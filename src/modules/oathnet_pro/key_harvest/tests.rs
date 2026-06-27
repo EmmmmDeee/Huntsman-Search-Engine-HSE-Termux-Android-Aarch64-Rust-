@@ -2412,3 +2412,27 @@ fn structured_detector_rejects_non_tokens() {
         "waytoolongtobeavalidtelegramauthtokenvalue123"
     )));
 }
+
+#[test]
+fn structural_detectors_reject_low_entropy_placeholders() {
+    // A structurally-valid but near-zero-entropy placeholder — a zeroed/templated
+    // exfil token, common in breach dumps and config templates — matches the
+    // shape yet must be gated out by the shared false-positive filter, exactly
+    // as the prefix and generic-hex paths gate their candidates.
+    let placeholder_tg = telegram_token("100000000", &"A".repeat(35));
+    assert!(is_telegram_bot_token(&placeholder_tg), "shape matches");
+    assert!(
+        identify_api_key(&placeholder_tg).is_none(),
+        "zero-entropy telegram placeholder must be gated out"
+    );
+
+    // 24/6/28 base64url segments of repeated chars: valid Discord shape, entropy
+    // far below the 3.5-bit bar.
+    let placeholder_dc = format!("{}.{}.{}", "A".repeat(24), "B".repeat(6), "C".repeat(28));
+    assert!(is_discord_bot_token(&placeholder_dc), "shape matches");
+    assert_ne!(
+        identify_api_key(&placeholder_dc).map(|(s, _)| s),
+        Some("discord_bot"),
+        "zero-entropy discord placeholder must be gated out"
+    );
+}

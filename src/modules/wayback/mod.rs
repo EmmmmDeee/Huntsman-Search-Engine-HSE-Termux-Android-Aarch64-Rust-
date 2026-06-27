@@ -131,9 +131,11 @@ fn is_contact_path(url: &str) -> bool {
     // Check only the path portion — not the domain — so a domain like
     // `contact-center.com` does not match every URL on that host.
     let path_start = lower.find("://").map_or(0, |p| p + 3);
+    // No '/' after the host ⇒ no path ⇒ empty (NOT the whole URL): a host like
+    // `contact-center.com` with no path must not match as a contact page.
     let path = lower[path_start..]
         .find('/')
-        .map_or(lower.as_str(), |p| &lower[path_start + p..]);
+        .map_or("", |p| &lower[path_start + p..]);
     CONTACT_PATH_KEYWORDS.iter().any(|kw| path.contains(kw))
 }
 

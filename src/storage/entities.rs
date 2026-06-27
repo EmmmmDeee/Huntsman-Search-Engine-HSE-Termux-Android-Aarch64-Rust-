@@ -166,8 +166,11 @@ impl super::Store {
             // Keep the FTS index synchronized. For a contentless-external FTS5
             // table the app must emit an explicit delete (old text, keyed by
             // rowid) then re-insert the new text. Only the value column is
-            // indexed, so skip the churn when the value is unchanged (the
-            // common merge case — same uid implies same normalised value).
+            // indexed, and `Entity::merge` NEVER rewrites `value`: a matching uid
+            // implies an identical normalised value (merge only swaps the
+            // display-only `raw_value`). So this guard is currently always false
+            // — it is retained, not removed, so the FTS resync stays correct if a
+            // future change ever makes `value` mutable on merge.
             if old_value != merged.value {
                 // `prepare_cached` so a batch of value-changing merges reuses
                 // the compiled statements instead of recompiling the same SQL
@@ -344,20 +347,29 @@ impl super::Store {
             sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
             let _ = next_param;
         }
-        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 5000");
+        // LIMIT is a per-call memory backstop. Kept at 500: this query feeds
+        // `recall_prior_entities`, which deserialises the result of EVERY prior
+        // scan and holds them all simultaneously before truncating — a larger
+        // limit multiplies across `MAX_PRIOR_SCANS` into a peak-memory blow-up on
+        // a 4 GB device (the failure the recall comment promises to prevent).
+        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 500");
 
         let raw: Vec<String> = {
+            use rusqlite::types::Value;
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(&sql)?;
 
             let like_pattern = value_contains.map(|v| format!("%{}%", super::escape_like(v)));
 
+            // `min_confidence` binds as a native REAL (not a stringified float) so
+            // the `e.confidence >= ?N` predicate is a numeric comparison by
+            // value, never lexicographic — independent of SQLite column affinity.
             let rows = stmt.query_map(
                 rusqlite::params_from_iter(
-                    std::iter::once(scan_id.to_string())
-                        .chain(kind.map(std::string::ToString::to_string))
-                        .chain(min_confidence.map(|c| c.to_string()))
-                        .chain(like_pattern),
+                    std::iter::once(Value::Text(scan_id.to_string()))
+                        .chain(kind.map(|k| Value::Text(k.to_string())))
+                        .chain(min_confidence.map(Value::Real))
+                        .chain(like_pattern.map(Value::Text)),
                 ),
                 |r| r.get::<_, String>(0),
             )?;

@@ -496,6 +496,12 @@ impl Module for SearchEngines {
             }
         }
 
+        // Re-enforce the working-set ceiling: the secondary pivot pass appends to
+        // `all_results` after the primary-pass truncation, so without this the cap
+        // is not a true bound. Cap again before the (super-linear) dedup + entity
+        // extraction consume it.
+        all_results.truncate(MAX_ACCUMULATED_RESULTS);
+
         // Count how many DISTINCT engines returned each canonical URL BEFORE
         // deduplication collapses the results to one `SearchResult` per URL.
         // This map carries the cross-engine corroboration signal into

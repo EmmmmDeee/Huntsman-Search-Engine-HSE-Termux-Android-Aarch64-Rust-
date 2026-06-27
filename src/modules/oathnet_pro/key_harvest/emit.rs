@@ -156,9 +156,9 @@ pub(super) fn emit_key_with(
 
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
-    // Provenance: harvested from breach/stealer data, never the operator's own →
-    // retained for reporting/attribution but gated out of `next_key`, so HSE
-    // never authenticates to the provider as the party this key was taken from.
+    // Provenance: record that this key was harvested from breach/stealer data
+    // (not operator-provisioned) for `keys list` reporting/attribution. Visibility
+    // metadata only — it does not gate selection (`next_key` ignores origin).
     entry.discovered_by = Some(format!("oathnet:{source}"));
     entry.discovered_at = Some(crate::core::entity::unix_now());
     entry.discovered_in_scan = Some(scan_id.to_string());
@@ -222,8 +222,9 @@ pub fn store_api_credential(item: &Value) {
     let pool = crate::util::key_pool::global_pool();
 
     let mut entry = crate::util::key_pool::KeyEntry::new(&password);
-    // Provenance: a stealer-dump credential, never the operator's own → gated
-    // out of `next_key` so it is reported but never reused for HSE's own auth.
+    // Provenance: record this as a stealer-dump credential (not operator-
+    // provisioned) for reporting. Visibility metadata only — does not gate
+    // selection.
     entry.discovered_by = Some("oathnet_stealer".to_string());
     entry.discovered_at = Some(crate::core::entity::unix_now());
     entry.notes = Some(format!(
@@ -237,8 +238,8 @@ pub fn store_api_credential(item: &Value) {
 
     let mut user_entry = crate::util::key_pool::KeyEntry::new(format!("{username}:{password}"));
     // Harvested login pair — `*_login` is non-poolable today (rejected by
-    // `is_poolable_service`), but stamp provenance defensively so it can never
-    // be reused for HSE's own auth even if poolability changes.
+    // `is_poolable_service`). Stamp provenance for reporting; it is visibility
+    // metadata only and does not gate selection.
     user_entry.discovered_by = Some("oathnet_stealer".to_string());
     user_entry.discovered_at = Some(crate::core::entity::unix_now());
     pool.add(&format!("{service}_login"), user_entry);

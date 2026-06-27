@@ -392,10 +392,15 @@ pub fn identify_vendor_api_key(value: &str) -> Option<(&'static str, &str)> {
 /// of length/charset checks, so there is no compile cost and no catastrophic
 /// backtracking surface on hostile breach text.
 fn identify_structured_token(s: &str) -> Option<&'static str> {
-    if is_telegram_bot_token(s) {
+    // Gate on the shared false-positive filter, exactly as the prefix and
+    // generic-hex paths do: the structural shape alone is not proof. Without
+    // this, a low-entropy placeholder (`100000000:AAA…AAA`, a zeroed/templated
+    // exfil token common in breach/config corpora) would be emitted as a
+    // VERIFIED bot token. A genuine token's base64 body clears the entropy bar.
+    if is_telegram_bot_token(s) && is_likely_real_key(s) {
         return Some("telegram_bot");
     }
-    if is_discord_bot_token(s) {
+    if is_discord_bot_token(s) && is_likely_real_key(s) {
         return Some("discord_bot");
     }
     None

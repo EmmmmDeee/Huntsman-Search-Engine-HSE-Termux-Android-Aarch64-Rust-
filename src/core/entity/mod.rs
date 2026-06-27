@@ -552,6 +552,16 @@ impl Entity {
     /// ```
     #[inline]
     pub fn classify(&self) -> Classification {
+        // A quarantined stranger (see `demote_to_candidate`) stays Candidate: the
+        // tag is authoritative. Without this floor the noisy-OR corroboration
+        // term in `c_effective` would lift a demoted 0.25-confidence entity past
+        // the Candidate tier once it accrued ≥2 distinct sources (e.g. the same
+        // same-name stranger surfaced by two breach providers), silently
+        // un-quarantining it into the analyst's default Probable/Verified view —
+        // the exact boundary the demotion exists to enforce.
+        if self.has_tag(crate::core::tags::CANDIDATE) {
+            return Classification::Candidate;
+        }
         Classification::from_c_eff(self.c_effective())
     }
 
@@ -1017,21 +1027,23 @@ fn normalise_url_query(query: &str) -> String {
 /// Invisible format / zero-width characters that are never part of a real
 /// identifier: BOM `U+FEFF`, zero-width space `U+200B`, ZWNJ/ZWJ `U+200C`/`U+200D`,
 /// word-joiner `U+2060`.
-const FORMAT_NOISE: [char; 5] = ['\u{feff}', '\u{200b}', '\u{200c}', '\u{200d}', '\u{2060}'];
-
-/// Strip [`FORMAT_NOISE`] from an identifier value. Being non-whitespace, these
-/// chars survive `trim` and silently fork one value's SHA-256 UID — a BOM an
-/// exporter prepended (`\u{feff}alice@x.com`), a zero-width space in a scraped
-/// handle — fragmenting one identity across two nodes. They never occur in a real
-/// email / username / domain, so removal is loss-free. Borrows when the input is
-/// clean (the overwhelmingly common case), so the hot normalize path allocates
-/// only for the rare dirty value.
+/// Strip invisible / format characters from an identifier value before it is
+/// hashed into a UID. Being non-whitespace, these chars survive `trim` and
+/// silently fork one value's SHA-256 UID — a BOM an exporter prepended
+/// (`\u{feff}alice@x.com`), a zero-width space in a scraped handle, a soft hyphen
+/// or a bidi override smuggled into a value — fragmenting one identity across two
+/// nodes. They never occur in a real email / username / domain, so removal is
+/// loss-free.
+///
+/// Delegates to [`crate::core::validation::strip_invisible`] — the
+/// SINGLE canonical set, shared with the seed-sanitisation boundary
+/// (`scan::sanitise_target_input`). Previously this path stripped only 5 of those
+/// codepoints while the seed boundary stripped the full set, so a module-
+/// discovered value carrying a soft hyphen / bidi control hashed to a different
+/// UID than its clean, seed-typed sibling. Sharing one definition makes that
+/// divergence structurally impossible.
 fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
-    if s.contains(FORMAT_NOISE) {
-        std::borrow::Cow::Owned(s.chars().filter(|c| !FORMAT_NOISE.contains(c)).collect())
-    } else {
-        std::borrow::Cow::Borrowed(s)
-    }
+    crate::core::validation::strip_invisible(s)
 }
 
 /// Normalise a value for a given kind.

@@ -1061,8 +1061,15 @@ impl ScanEngine {
         allow_live_sensors: bool,
     ) -> Vec<Entity> {
         use crate::core::entity::{EntityKind, Evidence, derive_uid, normalise};
-        const MAX_PRIOR_SCANS: usize = 32;
-        const MAX_ENTITIES: usize = 5000;
+        // These are device-MEMORY and O(n²)-correlator backstops, NOT result-
+        // fidelity caps: recall pre-loads prior-scan nodes into the working set
+        // BEFORE any budget check, and the set then feeds the super-linear
+        // relation/gap-fill derivation. Kept tight so a heavily-rescanned target
+        // can't drive a 32×5000 = 160k peak deserialisation or an O(n²) gap-fill
+        // blow-up on a 4 GB device. (Confidence-sorted, so the caps drop the
+        // weakest leads first.)
+        const MAX_PRIOR_SCANS: usize = 8;
+        const MAX_ENTITIES: usize = 300;
         const VALUE_MATCH_CAP: usize = 64;
 
         // Order/case/punctuation-insensitive token-set key (pure-digit tokens

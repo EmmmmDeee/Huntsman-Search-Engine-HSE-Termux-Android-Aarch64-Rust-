@@ -109,9 +109,9 @@ impl Module for ApiKeyProbe {
             let mut entry = KeyEntry::new(key);
             entry.status = KeyStatus::Active;
             entry.last_validated = Some(crate::core::entity::unix_now());
-            // Provenance: an auto-identified third-party key (the scan seed),
-            // never the operator's own → gated out of `next_key` so HSE reports
-            // it but never authenticates to the provider with someone else's key.
+            // Provenance: record this as an auto-identified key (the scan seed),
+            // not operator-provisioned, for reporting. Visibility metadata only —
+            // it does not gate selection.
             entry.discovered_by = Some("api_key_probe".to_string());
             entry.discovered_at = Some(crate::core::entity::unix_now());
             entry.discovered_in_scan = Some(ctx.scan_id.clone());

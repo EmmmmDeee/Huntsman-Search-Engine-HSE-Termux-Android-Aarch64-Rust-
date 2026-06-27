@@ -38,9 +38,9 @@ pub async fn add_and_validate(
 
     let mut entry = KeyEntry::new(key_value);
     entry.notes = notes;
-    // Provenance: a discovered key is validated and stored for reporting, but
-    // stamping `discovered_by` keeps it out of `next_key` so it is never reused
-    // as HSE's own credential.
+    // Provenance: record where a discovered key came from, for `keys list`
+    // reporting. Visibility metadata only — it does not gate selection
+    // (`next_key` ignores `discovered_by`).
     if discovered_by.is_some() {
         entry.discovered_at = Some(crate::core::entity::unix_now());
         entry.discovered_by = discovered_by;

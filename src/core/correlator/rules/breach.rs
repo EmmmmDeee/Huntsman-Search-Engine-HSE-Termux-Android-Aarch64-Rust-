@@ -607,7 +607,10 @@ pub(in crate::core::correlator) fn rule_au_021_api_key_exposure(
                 "AU-021",
                 "API key exposure",
                 Severity::Critical,
-                format!("API key '{}' discovered in breach/stealer data", e.value),
+                format!(
+                    "API key '{}…' discovered in breach/stealer data",
+                    e.value.chars().take(8).collect::<String>()
+                ),
                 vec![e.uid.clone()],
                 scan_id,
                 ts,
@@ -950,9 +953,9 @@ pub(in crate::core::correlator) fn rule_au_082_api_key_dual_pathway(
                 "API key dual-pathway exposure",
                 Severity::Critical,
                 format!(
-                    "API key '{}' independently found across {} source families ({}): \
+                    "API key '{}…' independently found across {} source families ({}): \
                      key was already circulating outside the original leak — revoke immediately",
-                    e.value,
+                    e.value.chars().take(8).collect::<String>(),
                     family_list.len(),
                     family_list.join(", "),
                 ),
