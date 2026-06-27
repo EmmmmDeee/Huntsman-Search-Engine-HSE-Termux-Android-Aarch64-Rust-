@@ -132,10 +132,15 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         },
         build_post: None,
         paginate: Some(|q, page| {
+            // Brave's web `offset` is a 0-based PAGE index (offset=1 → page 2),
+            // not a result count. The caller fetches page 0 via `build_url` and
+            // then calls this with `page` starting at 1, so the first paginated
+            // request must ask for offset=1 (page 2). Using `page + 1` here asked
+            // for offset=2 and silently skipped Brave's second page of results.
             format!(
                 "https://search.brave.com/search?q={}&offset={}",
                 crate::util::http::urlencode(q),
-                page + 1
+                page
             )
         }),
         ua: crate::util::curl::UA_DESKTOP,
