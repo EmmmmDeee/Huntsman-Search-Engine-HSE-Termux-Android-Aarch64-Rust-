@@ -28,7 +28,7 @@ pub struct AuAddress {
 
 impl AuAddress {
     pub fn confidence(&self) -> f64 {
-        // 0.70 baseline; +0.05 each for level/unit/street_number specificity
+        // 0.70 baseline; +0.10 for level, +0.05 each for unit/street_number specificity
         let mut c = 0.70_f64;
         if self.level.is_some() {
             c += 0.10;
@@ -412,7 +412,7 @@ pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
     // country code — a plain `61…` foreign number is left intact (→ `None`).
     let plus = value.contains('+');
     let digits: String = value.chars().filter(char::is_ascii_digit).collect();
-    let national = if let Some(rest) = digits.strip_prefix("0061") {
+    let nat = if let Some(rest) = digits.strip_prefix("0061") {
         rest
     } else if plus && let Some(rest) = digits.strip_prefix("61") {
         rest
@@ -420,7 +420,6 @@ pub fn au_phone_line_type(value: &str) -> Option<(AuLineType, &'static str)> {
         digits.as_str()
     }
     .trim_start_matches('0');
-    let nat = national;
     if nat.starts_with("1800") {
         return Some((
             AuLineType::Freephone,
