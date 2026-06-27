@@ -393,6 +393,11 @@ pub(crate) enum GeoSourceClass {
     Electoral,
     /// Australian property/land title register — government-maintained ownership record.
     Property,
+    /// A person's **breach/stealer login IP** geolocated to a city — their own
+    /// network connection at the time, not infrastructure. Coarse (ISP/cell-tower
+    /// grain) but person-linked, so it corroborates a locality the finer signals
+    /// already point to.
+    NetworkIp,
     /// Unrecognised / coarse (timezone clustering, etc.).
     Other,
 }
@@ -874,6 +879,46 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
             uid: e.uid.clone(),
         });
     }
+    // The person's own breach/stealer LOGIN IP, geolocated to a city — their
+    // network connection, not infrastructure. The breach modules tag a login IP
+    // `geolocation-lead`; ip_geo then resolves it to an AU `Coordinates` carrying
+    // an `ip` evidence attribute. A coordinate whose `ip` is one of those leads,
+    // and which is not a datacenter/proxy IP, is a coarse but person-linked fix —
+    // exactly the signal a breach dump's `lastip` provides for most AU victims.
+    let login_ips: HashSet<&str> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress && e.has_tag("geolocation-lead"))
+        .map(|e| e.value.as_str())
+        .collect();
+    if !login_ips.is_empty() {
+        for e in entities.iter().filter(|e| {
+            e.kind == EntityKind::Coordinates
+                && !e.has_tag("hosting")
+                && !e.has_tag("proxy")
+                && !e.has_tag("platform-infra")
+        }) {
+            let is_login_ip_geo = e.evidence.iter().any(|ev| {
+                ev.attributes
+                    .get("ip")
+                    .is_some_and(|ip| login_ips.contains(ip.as_str()))
+            });
+            if !is_login_ip_geo {
+                continue;
+            }
+            let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value) else {
+                continue;
+            };
+            if !crate::util::geo::is_in_australia(lat, lon) {
+                continue;
+            }
+            sigs.push(Sig {
+                lat,
+                lon,
+                class: GeoSourceClass::NetworkIp,
+                uid: e.uid.clone(),
+            });
+        }
+    }
     if sigs.is_empty() {
         return None;
     }
@@ -998,6 +1043,7 @@ fn geo_class_name(c: &GeoSourceClass) -> &'static str {
         GeoSourceClass::Search => "search",
         GeoSourceClass::Electoral => "electoral",
         GeoSourceClass::Property => "property",
+        GeoSourceClass::NetworkIp => "network-ip",
         GeoSourceClass::Other => "other",
     }
 }

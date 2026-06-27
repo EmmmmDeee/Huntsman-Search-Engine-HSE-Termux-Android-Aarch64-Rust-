@@ -3225,6 +3225,66 @@ fn location_corroboration_none_without_any_au_signal() {
 }
 
 #[test]
+fn location_corroboration_admits_person_breach_login_ip() {
+    use super::au_location_corroboration;
+    // A breach login IP (tagged geolocation-lead) geolocated to Brisbane — the
+    // person's own connection — is a coarse but real person-location signal.
+    let mut ip = Entity::new(EntityKind::IpAddress, "1.132.97.84", 0.6, "s");
+    ip.tag("geolocation-lead");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
+    coord.add_evidence(
+        Evidence::new("ip_geo", "IP geolocation for 1.132.97.84").with_attr("ip", "1.132.97.84"),
+    );
+    let c = au_location_corroboration(&[ip, coord]).expect("a person login-IP geo is a signal");
+    assert_eq!(c.state, "QLD");
+    assert!(c.class_names.contains(&"network-ip"));
+}
+
+#[test]
+fn location_corroboration_breach_ip_corroborates_a_postcode() {
+    use super::au_location_corroboration;
+    // An electoral-roll postcode (Brisbane 4000) AND the person's breach login IP
+    // (also Brisbane) are two INDEPENDENT methods converging on one locality.
+    let mut person = Entity::new(EntityKind::Person, "A Person", 0.6, "s");
+    person.add_evidence(Evidence::new("au_electoral", "roll").with_attr("postcode", "4000"));
+    let mut ip = Entity::new(EntityKind::IpAddress, "1.132.97.84", 0.6, "s");
+    ip.tag("geolocation-lead");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
+    coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "1.132.97.84"));
+
+    let c = au_location_corroboration(&[person, ip, coord]).unwrap();
+    assert_eq!(c.independent_classes, 2, "electoral + network-ip");
+    assert!(c.class_names.contains(&"electoral") && c.class_names.contains(&"network-ip"));
+    assert!(c.confidence > 0.65);
+}
+
+#[test]
+fn location_corroboration_rejects_a_datacenter_ip_geo() {
+    use super::au_location_corroboration;
+    // A hosting/datacenter IP geo is the server's location, never the person's —
+    // it must not be admitted even when tagged a geolocation-lead.
+    let mut ip = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.6, "s");
+    ip.tag("geolocation-lead");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
+    coord.tag("hosting");
+    coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "8.8.8.8"));
+    assert!(
+        au_location_corroboration(&[ip, coord]).is_none(),
+        "a datacenter IP geo is not a person fix"
+    );
+}
+
+#[test]
+fn location_corroboration_ignores_ip_geo_without_a_login_lead() {
+    use super::au_location_corroboration;
+    // An ip_geo coordinate whose IP is NOT a person breach login lead (e.g. a
+    // resolved infrastructure IP) is not a person-location signal.
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4683,153.0322", 0.6, "s");
+    coord.add_evidence(Evidence::new("ip_geo", "g").with_attr("ip", "203.0.113.7"));
+    assert!(au_location_corroboration(&[coord]).is_none());
+}
+
+#[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
     let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");

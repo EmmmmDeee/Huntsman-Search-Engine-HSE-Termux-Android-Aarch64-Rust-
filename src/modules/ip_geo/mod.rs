@@ -140,6 +140,11 @@ fn build_entities(data: &IpApiResp, ip: &str, scan_id: &str) -> Vec<Entity> {
         )
         .fold(
             Evidence::new(SRC, format!("IP geolocation for {ip}"))
+                // The originating IP, recorded explicitly so a finalise pass can
+                // robustly tie this coordinate back to its source IpAddress (e.g.
+                // to recognise a person's breach login IP) without parsing the
+                // summary string.
+                .with_attr("ip", ip)
                 .with_attr("country", data.country.as_deref().unwrap_or("-"))
                 .with_attr("region", data.region_name.as_deref().unwrap_or("-"))
                 .with_attr("city", data.city.as_deref().unwrap_or("-"))
