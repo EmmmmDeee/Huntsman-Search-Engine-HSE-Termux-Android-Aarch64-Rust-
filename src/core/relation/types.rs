@@ -70,6 +70,10 @@ pub enum RelationKind {
 }
 
 impl RelationKind {
+    /// The edge kind's stable snake_case tag — identical to the serde wire form
+    /// and the stored `relations.kind` column, so the DB value and the API/SPA
+    /// edge label can never drift (pinned by a test).
+    #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
             Self::SubdomainOf => "subdomain_of",
@@ -114,6 +118,9 @@ pub struct Relation {
 }
 
 impl Relation {
+    /// A typed edge `from → to` of `kind`, with a deterministic id
+    /// (`hex(SHA-256("from|kind|to|scan"))`) so storage upserts idempotently — a
+    /// re-scan never duplicates an edge. `confidence` is clamped to `0.0..=1.0`.
     pub fn new(
         from_uid: impl Into<String>,
         to_uid: impl Into<String>,

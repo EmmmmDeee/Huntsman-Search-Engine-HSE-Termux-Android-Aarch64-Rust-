@@ -237,10 +237,16 @@ impl ScanEngine {
         );
     }
 
+    /// The registered modules, in dispatch order — the set the engine runs each
+    /// applicable one of against every target.
+    #[must_use]
     pub fn modules(&self) -> &[Arc<dyn Module>] {
         &self.modules
     }
 
+    /// The engine's [`EventBus`] — subscribe to it to stream scan progress
+    /// (module start/done, entities found, correlations) as the graph grows.
+    #[must_use]
     pub fn bus(&self) -> &EventBus {
         &self.bus
     }

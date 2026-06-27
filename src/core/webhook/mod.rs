@@ -6,15 +6,28 @@
 
 use serde_json::json;
 
+/// The scan-summary fields a [`notify_scan_complete`] webhook POST carries — a
+/// borrowed view (no allocation) assembled by the engine at finalise.
 pub struct WebhookPayload<'a> {
+    /// The completed scan's id.
     pub scan_id: &'a str,
+    /// The seed target's kind (`email`, `username`, …) and value.
     pub target_kind: &'a str,
     pub target_value: &'a str,
+    /// How many entities the scan produced.
     pub entity_count: usize,
+    /// Terminal scan status (`completed`, `cancelled`, …).
     pub status: &'a str,
+    /// How many correlations fired.
     pub correlations_count: usize,
 }
 
+/// POST a `scan_complete` JSON notification to the operator's configured
+/// `webhook_url`. Fire-and-forget: bounded to a 10-second timeout and **never
+/// returns an error** — a failed or slow webhook logs and is dropped, so an
+/// external endpoint can't stall or fail the scan. On error only the webhook
+/// **host** is logged, never the full URL: a Slack/Discord-style webhook carries
+/// its secret in the path, which must not leak into the `/api/v1/logs` ring buffer.
 pub async fn notify_scan_complete(
     http: &reqwest::Client,
     webhook_url: &str,
@@ -59,6 +72,9 @@ pub async fn notify_scan_complete(
     }
 }
 
+/// The operator's webhook URL from `HUNTSMAN_WEBHOOK_URL`, or `None` when unset or
+/// empty — the env fallback when no per-scan webhook is configured in `ScanOptions`.
+#[must_use]
 pub fn webhook_url_from_env() -> Option<String> {
     std::env::var("HUNTSMAN_WEBHOOK_URL")
         .ok()
