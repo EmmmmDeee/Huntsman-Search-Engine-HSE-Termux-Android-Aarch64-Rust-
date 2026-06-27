@@ -158,6 +158,12 @@ fn is_plausible_postcode(state: &str, postcode: &str) -> bool {
         "VIC" => (3000..=3999).contains(&pc) || (8000..=8999).contains(&pc),
         "QLD" => (4000..=4999).contains(&pc) || (9000..=9999).contains(&pc),
         "SA" => (5000..=5999).contains(&pc),
+        // The 6798/6799 gap is deliberate: 6798 (Christmas Island) and 6799
+        // (Cocos (Keeling) Islands) are external territories ~2600 km offshore in
+        // the Indian Ocean, administered separately from WA. They are postally
+        // grouped under WA but are not the mainland state, so they map to no state
+        // (None) rather than being mis-attributed to WA. (Contrast VIC's 8xxx and
+        // QLD's 9xxx, which ARE in-state PO-box ranges and so are included.)
         "WA" => (6000..=6797).contains(&pc) || (6800..=6999).contains(&pc),
         "TAS" => (7000..=7999).contains(&pc),
         "NT" => (800..=999).contains(&pc),
