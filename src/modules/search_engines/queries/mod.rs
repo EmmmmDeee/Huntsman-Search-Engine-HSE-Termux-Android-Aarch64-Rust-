@@ -400,7 +400,8 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                 q.push(format!("\"{local}\" address OR location OR city"));
                 q.push(format!(
                     "\"{local}\" site:whitepages.com.au OR site:locatefamily.com \
-                     OR site:peoplefinder.com.au OR site:searchfind.com.au"
+                     OR site:peoplefinder.com.au OR site:searchfind.com.au \
+                     OR site:australialookup.com OR site:personlookup.com.au"
                 ));
             }
             // Breach-DB direct surfaces. HaveIBeenPwned + DeHashed +

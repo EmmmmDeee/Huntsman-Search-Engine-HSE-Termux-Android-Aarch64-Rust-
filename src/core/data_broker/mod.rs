@@ -33,6 +33,10 @@ pub const BROKERS: &[DataBroker] = &[
         name: "AnyWho",
     },
     DataBroker {
+        domain: "australialookup.com",
+        name: "Australia Lookup",
+    },
+    DataBroker {
         domain: "beenverified.com",
         name: "BeenVerified",
     },
@@ -59,6 +63,10 @@ pub const BROKERS: &[DataBroker] = &[
     DataBroker {
         domain: "peekyou.com",
         name: "PeekYou",
+    },
+    DataBroker {
+        domain: "personlookup.com.au",
+        name: "Person Lookup",
     },
     DataBroker {
         domain: "pipl.com",

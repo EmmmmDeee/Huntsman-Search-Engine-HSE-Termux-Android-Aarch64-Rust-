@@ -288,6 +288,7 @@ const MEGA_DOMAINS: &[&str] = &[
     // a person scan hits many at once as stranger co-occurrence noise).
     "advancedbackgroundchecks.com",
     "anywho.com",
+    "australialookup.com",
     "beenverified.com",
     "checkpeople.com",
     "clustrmaps.com",
@@ -302,6 +303,7 @@ const MEGA_DOMAINS: &[&str] = &[
     "nuwber.com",
     "peekyou.com",
     "peoplefinders.com",
+    "personlookup.com.au",
     "pipl.com",
     "radaris.com",
     "rocketreach.co",
