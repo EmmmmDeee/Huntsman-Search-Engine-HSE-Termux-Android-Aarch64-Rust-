@@ -259,3 +259,59 @@ use super::*;
         assert_eq!(events[0].entity_value, "Matthew Diegmann");
         assert_eq!(events[0].iso, "1990-05-05");
     }
+
+    #[test]
+    fn online_tenure_spans_the_breach_history() {
+        // Two breach exposures 2008 → 2025 reconstruct a 17-year online footprint.
+        let a = entity_with_attrs(
+            EntityKind::Email,
+            "a@x.com",
+            "see_know",
+            &[("breach_date", "2008-07-01")],
+        );
+        let b = entity_with_attrs(
+            EntityKind::Email,
+            "a@x.com",
+            "oathnet_pro",
+            &[("breach_date", "2025-12-15")],
+        );
+        let events = reconstruct(&[a, b]);
+        let t = online_tenure(&events).expect("a spanning tenure");
+        assert!(t.earliest_iso.starts_with("2008"));
+        assert!(t.latest_iso.starts_with("2025"));
+        assert_eq!(t.span_years, 17, "2008→2025 is a 17-year span");
+        assert_eq!(t.breach_count, 2);
+        assert_eq!(t.event_count, 2);
+    }
+
+    #[test]
+    fn online_tenure_excludes_date_of_birth() {
+        // A DOB must not stretch tenure back to the birth year; only presence dates it.
+        let p = entity_with_attrs(
+            EntityKind::Person,
+            "Jo Citizen",
+            "see_know",
+            &[("date_of_birth", "1980-01-01"), ("breach_date", "2015-06-01")],
+        );
+        let events = reconstruct(&[p]);
+        let t = online_tenure(&events).unwrap();
+        assert!(
+            t.earliest_iso.starts_with("2015"),
+            "DOB 1980 excluded; earliest is the 2015 breach"
+        );
+        assert_eq!(t.span_years, 0, "one presence event → zero span");
+        assert_eq!(t.breach_count, 1);
+    }
+
+    #[test]
+    fn online_tenure_none_for_a_dob_only_footprint() {
+        // A DOB alone is not online presence — no tenure rather than a multi-decade lie.
+        let p = entity_with_attrs(
+            EntityKind::Person,
+            "Jo Citizen",
+            "see_know",
+            &[("date_of_birth", "1980-01-01")],
+        );
+        let events = reconstruct(&[p]);
+        assert!(online_tenure(&events).is_none());
+    }

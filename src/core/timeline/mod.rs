@@ -162,6 +162,66 @@ pub fn reconstruct(entities: &[Entity]) -> Vec<TimelineEvent> {
     events
 }
 
+/// A summary of the subject's **online tenure** — how long their digital footprint
+/// has existed and how exposed it is. The headline temporal fact: "online since
+/// 2008, a 17-year footprint across 9 breaches".
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OnlineTenure {
+    /// Earliest presence instant (Unix seconds) and its `YYYY-MM-DD…` form.
+    pub earliest_ts: i64,
+    pub earliest_iso: String,
+    /// Most recent presence instant.
+    pub latest_ts: i64,
+    pub latest_iso: String,
+    /// Whole-year span from earliest to latest presence — the footprint's age.
+    pub span_years: u32,
+    /// Presence events counted (everything except DOB and future expiries).
+    pub event_count: usize,
+    /// Distinct breach-exposure events — the depth of the subject's breach history.
+    pub breach_count: usize,
+}
+
+/// Summarise the subject's online tenure from a reconstructed [`reconstruct`]
+/// timeline — the span and exposure depth of their digital footprint.
+///
+/// Counts only **presence** events: a [`TimelineEventKind::DateOfBirth`] predates
+/// the online footprint (it would wrongly stretch tenure back to the birth year)
+/// and an [`TimelineEventKind::Expiry`] is a future resource event, so both are
+/// excluded; everything else (breach exposure, account creation, registration,
+/// first/last seen) dates the subject's actual presence. `span_years` is the
+/// whole-year gap between the earliest and latest such event (mean Gregorian
+/// year). Pure and order-independent. `None` when the timeline carries no presence
+/// event at all — so a footprint dated only by a DOB reports no tenure rather than
+/// a misleading multi-decade span.
+#[must_use]
+pub fn online_tenure(events: &[TimelineEvent]) -> Option<OnlineTenure> {
+    let presence: Vec<&TimelineEvent> = events
+        .iter()
+        .filter(|e| {
+            !matches!(
+                e.kind,
+                TimelineEventKind::DateOfBirth | TimelineEventKind::Expiry
+            )
+        })
+        .collect();
+    let first = presence.iter().min_by_key(|e| e.ts)?;
+    let last = presence.iter().max_by_key(|e| e.ts)?;
+    Some(OnlineTenure {
+        earliest_ts: first.ts,
+        earliest_iso: first.iso.clone(),
+        latest_ts: last.ts,
+        latest_iso: last.iso.clone(),
+        // Mean Gregorian year (365.2425 d); `max(0)` guards a pathological
+        // out-of-order pair from underflowing.
+        span_years: u32::try_from((last.ts - first.ts).max(0) / 31_556_952).unwrap_or(u32::MAX),
+        event_count: presence.len(),
+        breach_count: presence
+            .iter()
+            .filter(|e| e.kind == TimelineEventKind::BreachExposure)
+            .count(),
+    })
+}
+
 // ─── Dependency-free date parsing ────────────────────────────────────────────
 
 /// Days from the civil date 1970-01-01 to `y-m-d` (Howard Hinnant's algorithm).

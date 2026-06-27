@@ -64,7 +64,20 @@ pub async fn scan_timeline(
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     let events = crate::core::timeline::reconstruct(&entities);
-    ok_list("events", events)
+    // Additive: alongside the event list (unchanged `events` + `count` shape),
+    // surface the online-tenure summary — the span and breach-depth of the
+    // subject's digital footprint ("online since 2008, 17 years, 9 breaches").
+    let tenure = crate::core::timeline::online_tenure(&events);
+    let count = events.len();
+    (
+        StatusCode::OK,
+        Json(json!({
+            "events": events,
+            "count": count,
+            "tenure": tenure,
+        })),
+    )
+        .into_response()
 }
 
 /// `GET /api/v1/scans/{id}/communities` — relationship-graph community detection
