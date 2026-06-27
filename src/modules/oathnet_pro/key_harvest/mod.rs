@@ -364,6 +364,15 @@ pub fn identify_vendor_api_key(value: &str) -> Option<(&'static str, &str)> {
             }
         }
     }
+    // Structurally-shaped credentials whose identity is in their LAYOUT, not a
+    // leading literal, so the prefix table can't catch them. Both dominate
+    // infostealer logs and paste dumps (the Telegram bot token especially — it
+    // is malware's most common exfil channel). Checked before the `user:pass`
+    // split in `identify_api_key`, which would otherwise mangle the Telegram
+    // token on its integral colon.
+    if let Some(service) = identify_structured_token(trimmed) {
+        return Some((service, trimmed));
+    }
     // PEM private-key blocks (id_rsa / id_ed25519 / OpenVPN configs in stealer
     // logs). Multi-line; checked separately from the single-token prefix table.
     if let Some(service) = identify_pem_private_key(trimmed) {
@@ -375,6 +384,59 @@ pub fn identify_vendor_api_key(value: &str) -> Option<(&'static str, &str)> {
         return Some((service, trimmed));
     }
     None
+}
+
+/// Identify a credential whose signature is its **structure** rather than a
+/// leading literal — the cases a prefix table inherently cannot model. Returns
+/// the service tag, or `None`. Hand-rolled (no regex): each shape is a handful
+/// of length/charset checks, so there is no compile cost and no catastrophic
+/// backtracking surface on hostile breach text.
+fn identify_structured_token(s: &str) -> Option<&'static str> {
+    if is_telegram_bot_token(s) {
+        return Some("telegram_bot");
+    }
+    if is_discord_bot_token(s) {
+        return Some("discord_bot");
+    }
+    None
+}
+
+/// True for a Telegram bot token: `<bot id>:<auth>`, where the bot id is 6–12
+/// ASCII digits and the auth is a 34–35 char base64url string, e.g.
+/// `123456789:AAH-dqTcvCH1vGWJxfSeofSAs0K5PALDsaw`. The colon is integral, so
+/// this MUST be recognised before the generic `user:password` split would tear
+/// the token in half and lose it.
+fn is_telegram_bot_token(s: &str) -> bool {
+    let Some((id, auth)) = s.split_once(':') else {
+        return false;
+    };
+    (6..=12).contains(&id.len())
+        && id.bytes().all(|b| b.is_ascii_digit())
+        && (34..=35).contains(&auth.len())
+        && auth
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+}
+
+/// True for a Discord bot token: three dot-separated base64url segments —
+/// `<base64 user-id>.<base64 timestamp>.<base64 hmac>`, e.g.
+/// `MTk4NjIyNDgzNDcxOTI1MjQ4.Cl2FMQ.x1b...`. Distinct from a Discord *webhook*
+/// URL (already covered) — a bot token grants full control of the bot account.
+/// The 6–7 char middle segment is the discriminator that separates these from a
+/// JWT (whose payload segment is far longer), so there is no `eyJ…` collision.
+fn is_discord_bot_token(s: &str) -> bool {
+    let mut segs = s.split('.');
+    let (Some(a), Some(b), Some(c), None) = (segs.next(), segs.next(), segs.next(), segs.next())
+    else {
+        return false;
+    };
+    let is_b64url = |seg: &str, lo: usize, hi: usize| {
+        (lo..=hi).contains(&seg.len())
+            && seg
+                .bytes()
+                .all(|x| x.is_ascii_alphanumeric() || x == b'_' || x == b'-')
+    };
+    is_b64url(a, 23, 28) && is_b64url(b, 6, 7) && is_b64url(c, 27, 40)
 }
 
 pub fn identify_api_key(value: &str) -> Option<(&'static str, &str)> {

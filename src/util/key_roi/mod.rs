@@ -74,9 +74,9 @@ pub fn classify(service: &str) -> KeyRoi {
         | "passivetotal" | "onyphe" | "zoomeye" | "netlas" | "fofa"
         | "spyse" | "leakix" | "urlscan"
         // Domain/URL intelligence → more domains → more crawl surface
-        | "virustotal" | "criminal_ip" | "whoisxml" | "builtwith"
+        | "virustotal" | "criminal_ip" | "whoisxml" | "builtwith" | "alienvault_otx"
         // Identity enumeration → more emails → new OathNet targets
-        | "hunter" | "proxycurl" | "epieos" | "emailrep" | "seon"
+        | "hunter" | "proxycurl" | "epieos" | "emailrep" | "seon" | "fullcontact"
         // Source-code key leaks
         | "github" | "gitlab"
         // Semantic search → URLs → web_crawler → leaked keys

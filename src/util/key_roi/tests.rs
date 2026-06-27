@@ -7,6 +7,9 @@ use super::*;
         assert_eq!(classify("securitytrails"), KeyRoi::Multiplier);
         assert_eq!(classify("hunter"), KeyRoi::Multiplier);
         assert_eq!(classify("proxycurl"), KeyRoi::Multiplier);
+        // Newly attributed high-value OSINT keys carry the same Multiplier ROI.
+        assert_eq!(classify("alienvault_otx"), KeyRoi::Multiplier);
+        assert_eq!(classify("fullcontact"), KeyRoi::Multiplier);
     }
 
     #[test]

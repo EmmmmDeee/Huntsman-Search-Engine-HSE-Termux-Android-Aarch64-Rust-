@@ -1896,6 +1896,49 @@ fn osint_attribution_requires_both_context_and_shape() {
 }
 
 #[test]
+fn osint_high_value_providers_attribute_by_context_and_shape() {
+    // AlienVault OTX — 64-hex, named by the X-OTX-API-KEY header or an
+    // alienvault/otx identifier.
+    let hex64 = "3f9a1c7e2b8d4506af13e9c2d7b04185fa6c39e1d8b25704ce9f1a3b6d8025f7";
+    assert_eq!(hex64.len(), 64);
+    assert_eq!(
+        match_osint_provider("X-OTX-API-KEY", hex64),
+        Some("alienvault_otx")
+    );
+    assert_eq!(
+        match_osint_provider("alienvault_otx_key", hex64),
+        Some("alienvault_otx")
+    );
+    // ONYPHE — 40-hex infrastructure-intel key.
+    let hex40 = "3f9a1c7e2b8d4506af13e9c2d7b04185fa6c39e1";
+    assert_eq!(hex40.len(), 40);
+    assert_eq!(
+        match_osint_provider("ONYPHE_API_KEY", hex40),
+        Some("onyphe")
+    );
+    // FOFA — 32-hex (hex-only): a same-length alnum value with letters past `f`
+    // is correctly rejected rather than misattributed.
+    let hex32 = "3f9a1c7e2b8d4506af13e9c2d7b04185";
+    assert_eq!(hex32.len(), 32);
+    assert_eq!(match_osint_provider("FOFA_KEY", hex32), Some("fofa"));
+    assert_eq!(match_osint_provider("FOFA_KEY", &SUFFIX[..32]), None);
+    // FullContact & IPQualityScore — 32-alnum.
+    let alnum32 = &SUFFIX[..32];
+    assert_eq!(
+        match_osint_provider("FULLCONTACT_API_KEY", alnum32),
+        Some("fullcontact")
+    );
+    assert_eq!(
+        match_osint_provider("IPQUALITYSCORE_KEY", alnum32),
+        Some("ipqs")
+    );
+    assert_eq!(
+        match_osint_provider("ipqs_private_key", alnum32),
+        Some("ipqs")
+    );
+}
+
+#[test]
 fn osint_context_still_honours_false_positive_gate() {
     // A 32-char but low-entropy value under a provider context is dropped by the
     // shared FP gate, so context never rescues a non-secret. `match_osint_provider`
@@ -2280,4 +2323,92 @@ mod prop {
             "short sk-svcacct- token must not cascade to the generic sk- service"
         );
     }
+}
+
+// ── Structural credentials: Telegram & Discord bot tokens ───────────────────
+// These dominate infostealer logs and paste dumps. The standard Telegram bot
+// token `<digits>:<base64>` cannot be prefix-matched (it leads with digits), and
+// Discord tokens whose base64 user-id does not start MT/ODk are missed by the
+// prefix table — `identify_structured_token` fills both gaps.
+//
+// The token-shaped fixtures below are ASSEMBLED from segments at runtime: no
+// contiguous bot-token literal lives in source, so secret-scanning push
+// protection does not (correctly) flag these synthetic test values.
+
+/// A Telegram-bot-token-shaped string `<bot id>:<auth>`, assembled at runtime.
+fn telegram_token(id: &str, auth: &str) -> String {
+    format!("{id}:{auth}")
+}
+
+/// A Discord-bot-token-shaped string (three base64url segments), assembled at
+/// runtime. The caller supplies the leading base64 user-id segment; the trailing
+/// timestamp + hmac segments are fixed.
+fn discord_token(user_id_b64: &str) -> String {
+    let timestamp = "Cl2FMQ";
+    let hmac = "x1bc-defGHIjklMNOpqrSTUvwx12";
+    format!("{user_id_b64}.{timestamp}.{hmac}")
+}
+
+#[test]
+fn identifies_standard_telegram_bot_token() {
+    // 9-digit bot id + 34-char base64url auth — the ubiquitous format.
+    let tok = telegram_token("123456789", "AAHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw");
+    let (svc, val) = identify_api_key(&tok).unwrap();
+    assert_eq!(svc, "telegram_bot");
+    // The integral colon must NOT trigger the generic user:password split —
+    // the whole token is preserved.
+    assert_eq!(val, tok.as_str());
+}
+
+#[test]
+fn telegram_token_with_35_char_auth_is_identified() {
+    let tok = telegram_token("9876543210", "ZZHdqTcvCH1vGWJxfSeofSAs0K5PALDsaw1");
+    assert_eq!(identify_api_key(&tok).map(|(s, _)| s), Some("telegram_bot"));
+}
+
+#[test]
+fn identifies_discord_bot_token_missed_by_prefix_table() {
+    // base64 user-id starting "Nz" (decimal id begins 7) is not covered by the
+    // MT/ODk/dcbot. prefixes — the structural detector catches it.
+    let tok = discord_token("Nzk4NjIyNDgzNDcxOTI1MjQ4");
+    assert_eq!(identify_api_key(&tok).map(|(s, _)| s), Some("discord_bot"));
+}
+
+#[test]
+fn discord_structural_detector_is_leading_char_agnostic() {
+    // Both an MT-leading and an Nz-leading token are structurally Discord — the
+    // detector does not depend on the prefix table's incomplete leading set.
+    assert!(is_discord_bot_token(&discord_token(
+        "MTk4NjIyNDgzNDcxOTI1MjQ4"
+    )));
+    assert!(is_discord_bot_token(&discord_token(
+        "Nzk4NjIyNDgzNDcxOTI1MjQ4"
+    )));
+}
+
+#[test]
+fn jwt_is_not_misclassified_as_discord_bot_token() {
+    // A JWT is also three base64 segments, but its payload segment is far longer
+    // than Discord's 6–7 char middle, so the structural detector rejects it.
+    let header = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9";
+    let payload = "eyJzdWIiOiIxMjM0NTY3ODkwIn0";
+    let sig = "dBjftJeZ4CVPmB92K27uhbUJU1p1r_wW1gFWFOEjXk";
+    let jwt = format!("{header}.{payload}.{sig}");
+    assert!(!is_discord_bot_token(&jwt));
+    assert_ne!(identify_api_key(&jwt).map(|(s, _)| s), Some("discord_bot"));
+}
+
+#[test]
+fn structured_detector_rejects_non_tokens() {
+    // Too-short bot id (< 6 digits).
+    assert!(identify_structured_token("12345:short").is_none());
+    // Two dotted segments — Discord needs exactly three.
+    assert!(identify_structured_token("abcdefghijklmnopqrstuvwx.Cl2FMQ").is_none());
+    // Ordinary dotted text is not a token.
+    assert!(identify_structured_token("the.quick.brown").is_none());
+    // Numeric id with an over-long secret is not a Telegram token.
+    assert!(!is_telegram_bot_token(&telegram_token(
+        "123456789",
+        "waytoolongtobeavalidtelegramauthtokenvalue123"
+    )));
 }

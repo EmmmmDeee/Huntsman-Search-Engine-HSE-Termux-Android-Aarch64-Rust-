@@ -62,6 +62,10 @@ impl Shape {
     }
 }
 
+const HEX32: Shape = Shape {
+    len: 32,
+    charset: CharSet::Hex,
+};
 const HEX40: Shape = Shape {
     len: 40,
     charset: CharSet::Hex,
@@ -170,6 +174,43 @@ pub(super) const OSINT_PROVIDERS: &[OsintProvider] = &[
     OsintProvider {
         service: "dehashed",
         contexts: &["dehashed"],
+        shapes: &[ALNUM32],
+    },
+    // AlienVault OTX — 64-char lowercase-hex key (the `X-OTX-API-KEY` header).
+    // Free, high-value threat intel: a pulse pivots to related domains / IPs /
+    // file hashes, feeding more crawl + lookup surface (Multiplier ROI).
+    OsintProvider {
+        service: "alienvault_otx",
+        contexts: &["alienvault", "otx"],
+        shapes: &[HEX64],
+    },
+    // ONYPHE — 40-char hex API key (internet-scan + passive-DNS infrastructure
+    // intelligence). Hostnames/IPs returned feed web_crawler → leaked keys.
+    OsintProvider {
+        service: "onyphe",
+        contexts: &["onyphe"],
+        shapes: &[HEX40],
+    },
+    // FOFA — 32-char hex API key (Chinese internet-scan engine, paired with the
+    // account email). High value for APAC / China-facing infrastructure recon,
+    // aligned with the AU-first + China expansion focus.
+    OsintProvider {
+        service: "fofa",
+        contexts: &["fofa"],
+        shapes: &[HEX32],
+    },
+    // FullContact — 32-char alphanumeric API key (identity / email enrichment).
+    // Each resolved person → more emails → new OathNet targets (Multiplier).
+    OsintProvider {
+        service: "fullcontact",
+        contexts: &["fullcontact"],
+        shapes: &[ALNUM32],
+    },
+    // IPQualityScore — 32-char alphanumeric private key (fraud / proxy / VPN /
+    // disposable-email scoring). A staple investigator key.
+    OsintProvider {
+        service: "ipqs",
+        contexts: &["ipqualityscore", "ipqs"],
         shapes: &[ALNUM32],
     },
 ];
