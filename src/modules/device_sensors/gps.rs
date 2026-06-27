@@ -52,6 +52,11 @@ pub(super) fn fix_confidence(provider: &str, accuracy_m: Option<f64>) -> f64 {
     }
 }
 
+/// Parse `termux-location`'s JSON into a `Coordinates` entity — the device's own
+/// GPS fix, the strongest first-party geolocation signal. Empty result on
+/// unparseable JSON (the tool absent / no fix) or an invalid lat/lon, so a missing
+/// fix degrades to "no signal" rather than a bad coordinate. Pure given `stdout`,
+/// so it is unit-testable without a device.
 pub(super) fn parse_fix(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let fix: Fix = match serde_json::from_slice(stdout) {
         Ok(v) => v,

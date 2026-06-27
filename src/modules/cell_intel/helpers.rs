@@ -85,6 +85,9 @@ pub(super) async fn query_opencellid(
     Some((lat, lon, data.range.unwrap_or(5000)))
 }
 
+/// Map a cell fix's accuracy radius (metres) to a coordinate confidence: a tight
+/// tower range (≤100 m, a dense urban small-cell) is trusted at 0.85, widening to
+/// 0.35 for a >10 km rural macro-cell whose centroid could be far from the device.
 pub(super) fn accuracy_to_confidence(range_m: u64) -> f64 {
     match range_m {
         0..=100 => 0.85,
@@ -105,6 +108,12 @@ pub(super) fn json_to_str(v: &Option<serde_json::Value>) -> Cow<'_, str> {
     }
 }
 
+/// Coarse country fix from a cell's **Mobile Country Code**: `(lat, lon, ISO)` at
+/// the country centroid, or `None` for an unrecognised MCC. The fallback when no
+/// precise tower location is available — at least the device's *country* is known
+/// from the network it's camped on. Australia (`505`) leads the table, consistent
+/// with the platform's AU focus; global MCCs follow so a roaming/non-AU device
+/// still resolves.
 pub(super) fn mcc_to_centroid(mcc: &str) -> Option<(f64, f64, &'static str)> {
     match mcc {
         // Oceania / Australia

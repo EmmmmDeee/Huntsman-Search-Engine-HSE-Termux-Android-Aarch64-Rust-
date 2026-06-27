@@ -30,6 +30,11 @@ pub(super) fn wifi_band(freq_mhz: Option<i64>) -> Option<&'static str> {
     }
 }
 
+/// Parse `termux-wifi-connectioninfo`'s JSON into the connected access point's
+/// entities (BSSID / SSID / frequency band) — the Wi-Fi the device is on, a
+/// strong co-location signal (a BSSID geolocates via wardriving databases). Empty
+/// result on unparseable JSON (tool absent / Wi-Fi off), so absence degrades to
+/// "no signal". Pure given `stdout` — unit-testable without a device.
 pub(super) fn parse_conn(stdout: &[u8], scan_id: &str) -> ModuleResult {
     let info: ConnInfo = match serde_json::from_slice(stdout) {
         Ok(v) => v,
