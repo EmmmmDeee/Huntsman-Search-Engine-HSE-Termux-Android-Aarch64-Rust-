@@ -344,7 +344,7 @@ impl super::Store {
             sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
             let _ = next_param;
         }
-        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 500");
+        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 5000");
 
         let raw: Vec<String> = {
             let conn = self.conn.lock();

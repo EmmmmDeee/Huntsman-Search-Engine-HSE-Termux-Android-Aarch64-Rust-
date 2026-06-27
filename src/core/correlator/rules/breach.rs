@@ -849,14 +849,14 @@ pub(in crate::core::correlator) fn rule_au_037_credential_exposure(
     // persisting as duplicate AU-037 rows. The caps stay so a huge credential
     // dump can't bloat one correlation's entity list.
     secret_uids.sort_unstable();
-    secret_uids.truncate(20);
+    secret_uids.truncate(256);
     let mut identity_uids: Vec<String> = entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
         .map(|e| e.uid.clone())
         .collect();
     identity_uids.sort_unstable();
-    identity_uids.truncate(5);
+    identity_uids.truncate(64);
     let mut uids = secret_uids;
     uids.extend(identity_uids);
 

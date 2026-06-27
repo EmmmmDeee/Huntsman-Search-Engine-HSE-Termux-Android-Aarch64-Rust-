@@ -211,9 +211,13 @@ pub(super) fn emit_bssid_entities(
     result
 }
 
-/// Max matched networks surfaced for an SSID search — a unique SSID resolves to
-/// a handful of points (the victim's location(s)); more means it isn't unique.
-const SSID_RESULT_CAP: usize = 10;
+/// Max matched networks surfaced for an SSID search. A genuinely unique SSID
+/// (a personalised network name) resolves to a handful of points — the victim's
+/// location(s); a generic name (`linksys`, `default`) resolves to many. Raised
+/// to 64 (was 10) so every observation of a unique SSID is emitted, while a
+/// truly common name is still bounded against flooding the graph with noise
+/// locations. This is a precision/uniqueness control, not a coverage cap.
+const SSID_RESULT_CAP: usize = 64;
 
 /// Emit geolocation entities for a unique SSID's matched networks: each
 /// network's coordinates (where WiGLE observed it) and its BSSID (tying the SSID

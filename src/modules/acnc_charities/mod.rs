@@ -57,10 +57,10 @@ pub(super) const RESOURCE_ID: &str = "8fb32972-24e9-4c95-885e-7140be51be8a";
 /// Cap on rows turned into entities for one seed — a generic single-word query
 /// can match thousands of charities; we keep the highest-ranked handful so a
 /// single seed doesn't flood the graph.
-pub(super) const MAX_RECORDS: usize = 20;
+pub(super) const MAX_RECORDS: usize = 256;
 
 /// Max other/trading names fanned out per charity.
-pub(super) const MAX_TRADING_NAMES: usize = 5;
+pub(super) const MAX_TRADING_NAMES: usize = 64;
 
 // Confidence tiers. Exact hits (name contains every seed token) are authoritative
 // federal-registry matches and sit above the 0.50 expansion floor so they pivot;

@@ -55,7 +55,7 @@ fn search_evidence_flags_truncated_snippet_and_preserves_full_length() {
     // A snippet longer than the preview cap must keep a generous preview
     // AND record that it was truncated plus the true length — so a finding
     // is verifiable and the UI never implies the snippet was complete.
-    let long = "x".repeat(5000);
+    let long = "x".repeat(40000);
     let r = SearchResult {
         url: "https://example.com/page".into(),
         title: "Title".into(),
@@ -70,13 +70,13 @@ fn search_evidence_flags_truncated_snippet_and_preserves_full_length() {
     );
     assert_eq!(
         ev.attributes.get("snippet_full_len").map(String::as_str),
-        Some("5000")
+        Some("40000")
     );
     // The stored preview is capped but non-empty and the URL is preserved.
     assert!(
         ev.attributes
             .get("snippet")
-            .is_some_and(|s| s.len() <= 4000)
+            .is_some_and(|s| s.len() <= 32768)
     );
     assert_eq!(
         ev.attributes.get("url").map(String::as_str),

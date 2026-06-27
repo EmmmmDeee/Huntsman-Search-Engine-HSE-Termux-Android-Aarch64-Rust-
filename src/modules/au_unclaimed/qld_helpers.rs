@@ -26,11 +26,11 @@ pub(super) const ACTION_BASE: &str = "https://www.data.qld.gov.au/api/3/action";
 /// Public Trustee unclaimed-monies datastore resource id.
 pub(super) const RESOURCE_ID: &str = "872065ae-ddfd-4b5f-ad15-e1935dadd883";
 /// Per-query record cap for the QLD register pass.
-pub(super) const MAX_RECORDS: usize = 20;
+pub(super) const MAX_RECORDS: usize = 256;
 /// Cap on the number of exact-match postcodes fanned out to suburb enumeration.
-pub(super) const POSTCODE_CAP: usize = 6;
+pub(super) const POSTCODE_CAP: usize = 64;
 /// Cap on the localities emitted per resolved postcode.
-pub(super) const SUBURB_CAP: usize = 8;
+pub(super) const SUBURB_CAP: usize = 64;
 
 /// A 4-digit Australian postcode, else `None`.
 pub(super) fn postcode(rec: &Map<String, Value>) -> Option<String> {

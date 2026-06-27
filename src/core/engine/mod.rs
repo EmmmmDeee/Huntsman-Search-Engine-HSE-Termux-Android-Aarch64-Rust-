@@ -1061,8 +1061,8 @@ impl ScanEngine {
         allow_live_sensors: bool,
     ) -> Vec<Entity> {
         use crate::core::entity::{EntityKind, Evidence, derive_uid, normalise};
-        const MAX_PRIOR_SCANS: usize = 8;
-        const MAX_ENTITIES: usize = 300;
+        const MAX_PRIOR_SCANS: usize = 32;
+        const MAX_ENTITIES: usize = 5000;
         const VALUE_MATCH_CAP: usize = 64;
 
         // Order/case/punctuation-insensitive token-set key (pure-digit tokens

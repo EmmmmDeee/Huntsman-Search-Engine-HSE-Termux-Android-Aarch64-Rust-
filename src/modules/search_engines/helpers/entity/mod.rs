@@ -200,8 +200,8 @@ pub(in crate::modules::search_engines) fn build_search_evidence(r: &SearchResult
     // `*_truncated` flag, so the logs/UI never silently imply the snippet was
     // complete. The key-phrase is extracted from the FULL snippet (not the
     // truncated preview) so a relevant clause past the cap is not lost.
-    const TITLE_CAP: usize = 500;
-    const SNIPPET_CAP: usize = 4000;
+    const TITLE_CAP: usize = 4000;
+    const SNIPPET_CAP: usize = 32768;
     let title_len = r.title.chars().count();
     let snippet_len = r.snippet.chars().count();
     let title_clean: String = r.title.chars().take(TITLE_CAP).collect();

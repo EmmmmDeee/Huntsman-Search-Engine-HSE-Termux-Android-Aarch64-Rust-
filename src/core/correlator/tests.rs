@@ -922,10 +922,10 @@ fn au037_entity_uids_are_deterministic_under_input_order() {
     // Determinism fix (the AU-039 take(N) family): the secret/identity samples are
     // sorted-then-capped, so the persisted entity_uids SET is independent of the
     // randomized HashMap input order — preventing duplicate AU-037 rows across the
-    // live and finalise passes. Use >cap (20) secrets so truncation engages.
+    // live and finalise passes. Use >cap (256) secrets so truncation engages.
     use std::collections::BTreeSet;
-    let mut ents: Vec<Entity> = (0..25)
-        .map(|i| Entity::new(EntityKind::Password, format!("pw{i:02}"), 0.9, "s"))
+    let mut ents: Vec<Entity> = (0..300)
+        .map(|i| Entity::new(EntityKind::Password, format!("pw{i:03}"), 0.9, "s"))
         .collect();
     ents.push(Entity::new(
         EntityKind::Email,
@@ -947,8 +947,8 @@ fn au037_entity_uids_are_deterministic_under_input_order() {
         f, b,
         "entity_uids must be order-independent (sorted-then-capped)"
     );
-    // The 20-cap on secrets is honoured (+ the one identity).
-    assert!(forward[0].entity_uids.len() <= 21);
+    // The 256-cap on secrets is honoured (+ up to 64 identities).
+    assert!(forward[0].entity_uids.len() <= 256 + 64);
 }
 
 // ── AU-038 ──────────────────────────────────────────────────────────

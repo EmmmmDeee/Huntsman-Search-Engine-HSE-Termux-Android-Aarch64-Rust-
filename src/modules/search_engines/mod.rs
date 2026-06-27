@@ -70,9 +70,13 @@ use crate::core::{
 
 pub struct SearchEngines;
 
-const MAX_RESULTS_PER_ENGINE: usize = 20;
+const MAX_RESULTS_PER_ENGINE: usize = 50;
 const MAX_PAGES: usize = 2;
-const MAX_ACCUMULATED_RESULTS: usize = 2000;
+// Working-set ceiling on raw SERP rows accumulated across engines/pages before
+// entity extraction. Raised 10× (was 2000) so a broad, multi-engine sweep no
+// longer drops minable rows; remains a memory backstop on a phone, not a
+// coverage limit for real result volumes.
+const MAX_ACCUMULATED_RESULTS: usize = 20000;
 /// How many engine fetches run at once in the primary pass. Bounded concurrency so
 /// a scan reaches ALL engines within budget (a 17-deep serial sweep timed out
 /// partway, leaving most engines untried), while staying gentle on a low-power
