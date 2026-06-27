@@ -88,6 +88,10 @@ const DOB_KEYS: &[&str] = &[
     "dateofbirth",
     "birthday",
     "born",
+    // OathNet renders its `Date Birth` field as `date_birth`; SeekNow/IntelVault
+    // also emit `date_birth` — a major breach source that the older key list missed.
+    "date_birth",
+    "datebirth",
 ];
 
 /// Normalise a breach DOB to a canonical `YYYY-MM-DD` when it carries an ISO date
@@ -107,6 +111,41 @@ fn normalise_dob(raw: &str) -> Option<String> {
         return Some(s[..10].to_string());
     }
     (!s.is_empty()).then(|| s.to_string())
+}
+
+/// Derive a person's whole-year age from a canonical `YYYY-MM-DD` date of birth
+/// as of `now_unix` (Unix seconds), or `None` for an unparseable / non-ISO date or
+/// a future DOB. Dependency-free (no `chrono`): converts the calendar DOB to a day
+/// count via Howard Hinnant's `days_from_civil`, then divides the elapsed seconds
+/// by the mean Gregorian year (365.2425 d) — exact to the year for any plausible
+/// DOB. Age is the single most stable people-centric identity attribute (it
+/// disambiguates same-name namesakes and dates a footprint), yet a bare `YYYY-MM-DD`
+/// leaves it implicit; this makes it explicit. Pure.
+pub(in crate::core::correlator) fn age_from_dob(dob: &str, now_unix: u64) -> Option<u32> {
+    let b = dob.as_bytes();
+    if dob.len() < 10 || b[4] != b'-' || b[7] != b'-' {
+        return None;
+    }
+    let y: i64 = dob[0..4].parse().ok()?;
+    let m: i64 = dob[5..7].parse().ok()?;
+    let d: i64 = dob[8..10].parse().ok()?;
+    if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    // days_from_civil (Hinnant): days since the Unix epoch (1970-01-01).
+    let yy = y - i64::from(m <= 2);
+    let era = (if yy >= 0 { yy } else { yy - 399 }) / 400;
+    let yoe = yy - era * 400;
+    let doy = (153 * (m + if m > 2 { -3 } else { 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe - 719_468;
+    let dob_unix = days * 86_400;
+    let now = i64::try_from(now_unix).ok()?;
+    if now < dob_unix {
+        return None; // a future DOB is not a real age
+    }
+    // Mean Gregorian year in seconds (365.2425 days) — exact to the whole year.
+    u32::try_from((now - dob_unix) / 31_556_952).ok()
 }
 
 /// AU-073 — the subject's date of birth, corroborated across sources.
@@ -147,8 +186,9 @@ pub(in crate::core::correlator) fn rule_au_073_subject_date_of_birth(
                 rule_name: "Subject date of birth".into(),
                 severity,
                 description: format!(
-                    "Subject date of birth {dob} — asserted by {n} independent source(s) \
+                    "Subject date of birth {dob}{} — asserted by {n} independent source(s) \
                      ({}); the strongest disambiguator from same-name namesakes",
+                    age_from_dob(&dob, ts).map_or(String::new(), |age| format!(" (age {age})")),
                     sources.iter().cloned().collect::<Vec<_>>().join(", ")
                 ),
                 entity_uids: uids.into_iter().collect(),

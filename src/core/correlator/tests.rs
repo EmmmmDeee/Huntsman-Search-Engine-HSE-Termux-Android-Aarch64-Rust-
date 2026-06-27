@@ -2560,6 +2560,60 @@ fn au073_dob_corroborated_across_sources_disambiguates_namesakes() {
 }
 
 #[test]
+fn au073_derives_subject_age_from_dob() {
+    // ts = 2026-01-01 00:00 UTC; DOB 1992-07-01 → age 33 (July birthday not yet
+    // passed). Also exercises the new `date_birth` key (OathNet's field).
+    const TS_2026_01_01: u64 = 1_767_225_600;
+    let mut p = Entity::new(EntityKind::Person, "Jerome Despal", 0.9, "s");
+    p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("date_birth", "1992-07-01"));
+    let mut e = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("dob", "1992-07-01"));
+
+    let r = super::rules::rule_au_073_subject_date_of_birth(&[p, e], "s", TS_2026_01_01);
+    let f = r
+        .iter()
+        .find(|c| c.description.contains("1992-07-01"))
+        .expect("the DOB fires (incl. via the date_birth key)");
+    assert_eq!(f.severity, Severity::High, "date_birth + dob = two sources");
+    assert!(
+        f.description.contains("age 33"),
+        "derived age present: {}",
+        f.description
+    );
+}
+
+#[test]
+fn au073_age_advances_after_the_birthday() {
+    // Same DOB, ts = 2026-12-01 (after the July birthday) → age 34.
+    const TS_2026_12_01: u64 = 1_796_083_200;
+    let mut p = Entity::new(EntityKind::Person, "Jerome Despal", 0.9, "s");
+    p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", "1992-07-01"));
+    let r = super::rules::rule_au_073_subject_date_of_birth(&[p], "s", TS_2026_12_01);
+    let f = r
+        .iter()
+        .find(|c| c.description.contains("1992-07-01"))
+        .unwrap();
+    assert!(f.description.contains("age 34"), "{}", f.description);
+}
+
+#[test]
+fn au073_omits_age_for_a_non_iso_dob() {
+    // A non-ISO DOB is surfaced verbatim but yields no (mis-parsed) age.
+    let mut p = Entity::new(EntityKind::Person, "Jane Citizen", 0.9, "s");
+    p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", "08/11/1980"));
+    let r = super::rules::rule_au_073_subject_date_of_birth(&[p], "s", 1_767_225_600);
+    let f = r
+        .iter()
+        .find(|c| c.description.contains("08/11/1980"))
+        .unwrap();
+    assert!(
+        !f.description.contains("age "),
+        "no age for a non-ISO DOB: {}",
+        f.description
+    );
+}
+
+#[test]
 fn au074_government_id_exposure_validates_checksum_and_masks() {
     // A checksum-valid TFN (ATO example 123456782) + a valid Medicare under their
     // breach keys → CRITICAL, value masked. A bad-checksum TFN is rejected.
