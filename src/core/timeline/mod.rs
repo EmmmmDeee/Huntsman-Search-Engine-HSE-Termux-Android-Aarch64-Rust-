@@ -227,13 +227,13 @@ pub fn online_tenure(events: &[TimelineEvent]) -> Option<OnlineTenure> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum FootprintStatus {
-    /// Activity within the last year — a live, current footprint.
+    /// Under 1 whole year (0 years elapsed) — a live, current footprint.
     Active,
-    /// 1–3 years — recently active.
+    /// 1–2 whole years — recently active.
     Recent,
-    /// 3–7 years — going cold.
+    /// 3–6 whole years — going cold.
     Aging,
-    /// Over 7 years since any dated activity — a dormant/historical footprint.
+    /// 7 or more whole years since any dated activity — a dormant/historical footprint.
     Dormant,
 }
 
