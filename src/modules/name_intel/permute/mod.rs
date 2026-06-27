@@ -273,12 +273,16 @@ pub struct ParsedName {
 }
 
 impl ParsedName {
+    /// The full name in natural order with original capitalisation, e.g.
+    /// `"Jane Mary Smith"` — the subject string for `"…"`-quoted search pivots.
     pub fn display_full(&self) -> String {
         self.display_words.join(" ")
     }
+    /// The first display word (given name), or `""` if somehow empty.
     pub fn display_first(&self) -> &str {
         self.display_words.first().map_or("", String::as_str)
     }
+    /// The last display word (surname), or `""` if somehow empty.
     pub fn display_last(&self) -> &str {
         self.display_words.last().map_or("", String::as_str)
     }
@@ -449,6 +453,14 @@ pub fn parse(raw: &str) -> Option<ParsedName> {
 
 // ── email_domains() ──────────────────────────────────────────────────────────
 
+/// The provider set used for email permutation.
+///
+/// Reads `HUNTSMAN_EMAIL_DOMAINS` (comma-separated) as an operator override —
+/// each entry is lowercased, `@`-stripped, and kept only if it looks like a
+/// domain (`contains('.')`) — falling back to the built-in
+/// [`DEFAULT_DOMAINS`] set when the var is unset, blank, or yields no valid
+/// entry. So a misconfigured override degrades to the default rather than
+/// emitting nothing.
 pub fn email_domains() -> Vec<String> {
     match std::env::var("HUNTSMAN_EMAIL_DOMAINS") {
         Ok(v) if !v.trim().is_empty() => {
@@ -638,6 +650,10 @@ pub fn emails(p: &ParsedName, domains: &[String]) -> Vec<String> {
 
 // ── gravatar_url() ────────────────────────────────────────────────────────────
 
+/// The Gravatar avatar URL for `email` — MD5 over the trimmed, lowercased
+/// address per the Gravatar spec. `d=404` makes a missing avatar return HTTP
+/// 404 (so a probe can tell "no Gravatar" from a default placeholder),
+/// requesting a 200px image.
 pub fn gravatar_url(email: &str) -> String {
     use md5::{Digest, Md5};
     let mut h = Md5::new();
