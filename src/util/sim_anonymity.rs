@@ -202,7 +202,10 @@ mod tests {
             classify_carrier("Lycamobile"),
             Some(SimAnonymity::PrepaidMvno)
         );
-        assert_eq!(classify_carrier("Lebara UK"), Some(SimAnonymity::PrepaidMvno));
+        assert_eq!(
+            classify_carrier("Lebara UK"),
+            Some(SimAnonymity::PrepaidMvno)
+        );
         assert_eq!(
             classify_carrier("FreedomPop"),
             Some(SimAnonymity::VoipVirtual)

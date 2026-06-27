@@ -140,7 +140,10 @@ fn haversine_antipodal_pairs_are_finite_not_nan() {
         let lat = f64::from(i);
         for lon in [0.0, 86.58, -120.0, 45.5, 179.9] {
             let d = haversine_km(lat, lon, -lat, lon + 180.0);
-            assert!(d.is_finite(), "antipodal ({lat},{lon}) produced non-finite {d}");
+            assert!(
+                d.is_finite(),
+                "antipodal ({lat},{lon}) produced non-finite {d}"
+            );
             assert!(
                 (d - half_circ).abs() < 1.0,
                 "antipodal distance {d} should be ~{half_circ} km"
@@ -189,6 +192,27 @@ fn reverse_country_iso_aliases_us_subregions() {
     assert_eq!(reverse_country_iso(61.0, -150.0), Some("US")); // Alaska → US
     assert_eq!(reverse_country_iso(21.3, -157.8), Some("US")); // Hawaii → US
     assert_eq!(reverse_country_iso(0.0, -30.0), None); // mid-Atlantic
+}
+
+#[test]
+fn reverse_country_iso_resolves_boxes_contained_in_larger_neighbours() {
+    // Regression: SG, HK and TW each sit geographically INSIDE a larger box
+    // declared earlier (SG ⊂ both the ID and MY boxes; HK and TW ⊂ the CN box).
+    // Because the first box to match in declaration order wins, those three were
+    // shadowed and could never be returned — defined-but-dead entries that
+    // misreported Singapore as Indonesia and Hong Kong / Taiwan as China. Each
+    // specific box must precede EVERY box that contains it (mirroring KR/JP,
+    // already placed before CN for the same reason). Unlike LU/UA — whose boxes
+    // cover neighbours' actual territory and so stay shadowed by design — these
+    // three boxes enclose no other country, so the fix is pure and regression-free.
+    assert_eq!(reverse_country_iso(1.3521, 103.8198), Some("SG")); // Singapore
+    assert_eq!(reverse_country_iso(22.3193, 114.1694), Some("HK")); // Hong Kong
+    assert_eq!(reverse_country_iso(25.0330, 121.5654), Some("TW")); // Taipei
+    // The containing nations remain correct outside the small contained boxes:
+    // Beijing still resolves to CN (HK/TW inserted before CN do not cover it),
+    // and Jakarta still resolves to ID (SG inserted before ID does not cover it).
+    assert_eq!(reverse_country_iso(39.9042, 116.4074), Some("CN")); // Beijing
+    assert_eq!(reverse_country_iso(-6.2088, 106.8456), Some("ID")); // Jakarta
 }
 
 // ── Property tests (proptest) ──────────────────────────────────────────────
