@@ -44,6 +44,10 @@ use super::*;
     fn freemail_basics() {
         assert!(is_freemail("gmail.com"));
         assert!(is_freemail("bigpond.com"));
+        // AU ISP mail domains (Exetel's mailbox domain is exemail.com.au, not
+        // exetel.com.au — the webmail host differs from the address domain).
+        assert!(is_freemail("exemail.com.au"));
+        assert!(is_freemail("iprimus.com.au"));
         assert!(!is_freemail("acme.com.au"));
         assert!(!is_freemail(""));
     }
