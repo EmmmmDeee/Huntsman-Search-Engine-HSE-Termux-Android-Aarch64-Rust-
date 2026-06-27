@@ -369,3 +369,56 @@ fn join_or_dash_empty_iterator_is_explicit_none() {
     let v: Vec<String> = Vec::new();
     assert_eq!(join_or_dash(v.iter()), "(none)");
 }
+
+#[test]
+fn render_full_orders_foreign_keys_by_roi_tier() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("roi_order.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let scan = Scan::new(
+        "scan-roi",
+        Target::new(TargetKind::Email, "x@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+
+    // A Terminal-tier key (abuseipdb) inserted FIRST, a Multiplier-tier key
+    // (shodan) second — the renderer must reorder so the higher-ROI key leads,
+    // regardless of insertion/confidence order.
+    let mut terminal = Entity::new(
+        EntityKind::ApiKey,
+        "abuseipdb:fake-terminal-val",
+        0.80,
+        "scan-roi",
+    );
+    terminal.tag("foreign-key");
+    terminal.add_evidence(
+        Evidence::new("api_key_probe", "harvested").with_attr("service", "abuseipdb"),
+    );
+    let mut multiplier = Entity::new(
+        EntityKind::ApiKey,
+        "shodan:fake-multiplier-val",
+        0.80,
+        "scan-roi",
+    );
+    multiplier.tag("foreign-key");
+    multiplier
+        .add_evidence(Evidence::new("api_key_probe", "harvested").with_attr("service", "shodan"));
+    store
+        .upsert_entities_batch(&[terminal, multiplier])
+        .unwrap();
+
+    let out = render_full(&store, "scan-roi").unwrap();
+    // Each line leads with the ROI tier label, then the service.
+    assert!(out.contains("[multiplier] [shodan]"), "{out}");
+    assert!(out.contains("[terminal] [abuseipdb]"), "{out}");
+    // The Multiplier key is surfaced BEFORE the Terminal key despite being
+    // inserted second — strategic value, not arrival order, drives the listing.
+    let mpos = out.find("[multiplier] [shodan]").unwrap();
+    let tpos = out.find("[terminal] [abuseipdb]").unwrap();
+    assert!(
+        mpos < tpos,
+        "Multiplier key must lead the foreign-keys section:\n{out}"
+    );
+}

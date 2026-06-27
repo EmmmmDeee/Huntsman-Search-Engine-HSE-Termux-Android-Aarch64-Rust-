@@ -137,10 +137,26 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     // (Stripe, AWS, GitHub, PEM blocks, …) identified in any module's response,
     // with our own auth keys excluded. Bare breach password hashes are NOT here
     // (they appear as their own entities below). Full evidence is in ENTITIES.
-    let foreign: Vec<&crate::core::entity::Entity> = entities
+    let mut foreign: Vec<&crate::core::entity::Entity> = entities
         .iter()
         .filter(|e| e.has_tag("foreign-key"))
         .collect();
+    // Highest-ROI keys first. A Multiplier (Shodan / AlienVault OTX / FOFA /
+    // Hunter — unlocks more infrastructure or identities, hence more keys) is a
+    // stronger lead than a Terminal single-shot key, so it heads the section.
+    // The `service` tag drives the tier via the shared `key_roi` classifier;
+    // equal tiers fall back to service name for a stable, deterministic order.
+    let service_of = |e: &crate::core::entity::Entity| -> String {
+        e.evidence
+            .iter()
+            .find_map(|ev| ev.attributes.get("service").cloned())
+            .unwrap_or_default()
+    };
+    foreign.sort_by(|a, b| {
+        crate::util::key_roi::classify(&service_of(b))
+            .cmp(&crate::util::key_roi::classify(&service_of(a)))
+            .then_with(|| service_of(a).cmp(&service_of(b)))
+    });
     let _ = writeln!(s, "\n── FOREIGN API KEYS RETRIEVED ({}) ──", foreign.len());
     if foreign.is_empty() {
         let _ = writeln!(s, "  (none identified in this scan's responses)");
@@ -152,9 +168,12 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
                 .find_map(|ev| ev.attributes.get(k).cloned())
                 .unwrap_or_default()
         };
+        // The ROI tier (multiplier / expansion / terminal) leads each line so the
+        // operator sees a key's strategic value at a glance, not just its vendor.
         let _ = writeln!(
             s,
-            "  • [{}] {}  (from {} · query={} · seen {}×)",
+            "  • [{}] [{}] {}  (from {} · query={} · seen {}×)",
+            crate::util::key_roi::classify(&attr("service")).label(),
             attr("service"),
             e.value,
             attr("source_provider"),
