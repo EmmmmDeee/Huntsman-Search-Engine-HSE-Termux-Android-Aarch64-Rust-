@@ -320,16 +320,18 @@ const AU_LOCALITY_ANCHORS: &[(&str, &str, f64, f64)] = &[
     ("Tennant Creek", "NT", -19.6500, 134.1900),
 ];
 
-/// Great-circle distance between two coordinates in kilometres (haversine,
-/// mean Earth radius 6371 km). Pure.
+/// Great-circle distance between two coordinates in kilometres (haversine, mean
+/// Earth radius 6371 km). Pure.
+///
+/// Delegates to the single canonical implementation in
+/// [`crate::util::geohash::haversine_km`] so the two can't drift — and so this
+/// AU-locality path inherits that function's numerically-stable, NaN-safe
+/// `atan2` form rather than re-deriving the equivalent `asin` form locally (the
+/// two agree to sub-micron precision; the `asin` variant additionally risks an
+/// out-of-domain `asin` at a near-antipodal floating-point edge).
 #[must_use]
 pub fn haversine_km(lat1: f64, lon1: f64, lat2: f64, lon2: f64) -> f64 {
-    const R: f64 = 6371.0;
-    let (p1, p2) = (lat1.to_radians(), lat2.to_radians());
-    let dlat = (lat2 - lat1).to_radians();
-    let dlon = (lon2 - lon1).to_radians();
-    let a = (dlat / 2.0).sin().powi(2) + p1.cos() * p2.cos() * (dlon / 2.0).sin().powi(2);
-    2.0 * R * a.sqrt().asin()
+    crate::util::geohash::haversine_km(lat1, lon1, lat2, lon2)
 }
 
 /// Offline **reverse geocode**: the nearest Australian population centre to

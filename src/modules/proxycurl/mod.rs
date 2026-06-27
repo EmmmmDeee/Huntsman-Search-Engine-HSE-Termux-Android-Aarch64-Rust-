@@ -48,8 +48,6 @@ pub(super) const MAX_EMAILS: usize = 3;
 pub(super) const MAX_PHONES: usize = 3;
 pub(super) const MAX_EXPERIENCES: usize = 5;
 pub(super) const MAX_LISTED: usize = 3; // companies/schools surfaced inline on the Person
-/// Professional `summary` is a free-text bio; cap it before persisting.
-pub(super) const SUMMARY_CAP: usize = 280;
 
 pub struct Proxycurl;
 

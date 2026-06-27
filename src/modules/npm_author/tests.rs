@@ -187,18 +187,19 @@ use super::*;
     }
 
     #[test]
-    fn package_cap_bounds_scanned_objects() {
-        // More than MAX_PACKAGES objects: only the first MAX_PACKAGES are
-        // scanned for emails/urls. Give each a unique homepage and count them.
-        let objects: Vec<String> = (0..(MAX_PACKAGES + 5))
+    fn every_returned_package_is_emitted() {
+        // Full-fidelity policy: every package the API returns is scanned and
+        // surfaced — no output cap. Give each a unique homepage and count them.
+        let count = MAX_PACKAGES + 5;
+        let objects: Vec<String> = (0..count)
             .map(|i| format!(r#"{{"package":{{"name":"p{i}","links":{{"homepage":"https://h{i}.dev"}}}}}}"#))
             .collect();
         let json = format!(
             r#"{{"objects":[{}],"total":{}}}"#,
             objects.join(","),
-            MAX_PACKAGES + 5
+            count
         );
         let ents = build_entities(&search(&json), "alice", "s");
-        // One Url per scanned package, capped at MAX_PACKAGES.
-        assert_eq!(of_kind(&ents, EntityKind::Url).len(), MAX_PACKAGES);
+        // One Url per package — every returned package, none dropped.
+        assert_eq!(of_kind(&ents, EntityKind::Url).len(), count);
     }

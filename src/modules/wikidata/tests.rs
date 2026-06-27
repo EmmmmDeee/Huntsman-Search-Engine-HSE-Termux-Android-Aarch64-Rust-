@@ -200,6 +200,91 @@ fn handle_cap_is_respected() {
 }
 
 #[test]
+fn person_with_position_held_is_flagged_pep() {
+    // P39 "position held" → the FATF politically-exposed-person signal: the head
+    // Person gains the `pep` / `politically-exposed` tags and the position Q-IDs
+    // are preserved as evidence for an investigator to resolve and verify.
+    // (Q3066207 = member of the Australian House of Representatives.)
+    let body = serde_json::json!({
+        "labels": {"en": {"value": "Jane Politician"}},
+        "claims": {
+            "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
+            "P39": [
+                {"mainsnak": {"datavalue": {"value": {"id": "Q3066207"}}}},
+                {"mainsnak": {"datavalue": {"value": {"id": "Q486839"}}}}
+            ]
+        }
+    });
+    let ents = primary_entities("Q1", "Jane Politician", &body, TargetKind::FullName, "s");
+    let head = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a Person head entity");
+    assert!(
+        head.tags.iter().any(|t| t == "pep"),
+        "tags: {:?}",
+        head.tags
+    );
+    assert!(head.tags.iter().any(|t| t == "politically-exposed"));
+    assert_eq!(
+        head.evidence[0]
+            .attributes
+            .get("position_held_qids")
+            .map(String::as_str),
+        Some("Q3066207,Q486839")
+    );
+}
+
+#[test]
+fn politician_occupation_is_flagged_pep_even_without_position() {
+    // P106 occupation == Q82955 (politician) with NO P39 position still flags the
+    // person PEP — covers a politician between terms or a Wikidata stub. No P39 ⇒
+    // no `position_held_qids` attribute, but the pep tags are present.
+    let body = serde_json::json!({
+        "labels": {"en": {"value": "Sam Member"}},
+        "claims": {
+            "P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}],
+            "P106": [{"mainsnak": {"datavalue": {"value": {"id": "Q82955"}}}}]
+        }
+    });
+    let ents = primary_entities("Q3", "Sam Member", &body, TargetKind::FullName, "s");
+    let head = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a Person head entity");
+    assert!(
+        head.tags.iter().any(|t| t == "pep"),
+        "tags: {:?}",
+        head.tags
+    );
+    assert!(head.tags.iter().any(|t| t == "politically-exposed"));
+    assert!(
+        !head.evidence[0]
+            .attributes
+            .contains_key("position_held_qids")
+    );
+}
+
+#[test]
+fn person_without_position_held_is_not_pep() {
+    let body = serde_json::json!({
+        "labels": {"en": {"value": "Jane Citizen"}},
+        "claims": {"P31": [{"mainsnak": {"datavalue": {"value": {"id": "Q5"}}}}]}
+    });
+    let ents = primary_entities("Q2", "Jane Citizen", &body, TargetKind::FullName, "s");
+    let head = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Person)
+        .expect("a Person head entity");
+    assert!(!head.tags.iter().any(|t| t == "pep"));
+    assert!(
+        !head.evidence[0]
+            .attributes
+            .contains_key("position_held_qids")
+    );
+}
+
+#[test]
 fn claim_p625_extracts_valid_lat_lon_in_order() {
     // Brisbane — a real, in-range, non-Null-Island fix. Tuple order is (lat, lon).
     let entity = serde_json::json!({

@@ -32,8 +32,11 @@ use crate::core::{
 use crate::util::http::fetch_json;
 
 const SRC: &str = "npm_author";
-/// Cap packages scanned per query — bounds work + entity fan-out on a phone.
-const MAX_PACKAGES: usize = 25;
+/// npm search page size requested (`/-/v1/search` caps `size` at 250). EVERY
+/// package the API returns is emitted (full-fidelity policy), so this only bounds
+/// the single-page fetch, not which discovered results are surfaced. An author
+/// with more than 250 packages would need cursor pagination (a follow-up).
+const MAX_PACKAGES: usize = 250;
 
 pub struct NpmAuthor;
 
@@ -160,8 +163,8 @@ impl Module for NpmAuthor {
 /// (carrying package coverage as evidence) is always emitted. Emails are taken
 /// only from author/publisher/maintainer records whose username matches the
 /// subject (or carry no username), so a co-maintainer's address isn't
-/// mis-attributed; emails and URLs are de-duplicated and packages capped at
-/// [`MAX_PACKAGES`].
+/// mis-attributed; emails and URLs are de-duplicated and EVERY returned package
+/// is surfaced (the request fetches up to [`MAX_PACKAGES`] per page).
 fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity> {
     let mut result = ModuleResult::new();
     let mut seen_emails: HashSet<String> = HashSet::new();
@@ -187,7 +190,9 @@ fn build_entities(resp: &SearchResp, handle: &str, scan_id: &str) -> Vec<Entity>
             }
         };
 
-    for obj in resp.objects.iter().take(MAX_PACKAGES) {
+    // Full-fidelity policy: process EVERY package the author published, never a
+    // capped subset — these are the target's own packages, a result not a preview.
+    for obj in &resp.objects {
         let Some(pkg) = obj.package.as_ref() else {
             continue;
         };

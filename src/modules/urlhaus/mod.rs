@@ -31,11 +31,6 @@ const KEY_ENV: &str = "HUNTSMAN_ABUSECH_KEY";
 /// Fallback: the ThreatFox key is the same abuse.ch account key.
 const KEY_ENV_FALLBACK: &str = "HUNTSMAN_THREATFOX_KEY";
 
-/// Distinct threat families to surface (lexically-first), keeping the row tidy.
-const MAX_THREATS: usize = 8;
-/// Top URL tags to surface, ranked by frequency.
-const MAX_TAGS: usize = 10;
-
 pub struct UrlHaus;
 
 #[derive(Deserialize)]
@@ -76,10 +71,10 @@ struct UrlEntry {
 /// Build the malicious-host entity from an URLhaus `host` response. **Pure** (no
 /// network/IO): records the malicious-URL count, the urlhaus reference, the
 /// first/last-seen window, the third-party blocklist verdicts, the online/offline
-/// URL split, the distinct threat families (lexically-first [`MAX_THREATS`]), and
-/// the top URL tags by frequency ([`MAX_TAGS`]). The individual malicious URLs
-/// are never stored — they are routinely still live. `url_count` is the parsed
-/// host-level count; caller guarantees it is non-zero.
+/// URL split, every distinct threat family (lexically sorted), and every URL tag
+/// ordered by frequency. The individual malicious URLs are never stored — they
+/// are routinely still live. `url_count` is the parsed host-level count; caller
+/// guarantees it is non-zero.
 fn build_threat_entity(
     kind: EntityKind,
     host: &str,
@@ -130,22 +125,15 @@ fn build_threat_entity(
         ev = ev.with_attr("urls_offline", offline.to_string());
 
         // Distinct threat families (e.g. "malware_download", "phishing"),
-        // deterministically the lexically-first MAX_THREATS regardless of the
-        // order URLhaus returned the URLs in.
+        // deterministically lexically sorted (BTreeSet). Full-fidelity policy:
+        // every distinct family is surfaced, never a capped subset.
         let threats: BTreeSet<&str> = urls.iter().filter_map(|u| u.threat.as_deref()).collect();
         if !threats.is_empty() {
-            ev = ev.with_attr(
-                "threats",
-                threats
-                    .into_iter()
-                    .take(MAX_THREATS)
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
+            ev = ev.with_attr("threats", threats.into_iter().collect::<Vec<_>>().join(","));
         }
 
-        // Aggregate tags across URL entries; surface the top MAX_TAGS by count
-        // (ties broken lexically) as `tag(count)`.
+        // Aggregate tags across URL entries; surface ALL tags ordered by count
+        // (ties broken lexically) as `tag(count)` — full-fidelity, no top-N cap.
         let mut tag_counts: BTreeMap<&str, usize> = BTreeMap::new();
         urls.iter()
             .filter_map(|u| u.tags.as_ref())
@@ -158,7 +146,6 @@ fn build_threat_entity(
             sorted_tags.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
             let top: Vec<String> = sorted_tags
                 .iter()
-                .take(MAX_TAGS)
                 .map(|(tag, count)| format!("{tag}({count})"))
                 .collect();
             ev = ev.with_attr("top_tags", top.join(", "));

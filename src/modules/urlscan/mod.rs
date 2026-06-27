@@ -163,8 +163,8 @@ impl Module for UrlScan {
             ev = ev.with_attr("countries", list.join(", "));
         }
         if !intel.servers.is_empty() {
-            // Cap at 8 distinct server strings to keep the row readable.
-            let list: Vec<&str> = intel.servers.iter().take(8).map(String::as_str).collect();
+            // Full-fidelity policy: every distinct server string observed.
+            let list: Vec<&str> = intel.servers.iter().map(String::as_str).collect();
             ev = ev.with_attr("servers", list.join(", "));
         }
         if intel.any_malicious {
@@ -217,10 +217,6 @@ fn summarize(results: &[ScanResult]) -> UrlScanIntel {
             .any(|v| v.malicious == Some(true)),
     }
 }
-
-/// Maximum scanned URLs surfaced as `Url` entities — a busy domain can have many
-/// scans; a sample is plenty to characterise the attack surface.
-const MAX_URLS: usize = 20;
 
 /// Child entities for a URLScan.io result: the resolved IPs, hosting countries,
 /// associated domains/subdomains, and scanned URLs. **Pure** (no IO) so the
@@ -290,23 +286,18 @@ fn child_entities(intel: &UrlScanIntel, target_value: &str, scan_id: &str) -> Ve
             }),
     );
 
-    // Scanned page URLs (capped) → attack-surface pivots.
-    out.extend(
-        intel
-            .urls
-            .iter()
-            .filter(|u| u.len() >= 4)
-            .take(MAX_URLS)
-            .map(|u| {
-                let mut e = Entity::new(EntityKind::Url, u, 0.50, scan_id);
-                e.tag("urlscan");
-                e.add_evidence(Evidence::new(
-                    SRC,
-                    format!("Page scanned by URLScan.io for {target_value}"),
-                ));
-                e
-            }),
-    );
+    // Scanned page URLs → attack-surface pivots. Full-fidelity policy: every URL
+    // urlscan observed for the target page becomes a pivot, never a capped subset
+    // (the set is bounded by urlscan's own per-scan response).
+    out.extend(intel.urls.iter().filter(|u| u.len() >= 4).map(|u| {
+        let mut e = Entity::new(EntityKind::Url, u, 0.50, scan_id);
+        e.tag("urlscan");
+        e.add_evidence(Evidence::new(
+            SRC,
+            format!("Page scanned by URLScan.io for {target_value}"),
+        ));
+        e
+    }));
 
     out
 }

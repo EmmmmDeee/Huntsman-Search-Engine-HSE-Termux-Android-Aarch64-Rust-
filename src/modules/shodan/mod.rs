@@ -200,13 +200,12 @@ impl Shodan {
             entity.tag("vulnerable");
         }
 
-        const MAX_PORTS: usize = 50;
+        // Full-fidelity policy: surface EVERY open port of the target host.
         let mut ports_sorted: Vec<u16> = body.ports.clone();
         ports_sorted.sort_unstable();
         ports_sorted.dedup();
         let ports_csv = ports_sorted
             .iter()
-            .take(MAX_PORTS)
             .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join(",");
@@ -223,23 +222,13 @@ impl Shodan {
         .with_attr("port_count", body.ports.len().to_string());
 
         if !body.vulns.is_empty() {
-            let v: Vec<&str> = body
-                .vulns
-                .iter()
-                .take(30)
-                .map(std::string::String::as_str)
-                .collect();
+            let v: Vec<&str> = body.vulns.iter().map(std::string::String::as_str).collect();
             ev = ev
                 .with_attr("vulns", v.join(","))
                 .with_attr("vuln_count", body.vulns.len().to_string());
         }
         if !body.cpes.is_empty() {
-            let c: Vec<&str> = body
-                .cpes
-                .iter()
-                .take(20)
-                .map(std::string::String::as_str)
-                .collect();
+            let c: Vec<&str> = body.cpes.iter().map(std::string::String::as_str).collect();
             ev = ev.with_attr("cpes", c.join(","));
         }
         if !body.tags.is_empty() {
@@ -254,12 +243,11 @@ impl Shodan {
         entity.add_evidence(ev);
         result.push(entity);
 
-        // Emit Domain entities for observed PTR / SAN hostnames.
-        const MAX_HOSTS: usize = 30;
+        // Emit Domain entities for observed PTR / SAN hostnames — all of them
+        // (full-fidelity policy: every discovered hostname becomes an entity).
         result.extend(
             body.hostnames
                 .iter()
-                .take(MAX_HOSTS)
                 .map(|host| host.trim().trim_end_matches('.'))
                 .filter(|host| {
                     !host.is_empty()
@@ -338,9 +326,9 @@ impl Shodan {
                 .with_attr("port_count", ports.len().to_string())
                 .with_attr(
                     "open_ports",
+                    // Full-fidelity policy: every open port of the target host.
                     ports
                         .iter()
-                        .take(20)
                         .map(u32::to_string)
                         .collect::<Vec<_>>()
                         .join(","),
@@ -351,9 +339,9 @@ impl Shodan {
                 .with_attr("vuln_count", body.vulns.len().to_string())
                 .with_attr(
                     "top_vulns",
+                    // Full-fidelity policy: every CVE reported for the target host.
                     body.vulns
                         .iter()
-                        .take(10)
                         .map(String::as_str)
                         .collect::<Vec<_>>()
                         .join(","),

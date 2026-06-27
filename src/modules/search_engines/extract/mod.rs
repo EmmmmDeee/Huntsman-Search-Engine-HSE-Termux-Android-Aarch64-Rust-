@@ -11,7 +11,6 @@ use super::fetch::fetch_one;
 use super::helpers::*;
 use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host};
 use crate::core::module::{ModuleContext, ModuleResult};
-use crate::util::str_util::truncate_safe;
 
 pub(super) async fn recycle_entities(
     ctx: &ModuleContext,
@@ -200,8 +199,11 @@ pub(super) async fn recycle_entities(
 /// and the surrounding text where the value actually appears — so the finding
 /// can be manually verified without reconstructing the lost context.
 fn recycled_evidence(r: &SearchResult, label: &str, value: &str, combined: &str) -> Evidence {
-    let title: String = truncate_safe(&r.title, 500).to_owned();
-    let snippet: String = truncate_safe(&r.snippet, 4000).to_owned();
+    // Full-fidelity policy: store the source title and snippet VERBATIM (never
+    // truncated) so the operator sees the authentic context the finding came
+    // from. Both are already bounded by the search engine's response shape.
+    let title: String = r.title.clone();
+    let snippet: String = r.snippet.clone();
     let context = extract_surrounding_text(combined, value, 240);
     let mut ev = Evidence::new(
         "search_engines",

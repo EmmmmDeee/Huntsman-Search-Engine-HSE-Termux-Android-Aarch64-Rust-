@@ -138,14 +138,18 @@ fn handle_like_names_are_not_persons() {
 }
 
 #[test]
-fn review_text_is_truncated_at_a_char_boundary() {
+fn review_text_is_preserved_verbatim() {
+    // Full-fidelity policy: a discovered review is stored exactly as returned,
+    // never truncated — the operator must see the authentic result in full, even
+    // a long one. (The non-ASCII place name also guards against any byte-vs-char
+    // mishandling now that no length cap is applied.)
     let long = "x".repeat(400);
     let es = build(&format!(
         r#"{{"maps_reviews":[{{"place_name":"Café ☕","text":"{long}"}}]}}"#
     ));
     let place = es.iter().find(|e| e.value == "Café ☕").unwrap();
     let text = place.evidence[0].attributes.get("review_text").unwrap();
-    assert_eq!(text.chars().count(), REVIEW_TEXT_CAP);
+    assert_eq!(text, &long);
 }
 
 #[test]

@@ -30,9 +30,6 @@ mod tests;
 pub(super) const KEY_ENV: &str = "HUNTSMAN_EMAILREP_KEY";
 pub(super) const SRC: &str = "emailrep";
 
-/// Cap on the social-profile platform list surfaced inline.
-pub(super) const MAX_PROFILES: usize = 20;
-
 pub struct EmailRep;
 
 #[derive(Deserialize)]
@@ -225,10 +222,11 @@ pub(super) fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str)
             ev = ev.with_attr("domain_age_days", days.to_string());
         }
         if !d.profiles.is_empty() {
+            // Full-fidelity policy: surface EVERY discovered profile, never a
+            // capped subset — the profile names are a result, not a preview.
             let csv = d
                 .profiles
                 .iter()
-                .take(MAX_PROFILES)
                 .map(String::as_str)
                 .collect::<Vec<_>>()
                 .join(",");
@@ -237,7 +235,7 @@ pub(super) fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str)
                 .with_attr("profile_count", d.profiles.len().to_string());
             // Tag each confirmed platform so graph rules can pivot on them
             // without needing to parse the CSV attribute.
-            for platform in d.profiles.iter().take(MAX_PROFILES) {
+            for platform in &d.profiles {
                 let p = platform.trim().to_lowercase();
                 if !p.is_empty() {
                     entity.tag(format!("has:{p}"));

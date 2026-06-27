@@ -289,7 +289,7 @@ impl Module for ExaSearch {
 /// existing entity emitters indirectly by producing the standard kinds.
 fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut ModuleResult) {
     // Email regex — same shape as web_crawler::extract_emails.
-    for cap in EMAIL_RE.find_iter(text).take(5) {
+    for cap in EMAIL_RE.find_iter(text) {
         let email = cap.as_str().to_lowercase();
         let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
         e.tag("exa-search");
@@ -301,7 +301,7 @@ fn mine_snippet(text: &str, scan_id: &str, source_url: &str, result: &mut Module
         result.push(e);
     }
     // International phone — at least 7 digits with optional + prefix.
-    for cap in PHONE_RE.find_iter(text).take(5) {
+    for cap in PHONE_RE.find_iter(text) {
         let raw = cap.as_str();
         let digits: String = raw
             .chars()

@@ -32,6 +32,16 @@ fn bt_is_uk() {
 }
 
 #[test]
+fn y7mail_is_australian() {
+    // Yahoo7 (y7mail.com) is a `.com` AU webmail brand, so — like bigpond.com —
+    // it needs an explicit REGIONAL_PROVIDERS entry to carry an Australian geo
+    // signal, since the `.com.au` TLD rule can't reach it.
+    let (provider, region) = detect_corporate_provider("y7mail.com").unwrap();
+    assert_eq!(region, "Australia");
+    assert!(provider.contains("Yahoo7"));
+}
+
+#[test]
 fn consumer_dot_boundary() {
     assert!(
         !CONSUMER_PROVIDERS.iter().any(|p| {

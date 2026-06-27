@@ -10,10 +10,9 @@ use crate::core::{
     scan::Target,
 };
 use crate::util::domains::is_freemail;
-use crate::util::str_util::truncate_safe;
 
 use super::types::{DateField, Education, LinkedInProfile};
-use super::{MAX_EMAILS, MAX_EXPERIENCES, MAX_LISTED, MAX_PHONES, SRC, SUMMARY_CAP};
+use super::{MAX_EMAILS, MAX_EXPERIENCES, MAX_LISTED, MAX_PHONES, SRC};
 
 use crate::util::str_util::nonempty;
 
@@ -56,7 +55,9 @@ pub(super) fn build_entities(
             ev = ev.with_attr("connections", c.to_string());
         }
         if let Some(summary) = nonempty(&profile.summary) {
-            ev = ev.with_attr("summary", truncate_safe(summary, SUMMARY_CAP));
+            // Full-fidelity policy: the professional bio is stored verbatim, never
+            // capped — the operator sees the authentic discovered text in full.
+            ev = ev.with_attr("summary", summary);
         }
         let current: Vec<&str> = profile
             .experiences

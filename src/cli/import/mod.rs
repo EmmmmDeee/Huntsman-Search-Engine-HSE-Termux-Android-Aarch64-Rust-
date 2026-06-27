@@ -247,6 +247,18 @@ pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>
     // entity and smuggles bogus documentation IPs past the IP-kind filter. A real
     // domain never parses as an IP address, so this has no false positives.
     entities.retain(|e| {
+        // Mirror the scan-path admission guard for EVERY importer in one place:
+        // drop documentation/template placeholders (example.com,
+        // firstname@gmail.com, John Doe) and truncated fragments (@gmail, a
+        // dotless "gmail" domain). Most parsers already filter these at
+        // construction, but the HTML/JSON parsers did not, so a centralised pass
+        // keeps them from leaking in. Both predicates exempt secrets internally,
+        // so a real password/API-key/credential value is never dropped here.
+        if crate::core::validation::is_placeholder_entity(&e.kind, &e.value)
+            || crate::core::validation::is_fragment_value(&e.kind, &e.value)
+        {
+            return false;
+        }
         if e.kind == crate::core::entity::EntityKind::IpAddress {
             !crate::core::validation::is_bogus_ip(&e.value)
         } else if e.kind == crate::core::entity::EntityKind::Domain {

@@ -264,6 +264,18 @@ pub async fn fetch_json<T: serde::de::DeserializeOwned>(url: &str, timeout_ms: u
 /// exit 63 as a hard failure would suppress real profiles whose pages exceed 8 KB.
 /// `timeout_ms` is reserved for future use; the current implementation encodes a
 /// 4-second curl `--max-time` internally.
+///
+/// # SSRF model
+/// This path applies the same protocol/redirect hardening as [`curl_exec`]
+/// (`--proto`/`--proto-redir` http/https only, `--max-redirs 5`) but deliberately
+/// omits the in-process private-IP `ssrf_resolve_pin`. That is safe **only because
+/// of how it is called**: the sole caller (`social_probe`) builds every URL from a
+/// hardcoded platform `url_pattern`, substituting user input into the URL *path*
+/// only — the host is always a trusted public platform, never attacker-controlled,
+/// so there is no rebinding target to pin. Adding a resolve-per-probe to this
+/// high-volume status fan-out is not warranted. Any future caller that passes an
+/// attacker-controlled host MUST route through [`curl_exec`] (or reqwest), which
+/// pin the resolved address against the private/reserved set.
 pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) -> (u16, String) {
     let mut args: Vec<&str> = vec![
         "-s",
@@ -272,6 +284,17 @@ pub async fn fetch_with_status(url: &str, _timeout_ms: u64, capture_body: bool) 
         "--max-time",
         "4",
         "-L",
+        // Protocol/redirect hardening, mirroring `FETCH_HARDENING_ARGS`: confine
+        // the initial request and every redirect hop to http/https (no
+        // `file://`/`gopher://`/`dict://` pivots) and bound the redirect chain.
+        // `--max-filesize` is set separately below because this path uses a tighter
+        // 8 KB body cap than the shared 32 MiB constant.
+        "--proto",
+        "=http,https",
+        "--proto-redir",
+        "=http,https",
+        "--max-redirs",
+        "5",
         "-A",
         UA_MOBILE,
     ];

@@ -82,9 +82,9 @@ fn accepts_domain_and_ip() {
     }
 
     #[test]
-    fn threats_are_deterministic_lexical_first_under_cap() {
-        // More distinct families than the cap, supplied out of order — the
-        // result must be the lexically-first MAX_THREATS regardless of input order.
+    fn threats_are_deterministic_lexically_sorted_in_full() {
+        // Distinct families supplied out of order — full-fidelity policy: EVERY
+        // distinct family is surfaced, lexically sorted, never a capped subset.
         let urls: String = ["m", "z", "a", "c", "b", "y", "x", "d", "e", "f"]
             .iter()
             .map(|t| format!(r#"{{"threat":"{t}","url_status":"online"}}"#))
@@ -93,8 +93,8 @@ fn accepts_domain_and_ip() {
         let body = resp(&format!(r#"{{"query_status":"ok","urls":[{urls}]}}"#));
         let e = build_threat_entity(EntityKind::Domain, "h", &body, 10, "s");
         let threats = attr(&e, "threats").unwrap();
-        assert_eq!(threats.split(',').count(), MAX_THREATS);
-        assert_eq!(threats, "a,b,c,d,e,f,m,x");
+        assert_eq!(threats.split(',').count(), 10);
+        assert_eq!(threats, "a,b,c,d,e,f,m,x,y,z");
     }
 
     #[test]

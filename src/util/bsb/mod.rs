@@ -49,8 +49,10 @@ const INSTITUTIONS: &[(&str, &str)] = &[
     ("183", "Macquarie Bank"),
     ("193", "Bank of Melbourne"),
     ("105", "BankSA"),
+    ("124", "Bank of Queensland"),
     ("484", "Suncorp Bank"),
     ("923", "ING"),
+    ("939", "AMP Bank"),
     // ── 2-digit (institution-wide blocks) ────────────────────────────────────
     ("01", "ANZ"),
     ("03", "Westpac"),
@@ -130,6 +132,8 @@ mod tests {
         assert_eq!(bsb_institution("105-900"), Some("BankSA"));
         assert_eq!(bsb_institution("193-879"), Some("Bank of Melbourne"));
         assert_eq!(bsb_institution("923-100"), Some("ING"));
+        assert_eq!(bsb_institution("124-001"), Some("Bank of Queensland"));
+        assert_eq!(bsb_institution("939-200"), Some("AMP Bank"));
     }
 
     #[test]

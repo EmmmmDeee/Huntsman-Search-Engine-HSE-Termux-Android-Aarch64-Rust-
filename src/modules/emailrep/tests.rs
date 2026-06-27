@@ -156,15 +156,17 @@ fn false_flags_do_not_tag() {
 }
 
 #[test]
-fn profiles_are_capped() {
+fn profiles_are_emitted_in_full() {
+    // Full-fidelity policy: every discovered profile is surfaced in the CSV,
+    // never a capped subset — the profile names are a result, not a preview.
     let profiles: Vec<String> = (0..30).map(|i| format!(r#""p{i}""#)).collect();
     let e = build(&format!(
         r#"{{"details":{{"profiles":[{}]}}}}"#,
         profiles.join(",")
     ));
     let csv = e.evidence[0].attributes.get("profiles").unwrap();
-    assert_eq!(csv.split(',').count(), MAX_PROFILES);
-    // …but the reported count is the true total.
+    assert_eq!(csv.split(',').count(), 30);
+    // …and the reported count matches the true total.
     assert_eq!(
         e.evidence[0]
             .attributes

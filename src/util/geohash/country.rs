@@ -38,6 +38,12 @@ pub fn reverse_country_iso(lat: f64, lon: f64) -> Option<&'static str> {
         ("DE", 47.3, 55.1, 5.9, 15.0),
         ("NL", 50.7, 53.6, 3.3, 7.3),
         ("BE", 49.5, 51.6, 2.5, 6.4),
+        // LU's box lies entirely within FR's (declared earlier) and also clips
+        // BE/DE border slivers, so as a coarse rectangle it is shadowed and never
+        // returned. Deliberately NOT reordered ahead of FR/BE/DE: doing so would
+        // mis-claim those neighbours' border localities — the bounding-box
+        // coarseness the function docstring already disclaims. A precise fix needs
+        // polygon data, which is out of scope for this offline first-pass lookup.
         ("LU", 49.4, 50.2, 5.7, 6.6),
         ("CH", 45.8, 47.9, 5.9, 10.5),
         ("AT", 46.4, 49.1, 9.5, 17.2),
@@ -55,22 +61,34 @@ pub fn reverse_country_iso(lat: f64, lon: f64) -> Option<&'static str> {
         ("HU", 45.7, 48.6, 16.1, 22.9),
         ("RO", 43.6, 48.3, 20.2, 29.7),
         ("GR", 34.8, 41.7, 19.4, 28.3),
-        // Russia (vast but the box catches it)
+        // Russia (vast but the box catches it). NOTE: RU's catch-all box fully
+        // contains UA's box, so UA is shadowed and never returned. UA is
+        // deliberately NOT reordered ahead of RU: UA's rectangle also covers
+        // south-west Russian cities (e.g. Rostov-on-Don, Krasnodar), which would
+        // then be mis-attributed to UA — trading one coarse-box error for another.
+        // Disentangling RU/UA needs polygon data, out of scope for this lookup.
         ("RU", 41.2, 81.9, 19.6, 180.0),
         ("UA", 44.4, 52.4, 22.1, 40.2),
-        // Asia
+        // Asia. Specific boxes (SARs, city-states, islands) MUST precede EVERY
+        // larger nation whose box geographically contains them, because the first
+        // box to match in declaration order wins. HK and TW sit inside the CN box,
+        // so they precede CN (as KR and JP already do, for the same reason). SG
+        // sits inside BOTH the ID and the MY boxes, so it must precede the earlier
+        // of the two (ID) — placing it only ahead of MY still left it shadowed by
+        // ID. Listing any of these tiny boxes after their container would shadow
+        // them entirely (they could never be returned).
         ("JP", 30.0, 45.6, 128.0, 146.0),
         ("KR", 33.1, 38.6, 124.6, 131.9),
+        ("HK", 22.2, 22.6, 113.8, 114.4),
+        ("TW", 21.9, 25.3, 119.5, 122.0),
         ("CN", 18.2, 53.6, 73.5, 134.8),
         ("IN", 6.7, 35.7, 68.1, 97.4),
+        ("SG", 1.2, 1.5, 103.6, 104.0),
         ("ID", -11.0, 6.1, 95.0, 141.0),
         ("PH", 4.6, 21.1, 116.9, 126.6),
         ("VN", 8.5, 23.4, 102.1, 109.5),
         ("TH", 5.6, 20.5, 97.3, 105.6),
         ("MY", 0.9, 7.4, 99.6, 119.3),
-        ("SG", 1.2, 1.5, 103.6, 104.0),
-        ("HK", 22.2, 22.6, 113.8, 114.4),
-        ("TW", 21.9, 25.3, 119.5, 122.0),
         ("AE", 22.6, 26.1, 51.6, 56.4),
         ("SA", 16.4, 32.2, 34.5, 55.7),
         ("IL", 29.5, 33.3, 34.3, 35.9),

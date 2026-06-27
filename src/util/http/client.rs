@@ -13,7 +13,13 @@
 pub fn build_client() -> reqwest::Client {
     super::ssrf::client_builder()
         .build()
-        .expect("reqwest client build failed")
+        // expect justification: `client_builder()` is a fully static configuration
+        // (SSRF DNS resolver, redirect policy, fixed timeouts, compile-time UA), so
+        // `ClientBuilder::build()` can only fail if the rustls TLS backend cannot
+        // initialise — a build/environment misconfiguration, never a runtime or
+        // input condition. Fail fast at construction so every caller can treat the
+        // client as infallibly available rather than threading a Result everywhere.
+        .expect("reqwest client (rustls backend) failed to build")
 }
 
 /// Like [`build_client`] but stamps every outbound request with a default
@@ -33,5 +39,10 @@ pub fn build_client_with_trace(trace_id: &str) -> reqwest::Client {
     super::ssrf::client_builder()
         .default_headers(headers)
         .build()
-        .expect("reqwest client build failed")
+        // expect justification: identical static-config / rustls-init-only failure
+        // mode as `build_client` — the trace header was already validated above
+        // (non-conforming ids are skipped, not panicked on), so it introduces no
+        // new fallible build input. A failure here is a misbuilt binary, not a
+        // runtime condition.
+        .expect("reqwest client (rustls backend) failed to build")
 }

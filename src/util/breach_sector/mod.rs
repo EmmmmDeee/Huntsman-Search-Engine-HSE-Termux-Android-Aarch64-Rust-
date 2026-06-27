@@ -151,6 +151,7 @@ const KNOWN_SOURCE_SECTORS: &[(&str, &str)] = &[
     ("garmin", "health"),
     ("peloton", "health"),
     ("noom", "health"),
+    ("medibank", "health"), // AU private health insurer (2022, 9.7M, published)
     // Adult.
     ("fling", "adult"),
     ("myvidster", "adult"),
@@ -185,6 +186,7 @@ const KNOWN_SOURCE_SECTORS: &[(&str, &str)] = &[
     ("robinhood", "finance"),
     ("revolut", "finance"),
     ("etoro", "finance"),
+    ("latitudefinancial", "finance"), // Latitude AU (2023, 14M — largest AU breach)
     // Travel / hospitality.
     ("expedia", "travel"),
     ("airbnb", "travel"),
@@ -194,6 +196,8 @@ const KNOWN_SOURCE_SECTORS: &[(&str, &str)] = &[
     ("hotels", "travel"),
     ("marriott", "travel"),
     ("hilton", "travel"),
+    // Telecom — major telco breaches (Australian emphasis).
+    ("optus", "telecom"), // Optus AU (2022, ~10M customers, names/DOB/ID numbers)
 ];
 
 /// Sector for a source whose name is a known breach **brand / domain**, matched

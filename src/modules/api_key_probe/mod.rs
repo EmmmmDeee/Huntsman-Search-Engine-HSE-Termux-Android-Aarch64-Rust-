@@ -47,10 +47,6 @@ impl Module for ApiKeyProbe {
         matches!(t.kind, TargetKind::ApiKey)
     }
 
-    fn is_passive(&self) -> bool {
-        true
-    }
-
     fn max_timeout_ms(&self) -> u64 {
         90_000
     }

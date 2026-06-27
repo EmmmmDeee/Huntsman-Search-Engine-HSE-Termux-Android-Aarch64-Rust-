@@ -84,8 +84,10 @@ use super::*;
     }
 
     #[test]
-    fn is_free_and_passive() {
+    fn is_free_and_active() {
         let m = ApiKeyProbe;
-        assert!(m.is_passive());
+        // Network-reaching: probes seeded keys against live service endpoints,
+        // so it must NOT be passive (a passive_only scan has to skip it).
+        assert!(!m.is_passive());
         assert_eq!(m.cost(), ModuleCost::Free);
     }

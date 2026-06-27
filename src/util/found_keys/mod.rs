@@ -98,11 +98,20 @@ fn lock() -> MutexGuard<'static, Sink> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// Token-length window: below 16 chars almost nothing real matches; above 512
-/// is past every known vendor key (GitLab's ~256 is the longest) and into
-/// base64-blob DoS territory.
+/// Token-length window for key-candidate extraction. Below 16 chars almost
+/// nothing real matches. The upper bound must cover the LONGEST credential the
+/// vendor classifier actually recognises — which is NOT GitLab's ~256-char PAT
+/// but a **JWT** (`eyJ…`, identified via its `eyJ` prefix and routinely
+/// 200–2000+ chars). `key_tokens` *filters* by length (it skips longer tokens,
+/// it does not truncate), so the previous 512 silently dropped every longer
+/// foreign JWT, leaving it unidentified — counter to the operator's "identify
+/// every foreign key" directive. 4096 matches the harvester's DoS-safe window
+/// (`EXTRACTED_VALUE_MAX`), well above any real key. Per-token cost stays bounded:
+/// vendor identification is prefix-anchored, and the entropy false-positive gate
+/// (`is_likely_real_key`) runs only on the rare prefix match, rejecting the
+/// low-entropy long-blob "DoS shape" regardless of this length bound.
 pub(crate) const MIN_TOKEN: usize = 16;
-pub(crate) const MAX_TOKEN: usize = 512;
+pub(crate) const MAX_TOKEN: usize = 4096;
 
 /// Token boundary for key-candidate extraction: whitespace plus the structural
 /// punctuation that brackets values in JSON, query strings, and env files.
