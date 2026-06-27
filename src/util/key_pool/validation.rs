@@ -11,12 +11,10 @@ use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
 /// but still stores it (won't be used by next_key).
 /// Returns true if the key is valid and was stored.
 ///
-/// `discovered_by` carries provenance: pass `Some(source)` for a key that came
-/// from imported/scanned data (not the operator's own config). A discovered key
-/// is stored and validated for reporting, but [`KeyEntry::is_operator_owned`]
-/// returns false for it so [`KeyPool::next_key`](super::pool::KeyPool::next_key)
-/// never serves it for HSE's own outbound auth. Pass `None` only for an
-/// operator-provisioned key.
+/// `discovered_by` records provenance for `keys list` reporting: pass
+/// `Some(source)` for a key that came from imported/scanned data, `None` for an
+/// operator-provisioned key. It is visibility metadata only — it does not gate
+/// selection (a usable pooled key is reusable regardless of origin).
 pub async fn add_and_validate(
     service: &str,
     key_value: &str,
