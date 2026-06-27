@@ -87,10 +87,6 @@ impl Module for DisposableCheck {
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }
-    fn is_passive(&self) -> bool {
-        true
-    }
-
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Email
     }
