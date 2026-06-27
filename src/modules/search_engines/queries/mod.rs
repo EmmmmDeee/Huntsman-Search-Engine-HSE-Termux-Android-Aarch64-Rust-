@@ -370,8 +370,13 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             format!("site:{v} intext:\"password\" OR intext:\"api_key\" OR intext:\"secret\""),
             // Subdomain discovery via negative site
             format!("site:{v} -site:www.{v}"),
-            // Backlinks
-            format!("link:{v}"),
+            // Inbound references / mentions of the domain on OTHER sites — the
+            // working replacement for the dead `link:` operator (Bing suspended it
+            // in March 2007, Google removed it in 2017), which returned no backlinks
+            // on any engine HSE queries, only a literal text-search of the string.
+            // `"{v}" -site:{v}` finds pages that cite the domain without being
+            // hosted on it: the closest live proxy for backlink discovery.
+            format!("\"{v}\" -site:{v}"),
         ],
         TargetKind::Email => {
             let domain = v.rsplit_once('@').map_or("", |(_, d)| d);
@@ -513,6 +518,12 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
         }
         TargetKind::IpAddress => vec![
             format!("\"{v}\""),
+            // Bing-exclusive `ip:` — returns pages Bing indexed as HOSTED at this
+            // IP (virtual-host / co-tenant discovery Google cannot do). On non-Bing
+            // engines it degrades to a literal text search, which the bare `"{v}"`
+            // dork above already covers, so it adds the Bing capability with no
+            // extra noise.
+            format!("ip:{v}"),
             format!("\"{v}\" hostname OR server OR domain"),
             format!("\"{v}\" site:shodan.io OR site:censys.io OR site:zoomeye.org"),
             format!("\"{v}\" location OR city OR country OR ISP"),

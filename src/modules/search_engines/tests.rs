@@ -246,7 +246,9 @@ fn build_queries_domain_produces_five_dorks() {
     assert!(q[0].contains("filetype:pdf") && q[0].contains("site:acme.com"));
     assert!(q[1].contains("@acme.com"));
     assert!(q[2].contains("login"));
-    assert!(q.iter().any(|s| s.contains("link:acme.com")));
+    // Dead `link:` dork replaced by a live inbound-mention dork.
+    assert!(!q.iter().any(|s| s.contains("link:acme.com")), "dead link: dork must be gone");
+    assert!(q.iter().any(|s| s == "\"acme.com\" -site:acme.com"));
 }
 
 #[test]

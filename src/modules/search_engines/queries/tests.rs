@@ -115,14 +115,17 @@ use super::*;
     // ── build_queries_base ───────────────────────────────────────────────────
 
     #[test]
-    fn build_queries_base_domain_emits_site_and_link_dorks() {
+    fn build_queries_base_domain_emits_site_and_mention_dorks() {
         use crate::core::scan::Target;
         let q = build_queries_base(&Target::new(TargetKind::Domain, "example.com"));
         assert!(!q.is_empty());
         // Bare `site:example.com` removed — 50% block rate / 27% hit rate in live
         // scans; the operator-enriched site: patterns below carry 99-100% hit rate.
         assert!(!q.iter().any(|s| s == "site:example.com"), "bare site: dork must be absent");
-        assert!(q.iter().any(|s| s == "link:example.com"));
+        // The dead `link:` operator (discontinued on Bing 2007 / Google 2017) was
+        // replaced by a live inbound-mention dork.
+        assert!(!q.iter().any(|s| s == "link:example.com"), "dead link: dork must be gone");
+        assert!(q.iter().any(|s| s == "\"example.com\" -site:example.com"));
         // Subdomain-discovery dork (negative site).
         assert!(
             q.iter()
@@ -178,6 +181,8 @@ use super::*;
             q.iter()
                 .any(|s| s.contains("site:shodan.io OR site:censys.io OR site:zoomeye.org"))
         );
+        // Bing-exclusive hosted-pages-at-IP dork.
+        assert!(q.iter().any(|s| s == "ip:8.8.8.8"), "{q:?}");
     }
 
     #[test]
