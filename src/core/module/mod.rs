@@ -384,34 +384,49 @@ fn persist_key_pool(pool: std::sync::Arc<crate::util::key_pool::KeyPool>) {
     }
 }
 
+/// The entities a module produced from one target — the accumulator every
+/// [`Module::process`] fills and returns. The engine merges these into the scan
+/// store (GREATEST-semantics) and feeds them to the next expansion round.
 #[derive(Debug, Default)]
 pub struct ModuleResult {
+    /// The discovered entities, in module-emission order.
     pub entities: Vec<Entity>,
 }
 
 impl ModuleResult {
+    /// An empty result.
+    #[must_use]
     pub fn new() -> Self {
         Self::default()
     }
 
+    /// An empty result with room pre-reserved for `cap` entities — for a module
+    /// that knows its output size up front (one entity per breach row, etc.).
+    #[must_use]
     pub fn with_capacity(cap: usize) -> Self {
         Self {
             entities: Vec::with_capacity(cap),
         }
     }
 
+    /// Append one discovered entity.
     pub fn push(&mut self, entity: Entity) {
         self.entities.push(entity);
     }
 
+    /// Append every entity from an iterator.
     pub fn extend(&mut self, entities: impl IntoIterator<Item = Entity>) {
         self.entities.extend(entities);
     }
 
+    /// True when the module produced nothing.
+    #[must_use]
     pub fn is_empty(&self) -> bool {
         self.entities.is_empty()
     }
 
+    /// Number of entities produced.
+    #[must_use]
     pub fn len(&self) -> usize {
         self.entities.len()
     }

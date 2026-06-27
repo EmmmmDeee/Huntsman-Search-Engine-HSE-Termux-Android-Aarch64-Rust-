@@ -25,6 +25,12 @@ pub const SKIPTRACE_CATEGORIES: &[ModuleCategory] = &[
     ModuleCategory::Breach,
 ];
 
+/// Resolve a named scan profile to its [`ScanOptions`] preset, or `None` for an
+/// unknown name. The profile is the operator's one-word intent (`passive`,
+/// `footprint`, `investigate`, `skiptrace`, …); `recommended`/`default` and
+/// `skiptrace`/`locate` are aliases. The single lookup the CLI and API both use,
+/// so a `--profile` flag and a `?profile=` query resolve identically.
+#[must_use]
 pub fn resolve_profile(name: &str) -> Option<ScanOptions> {
     match name {
         // `default` is an alias for `recommended` so callers can ask for either.
@@ -39,6 +45,10 @@ pub fn resolve_profile(name: &str) -> Option<ScanOptions> {
     }
 }
 
+/// Every selectable profile as `(name, one-line description)` — the catalogue the
+/// CLI `--help` and the API/SPA profile picker render. Aliases are omitted (each
+/// profile is listed once under its canonical name).
+#[must_use]
 pub fn list_profiles() -> Vec<(&'static str, &'static str)> {
     vec![
         (
