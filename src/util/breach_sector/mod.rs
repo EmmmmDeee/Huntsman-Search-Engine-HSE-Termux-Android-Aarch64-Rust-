@@ -166,7 +166,7 @@ const KNOWN_SOURCE_SECTORS: &[(&str, &str)] = &[
     ("coursera", "education"),
     ("udemy", "education"),
     ("duolingo", "education"),
-    ("Khan", "education"),
+    ("khan", "education"),
     // Retail / e-commerce.
     ("kixify", "retail"),
     ("ebay", "retail"),
