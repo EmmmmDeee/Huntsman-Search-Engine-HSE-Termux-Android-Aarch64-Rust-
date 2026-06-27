@@ -2,7 +2,6 @@
 //!
 //! Endpoints:
 //!   GET /api/v3/breachedaccount/{email}  — breaches containing this email
-//!   GET /api/v3/pasteaccount/{email}     — pastes containing this email
 //!   GET /api/v3/breaches?domain={domain} — breaches affecting a domain
 //!
 //! Rate limit: 10 req/min on the basic subscription. The module
