@@ -376,6 +376,10 @@ use import::cmd_import;
 
 // ─── Shared helpers (used by subcommand files) ─────────────────────────────
 
+/// Parse a CLI `--kind` string into a [`TargetKind`], accepting both the terse
+/// command-line aliases (`name`, `ip`, `org`, `coords`, …) and the canonical
+/// snake_case form the system itself emits (`full_name`, `ip_address`) so a copied
+/// canonical kind round-trips. Errors list every valid kind.
 pub(super) fn parse_target_kind(s: &str) -> Result<TargetKind> {
     match s.to_lowercase().trim() {
         "email" => Ok(TargetKind::Email),
@@ -418,10 +422,16 @@ pub(super) fn cost_label(c: ModuleCost) -> &'static str {
     }
 }
 
+/// Split a comma-separated CLI option (e.g. `--modules a,b,c`) into trimmed
+/// parts, or `None` when the option was absent.
 pub(super) fn split_csv(s: Option<String>) -> Option<Vec<String>> {
     s.map(|s| s.split(',').map(|m| m.trim().to_string()).collect())
 }
 
+/// Build the shared on-device CLI runtime: open the SQLite store (pruning aged
+/// events first), create the broadcast [`EventBus`](crate::core::event::EventBus),
+/// and construct the [`ScanEngine`] over the full module registry. Every
+/// scan/live/audit command starts from this one setup.
 pub(super) fn build_runtime(
     bus_capacity: usize,
 ) -> Result<(
@@ -440,6 +450,8 @@ pub(super) fn build_runtime(
     Ok((store, bus, engine))
 }
 
+/// Whether to emit ANSI colour: false when `NO_COLOR` is set (the de-facto
+/// standard) or when stdout is not a TTY (piped/redirected output stays plain).
 pub(super) fn use_color() -> bool {
     if std::env::var_os("NO_COLOR").is_some() {
         return false;
@@ -464,6 +476,9 @@ pub(super) fn color_confidence(c_eff: f64, text: &str, color: bool) -> String {
     }
 }
 
+/// Colour a correlation severity label for the CLI (bold-red Critical, red High,
+/// yellow Medium, dim otherwise) — the severity sibling of [`color_confidence`].
+/// A no-op when `color` is false (piped output / `NO_COLOR`).
 pub(super) fn color_severity(severity: &str, color: bool) -> String {
     if !color {
         return severity.to_string();
@@ -476,6 +491,9 @@ pub(super) fn color_severity(severity: &str, color: bool) -> String {
     }
 }
 
+/// Truncate `s` to at most `max` **characters** (not bytes — Unicode-safe),
+/// appending `…` when shortened. A bare `s.truncate(max)` would panic on a
+/// multi-byte boundary, so column-fitting CLI output goes through this.
 pub(super) fn truncate(s: &str, max: usize) -> String {
     if s.chars().count() <= max {
         s.to_string()
