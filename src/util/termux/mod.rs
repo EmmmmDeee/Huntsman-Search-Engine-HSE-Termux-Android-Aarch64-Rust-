@@ -1,3 +1,18 @@
+//! Bridge to the on-device **Termux `termux-*` API tools** — the primary
+//! deployment target's sensor/telephony surface (`termux-location`,
+//! `termux-wifi-scaninfo`, `termux-telephony-cellinfo`, …).
+//!
+//! Every call goes through [`termux_cmd`], which runs the helper under a hard
+//! timeout and **caches a timeout/spawn failure** for [`UNAVAILABLE_TTL`] so an
+//! ungranted permission or absent GPS fix costs its full timeout at most once
+//! every few minutes, never once per scan — the single biggest per-scan time sink
+//! on a phone. A *prompt* non-zero exit (the tool ran, just had no data) is NOT
+//! penalised, so a responsive-but-empty sensor stays live. The unavailable map is
+//! process-global, so the skip is shared across concurrent sensor modules and
+//! persists across scans on a long-running `hse serve`. Non-Termux platforms
+//! simply fail to spawn the tools and degrade cleanly to `None` (cross-platform
+//! safe — the sensor modules treat absence as "no signal").
+
 use std::collections::HashMap;
 use std::sync::{LazyLock, Mutex};
 use std::time::{Duration, Instant};
