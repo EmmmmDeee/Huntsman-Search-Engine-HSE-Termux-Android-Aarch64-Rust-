@@ -114,7 +114,7 @@ use super::*;
         assert_eq!(m.name(), "wayback");
         assert!(!m.description().is_empty());
         assert_eq!(m.priority(), 38);
-        assert_eq!(m.max_timeout_ms(), 30_000);
+        assert_eq!(m.max_timeout_ms(), 45_000);
         assert!(m.produces().contains(&EntityKind::Domain));
         assert!(m.produces().contains(&EntityKind::Url));
         assert!(m.produces().contains(&EntityKind::Email));
@@ -123,4 +123,68 @@ use super::*;
         let techniques = m.attack_techniques();
         assert!(techniques.contains(&"T1596"));
         assert!(techniques.contains(&"T1589.002"));
+    }
+
+    #[test]
+    fn is_minable_page_excludes_binary_assets_only() {
+        // Text/HTML/extensionless pages are minable (can carry a contact).
+        assert!(is_minable_page("https://example.com/contact"));
+        assert!(is_minable_page("https://example.com/"));
+        assert!(is_minable_page("https://example.com/about.html"));
+        assert!(is_minable_page("https://example.com/app.js")); // inline mailto/config
+        assert!(is_minable_page("https://example.com/data.json"));
+        assert!(is_minable_page("https://example.com/page?x=1#frag"));
+        // Binary/static assets carry no extractable contact text.
+        assert!(!is_minable_page("https://example.com/logo.png"));
+        assert!(!is_minable_page("https://example.com/font.woff2"));
+        assert!(!is_minable_page("https://example.com/brochure.pdf"));
+        assert!(!is_minable_page("https://example.com/clip.mp4"));
+        // Extension test ignores query/fragment, so an asset with a query is
+        // still excluded.
+        assert!(!is_minable_page("https://example.com/logo.png?v=2"));
+    }
+
+    #[test]
+    fn select_mining_snapshots_takes_contact_paths_first_then_fills() {
+        // Header row + a mix of contact pages, ordinary pages, and an asset.
+        let rows = vec![
+            row(&["timestamp", "original"]),
+            row(&["20100101000000", "http://example.com/blog/post-1"]),
+            row(&["20110101000000", "http://example.com/logo.png"]), // excluded
+            row(&["20120101000000", "http://example.com/contact-us"]),
+            row(&["20130101000000", "http://example.com/products"]),
+            row(&["20140101000000", "http://example.com/about"]),
+        ];
+        let picked = select_mining_snapshots(&rows, 10);
+        // Asset excluded; the two contact-adjacent pages come FIRST, then the
+        // ordinary pages fill the remaining budget (broader than contacts only).
+        let urls: Vec<&str> = picked.iter().map(|(_, u)| u.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec![
+                "http://example.com/contact-us",
+                "http://example.com/about",
+                "http://example.com/blog/post-1",
+                "http://example.com/products",
+            ]
+        );
+        assert!(!urls.iter().any(|u| u.ends_with(".png")));
+    }
+
+    #[test]
+    fn select_mining_snapshots_respects_the_cap_contacts_win() {
+        // More contact pages than the cap → only contact pages are taken, and
+        // the ordinary page is squeezed out (contacts are prioritised).
+        let rows = vec![
+            row(&["timestamp", "original"]),
+            row(&["20100101000000", "http://example.com/products"]),
+            row(&["20110101000000", "http://example.com/contact"]),
+            row(&["20120101000000", "http://example.com/about"]),
+        ];
+        let picked = select_mining_snapshots(&rows, 2);
+        let urls: Vec<&str> = picked.iter().map(|(_, u)| u.as_str()).collect();
+        assert_eq!(
+            urls,
+            vec!["http://example.com/contact", "http://example.com/about"]
+        );
     }

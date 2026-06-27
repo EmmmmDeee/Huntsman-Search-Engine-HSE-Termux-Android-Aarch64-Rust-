@@ -9,15 +9,18 @@
 //!    consensus rule and the age-confidence heuristic.
 //!
 //! 2. **Contact mining** (`fl=timestamp,original`, `collapse=urlkey`,
-//!    `limit=500`) — finds archived pages whose paths contain a
-//!    contact-adjacent keyword (contact, about, team, staff, imprint…),
-//!    fetches each raw snapshot HTML (capped at 32 KB), and extracts
-//!    email addresses and phone numbers. This recovers contacts that
-//!    have since been removed from the live site — the same technique
-//!    that drives many authoritative OSINT investigations (Theranos,
-//!    Wirecard, OCCRP shell companies) where the current site shows
-//!    different or no contacts but earlier versions are preserved in
-//!    the archive.
+//!    `limit=500`) — mines archived snapshots for email addresses and
+//!    phone numbers. Any minable (non-asset) page is eligible — a contact
+//!    removed from the live site often survives on a page other than
+//!    `/contact` — but contact-adjacent paths (contact, about, team, staff,
+//!    imprint…) are mined FIRST for their richer yield, then the remaining
+//!    per-scan budget is filled with other archived pages. Each raw snapshot
+//!    HTML is fetched (capped at 32 KB) and scanned. This recovers contacts
+//!    that have since been removed from the live site — the technique behind
+//!    many authoritative OSINT investigations (Theranos, Wirecard, OCCRP shell
+//!    companies) where the current site shows different or no contacts but
+//!    earlier versions are preserved in the archive. (A bounded equivalent of
+//!    kronikier's broad `--exhaustive` sweep, capped for the module timeout.)
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -34,9 +37,10 @@ use crate::util::http::{fetch_json, read_body_capped, urlencode};
 
 const SRC: &str = "wayback";
 
-/// Maximum archived contact-page snapshots to fetch per scan.
-/// Each fetch is one network round-trip to archive.org.
-const MAX_CONTACT_SNAPSHOTS: usize = 10;
+/// Maximum archived snapshots to fetch and mine for contacts per scan.
+/// Each fetch is one network round-trip to archive.org. Contact-adjacent
+/// pages are mined first; remaining budget is filled with other pages.
+const MAX_CONTACT_SNAPSHOTS: usize = 16;
 
 /// Body read cap per snapshot fetch. 32 KB is more than enough for a
 /// contact page; anything larger is almost certainly a binary or video.
@@ -133,6 +137,63 @@ fn is_contact_path(url: &str) -> bool {
     CONTACT_PATH_KEYWORDS.iter().any(|kw| path.contains(kw))
 }
 
+/// File extensions never worth fetching for contact mining: binary/static
+/// assets whose archived bytes carry no extractable email/phone text. Text-ish
+/// resources (`.js`/`.css`/`.json`/`.xml`/`.txt`/`.html`) are deliberately NOT
+/// excluded — a `mailto:` or inline config can surface a contact there. PDFs
+/// and Office docs are binary to the HTML extractor, so they are excluded.
+const NON_MINABLE_EXTS: &[&str] = &[
+    ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico", ".bmp", ".tiff", ".woff", ".woff2",
+    ".ttf", ".eot", ".otf", ".mp4", ".webm", ".mp3", ".wav", ".ogg", ".avi", ".mov", ".mkv",
+    ".zip", ".gz", ".tar", ".rar", ".7z", ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt",
+    ".pptx",
+];
+
+/// True when an archived URL is worth fetching for contact text — i.e. not an
+/// obvious binary/static asset (judged by the file extension on the path, with
+/// any query/fragment stripped first). Extensionless paths are minable.
+fn is_minable_page(url: &str) -> bool {
+    let lower = url.to_lowercase();
+    let path = lower.split(['?', '#']).next().unwrap_or(&lower);
+    let last_segment = path.rsplit('/').next().unwrap_or(path);
+    !NON_MINABLE_EXTS
+        .iter()
+        .any(|ext| last_segment.ends_with(ext))
+}
+
+/// Choose up to `cap` archived snapshots to mine, broadest-reach-first: every
+/// minable (non-asset) page is eligible, but contact-adjacent paths are taken
+/// FIRST (richest contact yield) and the remaining budget is filled with other
+/// pages. This is the bounded equivalent of kronikier's `--exhaustive` sweep —
+/// a contact removed from the live site often survives on a non-`/contact`
+/// archived page, so restricting mining to contact paths alone misses it.
+///
+/// `rows` is the raw CDX JSON: row 0 is the column header and is skipped; each
+/// data row is `[timestamp, original_url]`. Returns `(timestamp, url)` pairs in
+/// fetch order (contact pages, then others), preserving CDX (chronological)
+/// order within each group.
+fn select_mining_snapshots(rows: &[Row], cap: usize) -> Vec<(String, String)> {
+    let mut contact: Vec<(String, String)> = Vec::new();
+    let mut other: Vec<(String, String)> = Vec::new();
+    for r in rows.iter().skip(1) {
+        let Some(ts) = r.0.first().cloned() else {
+            continue;
+        };
+        let Some(orig) = r.0.get(1).cloned() else {
+            continue;
+        };
+        if !is_minable_page(&orig) {
+            continue;
+        }
+        if is_contact_path(&orig) {
+            contact.push((ts, orig));
+        } else {
+            other.push((ts, orig));
+        }
+    }
+    contact.into_iter().chain(other).take(cap).collect()
+}
+
 /// Construct the Wayback raw-content URL for a given snapshot. The `id_`
 /// modifier tells the Wayback Machine to return the unmodified original
 /// response without banner injection or URL rewriting.
@@ -158,23 +219,11 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
         Err(_) => return Vec::new(),
     };
 
-    // Skip header row, filter to contact-adjacent paths, take the cap.
-    let contact_snapshots: Vec<(String, String)> = rows
-        .iter()
-        .skip(1)
-        .filter_map(|r| {
-            let ts = r.0.first()?.clone();
-            let orig = r.0.get(1)?.clone();
-            if is_contact_path(&orig) {
-                Some((ts, orig))
-            } else {
-                None
-            }
-        })
-        .take(MAX_CONTACT_SNAPSHOTS)
-        .collect();
+    // Contact-adjacent pages first, then fill the budget with other minable
+    // (non-asset) pages — a broader sweep than contact paths alone.
+    let mining_snapshots = select_mining_snapshots(&rows, MAX_CONTACT_SNAPSHOTS);
 
-    if contact_snapshots.is_empty() {
+    if mining_snapshots.is_empty() {
         return Vec::new();
     }
 
@@ -182,7 +231,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (timestamp, original_url) in &contact_snapshots {
+    for (timestamp, original_url) in &mining_snapshots {
         if ctx.cancel.is_cancelled() {
             break;
         }
@@ -292,9 +341,9 @@ impl Module for Wayback {
 
     fn max_timeout_ms(&self) -> u64 {
         // Two CDX queries + up to MAX_CONTACT_SNAPSHOTS page fetches with
-        // INTER_SNAPSHOT_MS gaps: conservatively 10 × (300ms + 2s latency) = 23s.
-        // 30s gives headroom for slow archive responses.
-        30_000
+        // INTER_SNAPSHOT_MS gaps: conservatively 16 × (300ms + 2s latency) ≈ 37s.
+        // 45s gives headroom for slow archive responses.
+        45_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
