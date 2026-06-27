@@ -93,6 +93,43 @@ use super::*;
     }
 
     #[test]
+    fn detect_region_flags_chinese_seeds_and_emits_cn_dorks() {
+        use crate::core::scan::Target;
+        // `.cn` host (incl. `.gov.cn`/`.edu.cn`, which end in `.cn` not `.gov`/`.edu`)
+        // and `+86` phone are the China signals.
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Domain, "example.com.cn")),
+            Some(Region::Cn)
+        );
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Domain, "gsxt.gov.cn")),
+            Some(Region::Cn)
+        );
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Email, "user@pku.edu.cn")),
+            Some(Region::Cn)
+        );
+        assert_eq!(
+            detect_region(&Target::new(TargetKind::Phone, "+86 138 0000 0000")),
+            Some(Region::Cn)
+        );
+        // A `.cn` DOMAIN (entity seed) gets the registry/court dork only.
+        let dom = regional_dorks(&Target::new(TargetKind::Domain, "acme.com.cn"));
+        assert!(
+            dom.iter().any(|s| s.contains("site:gsxt.gov.cn")),
+            "cn domain must emit the registry dork: {dom:?}"
+        );
+        assert!(
+            !dom.iter().any(|s| s.contains("site:weibo.com")),
+            "cn domain (entity) must NOT emit the person-platform dork: {dom:?}"
+        );
+        // A `+86` PHONE (person seed) additionally gets the social-platform dork.
+        let ph = regional_dorks(&Target::new(TargetKind::Phone, "+86 138 0000 0000"));
+        assert!(ph.iter().any(|s| s.contains("site:gsxt.gov.cn")), "{ph:?}");
+        assert!(ph.iter().any(|s| s.contains("site:weibo.com")), "{ph:?}");
+    }
+
+    #[test]
     fn detect_region_phone_distinguishes_au_cc_from_us_area_code() {
         use crate::core::scan::Target;
         // Bare AU country code at full international length → AU.

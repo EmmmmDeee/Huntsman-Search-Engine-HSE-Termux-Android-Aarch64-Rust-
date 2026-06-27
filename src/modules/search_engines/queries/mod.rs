@@ -156,6 +156,7 @@ pub(super) enum Region {
     Uk,
     Us,
     Eu,
+    Cn,
 }
 
 /// Infer a region from the seed itself — only when it carries a clear signal, so
@@ -165,6 +166,8 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
     let host_au = |h: &str| h.ends_with(".au");
     let host_uk = |h: &str| h.ends_with(".uk");
     let host_us = |h: &str| h.ends_with(".edu") || h.ends_with(".gov");
+    // `.cn` (incl. `.gov.cn`/`.edu.cn`, which end in `.cn` not `.gov`/`.edu`).
+    let host_cn = |h: &str| h.ends_with(".cn");
     match target.kind {
         TargetKind::AbnAcn => Some(Region::Au),
         TargetKind::Domain => {
@@ -174,6 +177,8 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
                 Some(Region::Uk)
             } else if host_us(&v) {
                 Some(Region::Us)
+            } else if host_cn(&v) {
+                Some(Region::Cn)
             } else {
                 None
             }
@@ -190,6 +195,9 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
                 if host_us(h) {
                     return Some(Region::Us);
                 }
+                if host_cn(h) {
+                    return Some(Region::Cn);
+                }
             }
             None
         }
@@ -203,6 +211,9 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
                 }
                 if host_us(d) {
                     return Some(Region::Us);
+                }
+                if host_cn(d) {
+                    return Some(Region::Cn);
                 }
             }
             None
@@ -220,6 +231,10 @@ pub(super) fn detect_region(target: &Target) -> Option<Region> {
             // +44 → UK
             if v.contains("+44") {
                 return Some(Region::Uk);
+            }
+            // +86 → China
+            if v.contains("+86") {
+                return Some(Region::Cn);
             }
             // +1 with 11 digits (country code 1 + 10 national digits) → US
             let bare_us_cc = digits.len() == 11 && digits.starts_with('1');
@@ -311,6 +326,27 @@ pub(super) fn regional_dorks(target: &Target) -> Vec<String> {
             ]
         }
         Region::Eu => Vec::new(),
+        Region::Cn => {
+            // Fires ONLY for a China-signalling seed (`.cn` host / `+86` phone), so
+            // AU/Western scans are unaffected. Registries + court judgments give
+            // entity due-diligence (gsxt = national enterprise credit register,
+            // wenshu = published court judgments); the platform dork covers
+            // social/encyclopedia presence (Weibo, Zhihu, Baidu Baike, Tieba).
+            let mut d = vec![format!(
+                "\"{v}\" site:gsxt.gov.cn OR site:wenshu.court.gov.cn OR site:gov.cn"
+            )];
+            // Person-pivot platform dork only for the Cn-detectable PERSON seeds
+            // (a `.cn` email / `+86` phone). A `.cn` domain/url is an entity seed,
+            // so it gets the registry dork alone. (FullName/Username carry no
+            // `.cn`/`+86` signal, so they never reach the Cn arm at all.)
+            if matches!(target.kind, TargetKind::Email | TargetKind::Phone) {
+                d.push(format!(
+                    "\"{v}\" site:weibo.com OR site:zhihu.com \
+                     OR site:baike.baidu.com OR site:tieba.baidu.com"
+                ));
+            }
+            d
+        }
     }
 }
 
