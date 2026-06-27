@@ -9,6 +9,17 @@ use crate::core::{
 
 use super::SRC;
 
+/// Expand a single ABR `AbnDetails`/`AcnDetails` record into entities.
+///
+/// Fans one registry hit out into the full graph the correlators expect: the
+/// `Organisation` (confidence trimmed if the ABN is cancelled), the `AbnAcn`
+/// identifier, the registered `Address`, an inline `Coordinates` anchor
+/// (postcode → suburb centroid, falling back to state) for the AU geo rules
+/// AU-052/053, up to five trading `BusinessName`s, and — when the entity type
+/// is an individual/sole-trader — a `Person`. A non-empty `Message` field (the
+/// ABR's "no match"/error marker) or a missing `EntityName` is a no-op, so a
+/// miss adds nothing. Every emitted entity is tagged `abr`/`country:AU`,
+/// consistent with the platform's AU focus.
 pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleResult) {
     if data
         .get("Message")
@@ -141,6 +152,15 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     }
 }
 
+/// Expand the ranked `MatchingNames` candidate list into entities.
+///
+/// Walks up to the top 10 `Names` entries, mapping each ABR match `Score`
+/// (0-100) onto an entity confidence band, and emits the `Organisation`,
+/// `AbnAcn`, registered `Address`, and an inline `Coordinates` anchor per
+/// candidate — the multi-result analogue of [`parse_abn_result`], scored a
+/// touch lower since a name match is fuzzier than an exact ABN lookup. Entries
+/// missing a name or ABN are skipped; an empty/absent `Names` array is a no-op.
+/// `query` is the original search term, recorded in evidence for provenance.
 pub(super) fn parse_name_results(
     data: &Value,
     query: &str,
@@ -235,6 +255,10 @@ pub(super) fn parse_name_results(
     }
 }
 
+/// Read `key` from a JSON object as an owned `String`, treating an empty
+/// string the same as a missing key (`None`). Centralises the "present and
+/// non-blank" check so every field extraction in this module shares one
+/// definition of "has a usable value".
 pub(super) fn str_field(v: &Value, key: &str) -> Option<String> {
     v.get(key)
         .and_then(|v| v.as_str())
