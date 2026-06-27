@@ -72,6 +72,7 @@ fn maps_known_brands_from_the_real_corpus_by_bare_domain_or_tag() {
     // Major Australian mega-breaches resolve to their sector.
     assert_eq!(source_sector("medibank.com.au"), Some("health"));
     assert_eq!(source_sector("optus.com.au"), Some("telecom"));
+    assert_eq!(source_sector("latitudefinancial.com.au"), Some("finance"));
     // Whole-token match only: a brand needle can't bleed across a longer token.
     assert_eq!(source_sector("zyngamania.com"), None);
     assert_eq!(source_sector("pureincubation.com"), None); // still declined

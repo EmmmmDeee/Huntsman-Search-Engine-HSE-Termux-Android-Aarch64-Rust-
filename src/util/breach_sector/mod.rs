@@ -186,6 +186,7 @@ const KNOWN_SOURCE_SECTORS: &[(&str, &str)] = &[
     ("robinhood", "finance"),
     ("revolut", "finance"),
     ("etoro", "finance"),
+    ("latitudefinancial", "finance"), // Latitude AU (2023, 14M — largest AU breach)
     // Travel / hospitality.
     ("expedia", "travel"),
     ("airbnb", "travel"),
