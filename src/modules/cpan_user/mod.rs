@@ -100,8 +100,8 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
         out.push(p);
     }
 
-    // Public email addresses (up to 3).
-    for email in author.email.iter().filter(|e| e.contains('@')).take(3) {
+    // Public email addresses — all of them (the author's own contact details).
+    for email in author.email.iter().filter(|e| e.contains('@')) {
         let mut em = Entity::new(EntityKind::Email, email.trim(), 0.80, scan_id);
         em.tag("cpan");
         em.add_evidence(
@@ -111,13 +111,8 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
         out.push(em);
     }
 
-    // Personal websites → URL + Domain (up to 3).
-    for site in author
-        .website
-        .iter()
-        .filter_map(|s| s.url.as_deref())
-        .take(3)
-    {
+    // Personal websites → URL + Domain — all of them (the author's own sites).
+    for site in author.website.iter().filter_map(|s| s.url.as_deref()) {
         for mut e in profile_kit::website_url_and_domain(site, 0.70, 0.62, scan_id) {
             e.tag("cpan");
             if e.kind == EntityKind::Domain {

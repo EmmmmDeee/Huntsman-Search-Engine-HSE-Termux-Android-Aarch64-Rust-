@@ -145,7 +145,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
     if let Some(about) = user.about.as_deref() {
         // Extract ALL emails and URLs from the bio (HN bios are HTML-escaped
         // free text; both often appear multiple times in developer profiles).
-        for email in crate::util::extract::emails(about).into_iter().take(5) {
+        for email in crate::util::extract::emails(about) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.78, scan_id);
             e.tag("hacker-news");
             e.tag("public-profile");
@@ -156,7 +156,7 @@ pub(super) fn build_entities(user: HnUser, scan_id: &str) -> Vec<Entity> {
             result.push(e);
         }
         let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in URL_RE.find_iter(about).take(5) {
+        for m in URL_RE.find_iter(about) {
             let link = m.as_str().trim_end_matches(['.', ',', ')']);
             if !seen_urls.insert(link.to_string()) {
                 continue;
@@ -227,7 +227,6 @@ async fn fetch_algolia_submissions(
 
     domains
         .into_iter()
-        .take(15)
         .map(|dom| {
             let mut d = Entity::new(EntityKind::Domain, &dom, 0.50, scan_id);
             d.tag("hn-submission");
