@@ -162,7 +162,7 @@ fn infer_state_from_division_maps_name_fragments() {
     assert_eq!(infer_state_from_division("Hobart"), Some("TAS"));
     assert_eq!(infer_state_from_division("Launceston"), Some("TAS"));
     assert_eq!(infer_state_from_division("Canberra"), Some("ACT"));
-    assert_eq!(infer_state_from_division("Darwin"), Some("ACT"));
+    assert_eq!(infer_state_from_division("Darwin"), Some("NT"));
     assert_eq!(infer_state_from_division("Wentworth"), None);
 }
 
