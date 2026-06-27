@@ -276,6 +276,7 @@ pub(super) async fn parse_oathnet_json(
                     svc,
                     pw,
                     Some(format!("Import: {svc} key from stealer data")),
+                    Some("import:oathnet".to_string()),
                 )
                 .await;
                 if valid {

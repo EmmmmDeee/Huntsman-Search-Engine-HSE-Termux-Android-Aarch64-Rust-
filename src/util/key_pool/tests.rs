@@ -673,3 +673,75 @@ fn key_tier_as_str_matches_snake_case_serde_wire_form() {
         assert_eq!(wire, serde_json::Value::String(want.to_string()));
     }
 }
+
+// ── Provenance gate ──────────────────────────────────────────────────────────
+// A discovered/harvested third-party key must NEVER be served for HSE's own
+// outbound auth (`next_key` / `merge_pool_into_env`), only retained for
+// reporting. Operator-owned keys (`discovered_by == None`) remain fully usable.
+
+/// A harvested (discovered) key — Active and otherwise usable — that must still
+/// be gated out of selection by its `discovered_by` provenance.
+fn harvested(value: &str, source: &str) -> KeyEntry {
+    let mut e = KeyEntry::new(value);
+    e.status = KeyStatus::Active;
+    e.discovered_by = Some(source.to_string());
+    e
+}
+
+#[test]
+fn is_operator_owned_tracks_discovered_by() {
+    assert!(KeyEntry::new("own").is_operator_owned());
+    assert!(!harvested("stolen", "oathnet").is_operator_owned());
+}
+
+#[test]
+fn next_key_never_serves_a_harvested_key() {
+    let pool = KeyPool::new();
+    // Pool holds ONLY a harvested key — Active and usable, yet not the operator's.
+    pool.add("shodan", harvested("stolen-victim-key", "oathnet"));
+    // It must never be selected for HSE's own outbound call.
+    assert_eq!(pool.next_key("shodan"), None);
+}
+
+#[test]
+fn next_key_serves_only_the_operator_owned_key_in_a_mixed_pool() {
+    let pool = KeyPool::new();
+    pool.add("shodan", harvested("stolen-victim-key", "oathnet"));
+    let mut own = KeyEntry::new("operator-key");
+    own.status = KeyStatus::Active;
+    pool.add("shodan", own);
+    // Every selection returns the operator's own key; the harvested entry is
+    // skipped entirely by the rotation, never served.
+    for _ in 0..8 {
+        assert_eq!(pool.next_key("shodan").as_deref(), Some("operator-key"));
+    }
+}
+
+#[test]
+fn merge_pool_into_env_skips_harvested_keys() {
+    let pool = KeyPool::new();
+    pool.add("shodan", harvested("stolen-victim-key", "oathnet"));
+    let mut map: HashMap<String, String> = HashMap::new();
+    merge_pool_into_env(&pool, &mut map);
+    // A harvested-only pool fills NO env var — the victim key never becomes a
+    // credential HSE would transmit.
+    assert!(
+        !map.values().any(|v| v == "stolen-victim-key"),
+        "harvested key must not be merged into the env: {map:?}"
+    );
+}
+
+#[test]
+fn merge_pool_into_env_uses_an_operator_owned_key() {
+    let pool = KeyPool::new();
+    let mut own = KeyEntry::new("operator-key");
+    own.status = KeyStatus::Active;
+    pool.add("shodan", own);
+    let mut map: HashMap<String, String> = HashMap::new();
+    merge_pool_into_env(&pool, &mut map);
+    // The operator's own key DOES fill its service env var.
+    assert!(
+        map.values().any(|v| v == "operator-key"),
+        "operator-owned key should be merged into the env: {map:?}"
+    );
+}

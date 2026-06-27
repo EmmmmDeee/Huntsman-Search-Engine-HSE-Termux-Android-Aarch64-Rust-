@@ -125,6 +125,28 @@ impl KeyEntry {
         self.environment.as_deref().unwrap_or("default")
     }
 
+    /// True iff this key was provisioned by the operator (env/config file,
+    /// `keys add`, or a rotation of such a key) rather than *discovered* by HSE
+    /// while scanning (harvested from a response body, breach/stealer dump,
+    /// SERP, or import file).
+    ///
+    /// SECURITY INVARIANT: only operator-owned keys may be selected for HSE's
+    /// own outbound API calls (see [`KeyPool::next_key`](super::pool::KeyPool::next_key)).
+    /// A *discovered* third-party key is retained for reporting and attribution,
+    /// but MUST NEVER be used to authenticate to the provider it was stolen
+    /// from — doing so would make HSE impersonate the breach victim, which the
+    /// operator policy in `util::found_keys` explicitly forbids ("identify every
+    /// other API key … I don't need the keys already used to query").
+    ///
+    /// `discovered_by` is the provenance marker and the fail-safe pivot: every
+    /// harvest ingress stamps it `Some(source)`; the operator ingress paths
+    /// leave it `None`. A new harvest path that forgets to stamp it is the only
+    /// way to regress this — so harvest sites set it at construction.
+    #[must_use]
+    pub fn is_operator_owned(&self) -> bool {
+        self.discovered_by.is_none()
+    }
+
     pub fn is_usable(&self) -> bool {
         match self.status {
             KeyStatus::Untested | KeyStatus::Active => true,

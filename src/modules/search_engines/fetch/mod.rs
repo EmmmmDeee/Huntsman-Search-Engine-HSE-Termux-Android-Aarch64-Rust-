@@ -461,6 +461,10 @@ fn scan_body_for_keys(body: &str) {
         {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.status = crate::util::key_pool::KeyStatus::Untested;
+            // Provenance: scraped from a result page, never the operator's own →
+            // gated out of `next_key` (reported, never reused for HSE's auth).
+            entry.discovered_by = Some("search_engines".into());
+            entry.discovered_at = Some(crate::core::entity::unix_now());
             entry.notes = Some("Search engine result page".into());
             pool.add(service, entry);
         }

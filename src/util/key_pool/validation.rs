@@ -10,7 +10,19 @@ use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
 /// If valid, marks it Active and stores it. If invalid, marks it Invalid
 /// but still stores it (won't be used by next_key).
 /// Returns true if the key is valid and was stored.
-pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<String>) -> bool {
+///
+/// `discovered_by` carries provenance: pass `Some(source)` for a key that came
+/// from imported/scanned data (not the operator's own config). A discovered key
+/// is stored and validated for reporting, but [`KeyEntry::is_operator_owned`]
+/// returns false for it so [`KeyPool::next_key`](super::pool::KeyPool::next_key)
+/// never serves it for HSE's own outbound auth. Pass `None` only for an
+/// operator-provisioned key.
+pub async fn add_and_validate(
+    service: &str,
+    key_value: &str,
+    notes: Option<String>,
+    discovered_by: Option<String>,
+) -> bool {
     let pool = super::global_pool();
 
     // Validate once: if the pool already holds this exact key with a settled
@@ -28,6 +40,13 @@ pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<Stri
 
     let mut entry = KeyEntry::new(key_value);
     entry.notes = notes;
+    // Provenance: a discovered key is validated and stored for reporting, but
+    // stamping `discovered_by` keeps it out of `next_key` so it is never reused
+    // as HSE's own credential.
+    if discovered_by.is_some() {
+        entry.discovered_at = Some(crate::core::entity::unix_now());
+        entry.discovered_by = discovered_by;
+    }
 
     if let Some(valid) = validate_key(service, key_value).await {
         if valid {

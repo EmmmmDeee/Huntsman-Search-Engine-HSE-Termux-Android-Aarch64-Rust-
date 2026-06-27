@@ -593,6 +593,10 @@ fn push_ssids(
 fn store_key_in_pool(service: &str, key: &str, notes: String) {
     let pool = crate::util::key_pool::global_pool();
     let mut entry = crate::util::key_pool::KeyEntry::new(key);
+    // Provenance: a key found inside an imported dump, never the operator's own
+    // → gated out of `next_key` (reported/attributed, never reused for HSE auth).
+    entry.discovered_by = Some("import".to_string());
+    entry.discovered_at = Some(crate::core::entity::unix_now());
     entry.notes = Some(notes);
     pool.add(service, entry);
 }
