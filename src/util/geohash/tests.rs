@@ -128,6 +128,27 @@ fn haversine_known_distance_sydney_to_melbourne() {
     assert_eq!(haversine_km(10.0, 20.0, 10.0, 20.0), 0.0);
 }
 
+#[test]
+fn haversine_antipodal_pairs_are_finite_not_nan() {
+    // Regression: at a near-antipodal pair the haversine `a` term can round ~1 ULP
+    // above 1.0 (e.g. (-87.5, 0, 87.5, 180) → a = 1.0000000000000002), and the old
+    // unclamped `(1.0 - a).sqrt()` was `sqrt(<0) = NaN`. The random metric test
+    // above never lands on the antipodal locus, so scan it explicitly: (lat, lon)
+    // and (-lat, lon+180) are exact antipodes, π·R ≈ 20015 km apart, never NaN.
+    let half_circ = std::f64::consts::PI * 6371.0;
+    for i in -90..=90 {
+        let lat = f64::from(i);
+        for lon in [0.0, 86.58, -120.0, 45.5, 179.9] {
+            let d = haversine_km(lat, lon, -lat, lon + 180.0);
+            assert!(d.is_finite(), "antipodal ({lat},{lon}) produced non-finite {d}");
+            assert!(
+                (d - half_circ).abs() < 1.0,
+                "antipodal distance {d} should be ~{half_circ} km"
+            );
+        }
+    }
+}
+
 /// Metric invariants of `haversine_km`, proved over a randomised sample of
 /// valid coordinates (seeded LCG — deterministic, no `rand` dependency). The
 /// geo-cluster correlators treat this as a distance, so it must stay a proper
