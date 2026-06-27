@@ -215,6 +215,24 @@ pub(crate) fn extract_au_location_fix(
     correlations: &[crate::core::correlator::Correlation],
     entities: &[crate::core::entity::Entity],
 ) -> serde_json::Value {
+    // Independent-source corroboration (computed regardless of which headline fix
+    // wins): how many DISTINCT methods agree on a locality, folding in the
+    // postcode-grain signals the synergy fix can't see. Attached to whichever fix
+    // is returned so the JSON surface always reports the corroboration strength.
+    let corroboration = crate::core::correlator::au_location_corroboration(entities).map(|c| {
+        json!({
+            "lat": c.lat,
+            "lon": c.lon,
+            "radius_km": c.radius_km,
+            "state": c.state,
+            "locality": c.locality,
+            "independent_classes": c.independent_classes,
+            "signal_count": c.signal_count,
+            "classes": c.class_names,
+            "confidence": c.confidence,
+        })
+    });
+
     // Primary: the AU-059 multi-source cross-class synergy fix (strongest). The
     // structured fields are recomputed from the entities, never parsed from prose.
     let best = correlations
@@ -225,42 +243,50 @@ pub(crate) fn extract_au_location_fix(
                 .partial_cmp(&b.rank)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-    if let Some(c) = best
-        && let Some(fix) = crate::core::correlator::au059_synergy_fix(entities)
+    let mut fix = if let Some(c) = best
+        && let Some(synergy) = crate::core::correlator::au059_synergy_fix(entities)
     {
-        return json!({
-            "lat": fix.lat,
-            "lon": fix.lon,
-            "radius_km": fix.radius_km,
-            "geohash": fix.geohash,
-            "state": fix.state,
-            "synergy_confidence": fix.synergy_confidence,
+        json!({
+            "lat": synergy.lat,
+            "lon": synergy.lon,
+            "radius_km": synergy.radius_km,
+            "geohash": synergy.geohash,
+            "state": synergy.state,
+            "synergy_confidence": synergy.synergy_confidence,
             "severity": c.severity.as_canonical(),
             "rank": c.rank,
-            "source_count": fix.count,
-            "class_count": fix.class_names.len(),
+            "source_count": synergy.count,
+            "class_count": synergy.class_names.len(),
             "rule_id": "AU-059",
-        });
-    }
+        })
+    } else {
+        // Fallback: the single-signal best-location estimate, so the web/JSON
+        // surface carries a headline fix whenever ANY AU location signal exists —
+        // not only the ≥2-class synergy case. Carries the precision radius, nearest
+        // locality, and the basis it was derived from. `Null` only when there is no
+        // AU location at all.
+        match crate::core::correlator::best_au_location_estimate(entities) {
+            Some(est) => json!({
+                "lat": est.lat,
+                "lon": est.lon,
+                "radius_km": est.radius_km,
+                "geohash": est.geohash,
+                "state": est.state,
+                "locality": est.locality,
+                "confidence": est.confidence,
+                "basis": est.basis,
+                "source": "single-signal",
+            }),
+            None => serde_json::Value::Null,
+        }
+    };
 
-    // Fallback: the single-signal best-location estimate, so the web/JSON surface
-    // carries a headline fix whenever ANY AU location signal exists — not only the
-    // ≥2-class synergy case. Carries the precision radius, nearest locality, and
-    // the basis it was derived from. `Null` only when there is no AU location at all.
-    match crate::core::correlator::best_au_location_estimate(entities) {
-        Some(est) => json!({
-            "lat": est.lat,
-            "lon": est.lon,
-            "radius_km": est.radius_km,
-            "geohash": est.geohash,
-            "state": est.state,
-            "locality": est.locality,
-            "confidence": est.confidence,
-            "basis": est.basis,
-            "source": "single-signal",
-        }),
-        None => serde_json::Value::Null,
+    if let Some(obj) = fix.as_object_mut()
+        && let Some(corr) = corroboration
+    {
+        obj.insert("corroboration".to_string(), corr);
     }
+    fix
 }
 
 pub async fn scan_export_gexf(

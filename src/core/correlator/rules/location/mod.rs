@@ -770,6 +770,177 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
     None
 }
 
+/// The most-specific orthogonal [`GeoSourceClass`] an entity's corroborating
+/// sources map to — preferring a recognised class over the [`GeoSourceClass::Other`]
+/// fallback, so a register postcode counts as `Directory`/`Electoral`/… (a real
+/// independent method) rather than collapsing to `Other`. Deterministic: scans the
+/// sorted source set and keeps the first non-`Other` class it meets.
+fn best_geo_class(e: &Entity) -> GeoSourceClass {
+    let mut sources: Vec<&str> = e.corroborating_sources().into_iter().collect();
+    sources.sort_unstable();
+    sources
+        .iter()
+        .map(|s| geo_source_class(s))
+        .find(|c| *c != GeoSourceClass::Other)
+        .unwrap_or(GeoSourceClass::Other)
+}
+
+/// A multi-source Australian **geolocation corroboration** — the locality the most
+/// *independent kinds of source* agree on, and how strongly. The output of
+/// [`au_location_corroboration`].
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct LocationCorroboration {
+    pub lat: f64,
+    pub lon: f64,
+    /// Spread (km) of the agreeing signals around the centroid.
+    pub radius_km: f64,
+    pub state: &'static str,
+    /// Nearest AU population centre to the centroid (offline reverse geocode).
+    pub locality: Option<String>,
+    /// Distinct orthogonal source classes converging on this locality — the
+    /// independence count that makes the fix trustworthy (`1` = single-source).
+    pub independent_classes: usize,
+    /// Total agreeing signals (entities) in the cluster.
+    pub signal_count: usize,
+    /// Names of the converging classes, sorted — the human-readable basis.
+    pub class_names: Vec<&'static str>,
+    /// Corroboration-weighted confidence: `1 − 0.55^independent_classes`, so each
+    /// extra independent method lifts trust (1→0.45, 2→0.70, 3→0.83, 4→0.91).
+    pub confidence: f64,
+}
+
+/// Distance (km) within which two AU **locality-grain** signals are treated as the
+/// same area of operation — generous enough to group the suburbs/towns of one
+/// region (e.g. the Sunshine Coast postcodes 4552 & 4557, ~25 km apart) yet tight
+/// enough to keep distinct capitals apart.
+const SAME_AREA_KM: f64 = 60.0;
+
+/// Score how strongly **independent** Australian location signals corroborate one
+/// locality — the Interpol-grade "how many different methods agree, and where"
+/// geolocation question, over the BROAD signal set (not just GPS).
+///
+/// Where [`au059_synergy_fix`] requires ≥2 person-anchored `Coordinates` (a GPS /
+/// Wi-Fi / geocode fix), this also folds in the **postcode-grain** signals that the
+/// *majority* of Australian entities actually carry — a breach/register postcode, a
+/// people-finder suburb, a name-matched street address — each resolved offline to a
+/// centroid ([`crate::util::city_coords::city_coords`]) and classed by its
+/// orthogonal [`GeoSourceClass`]. It then finds the locality (within
+/// [`SAME_AREA_KM`]) that the most *distinct* source classes agree on and reports
+/// that independence count, so a subject located only by postcodes — no GPS at all
+/// — still gets a corroborated, trust-scored fix instead of a bare single-source
+/// guess. `Coordinates` are excluded from the postcode pass (their lat/lon digits
+/// would be misread as a postcode); `platform-infra` entities never contribute.
+///
+/// Pure, offline and deterministic. `None` only when the scan holds no resolvable
+/// AU locality signal at all.
+pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationCorroboration> {
+    use std::collections::HashSet;
+
+    // One locality-grain signal per entity: a precise AU coordinate, else a
+    // postcode/address centroid. Each carries its orthogonal source class.
+    struct Sig {
+        lat: f64,
+        lon: f64,
+        class: GeoSourceClass,
+        uid: String,
+    }
+    let mut sigs: Vec<Sig> = Vec::new();
+
+    for (e, (lat, lon)) in person_anchored_coords(entities)
+        .into_iter()
+        .filter(|(e, ll)| is_australian_coord(e, *ll))
+    {
+        sigs.push(Sig {
+            lat,
+            lon,
+            class: best_geo_class(e),
+            uid: e.uid.clone(),
+        });
+    }
+    for e in entities
+        .iter()
+        .filter(|e| e.kind != EntityKind::Coordinates && !e.has_tag("platform-infra"))
+    {
+        let Some(pc) = crate::core::geo_family::au_postcode(e) else {
+            continue;
+        };
+        let Some((lat, lon)) = crate::util::city_coords::city_coords(&pc) else {
+            continue;
+        };
+        sigs.push(Sig {
+            lat,
+            lon,
+            class: best_geo_class(e),
+            uid: e.uid.clone(),
+        });
+    }
+    if sigs.is_empty() {
+        return None;
+    }
+
+    // For each signal, the indices of every signal within SAME_AREA_KM of it.
+    let members: Vec<Vec<usize>> = sigs
+        .iter()
+        .map(|c| {
+            sigs.iter()
+                .enumerate()
+                .filter(|(_, s)| {
+                    crate::util::geo::haversine_km(c.lat, c.lon, s.lat, s.lon) <= SAME_AREA_KM
+                })
+                .map(|(i, _)| i)
+                .collect()
+        })
+        .collect();
+    let distinct_classes = |idxs: &[usize]| -> usize {
+        idxs.iter()
+            .map(|&i| sigs[i].class)
+            .collect::<HashSet<_>>()
+            .len()
+    };
+
+    // The locality the most distinct classes agree on (then the most signals);
+    // deterministic UID tie-break.
+    let best = (0..sigs.len()).max_by(|&a, &b| {
+        distinct_classes(&members[a])
+            .cmp(&distinct_classes(&members[b]))
+            .then(members[a].len().cmp(&members[b].len()))
+            .then_with(|| sigs[b].uid.cmp(&sigs[a].uid))
+    })?;
+    let cluster = &members[best];
+
+    // Centroid (mean) of the agreeing signals; spread = farthest member from it.
+    let n = cluster.len() as f64;
+    let lat = cluster.iter().map(|&i| sigs[i].lat).sum::<f64>() / n;
+    let lon = cluster.iter().map(|&i| sigs[i].lon).sum::<f64>() / n;
+    let radius_km = cluster
+        .iter()
+        .map(|&i| crate::util::geo::haversine_km(lat, lon, sigs[i].lat, sigs[i].lon))
+        .fold(0.0_f64, f64::max)
+        .max(8.0); // never claim sub-postcode precision from a single signal
+
+    let mut classes: Vec<GeoSourceClass> = cluster
+        .iter()
+        .map(|&i| sigs[i].class)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    let independent_classes = classes.len();
+    classes.sort_unstable_by_key(geo_class_name);
+    let class_names: Vec<&'static str> = classes.iter().map(geo_class_name).collect();
+
+    Some(LocationCorroboration {
+        lat,
+        lon,
+        radius_km,
+        state: crate::util::geo::au_state_for_coords(lat, lon).unwrap_or("AU"),
+        locality: crate::util::geo::nearest_au_locality(lat, lon).map(|(n, _, _)| n.to_string()),
+        independent_classes,
+        signal_count: cluster.len(),
+        class_names,
+        confidence: 1.0 - 0.55_f64.powi(independent_classes as i32),
+    })
+}
+
 pub(in crate::core::correlator) fn rule_au_059_cross_seed_geo_synergy(
     entities: &[Entity],
     scan_id: &str,

@@ -3155,6 +3155,76 @@ fn best_location_excludes_a_platform_infra_tagged_landline() {
 }
 
 #[test]
+fn location_corroboration_counts_independent_classes() {
+    use super::au_location_corroboration;
+    // Two INDEPENDENT methods (electoral roll + unclaimed-money directory) place
+    // the subject's circle at the same postcode — corroboration, not a lone guess.
+    let mut a = Entity::new(EntityKind::Person, "A Person", 0.6, "s");
+    a.add_evidence(Evidence::new("au_electoral", "roll").with_attr("postcode", "4000"));
+    let mut b = Entity::new(EntityKind::Person, "B Person", 0.6, "s");
+    b.add_evidence(Evidence::new("qld_unclaimed", "register").with_attr("postcode", "4000"));
+
+    let c = au_location_corroboration(&[a, b]).expect("two AU postcode signals");
+    assert_eq!(
+        c.independent_classes, 2,
+        "electoral + directory are independent"
+    );
+    assert_eq!(c.signal_count, 2);
+    assert_eq!(c.state, "QLD");
+    assert!(
+        c.confidence > 0.65 && c.confidence < 0.75,
+        "2 independent classes ≈ 0.70, got {}",
+        c.confidence
+    );
+}
+
+#[test]
+fn location_corroboration_same_source_class_is_single_source() {
+    use super::au_location_corroboration;
+    // Two rows from the SAME breach source (one method) are NOT independent
+    // corroboration, even at the same postcode — independence counts CLASSES.
+    let mut a = Entity::new(EntityKind::Person, "A Person", 0.6, "s");
+    a.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
+    let mut b = Entity::new(EntityKind::Person, "B Person", 0.6, "s");
+    b.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("postcode", "4000"));
+
+    let c = au_location_corroboration(&[a, b]).unwrap();
+    assert_eq!(c.independent_classes, 1, "one breach source = one method");
+    assert!(
+        c.confidence < 0.5,
+        "single-source stays low, got {}",
+        c.confidence
+    );
+}
+
+#[test]
+fn location_corroboration_prefers_the_better_corroborated_locality() {
+    use super::au_location_corroboration;
+    // Two independent classes agree on Brisbane (4000); a lone Perth (6000) signal
+    // ~3600 km away. The better-corroborated locality must win.
+    let mut a = Entity::new(EntityKind::Person, "A Person", 0.6, "s");
+    a.add_evidence(Evidence::new("au_electoral", "roll").with_attr("postcode", "4000"));
+    let mut b = Entity::new(EntityKind::Person, "B Person", 0.6, "s");
+    b.add_evidence(Evidence::new("qld_unclaimed", "register").with_attr("postcode", "4000"));
+    let mut perth = Entity::new(EntityKind::Person, "C Person", 0.6, "s");
+    perth.add_evidence(Evidence::new("au_people", "directory").with_attr("postcode", "6000"));
+
+    let c = au_location_corroboration(&[a, b, perth]).unwrap();
+    assert_eq!(
+        c.state, "QLD",
+        "the 2-class Brisbane cluster beats the lone Perth signal"
+    );
+    assert_eq!(c.independent_classes, 2);
+}
+
+#[test]
+fn location_corroboration_none_without_any_au_signal() {
+    use super::au_location_corroboration;
+    let e = Entity::new(EntityKind::Email, "x@y.com", 0.8, "s");
+    assert!(au_location_corroboration(&[e]).is_none());
+}
+
+#[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
     let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
