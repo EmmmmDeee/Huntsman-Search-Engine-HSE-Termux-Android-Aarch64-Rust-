@@ -6,6 +6,18 @@ use hickory_resolver::{
     net::runtime::TokioRuntimeProvider,
 };
 
+/// The process-wide DNS resolver — a lazily-initialised, Cloudflare-backed
+/// [`TokioResolver`] shared by every DNS-issuing module (`dns_intel`, `geo_intel`,
+/// the DNSBL checks, …) so they reuse one connection pool and cache instead of
+/// each standing up its own.
+///
+/// Tuned for **bounded latency over completeness** (the platform's "a slow or
+/// dead service degrades the scan, never freezes it" rule): a 2-second timeout
+/// with a single attempt so a wedged query fails fast, and an `Ipv4thenIpv6`
+/// strategy so a v6-less host doesn't pay the failover tax on every lookup — see
+/// the inline notes for the observed wedge this prevents. Initialised once via
+/// [`OnceLock`]; the hardcoded config is infallible by construction.
+#[must_use]
 pub fn shared_resolver() -> &'static TokioResolver {
     static RESOLVER: OnceLock<TokioResolver> = OnceLock::new();
     RESOLVER.get_or_init(|| {

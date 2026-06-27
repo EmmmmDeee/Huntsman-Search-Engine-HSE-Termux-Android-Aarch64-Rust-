@@ -1,15 +1,28 @@
 use serde::{Deserialize, Serialize};
 
+/// Static metadata for one keyed external provider — the single registry the
+/// key-management surface (validation probes, the key pool, ROI accounting) reads
+/// so a provider's env var, test endpoint, key placement and rate-limit window are
+/// declared in exactly one place and can't drift between consumers.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceDef {
+    /// Canonical lowercase service name (the lookup key for [`find_service`]).
     pub name: &'static str,
+    /// Environment variable that supplies this service's API key.
     pub env_var: &'static str,
+    /// Coarse grouping (`breach`, `infra`, `geo`, …) for reporting/ROI rollups.
     pub category: &'static str,
+    /// A cheap endpoint a key-validation probe can hit to check the key works.
     pub test_url: &'static str,
+    /// Where the key goes on a request (query param vs header) — see [`KeyPlacement`].
     pub key_header: KeyPlacement,
+    /// Seconds to back off after a rate-limit response from this service.
     pub rate_limit_reset_secs: u64,
 }
 
+/// The rate-limit back-off window (seconds) for `service`, or a conservative
+/// `3600` default when the name is not a registered provider ([`find_service`]).
+#[must_use]
 pub fn rate_limit_reset(service: &str) -> u64 {
     find_service(service).map_or(3600, |d| d.rate_limit_reset_secs)
 }
@@ -352,10 +365,16 @@ static SERVICE_DEFS: &[ServiceDef] = &[
     },
 ];
 
+/// The full static registry of keyed-provider definitions — the canonical list
+/// every key-management consumer iterates.
+#[must_use]
 pub fn service_defs() -> &'static [ServiceDef] {
     SERVICE_DEFS
 }
 
+/// Look up a provider's [`ServiceDef`] by name, case-insensitively, or `None` when
+/// it is not a registered keyed provider.
+#[must_use]
 pub fn find_service(name: &str) -> Option<&'static ServiceDef> {
     let lower = name.to_lowercase();
     SERVICE_DEFS.iter().find(|s| s.name == lower)
