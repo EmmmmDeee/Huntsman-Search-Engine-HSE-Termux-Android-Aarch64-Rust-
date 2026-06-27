@@ -96,7 +96,7 @@ impl Module for GithubCodeSearch {
             return Ok(ModuleResult::new());
         }
 
-        let token = ctx.key_opt("GITHUB_TOKEN");
+        let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
         let url = format!(
             "{API}/search/code?q={}&per_page=10",
             crate::util::http::urlencode(seed),
