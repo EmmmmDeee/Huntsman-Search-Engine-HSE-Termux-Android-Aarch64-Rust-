@@ -45,6 +45,10 @@ pub const BROKERS: &[DataBroker] = &[
         name: "Intelius",
     },
     DataBroker {
+        domain: "locatefamily.com",
+        name: "LocateFamily",
+    },
+    DataBroker {
         domain: "mylife.com",
         name: "MyLife",
     },
@@ -83,6 +87,10 @@ pub const BROKERS: &[DataBroker] = &[
     DataBroker {
         domain: "whitepages.com",
         name: "Whitepages",
+    },
+    DataBroker {
+        domain: "whitepages.com.au",
+        name: "White Pages Australia",
     },
     DataBroker {
         domain: "zabasearch.com",

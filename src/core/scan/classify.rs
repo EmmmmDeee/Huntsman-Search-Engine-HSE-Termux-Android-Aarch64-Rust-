@@ -297,6 +297,7 @@ const MEGA_DOMAINS: &[&str] = &[
     "idcrawl.com",
     "instantcheckmate.com",
     "intelius.com",
+    "locatefamily.com",
     "mylife.com",
     "nuwber.com",
     "peekyou.com",
@@ -314,6 +315,7 @@ const MEGA_DOMAINS: &[&str] = &[
     "usphonebook.com",
     "ussearch.com",
     "whitepages.com",
+    "whitepages.com.au",
     "zabasearch.com",
     "zoominfo.com",
     // Email providers (freemail) — never the subject's own infrastructure, so a
