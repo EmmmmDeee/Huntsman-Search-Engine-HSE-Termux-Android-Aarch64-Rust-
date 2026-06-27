@@ -21,6 +21,15 @@ const SRC: &str = "acma_rrl";
 
 pub struct AcmaRrl;
 
+/// Scrape the ACMA RRL search-results table into
+/// `(licensee_name, licence_number, service)` rows.
+///
+/// A deliberately dependency-free HTML walk (no scraper/html5ever crate, in
+/// keeping with the lean Termux build): it splits on `<tr>`/`</tr>`, pulls each
+/// `<td>` via [`strip_html_tags`], and keeps rows with at least three cells.
+/// The header row (`Licensee`) and rows missing a name or licence number are
+/// dropped, so the result is data-only. Pure given `html` — unit-testable
+/// against a captured response without a network round-trip.
 pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
     // Returns Vec<(licensee_name, licence_number, service)>
     let mut results = Vec::new();
@@ -62,6 +71,13 @@ pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
     results
 }
 
+/// Pull the licensee's ABN out of the RRL detail HTML, if present.
+///
+/// Finds the `ABN:</…>` label cell, takes the digits from the following table
+/// cell, and returns them only when exactly 11 — the strict ABN length — so a
+/// stray or malformed number is rejected rather than emitted as a bogus
+/// `AbnAcn`. `None` when no ABN label is present (the common case for an
+/// individual licensee).
 pub(super) fn extract_abn_from_html(html: &str) -> Option<String> {
     let marker = "ABN:</";
     let pos = html.find(marker)?;
@@ -72,6 +88,11 @@ pub(super) fn extract_abn_from_html(html: &str) -> Option<String> {
     if abn.len() == 11 { Some(abn) } else { None }
 }
 
+/// Remove HTML tags from a table cell, returning its visible text.
+///
+/// A single-pass character filter that drops everything between `<` and `>`.
+/// Sufficient for the flat, well-formed RRL cells (no nested-bracket or
+/// entity-decoding concerns here); the caller trims the result.
 fn strip_html_tags(html: &str) -> String {
     let mut out = String::with_capacity(html.len());
     let mut in_tag = false;
