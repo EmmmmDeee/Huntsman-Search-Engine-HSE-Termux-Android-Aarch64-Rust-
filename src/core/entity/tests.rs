@@ -614,6 +614,52 @@ fn normalise_email_strips_invisible_and_control_noise() {
 }
 
 #[test]
+fn normalise_email_strips_surrounding_quotes() {
+    // A seed/CSV/shell-quoted address (`"matt@x.com`, `'matt@x.com'`) must fold to
+    // the clean address — a stray quote otherwise forks the UID and poisons every
+    // derived entity (the real `"matthewdiegmann@gmail.com` contamination).
+    let clean = "matthewdiegmann@gmail.com";
+    for dirty in [
+        "\"matthewdiegmann@gmail.com",
+        "\"matthewdiegmann@gmail.com\"",
+        "'matthewdiegmann@gmail.com'",
+        "`matthewdiegmann@gmail.com`",
+    ] {
+        assert_eq!(
+            normalise(&EntityKind::Email, dirty),
+            clean,
+            "{dirty:?} must fold to the clean address"
+        );
+        assert_eq!(
+            Entity::new(EntityKind::Email, dirty, 0.9, "s").uid,
+            Entity::new(EntityKind::Email, clean, 0.9, "s").uid,
+            "{dirty:?} must share the clean UID"
+        );
+    }
+    // Idempotent + no false positives on a clean address.
+    assert_eq!(normalise(&EntityKind::Email, clean), clean);
+}
+
+#[test]
+fn normalise_username_strips_surrounding_quotes_and_at_sigil() {
+    // A quoted handle sheds the quote AND the `@` sigil, in either order, so the
+    // contaminated `"matthewdiegmann` folds to the clean derived username.
+    let clean = "matthewdiegmann";
+    for dirty in [
+        "\"matthewdiegmann",
+        "\"matthewdiegmann\"",
+        "'@matthewdiegmann'",
+        "@matthewdiegmann",
+    ] {
+        assert_eq!(
+            normalise(&EntityKind::Username, dirty),
+            clean,
+            "{dirty:?} must fold to the clean handle"
+        );
+    }
+}
+
+#[test]
 fn normalise_phone_strips_formatting() {
     let r = normalise(&EntityKind::Phone, "+61 04 1234 5678");
     assert_eq!(r, "+61041234567 8".replace(' ', ""));

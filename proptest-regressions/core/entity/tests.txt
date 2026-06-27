@@ -6,3 +6,4 @@
 # everyone who runs the test benefits from these saved cases.
 cc 8e66fe58e3fb5fd8f3b269cbfc6dde715da9acb81851bf03030703234d5d5657 # shrinks to kind = Domain, v = "\u{e000}\t."
 cc 7449707cce99d428d52bfc7ed48a4fb3e740c765b526dca8c3b0955846a1586b # shrinks to kind = Domain, v = "\u{feff}\u{b}¡"
+cc 0f2bb9f3e994d22ce9dcb4fb0aa7286cf0b8e049e564448ef4ae5f52129c6395 # shrinks to kind = Email, v = "A\"\u{b}A"

@@ -1036,9 +1036,9 @@ fn strip_format_noise(s: &str) -> std::borrow::Cow<'_, str> {
 
 /// Normalise a value for a given kind.
 ///
-/// - Email → lowercase, trim
+/// - Email → lowercase, trim, strip surrounding quotes
 /// - Domain → lowercase, trim, strip trailing dot
-/// - Username → lowercase, trim
+/// - Username → lowercase, trim, strip surrounding quotes + leading `@`
 /// - IpAddress → trim
 /// - Phone → strip non-digits (keep leading +)
 /// - Everything else → trim
@@ -1064,11 +1064,21 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             let cut = cleaned
                 .find(|c: char| c == '\\' || c.is_whitespace() || c.is_control())
                 .unwrap_or(cleaned.len());
+            // Strip surrounding quote characters an exporter or shell left on the
+            // value (`"matt@x.com"`, `'matt@x.com`, a CSV `""`-escaped quote that
+            // leaked into the seed): a quote is never part of a real address as HSE
+            // handles them, so a leading/trailing one only forks the UID and
+            // poisons every entity derived from the value (a `"matt@x.com` seed
+            // spawned a `"matt` username that could never correlate with the clean
+            // `matt`). Done AFTER the cut so a quote the cut exposes at the new end
+            // (`a"<ctrl>b` → `a"` → `a`) is still removed — keeping normalise a
+            // fixed point. Clean addresses carry none, so their UID is unchanged.
+            let head = cleaned[..cut].trim_matches(['"', '\'', '`']);
             // Total Unicode case-fold for dedup. `str::to_lowercase` maps every
             // char through `char::to_lowercase`, so a value whose only capital is
             // non-ASCII (`Ölaf`, a Cyrillic/Greek handle, Turkish `İ`) folds the
             // same as its all-caps spelling — they must share a UID.
-            cleaned[..cut].to_lowercase()
+            head.to_lowercase()
         }
         EntityKind::Username => {
             // Same total Unicode case-fold as Email, plus stripping a leading `@`
@@ -1081,7 +1091,14 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // leading `@` from the sigil strip.
             strip_format_noise(value.trim())
                 .trim()
-                .trim_start_matches('@')
+                // Strip a leading run of the `@` handle sigil and any surrounding
+                // quote contamination TOGETHER, so an interleaved `@"@handle` or a
+                // quoted `'@handle` collapses to `handle` in one pass — a fixed
+                // point. (A two-step "quotes then `@`" strip left a quote/sigil for
+                // the next normalise to find, breaking idempotency.) Trailing
+                // quotes are stripped too; a final trim catches any exposed space.
+                .trim_start_matches(['@', '"', '\'', '`'])
+                .trim_end_matches(['"', '\'', '`'])
                 .trim()
                 .to_lowercase()
         }
