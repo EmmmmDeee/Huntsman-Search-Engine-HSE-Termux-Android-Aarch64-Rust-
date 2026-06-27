@@ -343,6 +343,11 @@ pub async fn scan_debug_bundle(
     }
 }
 
+/// Wrap an export `body` as a browser download: a `200` with the given
+/// `content_type` and a `Content-Disposition: attachment` whose filename is
+/// `hse-<ext>-<short-scan-id>.<ext>` (id truncated to 12 chars). Shared by the
+/// CSV / JSON / GEXF / debug-bundle endpoints so every download names itself the
+/// same way.
 pub(crate) fn download_response(
     body: String,
     content_type: &'static str,
@@ -364,6 +369,11 @@ pub(crate) fn download_response(
     resp
 }
 
+/// RFC-4180 CSV field escaping with **formula-injection defanging**: a field
+/// whose first byte is `= + - @ TAB CR` is prefixed with a `'` so Excel /
+/// LibreOffice don't execute it as a formula on open (OWASP CSV-injection), then
+/// any field containing `, " \n \r` is double-quoted with embedded quotes doubled.
+/// Every cell in an exported scan CSV passes through this.
 pub(crate) fn csv_escape(s: &str) -> String {
     // Formula-injection neutralization: a leading =/+/-/@/CR/TAB causes
     // Excel and LibreOffice to interpret the cell as a formula on file

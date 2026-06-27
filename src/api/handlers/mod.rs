@@ -42,6 +42,9 @@ pub(crate) fn validated_target(kind: TargetKind, value: String) -> Result<Target
     Ok(target)
 }
 
+/// A `500` with a `{ "error": <msg> }` body — the server-error sibling of
+/// [`bad_request`] / [`not_found`], for a storage or internal failure. One shape
+/// for every 500 so API consumers parse errors uniformly.
 pub(crate) fn internal_error(err: &impl ToString) -> axum::response::Response {
     (
         StatusCode::INTERNAL_SERVER_ERROR,
@@ -50,6 +53,8 @@ pub(crate) fn internal_error(err: &impl ToString) -> axum::response::Response {
         .into_response()
 }
 
+/// A `404` with a `{ "error": "not found" }` body — returned when a scan / entity
+/// / sub-resource id doesn't exist, in the shared error shape.
 pub(crate) fn not_found() -> axum::response::Response {
     (StatusCode::NOT_FOUND, Json(json!({ "error": "not found" }))).into_response()
 }
@@ -72,6 +77,9 @@ pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
     (StatusCode::FORBIDDEN, Json(json!({ "error": msg.into() }))).into_response()
 }
 
+/// The canonical list envelope every list endpoint returns:
+/// `{ "<key>": [items…], "count": <n> }`. One shape so the SPA and CLI parse
+/// every collection response (entities, relations, correlations, …) identically.
 pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response::Response {
     let n = items.len();
     let mut map = serde_json::Map::new();
@@ -83,6 +91,14 @@ pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response:
     (StatusCode::OK, Json(Value::Object(map))).into_response()
 }
 
+/// Dispatch a created `scan` to run on the async runtime — the HTTP layer's
+/// fire-and-forget hand-off to the engine (the request returns `202` immediately).
+///
+/// Wires up everything the background run needs: a [`crate::core::cancel::CancelHandle`]
+/// registered so `POST /scans/{id}/cancel` can stop it, a per-scan HTTP client
+/// stamped with the scan id (`x-huntsman-trace`) so outbound calls correlate in
+/// upstream logs, the shared proxy pool, and the scan-concurrency semaphore that
+/// bounds how many scans run at once on a low-RAM device.
 pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, target: Target) {
     let sid = scan.id.clone();
     let cancel = crate::core::cancel::CancelHandle::new();
