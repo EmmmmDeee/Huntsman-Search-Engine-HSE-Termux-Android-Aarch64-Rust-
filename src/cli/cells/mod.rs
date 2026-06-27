@@ -100,7 +100,9 @@ fn cmd_status() -> Result<()> {
             .unwrap_or_default()
             .as_secs() as i64)
             .saturating_sub(rec.imported_at);
-        let age_str = format_age(age_secs as u64);
+        // `.max(0)` so a future `imported_at` (clock skew) doesn't wrap the
+        // i64→u64 cast into a ~18-quintillion-second "age".
+        let age_str = format_age(age_secs.max(0) as u64);
         println!("\nLast import:");
         println!("  File:     {}", rec.source_file);
         println!("  Rows:     {}", rec.row_count);
@@ -266,7 +268,7 @@ fn import_from_file(path: &str, mcc_hint: Option<i64>) -> Result<()> {
         return Err(Error::Other(format!("File not found: {path}")));
     }
 
-    let is_gz = path.ends_with(".gz");
+    let is_gz = path.to_ascii_lowercase().ends_with(".gz");
 
     let conn = cell_db::open_rw().map_err(|e| Error::Other(e.to_string()))?;
 

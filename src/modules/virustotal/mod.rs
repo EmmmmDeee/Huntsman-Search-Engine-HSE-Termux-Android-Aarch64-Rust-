@@ -64,12 +64,18 @@ fn build_entity(target: &Target, attrs: &VtAttributes, scan_id: &str) -> Entity 
     let stats = attrs.last_analysis_stats.as_ref();
     let malicious = stats.map_or(0, |s| s.malicious);
     let suspicious = stats.map_or(0, |s| s.suspicious);
-    let total = stats.map_or(0, |s| {
-        s.malicious + s.suspicious + s.undetected + s.harmless
+    // Widen to u64 + saturating_add: a malformed/hostile response with huge
+    // per-class counts would otherwise overflow the u32 sum (debug panic; release
+    // wrap-to-tiny → ratio > 1.0).
+    let total: u64 = stats.map_or(0, |s| {
+        u64::from(s.malicious)
+            .saturating_add(u64::from(s.suspicious))
+            .saturating_add(u64::from(s.undetected))
+            .saturating_add(u64::from(s.harmless))
     });
 
     let confidence = if total > 0 {
-        0.50 + (malicious as f64 / total as f64) * 0.45
+        0.50 + (f64::from(malicious) / total as f64) * 0.45
     } else {
         0.50
     };

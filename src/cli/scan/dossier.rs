@@ -21,7 +21,7 @@ pub(super) fn print_dossier(
     println!("╚══════════════════════════════════════════════════════════════╝");
     println!();
     println!("  Target:    {kind} = {value}");
-    println!("  Scan ID:   {}", &scan.id[..16]);
+    println!("  Scan ID:   {}", &scan.id[..scan.id.len().min(16)]);
     println!("  Status:    {}", scan.status.as_str());
     println!("  Entities:  {}", scan.entity_count);
     println!(

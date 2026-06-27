@@ -16,21 +16,64 @@ pub fn pool_path() -> PathBuf {
 
 pub fn load_pool() -> KeyPool {
     let path = pool_path();
-    match std::fs::read_to_string(&path) {
-        Ok(content) => match serde_json::from_str::<PoolData>(&content) {
-            Ok(data) => KeyPool::from_data(data),
-            Err(e) => {
-                tracing::warn!(
-                    "key pool at {} is corrupted ({e}); backing up and starting fresh",
-                    path.display()
-                );
-                let backup = path.with_extension("json.bak");
-                let _ = std::fs::rename(&path, &backup);
-                KeyPool::new()
-            }
-        },
-        Err(_) => KeyPool::new(),
+    let content = match std::fs::read_to_string(&path) {
+        Ok(c) => c,
+        Err(_) => return KeyPool::new(),
+    };
+
+    // Strict parse first — the overwhelmingly common clean case.
+    if let Ok(data) = serde_json::from_str::<PoolData>(&content) {
+        return KeyPool::from_data(data);
     }
+
+    // Lenient salvage: a SINGLE unreadable entry (e.g. an unknown `status` enum
+    // written by a newer build and then read by a downgrade, or a partially-
+    // written record) must NOT discard EVERY harvested key. Re-parse the services
+    // map with each entry as raw JSON, deserialize the entries independently, and
+    // keep the good ones.
+    if let Ok(raw) =
+        serde_json::from_str::<std::collections::HashMap<String, Vec<serde_json::Value>>>(&content)
+    {
+        let mut services: std::collections::HashMap<String, Vec<super::KeyEntry>> =
+            std::collections::HashMap::new();
+        let mut dropped = 0usize;
+        for (svc, entries) in raw {
+            let good: Vec<super::KeyEntry> = entries
+                .into_iter()
+                .filter_map(|v| match serde_json::from_value::<super::KeyEntry>(v) {
+                    Ok(entry) => Some(entry),
+                    Err(_) => {
+                        dropped += 1;
+                        None
+                    }
+                })
+                .collect();
+            if !good.is_empty() {
+                services.insert(svc, good);
+            }
+        }
+        if dropped > 0 {
+            tracing::warn!(
+                "key pool at {}: dropped {dropped} unreadable entr(ies), kept the rest",
+                path.display()
+            );
+        }
+        return KeyPool::from_data(PoolData { services });
+    }
+
+    // Not even valid JSON → back up under a UNIQUE (timestamped) name so a second
+    // failed load can't clobber the only prior backup, then start fresh.
+    let stamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs());
+    let backup = path.with_extension(format!("json.bak.{stamp}"));
+    tracing::warn!(
+        "key pool at {} is not valid JSON; backing up to {} and starting fresh",
+        path.display(),
+        backup.display()
+    );
+    let _ = std::fs::rename(&path, &backup);
+    KeyPool::new()
 }
 
 pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {

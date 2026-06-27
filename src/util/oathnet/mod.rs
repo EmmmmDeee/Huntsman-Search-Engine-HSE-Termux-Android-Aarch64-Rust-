@@ -408,7 +408,10 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         return None;
     }
     let url = format!("{}{}", base_url(), paths::SESSION_INIT);
-    let body = format!(r#"{{"query":"{}"}}"#, value.replace('"', "\\\""));
+    // Build via serde so EVERY JSON metacharacter is escaped (a hand-rolled
+    // `"`-only replace left a backslash in e.g. `DOMAIN\user` unescaped → invalid
+    // JSON → the session-init post silently failed).
+    let body = serde_json::json!({ "query": value }).to_string();
     // Routed through the shared CurlClient — same UA / Accept /
     // auth-header layout as the GET path, just with a JSON body.
     let text = CLIENT.post_json(&url, key, &body).await.ok()?;

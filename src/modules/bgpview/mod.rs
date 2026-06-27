@@ -75,8 +75,16 @@ impl Module for BgpView {
                     return Ok(result);
                 };
                 let url = format!("https://api.bgpview.io/asn/{asn_num}/prefixes");
-                let resp: BgpPrefixResponse =
-                    crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
+                // BGPView returns 404 for an ASN/IP it has no record of — a
+                // routine "not in our dataset" miss, not an error. `fetch_json_or_404`
+                // maps that to None (its doc names BGPView for exactly this);
+                // plain `fetch_json` would mislabel the miss as a module failure.
+                let Some(resp) =
+                    crate::util::http::fetch_json_or_404::<BgpPrefixResponse>(&ctx.http, SRC, &url)
+                        .await?
+                else {
+                    return Ok(result);
+                };
                 if let Some(data) = resp.data {
                     result.extend(asn_prefix_entities(
                         &data,
@@ -88,8 +96,12 @@ impl Module for BgpView {
             TargetKind::IpAddress => {
                 let ip = target.value.trim();
                 let url = format!("https://api.bgpview.io/ip/{ip}");
-                let resp: BgpIpResponse =
-                    crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
+                let Some(resp) =
+                    crate::util::http::fetch_json_or_404::<BgpIpResponse>(&ctx.http, SRC, &url)
+                        .await?
+                else {
+                    return Ok(result);
+                };
                 if let Some(data) = resp.data {
                     result.extend(ip_entities(&data, ip, &ctx.scan_id));
                 }

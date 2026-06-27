@@ -19,6 +19,10 @@ use crate::core::{
 use crate::util::key_pool::{self, KeyEntry, KeyStatus};
 
 const SRC: &str = "api_key_probe";
+/// Bounded concurrency for the probe fan-out (was an unbounded 24-task burst).
+/// Keeps the in-flight curl children few on the 2-worker Termux runtime while
+/// still parallelising the validation round-trips.
+const PROBE_CONCURRENCY: usize = 8;
 
 pub struct ApiKeyProbe;
 
@@ -75,25 +79,39 @@ impl Module for ApiKeyProbe {
 
         let mut result = ModuleResult::new();
         let all_probes = probes();
-        let mut tasks = Vec::new();
-
-        for probe in &all_probes {
+        // Bounded-concurrency JoinSet (not a Vec<JoinHandle>): a timeout or cancel
+        // that drops this future ABORTS the in-flight probes — JoinSet aborts its
+        // tasks on drop, which trips each `probe_endpoint`'s curl `kill_on_drop` —
+        // instead of detaching the probe tasks + their curl children to linger
+        // ~12 s past cancellation. Each task carries its probe index so results,
+        // which arrive in completion order, map back to the right probe.
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(PROBE_CONCURRENCY));
+        let mut set: tokio::task::JoinSet<(usize, Option<String>)> = tokio::task::JoinSet::new();
+        for (i, probe) in all_probes.iter().enumerate() {
             let key = key.to_string();
             let (url, headers) = (probe.url_builder)(&key);
-            tasks.push(tokio::spawn(async move {
-                probe_endpoint(&url, &key, &headers).await
-            }));
+            let sem = sem.clone();
+            set.spawn(async move {
+                let _permit = sem.acquire_owned().await;
+                (i, probe_endpoint(&url, &key, &headers).await)
+            });
         }
 
         let pool = key_pool::global_pool();
         let mut identified = Vec::new();
 
-        for (i, task) in tasks.into_iter().enumerate() {
-            let probe = &all_probes[i];
-            let response = match task.await {
-                Ok(Some(body)) => body,
+        while let Some(joined) = set.join_next().await {
+            // Cancel mid-drain → abort the remaining probes (and their curl
+            // children) promptly rather than draining them all.
+            if ctx.cancel.is_cancelled() {
+                set.abort_all();
+                break;
+            }
+            let (i, response) = match joined {
+                Ok((idx, Some(body))) => (idx, body),
                 _ => continue,
             };
+            let probe = &all_probes[i];
 
             let json: Value = match serde_json::from_str(&response) {
                 Ok(v) => v,

@@ -171,7 +171,13 @@ pub fn query_bbox(
          LIMIT ?5",
     )?;
     let rows = stmt.query_map(
-        params![lat_min, lat_max, lon_min, lon_max, limit as i64],
+        params![
+            lat_min,
+            lat_max,
+            lon_min,
+            lon_max,
+            i64::try_from(limit).unwrap_or(i64::MAX)
+        ],
         |r| {
             Ok(CellRow {
                 radio: r.get(0)?,
