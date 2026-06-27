@@ -286,7 +286,11 @@ pub fn footprint_recency(latest_ts: i64, now_unix: i64) -> FootprintRecency {
 
 /// Days from the civil date 1970-01-01 to `y-m-d` (Howard Hinnant's algorithm).
 /// Valid for any Gregorian date; returns a signed day count.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+///
+/// `pub(crate)` so other modules that need an exact date→epoch conversion can
+/// reuse this leap-year-correct implementation rather than re-deriving an
+/// approximate one (e.g. the `hudsonrock` module's freshness check).
+pub(crate) fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
     let y = if m <= 2 { y - 1 } else { y };
     let era = if y >= 0 { y } else { y - 399 } / 400;
     let yoe = y - era * 400; // [0, 399]
