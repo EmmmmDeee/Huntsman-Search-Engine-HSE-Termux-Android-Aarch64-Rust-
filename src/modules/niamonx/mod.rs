@@ -24,7 +24,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
-use crate::util::str_util::{slugify, truncate_display};
+use crate::util::str_util::slugify;
 
 const SRC: &str = "niamonx";
 const KEY_ENV: &str = "HUNTSMAN_NIAMONX_KEY";
@@ -446,9 +446,10 @@ fn emit_pbs_v1(
         let source = block.title.as_deref().unwrap_or("unknown");
         entity.tag(format!("niamonx:breach:{}", slugify(source)));
         if let Some(desc) = &block.description {
+            // Full-fidelity policy: the breach description is stored verbatim,
+            // never truncated — the operator sees the authentic discovered text.
             entity.add_evidence(
-                Evidence::new(SRC, format!("[{source}] {}", truncate_display(desc, 200)))
-                    .with_attr("source", source),
+                Evidence::new(SRC, format!("[{source}] {desc}")).with_attr("source", source),
             );
         }
     }

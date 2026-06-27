@@ -110,18 +110,17 @@ impl Module for WebserverBanner {
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
-            // Fold each captured header into the evidence, clipping individual
-            // values so a verbose CSP doesn't bloat the row past sanity.
+            // Fold each captured header into the evidence VERBATIM. Full-fidelity
+            // policy: a discovered banner/header is stored exactly as the server
+            // returned it, never clipped — the operator must see the authentic
+            // result. The header count and each value's length are already bounded
+            // upstream by the HTTP client's header limits, so the row stays sane
+            // without truncating any real value.
             let ev = captured.iter().fold(
                 Evidence::new(SRC, format!("HTTP headers from {scheme} HEAD of {host}"))
                     .with_attr("scheme", scheme)
                     .with_attr("status", status.as_u16().to_string()),
-                |ev, (h, v)| {
-                    ev.with_attr(
-                        h.as_str(),
-                        crate::util::str_util::truncate_safe(v, 240).to_string(),
-                    )
-                },
+                |ev, (h, v)| ev.with_attr(h.as_str(), v.as_str()),
             );
             entity.add_evidence(ev);
 

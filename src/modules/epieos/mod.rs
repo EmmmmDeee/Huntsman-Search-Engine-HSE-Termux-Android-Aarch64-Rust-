@@ -27,7 +27,6 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::http::RequestBuilderExt;
-use crate::util::str_util::truncate_safe;
 
 pub(super) const KEY_ENV: &str = "HUNTSMAN_EPIEOS_KEY";
 pub(super) const SRC: &str = "epieos";
@@ -35,8 +34,6 @@ pub(super) const SRC: &str = "epieos";
 /// Maps-review places surfaced inline on the email entity / emitted as Address.
 pub(super) const MAX_PLACES_INLINE: usize = 5;
 pub(super) const MAX_PLACE_ENTITIES: usize = 3;
-/// Review text is free-form user content; cap it before persisting.
-pub(super) const REVIEW_TEXT_CAP: usize = 200;
 
 pub struct Epieos;
 
@@ -234,7 +231,9 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
                 rev_ev = rev_ev.with_attr("rating", format!("{rating:.1}"));
             }
             if let Some(text) = nonempty(&review.text) {
-                rev_ev = rev_ev.with_attr("review_text", truncate_safe(text, REVIEW_TEXT_CAP));
+                // Full-fidelity policy: the review is stored verbatim, never
+                // truncated — the operator sees the authentic discovered content.
+                rev_ev = rev_ev.with_attr("review_text", text);
             }
             if let Some(d) = nonempty(&review.date) {
                 rev_ev = rev_ev.with_attr("review_date", d);
