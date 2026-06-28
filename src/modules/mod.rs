@@ -25,6 +25,7 @@ pub mod asic_director;
 pub mod asic_liquidators;
 pub mod asic_persons;
 pub mod asic_registered_auditors;
+pub mod asic_smsf_auditors;
 pub mod au_business_id;
 pub mod au_electoral;
 pub mod au_geo;
@@ -457,6 +458,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(asic_credit_licensees::AsicCreditLicensees),
         Arc::new(asic_credit_representatives::AsicCreditRepresentatives),
         Arc::new(asic_registered_auditors::AsicRegisteredAuditors),
+        Arc::new(asic_smsf_auditors::AsicSmsfAuditors),
         Arc::new(asic_liquidators::AsicLiquidators),
         Arc::new(au_business_id::AuBusinessId),
         Arc::new(au_electoral::AuElectoral),

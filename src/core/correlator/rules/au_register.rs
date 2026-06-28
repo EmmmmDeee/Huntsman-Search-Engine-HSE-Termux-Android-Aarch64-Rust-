@@ -43,6 +43,7 @@ const AU_IDENTITY_REGISTERS: &[&str] = &[
     "asic_credit_licensees",
     "asic_credit_representatives",
     "asic_registered_auditors",
+    "asic_smsf_auditors",
     "asic_liquidators",
     "abn_lookup",
     "au_business_id",
