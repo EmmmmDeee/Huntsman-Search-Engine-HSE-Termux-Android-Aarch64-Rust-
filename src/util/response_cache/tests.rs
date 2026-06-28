@@ -14,15 +14,49 @@ use super::*;
     }
 
     #[test]
-    fn put_noops_once_cap_reached() {
+    fn put_evicts_lru_once_cap_reached() {
         let c: ResponseCache<u32> = ResponseCache::new(2);
         c.put("a".into(), 1);
         c.put("b".into(), 2);
-        // Third insert MUST be silently dropped — cap is a hard
-        // ceiling, not a soft hint.
+        // Third insert MUST stay within cap (hard ceiling) by evicting the
+        // least-recently-used entry — "a", which has not been touched since
+        // its insert — rather than dropping the incoming value.
         c.put("c".into(), 3);
-        assert_eq!(c.len(), 2);
-        assert_eq!(c.get("c"), None);
+        assert_eq!(c.len(), 2, "cap is a hard ceiling, not a soft hint");
+        assert_eq!(c.get("c"), Some(3), "the new key must be admitted");
+        assert_eq!(c.get("a"), None, "the LRU entry must be the victim");
+        assert_eq!(c.get("b"), Some(2), "non-LRU entries must survive");
+        assert_eq!(c.evictions(), 1, "exactly one eviction must be recorded");
+    }
+
+    #[test]
+    fn get_refreshes_recency_to_protect_hot_entries() {
+        // True-LRU property: reading an entry moves it to the front, so a
+        // frequently-read key survives eviction even though it was inserted
+        // first. Without move-to-front "a" would be the victim; with it, the
+        // never-read "b" is.
+        let c: ResponseCache<u32> = ResponseCache::new(2);
+        c.put("a".into(), 1);
+        c.put("b".into(), 2);
+        assert_eq!(c.get("a"), Some(1)); // touch "a" — now MRU
+        c.put("c".into(), 3); // forces an eviction
+        assert_eq!(c.get("a"), Some(1), "recently-read key must be protected");
+        assert_eq!(c.get("b"), None, "the cold entry must be evicted");
+        assert_eq!(c.get("c"), Some(3));
+        assert_eq!(c.evictions(), 1);
+    }
+
+    #[test]
+    fn evictions_starts_at_zero_and_survives_clear() {
+        let c: ResponseCache<u32> = ResponseCache::new(1);
+        assert_eq!(c.evictions(), 0, "no evictions before saturation");
+        c.put("a".into(), 1);
+        c.put("b".into(), 2); // evicts "a"
+        assert_eq!(c.evictions(), 1);
+        // `clear()` drops live state but the lifetime metric must persist so
+        // a saturating cache stays observable across operator flushes.
+        c.clear();
+        assert_eq!(c.evictions(), 1, "eviction count is a lifetime metric");
     }
 
     #[test]
@@ -72,13 +106,15 @@ use super::*;
     }
 
     #[test]
-    fn cap_of_one_admits_only_first_entry() {
+    fn cap_of_one_keeps_only_the_newest_entry() {
+        // With cap 1 every new key evicts the sole resident, so the cache
+        // always reflects the most recent put.
         let c: ResponseCache<u32> = ResponseCache::new(1);
         c.put("a".into(), 1);
         c.put("b".into(), 2);
-        assert_eq!(c.len(), 1);
-        assert_eq!(c.get("a"), Some(1));
-        assert_eq!(c.get("b"), None);
+        assert_eq!(c.len(), 1, "cap of one holds exactly one entry");
+        assert_eq!(c.get("a"), None, "the prior entry is evicted");
+        assert_eq!(c.get("b"), Some(2), "the newest entry is retained");
     }
 
     #[test]
@@ -118,16 +154,16 @@ use super::*;
 
     #[test]
     fn full_cache_still_refreshes_an_existing_key() {
-        // T2.12: at cap, a NEW key is rejected (the ceiling holds), but an in-place
-        // refresh of a key already present must still apply — a full cache must
-        // never get stuck serving a stale value for a key it already holds.
+        // T2.12: an in-place refresh of a key already present must always apply
+        // and must never grow the map past cap — a full cache must never get
+        // stuck serving a stale value for a key it already holds. (A new key at
+        // cap is admitted by evicting the LRU entry; that path is covered by
+        // `put_evicts_lru_once_cap_reached`.)
         let c: ResponseCache<u32> = ResponseCache::new(2);
         c.put("a".into(), 1);
         c.put("b".into(), 2); // now at cap
-        c.put("c".into(), 3); // new key: rejected (ceiling holds)
-        assert_eq!(c.get("c"), None, "new key must be rejected at cap");
-        assert_eq!(c.len(), 2);
-        c.put("a".into(), 99); // existing key: must refresh despite being full
+        c.put("a".into(), 99); // existing key: must refresh in place, no eviction
         assert_eq!(c.get("a"), Some(99), "existing key must refresh when full");
         assert_eq!(c.len(), 2, "refresh must not grow the map past cap");
+        assert_eq!(c.evictions(), 0, "an in-place refresh must not evict anything");
     }

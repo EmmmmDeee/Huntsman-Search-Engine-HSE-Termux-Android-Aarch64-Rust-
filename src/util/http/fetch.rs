@@ -241,7 +241,7 @@ fn record_breaker_outcome(host: Option<&str>, status: reqwest::StatusCode) {
         if is_breaker_failure_status(status) {
             circuit_breaker::record_failure(h, crate::core::entity::unix_now());
         } else {
-            circuit_breaker::record_success(h);
+            circuit_breaker::record_success(h, crate::core::entity::unix_now());
         }
     }
 }

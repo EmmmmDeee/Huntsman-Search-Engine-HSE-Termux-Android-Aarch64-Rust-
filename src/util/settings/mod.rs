@@ -13,12 +13,39 @@
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
-use std::sync::{LazyLock, RwLock};
+use std::sync::{LazyLock, Mutex, RwLock};
 
 /// In-process cache of the override map, loaded once from disk. Reads on hot
 /// paths hit this, never the filesystem.
+///
+/// The cache is **authoritative**: every reader ([`get_bool`], [`overrides`], …)
+/// sees the merged result of all completed writes the instant their `RwLock`
+/// write guard is released, with no filesystem round-trip. Disk is a persistence
+/// shadow that may momentarily lag the cache by at most one in-flight write —
+/// but see [`WRITE_LOCK`] for why the *settled* on-disk view always matches the
+/// cache state that produced the winning write.
 static CACHE: LazyLock<RwLock<BTreeMap<String, bool>>> =
     LazyLock::new(|| RwLock::new(read_map(&settings_path())));
+
+/// Serializes the whole *write* path of [`set_bool`] — the cache mutation, the
+/// snapshot, and the atomic file write are one critical section per writer.
+///
+/// Without it two concurrent writers (e.g. `PUT /api/v1/settings/toggles` and a
+/// `hse config` invocation in the same process) could each take a snapshot of a
+/// different cache state under the `RwLock` and then race on the file write: the
+/// `RwLock` merges both mutations into the cache, but the last writer to *rename*
+/// wins on disk, and that winner's snapshot need not be the most recent cache
+/// state — a lost update of the on-disk view versus the cache. [`crate::util::atomic_file`]'s
+/// unique temp prevents a *torn* file, not this logical divergence.
+///
+/// Holding this mutex across snapshot-and-write makes the two strictly ordered:
+/// each writer's on-disk snapshot is exactly the cache state *it* produced, and
+/// the last writer to enter the critical section is both the last to mutate the
+/// cache and the last to rename — so the settled disk view always equals the
+/// authoritative cache. Readers are unaffected: this mutex is never taken on a
+/// read path, and the `RwLock` write guard is released before the (slow) file
+/// I/O so concurrent reads never block on disk.
+static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 /// `~/.huntsman/settings.json` (same dir as the key pool / DB).
 pub fn settings_path() -> PathBuf {
@@ -63,7 +90,22 @@ pub fn get_bool(key: &str, default: bool) -> bool {
 
 /// Set and persist a toggle. Updates the in-process cache immediately so the
 /// change is visible without a restart, then writes the file atomically.
+///
+/// The whole cache-mutate → snapshot → file-write sequence runs under
+/// [`WRITE_LOCK`], so the on-disk snapshot always reflects the cache state that
+/// produced it: two concurrent `set_bool` calls (e.g. the web `PUT` endpoint and
+/// `hse config`) are strictly ordered, the second sees the first's mutation, and
+/// the last writer's disk snapshot matches the authoritative cache. The cheap
+/// `m.clone()` of the tiny toggle map is taken under the `RwLock` write guard,
+/// which is then released *before* the file I/O so concurrent reads never block
+/// on disk while still preserving the write ordering via [`WRITE_LOCK`].
 pub fn set_bool(key: &str, value: bool) -> std::io::Result<()> {
+    // Serialize the entire write path. A poisoned mutex still yields the guard —
+    // the data is `()`, so there is no corrupt state to recover, and dropping the
+    // write would be a worse failure mode than proceeding.
+    let _write = WRITE_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let snapshot = {
         let mut m = CACHE
             .write()

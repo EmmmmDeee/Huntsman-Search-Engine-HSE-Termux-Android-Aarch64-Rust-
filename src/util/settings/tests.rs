@@ -62,3 +62,53 @@ fn feature_toggles_length_matches_registration() {
         assert!(is_feature_key(&key), "{key} missing from FEATURE_TOGGLES");
     }
 }
+
+#[test]
+fn concurrent_set_bool_leaves_disk_matching_cache() {
+    // Regression: two writers racing on `set_bool` must not leave the on-disk
+    // snapshot diverged from the authoritative cache. `WRITE_LOCK` serializes the
+    // mutate→snapshot→write sequence, so after both writes settle the file
+    // deserializes to exactly the cache the winning write produced.
+    //
+    // We drive `set_bool` directly (it persists to `~/.huntsman/settings.json`),
+    // then compare the parsed disk map against `overrides()` for the two keys we
+    // touched. Other test toggles may share the process-global cache, so we assert
+    // only on our own keys and read them back from both views.
+    use std::thread;
+
+    let key_a = "test.concurrent.a";
+    let key_b = "test.concurrent.b";
+
+    let h1 = thread::spawn(move || {
+        for i in 0..50 {
+            set_bool(key_a, i % 2 == 0).expect("set_bool a");
+        }
+    });
+    let h2 = thread::spawn(move || {
+        for i in 0..50 {
+            set_bool(key_b, i % 2 == 0).expect("set_bool b");
+        }
+    });
+    h1.join().expect("thread a");
+    h2.join().expect("thread b");
+
+    // Final deterministic writes so cache and disk have a known settled value.
+    set_bool(key_a, true).expect("final a");
+    set_bool(key_b, false).expect("final b");
+
+    let on_disk = read_map(&settings_path());
+    let cache = overrides();
+
+    assert_eq!(
+        on_disk.get(key_a).copied(),
+        cache.get(key_a).copied(),
+        "disk must match cache for {key_a} after concurrent writes"
+    );
+    assert_eq!(
+        on_disk.get(key_b).copied(),
+        cache.get(key_b).copied(),
+        "disk must match cache for {key_b} after concurrent writes"
+    );
+    assert_eq!(on_disk.get(key_a).copied(), Some(true));
+    assert_eq!(on_disk.get(key_b).copied(), Some(false));
+}
