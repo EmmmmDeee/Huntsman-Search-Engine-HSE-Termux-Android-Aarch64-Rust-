@@ -808,6 +808,56 @@ fn next_key_prefers_a_corroborated_key_on_a_tie() {
 }
 
 #[test]
+fn import_greatest_merges_accumulated_value_never_discarding_it() {
+    // The live pool holds a key with some accumulated value.
+    let pool = KeyPool::new();
+    let mut local = KeyEntry::new("dup");
+    local.corroboration = 2;
+    local.use_count = 5;
+    pool.add("shodan", local);
+
+    // A backup export carries MORE accumulated value for the same key.
+    let backup = KeyPool::new();
+    let mut richer = KeyEntry::new("dup");
+    richer.corroboration = 10;
+    richer.use_count = 3;
+    richer.last_validated = Some(999);
+    backup.add("shodan", richer);
+    let json = backup.export_json(None).unwrap();
+
+    // Importing the backup must GREATEST-merge, never reduce, the held value.
+    assert_eq!(
+        pool.import_json(&json, None).unwrap(),
+        0,
+        "no new key — the duplicate is merged, not added"
+    );
+    let snap = pool.snapshot();
+    let e = &snap.services["shodan"][0];
+    assert_eq!(e.corroboration, 10, "corroboration kept at the greater");
+    assert_eq!(e.use_count, 5, "use_count kept at the greater");
+    assert_eq!(e.last_validated, Some(999), "validation timestamp retained");
+}
+
+#[test]
+fn import_never_resurrects_a_revoked_key() {
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("k"));
+    assert!(pool.revoke("shodan", "k"));
+    // A backup where the same key is Active must NOT un-revoke it.
+    let backup = KeyPool::new();
+    let mut active = KeyEntry::new("k");
+    active.status = KeyStatus::Active;
+    backup.add("shodan", active);
+    let json = backup.export_json(None).unwrap();
+    pool.import_json(&json, None).unwrap();
+    assert_eq!(
+        pool.entry_status("shodan", "k"),
+        Some(KeyStatus::Revoked),
+        "operator revocation is sticky across imports"
+    );
+}
+
+#[test]
 fn corroboration_lifts_a_sub_ceiling_health_score_but_never_breaches_one() {
     let now = crate::core::entity::unix_now();
 

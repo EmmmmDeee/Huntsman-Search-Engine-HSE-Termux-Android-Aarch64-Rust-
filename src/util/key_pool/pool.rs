@@ -139,10 +139,16 @@ impl KeyPool {
     }
 
     /// Merge keys from an exported pool JSON into this pool. Dedup is by value
-    /// within a service (identical to `add`), so re-importing an export is
-    /// idempotent. An `environment` override stamps every imported key with that
-    /// label (useful for slotting a teammate's export into your "shared" env).
-    /// Returns the number of keys newly added.
+    /// within a service, so re-importing an export is idempotent. An `environment`
+    /// override stamps every imported key with that label (useful for slotting a
+    /// teammate's export into your "shared" env). Returns the number of keys newly
+    /// added.
+    ///
+    /// A duplicate value is GREATEST-merged ([`KeyEntry::greatest_merge`]) rather
+    /// than discarded, so restoring a backup never REDUCES the accumulated
+    /// self-funding value (corroboration, usage, validation) already held — it only
+    /// ever keeps the greater. This is what makes the pool a perpetual,
+    /// loss-resistant store of harvested value across re-imports and merges.
     pub fn import_json(&self, json: &str, environment: Option<&str>) -> serde_json::Result<usize> {
         let incoming: PoolData = serde_json::from_str(json)?;
         let mut added = 0usize;
@@ -151,12 +157,36 @@ impl KeyPool {
                 if let Some(env) = environment {
                     entry.environment = Some(env.to_string());
                 }
-                if self.add(&service, entry) {
+                if self.merge_or_add(&service, entry) {
                     added += 1;
                 }
             }
         }
         Ok(added)
+    }
+
+    /// Import one entry, GREATEST-merging it when the value is already pooled.
+    ///
+    /// Unlike [`Self::add`] (whose duplicate path folds a single *re-observation*
+    /// into `+1` corroboration), this preserves the FULL accumulated telemetry of
+    /// the incoming record by merging it field-by-field with
+    /// [`KeyEntry::greatest_merge`] — so importing a backup that holds more value
+    /// than the live pool retains that value rather than throwing it away. Returns
+    /// `true` only when a genuinely new key was added.
+    fn merge_or_add(&self, service: &str, entry: KeyEntry) -> bool {
+        // Same poolability gate as `add`: only reusable keyed-provider keys are
+        // retained, so an import cannot bloat the pool with non-poolable values.
+        if !crate::util::service_defs::is_poolable_service(service) {
+            return false;
+        }
+        let mut data = self.data.lock();
+        let entries = data.services.entry(service.to_lowercase()).or_default();
+        if let Some(existing) = entries.iter_mut().find(|e| e.value == entry.value) {
+            existing.greatest_merge(&entry);
+            return false;
+        }
+        entries.push(entry);
+        true
     }
 
     /// Revoke a key: a one-way move to `Revoked` so it's retained for audit but

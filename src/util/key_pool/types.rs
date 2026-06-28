@@ -151,6 +151,47 @@ impl KeyEntry {
         self.corroboration > 0
     }
 
+    /// GREATEST-merge another record for the SAME key value into this one,
+    /// retaining the maximum accumulated self-funding value across both copies.
+    ///
+    /// Used when importing/restoring a backup so a re-import never DISCARDS
+    /// accumulated telemetry — every counter keeps the greater of the two, so the
+    /// operation is monotone and order-independent (the invariant's
+    /// GREATEST-semantics). Timestamps follow the same rule by meaning:
+    /// `discovered_at` (first seen) keeps the EARLIER; every `last_*` keeps the
+    /// LATER. Status never downgrades — an operator revocation is sticky and a
+    /// proven-live verdict wins over an unsettled one — and missing
+    /// provenance/labels are filled in from the incoming copy.
+    pub fn greatest_merge(&mut self, other: &KeyEntry) {
+        self.corroboration = self.corroboration.max(other.corroboration);
+        self.use_count = self.use_count.max(other.use_count);
+        self.error_count = self.error_count.max(other.error_count);
+        self.tier = self.tier.max(other.tier);
+        self.last_used = max_opt(self.last_used, other.last_used);
+        self.last_validated = max_opt(self.last_validated, other.last_validated);
+        self.rate_limit_reset = max_opt(self.rate_limit_reset, other.rate_limit_reset);
+        self.rotated_at = max_opt(self.rotated_at, other.rotated_at);
+        self.discovered_at = min_opt(self.discovered_at, other.discovered_at);
+        self.status = merge_status(self.status, other.status);
+        // Fill any provenance/label this copy is missing from the incoming one;
+        // never overwrite a value already present locally.
+        if self.notes.is_none() {
+            self.notes = other.notes.clone();
+        }
+        if self.discovered_by.is_none() {
+            self.discovered_by = other.discovered_by.clone();
+        }
+        if self.discovered_in_scan.is_none() {
+            self.discovered_in_scan = other.discovered_in_scan.clone();
+        }
+        if self.source_entity.is_none() {
+            self.source_entity = other.source_entity.clone();
+        }
+        if self.environment.is_none() {
+            self.environment = other.environment.clone();
+        }
+    }
+
     pub fn is_usable(&self) -> bool {
         match self.status {
             KeyStatus::Untested | KeyStatus::Active => true,
@@ -373,6 +414,41 @@ fn tier_fraction(tier: KeyTier) -> f64 {
         KeyTier::Basic => 1.0 / 3.0,
         KeyTier::Standard => 2.0 / 3.0,
         KeyTier::Premium => 1.0,
+    }
+}
+
+/// GREATEST of two optional timestamps (the LATER one), treating `None` as
+/// "absent" so a present value always wins. Used by [`KeyEntry::greatest_merge`]
+/// for the `last_*` fields when retaining the maximum accumulated value.
+fn max_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.max(y)),
+        (some, None) | (None, some) => some,
+    }
+}
+
+/// LEAST of two optional timestamps (the EARLIER one), treating `None` as
+/// "absent". Used by [`KeyEntry::greatest_merge`] for `discovered_at` so the
+/// merged record keeps the earliest first-seen time.
+fn min_opt(a: Option<u64>, b: Option<u64>) -> Option<u64> {
+    match (a, b) {
+        (Some(x), Some(y)) => Some(x.min(y)),
+        (some, None) | (None, some) => some,
+    }
+}
+
+/// Merge two statuses for the SAME key without ever downgrading retention:
+/// an operator [`KeyStatus::Revoked`] is sticky (a backup import can never
+/// resurrect a deliberately-killed key), a proven-live [`KeyStatus::Active`]
+/// otherwise wins over any unsettled/failed state, and failing that the local
+/// pool's own verdict is kept as authoritative.
+fn merge_status(local: KeyStatus, incoming: KeyStatus) -> KeyStatus {
+    if local == KeyStatus::Revoked || incoming == KeyStatus::Revoked {
+        KeyStatus::Revoked
+    } else if local == KeyStatus::Active || incoming == KeyStatus::Active {
+        KeyStatus::Active
+    } else {
+        local
     }
 }
 
