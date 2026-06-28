@@ -109,7 +109,14 @@ impl KeyPool {
         }
         let mut data = self.data.lock();
         let entries = data.services.entry(service.to_lowercase()).or_default();
-        if entries.iter().any(|e| e.value == key.value) {
+        if let Some(existing) = entries.iter_mut().find(|e| e.value == key.value) {
+            // Duplicate value: not a NEW key, but an independent re-observation of
+            // one we already hold. Fold it in as corroboration (the pool-layer
+            // verified-duplicate signal that lifts the key's health_score and
+            // shields it from pruning) instead of discarding it silently. Still
+            // returns `false` — no new entry was added, so callers counting
+            // additions and the idempotent-import contract are unchanged.
+            existing.record_corroboration();
             return false;
         }
         entries.push(key);
@@ -251,8 +258,11 @@ impl KeyPool {
     /// [`KeyEntry::is_usable`]) it serves the one with the greatest live
     /// [`KeyEntry::selection_rank`] — highest tier, healthiest, then
     /// least-recently-used — so requests fan out across the pool and no single key
-    /// is driven to its rate limit. The round-robin start makes equal-rank ties
-    /// deterministic and adds extra spread. The selection mutates telemetry
+    /// is driven to its rate limit. A key's [`KeyEntry::corroboration`] count is a
+    /// final tiebreak *after* idleness, so among otherwise-identical keys a proven,
+    /// independently re-confirmed credential is preferred without disturbing the
+    /// load-spreading. The round-robin start makes any remaining ties deterministic
+    /// and adds extra spread. The selection mutates telemetry
     /// (`use_count`/`last_used`), so the *next* call sees the load it just placed
     /// and naturally moves on to the next-idlest key.
     pub fn next_key(&self, service: &str) -> Option<String> {
@@ -269,19 +279,26 @@ impl KeyPool {
         let len = entries.len();
 
         let mut best: Option<usize> = None;
-        let mut best_rank: Option<(KeyTier, u8, u64)> = None;
+        let mut best_key: Option<((KeyTier, u8, u64), u32)> = None;
         for offset in 0..len {
             let i = (*idx + offset) % len;
             let entry = &entries[i];
             if !entry.is_usable() {
                 continue;
             }
-            let rank = entry.selection_rank(now);
-            // Strict `>`: the FIRST key at the best rank (in rotated scan order)
-            // wins, so equal-rank keys round-robin via the start index.
-            if best_rank.is_none_or(|b| rank > b) {
+            // Compare on (selection_rank, corroboration): the rank decides exactly
+            // as before, and corroboration is a FINAL tiebreak so that among
+            // otherwise-equal keys (same tier / health band / idleness) a proven,
+            // independently re-confirmed credential is preferred — without
+            // disturbing the load-spreading that idleness drives. Uncorroborated
+            // keys all carry 0, so this is identical to the prior behaviour whenever
+            // no key in the service is corroborated.
+            let key = (entry.selection_rank(now), entry.corroboration);
+            // Strict `>`: the FIRST key at the best (rank, corroboration) in rotated
+            // scan order wins, so equal keys round-robin via the start index.
+            if best_key.is_none_or(|b| key > b) {
                 best = Some(i);
-                best_rank = Some(rank);
+                best_key = Some(key);
             }
         }
 
@@ -356,9 +373,11 @@ impl KeyPool {
     /// `min_success_rate` (i.e. their error rate is too high), once they have at
     /// least `min_uses` recorded uses to judge by. Returns the number pruned.
     ///
-    /// High-value keys (Standard/Premium tier) are **always retained**: a scarce,
-    /// expensive credential isn't discarded over a transient error streak — the
-    /// operator revokes those deliberately. Trial/Basic keys prune normally.
+    /// High-value keys (Standard/Premium tier) and independently corroborated
+    /// keys are **always retained**: a scarce, expensive credential — or one
+    /// re-confirmed across multiple independent sightings — is not discarded over a
+    /// transient error streak; the operator revokes those deliberately. Trial/Basic,
+    /// uncorroborated keys prune normally.
     pub fn prune_degraded(&self, min_success_rate: f64, min_uses: u64) -> usize {
         let mut data = self.data.lock();
         let mut pruned = 0;
@@ -366,6 +385,7 @@ impl KeyPool {
             let before = entries.len();
             entries.retain(|e| {
                 e.tier >= KeyTier::Standard
+                    || e.is_corroborated()
                     || e.use_count < min_uses
                     || e.success_rate() >= min_success_rate
             });
