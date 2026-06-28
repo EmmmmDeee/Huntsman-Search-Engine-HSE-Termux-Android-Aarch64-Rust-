@@ -144,6 +144,10 @@ pub enum KeysAction {
         /// (highest ROI tier first — Multiplier > Expansion > Terminal).
         #[arg(long)]
         resellable: bool,
+        /// Print a value-free valuation roll-up of the retained inventory (counts
+        /// of total / OSINT / proven keys, proven broken down by resale tier).
+        #[arg(long)]
+        value: bool,
     },
     /// List supported service names and their categories.
     Services,
@@ -446,8 +450,28 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             verified,
             promote,
             resellable,
+            value,
         } => {
             use crate::util::key_vault;
+
+            if value {
+                let v = key_vault::valuation();
+                if v.total == 0 {
+                    println!("Key bank is empty — nothing to value yet.");
+                    println!("Bank file: {}", key_vault::vault_path().display());
+                    return Ok(());
+                }
+                println!("BANK VALUATION — retained self-funding inventory\n");
+                println!("  total retained keys : {}", v.total);
+                println!("  OSINT-provider keys : {}", v.osint);
+                println!("  proven live (✓)     : {}", v.verified);
+                println!("  proven by resale value:");
+                println!("       multiplier : {}", v.multiplier);
+                println!("       expansion  : {}", v.expansion);
+                println!("       terminal   : {}", v.terminal);
+                println!("\nBank file: {}", key_vault::vault_path().display());
+                return Ok(());
+            }
 
             if resellable {
                 let mut entries = key_vault::resellable_entries();

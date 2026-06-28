@@ -458,6 +458,59 @@ pub fn total_count() -> u64 {
         .map_or(0, |n| n as u64)
 }
 
+/// A value-free roll-up of the bank's retained inventory for the operator
+/// dashboard: total keys retained, how many belong to OSINT/recon providers, how
+/// many are proven live, and the proven count broken down by resale-value (ROI)
+/// tier. Contains NO key plaintext — only counts — so it is always safe to print
+/// or serialise.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct BankValuation {
+    /// Distinct keys retained in the bank.
+    pub total: usize,
+    /// Keys whose provider is catalogued OSINT/recon tooling.
+    pub osint: usize,
+    /// Keys confirmed live at least once (`verified_count >= 1`).
+    pub verified: usize,
+    /// Proven-live keys of the highest resale tier (cascade into more keys).
+    pub multiplier: usize,
+    /// Proven-live keys of the middle resale tier (many entities, no key chain).
+    pub expansion: usize,
+    /// Proven-live keys of the lowest resale tier (single-shot data).
+    pub terminal: usize,
+}
+
+/// Value-free valuation of the whole bank (see [`BankValuation`]). Empty/zeroed
+/// when the vault does not exist.
+#[must_use]
+pub fn valuation() -> BankValuation {
+    summarise(&all_entries())
+}
+
+/// Pure summariser behind [`valuation`], split out so the tiering is unit-tested
+/// without a live database. Only PROVEN-live keys are counted into the ROI tiers,
+/// since an unverified key has no demonstrated value.
+fn summarise(entries: &[VaultEntry]) -> BankValuation {
+    use crate::util::key_roi::KeyRoi;
+    let mut v = BankValuation {
+        total: entries.len(),
+        ..BankValuation::default()
+    };
+    for e in entries {
+        if e.is_osint() {
+            v.osint += 1;
+        }
+        if e.is_verified() {
+            v.verified += 1;
+            match e.roi() {
+                KeyRoi::Multiplier => v.multiplier += 1,
+                KeyRoi::Expansion => v.expansion += 1,
+                KeyRoi::Terminal => v.terminal += 1,
+            }
+        }
+    }
+    v
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -483,14 +536,9 @@ mod tests {
 
     #[test]
     fn persist_and_query_roundtrip() {
-        // Use an in-memory DB by temporarily overriding via the open() path is
-        // not straightforward, so we write to a temp file and clean up.
-        let dir = std::env::temp_dir().join("hse_kv_test");
-        let _ = std::fs::create_dir_all(&dir);
-        let db_path = dir.join("test_vault.db");
-        let _ = std::fs::remove_file(&db_path); // clean slate
-
-        let conn = Connection::open(&db_path).unwrap();
+        // In-memory DB (like the sibling tests): deterministic, with no shared
+        // temp-file/WAL state that could leak between runs and flake the suite.
+        let conn = Connection::open_in_memory().unwrap();
         ensure_schema(&conn).unwrap();
 
         let keys = vec![
@@ -516,8 +564,6 @@ mod tests {
         assert_eq!(stripe.first_scan_id, "scan-001");
         assert_eq!(stripe.last_scan_id, "scan-002");
         assert_eq!(stripe.discovery_count, 2);
-
-        let _ = std::fs::remove_dir_all(dir);
     }
 
     fn entry(service: &str) -> VaultEntry {
@@ -589,6 +635,26 @@ mod tests {
         assert_eq!(e.len(), 1, "legacy row preserved through migration");
         assert_eq!(e[0].verified_count, 0, "legacy row backfills to unverified");
         assert!(write_verification(&conn, "dh-key-abcdef", 20).unwrap());
+    }
+
+    #[test]
+    fn valuation_counts_proven_keys_by_roi_tier() {
+        let mut shodan = entry("shodan"); // osint, Multiplier, verified
+        shodan.verified_count = 2;
+        let dehashed = entry("dehashed"); // osint, Multiplier, NOT verified
+        let mut stripe = entry("stripe_live"); // not osint, Expansion (default), verified
+        stripe.verified_count = 1;
+
+        let v = summarise(&[shodan, dehashed, stripe]);
+        assert_eq!(v.total, 3);
+        assert_eq!(v.osint, 2, "shodan + dehashed are OSINT providers");
+        assert_eq!(v.verified, 2, "shodan + stripe are proven live");
+        assert_eq!(
+            v.multiplier, 1,
+            "only the verified Multiplier (shodan) counts"
+        );
+        assert_eq!(v.expansion, 1, "verified stripe defaults to Expansion");
+        assert_eq!(v.terminal, 0);
     }
 
     #[test]
