@@ -734,3 +734,111 @@ fn curl_config_escape_neutralises_quote_backslash_and_newlines() {
         "sk-AbC123"
     );
 }
+
+// ── corroboration / verified-duplicate signal ───────────────────────────────
+
+#[test]
+fn duplicate_add_folds_into_corroboration_and_reports_not_new() {
+    let pool = KeyPool::new();
+    assert!(pool.add("shodan", KeyEntry::new("dup")), "first add is new");
+    // Two further independent observations of the same value: not new entries,
+    // but each folds in as corroboration on the held key (the pool-layer
+    // verified-duplicate signal), never as a duplicate row.
+    assert!(
+        !pool.add("shodan", KeyEntry::new("dup")),
+        "second add is a duplicate (not new)"
+    );
+    assert!(
+        !pool.add("shodan", KeyEntry::new("dup")),
+        "third add is a duplicate (not new)"
+    );
+    assert_eq!(pool.service_count("shodan"), 1, "no duplicate rows created");
+    let snap = pool.snapshot();
+    assert_eq!(
+        snap.services["shodan"][0].corroboration, 2,
+        "two re-observations corroborated the held key"
+    );
+    assert!(snap.services["shodan"][0].is_corroborated());
+}
+
+#[test]
+fn prune_degraded_retains_a_corroborated_key() {
+    let pool = KeyPool::new();
+    // A degraded Basic key (0% success over 10 uses) that has nonetheless been
+    // independently re-confirmed: proven capacity is not discarded over an error
+    // streak, just like a high-tier key.
+    let mut proven = KeyEntry::new("corroborated-bad");
+    proven.tier = KeyTier::Basic;
+    proven.use_count = 10;
+    proven.error_count = 10;
+    proven.corroboration = 3;
+    pool.add("shodan", proven);
+    // An equally-degraded but uncorroborated Basic key still prunes.
+    let mut plain = KeyEntry::new("plain-bad");
+    plain.tier = KeyTier::Basic;
+    plain.use_count = 10;
+    plain.error_count = 10;
+    pool.add("shodan", plain);
+
+    let pruned = pool.prune_degraded(0.5, 1);
+    assert_eq!(pruned, 1, "only the uncorroborated degraded key prunes");
+    assert!(
+        pool.entry_status("shodan", "corroborated-bad").is_some(),
+        "corroborated key retained"
+    );
+    assert_eq!(pool.entry_status("shodan", "plain-bad"), None);
+}
+
+#[test]
+fn next_key_prefers_a_corroborated_key_on_a_tie() {
+    let pool = KeyPool::new();
+    // Two otherwise-identical fresh Active keys (same tier / health band, both
+    // never used → equal idleness); only corroboration differs.
+    let mut plain = KeyEntry::new("plain");
+    plain.status = KeyStatus::Active;
+    let mut proven = KeyEntry::new("proven");
+    proven.status = KeyStatus::Active;
+    proven.corroboration = 5;
+    pool.add("shodan", plain);
+    pool.add("shodan", proven);
+    // Corroboration is the final tiebreak, so the proven key is served first —
+    // biasing rotation toward credentials known to work without disturbing the
+    // load-spreading that idleness drives.
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("proven"));
+}
+
+#[test]
+fn corroboration_lifts_a_sub_ceiling_health_score_but_never_breaches_one() {
+    let now = crate::core::entity::unix_now();
+
+    // A fresh Active Basic key sits below the 1.0 ceiling (partial tier bonus).
+    let mut plain = KeyEntry::new("plain");
+    plain.status = KeyStatus::Active;
+    plain.tier = KeyTier::Basic;
+    let base = plain.health_score(now);
+
+    let mut proven = plain.clone();
+    proven.corroboration = 4;
+    let lifted = proven.health_score(now);
+    assert!(
+        lifted > base,
+        "corroboration lifts a sub-ceiling key: {lifted} > {base}"
+    );
+    assert!(lifted <= 1.0, "never breaches the ceiling: {lifted}");
+
+    // A fresh top-tier key is already at the ceiling; corroboration cannot push it
+    // past 1.0, so its score is unchanged.
+    let mut top = KeyEntry::new("top");
+    top.status = KeyStatus::Active;
+    top.tier = KeyTier::Premium;
+    let top_plain = top.health_score(now);
+    assert!(
+        (top_plain - 1.0).abs() < 1e-9,
+        "top-tier fresh key is at 1.0"
+    );
+    top.corroboration = 9;
+    assert!(
+        (top.health_score(now) - top_plain).abs() < 1e-9,
+        "a ceiling key is unchanged by corroboration"
+    );
+}
