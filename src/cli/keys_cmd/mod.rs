@@ -297,6 +297,11 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                     match key_pool::validate_key(svc, &entry.value).await {
                         Some(true) => {
                             pool.mark_validated(svc, &entry.value, true);
+                            // Perpetual accrual: a live confirmation of a key that
+                            // is also banked records a verified duplicate, so the
+                            // bank's proven-capacity ledger grows on every routine
+                            // validation pass (no-op when the key isn't banked).
+                            let _ = crate::util::key_vault::record_verification(&entry.value);
                             println!("ACTIVE");
                             active += 1;
                         }
