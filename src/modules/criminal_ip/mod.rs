@@ -249,6 +249,12 @@ impl Module for CriminalIp {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// Host/IP intelligence is stable for ~24h per target; cache to avoid re-burning paid Criminal IP quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }

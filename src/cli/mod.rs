@@ -54,13 +54,27 @@ use crate::{
 /// selector semantics can't drift (they were three near-identical copies).
 pub(crate) fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
     if raw == "latest" {
-        return store
-            .latest_completed_scan()?
-            .map(|s| s.id)
-            .ok_or_else(|| Error::Other("no completed scans in store".into()));
+        return match store.latest_completed_scan()? {
+            Some(s) => Ok(s.id),
+            // Actionable, matching the multi-line hint quality elsewhere in this
+            // file: a first-time operator running `export/diff/audit latest`
+            // before any scan got a dead-end "no completed scans in store".
+            None => Err(Error::Other(
+                "no completed scans in store yet — run one first, e.g. \
+                 `hse scan -v <seed>` (or `hse scan` with HUNTSMAN_DEFAULT_SEED set), \
+                 then retry with `latest`"
+                    .into(),
+            )),
+        };
     }
     match store.get_scan(raw)? {
-        None => Err(Error::Other(format!("scan {raw} not found"))),
+        // A typo'd or stale id is a dead end; surface the most-recent completed
+        // scan id(s) so the operator can correct it (or pass `latest`), matching
+        // the actionable-hint quality the rest of the CLI sets.
+        None => Err(Error::Other(format!(
+            "scan {raw} not found.{}",
+            recent_scan_hint(store)
+        ))),
         Some(scan) => {
             // A scan interrupted before finalise — a hang, a kill, an OOM, a power
             // loss — still CHECKPOINTED its enumerated/validated entities to the
@@ -80,6 +94,34 @@ pub(crate) fn resolve_scan_id(store: &Store, raw: &str) -> Result<String> {
             }
             Ok(raw.to_string())
         }
+    }
+}
+
+/// A trailing, actionable hint for a "scan not found" error: the most-recent
+/// completed scan ids the operator can substitute (newest first, short-form),
+/// or a "run a scan first" nudge when the store is empty. Best-effort — a
+/// storage error here must not mask the original not-found error, so it degrades
+/// to an empty string rather than propagating.
+fn recent_scan_hint(store: &Store) -> String {
+    // A handful is enough to correct a typo without flooding the message; a
+    // 64-char SHA-256 id is shortened to its 12-char prefix (still unambiguous
+    // for the operator, who can also just pass `latest`).
+    let recent: Vec<String> = store
+        .list_scans(5)
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|s| s.status == ScanStatus::Complete)
+        .map(|s| s.id.chars().take(12).collect::<String>())
+        .collect();
+    if recent.is_empty() {
+        " No completed scans in the store yet — run `hse scan -v <seed>` first, \
+         then read it back with `latest`."
+            .to_string()
+    } else {
+        format!(
+            " Recent completed scans (newest first): {}. Use one of these, or `latest`.",
+            recent.join(", ")
+        )
     }
 }
 
@@ -194,7 +236,7 @@ pub async fn run() -> Result<()> {
             gate_speculative,
             profile,
             output,
-            include_infra: _,
+            include_infra,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
             // `--full` is the no-compromise preset: force every module on (drop
@@ -232,6 +274,11 @@ pub async fn run() -> Result<()> {
                 gate_speculative,
                 profile,
                 output,
+                // `--full` is the no-compromise preset: it includes platform
+                // infrastructure too, as the `--include-infra` help documents
+                // ("implied by `--full`"). Otherwise infra is excluded unless
+                // the operator passes `--include-infra`.
+                include_infra: include_infra || full,
             })
             .await
         }

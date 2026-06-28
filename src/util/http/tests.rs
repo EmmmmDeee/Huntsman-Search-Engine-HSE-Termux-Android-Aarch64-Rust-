@@ -3,7 +3,7 @@ use super::fetch::{
     JSON_BODY_CAP, is_keyed_error_status, key_tail, keyed_ok_or_404, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
-use super::ssrf::{filter_public, redirect_to_private_ip};
+use super::ssrf::{filter_public, is_plaintext_downgrade, redirect_to_private_ip};
 use super::url::json_decode;
 use super::url::{RequestBuilderExt, urlencode};
 use crate::util::found_keys::{is_key_delimiter, key_tokens};
@@ -257,6 +257,41 @@ fn build_client_succeeds() {
 }
 
 #[test]
+fn plaintext_downgrade_only_blocks_cross_host_http() {
+    let u = |s: &str| url::Url::parse(s).expect("test url");
+
+    // Cross-host downgrade to cleartext — the MITM-redirect case: must block.
+    assert!(
+        is_plaintext_downgrade(&u("https://good.example/"), &u("http://evil.example/")),
+        "https→http onto a different host is a hostile downgrade"
+    );
+    assert!(
+        is_plaintext_downgrade(&u("http://good.example/"), &u("http://evil.example/")),
+        "http→http onto a different host is still a cross-host cleartext hop"
+    );
+
+    // Same-host http→http: the plaintext free-tier modules (ip_geo / contact_enrich)
+    // legitimately hop within their own host; must follow.
+    assert!(
+        !is_plaintext_downgrade(
+            &u("http://ip-api.com/json/"),
+            &u("http://ip-api.com/json/1.1.1.1")
+        ),
+        "same-host http→http hop must be allowed"
+    );
+
+    // Any upgrade to https is always fine, even cross-host.
+    assert!(
+        !is_plaintext_downgrade(&u("http://a.example/"), &u("https://b.example/")),
+        "http→https upgrade is never a downgrade"
+    );
+    assert!(
+        !is_plaintext_downgrade(&u("https://a.example/"), &u("https://b.example/")),
+        "https→https hop is not a plaintext downgrade"
+    );
+}
+
+#[test]
 fn redacts_path_embedded_secret_value() {
     let key = "abcd1234efgh5678ijkl";
     let body = format!("invalid request: /api/json/ip/{key}/1.2.3.4 rejected");
@@ -338,6 +373,41 @@ fn retry_after_clamps_oversized_default_to_max() {
 #[test]
 fn retry_after_ignores_unparseable_header() {
     assert_eq!(retry_after_secs(&hdrs(Some("soon")), 7, 30), 7);
+}
+
+#[test]
+fn retry_after_parses_http_date_in_the_past_as_zero() {
+    // RFC 7231 also permits an HTTP-date form. A date already in the past means
+    // "retry immediately" → 0 (clamped, but 0 is already under any max).
+    assert_eq!(
+        retry_after_secs(&hdrs(Some("Wed, 21 Oct 2015 07:28:00 GMT")), 7, 30),
+        0
+    );
+}
+
+#[test]
+fn retry_after_parses_far_future_http_date_clamped_to_max() {
+    // A far-future HTTP-date yields a huge seconds-from-now delta that the caller
+    // clamps to `max_secs` — proving the date form is parsed (not silently
+    // discarded to `default_secs`, which would be 7 here, not 30).
+    assert_eq!(
+        retry_after_secs(&hdrs(Some("Fri, 31 Dec 9999 23:59:59 GMT")), 7, 30),
+        30
+    );
+}
+
+#[test]
+fn retry_after_falls_back_on_malformed_http_date() {
+    // A date-shaped but invalid value (bad month, missing GMT zone) is not the
+    // delta-seconds form and not a valid IMF-fixdate → fall back to default.
+    assert_eq!(
+        retry_after_secs(&hdrs(Some("Wed, 21 Xyz 2026 07:28:00 GMT")), 7, 30),
+        7
+    );
+    assert_eq!(
+        retry_after_secs(&hdrs(Some("Wed, 21 Oct 2026 07:28:00 UTC")), 9, 30),
+        9
+    );
 }
 
 #[test]

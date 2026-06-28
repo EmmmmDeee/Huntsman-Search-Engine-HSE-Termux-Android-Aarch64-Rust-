@@ -224,6 +224,11 @@ impl Module for ThreatFox {
         ModuleCost::KeyGated
     }
 
+    /// IOC/threat-feed matches move faster than static intel; cache 1h to cut repeat key-gated ThreatFox calls while staying fresh.
+    fn cache_ttl_secs(&self) -> u64 {
+        3_600
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain | TargetKind::IpAddress)
     }

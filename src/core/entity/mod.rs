@@ -3,7 +3,16 @@
 //! # Architecture invariants
 //! - SHA-256 deterministic UIDs
 //! - GREATEST-semantics merge (confidence, corroboration only ever increase)
-//! - `C_eff = clamp(C × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+//! - `C_eff = clamp(max(C·(1 + 0.15·ln n), 1 − (1 − C)·γ^(n−1)), 0.0, 1.0)`
+//!   where `n` = the count of DISTINCT *corroborating* sources
+//!   ([`Entity::source_count`], floored at 1) and `γ` =
+//!   [`CORROBORATION_DOUBT_DECAY`]. The legacy multiplicative term `C·(1 +
+//!   0.15·ln n)` is retained as the floor; the noisy-OR agreement term
+//!   `1 − (1 − C)·γ^(n−1)` is the SANCTIONED extension that gives genuine
+//!   cross-correlation its due (see [`Entity::c_effective_with_source_count`]
+//!   for the single, canonical definition both branches share). This is the
+//!   one place the invariant is stated; the formula lives in exactly one
+//!   function so prose and code cannot drift.
 //! - `Classify()` is derived-only from `C_eff`
 //! - No unsafe, no std::sync::Mutex (use tokio::sync)
 //! - Zero CGO / native deps
@@ -39,6 +48,12 @@ pub const GAMMA_PER_HOUR: f64 = 0.85;
 /// [`Entity::demote_to_candidate`] — one definition shared by every breach pool
 /// (the matcher that DECIDES a non-match lives separately in
 /// `util::target_match`, keeping "does this match?" orthogonal to "tier it").
+///
+/// The cap is enforced as a sticky one: [`Entity::c_effective`] clamps any
+/// entity carrying the [`crate::core::tags::CANDIDATE`] tag to this value, so the
+/// quarantine cannot be undone by the GREATEST merge raising the entity's stored
+/// `confidence`. See [`Entity::c_effective_with_source_count`] and
+/// [`Entity::demote_to_candidate`] for the ordering contract.
 pub const CANDIDATE_CONF: f64 = 0.25;
 
 /// Evidence "sources" that are deterministic self-enrichment passes the engine
@@ -65,6 +80,18 @@ pub const CANDIDATE_CONF: f64 = 0.25;
 /// and fired AU-003 / AU-034. Excluding it means a permutation needs two
 /// *genuine* sources to corroborate, while the derived entity still appears as a
 /// lead in the dossier (its evidence is kept and shown).
+///
+/// `payid` is the PayID-eligibility pass ([`crate::modules::payid`]): it
+/// re-emits an already-discovered email/phone/ABN annotated as an NPP
+/// confirm-payee pivot (the registered account-holder name a payment to it would
+/// reveal). PayID-eligibility is a property of the identifier's *shape*, not an
+/// independent sighting that it belongs to the subject, so — exactly like
+/// `geo_normalize` and `name_intel` — counting its evidence as a corroborating
+/// source would fabricate agreement: a lone email would look "corroborated by 2
+/// sources" and clear the cross-source rules purely because it *could* be a
+/// PayID. Its tags, canonical form and pivot guidance stay in the evidence chain
+/// and [`Entity::evidence_sources`] for the analyst; only the corroboration count
+/// excludes it.
 pub const ENRICHMENT_ONLY_SOURCES: &[&str] = &["geo_normalize", "name_intel", "payid"];
 
 /// True if `source` is a deterministic self-enrichment pass rather than an
@@ -357,10 +384,23 @@ impl Evidence {
 /// `uid = hex(SHA-256(kind_str + ":" + value_normalised))`
 ///
 /// # Confidence formula
-/// `C_eff = clamp(confidence × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+/// `C_eff = clamp(max(confidence·(1 + 0.15·ln n), 1 − (1 − confidence)·γ^(n−1)), 0.0, 1.0)`
+/// where `n` = the DISTINCT *corroborating* source count
+/// ([`Self::source_count`], floored at 1) and `γ` =
+/// [`CORROBORATION_DOUBT_DECAY`]. The combinator keys off the distinct-source
+/// count, NOT the [`Self::corroboration`] field (that field is summed
+/// observation magnitude, not a count of independent sources). The pure
+/// multiplicative term is the floor and the noisy-OR agreement term the
+/// sanctioned extension — both are defined once in
+/// [`Self::c_effective_with_source_count`], so this prose and the code share a
+/// single source of truth.
 ///
 /// # GREATEST-semantics merge
-/// `confidence` and `corroboration` only ever increase during merge.
+/// `confidence` and `corroboration` only ever increase during merge. A
+/// `candidate` quarantine cap ([`Self::demote_to_candidate`]) survives merges
+/// because it is enforced by [`Self::c_effective`] off the sticky tag, not by
+/// mutating `confidence` against the GREATEST direction (see
+/// [`Self::demote_to_candidate`] for the ordering contract).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Entity {
     /// Deterministic SHA-256 UID.
@@ -415,38 +455,26 @@ impl Entity {
 
     // ── Derived metrics ──────────────────────────────────────────────────────
 
-    /// Number of DISTINCT corroborating sources backing this entity — the
-    /// true cross-correlation signal that drives the C_eff boost.
+    /// Distinct *corroborating* evidence sources, counted WITHOUT allocating a
+    /// `HashSet` — the allocation-free twin of `corroborating_sources().len()`.
     ///
-    /// This is `corroborating_sources().len()` (distinct `evidence.source`
-    /// strings, since every module emits one stable source name, minus the
-    /// deterministic self-enrichment passes in [`ENRICHMENT_ONLY_SOURCES`]),
-    /// floored at 1. When no corroborating evidence is attached (synthetic/test
-    /// entities, an entity constructed before its evidence, or one carrying only
-    /// enrichment evidence) it falls back to the stored `corroboration` field so
-    /// an explicitly-set strength value is still honoured.
-    ///
-    /// Why not the `corroboration` field directly: that field is the summed
-    /// *observation magnitude* (e.g. hibp seeds it with verified-breach count,
-    /// search_engines with engine-agreement count, and `merge()` adds them).
-    /// Summed within-module counts are NOT a count of independent sources, so
-    /// using them to boost C_eff over-credited single-source findings (a 5-breach
-    /// hibp hit looked like "5 independent sources"). The distinct-source count
-    /// is the honest cross-correlation measure — and is already the signal used
-    /// by the expansion gate, the diagnostics diversity floor, and 6 correlator
-    /// rules. The `corroboration` field is retained as the observation-magnitude
-    /// signal for ranking/diagnostics; it no longer drives C_eff.
+    /// This is the shared hot-path primitive: [`Self::source_count`] (and through
+    /// it [`Self::c_effective`]/[`Self::classify`]) runs for every entity on the
+    /// merge/dedup hot path, and the dispatch gate
+    /// (`engine::dispatch::target_distinct_sources`) and ranking want the same
+    /// count per discovered target. Building and dropping a `HashSet<&str>` just
+    /// to read its `.len()` was pure overhead, so the distinct scan is done in
+    /// place: a source is counted once, at its first occurrence — for each record
+    /// only the evidence *before* it is scanned for the same source. Entity
+    /// evidence chains are short (a handful of sources), so this O(k²) scan over
+    /// tiny `k` beats hashing + heap allocation, and the count it yields is
+    /// identical to `corroborating_sources().len()`. Unlike [`Self::source_count`]
+    /// this returns the TRUE count (it can be 0, and never falls back to the
+    /// `corroboration` field), so callers that distinguish "no corroboration yet"
+    /// (the high-value-API gate) read it directly.
     #[inline]
-    pub fn source_count(&self) -> u32 {
-        // Count DISTINCT corroborating sources WITHOUT allocating a `HashSet`.
-        // This runs for every entity on the merge/dedup hot path (via
-        // `c_effective`/`classify`), so the previous `corroborating_sources().len()`
-        // — which built and dropped a `HashSet<&str>` on every call — was pure
-        // overhead. A source is counted exactly once, at its first occurrence:
-        // for each record we scan only the evidence *before* it for the same
-        // source. Entity evidence chains are short (a handful of sources), so
-        // this O(k²) scan over tiny `k` beats hashing + heap allocation, and the
-        // distinct set it yields is identical to `corroborating_sources().len()`.
+    #[must_use]
+    pub fn corroborating_source_count(&self) -> u32 {
         let mut distinct: u32 = 0;
         for (i, ev) in self.evidence.iter().enumerate() {
             let s = ev.source.as_str();
@@ -460,6 +488,33 @@ impl Entity {
                 distinct += 1;
             }
         }
+        distinct
+    }
+
+    /// Number of DISTINCT corroborating sources backing this entity — the
+    /// true cross-correlation signal that drives the C_eff boost.
+    ///
+    /// This is [`Self::corroborating_source_count`] (= `corroborating_sources().len()`,
+    /// distinct `evidence.source` strings minus the deterministic self-enrichment
+    /// passes in [`ENRICHMENT_ONLY_SOURCES`]), floored at 1. When no corroborating
+    /// evidence is attached (synthetic/test entities, an entity constructed before
+    /// its evidence, or one carrying only enrichment evidence) it falls back to the
+    /// stored `corroboration` field so an explicitly-set strength value is still
+    /// honoured.
+    ///
+    /// Why not the `corroboration` field directly: that field is the summed
+    /// *observation magnitude* (e.g. hibp seeds it with verified-breach count,
+    /// search_engines with engine-agreement count, and `merge()` adds them).
+    /// Summed within-module counts are NOT a count of independent sources, so
+    /// using them to boost C_eff over-credited single-source findings (a 5-breach
+    /// hibp hit looked like "5 independent sources"). The distinct-source count
+    /// is the honest cross-correlation measure — and is already the signal used
+    /// by the expansion gate, the diagnostics diversity floor, and 6 correlator
+    /// rules. The `corroboration` field is retained as the observation-magnitude
+    /// signal for ranking/diagnostics; it no longer drives C_eff.
+    #[inline]
+    pub fn source_count(&self) -> u32 {
+        let distinct = self.corroborating_source_count();
         if distinct > 0 {
             // Evidence is attached: distinct *corroborating* sources is the
             // authoritative cross-correlation count. The summed `corroboration`
@@ -507,6 +562,20 @@ impl Entity {
     /// `max` keeps the result monotonic and never below the legacy value, so the
     /// change only ever *adds* confidence for genuinely multi-sourced entities.
     ///
+    /// **Quarantine cap (sticky).** When the entity carries the
+    /// [`crate::core::tags::CANDIDATE`] tag ([`Self::demote_to_candidate`]) the
+    /// result is additionally capped at [`CANDIDATE_CONF`] — strictly below
+    /// [`Classification::PROBABLE_MIN`], so a quarantined finding always
+    /// classifies `Candidate`. The cap is enforced HERE, off the sticky tag,
+    /// rather than by lowering the stored `confidence`: the GREATEST merge only
+    /// ever *raises* `confidence`, so a confidence-mutating demotion would be
+    /// silently undone the next time a same-UID observation merged in (and a
+    /// demotion applied after a merge would lower a value the invariant says only
+    /// rises). Keying the cap on the tag — which `absorb` unions and never drops —
+    /// makes quarantine survive merges in any order. The legitimate un-quarantine
+    /// path (`promote_breach_candidate_geo_corroborated`) removes the tag, which
+    /// releases the cap, so promotion still works.
+    ///
     /// ```
     /// use huntsman_search_engine::core::entity::{Entity, EntityKind};
     ///
@@ -532,7 +601,20 @@ impl Entity {
         let multiplicative = self.confidence * CORROBORATION_COEFF.mul_add(n.ln(), 1.0);
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
         let agreement = 1.0 - residual_doubt;
-        multiplicative.max(agreement).clamp(0.0, 1.0)
+        let c_eff = multiplicative.max(agreement).clamp(0.0, 1.0);
+        // Sticky quarantine cap: a `candidate`-tagged entity
+        // ([`Self::demote_to_candidate`]) can never present above
+        // [`CANDIDATE_CONF`], no matter how a later GREATEST merge lifts its
+        // stored `confidence`. Enforcing the cap here (off the merge-surviving
+        // tag) — instead of writing a lower `confidence` the merge would undo —
+        // is what keeps quarantine and the non-decreasing merge from fighting.
+        // The cap releases automatically when the legitimate un-quarantine pass
+        // drops the tag.
+        if self.has_tag(crate::core::tags::CANDIDATE) {
+            c_eff.min(CANDIDATE_CONF)
+        } else {
+            c_eff
+        }
     }
 
     /// Derived classification tier from [`Self::c_effective`]: `Verified` at
@@ -568,17 +650,33 @@ impl Entity {
         self.classify()
     }
 
-    /// Apply gamma-decay over elapsed time since `observed_at`.
+    /// Gamma-decayed confidence over the time elapsed since `observed_at`,
+    /// computed WITHOUT mutating the stored field.
     ///
-    /// Returns the decayed confidence without mutating. Use `apply_decay()`
-    /// to mutate in place.
+    /// This is the **preferred** decay accessor: read it at the export/read
+    /// boundary and leave the persisted `confidence` as the GREATEST base that
+    /// [`Self::merge`]/[`Self::absorb`] max over (see [`Self::apply_decay`] for
+    /// why the read-time form is the safe one). `observed_at` is the most-recent
+    /// observation (merge takes its `max`), so `saturating_sub` reads 0 elapsed
+    /// for a future `observed_at` (clock skew → no spurious decay) and a very
+    /// large elapsed time underflows the `powf` cleanly toward 0 (never NaN).
     pub fn decayed_confidence(&self) -> f64 {
         let now = unix_now();
         let hours_elapsed = (now.saturating_sub(self.observed_at)) as f64 / 3600.0;
         (self.confidence * GAMMA_PER_HOUR.powf(hours_elapsed)).clamp(0.0, 1.0)
     }
 
-    /// Mutate confidence in place using gamma decay.
+    /// Mutate `confidence` in place using gamma decay.
+    ///
+    /// **Ordering contract: never call this before a merge.** It writes a
+    /// *decreased* `confidence`, against the non-decreasing direction the GREATEST
+    /// [`Self::merge`]/[`Self::absorb`] enforce — so a later identical observation
+    /// merging in (its un-decayed `confidence`) would `max` the decay straight
+    /// back out, masking the staleness this is meant to express (the same
+    /// monotonicity hazard as a confidence-mutating [`Self::demote_to_candidate`]).
+    /// Prefer [`Self::decayed_confidence`] at the read/export boundary and keep the
+    /// stored field as the GREATEST base; reserve this destructive form for the
+    /// terminal, post-merge case where the entity will not be merged again.
     pub fn apply_decay(&mut self) {
         self.confidence = self.decayed_confidence();
     }
@@ -599,14 +697,29 @@ impl Entity {
         }
     }
 
-    /// Quarantine this entity into the `Candidate` tier: cap its confidence at
-    /// [`CANDIDATE_CONF`] and stamp the `candidate` tag. Idempotent (the tag
-    /// de-dupes; the cap is a `min`). The single, orthogonal definition of "this
-    /// finding doesn't identify the subject, keep it but out of the
-    /// full-confidence view" — applied by every breach/stealer pool
-    /// (`oathnet_pro`, `see_know`) to rows a `util::target_match::TargetMatch`
-    /// classified as a non-match, so the demotion semantics can never drift
-    /// between them.
+    /// Quarantine this entity into the `Candidate` tier: stamp the sticky
+    /// `candidate` tag and pull the stored `confidence` down to at most
+    /// [`CANDIDATE_CONF`]. Idempotent (the tag de-dupes; the confidence write is a
+    /// `min`). The single, orthogonal definition of "this finding doesn't identify
+    /// the subject, keep it but out of the full-confidence view" — applied by
+    /// every breach/stealer pool (`oathnet_pro`, `see_know`) to rows a
+    /// `util::target_match::TargetMatch` classified as a non-match, so the demotion
+    /// semantics can never drift between them.
+    ///
+    /// **The cap that classification sees is the TAG, not this confidence write.**
+    /// [`Self::c_effective`] caps a `candidate`-tagged entity at
+    /// [`CANDIDATE_CONF`] regardless of its stored `confidence`. This is what makes
+    /// quarantine merge-safe: GREATEST [`Self::merge`]/[`Self::absorb`] only ever
+    /// *raise* `confidence`, so a demotion expressed purely as a lower `confidence`
+    /// would be silently undone whenever a higher-confidence same-UID observation
+    /// merged in afterwards — and a demotion applied AFTER a merge would lower a
+    /// value the invariant says only rises. The `confidence` `min` here is kept as
+    /// a defensive base (so the stored field doesn't overstate a quarantined lead),
+    /// but the tag — which `absorb` unions and never drops — is the authority, so
+    /// the order of `demote_to_candidate` relative to merges no longer matters.
+    /// The legitimate un-quarantine pass
+    /// (`engine::passes::promote_breach_candidate_geo_corroborated`) drops the tag,
+    /// which releases the C_eff cap.
     pub fn demote_to_candidate(&mut self) {
         self.confidence = self.confidence.min(CANDIDATE_CONF);
         self.tag(crate::core::tags::CANDIDATE);
@@ -678,6 +791,12 @@ impl Entity {
     /// [`Self::source_count`]/[`Self::c_effective`] and the corroboration
     /// correlator rules; the full [`Self::evidence_sources`] set is retained for
     /// display and attribute access.
+    ///
+    /// Allocates a `HashSet`, so use it only where the SET (membership /
+    /// iteration) is needed — e.g. ranking's anchoring-geo filter. A caller that
+    /// only needs the *number* of distinct corroborating sources must use the
+    /// allocation-free [`Self::corroborating_source_count`] instead (the dispatch
+    /// gate's per-target hot path), which yields the identical count.
     pub fn corroborating_sources(&self) -> std::collections::HashSet<&str> {
         self.evidence
             .iter()

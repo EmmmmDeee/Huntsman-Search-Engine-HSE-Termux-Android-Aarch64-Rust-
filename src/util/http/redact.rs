@@ -7,10 +7,13 @@
 /// the URL as a `?api_key=…` / `?apiKey=…` query parameter.
 ///
 /// The matched names (`api_key`, `apiKey`, `key`, `token`, `secret`,
-/// `access_token`, `auth`) cover the providers HSE keys directly
-/// (Hunter, WhoisXML, OpenCellID, Shodan, etc.). The redaction
-/// replaces the value with `***` and preserves the surrounding
-/// delimiters so the error message still reads naturally.
+/// `access_token`, `auth`, plus `authorization`/`bearer` header echoes,
+/// signature/SAS params, and password params) cover the providers HSE keys
+/// directly (Hunter, WhoisXML, OpenCellID, Shodan, etc.) and the common token
+/// shapes upstreams echo back in error bodies. The redaction replaces the value
+/// with `***` and preserves the surrounding delimiters so the error message
+/// still reads naturally. URL userinfo (`scheme://user:pass@host`) is masked in
+/// a separate pass below.
 pub(crate) fn redact_credentials(text: &str) -> String {
     const CREDENTIAL_PARAMS: &[&str] = &[
         "api_key",
@@ -20,6 +23,19 @@ pub(crate) fn redact_credentials(text: &str) -> String {
         "secret",
         "token",
         "auth",
+        // Header echoes and signature/SAS/password shapes that several APIs
+        // reflect into error bodies. `bearer` catches an echoed
+        // `Authorization: Bearer <jwt>` (the helper treats `name=` and the
+        // header `name<sep>value` forms; the JWT-shape pass below covers the
+        // bare `Bearer eyJ…` case where no `=`/`:` delimiter follows).
+        "authorization",
+        "bearer",
+        "sig",
+        "signature",
+        "sas_token",
+        "sas",
+        "password",
+        "pwd",
         // `key` deliberately masks ANY `key=<value>` that follows a query
         // boundary (the `preceded_by_boundary` check below stops it tripping on
         // mid-word matches like `monkey=`). We accept over-redacting a benign
@@ -75,12 +91,135 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     // that can't be reached for valid-UTF-8 input.
     let query_masked = String::from_utf8(out)
         .unwrap_or_else(|e| String::from_utf8_lossy(e.as_bytes()).into_owned());
-    // Second pass: mask any configured secret value appearing VERBATIM. This
-    // closes the gap where a key embedded in a URL *path* (e.g. IPQS
+    // Pass 2: mask URL userinfo (`scheme://user:pass@host`) and bare token
+    // shapes (`Bearer eyJ…`, raw `eyJ…` JWTs) that the `name=value` query pass
+    // can't see. Both reach the persisted `events` table and the SSE stream.
+    let shape_masked = redact_token_shapes(&query_masked);
+    // Pass 3: mask any configured secret value appearing VERBATIM. This closes
+    // the gap where a key embedded in a URL *path* (e.g. IPQS
     // `/api/json/ip/<KEY>/...`) is echoed back by an upstream error body — the
     // query-param pass above only catches `name=value` shapes, so a path key
     // would otherwise survive into the persisted `events` table and SSE stream.
-    redact_literal_secrets(&query_masked, env_secret_values())
+    redact_literal_secrets(&shape_masked, env_secret_values())
+}
+
+/// Mask credential shapes that the `name=value` query-param pass cannot catch:
+/// URL userinfo (`scheme://user:pass@host` → `scheme://***@host`) and bare
+/// bearer/JWT tokens (`Bearer eyJ…`, or a raw `eyJ…` JWT echoed in a body). These
+/// forms have no `name=` delimiter, so they slip past the param matcher yet still
+/// reach the persisted `events` table and the SSE stream. Operates on already
+/// valid UTF-8 and only ever splits on ASCII anchors, so the result stays valid.
+fn redact_token_shapes(text: &str) -> String {
+    // 1. URL userinfo: `://user:pass@host` → `://***@host`. Anchor on `://` then
+    //    mask up to the next `@`, refusing to cross a `/`, whitespace, or quote
+    //    (which would mean there is no userinfo — `@` belongs to a later path or
+    //    a `user@host` with no credential we shouldn't touch).
+    let mut out = String::with_capacity(text.len());
+    let bytes = text.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i..].starts_with(b"://") {
+            let auth_start = i + 3;
+            let mut j = auth_start;
+            let mut at = None;
+            while j < bytes.len() {
+                match bytes[j] {
+                    b'@' => {
+                        at = Some(j);
+                        break;
+                    }
+                    // No userinfo region — stop scanning at the host/path boundary.
+                    b'/' | b'?' | b'#' | b' ' | b'\t' | b'\n' | b'\r' | b'"' | b'\'' => break,
+                    _ => j += 1,
+                }
+            }
+            if let Some(at) = at
+                && at > auth_start
+            {
+                out.push_str("://***");
+                i = at; // resume at the `@`, kept verbatim next iteration
+                continue;
+            }
+        }
+        // Copy one whole UTF-8 char. The ASCII anchors above only advance past
+        // `://` / userinfo (all ASCII), so we never land mid-sequence here; the
+        // char is reassembled in one `push_str` to keep the buffer valid.
+        let ch_len = utf8_char_len(bytes[i]);
+        let end = (i + ch_len).min(bytes.len());
+        // Copy the whole char in one go to avoid emitting a partial sequence.
+        if let Ok(s) = std::str::from_utf8(&bytes[i..end]) {
+            out.push_str(s);
+        } else {
+            out.push('\u{FFFD}');
+        }
+        i = end;
+    }
+    // 2. Bare JWT / `Bearer <jwt>` shapes: a JWT is three base64url segments
+    //    joined by '.', and always starts `eyJ` (base64url of `{"`). Mask any
+    //    `eyJ…` run (and a preceding `Bearer `/`bearer ` if present) — these
+    //    appear in echoed Authorization headers and decoded error bodies.
+    mask_jwt_runs(&out)
+}
+
+/// Length of the UTF-8 char beginning at lead byte `b` (1–4). A continuation
+/// byte (`0b10xx_xxxx`) or invalid lead returns 1 so the caller still advances.
+fn utf8_char_len(b: u8) -> usize {
+    match b {
+        0x00..=0x7F => 1,
+        0xC0..=0xDF => 2,
+        0xE0..=0xEF => 3,
+        0xF0..=0xF7 => 4,
+        _ => 1,
+    }
+}
+
+/// Replace every `eyJ…` JWT-shaped run (optionally preceded by a `Bearer `
+/// prefix) with `***`. A JWT char run is `[A-Za-z0-9_.\-]` — all ASCII, so the
+/// scan never splits a multi-byte char and the result stays valid UTF-8.
+fn mask_jwt_runs(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        // Optional `Bearer ` / `bearer ` prefix immediately before a JWT.
+        let bearer_len = if bytes[i..].starts_with(b"Bearer ") || bytes[i..].starts_with(b"bearer ")
+        {
+            7
+        } else {
+            0
+        };
+        let jwt_at = i + bearer_len;
+        if bytes[jwt_at..].starts_with(b"eyJ") {
+            let mut end = jwt_at + 3;
+            while end < bytes.len() {
+                let c = bytes[end];
+                if c.is_ascii_alphanumeric() || matches!(c, b'_' | b'.' | b'-') {
+                    end += 1;
+                } else {
+                    break;
+                }
+            }
+            // Only treat as a JWT if it has at least one `.` separator in the run
+            // (distinguishes a real token from an `eyJ…`-prefixed identifier).
+            if text[jwt_at..end].contains('.') {
+                if bearer_len > 0 {
+                    out.push_str(&text[i..jwt_at]); // keep the `Bearer ` prefix
+                }
+                out.push_str("***");
+                i = end;
+                continue;
+            }
+        }
+        let ch_len = utf8_char_len(bytes[i]);
+        let stop = (i + ch_len).min(bytes.len());
+        if let Ok(s) = std::str::from_utf8(&bytes[i..stop]) {
+            out.push_str(s);
+        } else {
+            out.push('\u{FFFD}');
+        }
+        i = stop;
+    }
+    out
 }
 
 /// `HUNTSMAN_*` values from the process environment — the operator's configured

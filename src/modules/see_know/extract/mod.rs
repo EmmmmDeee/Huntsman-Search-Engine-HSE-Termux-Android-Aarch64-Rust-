@@ -188,6 +188,42 @@ pub(super) fn extract_entities(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
+    // Does this record actually identify the subject? Computed here for callers
+    // (the add-on endpoint matrix + identity pivots) that lack a precomputed
+    // page-wide match. The broad `/search` page instead precomputes ONE
+    // `TargetMatch` pass and feeds each row's decision via `extract_entities_with`
+    // (so the match also gates the parent dossier without being recomputed).
+    let is_target = TargetMatch::new(target_value).matches(item);
+    extract_entities_with(
+        item,
+        is_target,
+        target_value,
+        scan_id,
+        endpoint,
+        key_fp,
+        seen,
+        result,
+    );
+}
+
+/// As [`extract_entities`], but with the target-match decision (`is_target`)
+/// supplied by the caller instead of recomputed per row.
+///
+/// The broad `/search` page classifies every row against the subject identity in
+/// ONE [`TargetMatch`] pass (the same pass that gates the parent breach dossier —
+/// mirroring oathnet_pro's `breach_parent_entity` / `extract_breach_page` split),
+/// so the per-row match must not be recomputed here.
+#[allow(clippy::too_many_arguments)]
+pub(super) fn extract_entities_with(
+    item: &Value,
+    is_target: bool,
+    target_value: &str,
+    scan_id: &str,
+    endpoint: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
     let dbname = val_str(item, "dbname")
         .or_else(|| val_str(item, "source"))
         .unwrap_or_else(|| "see-know".to_string());
@@ -196,13 +232,12 @@ pub(super) fn extract_entities(
     // API-key origin, endpoint) for traceability.
     let ev = record_evidence(item, &dbname, endpoint, key_fp);
 
-    // Does this record actually identify the subject? A broad see_know search —
-    // above all a name auto-detect — can return same-name strangers; the
-    // identity + credential entities they yield are demoted to quarantined
-    // `candidate` leads below (mirroring oathnet_pro), so they never reach the
-    // subject's full-confidence tier. `quarantine_start` marks where this
-    // record's entities begin so the demotion targets exactly them.
-    let is_target = TargetMatch::new(target_value).matches(item);
+    // A broad see_know search — above all a name auto-detect — can return
+    // same-name strangers; the identity + credential entities they yield are
+    // demoted to quarantined `candidate` leads below (mirroring oathnet_pro), so
+    // they never reach the subject's full-confidence tier. `quarantine_start`
+    // marks where this record's entities begin so the demotion targets exactly
+    // them.
     let quarantine_start = result.entities.len();
 
     if let Some(email) = val_str(item, "email") {
@@ -487,6 +522,53 @@ fn push_breach_entity(
     result.push(e);
 }
 
+/// Build the subject's SeekNow breach **dossier** parent entity from the
+/// page-wide match decisions, or `None` when no returned row identifies the
+/// subject.
+///
+/// Mirrors oathnet_pro's `breach_parent_entity`: the engine pre-seeds a subject
+/// anchor, so minting a `0.85` `breach`-tagged parent off a page where the
+/// subject never appears merged a false breach confirmation onto that anchor —
+/// exactly the false positive a broad `full_name` auto-detect `/search` (a page
+/// of strangers) triggered. Gating on a real target match keeps the headline
+/// node honest; the evidence reports the matching-vs-returned split so the
+/// dossier reflects the subject's OWN records, not the whole page.
+///
+/// `row_matches` must be aligned 1:1 with the rows that produced it (the single
+/// [`TargetMatch`] pass that also drives the per-row `extract_entities_with`
+/// quarantine). Confidence stays `0.85` and uses [`crate::core::scan::Target::to_entity`] so the
+/// engine's documented corroboration formula
+/// (`C_eff = clamp(C × (1 + 0.15·ln(corroboration)))`) is applied downstream,
+/// unchanged — this only decides *whether* the parent is emitted, not how its
+/// effective confidence is later computed.
+pub(super) fn breach_parent_entity(
+    target: &crate::core::scan::Target,
+    scan_id: &str,
+    key_fp: &str,
+    row_matches: &[bool],
+) -> Option<Entity> {
+    let match_count = row_matches.iter().filter(|m| **m).count();
+    if match_count == 0 {
+        return None;
+    }
+    let total = row_matches.len();
+    let mut parent = target.to_entity(0.85, scan_id);
+    parent.tag(tags::BREACH);
+    parent.tag("see-know");
+    parent.add_evidence(
+        Evidence::new(
+            SRC,
+            format!("SeekNow: {match_count} matching record(s) of {total} via /search"),
+        )
+        .with_attr("hits", match_count.to_string())
+        .with_attr("records_returned", total.to_string())
+        .with_attr("endpoint", "/api/v1/search")
+        .with_attr("provider", "see-know.eu")
+        .with_attr("api_key_origin", key_fp),
+    );
+    Some(parent)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -584,5 +666,50 @@ mod tests {
         let mut result = ModuleResult::new();
         extract_associates(&item, "Someone", "s", "fp", &mut seen, &mut result);
         assert!(result.entities.is_empty());
+    }
+
+    #[test]
+    fn breach_parent_suppressed_when_no_row_matches_the_target() {
+        // False-positive regression: a broad `full_name` `/search` that returns a
+        // page of strangers (zero rows identifying the subject) must NOT mint the
+        // 0.85 breach parent dossier onto the subject anchor — mirroring
+        // oathnet_pro, the parent is gated on a real target match.
+        use crate::core::scan::{Target, TargetKind};
+        let target = Target::new(TargetKind::FullName, "Ali Kareem");
+        // Non-empty page, but every row is a stranger ⇒ all `false`.
+        let row_matches = vec![false; 100];
+        assert!(
+            breach_parent_entity(&target, "scan", "see-know.eu:test", &row_matches).is_none(),
+            "zero matching rows must suppress the breach parent (no false 0.85 confirmation)"
+        );
+    }
+
+    #[test]
+    fn breach_parent_emitted_at_full_confidence_when_a_row_matches() {
+        // The honest case: at least one returned row identifies the subject, so
+        // the 0.85 `breach` parent IS emitted, tagged, and reports the
+        // matching-vs-returned split in its evidence.
+        use crate::core::scan::{Target, TargetKind};
+        let target = Target::new(TargetKind::FullName, "Ali Kareem");
+        let row_matches = vec![true, false, false]; // 1 of 3 rows is the subject
+        let parent = breach_parent_entity(&target, "scan", "see-know.eu:test", &row_matches)
+            .expect("a matching row must yield the breach parent");
+        assert_eq!(parent.kind, EntityKind::Person);
+        assert_eq!(parent.value, "Ali Kareem");
+        assert!(
+            (parent.confidence - 0.85).abs() < 1e-9,
+            "parent stays at 0.85"
+        );
+        assert!(parent.has_tag(tags::BREACH) && parent.has_tag("see-know"));
+        let ev = parent.evidence.first().expect("parent carries evidence");
+        assert_eq!(ev.attributes.get("hits").map(String::as_str), Some("1"));
+        assert_eq!(
+            ev.attributes.get("records_returned").map(String::as_str),
+            Some("3")
+        );
+        assert_eq!(
+            ev.attributes.get("api_key_origin").map(String::as_str),
+            Some("see-know.eu:test")
+        );
     }
 }

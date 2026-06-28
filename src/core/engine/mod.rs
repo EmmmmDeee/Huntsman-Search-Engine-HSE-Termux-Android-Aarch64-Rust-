@@ -926,6 +926,14 @@ impl ScanEngine {
                 warn!(scan_id = %scan.id, error = %e, "events prune deferred");
             }
 
+            // Bound the inter-scan entity cache (`raw_archive`) on the same
+            // cadence: a long-lived process scanning many distinct targets would
+            // otherwise accumulate expired cache rows (pruned only at startup).
+            // Best-effort + matches the TTL-expiry policy of the startup prune.
+            if let Err(e) = store.prune_archive() {
+                warn!(scan_id = %scan.id, error = %e, "archive prune deferred");
+            }
+
             emitter.emit(
                 &scan.id,
                 EventKind::ScanComplete {

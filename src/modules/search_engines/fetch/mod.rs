@@ -122,8 +122,11 @@ pub(super) async fn try_fetch(
         crate::util::curl::fetch_with_ua(url, timeout_ms, ua).await
     };
 
-    // If direct fetch failed, try through the HUNTSMAN_SEARCH_PROXY env
-    // or fall back to the proxy pool (populated by util::proxy::harvest)
+    // If the direct fetch yielded too little to be a real SERP, retry once
+    // through the operator-configured `HUNTSMAN_SEARCH_PROXY` (a single value
+    // or a comma-list rotated round-robin in `util::curl`). There is no
+    // auto-harvested proxy-pool fallback: `ctx.proxy_pool` is empty unless an
+    // operator populates it, and this free fetch path holds no context handle.
     let body = match body {
         Some(b) if b.len() >= 500 => Some(b),
         _ => {

@@ -159,8 +159,9 @@ fn archive_key(name: &str, target: &Target) -> String {
 /// gate: a discovered entity must reach real cross-correlation, not just a bumped
 /// corroboration counter, before the heaviest paid modules fire on it.
 ///
-/// Uses [`Entity::corroborating_sources`], NOT `evidence_sources`: the
-/// deterministic `geo_normalize` enrichment pass writes a source to every
+/// Uses [`Entity::corroborating_source_count`] (the allocation-free count, this
+/// being a per-target gate decision), NOT `evidence_sources`: the deterministic
+/// `geo_normalize` enrichment pass writes a source to every
 /// `Coordinates`/`Address` entity, so counting raw evidence sources would credit
 /// a one-real-source coordinate as two — letting the WiGLE finaliser gate fire on
 /// an uncorroborated coordinate (the very thing it exists to prevent). For the
@@ -175,7 +176,7 @@ pub(super) fn target_distinct_sources(
     let uid = crate::core::entity::derive_uid(&entity_kind, &normalised);
     entity_map
         .get(&uid)
-        .map_or(0, |e| e.corroborating_sources().len())
+        .map_or(0, |e| e.corroborating_source_count() as usize)
 }
 
 pub(super) fn module_skip_reason(

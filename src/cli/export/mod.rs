@@ -54,7 +54,11 @@ pub(super) async fn cmd_export(
             eprintln!("exported {} bytes to {path}", body.len());
         }
         None => {
-            // stdout — avoid println! to keep binary GEXF unmolested.
+            // stdout — `write_all` (not `println!`) so NO trailing newline is
+            // appended. Every renderer returns UTF-8 text (GEXF is XML, not
+            // binary), so byte-safety isn't the concern; byte-EXACTNESS is: the
+            // `full`/`debug` bundles are diffed for byte-determinism, and an
+            // extra `\n` would break that reproducibility.
             use std::io::Write as _;
             std::io::stdout()
                 .write_all(body.as_bytes())

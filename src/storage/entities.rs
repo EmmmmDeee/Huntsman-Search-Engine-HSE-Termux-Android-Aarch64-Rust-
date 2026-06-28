@@ -319,6 +319,12 @@ impl super::Store {
         Ok(n.max(0) as usize)
     }
 
+    /// Hard cap on rows returned by [`Self::entities_filtered`]. Named (rather
+    /// than a magic literal) so the truncation point is greppable and documented:
+    /// a filtered view returning exactly this many rows may have been capped.
+    /// Kept at the historical value of 500 to preserve existing behaviour.
+    const FILTERED_ROW_CAP: usize = 500;
+
     pub fn entities_filtered(
         &self,
         scan_id: &str,
@@ -341,10 +347,18 @@ impl super::Store {
             next_param += 1;
         }
         if value_contains.is_some() {
+            // Substring (`%v%`) match: the leading `%` means this LIKE is a
+            // deliberate full scan that no index can serve — acceptable because the
+            // `o.scan_id = ?1` join has already narrowed the candidate set to one
+            // scan's entities, so the unindexed value filter runs over a small set.
             sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
             let _ = next_param;
         }
-        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 500");
+        // Silent truncation at FILTERED_ROW_CAP (see the const's doc).
+        sql.push_str(&format!(
+            " ORDER BY e.confidence DESC, e.uid ASC LIMIT {}",
+            Self::FILTERED_ROW_CAP
+        ));
 
         let raw: Vec<String> = {
             let conn = self.conn.lock();

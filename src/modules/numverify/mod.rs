@@ -59,6 +59,11 @@ impl Module for NumVerify {
         ModuleCost::KeyGated
     }
 
+    /// Carrier and line-type lookups are stable for ~24h per target; cache to avoid re-burning paid NumVerify quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Phone)
     }

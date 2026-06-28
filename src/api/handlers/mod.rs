@@ -9,7 +9,7 @@ use std::{convert::Infallible, sync::Arc};
 use axum::{
     Json,
     extract::{Path, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
     response::{
         IntoResponse,
         sse::{Event as SseEvent, KeepAlive, Sse},
@@ -382,6 +382,7 @@ pub async fn modules_graph(State(s): State<Arc<AppState>>) -> Json<Value> {
 pub async fn entity_get(
     State(s): State<Arc<AppState>>,
     Path(uid): Path<String>,
+    req_headers: HeaderMap,
 ) -> impl IntoResponse {
     match s.store.get_entity(&uid) {
         Ok(Some(entity)) => {
@@ -399,7 +400,31 @@ pub async fn entity_get(
                     return internal_error(&e);
                 }
             };
-            (
+            // Cache revalidation for this stable cross-scan point lookup: an
+            // entity's record changes only when it is re-observed, so
+            // `observed_at` + the observation count is a sound weak validator. A
+            // reconnecting SPA polling the entity panel revalidates with `304`
+            // instead of refetching the full record (+ every scan it appears in)
+            // over cellular. `private, no-cache` allows the browser to cache and
+            // revalidate while keeping the sensitive record out of shared caches.
+            let etag = format!("W/\"{:x}-{}\"", entity.observed_at, obs_count);
+            let not_modified = req_headers
+                .get(header::IF_NONE_MATCH)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|inm| if_none_match_hit(inm, &etag));
+            if not_modified {
+                let mut resp = StatusCode::NOT_MODIFIED.into_response();
+                let h = resp.headers_mut();
+                if let Ok(v) = axum::http::HeaderValue::from_str(&etag) {
+                    h.insert(header::ETAG, v);
+                }
+                h.insert(
+                    header::CACHE_CONTROL,
+                    axum::http::HeaderValue::from_static("private, no-cache"),
+                );
+                return resp;
+            }
+            let mut resp = (
                 StatusCode::OK,
                 Json(serde_json::json!({
                     "entity": entity,
@@ -407,11 +432,32 @@ pub async fn entity_get(
                     "observation_count": obs_count,
                 })),
             )
-                .into_response()
+                .into_response();
+            let h = resp.headers_mut();
+            if let Ok(v) = axum::http::HeaderValue::from_str(&etag) {
+                h.insert(header::ETAG, v);
+            }
+            h.insert(
+                header::CACHE_CONTROL,
+                axum::http::HeaderValue::from_static("private, no-cache"),
+            );
+            resp
         }
         Ok(None) => not_found(),
         Err(e) => internal_error(&e),
     }
+}
+
+/// RFC 7232 `If-None-Match` test for the JSON handlers (weak-aware): true if the
+/// header is `*` or lists `etag`, ignoring the `W/` weak prefix on both sides.
+/// Mirrors the export module's equivalent; kept local so each module's caching
+/// is self-contained.
+fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
+    let strip = |t: &str| t.trim().trim_start_matches("W/").to_string();
+    let want = strip(etag);
+    if_none_match
+        .split(',')
+        .any(|t| t.trim() == "*" || strip(t) == want)
 }
 
 pub async fn search_entities(
@@ -456,12 +502,73 @@ pub async fn search_entities(
 
 const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 
+/// Render one bus [`Event`] as a wire [`SseEvent`].
+///
+/// The frame is stamped with `id:` = the event's `ts` (unix seconds). The
+/// browser's `EventSource` records the last id seen and echoes it as the
+/// `Last-Event-ID` request header on its automatic reconnect, which
+/// [`replay_since`] uses to backfill the events missed during a mobile-link drop
+/// — the gap the previous bare-`data` frames left permanently unrecoverable from
+/// the live stream.
+///
+/// The frame is left as the **default unnamed `message` event** — deliberately
+/// NOT `.event(tag)`. A named SSE event is dispatched only to a matching
+/// `addEventListener(tag, …)` and bypasses `EventSource.onmessage`; the SPA
+/// consumes the stream through `es.onmessage` and switches on the JSON `type`
+/// field, so naming the frames would silently stop it receiving them. Stamping
+/// only `id:` is purely additive: `onmessage` still fires for every frame and
+/// the JSON body (with its unchanged `entity_found`/… `type` tag) is untouched,
+/// so the existing client contract is preserved.
+fn event_to_sse(event: &Event) -> SseEvent {
+    let payload = serde_json::to_string(&event.kind).unwrap_or_default();
+    SseEvent::default().id(event.ts.to_string()).data(payload)
+}
+
+/// Persisted events to replay when a reconnecting `EventSource` presents a
+/// `Last-Event-ID` — every stored event for `scan_id` newer than that id, in
+/// order, so a client resumes exactly where its dropped stream left off.
+///
+/// The id is an event `ts` (unix seconds); we replay `ts > last_id`. Same-second
+/// events straddling the boundary may re-deliver a couple of frames, which the
+/// log view tolerates — a far better failure mode than the old behaviour, where
+/// every event pushed during the drop was lost permanently (recoverable only by
+/// separately polling `events.history`). Returns an empty vec when the header is
+/// absent/unparseable or no scan/events exist; a store error degrades to no
+/// replay rather than failing the live stream the client actually wants.
+fn replay_since(
+    store: &dyn crate::core::port::StoragePort,
+    scan_id: &str,
+    headers: &HeaderMap,
+) -> Vec<Event> {
+    let Some(last_id) = headers
+        .get(header::HeaderName::from_static("last-event-id"))
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.trim().parse::<u64>().ok())
+    else {
+        return Vec::new();
+    };
+    match store.events_for_scan(scan_id) {
+        Ok(events) => events.into_iter().filter(|e| e.ts > last_id).collect(),
+        Err(e) => {
+            tracing::warn!(scan_id = %scan_id, error = %e, "SSE replay query failed; resuming live only");
+            Vec::new()
+        }
+    }
+}
+
 /// Build the SSE body stream shared by the scan- and live-event endpoints.
 ///
-/// `accept` selects which bus events belong on this stream (by `scan_id` and/or
-/// live-session ownership). Centralising the plumbing here is what keeps the two
-/// endpoints from drifting — every subtle SSE property lives in one place:
+/// `replay` is a (possibly empty) prelude of already-persisted events emitted
+/// before the live tail — the `Last-Event-ID` backfill (see [`replay_since`]).
+/// `accept` selects which live bus events belong on this stream (by `scan_id`
+/// and/or live-session ownership). Centralising the plumbing here is what keeps
+/// the two endpoints from drifting — every subtle SSE property lives in one
+/// place:
 ///
+/// * **Resumption** — the `replay` prelude is chained ahead of the live
+///   broadcast tail, so a reconnecting client first receives the events it
+///   missed (newer than its `Last-Event-ID`) and then continues live, with no
+///   gap.
 /// * **Lag tolerance** — a slow client that overflows its broadcast buffer
 ///   yields `Err(Lagged)`, which falls through to `_ => None`: the missed events
 ///   are skipped but the stream stays open (dropping a few live-log lines under
@@ -472,6 +579,8 @@ const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120
 ///   yet). A finished scan stops emitting, so its stream closes ~timeout later,
 ///   as intended; the browser's `EventSource` transparently reconnects if the
 ///   session is still live (only relevant when an interval exceeds the timeout).
+///   The idle timeout applies only to the live tail, so a long `replay` prelude
+///   can't trip it.
 /// * **Keep-alive** — periodic comment pings hold the connection open and surface
 ///   a dead socket promptly via the failing write.
 ///
@@ -479,31 +588,46 @@ const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120
 /// and unsubscribing it — so there is no per-connection resource to leak.
 fn sse_event_stream<F>(
     bus: &EventBus,
+    replay: Vec<Event>,
     accept: F,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>> + use<F>>
 where
     F: Fn(&Event) -> bool + Send + 'static,
 {
-    let stream = BroadcastStream::new(bus.subscribe())
+    // Backfill prelude: the events the client missed, already persisted and in
+    // order. Each is an infallible `Ok` SseEvent, stamped with the same id/type
+    // as the live frames so the client's `Last-Event-ID` continues monotonically.
+    let prelude = tokio_stream::iter(
+        replay
+            .into_iter()
+            .map(|e| Ok::<SseEvent, Infallible>(event_to_sse(&e))),
+    );
+
+    let live = BroadcastStream::new(bus.subscribe())
         .filter_map(move |msg| match msg {
-            Ok(event) if accept(&event) => {
-                let payload = serde_json::to_string(&event.kind).unwrap_or_default();
-                Some(Ok(SseEvent::default().data(payload)))
-            }
+            Ok(event) if accept(&event) => Some(Ok(event_to_sse(&event))),
             _ => None,
         })
         .timeout(SSE_IDLE_TIMEOUT)
         .take_while(std::result::Result::is_ok)
         .filter_map(std::result::Result::ok);
 
+    let stream = prelude.chain(live);
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
 pub async fn scan_events_sse(
     State(s): State<Arc<AppState>>,
     Path(target_sid): Path<String>,
+    headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
-    sse_event_stream(&s.bus, move |event| event.scan_id == target_sid)
+    // Read the missed-event backfill from the persisted log, then chain the live
+    // tail after it. The events table is the durable record the engine writes to,
+    // so a reconnecting `EventSource` recovers everything newer than its
+    // `Last-Event-ID` (see `replay_since`); the live tail then continues. A few
+    // same-second boundary frames may re-deliver, which the log view tolerates.
+    let replay = replay_since(s.store.as_ref(), &target_sid, &headers);
+    sse_event_stream(&s.bus, replay, move |event| event.scan_id == target_sid)
 }
 
 // ─── Settings handlers ─────────────────────────────────────────────────────
@@ -563,11 +687,18 @@ pub async fn live_stop(
 pub async fn live_events_sse(
     State(s): State<Arc<AppState>>,
     Path(target_lid): Path<String>,
+    headers: HeaderMap,
 ) -> Sse<impl Stream<Item = Result<SseEvent, Infallible>>> {
     // A live session's stream carries both its own lifecycle events (emitted
     // under `scan_id == live_id`) and every per-iteration scan it spawned.
     let live = s.live.clone();
-    sse_event_stream(&s.bus, move |event| {
+    // On reconnect, backfill the session's own lifecycle events newer than the
+    // client's `Last-Event-ID` (those persisted under the live id). The
+    // per-iteration child scans keep streaming live; replaying every child's
+    // full history would be unbounded, so the durable backfill is scoped to the
+    // session timeline, with the live tail resuming both.
+    let replay = replay_since(s.store.as_ref(), &target_lid, &headers);
+    sse_event_stream(&s.bus, replay, move |event| {
         event.scan_id == target_lid || live.session_owns_scan(&target_lid, &event.scan_id)
     })
 }

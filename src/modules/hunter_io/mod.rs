@@ -119,6 +119,11 @@ impl Module for HunterIo {
         ModuleCost::KeyGated
     }
 
+    /// Domain email-pattern intel is stable for ~24h per target; cache to avoid re-burning key-gated Hunter.io quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

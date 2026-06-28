@@ -35,6 +35,16 @@ fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
 /// Use this everywhere a module returns `Error::module(name, "HTTP …")`
 /// so the user sees the upstream's actual error payload rather than a
 /// bare status code.
+///
+/// Decompression assumption: the shared reqwest client is built with
+/// `default-features = false, features = ["json", "rustls-tls", "stream"]`
+/// (Cargo.toml) — **no** `gzip`/`brotli`/`deflate` feature — so reqwest sends no
+/// `Accept-Encoding` and never auto-decompresses. The byte cap below therefore
+/// bounds the raw on-the-wire bytes, and a compressed "decompression bomb" cannot
+/// expand inside this stream: the cap is reached on the *compressed* size. If a
+/// decompression feature is ever enabled, this cap would instead bound the
+/// *decoded* accumulation (still safe to within one chunk), but verify before
+/// flipping that feature.
 pub async fn error_snippet(resp: reqwest::Response) -> String {
     // Stream up to 8 KiB before deciding the snippet is "long
     // enough" — a hostile or compromised upstream could otherwise
@@ -81,6 +91,10 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
 /// risk under the username_search 32-way probe fan-out. Returns lossy UTF-8 of
 /// what was read (sufficient for substring/needle checks), or `None` on a
 /// transport error.
+///
+/// Decompression assumption: as documented on [`error_snippet`], the shared
+/// reqwest client has no `gzip`/`brotli`/`deflate` feature, so `cap` bounds the
+/// raw on-the-wire bytes and no compressed body can expand inside this stream.
 pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<String> {
     use futures::StreamExt as _;
     let mut stream = resp.bytes_stream();
@@ -114,6 +128,11 @@ pub const JSON_BODY_CAP: usize = 32 * 1024 * 1024;
 /// lossy UTF-8 so an odd-charset body still yields a string. The shared erroring-cap
 /// core of [`read_json_text`] and [`read_text`] (cf. the *truncating*, needle-check
 /// [`read_body_capped`]).
+///
+/// Decompression assumption: as documented on [`error_snippet`], the shared
+/// reqwest client has no `gzip`/`brotli`/`deflate` feature, so [`JSON_BODY_CAP`]
+/// bounds the raw on-the-wire bytes and a compressed bomb cannot expand inside
+/// this stream — the cap is reached on the *compressed* size.
 async fn read_capped_or_err(resp: reqwest::Response, module: &str) -> Result<String> {
     use futures::StreamExt as _;
     let mut stream = resp.bytes_stream();
@@ -255,6 +274,136 @@ async fn decode_json_body<T: DeserializeOwned>(resp: reqwest::Response, module: 
         .map_err(|e| Error::module(module, redact_credentials(&e.to_string())))
 }
 
+/// Total send attempts for an idempotent GET: the first try plus one retry. A
+/// single retry rescues the common transient failure (a dropped packet during
+/// connect, a momentary 503 behind a CDN) on a flaky mobile link while keeping
+/// the worst-case in-process wait tiny relative to the module budget.
+const RETRY_MAX_ATTEMPTS: u32 = 2;
+
+/// Base backoff before a retry. With the jitter below the longest single wait is
+/// `RETRY_BACKOFF_BASE_MS + RETRY_JITTER_MS` ≈ 350 ms — and there is at most one
+/// retry — so the total added in-process wait stays far under ⅓ of
+/// `MODULE_TIMEOUT_MS` (1000 ms), honouring the `retry_after` budget rule.
+const RETRY_BACKOFF_BASE_MS: u64 = 200;
+
+/// Upper bound on the random jitter added to the backoff, decorrelating retries
+/// across the fan-out so a transient blip on a shared host doesn't trigger a
+/// synchronised thundering-herd retry from many modules at once.
+const RETRY_JITTER_MS: u64 = 150;
+
+/// True for the transient *server-side* statuses worth a single retry: 502 Bad
+/// Gateway, 503 Service Unavailable, 504 Gateway Timeout — typically a momentary
+/// upstream/CDN hiccup that a short backoff clears. 500 is deliberately excluded
+/// (often a deterministic application error that a retry just repeats), and 429
+/// is handled by the dedicated `Retry-After`-aware paths, not here.
+fn is_transient_retry_status(status: reqwest::StatusCode) -> bool {
+    matches!(status.as_u16(), 502..=504)
+}
+
+/// Cheap, dependency-free jitter in `[0, RETRY_JITTER_MS]`. Seeded from the
+/// process clock xored with a monotonically-incrementing counter so concurrent
+/// callers in the same millisecond still diverge. Not cryptographic — it only
+/// needs to decorrelate retry timing, not resist prediction.
+fn retry_jitter_ms() -> u64 {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    use std::time::{SystemTime, UNIX_EPOCH};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let nanos = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.subsec_nanos() as u64)
+        .unwrap_or(0);
+    let n = nanos ^ COUNTER.fetch_add(0x9E37_79B9, Ordering::Relaxed);
+    n % (RETRY_JITTER_MS + 1)
+}
+
+/// Send an idempotent GET with a bounded transient-failure retry. Retries at most
+/// `RETRY_MAX_ATTEMPTS - 1` times, on either a transport error or a transient 5xx
+/// (`is_transient_retry_status`), with a short jittered backoff. Every failed
+/// attempt (transport error or retryable status) records a breaker failure for
+/// `host`, so a genuinely wedged host still trips the breaker rather than being
+/// masked by the retry. Returns the final `Response` (which may itself be a
+/// non-success the caller must classify) or the last transport `Err`.
+async fn send_get_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    host: Option<&str>,
+) -> reqwest::Result<reqwest::Response> {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match client.get(url).send().await {
+            Ok(resp) => {
+                if attempt < RETRY_MAX_ATTEMPTS && is_transient_retry_status(resp.status()) {
+                    // A transient upstream fault is also a breaker failure: record
+                    // it before backing off so a host stuck at 503 still trips.
+                    if let Some(h) = host {
+                        circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                    }
+                    let backoff = RETRY_BACKOFF_BASE_MS + retry_jitter_ms();
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                    continue;
+                }
+                return Ok(resp);
+            }
+            Err(e) => {
+                if attempt < RETRY_MAX_ATTEMPTS {
+                    if let Some(h) = host {
+                        circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                    }
+                    let backoff = RETRY_BACKOFF_BASE_MS + retry_jitter_ms();
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
+/// Keyed counterpart to [`send_get_with_retry`]: send an idempotent GET that
+/// carries a single `header_name: key` credential header, with the same bounded
+/// transient retry (transport error or 502/503/504) and breaker-failure
+/// accounting. The keyed path can't use the curl fallback (a key header can't be
+/// replayed through curl), so this retry is the *only* second chance a transient
+/// blip gets on a keyed module — closing the asymmetry the audit flagged. The
+/// key never rides through curl and never appears in a log here.
+async fn send_keyed_get_with_retry(
+    client: &reqwest::Client,
+    url: &str,
+    header_name: &str,
+    key: &str,
+    host: Option<&str>,
+) -> reqwest::Result<reqwest::Response> {
+    let mut attempt: u32 = 0;
+    loop {
+        attempt += 1;
+        match client.get(url).header(header_name, key).send().await {
+            Ok(resp) => {
+                if attempt < RETRY_MAX_ATTEMPTS && is_transient_retry_status(resp.status()) {
+                    if let Some(h) = host {
+                        circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                    }
+                    let backoff = RETRY_BACKOFF_BASE_MS + retry_jitter_ms();
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                    continue;
+                }
+                return Ok(resp);
+            }
+            Err(e) => {
+                if attempt < RETRY_MAX_ATTEMPTS {
+                    if let Some(h) = host {
+                        circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                    }
+                    let backoff = RETRY_BACKOFF_BASE_MS + retry_jitter_ms();
+                    tokio::time::sleep(std::time::Duration::from_millis(backoff)).await;
+                    continue;
+                }
+                return Err(e);
+            }
+        }
+    }
+}
+
 async fn fetch_json_inner<T: DeserializeOwned>(
     client: &reqwest::Client,
     module: &'static str,
@@ -266,7 +415,11 @@ async fn fetch_json_inner<T: DeserializeOwned>(
     // blocked request returns an `Err` (never `Ok(None)`, which `fetch_json_or_404` would
     // misread as a definitive "not found").
     let host = breaker_gate(module, url)?;
-    match client.get(url).send().await {
+    // Bounded transient retry (transport error or 502/503/504) before falling
+    // back to curl — a single dropped packet during connect on a mobile link
+    // would otherwise permanently fail an idempotent GET. Intermediate failures
+    // are recorded against the breaker inside the helper.
+    match send_get_with_retry(client, url, host.as_deref()).await {
         Ok(resp) => {
             let status = resp.status();
             record_breaker_outcome(host.as_deref(), status);
@@ -323,12 +476,86 @@ pub fn retry_after_secs(
     default_secs: u64,
     max_secs: u64,
 ) -> u64 {
-    headers
+    let secs = headers
         .get("retry-after")
         .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
-        .unwrap_or(default_secs)
-        .min(max_secs)
+        .and_then(|s| {
+            let s = s.trim();
+            // Fast path: the delta-seconds form (`Retry-After: 120`).
+            if let Ok(n) = s.parse::<u64>() {
+                return Some(n);
+            }
+            // RFC 7231 also permits an HTTP-date form
+            // (`Retry-After: Wed, 21 Oct 2026 07:28:00 GMT`), which some
+            // CDN-fronted rate limiters emit. Convert it to seconds-from-now so
+            // the server's actual hint isn't discarded as "unparseable".
+            httpdate_secs_from_now(s)
+        })
+        .unwrap_or(default_secs);
+    secs.min(max_secs)
+}
+
+/// Parse an RFC 7231 / RFC 1123 IMF-fixdate (`Wed, 21 Oct 2026 07:28:00 GMT`) and
+/// return whole seconds from now until that instant, or `None` if the string is
+/// not that exact shape. Dependency-free (no `httpdate`/`chrono`/`time` direct
+/// dep): the `Retry-After` date path is rare, so a small inline parser of the one
+/// canonical form HTTP servers must send is cheaper than a new crate. A date in
+/// the past yields `0` (retry immediately); the result is clamped to `max_secs`
+/// by the caller.
+fn httpdate_secs_from_now(s: &str) -> Option<u64> {
+    // Expected: "Wed, 21 Oct 2026 07:28:00 GMT" — day-name, DD Mon YYYY HH:MM:SS GMT.
+    let rest = s.split_once(", ").map_or(s, |(_, r)| r).trim();
+    let mut it = rest.split_whitespace();
+    let day: u32 = it.next()?.parse().ok()?;
+    let mon = match it.next()? {
+        "Jan" => 1,
+        "Feb" => 2,
+        "Mar" => 3,
+        "Apr" => 4,
+        "May" => 5,
+        "Jun" => 6,
+        "Jul" => 7,
+        "Aug" => 8,
+        "Sep" => 9,
+        "Oct" => 10,
+        "Nov" => 11,
+        "Dec" => 12,
+        _ => return None,
+    };
+    let year: i64 = it.next()?.parse().ok()?;
+    let mut hms = it.next()?.split(':');
+    let hour: u64 = hms.next()?.parse().ok()?;
+    let min: u64 = hms.next()?.parse().ok()?;
+    let sec: u64 = hms.next()?.parse().ok()?;
+    // Require the trailing zone token to be GMT (the only form RFC 7231 mandates);
+    // reject anything else rather than silently mis-timing.
+    if it.next() != Some("GMT") {
+        return None;
+    }
+    if !(1..=31).contains(&day) || hour > 23 || min > 59 || sec > 60 {
+        return None;
+    }
+    let epoch = civil_to_unix(year, mon, day, hour, min, sec)?;
+    let now = crate::core::entity::unix_now();
+    // Past or now → 0 (retry immediately); future → the delta.
+    Some(epoch.saturating_sub(now))
+}
+
+/// Convert a proleptic-Gregorian UTC civil date-time to a Unix timestamp
+/// (seconds). Uses Howard Hinnant's `days_from_civil` algorithm (public domain),
+/// valid for all years; returns `None` only if the pre-epoch result would be
+/// negative (a `Retry-After` in 1969 is nonsensical — treat as unparseable).
+fn civil_to_unix(year: i64, month: u32, day: u32, hour: u64, min: u64, sec: u64) -> Option<u64> {
+    let y = if month <= 2 { year - 1 } else { year };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let m = month as i64;
+    let d = day as i64;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    let days = era * 146097 + doe - 719468; // days since 1970-01-01
+    let total = days * 86400 + (hour as i64) * 3600 + (min as i64) * 60 + sec as i64;
+    u64::try_from(total).ok()
 }
 
 /// Handle a non-success HTTP response for keyed modules. Returns:
@@ -461,20 +688,22 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
 ) -> Result<Option<T>> {
     let key = ctx.key(key_env)?;
     // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
-    // repeatedly. Host-less/unparseable URLs are un-gated. Note the deliberate asymmetry
-    // with `fetch_json_inner`: a keyed request does NOT fall back to curl on a transport
-    // error (a key header can't be replayed through the curl path), so a send failure is
-    // surfaced directly after recording the breaker failure.
+    // repeatedly. Host-less/unparseable URLs are un-gated. A keyed request still does NOT
+    // fall back to curl on a transport error (a key header can't be replayed through the
+    // curl path), but it now gets the same bounded transient retry as the non-keyed path
+    // (`send_keyed_get_with_retry`) so a single connect blip no longer permanently fails a
+    // keyed module; intermediate failures are recorded against the breaker in the helper.
     let host = breaker_gate(module, url)?;
-    let resp = match ctx.http.get(url).header(header_name, key).send().await {
-        Ok(resp) => resp,
-        Err(e) => {
-            if let Some(h) = host.as_deref() {
-                circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+    let resp =
+        match send_keyed_get_with_retry(&ctx.http, url, header_name, key, host.as_deref()).await {
+            Ok(resp) => resp,
+            Err(e) => {
+                if let Some(h) = host.as_deref() {
+                    circuit_breaker::record_failure(h, crate::core::entity::unix_now());
+                }
+                return Err(Error::module(module, redact_credentials(&e.to_string())));
             }
-            return Err(Error::module(module, redact_credentials(&e.to_string())));
-        }
-    };
+        };
     record_breaker_outcome(host.as_deref(), resp.status());
     // Classify the keyed response via the shared policy: 404 -> Ok(None); 401/403/429 ->
     // burn the key + Err; any other non-2xx -> Err; 2xx -> the response to decode. Reuses

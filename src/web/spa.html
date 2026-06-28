@@ -137,6 +137,32 @@
       #scan-filter { width: 100% !important; float: none !important; margin-top: 6px !important; display: block; }
       .keyrow .kn { min-width: 0 !important; }
       .keyrow input[type=password] { min-width: 0 !important; }
+      /* The live-log rows use desktop fixed-width columns (ts 80 / typ 120)
+         that crush the message on a phone. Stack the timestamp+type onto one
+         line and give the message the full width below, so a long entity value
+         or error wraps readably instead of clipping. */
+      .log-row { flex-wrap: wrap; gap: 4px 8px; }
+      .log-row .ts { width: auto; }
+      .log-row .typ { width: auto; min-width: 92px; }
+      .log-row .msg { flex: 1 0 100%; }
+      /* The log and graph canvases are 560px tall — over half a phone screen.
+         Cap them so the surrounding controls stay reachable without a long
+         scroll, while keeping enough rows/graph visible to be useful. */
+      #log-box { max-height: 48vh; }
+      #graph-svg { height: 60vh; }
+      /* Comfortable tap targets: Bootstrap's condensed buttons/inputs are
+         ~30px tall, below the ~44px touch-target guideline. Nudge interactive
+         controls up so they're reliably tappable on a phone (does not affect
+         the desktop layout above this breakpoint). */
+      .btn, .form-control, .nav-tabs > li > a { min-height: 40px; }
+      .btn-xs, .btn-sm { min-height: 34px; }
+      /* Let the page use the full narrow width — the desktop side padding
+         wastes scarce horizontal space on a phone. */
+      #mainbody { padding-left: 8px !important; padding-right: 8px !important; }
+      /* Scrollable tab strips: the per-scan sub-nav has many tabs; allow it to
+         scroll horizontally instead of wrapping into a tall stack. */
+      .nav-tabs { white-space: nowrap; overflow-x: auto; -webkit-overflow-scrolling: touch; }
+      .nav-tabs > li { float: none; display: inline-block; }
     }
     .keyrow .kactions{display:flex;gap:6px;margin-left:auto}
     /* Capability-toggle grid (Settings): chips wrap and flow; monospace name. */

@@ -526,6 +526,82 @@ fn merge_corroboration_accumulates() {
     assert_eq!(a.corroboration, 4); // 1 + 3
 }
 
+#[test]
+fn quarantine_survives_a_merge_that_raises_confidence() {
+    // GREATEST merge raises `confidence`; the quarantine cap is sticky via the
+    // `candidate` tag, so a demoted entity that later merges with a higher-
+    // confidence same-UID observation must STILL classify Candidate. Before the
+    // tag-driven cap, `absorb`'s `f64::max` silently un-demoted it.
+    let mut stranger = Entity::new(EntityKind::Email, "stranger@example.com", 0.70, "s");
+    stranger.demote_to_candidate();
+    assert_eq!(stranger.classify(), Classification::Candidate);
+
+    // A fresh same-UID observation arrives carrying high confidence.
+    let mut fresh = Entity::new(EntityKind::Email, "stranger@example.com", 0.95, "s");
+    fresh.add_evidence(Evidence::new("hibp", "breach"));
+    assert_eq!(stranger.uid, fresh.uid);
+    stranger.merge(fresh);
+
+    // Stored confidence rose (GREATEST), but C_eff stays capped and the tier is
+    // still Candidate — the quarantine was not undone by the merge.
+    assert!(
+        stranger.confidence >= 0.95,
+        "GREATEST raised the stored field"
+    );
+    assert!(
+        stranger.has_tag(crate::core::tags::CANDIDATE),
+        "tag survives merge"
+    );
+    assert!(
+        stranger.c_effective() <= CANDIDATE_CONF + 1e-9,
+        "C_eff stays capped while the candidate tag is present"
+    );
+    assert_eq!(stranger.classify(), Classification::Candidate);
+}
+
+#[test]
+fn quarantine_cap_releases_when_the_candidate_tag_is_removed() {
+    // The legitimate un-quarantine path (promote_breach_candidate_geo_corroborated)
+    // drops the `candidate` tag and lifts confidence; the C_eff cap must release
+    // with the tag so promotion actually takes effect.
+    let mut e = Entity::new(EntityKind::Email, "subject@example.com", 0.70, "s");
+    e.demote_to_candidate();
+    assert_eq!(e.classify(), Classification::Candidate);
+
+    // Mirror the promotion pass: drop the tag, raise confidence.
+    e.tags.retain(|t| t != crate::core::tags::CANDIDATE);
+    e.confidence = e.confidence.max(0.50);
+    assert!(
+        e.c_effective() >= 0.50 - 1e-9,
+        "cap released once the candidate tag is gone"
+    );
+    assert_eq!(e.classify(), Classification::Probable);
+}
+
+#[test]
+fn corroborating_source_count_matches_the_set_len() {
+    // The allocation-free count must equal `corroborating_sources().len()` across
+    // the real / enrichment / recall mix — they are the two forms of one measure.
+    let mut e = email("a@b.com");
+    e.add_evidence(Evidence::new("hibp", "breach"));
+    e.add_evidence(Evidence::new("hibp", "another breach row")); // same source
+    e.add_evidence(Evidence::new("search_engines", "page"));
+    e.add_evidence(Evidence::new("geo_normalize", "enrichment")); // non-corroborating
+    e.add_evidence(Evidence::new("recall", "replay")); // non-corroborating
+    assert_eq!(
+        e.corroborating_source_count() as usize,
+        e.corroborating_sources().len()
+    );
+    assert_eq!(e.corroborating_source_count(), 2); // hibp + search_engines
+    // Unlike source_count(), the raw count is the TRUE value with no field
+    // fallback / floor: an entity with only enrichment evidence reads 0.
+    let mut only_enrich = email("c@d.com");
+    only_enrich.corroboration = 5;
+    only_enrich.add_evidence(Evidence::new("geo_normalize", "enrichment"));
+    assert_eq!(only_enrich.corroborating_source_count(), 0);
+    assert_eq!(only_enrich.source_count(), 1); // source_count floors at 1
+}
+
 // ── Decay ────────────────────────────────────────────────────────────────
 
 #[test]

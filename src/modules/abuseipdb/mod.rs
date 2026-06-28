@@ -34,6 +34,12 @@ impl Module for AbuseIpDb {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// Abuse-confidence scores move faster than static intel; cache 1h to cut repeat key-gated AbuseIPDB calls while staying fresh.
+    fn cache_ttl_secs(&self) -> u64 {
+        3_600
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress)
     }

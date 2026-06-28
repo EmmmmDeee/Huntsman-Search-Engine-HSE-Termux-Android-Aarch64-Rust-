@@ -61,7 +61,33 @@ fn write_inner(tmp: &Path, path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     {
         std::fs::write(tmp, bytes)?;
     }
-    std::fs::rename(tmp, path)
+    // `rename` is atomic only WITHIN one filesystem; a cross-device rename returns
+    // `EXDEV`. The temp is `path.with_file_name(...)` — a sibling in the SAME
+    // directory as the destination — so source and target always share a device
+    // and this invariant holds. (Do not relocate the temp to another tree.)
+    std::fs::rename(tmp, path)?;
+    // Fsync the PARENT DIRECTORY so the rename (the directory entry now pointing
+    // at the new inode) is itself durable. `sync_all` on the temp flushed the
+    // file *contents*, but on a power-loss/abrupt-kill (the Termux/Android norm)
+    // immediately after rename the directory entry can still be lost — reverting
+    // the destination to the old file, or, for a first-ever write, losing it
+    // entirely. Best-effort and Unix-only (directory fsync is a no-op / errors on
+    // some platforms); a failure here does not invalidate the already-synced data.
+    #[cfg(unix)]
+    {
+        if let Some(parent) = path.parent() {
+            // An empty parent means the path is just a filename → current dir.
+            let dir = if parent.as_os_str().is_empty() {
+                Path::new(".")
+            } else {
+                parent
+            };
+            if let Ok(d) = std::fs::File::open(dir) {
+                let _ = d.sync_all();
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Create `path` (and any missing parents) as a **private** directory — mode

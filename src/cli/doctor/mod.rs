@@ -74,6 +74,25 @@ pub(super) async fn cmd_doctor() -> Result<()> {
              will silently return nothing. Install it: pkg install curl"
         );
     }
+    // `git` gates the in-place upgrade path: `hse update`/`upgrade` and the
+    // server's autonomous self-update shell out to `git fetch`/`git rev-list`
+    // (see src/cli/update.rs). Without it, `--check` reports `commits_behind =
+    // None` and the upgrade is a silent no-op, so surface the gap up front
+    // rather than leaving the operator to discover a broken update path.
+    let git_ok = std::process::Command::new("git")
+        .arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status()
+        .is_ok_and(|s| s.success());
+    if git_ok {
+        println!("  git:       present");
+    } else {
+        println!(
+            "  git:       MISSING — `hse update` (git fetch / rev-list) can't check for or\n             \
+             apply upgrades and silently no-ops. Install it: pkg install git"
+        );
+    }
 
     println!("\nModules ({} registered):", mods.len());
     let mut by_cost = std::collections::BTreeMap::<&str, usize>::new();

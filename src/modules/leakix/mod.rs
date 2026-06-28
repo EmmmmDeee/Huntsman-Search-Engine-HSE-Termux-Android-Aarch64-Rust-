@@ -148,6 +148,12 @@ impl Module for LeakIx {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// Host/service exposure intel is stable for ~24h per target; cache to avoid re-burning key-gated LeakIX quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::IpAddress | TargetKind::Domain)
     }

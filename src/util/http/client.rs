@@ -33,8 +33,19 @@ pub fn build_client() -> reqwest::Client {
 pub fn build_client_with_trace(trace_id: &str) -> reqwest::Client {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
     let mut headers = HeaderMap::new();
-    if let Ok(value) = HeaderValue::from_str(trace_id) {
-        headers.insert(HeaderName::from_static("x-huntsman-trace"), value);
+    match HeaderValue::from_str(trace_id) {
+        Ok(value) => {
+            headers.insert(HeaderName::from_static("x-huntsman-trace"), value);
+        }
+        // A non-ASCII / control-char id can't ride in a header value; fall back to
+        // an un-stamped client but leave a breadcrumb so an operator can see why
+        // x-huntsman-trace went missing (it's the non-secret scan id, safe to log).
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "trace id rejected as a header value; outbound requests will be un-stamped"
+            );
+        }
     }
     super::ssrf::client_builder()
         .default_headers(headers)

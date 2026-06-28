@@ -39,15 +39,15 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::core::{
-    entity::{EntityKind, Evidence},
+    entity::EntityKind,
     error::Result,
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
-    tags,
 };
 use crate::modules::oathnet_pro::key_harvest::{extract_api_keys_from_item, store_api_credential};
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know;
+use crate::util::target_match::TargetMatch;
 
 mod endpoints;
 mod extract;
@@ -55,7 +55,8 @@ mod pivots;
 
 use endpoints::{dispatch_plan, effective_plan};
 use extract::{
-    extract_entities, extract_geo_entities, extract_message_emails, extract_message_mentions,
+    breach_parent_entity, extract_entities, extract_entities_with, extract_geo_entities,
+    extract_message_emails, extract_message_mentions,
 };
 use pivots::{
     discover_discord_pivots, discover_steam_pivots, dispatch_discord_pivots, dispatch_steam_pivots,
@@ -236,25 +237,35 @@ impl Module for SeekNow {
         let total = items.len();
 
         if total > 0 {
-            let mut parent = target.to_entity(0.85, &ctx.scan_id);
-            parent.tag(tags::BREACH);
-            parent.tag("see-know");
-            parent.add_evidence(
-                Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
-                    .with_attr("hits", total.to_string())
-                    .with_attr("endpoint", "/api/v1/search")
-                    .with_attr("provider", "see-know.eu")
-                    .with_attr("api_key_origin", &key_fp),
-            );
-            result.push(parent);
+            // Classify every returned row against the subject identity ONCE. This
+            // single pass drives BOTH the parent dossier gate and the per-row
+            // candidate quarantine, so the match is never recomputed (mirroring
+            // oathnet_pro's `breach_parent_entity` / `extract_breach_page` split).
+            let matcher = TargetMatch::new(v);
+            let row_matches: Vec<bool> = items.iter().map(|i| matcher.matches(i)).collect();
+
+            // Parent dossier — emitted ONLY when at least one returned row
+            // actually identifies the subject. The engine pre-seeds a subject
+            // anchor, so a broad `full_name` auto-detect `/search` that returns a
+            // page of strangers used to merge a false 0.85 `breach` confirmation
+            // straight onto that anchor; `breach_parent_entity` returns `None` on
+            // a zero-match page (mirroring oathnet_pro).
+            if let Some(parent) = breach_parent_entity(target, &ctx.scan_id, &key_fp, &row_matches)
+            {
+                result.push(parent);
+            }
 
             // Each record yields at least one entity; reserve up front so the
             // result vector doesn't repeatedly realloc as records are walked.
             result.entities.reserve(total);
 
-            for item in &items {
-                extract_entities(
+            for (item, &is_target) in items.iter().zip(&row_matches) {
+                // Feed the precomputed per-row match so the extractor's candidate
+                // quarantine uses the SAME decision the parent gate did, without
+                // recomputing `TargetMatch` per row.
+                extract_entities_with(
                     item,
+                    is_target,
                     v,
                     &ctx.scan_id,
                     "search",

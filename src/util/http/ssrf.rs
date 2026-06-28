@@ -29,6 +29,43 @@ pub(super) fn redirect_to_private_ip(host: Option<&str>) -> bool {
         .is_some_and(crate::util::preflight::is_private_ip)
 }
 
+/// True if a redirect hop is an unencrypted **cross-host** downgrade — i.e. the
+/// next hop is plaintext `http://` and its host differs from the host that
+/// issued the redirect. This is the on-path-injection risk the [`client_builder`]
+/// redirect policy must refuse: a MITM on a flaky mobile link can rewrite a 3xx
+/// `Location` to bounce the client onto an attacker-controlled plaintext host and
+/// tamper with the (then-unauthenticated, unencrypted) response.
+///
+/// Deliberately **scoped to cross-host**: the two modules that legitimately speak
+/// plaintext (`ip_geo` → `http://ip-api.com`, `contact_enrich`'s `http://apilayer.net`
+/// fallback) reach their endpoint directly or stay on the same host across a hop,
+/// so a same-host `http`→`http` redirect and any `http`→`https` upgrade are still
+/// followed. Only a downgrade that *also* changes host is treated as hostile.
+/// Operators who want a blanket plaintext ban set `HUNTSMAN_HTTPS_ONLY` (see
+/// [`https_only_opt_in`]), which additionally rejects every plaintext hop and target.
+///
+/// `prev` is the URL that issued the redirect (the last entry of
+/// `redirect::Attempt::previous()`); `next` is `redirect::Attempt::url()`.
+pub(super) fn is_plaintext_downgrade(prev: &url::Url, next: &url::Url) -> bool {
+    next.scheme() == "http" && prev.host_str() != next.host_str()
+}
+
+/// Operator opt-in for a blanket plaintext ban via `HUNTSMAN_HTTPS_ONLY`
+/// (`1`/`true`/`yes`/`on`). Default **off**: two modules legitimately require
+/// plaintext on their free tiers (`ip_geo` → `http://ip-api.com`,
+/// `contact_enrich` → `http://apilayer.net` fallback; both upstreams gate HTTPS
+/// behind a paid plan), so `https_only(true)` cannot be the unconditional default
+/// without silently breaking them. When set, [`client_builder`] applies
+/// `reqwest::ClientBuilder::https_only(true)`, refusing every non-TLS target and
+/// redirect hop — defense-in-depth for deployments that have confirmed they don't
+/// exercise the plaintext modules. The cross-host downgrade guard
+/// ([`is_plaintext_downgrade`]) is always on regardless of this flag.
+fn https_only_opt_in() -> bool {
+    std::env::var("HUNTSMAN_HTTPS_ONLY")
+        .ok()
+        .is_some_and(|v| matches!(v.trim(), "1" | "true" | "yes" | "on"))
+}
+
 /// Drop private/reserved IPs from a resolved address set — the SSRF DNS filter.
 pub(super) fn filter_public(
     addrs: impl Iterator<Item = std::net::SocketAddr>,
@@ -132,12 +169,25 @@ impl reqwest::dns::Resolve for SsrfResolver {
 /// Shared reqwest configuration (SSRF-guarded DNS, redirect policy, timeouts,
 /// pool, UA) used by both the plain and the trace-stamped client builders.
 pub(super) fn client_builder() -> reqwest::ClientBuilder {
-    reqwest::Client::builder()
+    let builder = reqwest::Client::builder()
         .dns_resolver(std::sync::Arc::new(SsrfResolver))
         .redirect(reqwest::redirect::Policy::custom(|attempt| {
             if attempt.previous().len() >= 10 {
                 attempt.error("too many redirects")
             } else if redirect_to_private_ip(attempt.url().host_str()) {
+                // SSRF: a public URL 3xx-ing onto a private/metadata IP hop.
+                attempt.stop()
+            } else if attempt
+                .previous()
+                .last()
+                .is_some_and(|prev| is_plaintext_downgrade(prev, attempt.url()))
+            {
+                // Defense-in-depth: refuse a cross-host plaintext (`http://`)
+                // downgrade. On a flaky mobile link a MITM could rewrite the
+                // `Location` to bounce us onto an attacker-controlled cleartext
+                // host and tamper with the response. Same-host http→http hops and
+                // http→https upgrades are still followed, so the plaintext-only
+                // free-tier modules (ip_geo / contact_enrich) are unaffected.
                 attempt.stop()
             } else {
                 attempt.follow()
@@ -150,12 +200,43 @@ pub(super) fn client_builder() -> reqwest::ClientBuilder {
         // it never cuts a slow-but-progressing stream; complements the explicit
         // per-call `tokio::time::timeout`s on the budgeted fetch paths.
         .read_timeout(Duration::from_secs(30))
-        .pool_max_idle_per_host(5)
+        // Pool sizing for the 130-module fan-out: many modules hammer a small
+        // set of shared OSINT hosts (crt.sh, ip-api, hudsonrock, …), so the
+        // dominant hosts benefit from keeping more warm keep-alive connections
+        // rather than re-running a rustls handshake per request — handshakes cost
+        // far more CPU/battery on a constrained Termux device than the few extra
+        // idle sockets. 16 covers the username_search 32-way probe burst without
+        // unbounded socket growth (the 90 s idle timeout reaps the rest).
+        .pool_max_idle_per_host(16)
         .pool_idle_timeout(Duration::from_secs(90))
         .tcp_keepalive(Duration::from_secs(15))
+        // NOTE: HTTP/2 keep-alive / adaptive-window tuning is intentionally NOT
+        // applied here. Those `ClientBuilder` methods (`http2_adaptive_window`,
+        // `http2_keep_alive_interval`, `http2_keep_alive_while_idle`,
+        // `http2_keep_alive_timeout`) are all `#[cfg(feature = "http2")]`-gated in
+        // reqwest; the crate is built with `features = ["json", "rustls-tls",
+        // "stream"]` (Cargo.toml) — no `http2` — so the methods do not exist on
+        // `ClientBuilder` and calling them would be a hard compile error. Enabling
+        // the feature pulls in the `h2` crate, a new transitive dependency absent
+        // from the lock file. The reqwest dependency surface is deliberately
+        // minimal and pinned for the Termux aarch64 target (see Cargo.toml's
+        // reqwest comment block), so adding `h2` is a deliberate, on-device-
+        // validated dependency decision that cannot be made from this file alone.
+        // Until then, `tcp_keepalive` above plus the 30 s `read_timeout` bound a
+        // stalled pooled connection.
         .user_agent(concat!(
             "huntsman-search-engine/",
             env!("CARGO_PKG_VERSION"),
             " (+https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-)"
-        ))
+        ));
+    // Defense-in-depth opt-in: a blanket plaintext ban when the operator sets
+    // `HUNTSMAN_HTTPS_ONLY`. Default off so the two free-tier plaintext modules
+    // (ip_geo, contact_enrich) keep working; the always-on cross-host downgrade
+    // guard in the redirect policy above already neutralises the MITM-redirect
+    // case without it. Applied last so every other knob is set regardless.
+    if https_only_opt_in() {
+        builder.https_only(true)
+    } else {
+        builder
+    }
 }

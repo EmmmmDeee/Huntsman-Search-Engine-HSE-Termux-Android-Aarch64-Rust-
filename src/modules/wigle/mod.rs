@@ -184,6 +184,12 @@ impl Module for Wigle {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// WiFi-network geolocation is stable for ~24h per target; cache to avoid re-burning key-gated WiGLE quota (mirrors opencellid).
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Geo
     }

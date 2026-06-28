@@ -27,7 +27,10 @@ pub mod austlii;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
-pub mod breach_rich;
+// Shared maximum-raw-data breach-record extractor (`extract_rich_detail`) used by
+// the `oathnet_pro` and `see_know` pools — a helper, not a registered `Module`,
+// so it is `pub(crate)` (the registry guard only inspects `pub mod` declarations).
+pub(crate) mod breach_rich;
 pub mod breach_timezone;
 pub mod cell_intel;
 pub mod cell_local;

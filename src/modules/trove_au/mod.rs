@@ -78,6 +78,11 @@ impl Module for TroveAu {
         ModuleCost::KeyGated
     }
 
+    /// Newspaper-archive results are stable for ~24h per target; cache to avoid re-burning key-gated Trove quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Organisation | TargetKind::AbnAcn)
     }

@@ -52,6 +52,11 @@ impl Module for AbnLookup {
         ModuleCost::KeyGated
     }
 
+    /// Business-register (ABN) records are stable for ~24h per target; cache to avoid re-burning paid ABR quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

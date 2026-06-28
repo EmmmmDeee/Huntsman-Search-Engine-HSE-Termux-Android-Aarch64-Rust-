@@ -65,6 +65,12 @@ impl Module for Proxycurl {
     fn cost(&self) -> ModuleCost {
         ModuleCost::Paid
     }
+
+    /// LinkedIn/company profile data is stable for ~24h per target; cache to avoid re-burning paid Proxycurl credits.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

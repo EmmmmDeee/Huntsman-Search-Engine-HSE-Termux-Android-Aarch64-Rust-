@@ -133,6 +133,12 @@ impl Module for VirusTotal {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// Reputation verdicts move faster than static intel; cache 1h to cut repeat key-gated VirusTotal calls while staying fresh.
+    fn cache_ttl_secs(&self) -> u64 {
+        3_600
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         10_000
     }

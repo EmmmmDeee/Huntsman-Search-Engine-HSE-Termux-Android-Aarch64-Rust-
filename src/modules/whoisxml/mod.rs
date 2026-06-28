@@ -130,6 +130,11 @@ impl Module for WhoisXml {
         ModuleCost::KeyGated
     }
 
+    /// WHOIS/DNS records are stable for ~24h per target; cache to avoid re-burning paid WhoisXML quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Domain)
     }

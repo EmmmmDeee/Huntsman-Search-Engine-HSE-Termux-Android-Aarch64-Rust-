@@ -272,6 +272,12 @@ impl Module for Epieos {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// Email-to-identity resolution is stable for ~24h per target; cache to avoid re-burning key-gated Epieos quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }

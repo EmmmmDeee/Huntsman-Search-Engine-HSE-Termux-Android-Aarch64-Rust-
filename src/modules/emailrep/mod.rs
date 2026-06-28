@@ -92,6 +92,12 @@ impl Module for EmailRep {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// Email reputation/risk verdicts move faster than static intel; cache 1h to cut repeat key-gated EmailRep calls while staying fresh.
+    fn cache_ttl_secs(&self) -> u64 {
+        3_600
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }

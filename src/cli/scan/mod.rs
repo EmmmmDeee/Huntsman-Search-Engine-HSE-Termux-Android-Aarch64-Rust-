@@ -46,6 +46,11 @@ pub(super) struct ScanCmd {
     pub gate_speculative: bool,
     pub profile: Option<String>,
     pub output: String,
+    /// Include platform/shared-infrastructure entities (cloud buckets, CDN IPs,
+    /// analytics tracking IDs sourced from third-party platform pages) in the
+    /// scan output. Excluded by default; forced on by `--full`. Mirrors the
+    /// `include_infra` infra-tag filter the export `report` path applies.
+    pub include_infra: bool,
 }
 
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
@@ -256,7 +261,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     };
 
     let scan = engine.run(scan, target, ctx).await?;
-    let entities = store.entities_for_scan(&sid)?;
+    let mut entities = store.entities_for_scan(&sid)?;
+    // Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
+    // analytics IDs sourced from third-party platform pages) from the scan
+    // output unless asked for, mirroring the export `report` path's infra-tag
+    // retain (`build_scan_report(..., include_infra)`) so the CLI table/json/
+    // dossier and the exported report agree on what "infra" means. `--full`
+    // forces them on by setting `include_infra` upstream in `cli::run`. The
+    // on-disk full dossier written above is unaffected — it is always complete.
+    if !cmd.include_infra {
+        entities.retain(|e| !e.has_tag("platform-infra"));
+    }
+    let entities = entities;
     let correlations = store.correlations_for_scan(&sid)?;
     let relations = store.relations_for_scan(&sid)?;
 
@@ -269,114 +285,147 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         Err(e) => eprintln!("warning: could not write full dossier: {e}"),
     }
 
-    if cmd.output == "json" {
-        // Full self-optimization payload — scan + entities + correlations
-        // + diagnostics (module ranking, confidence calibration, geo
-        // precision report, cross-source overlaps, optimization hints,
-        // enrichment lineage).
-        let wall_ms = scan
-            .finished_at
-            .and_then(|f| f.checked_sub(scan.started_at))
-            .unwrap_or(0)
-            .saturating_mul(1000);
-        let diag =
-            crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "scan": scan,
-                "entities": entities,
-                "correlations": correlations,
-                "relations": relations,
-                "diagnostics": diag,
-                "exposure": crate::core::exposure::assess(&entities, &correlations),
-                // Which of this scan's identifiers most bridge to the local
-                // intelligence base (data_retention_design §4.1) — ranked by
-                // realised cross-scan degree. A live cross-scan view (it grows as
-                // investigations accumulate), so it belongs in this live output, NOT
-                // the byte-deterministic debug bundle.
-                "enrichment_leverage":
-                    crate::core::engine::rank_enrichment_leverage(store.as_ref(), &entities, entities.len()),
-            }))?
-        );
-    } else if cmd.output == "dossier" {
-        let leverage = crate::core::engine::rank_enrichment_leverage(
-            store.as_ref(),
-            &entities,
-            entities.len(),
-        );
-        dossier::print_dossier(
-            &scan,
-            &entities,
-            &correlations,
-            &relations,
-            kind_str,
-            &cmd.value,
-            &leverage,
-        );
-    } else {
-        let color = use_color();
-        println!(
-            "\nScan {} — {} entities for {}={}",
-            &sid[..8],
-            entities.len(),
-            kind_str,
-            cmd.value
-        );
-        if scan.modules_run > 0 {
-            // `skipped` is shown so toggle effects are observable in the
-            // standard view: excluding a module (`--exclude`) or disabling one
-            // (`hse config module.<name> off`) moves it out of `run` and into
-            // `skipped` here, without needing `--output json`.
+    // Validate `--output` up front and error loudly on an unknown value, the way
+    // every sibling read command does (`export`/`diff` reject an unknown
+    // `--format`). A typo like `--output dosier` previously fell through to the
+    // table renderer silently — "nothing is a black box": a typo must fail, not
+    // quietly do something else. Case-insensitive to match `--format` handling.
+    match cmd.output.to_lowercase().as_str() {
+        "json" => {
+            // Full self-optimization payload — scan + entities + correlations
+            // + diagnostics (module ranking, confidence calibration, geo
+            // precision report, cross-source overlaps, optimization hints,
+            // enrichment lineage).
+            let wall_ms = scan
+                .finished_at
+                .and_then(|f| f.checked_sub(scan.started_at))
+                .unwrap_or(0)
+                .saturating_mul(1000);
+            let diag =
+                crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
             println!(
-                "  modules: {} run, {} errored, {} timed out, {} deduped, {} skipped\n",
-                scan.modules_run,
-                scan.modules_errored,
-                scan.modules_timed_out,
-                scan.modules_deduped,
-                scan.modules_skipped
+                "{}",
+                serde_json::to_string_pretty(&serde_json::json!({
+                    "scan": scan,
+                    "entities": entities,
+                    "correlations": correlations,
+                    "relations": relations,
+                    "diagnostics": diag,
+                    "exposure": crate::core::exposure::assess(&entities, &correlations),
+                    // Which of this scan's identifiers most bridge to the local
+                    // intelligence base (data_retention_design §4.1) — ranked by
+                    // realised cross-scan degree. A live cross-scan view (it grows as
+                    // investigations accumulate), so it belongs in this live output, NOT
+                    // the byte-deterministic debug bundle.
+                    "enrichment_leverage":
+                        crate::core::engine::rank_enrichment_leverage(store.as_ref(), &entities, entities.len()),
+                }))?
             );
-        } else {
-            println!();
         }
-        println!(
-            "{:<16} {:>6} {:>6}  {:<10} {:<26} VALUE",
-            "KIND", "CONF", "C_EFF", "CLASS", "SOURCES"
-        );
-        println!("{}", "-".repeat(90));
-        for e in &entities {
-            let c_eff = e.c_effective();
-            let class = e.classify();
-            // Raw source names (not just a count) for at-a-glance traceability;
-            // the full per-source records are in `--output dossier` / `json`.
-            let sources = entity_source_labels(e);
-            // VALUE is the LAST column and printed IN FULL — complete URLs (and
-            // every other value) are never truncated in the standard results
-            // view (no omission). Long values run to the end of the line.
-            let row = format!(
-                "{:<16} {:>6.3} {:>6.3}  {:<10} {:<26} {}",
-                e.kind, e.confidence, c_eff, class, sources, e.value
+        "dossier" => {
+            let leverage = crate::core::engine::rank_enrichment_leverage(
+                store.as_ref(),
+                &entities,
+                entities.len(),
             );
-            println!("{}", color_confidence(c_eff, &row, color));
+            dossier::print_dossier(
+                &scan,
+                &entities,
+                &correlations,
+                &relations,
+                kind_str,
+                &cmd.value,
+                &leverage,
+            );
         }
-        if !correlations.is_empty() {
-            println!("\n{} correlations:\n", correlations.len());
+        "table" => {
+            let color = use_color();
             println!(
-                "{:<10} {:<10} {:<40} DESCRIPTION",
-                "RULE", "SEVERITY", "NAME"
+                "\nScan {} — {} entities for {}={}",
+                &sid[..8],
+                entities.len(),
+                kind_str,
+                cmd.value
             );
-            println!("{}", "-".repeat(86));
-            for c in &correlations {
-                let sev_padded = format!("{:<10}", c.severity);
-                let sev_colored = color_severity(&sev_padded, color);
+            if scan.modules_run > 0 {
+                // `skipped` is shown so toggle effects are observable in the
+                // standard view: excluding a module (`--exclude`) or disabling one
+                // (`hse config module.<name> off`) moves it out of `run` and into
+                // `skipped` here, without needing `--output json`.
                 println!(
-                    "{:<10} {} {:<40} {}",
-                    c.rule_id,
-                    sev_colored,
-                    truncate(&c.rule_name, 40),
-                    c.description
+                    "  modules: {} run, {} errored, {} timed out, {} deduped, {} skipped\n",
+                    scan.modules_run,
+                    scan.modules_errored,
+                    scan.modules_timed_out,
+                    scan.modules_deduped,
+                    scan.modules_skipped
                 );
+            } else {
+                println!();
             }
+            // SOURCES is a FIXED-WIDTH column (26): a well-corroborated entity can
+            // list several sources whose joined label overflows the column and
+            // shoves the trailing VALUE out of alignment, breaking the grid exactly
+            // on the most interesting (multi-source) rows. Fit the cell to the
+            // column with the Unicode-safe `truncate` helper (…-elided) so the table
+            // stays aligned; the COMPLETE source list is untouched in
+            // `--output dossier` / `json`. VALUE stays last and full.
+            const SOURCES_W: usize = 26;
+            println!(
+                "{:<16} {:>6} {:>6}  {:<10} {:<width$} VALUE",
+                "KIND",
+                "CONF",
+                "C_EFF",
+                "CLASS",
+                "SOURCES",
+                width = SOURCES_W
+            );
+            println!("{}", "-".repeat(90));
+            for e in &entities {
+                let c_eff = e.c_effective();
+                let class = e.classify();
+                // Raw source names (not just a count) for at-a-glance traceability;
+                // the full per-source records are in `--output dossier` / `json`.
+                let sources = truncate(&entity_source_labels(e), SOURCES_W);
+                // VALUE is the LAST column and printed IN FULL — complete URLs (and
+                // every other value) are never truncated in the standard results
+                // view (no omission). Long values run to the end of the line.
+                let row = format!(
+                    "{:<16} {:>6.3} {:>6.3}  {:<10} {:<width$} {}",
+                    e.kind,
+                    e.confidence,
+                    c_eff,
+                    class,
+                    sources,
+                    e.value,
+                    width = SOURCES_W
+                );
+                println!("{}", color_confidence(c_eff, &row, color));
+            }
+            if !correlations.is_empty() {
+                println!("\n{} correlations:\n", correlations.len());
+                println!(
+                    "{:<10} {:<10} {:<40} DESCRIPTION",
+                    "RULE", "SEVERITY", "NAME"
+                );
+                println!("{}", "-".repeat(86));
+                for c in &correlations {
+                    let sev_padded = format!("{:<10}", c.severity);
+                    let sev_colored = color_severity(&sev_padded, color);
+                    println!(
+                        "{:<10} {} {:<40} {}",
+                        c.rule_id,
+                        sev_colored,
+                        truncate(&c.rule_name, 40),
+                        c.description
+                    );
+                }
+            }
+        }
+        other => {
+            return Err(crate::core::error::Error::Other(format!(
+                "unknown --output '{other}'. Valid: table, json, dossier"
+            )));
         }
     }
     Ok(())

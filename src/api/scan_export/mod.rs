@@ -7,7 +7,7 @@
 
 use axum::{
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
 };
 use serde_json::json;
@@ -21,6 +21,7 @@ pub async fn scan_entities_csv(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
+    req_headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
@@ -46,6 +47,7 @@ pub async fn scan_entities_csv(
         "text/csv; charset=utf-8",
         &id,
         "csv",
+        &req_headers,
     )
 }
 
@@ -114,6 +116,7 @@ pub async fn scan_report_json(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
+    req_headers: HeaderMap,
 ) -> impl IntoResponse {
     match build_scan_report(
         &*s.store,
@@ -122,11 +125,36 @@ pub async fn scan_report_json(
         wants_infra(&params),
     ) {
         Ok(Some(report)) => {
+            // Structural ETag: the report body restamps `exported_at` every
+            // render, so a body hash would never 304. Validate on the immutable
+            // dossier instead — the scan's finished_at + status + entity/
+            // correlation counts + the candidate/infra view flags (each flag
+            // changes which entities are included). A completed scan's dossier is
+            // immutable until re-run, so this revalidates correctly.
+            let finished = report["scan"]["finished_at"].as_u64().unwrap_or(0);
+            let status = report["scan"]["status"].as_str().unwrap_or("");
+            let ecount = report["entity_count"].as_u64().unwrap_or(0);
+            let ccount = report["correlation_count"].as_u64().unwrap_or(0);
+            let etag = weak_etag(
+                format!(
+                    "{finished}:{status}:{ecount}:{ccount}:{}:{}",
+                    wants_candidates(&params),
+                    wants_infra(&params),
+                )
+                .as_bytes(),
+            );
             let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
                 tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
                 "{}".into()
             });
-            download_response(body, "application/json; charset=utf-8", &id, "json")
+            download_response_etag(
+                body,
+                "application/json; charset=utf-8",
+                &id,
+                "json",
+                &req_headers,
+                Some(etag),
+            )
         }
         Ok(None) => not_found(),
         Err(e) => internal_error(&e),
@@ -292,6 +320,7 @@ pub(crate) fn extract_au_location_fix(
 pub async fn scan_export_gexf(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    req_headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
@@ -311,7 +340,13 @@ pub async fn scan_export_gexf(
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
-    download_response(body, "application/xml; charset=utf-8", &id, "gexf")
+    download_response(
+        body,
+        "application/xml; charset=utf-8",
+        &id,
+        "gexf",
+        &req_headers,
+    )
 }
 
 /// `GET /api/v1/scans/{id}/debug.txt` — the one-click debug bundle: the entire
@@ -322,6 +357,7 @@ pub async fn scan_export_gexf(
 pub async fn scan_debug_bundle(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    req_headers: HeaderMap,
 ) -> impl IntoResponse {
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
@@ -337,7 +373,15 @@ pub async fn scan_debug_bundle(
     })
     .await
     {
-        Ok(Ok(body)) => download_response(body, "text/plain; charset=utf-8", &id, "debug.txt"),
+        // The debug bundle is byte-stable per render (no timestamp — proven by
+        // the determinism audit), so a body-hash ETag revalidates exactly.
+        Ok(Ok(body)) => download_response(
+            body,
+            "text/plain; charset=utf-8",
+            &id,
+            "debug.txt",
+            &req_headers,
+        ),
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("debug-bundle render task failed: {e}")),
     }
@@ -348,25 +392,99 @@ pub async fn scan_debug_bundle(
 /// `hse-<ext>-<short-scan-id>.<ext>` (id truncated to 12 chars). Shared by the
 /// CSV / JSON / GEXF / debug-bundle endpoints so every download names itself the
 /// same way.
-pub(crate) fn download_response(
+///
+/// Conditional GET: a completed scan's export is immutable until the scan is
+/// re-run, so the body is its own validator. We derive a content-hash ETag and,
+/// when the caller's `If-None-Match` already lists it, return `304 Not Modified`
+/// with no body — eliminating the full re-transfer of a large dossier on every
+/// poll over a metered cellular link (the `report.json`/`debug.txt` of a
+/// several-hundred-entity scan is the case this targets). `Cache-Control:
+/// private, no-cache` lets the browser cache-and-revalidate while forbidding any
+/// shared/intermediary cache from retaining the sensitive dossier; `no-cache`
+/// (revalidate, not "don't store") is what makes the ETag round-trip fire.
+fn download_response(
     body: String,
     content_type: &'static str,
     scan_id: &str,
     ext: &str,
+    req_headers: &HeaderMap,
 ) -> axum::response::Response {
+    download_response_etag(body, content_type, scan_id, ext, req_headers, None)
+}
+
+/// [`download_response`] with an optional explicit ETag. The CSV / GEXF / debug
+/// exports are byte-stable per render, so `None` lets us hash the body. The
+/// `report.json` export is **not** byte-stable — it stamps a fresh `exported_at`
+/// every render (the documented sole source of non-determinism) — so a body hash
+/// would change every time and never 304. There the caller passes a *structural*
+/// validator (scan identity + entity count) that tracks the immutable parts of
+/// the dossier, so revalidation still works.
+fn download_response_etag(
+    body: String,
+    content_type: &'static str,
+    scan_id: &str,
+    ext: &str,
+    req_headers: &HeaderMap,
+    etag_override: Option<String>,
+) -> axum::response::Response {
+    let etag = etag_override.unwrap_or_else(|| weak_etag(body.as_bytes()));
+    let cache = axum::http::HeaderValue::from_static("private, no-cache");
+
+    // If the client already holds these exact bytes, skip re-sending them.
+    let not_modified = req_headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|inm| if_none_match_hit(inm, &etag));
+    if not_modified {
+        let mut resp = StatusCode::NOT_MODIFIED.into_response();
+        let h = resp.headers_mut();
+        if let Ok(v) = axum::http::HeaderValue::from_str(&etag) {
+            h.insert(header::ETAG, v);
+        }
+        h.insert(header::CACHE_CONTROL, cache);
+        return resp;
+    }
+
     let short_id: String = scan_id.chars().take(12).collect();
     let filename = format!("hse-{ext}-{short_id}.{ext}");
     let disposition = format!("attachment; filename=\"{filename}\"");
     let mut resp = (StatusCode::OK, body).into_response();
     let headers = resp.headers_mut();
     headers.insert(
-        axum::http::header::CONTENT_TYPE,
+        header::CONTENT_TYPE,
         axum::http::HeaderValue::from_static(content_type),
     );
     if let Ok(v) = axum::http::HeaderValue::from_str(&disposition) {
-        headers.insert(axum::http::header::CONTENT_DISPOSITION, v);
+        headers.insert(header::CONTENT_DISPOSITION, v);
     }
+    if let Ok(v) = axum::http::HeaderValue::from_str(&etag) {
+        headers.insert(header::ETAG, v);
+    }
+    headers.insert(header::CACHE_CONTROL, cache);
     resp
+}
+
+/// A weak ETag (`W/"<hex>"`) over `bytes` — a cheap 64-bit content hash that
+/// changes iff the rendered export changes. Weak (not strong) because gzip from
+/// the compression layer makes byte-for-byte equality moot; weak validators
+/// still satisfy `If-None-Match`. Centralised so every export tags identically.
+pub(crate) fn weak_etag(bytes: &[u8]) -> String {
+    use std::hash::{Hash as _, Hasher as _};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    bytes.hash(&mut h);
+    format!("W/\"{:016x}\"", h.finish())
+}
+
+/// RFC 7232 `If-None-Match` test: true if the header is `*` or lists `etag`.
+/// Comparison ignores the `W/` weak prefix on both sides so a weak validator
+/// echoed verbatim by the browser still matches. Mirrors the static handler's
+/// equivalent in `api::routes`.
+fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
+    let strip = |t: &str| t.trim().trim_start_matches("W/").to_string();
+    let want = strip(etag);
+    if_none_match
+        .split(',')
+        .any(|t| t.trim() == "*" || strip(t) == want)
 }
 
 /// RFC-4180 CSV field escaping with **formula-injection defanging**: a field

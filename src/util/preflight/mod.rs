@@ -78,6 +78,8 @@ pub fn should_skip_external_ip(ip: &str) -> bool {
 ///   * **NAT64** `64:ff9b::a.b.c.d` — Android cellular networks commonly run
 ///     NAT64/464XLAT, so `64:ff9b::<private-v4>` is a real on-device SSRF vector;
 ///   * **6to4** `2002:<v4>::/48`;
+///   * **Teredo** `2001:0000::/32` — the obfuscated mapped-client IPv4 in the
+///     low 32 bits (RFC 4380), de-obfuscated and judged;
 ///   * deprecated **IPv4-compatible** `::a.b.c.d`.
 ///
 /// Shared by the string host gate and the HTTP client's SSRF DNS filter.
@@ -126,9 +128,9 @@ fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
 
 /// Extract the IPv4 address embedded in a v6 address that the host may route to
 /// the underlying v4 — NAT64 (well-known `64:ff9b::/96` and the RFC 8215
-/// local-use `64:ff9b:1::/48`), 6to4 (`2002::/16`), and the deprecated
-/// IPv4-compatible (`::a.b.c.d`). IPv4-MAPPED (`::ffff:/96`) is already folded
-/// by `to_canonical` before [`is_private_addr`]'s V6 arm.
+/// local-use `64:ff9b:1::/48`), 6to4 (`2002::/16`), Teredo (`2001:0000::/32`),
+/// and the deprecated IPv4-compatible (`::a.b.c.d`). IPv4-MAPPED (`::ffff:/96`)
+/// is already folded by `to_canonical` before [`is_private_addr`]'s V6 arm.
 fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     let o = v6.octets();
     let v4 = |a, b, c, d| std::net::Ipv4Addr::new(a, b, c, d);
@@ -141,6 +143,16 @@ fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
         && o[4..12].iter().all(|&b| b == 0)
     {
         return Some(v4(o[12], o[13], o[14], o[15]));
+    }
+
+    // Teredo 2001:0000::/32 (RFC 4380) tunnels IPv4-over-UDP. The mapped client
+    // (peer) IPv4 is the last 32 bits, OBFUSCATED by a bitwise-NOT (XOR 0xff per
+    // octet); de-obfuscate and judge it, since a Teredo address embedding a
+    // private/loopback peer is the same embedded-v4 SSRF vector as NAT64/6to4.
+    // (The Teredo *server* address in octets 4..8 is plaintext but is the relay,
+    // not the resource the URL targets; the client address is the routable peer.)
+    if o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x00 && o[3] == 0x00 {
+        return Some(v4(!o[12], !o[13], !o[14], !o[15]));
     }
 
     // Local-use NAT64 prefix 64:ff9b:1::/48 (RFC 8215) — reserved specifically

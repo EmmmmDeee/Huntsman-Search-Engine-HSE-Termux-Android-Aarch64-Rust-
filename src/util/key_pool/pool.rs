@@ -13,6 +13,32 @@ pub(super) use crate::util::service_defs::rate_limit_reset;
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct PoolData {
     pub services: HashMap<String, Vec<KeyEntry>>,
+
+    /// Per-service round-robin start index for [`KeyPool::next_key`] tie-breaking.
+    /// Ephemeral session state, NOT durable intelligence: `#[serde(skip)]` keeps it
+    /// out of the on-disk JSON (so the export/import format is unchanged) and it
+    /// resets to empty on load. Folded in here — rather than a parallel
+    /// `Mutex<HashMap>` on [`KeyPool`] — so `next_key` takes a single lock,
+    /// removing both the second per-selection lock acquisition and the latent
+    /// data-then-indices lock-ordering hazard. Keyed by the lowercased service.
+    #[serde(skip)]
+    pub(super) rr_index: HashMap<String, usize>,
+}
+
+/// Keep a service's round-robin start (`rr_index`) consistent with its live key
+/// vector after a shrink. Drops the entry entirely once the service has no keys
+/// (so removed services don't accumulate stale starts), otherwise clamps the
+/// stored start below the new length. Called from the pruning/removal paths so
+/// the index tracks the live vec rather than relying solely on the read-time
+/// `% len` normalisation in [`KeyPool::next_key`].
+fn clamp_rr_index(rr_index: &mut HashMap<String, usize>, service: &str, new_len: usize) {
+    if new_len == 0 {
+        rr_index.remove(service);
+    } else if let Some(idx) = rr_index.get_mut(service)
+        && *idx >= new_len
+    {
+        *idx %= new_len;
+    }
 }
 
 /// Per-status key counts for one service — the breakdown surfaced inside a
@@ -71,7 +97,6 @@ pub struct ServiceHealth {
 
 pub struct KeyPool {
     pub(super) data: Mutex<PoolData>,
-    pub(super) indices: Mutex<HashMap<String, usize>>,
 }
 
 impl Default for KeyPool {
@@ -84,14 +109,12 @@ impl KeyPool {
     pub fn new() -> Self {
         Self {
             data: Mutex::new(PoolData::default()),
-            indices: Mutex::new(HashMap::new()),
         }
     }
 
     pub fn from_data(data: PoolData) -> Self {
         Self {
             data: Mutex::new(data),
-            indices: Mutex::new(HashMap::new()),
         }
     }
 
@@ -253,20 +276,27 @@ impl KeyPool {
     pub fn next_key(&self, service: &str) -> Option<String> {
         let lower = service.to_lowercase();
         let now = crate::core::entity::unix_now();
+        // Single lock: the round-robin start index now lives in `PoolData`
+        // (`rr_index`) alongside `services`, so there is no second mutex to take
+        // and no data-then-indices lock-ordering hazard.
         let mut data = self.data.lock();
+
+        // Read the round-robin start (copied out) BEFORE the mutable `entries`
+        // borrow, so the two disjoint fields of `data` are never borrowed at once.
+        // `% len` keeps a start carried over from a now-shorter vec in range.
+        let start = data.rr_index.get(&lower).copied().unwrap_or(0);
+
         let entries = data.services.get_mut(&lower)?;
-        if entries.is_empty() {
+        let len = entries.len();
+        if len == 0 {
             return None;
         }
-
-        let mut indices = self.indices.lock();
-        let idx = indices.entry(lower.clone()).or_insert(0);
-        let len = entries.len();
+        let start = start % len;
 
         let mut best: Option<usize> = None;
         let mut best_rank: Option<(KeyTier, u8, u64)> = None;
         for offset in 0..len {
-            let i = (*idx + offset) % len;
+            let i = (start + offset) % len;
             let entry = &entries[i];
             if !entry.is_usable() {
                 continue;
@@ -291,8 +321,11 @@ impl KeyPool {
         }
         entry.use_count += 1;
         entry.last_used = Some(now);
-        *idx = i.wrapping_add(1);
-        Some(entry.value.clone())
+        let value = entry.value.clone();
+        // Advance the start past the served key for the next call. Re-borrow
+        // `rr_index` only now that the `entries` borrow has ended.
+        data.rr_index.insert(lower, i.wrapping_add(1));
+        Some(value)
     }
 
     pub fn mark_status(&self, service: &str, value: &str, status: KeyStatus) {
@@ -357,14 +390,25 @@ impl KeyPool {
     pub fn prune_degraded(&self, min_success_rate: f64, min_uses: u64) -> usize {
         let mut data = self.data.lock();
         let mut pruned = 0;
-        for entries in data.services.values_mut() {
+        // Services whose vec shrank: their round-robin start may now point past
+        // the live end, so clamp each afterwards to keep the index tracking the
+        // vec. Collected first because `services.iter_mut()` borrows `data`.
+        let mut shrunk: Vec<(String, usize)> = Vec::new();
+        for (service, entries) in &mut data.services {
             let before = entries.len();
             entries.retain(|e| {
                 e.tier >= KeyTier::Standard
                     || e.use_count < min_uses
                     || e.success_rate() >= min_success_rate
             });
-            pruned += before - entries.len();
+            let after = entries.len();
+            if after < before {
+                pruned += before - after;
+                shrunk.push((service.clone(), after));
+            }
+        }
+        for (service, len) in shrunk {
+            clamp_rr_index(&mut data.rr_index, &service, len);
         }
         pruned
     }
@@ -372,12 +416,21 @@ impl KeyPool {
     pub fn remove(&self, service: &str, value: &str) -> bool {
         let lower = service.to_lowercase();
         let mut data = self.data.lock();
-        if let Some(entries) = data.services.get_mut(&lower) {
+        let new_len = if let Some(entries) = data.services.get_mut(&lower) {
             let before = entries.len();
             entries.retain(|e| e.value != value);
-            return entries.len() < before;
-        }
-        false
+            let after = entries.len();
+            if after == before {
+                return false;
+            }
+            after
+        } else {
+            return false;
+        };
+        // The vec shrank: keep the round-robin start in range (and drop it once
+        // the service has no keys left).
+        clamp_rr_index(&mut data.rr_index, &lower, new_len);
+        true
     }
 
     pub fn snapshot(&self) -> PoolData {

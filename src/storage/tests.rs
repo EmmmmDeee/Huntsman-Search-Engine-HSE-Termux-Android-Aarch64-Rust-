@@ -1308,13 +1308,23 @@ fn open_produces_exact_schema_and_pragmas() {
     drop(stmt);
     let expected = [
         "index|idx_corr_scan",
+        // Composite (confidence, observed_at) backing low_confidence_evidence()'s
+        // `WHERE confidence < ? AND observed_at >= ? ORDER BY confidence` range scan.
+        "index|idx_entities_conf_obs",
         "index|idx_entities_kind",
         "index|idx_entities_scan",
         "index|idx_events_scan",
         "index|idx_obs_entity",
         "index|idx_obs_scan",
+        // Covering (scan_id, entity_uid) for the per-scan entities_for_scan /
+        // entities_filtered / entity_facets join (PK is the reverse order, so
+        // this forward-order index makes the observation lookup index-only).
+        "index|idx_obs_scan_entity",
         "index|idx_relations_scan",
         "index|idx_scans_started",
+        // (status, started_at DESC) for latest_completed_scan(): replaces a
+        // json_extract() full scan over data_json with an indexed status probe.
+        "index|idx_scans_status_started",
         "index|sqlite_autoindex_correlations_1",
         "index|sqlite_autoindex_entities_1",
         "index|sqlite_autoindex_entity_observations_1",

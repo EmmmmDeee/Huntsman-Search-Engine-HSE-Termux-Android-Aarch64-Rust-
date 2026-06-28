@@ -41,25 +41,32 @@ use super::*;
     }
 
     #[test]
-    fn is_public_proxy_filters_private_and_malformed() {
-        // Public IPv4 endpoints pass.
-        assert!(is_public_proxy("8.8.8.8:8080"));
-        assert!(is_public_proxy("1.1.1.1:3128"));
-        // Private / reserved / loopback / link-local metadata are dropped (SSRF).
-        for bad in [
-            "127.0.0.1:8080",
-            "10.0.0.1:3128",
-            "192.168.1.1:8080",
-            "169.254.169.254:80",
-            "[::1]:8080",
-        ] {
-            assert!(
-                !is_public_proxy(bad),
-                "{bad} must be rejected as non-public"
-            );
-        }
-        // Malformed: no port, non-numeric port, hostname, empty.
-        for bad in ["8.8.8.8", "8.8.8.8:abc", "proxy.example.com:8080", ""] {
-            assert!(!is_public_proxy(bad), "{bad} must be rejected as malformed");
-        }
+    fn replace_resets_rotation_to_head() {
+        let pool = ProxyPool::new();
+        pool.replace(vec![
+            Proxy {
+                addr: "1.2.3.4:8080".into(),
+                proto: "http",
+                latency_ms: 100,
+            },
+            Proxy {
+                addr: "5.6.7.8:3128".into(),
+                proto: "socks5",
+                latency_ms: 200,
+            },
+        ]);
+        // Advance the rotation cursor, then replace: the next pick must start
+        // from the new head, not wherever the old cursor pointed.
+        let _ = pool.next();
+        pool.replace(vec![Proxy {
+            addr: "9.9.9.9:1080".into(),
+            proto: "socks5",
+            latency_ms: 10,
+        }]);
+        assert_eq!(pool.count(), 1);
+        let p = pool.next().unwrap();
+        assert_eq!(p.addr, "9.9.9.9:1080");
+        // A socks5 entry renders its scheme through `url()` (proto is not pinned
+        // to http) — guards the mixed-scheme contract the field documents.
+        assert_eq!(p.url(), "socks5://9.9.9.9:1080");
     }

@@ -86,7 +86,7 @@ T1
 | B1.1.1 | New CAPTCHA vendor unrecognised | Medium | Medium | Medium | ⚒ Data-driven two-tier block detector (vendor fingerprints + AND-set phrases), broadened to CF challenge-platform / reCAPTCHA / hCaptcha / DataDome / PerimeterX / Imperva; one-line + test to extend |
 | B1.1.2 | Result markup drift | Medium | Medium | Low | ✅ 3-tier extraction (href / `<cite>` / `/url?q=`) + alt-UA retry; 17-engine breadth so one engine's drift ≠ total loss |
 | B1.1.3 | Block read as SERP | Low | Medium | Medium | ⚒ Detector is a strict superset of prior coverage; FP-avoidance tests |
-| B1.1.4 | DC IP blocked | High (CI) / Low (Termux) | Low | High | ✅ Termux runs from residential IPs; `HUNTSMAN_SEARCH_PROXY` + proxy-pool fallback |
+| B1.1.4 | DC IP blocked | High (CI) / Low (Termux) | Low | High | ✅ Termux runs from residential IPs; operator-configured `HUNTSMAN_SEARCH_PROXY` (single value or round-robin list) for egress rotation |
 | B1.2.1 | Ambiguous detect | Low | Low | High | ⚒ Ordered most-specific→least; explicit `--kind` always overrides; detected kind echoed to stderr |
 | B1.2.2 | Detector regression | Low | Medium | High | ⚒ Exhaustive detect tests (structured, free-text, overlap, junk-never-panics, detect→validate round-trip) |
 | E1.3 | Module dead at runtime | Very Low | Medium | High | ✅ `tests/architecture.rs::every_declared_module_is_registered` fails CI |

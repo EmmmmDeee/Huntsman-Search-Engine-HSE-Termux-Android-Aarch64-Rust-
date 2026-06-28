@@ -76,6 +76,11 @@ impl Module for Onyphe {
         ModuleCost::KeyGated
     }
 
+    /// Host/IP scan intelligence is stable for ~24h per target; cache to avoid re-burning paid Onyphe quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Infrastructure
     }

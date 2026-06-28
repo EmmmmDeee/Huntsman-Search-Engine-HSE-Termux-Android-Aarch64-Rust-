@@ -91,10 +91,23 @@ const SCHEMA_DDL: &str = "
 
             CREATE INDEX IF NOT EXISTS idx_entities_scan ON entities(scan_id);
             CREATE INDEX IF NOT EXISTS idx_entities_kind ON entities(kind);
+            -- Composite (confidence, observed_at) so low_confidence_evidence()'s
+            -- `WHERE confidence < ? AND observed_at >= ? ORDER BY confidence` runs
+            -- as an index range scan instead of a full table scan + sort.
+            CREATE INDEX IF NOT EXISTS idx_entities_conf_obs ON entities(confidence, observed_at);
             CREATE INDEX IF NOT EXISTS idx_scans_started ON scans(started_at DESC);
+            -- (status, started_at) for latest_completed_scan(): the indexed status
+            -- column replaces a json_extract() full scan, and the ordering column
+            -- rides the same index for the LIMIT 1 lookup.
+            CREATE INDEX IF NOT EXISTS idx_scans_status_started ON scans(status, started_at DESC);
             CREATE INDEX IF NOT EXISTS idx_corr_scan     ON correlations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
+            -- Covering (scan_id, entity_uid) for the hot per-scan join in
+            -- entities_for_scan / entities_filtered / entity_facets: the join's
+            -- observation lookup becomes index-only (the PK is the reverse order
+            -- (entity_uid, scan_id), so this forward-order index is the missing one).
+            CREATE INDEX IF NOT EXISTS idx_obs_scan_entity ON entity_observations(scan_id, entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
 
@@ -153,6 +166,33 @@ fn env_i64(var: &str, default: i64) -> i64 {
         .unwrap_or(default)
 }
 
+/// Deserialise a `data_json` row into `T`, logging (but not failing) when a row
+/// is corrupt instead of dropping it silently.
+///
+/// The list/read paths return best-effort `Vec`s and must never crash on a
+/// single bad row (durability-first: a corrupt record can't take down the whole
+/// query). The previous `filter_map(|s| from_str(&s).ok())` honoured that but
+/// swallowed the failure with zero diagnostic — the same silent-data-loss class
+/// the integrity-check/FTS comments treat as critical. This keeps the drop
+/// behaviour but emits a `tracing::warn!` (with the `table` context and a short
+/// prefix of the offending JSON) so corruption is observable, not invisible.
+fn deserialize_row<T: serde::de::DeserializeOwned>(table: &str, json: &str) -> Option<T> {
+    match serde_json::from_str(json) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            // Cap the logged payload so a large/garbage row can't flood the log.
+            let preview: String = json.chars().take(120).collect();
+            tracing::warn!(
+                table,
+                error = %e,
+                json_preview = %preview,
+                "dropping a row whose data_json failed to deserialise (possible corruption)"
+            );
+            None
+        }
+    }
+}
+
 /// Escape the LIKE metacharacters in `s` for a query using `ESCAPE '\'`.
 ///
 /// The escape character `\` is escaped FIRST, then `%` and `_`, so all three
@@ -172,12 +212,28 @@ impl Store {
         // smaller page cache / mmap); the schema itself is static (SCHEMA_DDL).
         let cache_kb = env_i64("HSE_SQLITE_CACHE_KB", 2000);
         let mmap = env_i64("HSE_SQLITE_MMAP", 67_108_864);
+        // Contended writers (WAL + NORMAL locking, multi-process serve+scan) block
+        // and retry for up to this many ms instead of erroring SQLITE_BUSY on the
+        // first lock conflict (e.g. a concurrent commit/checkpoint). Durability is
+        // unaffected — this only governs how long a write waits before failing.
+        let busy_ms = env_i64("HSE_SQLITE_BUSY_MS", 5000);
 
         let conn = Connection::open(path)?;
         conn.execute_batch(&format!(
             "
+            -- Pin the page size to 4 KB BEFORE the first table is created: it only
+            -- takes effect on an empty database (the very first write fixes it for
+            -- the file's lifetime), and the wal_autocheckpoint / cache_size math
+            -- below all assume 4 KB pages. Without this the file inherits whatever
+            -- the SQLite build default is, which is not guaranteed across Termux
+            -- aarch64 builds — silently invalidating the footprint reasoning.
+            PRAGMA page_size=4096;
             PRAGMA journal_mode=WAL;
             PRAGMA synchronous=NORMAL;
+            -- Block-and-retry on lock contention rather than failing immediately;
+            -- the standard companion to WAL + NORMAL locking for multi-process
+            -- access (see HSE_SQLITE_BUSY_MS above). Durability-preserving.
+            PRAGMA busy_timeout={busy_ms};
             -- Bound the WAL explicitly (512 pages ~2 MB at the 4 KB page size)
             -- rather than SQLite's implicit 1000-page default, so the live -wal
             -- footprint stays bounded under a long-lived `serve`/`live` process on
@@ -185,6 +241,16 @@ impl Store {
             -- the file is reset to zero at scan boundaries via checkpoint_truncate().
             PRAGMA wal_autocheckpoint=512;
             PRAGMA temp_store=MEMORY;
+            -- foreign_keys=ON is retained deliberately, NOT as live enforcement:
+            -- no table declares a FOREIGN KEY, so SQLite enforces nothing here and
+            -- the pragma is a no-op on the write paths. It stays ON because the
+            -- schema-invariant test (`storage::tests`) asserts it, and to signal
+            -- that adding real FK constraints later won't need a pragma flip.
+            -- Referential integrity across scans (entities/correlations/events/
+            -- relations/observations → scans) is enforced MANUALLY and atomically
+            -- in delete_scan(), which deletes the dependents in one transaction;
+            -- there is no ON DELETE CASCADE, so do not assume the engine cleans up
+            -- dependents on a bare `DELETE FROM scans` outside that method.
             PRAGMA foreign_keys=ON;
             PRAGMA cache_size=-{cache_kb};
             PRAGMA mmap_size={mmap};
@@ -221,11 +287,23 @@ impl Store {
         let ent_count: i64 = conn
             .query_row("SELECT count(*) FROM entities", [], |r| r.get(0))
             .unwrap_or(0);
-        if fts_count == 0 && ent_count > 0 {
-            // If this fails the FTS index stays empty and search silently returns
-            // nothing — the exact "search is broken with no diagnostic" failure
-            // mode HSE exists to avoid. Best-effort (a missing index must not
-            // block startup), but never silent: leave a trace to debug from.
+        // Rebuild whenever the FTS row count disagrees with the entity count, not
+        // only when it is empty: a crash mid-batch or an externally-restored DB can
+        // leave the index PARTIALLY populated (fts_count > 0 but < ent_count), which
+        // the old `== 0` guard skipped — letting search silently return incomplete
+        // results, the exact failure mode HSE exists to avoid. `rebuild` rederives
+        // the whole index from the content table, so it heals both the empty and the
+        // stale-subset case. Skip only when the counts already agree.
+        if ent_count > 0 && fts_count != ent_count {
+            if fts_count != 0 {
+                tracing::warn!(
+                    fts_rows = fts_count,
+                    entities = ent_count,
+                    "FTS index is partially populated (count mismatch) — rebuilding to restore complete search results"
+                );
+            }
+            // Best-effort (a missing index must not block startup), but never
+            // silent: leave a trace to debug from.
             if let Err(e) =
                 conn.execute_batch("INSERT INTO entities_fts(entities_fts) VALUES('rebuild');")
             {
@@ -235,11 +313,22 @@ impl Store {
                     "FTS rebuild failed at init — full-text search may return no results until the index is rebuilt"
                 );
             } else {
-                tracing::info!(
-                    entities = ent_count,
-                    "rebuilt empty FTS index from existing rows"
-                );
+                tracing::info!(entities = ent_count, "rebuilt FTS index from existing rows");
             }
+        }
+
+        // Garbage-collect expired inter-scan cache rows at startup, mirroring the
+        // events prune: raw_archive entries past `archived_at + ttl_secs` are dead
+        // (lookup_module_result_fresh already ignores them) and otherwise grow the
+        // file unbounded across scans of distinct targets on a low-RAM device.
+        // Runs on the bare `conn` (the `Store` wrapper isn't built yet), so it
+        // shares the delete SQL with `Store::prune_archive` via `prune_archive_conn`
+        // rather than duplicating the predicate. Best-effort — a failed GC only
+        // wastes disk, never correctness.
+        match archive::prune_archive_conn(&conn) {
+            Ok(n) if n > 0 => tracing::info!("pruned {n} expired raw_archive entries"),
+            Ok(_) => {}
+            Err(e) => tracing::debug!(error = %e, "raw_archive prune failed (non-fatal)"),
         }
 
         // Query-planner statistics refresh — purely advisory; a failure costs at
@@ -283,6 +372,20 @@ impl Store {
     /// the caller to log and ignore — the next boundary will retry.
     pub fn checkpoint_truncate(&self) -> Result<()> {
         let conn = self.conn.lock();
+        // Refresh planner statistics at the scan boundary, BEFORE the truncate.
+        // `PRAGMA optimize` is run once at open(), but a long-lived `serve`/`live`
+        // process never revisits it as the DB fills, so its plans drift stale.
+        // SQLite recommends running it periodically; a scan boundary is the natural
+        // cadence. It MUST run first: optimize internally ANALYZEs and writes the
+        // sqlite_stat* tables, so running it AFTER the truncate would append fresh
+        // frames to the just-emptied -wal and leave it non-zero — defeating the
+        // truncate. Run before, and the checkpoint folds those stat writes into the
+        // main DB and resets the -wal to zero. Purely advisory — a failure costs at
+        // most a suboptimal plan, never correctness, and must not turn a successful
+        // checkpoint into an error, so it is swallowed (best-effort) not propagated.
+        if let Err(e) = conn.execute_batch("PRAGMA optimize;") {
+            tracing::debug!(error = %e, "PRAGMA optimize at checkpoint failed (non-fatal)");
+        }
         conn.execute_batch("PRAGMA wal_checkpoint(TRUNCATE);")?;
         Ok(())
     }
@@ -360,16 +463,16 @@ impl Store {
         };
         Ok(raw
             .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
+            .filter_map(|s| deserialize_row("scans", &s))
             .collect())
     }
 
-    /// Return the most recent scan whose serialised status matches
-    /// `complete` (the lower-case canonical form used by ScanStatus::
-    /// as_str). Filters at the SQL layer using a JSON-extract probe
-    /// so we don't deserialise dozens of non-Complete rows just to
-    /// find one Complete record. Used by `hse export latest …` and
-    /// the SPA's "open latest scan" affordance.
+    /// Return the most recent scan whose status is `complete` (the lower-case
+    /// canonical form `ScanStatus::as_str` writes into the dedicated `status`
+    /// column). Filters on that indexed column (idx_scans_status_started) rather
+    /// than a `json_extract` probe over `data_json`, so the lookup is an index
+    /// range scan with no per-row JSON parsing. Used by `hse export latest …`
+    /// and the SPA's "open latest scan" affordance.
     pub fn latest_completed_scan(&self) -> Result<Option<Scan>> {
         let raw: Option<String> = {
             let conn = self.conn.lock();
@@ -377,9 +480,11 @@ impl Store {
                 // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
                 // 1-second resolution, so without it two scans completing in the
                 // same second make `latest` non-deterministic — `export/diff/audit
-                // latest` could resolve to a different scan on identical state.
+                // latest` could resolve to a different scan on identical state. The
+                // `status` column is the canonical lower-case value, so the literal
+                // matches what `json_extract(...,'$.status')` previously returned.
                 "SELECT data_json FROM scans
-                 WHERE json_extract(data_json, '$.status') = 'complete'
+                 WHERE status = 'complete'
                  ORDER BY started_at DESC, id DESC LIMIT 1",
             )?;
             stmt.query_row(params![], |r| r.get::<_, String>(0)).ok()
@@ -494,7 +599,7 @@ impl Store {
         };
         let mut corrs: Vec<Correlation> = raw
             .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
+            .filter_map(|s| deserialize_row("correlations", &s))
             .collect();
         // Rank desc: severity × max child C_eff (computed at correlator-run
         // time). Stable tie-break on severity then rule_id, matching the
@@ -546,7 +651,7 @@ impl Store {
         };
         Ok(raw
             .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
+            .filter_map(|s| deserialize_row("relations", &s))
             .collect())
     }
 
@@ -623,8 +728,16 @@ impl Store {
         let conn = self.conn.lock();
         let cutoff = crate::core::entity::unix_now().saturating_sub(max_age_secs);
         let aged = conn.execute("DELETE FROM events WHERE ts < ?1", params![cutoff as i64])?;
+        // Range delete on the PRIMARY KEY rather than `NOT IN (SELECT … LIMIT ?)`:
+        // the subquery finds the id of the row that is the `max_rows`-th newest
+        // (OFFSET ?1 over a DESC scan), and everything with a smaller-or-equal id is
+        // older and trimmed. This is an index range scan instead of materialising a
+        // whole-table id-set for `NOT IN`. When fewer than `max_rows` rows exist the
+        // OFFSET runs past the end, the subquery yields NULL, and `id <= NULL` is
+        // never true — so the delete is a correct no-op (matching the old `NOT IN`).
         let excess = conn.execute(
-            "DELETE FROM events WHERE id NOT IN (SELECT id FROM events ORDER BY id DESC LIMIT ?1)",
+            "DELETE FROM events
+             WHERE id <= (SELECT id FROM events ORDER BY id DESC LIMIT 1 OFFSET ?1)",
             params![max_rows as i64],
         )?;
         let total = aged + excess;
@@ -663,7 +776,7 @@ impl Store {
         };
         Ok(raw
             .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
+            .filter_map(|s| deserialize_row("events", &s))
             .collect())
     }
 }
@@ -675,6 +788,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
         Store::prune_events(self, max_age_secs, max_rows)
+    }
+
+    fn prune_archive(&self) -> Result<usize> {
+        Store::prune_archive(self)
     }
 
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {

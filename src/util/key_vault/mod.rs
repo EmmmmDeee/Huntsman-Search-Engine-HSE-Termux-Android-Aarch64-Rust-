@@ -18,9 +18,10 @@
 //!     view of exactly those first-class pivots.
 //!   * **Retention-only** — the vault is never read back into the dispatch
 //!     environment; keys are kept as intelligence, not used to authenticate.
-//!   * **Deduplication-safe** — primary key is the key value itself (text); an
-//!     `INSERT OR IGNORE` followed by an UPDATE accumulates discovery_count and
-//!     extends last_seen in one round trip.
+//!   * **Deduplication-safe** — primary key is the key value itself (text); a
+//!     single `INSERT … ON CONFLICT(key_value) DO UPDATE` upsert accumulates
+//!     discovery_count and extends last_seen in one statement, and the whole
+//!     batch commits in one transaction (one fsync).
 //!   * **Zero-alloc hot path** — the vault is only written when
 //!     [`persist_batch`] is called (at scan finalisation), not on every HTTP
 //!     response. The hot path (`found_keys::scan_body`) remains allocation-free.
@@ -73,11 +74,43 @@ pub fn vault_path() -> PathBuf {
 /// Open (or create) the vault for read-write access and ensure the schema exists.
 /// Each call opens a fresh connection — the vault is written once per scan
 /// finalisation, not held open across the whole process lifetime.
+///
+/// `journal_mode=WAL` is a **persistent**, on-disk property of the database
+/// header: SQLite records it once and every subsequent connection reopens in WAL
+/// without the pragma being re-issued. We therefore set it lazily only when the
+/// DB does not yet carry it (a fresh file, or a legacy rollback-journal file),
+/// rather than re-running the journal-mode switch on every `persist_batch`
+/// finalisation. `synchronous=NORMAL` is per-connection (durable + WAL-safe: the
+/// hard constraint here is to keep NORMAL and never OFF) and is always set.
 fn open() -> rusqlite::Result<Connection> {
-    let conn = Connection::open(vault_path())?;
-    // WAL mode: safe for concurrent server-mode scans; fine-grained locking.
-    conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;")?;
+    let path = vault_path();
+    let conn = Connection::open(&path)?;
+    // synchronous=NORMAL is a per-connection setting — durable under WAL, and the
+    // engine's invariant is to never drop below it. Always applied.
+    conn.execute_batch("PRAGMA synchronous=NORMAL;")?;
+    // Set WAL only when this DB is not already in WAL — querying the current mode
+    // costs nothing, while re-issuing `journal_mode=WAL` creates/touches the
+    // -wal/-shm sidecars and does a checkpoint-class operation each time.
+    let mode: String = conn.query_row("PRAGMA journal_mode;", [], |r| r.get(0))?;
+    if !mode.eq_ignore_ascii_case("wal") {
+        // WAL mode: safe for concurrent server-mode scans; fine-grained locking.
+        // Persisted in the DB header, so this runs at most once per file lifetime.
+        let _: String = conn.query_row("PRAGMA journal_mode=WAL;", [], |r| r.get(0))?;
+    }
     ensure_schema(&conn)?;
+    // The -wal/-shm sidecars hold harvested key plaintext between checkpoints;
+    // SQLite creates them at default umask, so tighten them to owner-only like
+    // the main DB and its containing dir. Best-effort: a sidecar may not exist
+    // yet (it is created on first WAL write), in which case there is nothing to
+    // restrict and the absence is not an error.
+    #[cfg(unix)]
+    {
+        for suffix in ["-wal", "-shm"] {
+            let mut sidecar = path.clone().into_os_string();
+            sidecar.push(suffix);
+            let _ = crate::util::atomic_file::set_private(std::path::Path::new(&sidecar));
+        }
+    }
     Ok(conn)
 }
 
@@ -128,29 +161,48 @@ fn write_batch(
     now: u64,
 ) -> rusqlite::Result<usize> {
     let now_i = now as i64;
-    for fk in keys {
-        // First touch: INSERT OR IGNORE — no-op if the key value already exists.
-        conn.execute(
-            "INSERT OR IGNORE INTO found_keys
+    // One transaction for the whole batch: collapses N implicit transactions
+    // (each its own fsync) into a single commit/fsync — the win on slow Termux
+    // flash. `unchecked_transaction` borrows `&Connection` (matching this
+    // function's signature) instead of requiring `&mut`. Dropped without commit
+    // it rolls back, so a mid-batch error leaves the vault unchanged.
+    let tx = conn.unchecked_transaction()?;
+    {
+        // Single upsert reused across the loop via the statement cache, so the
+        // SQL is compiled once. `ON CONFLICT(key_value)` folds the former
+        // INSERT-OR-IGNORE-then-UPDATE pair into one statement: a brand-new key
+        // inserts with discovery_count=1; an already-present key updates
+        // provenance + last_seen and increments discovery_count — but only when
+        // this is a DIFFERENT scan than the one last recorded, so re-seeing a key
+        // within the same scan does not double-count (preserving the prior
+        // `last_scan_id != ?` guard). first_scan_id / first_seen_at are never
+        // overwritten, so the original discovery provenance is retained.
+        let mut stmt = tx.prepare_cached(
+            "INSERT INTO found_keys
                 (key_value, service, provider, query, first_scan_id, last_scan_id,
                  discovery_count, first_seen_at, last_seen_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, ?6, ?6)",
-            params![fk.key, fk.service, fk.provider, fk.query, scan_id, now_i],
+             VALUES (?1, ?2, ?3, ?4, ?5, ?5, 1, ?6, ?6)
+             ON CONFLICT(key_value) DO UPDATE SET
+                 last_scan_id    = excluded.last_scan_id,
+                 service         = excluded.service,
+                 provider        = excluded.provider,
+                 query           = excluded.query,
+                 discovery_count = discovery_count + 1,
+                 last_seen_at    = excluded.last_seen_at
+             WHERE found_keys.last_scan_id != excluded.last_scan_id",
         )?;
-        // Subsequent touch: update provenance + increment count + update last_seen.
-        conn.execute(
-            "UPDATE found_keys
-             SET last_scan_id     = ?1,
-                 service          = ?2,
-                 provider         = ?3,
-                 query            = ?4,
-                 discovery_count  = discovery_count + 1,
-                 last_seen_at     = ?5
-             WHERE key_value = ?6
-               AND last_scan_id != ?1",
-            params![scan_id, fk.service, fk.provider, fk.query, now_i, fk.key],
-        )?;
+        for fk in keys {
+            stmt.execute(params![
+                fk.key,
+                fk.service,
+                fk.provider,
+                fk.query,
+                scan_id,
+                now_i
+            ])?;
+        }
     }
+    tx.commit()?;
     Ok(keys.len())
 }
 

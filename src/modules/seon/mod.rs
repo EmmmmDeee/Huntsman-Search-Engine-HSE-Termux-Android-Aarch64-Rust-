@@ -58,6 +58,12 @@ impl Module for Seon {
     fn cost(&self) -> ModuleCost {
         ModuleCost::KeyGated
     }
+
+    /// Fraud/reputation scoring moves faster than static intel; cache 1h to cut repeat paid SEON calls while staying fresh.
+    fn cache_ttl_secs(&self) -> u64 {
+        3_600
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email | TargetKind::Phone)
     }

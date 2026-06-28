@@ -329,8 +329,12 @@ pub struct ModuleContext {
     /// abort mid-process for faster cancel latency. Default-constructed
     /// handles never fire.
     pub cancel: crate::core::cancel::CancelHandle,
-    /// Shared proxy pool for free scraping modules. Populated once at
-    /// scan start; modules call `ctx.proxy_pool.next()` to rotate.
+    /// Shared rotating proxy pool for free scraping modules
+    /// ([`crate::util::proxy::ProxyPool`]). Empty by default — no live proxy
+    /// harvesting runs — so [`crate::util::proxy::ProxyPool::next`] yields `None`
+    /// and modules fall through to a direct fetch (or the operator's
+    /// `HUNTSMAN_SEARCH_PROXY`). A caller that populates it via
+    /// [`crate::util::proxy::ProxyPool::replace`] enables per-call egress rotation.
     pub proxy_pool: std::sync::Arc<crate::util::proxy::ProxyPool>,
 }
 

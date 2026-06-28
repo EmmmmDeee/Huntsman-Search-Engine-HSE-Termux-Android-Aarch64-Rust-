@@ -1,50 +1,54 @@
 //! Router definition, JSON 404 for `/api` typos, and SPA static fallback.
 //!
-//! Endpoint surface:
+//! # Endpoint surface
 //!
-//! | Method | Path                              | Handler                  |
-//! |--------|-----------------------------------|--------------------------|
-//! | GET    | `/api/v1/health`                  | `health`                 |
-//! | GET    | `/api/v1/version`                 | `version`                |
-//! | GET    | `/api/v1/modules`                 | `modules_list`           |
-//! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
-//! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
-//! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
-//! | POST   | `/api/v1/scans`                   | `scan_create`            |
-//! | GET    | `/api/v1/scans`                   | `scan_list`              |
-//! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
-//! | DELETE | `/api/v1/scans/{id}`              | `scan_delete`            |
-//! | POST   | `/api/v1/scans/{id}/rerun`        | `scan_rerun`             |
-//! | GET    | `/api/v1/scans/{id}/entities`     | `scan_entities`          |
-//! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
-//! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
-//! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
-//! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
-//! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
-//! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
-//! | GET    | `/api/v1/live`                    | `live_list`              |
-//! | GET    | `/api/v1/live/{id}`               | `live_get`               |
-//! | DELETE | `/api/v1/live/{id}`               | `live_stop`              |
-//! | GET    | `/api/v1/live/{id}/events`        | `live_events_sse` (SSE)  |
-//! | GET    | `/api/v1/settings/keys`           | `settings_keys_get` (v0.10+) |
-//! | PUT    | `/api/v1/settings/keys`           | `settings_keys_put`      |
-//! | GET    | `/api/v1/settings/toggles`        | `settings_toggles_get` (v1.4+) |
-//! | PUT    | `/api/v1/settings/toggles`        | `settings_toggles_put`   |
-//! | GET    | `/api/v1/update/status`           | `get_status` (v1.5+)     |
-//! | POST   | `/api/v1/update/trigger`          | `post_trigger` (v1.5+)   |
-//! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
-//! | GET    | `/static/{file}`                  | `vendor_handler`         |
-//! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
+//! The single source of truth for the route set is the [`router`] function
+//! below — read it directly rather than trusting a hand-maintained table (an
+//! earlier copy of that table drifted ~25 routes behind the real ~60). The
+//! groups below are an orientation map, not an exhaustive contract; every
+//! `.route(...)` call in [`router`] is the authority.
+//!
+//! All API endpoints are under `/api/v1`. Any unmatched path under `/api`
+//! returns a JSON 404 ([`api_not_found`]) rather than the SPA HTML.
+//!
+//! * **Meta / health** — `/health`, `/version`, `/stats`, `/modules`,
+//!   `/modules/graph`, `/engines/health`, `/selftest`, `/logs`.
+//! * **Keys** — `/keys/patterns`, `/keys/status`, `/keys/pool`,
+//!   `/keys/pool/revoke`, `/keys/pool/rotate`.
+//! * **Scan lifecycle** — `POST`/`GET /scans`, `/scans/batch`,
+//!   `/scans/import`, `/scans/{id}` (GET/DELETE), `/scans/{id}/rerun`,
+//!   `/scans/{id}/cancel`.
+//! * **Autonomous** — `/scan/auto`, `/scan/auto/plan`, `/scan/auto/sweep`,
+//!   `/plan`, `/radar`, `/radar/live`.
+//! * **Scan data** — `/scans/{id}/entities`, `entities/filter`,
+//!   `entities/facets`, `entities.csv`, `report.json`, `graph.gexf`,
+//!   `debug.txt`, `correlations`, `relations`, `network`, `identities`,
+//!   `leads`, `timeline`, `communities`, `trust`, `path`, `metrics`,
+//!   `duplicates`, `pivots`, `gaps`, `benchmark`, `audit`,
+//!   `/scans/{a}/diff/{b}`, `/scans/{id}/events` (SSE), `events.history`.
+//! * **Live** — `POST`/`GET /live`, `/live/{id}` (GET/DELETE),
+//!   `/live/{id}/events` (SSE).
+//! * **Cross-scan** — `/entities/{uid}`, `/search`.
+//! * **Settings / update** — `/settings/keys` (GET/PUT),
+//!   `/settings/toggles` (GET/PUT), `/update/status`, `/update/trigger`.
+//!
+//! Non-API routes: `/static/{file}` (vendor bundle), `/favicon.svg`,
+//! `/favicon.ico`, `/manifest.webmanifest`, and the SPA fallback for any
+//! other path.
 
+use std::collections::HashMap;
+use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
 
 use axum::{
     Json, Router,
-    extract::{DefaultBodyLimit, OriginalUri, Path},
+    extract::{ConnectInfo, DefaultBodyLimit, OriginalUri, Path},
     http::{HeaderMap, HeaderValue, Method, StatusCode, header},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use parking_lot::Mutex;
 use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
@@ -298,7 +302,13 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── favicon — browsers (esp. Chrome-on-Android) request /favicon.ico
         //    unconditionally; without this route it would hit the SPA fallback
         //    and return the whole HTML document as an "image". Serve the same
-        //    inline locator-mark favicon the SPA links, with the correct content type.
+        //    inline locator-mark favicon the SPA links, with the correct content
+        //    type. `/favicon.svg` is the canonical, correctly-typed source the
+        //    manifest icon references (`.svg` URL ↔ `image/svg+xml`, self-
+        //    consistent for Chrome's Add-to-Home-Screen installability check);
+        //    `/favicon.ico` is a thin alias for legacy clients that request the
+        //    `.ico` path directly. Both return the identical SVG bytes.
+        .route("/favicon.svg", get(favicon_handler))
         .route("/favicon.ico", get(favicon_handler))
         // ── web-app manifest — lets Chrome-on-Android install the UI as a
         //    standalone fullscreen app (Add to Home Screen). Progressive
@@ -339,9 +349,33 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         None => app,
     };
 
+    // Per-process rate limit on the mutating + compute-heavy surface. The only
+    // other backpressure is `scan_semaphore` (`MAX_CONCURRENT_SCANS`), which
+    // bounds *running* scans, not *request rate* — so a rapid loop of
+    // `POST /scan/auto`, `/scans/batch`, or a heavy analysis GET
+    // (`/network`, `/benchmark`, …) on a large scan can saturate the blocking
+    // pool and starve the SSE reactor on a 2-core phone. This token bucket caps
+    // the rate of exactly those routes (cheap reads — health, version, the SSE
+    // streams themselves — are never charged), keyed by peer IP. On a loopback
+    // bind every peer is `127.0.0.1`/`::1`, so it is effectively one global
+    // throttle that stops a runaway SPA bug or a hostile same-device tab from
+    // pinning the device, while a single interactive operator never notices the
+    // generous ceiling. Placed inside the Host guard (a rejected-host request
+    // must not consume a token) and inside the security-header layer (so the
+    // `429` still carries CSP/COOP/etc.). See `enforce_rate_limit`.
+    let limiter = Arc::new(RateLimiter::new(
+        RATE_LIMIT_CAPACITY,
+        RATE_LIMIT_REFILL_PER_SEC,
+    ));
+    let app = app.layer(axum::middleware::from_fn(
+        move |req: axum::extract::Request, next: axum::middleware::Next| {
+            enforce_rate_limit(Arc::clone(&limiter), req, next)
+        },
+    ));
+
     // Security headers on every response (outermost, so it also covers CORS
-    // preflight, the SPA, static, the API, and the Host-guard 403). See
-    // `set_security_headers`.
+    // preflight, the SPA, static, the API, the Host-guard 403, and the
+    // rate-limit 429). See `set_security_headers`.
     app.layer(axum::middleware::map_response(set_security_headers))
 }
 
@@ -369,25 +403,247 @@ fn host_allowlist(bind: &str) -> Option<std::collections::HashSet<String>> {
 /// allowlist ([`host_allowlist`]) — the DNS-rebinding defense described at the
 /// call site. A rebind attack is browser-driven, and an HTTP/1.1 browser always
 /// sends `Host` set to the attacker's domain, so the *present-and-mismatched*
-/// case is exactly the attack; an **absent** `Host` is allowed through (a
-/// non-browser local client — or the test harness — that omits it is not the
-/// rebind threat and is already covered by the per-handler loopback guards).
-/// Returns `403` before the request reaches any handler.
+/// case is exactly the attack. On HTTP/2 the browser sends `:authority` rather
+/// than `Host`; axum/hyper normalise `:authority` into the `HeaderMap`'s `HOST`
+/// entry before this middleware runs, so the same allowlist transparently covers
+/// h2 — there is no separate `:authority` path to guard here.
+///
+/// An **absent** `Host` is handled by method: a header-less *safe* request
+/// (`GET`/`HEAD`/`OPTIONS`) is allowed through — it is not the rebind threat (no
+/// browser omits `Host`/`:authority`) and legitimate local probes/health-checks
+/// may omit it — but a header-less *state-changing* request
+/// (`POST`/`PUT`/`DELETE`/`PATCH`, per [`is_state_changing`]) is rejected as
+/// defence-in-depth. HTTP/1.1 requires a `Host` header (RFC 7230 §5.4), so a
+/// host-less mutation is already a non-conformant request; refusing it costs
+/// conformant local tooling nothing (reqwest, curl and browsers all send `Host`)
+/// while denying any non-browser caller that tries to mutate state without
+/// naming the host it believes it is talking to. Returns `403` before any
+/// handler in both the present-and-mismatched and the host-less-mutation cases.
 async fn enforce_host_allowlist(
     allowed: Arc<std::collections::HashSet<String>>,
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let rebind = req
+    match req
         .headers()
         .get(header::HOST)
         .and_then(|h| h.to_str().ok())
-        .is_some_and(|h| !allowed.contains(&h.to_ascii_lowercase()));
-    if rebind {
-        (StatusCode::FORBIDDEN, "host not in loopback allowlist").into_response()
-    } else {
-        next.run(req).await
+    {
+        // Present `Host`: must be in the loopback allowlist (the rebind case).
+        Some(host) => {
+            if !allowed.contains(&host.to_ascii_lowercase()) {
+                return (StatusCode::FORBIDDEN, "host not in loopback allowlist")
+                    .into_response();
+            }
+        }
+        // Absent `Host`: tolerate safe methods, reject mutations (defence-in-depth).
+        None => {
+            if is_state_changing(req.method()) {
+                return (StatusCode::FORBIDDEN, "host header required for mutations")
+                    .into_response();
+            }
+        }
     }
+    next.run(req).await
+}
+
+/// Whether `method` mutates server state (`POST`/`PUT`/`DELETE`/`PATCH`). Used by
+/// [`is_rate_limited_request`] to decide which requests are charged against the
+/// per-peer token bucket (every mutation, plus the compute-heavy analysis GETs).
+fn is_state_changing(method: &Method) -> bool {
+    matches!(
+        *method,
+        Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+    )
+}
+
+/// Token-bucket size for the rate limiter ([`RateLimiter`]): the burst a single
+/// peer may fire before the steady-state [`RATE_LIMIT_REFILL_PER_SEC`] ceiling
+/// applies. Sized so an interactive operator clicking through the SPA — which can
+/// fan a single view out into a handful of analysis GETs — never trips it, while
+/// a runaway loop is throttled within a second.
+const RATE_LIMIT_CAPACITY: f64 = 40.0;
+
+/// Steady-state refill rate (tokens per second) for the rate limiter. A generous
+/// global ceiling: high enough that no human-driven session approaches it, low
+/// enough that a hostile same-device tab or a buggy SPA retry-loop can't pin a
+/// 2-core phone with autonomous-scan or full-graph-synthesis requests.
+const RATE_LIMIT_REFILL_PER_SEC: f64 = 20.0;
+
+/// `Retry-After` value (seconds) returned with a `429`. Whole seconds per
+/// RFC 9110 §10.2.3; one second is the worst-case wait to regain a token at the
+/// [`RATE_LIMIT_REFILL_PER_SEC`] rate.
+const RATE_LIMIT_RETRY_AFTER_SECS: u64 = 1;
+
+/// A single peer's token bucket: `tokens` available right now and the `Instant`
+/// they were last refilled. Refill is lazy (computed on access from elapsed
+/// time) so there is no background timer — a property that matters on a phone
+/// where every spare wakeup costs battery.
+struct Bucket {
+    tokens: f64,
+    last_refill: Instant,
+}
+
+/// Per-process, per-peer token-bucket rate limiter for the mutating and
+/// compute-heavy route surface (see the call site in [`router`] and the
+/// classifier [`is_rate_limited_request`]).
+///
+/// A bucket holds at most `capacity` tokens and refills at `refill_per_sec`;
+/// each charged request consumes one token, and a request that finds the bucket
+/// empty is rejected with `429` + `Retry-After`. Buckets are keyed by peer
+/// [`IpAddr`]; on the loopback bind this is a single key (`127.0.0.1`/`::1`), so
+/// the limiter behaves as one global throttle, which is exactly the intent for a
+/// same-device console. The map is pruned of long-idle (full) buckets on access
+/// so it can't grow without bound on a non-loopback bind serving many clients.
+struct RateLimiter {
+    capacity: f64,
+    refill_per_sec: f64,
+    buckets: Mutex<HashMap<IpAddr, Bucket>>,
+}
+
+impl RateLimiter {
+    fn new(capacity: f64, refill_per_sec: f64) -> Self {
+        Self {
+            capacity,
+            refill_per_sec,
+            buckets: Mutex::new(HashMap::new()),
+        }
+    }
+
+    /// Charge one token to `peer`'s bucket. Returns `true` if a token was
+    /// available (request allowed) or `false` if the bucket was empty (reject
+    /// with `429`). Refills lazily from elapsed wall time before charging.
+    fn try_acquire(&self, peer: IpAddr) -> bool {
+        let now = Instant::now();
+        // `parking_lot::Mutex` does not poison and the guard is never held across
+        // an `.await`, so this lock is contention-cheap on the 2-core target.
+        let mut buckets = self.buckets.lock();
+
+        let bucket = buckets.entry(peer).or_insert_with(|| Bucket {
+            tokens: self.capacity,
+            last_refill: now,
+        });
+        // Lazy refill: add the tokens accrued since the last touch, capped at
+        // `capacity`. `saturating`-style clamp via `min` keeps it bounded.
+        let elapsed = now.duration_since(bucket.last_refill).as_secs_f64();
+        bucket.tokens = (bucket.tokens + elapsed * self.refill_per_sec).min(self.capacity);
+        bucket.last_refill = now;
+
+        let allowed = if bucket.tokens >= 1.0 {
+            bucket.tokens -= 1.0;
+            true
+        } else {
+            false
+        };
+
+        // Opportunistic prune: drop any *other* peer whose bucket has been idle
+        // long enough to have fully refilled, so a non-loopback bind serving many
+        // short-lived clients can't accumulate dead entries. Bounded work (the
+        // map is tiny in the loopback common case).
+        if buckets.len() > 1 {
+            let cap = self.capacity;
+            let refill = self.refill_per_sec;
+            buckets.retain(|&ip, b| {
+                if ip == peer {
+                    return true;
+                }
+                let restored = b.tokens + now.duration_since(b.last_refill).as_secs_f64() * refill;
+                restored < cap
+            });
+        }
+
+        allowed
+    }
+}
+
+/// Whether a request should be charged against the [`RateLimiter`]: every
+/// state-changing method ([`is_state_changing`]) — autonomous scans, the batch
+/// endpoint, imports, key writes, the binary-swap trigger — plus the read-only
+/// but **compute-heavy** analysis GETs that run full graph synthesis on a 2-core
+/// device. Cheap reads (`/health`, `/version`, the SSE event streams, static
+/// assets, the SPA) are never charged, so the limiter never interferes with the
+/// console's normal liveness traffic or a long-lived SSE subscription.
+fn is_rate_limited_request(method: &Method, path: &str) -> bool {
+    if is_state_changing(method) {
+        return true;
+    }
+    // Compute-heavy GET suffixes: the per-scan analysis endpoints whose handlers
+    // synthesise the relationship graph / metrics from scratch. SSE streams
+    // (`/events`) are deliberately excluded — they are long-lived and cheap to
+    // hold open, and charging them would break live monitoring.
+    const HEAVY_GET_SUFFIXES: &[&str] = &[
+        "/network",
+        "/identities",
+        "/leads",
+        "/timeline",
+        "/communities",
+        "/trust",
+        "/path",
+        "/metrics",
+        "/duplicates",
+        "/pivots",
+        "/gaps",
+        "/benchmark",
+        "/correlations",
+        "/relations",
+        "/report.json",
+        "/graph.gexf",
+        "/debug.txt",
+        "/entities/facets",
+        "/entities/filter",
+    ];
+    method == Method::GET && HEAVY_GET_SUFFIXES.iter().any(|s| path.ends_with(s))
+}
+
+/// Reject mutating / compute-heavy requests that exceed the per-peer token-bucket
+/// ceiling with `429 Too Many Requests` + a `Retry-After` header, in the shared
+/// `{ "error": … }` JSON shape. Cheap reads pass through uncharged
+/// ([`is_rate_limited_request`]). The peer IP is read from the
+/// [`ConnectInfo<SocketAddr>`] the serve bootstrap installs; when it is absent
+/// (e.g. a router built in a unit test without connect-info) the request is keyed
+/// under the unspecified address, collapsing to a single global bucket — still a
+/// correct, if coarser, throttle. Returns before the request reaches any handler.
+async fn enforce_rate_limit(
+    limiter: Arc<RateLimiter>,
+    req: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    if !is_rate_limited_request(req.method(), req.uri().path()) {
+        return next.run(req).await;
+    }
+    let peer = req
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map_or(IpAddr::from([0, 0, 0, 0]), |ci| ci.0.ip());
+    if limiter.try_acquire(peer) {
+        next.run(req).await
+    } else {
+        (
+            StatusCode::TOO_MANY_REQUESTS,
+            [(
+                header::RETRY_AFTER,
+                HeaderValue::from_static(const_retry_after()),
+            )],
+            Json(json!({ "error": "rate limit exceeded" })),
+        )
+            .into_response()
+    }
+}
+
+/// The `Retry-After` header value as a `&'static str`, so the `429` path can use
+/// `HeaderValue::from_static` (infallible, no per-request allocation). A `const fn`
+/// can't `format!` the numeric [`RATE_LIMIT_RETRY_AFTER_SECS`] into a string, so
+/// the literal is written out and a compile-time `assert!` pins it equal to the
+/// constant — bumping the constant without updating the literal fails the build,
+/// not just the `retry_after_constant_matches` test.
+const fn const_retry_after() -> &'static str {
+    const {
+        assert!(
+            RATE_LIMIT_RETRY_AFTER_SECS == 1,
+            "update the Retry-After literal"
+        );
+    }
+    "1"
 }
 
 /// Content-Security-Policy for the embedded SPA.
@@ -448,6 +704,22 @@ async fn set_security_headers(mut response: Response) -> Response {
         header::HeaderName::from_static("permissions-policy"),
         HeaderValue::from_static(PERMISSIONS_POLICY),
     );
+    // Cross-origin isolation, free for a strictly same-origin SPA. COOP severs
+    // the `window.opener` relationship so a popup/opener on another origin can't
+    // reach this console's window; CORP refuses to hand any of this origin's
+    // bytes (the sensitive scan dossiers) to a cross-origin `<img>`/`<script>`/
+    // `fetch` embed. The SPA loads every asset same-origin from this binary, so
+    // neither restricts a single legitimate request — they only close the
+    // cross-origin window/resource-leak gaps. Neither constant exists in the
+    // `http` crate, so both are named explicitly (lowercase for `from_static`).
+    h.insert(
+        header::HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
+    h.insert(
+        header::HeaderName::from_static("cross-origin-resource-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
     response
 }
 
@@ -464,8 +736,9 @@ async fn spa_handler() -> Response {
 }
 
 /// SVG favicon — a concentric locator mark in the brand cyan on the navbar's dark.
-/// Matches the inline `<link rel="icon">` in the SPA head; this route covers
-/// clients that request `/favicon.ico` directly regardless of that link.
+/// Matches the inline `<link rel="icon">` in the SPA head; the `/favicon.svg`
+/// and `/favicon.ico` routes both serve these bytes for clients that request a
+/// favicon path directly regardless of that link.
 const FAVICON_SVG: &str = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='#222222'/><circle cx='16' cy='16' r='8' fill='none' stroke='#07aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='#07aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='#07aef1' stroke-width='2'/></svg>";
 
 async fn favicon_handler() -> Response {
@@ -491,8 +764,11 @@ async fn favicon_handler() -> Response {
 /// address bar, reclaiming ~10% of a phone's vertical space for scan results).
 /// `display: standalone` + the matching `theme_color`/`background_color` give an
 /// app-like launch on the device. The icon reuses the same inline
-/// locator-mark SVG the favicon serves (`sizes:"any"` satisfies Chrome's
-/// installability check for a scalable icon) — zero extra binary asset. Served
+/// locator-mark SVG the favicon serves, referenced via the canonical
+/// `/favicon.svg` path so the icon's `src` extension and `type` agree
+/// (`.svg` ↔ `image/svg+xml`) — a `.ico` path tagged `image/svg+xml` tripped
+/// some Chrome installability checks. `sizes:"any"` satisfies Chrome's
+/// installability check for a scalable icon; zero extra binary asset. Served
 /// same-origin, so CSP `default-src 'self'` (which `manifest-src` falls back to)
 /// permits it.
 const MANIFEST_JSON: &str = r##"{
@@ -506,7 +782,7 @@ const MANIFEST_JSON: &str = r##"{
   "background_color": "#222222",
   "theme_color": "#222222",
   "icons": [
-    { "src": "/favicon.ico", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+    { "src": "/favicon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
   ]
 }"##;
 
@@ -618,8 +894,6 @@ fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
 /// Anything that doesn't parse as a loopback IP — and isn't literally
 /// `localhost` — is treated as a network-exposed interface.
 fn is_loopback_bind(bind: &str) -> bool {
-    use std::net::{IpAddr, SocketAddr};
-
     if let Ok(sa) = bind.parse::<SocketAddr>() {
         return sa.ip().is_loopback();
     }
@@ -632,6 +906,19 @@ fn is_loopback_bind(bind: &str) -> bool {
     host == "localhost"
 }
 
+/// The exact set of request headers CORS permits cross-origin — the single
+/// source of truth `build_cors_layer` feeds to `allow_headers`, lifted to a
+/// named constant so the `cors_allow_headers_never_includes_csrf` regression
+/// test can assert directly against it.
+///
+/// SECURITY — this list MUST NOT contain `X-HSE-CSRF` (the `/scans/import` CSRF
+/// token). The import CSRF defence works precisely *because* that header is not
+/// allow-listed: requiring it makes the import a CORS *non-simple* request, so a
+/// cross-origin caller must preflight, and the preflight fails since the header
+/// is absent here. `CONTENT_TYPE` is the only header the SPA's same-origin
+/// requests need cross-checked.
+const CORS_ALLOW_HEADERS: &[header::HeaderName] = &[header::CONTENT_TYPE];
+
 fn build_cors_layer(bind: &str) -> CorsLayer {
     // Bound to the matching `http(s)://<bind>` origin even on loopback —
     // the previous `allow_origin(Any)` for loopback meant ANY website the
@@ -639,6 +926,10 @@ fn build_cors_layer(bind: &str) -> CorsLayer {
     // scan history (an attack vector copilot flagged on PR #9). The SPA
     // is served same-origin from this binary so it never needs cross-
     // origin in normal use.
+    // SECURITY — the allow-headers set is `CORS_ALLOW_HEADERS`; see its doc
+    // comment. DO NOT add `X-HSE-CSRF` (the `/scans/import` CSRF token) to it:
+    // its absence is what forces a cross-origin import to preflight and fail,
+    // and the `cors_allow_headers_never_includes_csrf` test pins that invariant.
     let base = CorsLayer::new()
         .allow_methods([
             Method::GET,
@@ -647,7 +938,7 @@ fn build_cors_layer(bind: &str) -> CorsLayer {
             Method::DELETE,
             Method::OPTIONS,
         ])
-        .allow_headers([axum::http::header::CONTENT_TYPE]);
+        .allow_headers(CORS_ALLOW_HEADERS.to_vec());
 
     let mut allowed: Vec<HeaderValue> = Vec::new();
     let mut push = |o: String| {

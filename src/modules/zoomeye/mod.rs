@@ -73,6 +73,11 @@ impl Module for ZoomEye {
         ModuleCost::KeyGated
     }
 
+    /// Host/port/service scan data is stable for ~24h per target; cache to avoid re-burning paid ZoomEye quota.
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Infrastructure
     }

@@ -14,6 +14,7 @@
 //! reduces to a single `static BUDGET: QuotaBudget = QuotaBudget::new(...)`
 //! declaration plus thin wrappers for back-compat.
 
+use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 
 /// Snapshot of a [`QuotaBudget`] at a point in time. Used by the
@@ -69,6 +70,20 @@ pub struct QuotaBudget {
     /// Env-var name for the per-session ceiling. May be empty,
     /// in which case `default_session_cap` is always used.
     env_session_cap_var: &'static str,
+
+    /// Memoised env-resolved per-scan cap (env var if set + > 0, else
+    /// `default_scan_cap`). Process-environment caps cannot change after start,
+    /// so we read the env var at most once instead of on every billable call's
+    /// `remaining()` / `try_increment()`. The runtime `cap_override` is checked
+    /// *before* this in `scan_cap()`, so memoising the env fallback does not
+    /// freeze an operator's per-scan override.
+    scan_cap_cache: OnceLock<u32>,
+
+    /// Memoised env-resolved per-session cap (env var if set + > 0, else
+    /// `default_session_cap`). Same rationale as `scan_cap_cache`; the session
+    /// ceiling has no runtime override, so this is the sole source after first
+    /// resolution.
+    session_cap_cache: OnceLock<u32>,
 }
 
 impl QuotaBudget {
@@ -96,6 +111,8 @@ impl QuotaBudget {
             default_session_cap,
             env_scan_cap_var,
             env_session_cap_var,
+            scan_cap_cache: OnceLock::new(),
+            session_cap_cache: OnceLock::new(),
         }
     }
 
@@ -106,30 +123,44 @@ impl QuotaBudget {
 
     /// Effective per-scan cap — `cap_override` if set, else the env
     /// var if set + > 0, else `default_scan_cap`.
+    ///
+    /// The env-derived fallback is resolved once and memoised (see
+    /// `scan_cap_cache`): on the `join_all` fan-out hot path this avoids a
+    /// `std::env::var` syscall (+ allocation, + a global libc lock on some
+    /// platforms) per billable call. The runtime override is still read live on
+    /// every call, so an operator's mid-scan cap change takes effect immediately.
     pub fn scan_cap(&self) -> u32 {
         let override_value = self.cap_override.load(Ordering::Acquire);
         if override_value > 0 {
             return override_value;
         }
-        std::env::var(self.env_scan_cap_var)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&v: &u32| v > 0)
-            .unwrap_or(self.default_scan_cap)
+        *self.scan_cap_cache.get_or_init(|| {
+            std::env::var(self.env_scan_cap_var)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&v: &u32| v > 0)
+                .unwrap_or(self.default_scan_cap)
+        })
     }
 
     /// Effective per-session cap — env var if set + > 0, else
     /// `default_session_cap`. No runtime override (the session
     /// ceiling represents the operator's daily-quota contract).
+    ///
+    /// Resolved once and memoised (see `session_cap_cache`) so the env var is
+    /// read at most once per process rather than on every `remaining()` /
+    /// `try_increment()` / `snapshot()`.
     pub fn session_cap(&self) -> u32 {
-        if self.env_session_cap_var.is_empty() {
-            return self.default_session_cap;
-        }
-        std::env::var(self.env_session_cap_var)
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|&v: &u32| v > 0)
-            .unwrap_or(self.default_session_cap)
+        *self.session_cap_cache.get_or_init(|| {
+            if self.env_session_cap_var.is_empty() {
+                return self.default_session_cap;
+            }
+            std::env::var(self.env_session_cap_var)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|&v: &u32| v > 0)
+                .unwrap_or(self.default_session_cap)
+        })
     }
 
     /// Install a per-scan cap override. `0` clears the override
@@ -176,6 +207,13 @@ impl QuotaBudget {
     /// counter, so the cap is never exceeded. If the per-session ceiling is hit
     /// after a per-scan slot was taken, the per-scan reservation is rolled back
     /// (saturating) so the two counters stay consistent.
+    ///
+    /// The cap is never *over*spent, but the per-scan-then-session ordering is
+    /// not perfectly race-free: between the successful scan reservation and a
+    /// session-cap failure, a concurrent caller can briefly observe the
+    /// inflated scan counter and be denied a slot it would otherwise have got.
+    /// That window is conservative (it errs toward *under*-spending, never over)
+    /// and benign, since the scan counter resets every round.
     pub fn try_increment(&self) -> bool {
         if self.is_exhausted() {
             return false;

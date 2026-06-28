@@ -149,21 +149,27 @@ fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
-/// Shorthand: build a POST request with a JSON body.
+/// Shorthand: build a POST request with a JSON body. Carries a `Host` matching
+/// the test app's loopback bind: the DNS-rebind guard rejects a *mutating*
+/// request with no `Host` (a real browser always sends one), so the harness must
+/// model that browser. `test_app` binds `127.0.0.1:8080`.
 fn post_json(uri: &str, body: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "application/json")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
-/// Shorthand: build a DELETE request.
+/// Shorthand: build a DELETE request. Carries a loopback `Host` for the same
+/// reason as [`post_json`] — a `Host`-less mutation is refused by the rebind guard.
 fn delete(uri: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")
         .uri(uri)
+        .header("host", "127.0.0.1:8080")
         .body(Body::empty())
         .unwrap()
 }
@@ -225,6 +231,19 @@ async fn responses_carry_security_headers() {
             "no-referrer",
             "{uri}: Referrer-Policy"
         );
+        // Cross-origin isolation for the strictly same-origin SPA: COOP severs
+        // the opener relationship, CORP refuses to hand the dossier bytes to a
+        // cross-origin embed.
+        assert_eq!(
+            hv("cross-origin-opener-policy"),
+            "same-origin",
+            "{uri}: Cross-Origin-Opener-Policy"
+        );
+        assert_eq!(
+            hv("cross-origin-resource-policy"),
+            "same-origin",
+            "{uri}: Cross-Origin-Resource-Policy"
+        );
         // Phone defence-in-depth: the browser must deny the device's camera,
         // mic, and GPS to the console (which uses none of them).
         let pp = hv("permissions-policy");
@@ -234,7 +253,79 @@ async fn responses_carry_security_headers() {
                 "{uri}: Permissions-Policy must deny {feature}: {pp:?}"
             );
         }
+        // Cross-origin isolation: COOP severs `window.opener`, CORP refuses to
+        // hand this origin's bytes to a cross-origin embed. Both are free for a
+        // strictly same-origin SPA and must be present on every response.
+        assert_eq!(
+            hv("cross-origin-opener-policy"),
+            "same-origin",
+            "{uri}: Cross-Origin-Opener-Policy must be same-origin"
+        );
+        assert_eq!(
+            hv("cross-origin-resource-policy"),
+            "same-origin",
+            "{uri}: Cross-Origin-Resource-Policy must be same-origin"
+        );
+        // The plaintext-HTTP loopback console must NOT advertise HSTS: pinning
+        // the browser to HTTPS on a host it only ever serves over HTTP would
+        // brick the console for the configured port. (HSTS belongs only on a
+        // TLS/non-loopback front-end, which this bind is not.)
+        assert!(
+            h.get("strict-transport-security").is_none(),
+            "{uri}: loopback HTTP console must not send HSTS"
+        );
     }
+}
+
+#[tokio::test]
+async fn cors_preflight_rejects_csrf_header() {
+    // The `/scans/import` CSRF defence depends on `X-HSE-CSRF` NOT being in the
+    // CORS allow-headers set: a cross-origin caller that tries to send it must
+    // preflight, and the preflight must fail. A maintainer who "fixes CORS" by
+    // allow-listing the header would silently disable the import CSRF guard, so
+    // this pins the invariant. `content-type` (the one allowed header) is
+    // reflected; `x-hse-csrf` must not be.
+    let app = test_app("cors-csrf");
+    let preflight = |req_headers: &str| {
+        Request::builder()
+            .method("OPTIONS")
+            .uri("/api/v1/scans/import")
+            .header("origin", "http://127.0.0.1:8080")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", req_headers)
+            .body(Body::empty())
+            .unwrap()
+    };
+    let resp = app.clone().oneshot(preflight("x-hse-csrf")).await.unwrap();
+    let allowed = resp
+        .headers()
+        .get("access-control-allow-headers")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    assert!(
+        !allowed.contains("x-hse-csrf"),
+        "CORS must never allow x-hse-csrf (it is the import CSRF token): {allowed:?}"
+    );
+}
+
+#[tokio::test]
+async fn favicon_svg_is_self_consistent_svg() {
+    // The manifest references /favicon.svg with type image/svg+xml; the route
+    // must serve SVG bytes with that content type so Chrome's Add-to-Home-Screen
+    // installability check sees a consistent icon.
+    let app = test_app("favicon-svg");
+    let resp = app.clone().oneshot(get("/favicon.svg")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let ct = resp
+        .headers()
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    assert_eq!(ct, "image/svg+xml", "favicon.svg content type");
+    // The .ico alias still works for legacy direct requests.
+    let resp_ico = app.oneshot(get("/favicon.ico")).await.unwrap();
+    assert_eq!(resp_ico.status(), 200);
 }
 
 // ── 2. Version ────────────────────────────────────────────────────────────
@@ -878,6 +969,86 @@ async fn favicon_returns_svg_not_html() {
 }
 
 #[tokio::test]
+async fn manifest_icon_src_and_type_are_self_consistent() {
+    // Add-to-Home-Screen installability: the icon `src` extension must agree
+    // with its `type` (`.svg` ↔ `image/svg+xml`). A `.ico` path tagged
+    // `image/svg+xml` tripped some Chrome installability checks.
+    let app = test_app("manifest-icon");
+    let resp = app.oneshot(get("/manifest.webmanifest")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let icons = json["icons"].as_array().expect("icons array");
+    let icon = &icons[0];
+    assert_eq!(
+        icon["src"].as_str(),
+        Some("/favicon.svg"),
+        "manifest icon src must point at the canonical .svg route"
+    );
+    assert_eq!(
+        icon["type"].as_str(),
+        Some("image/svg+xml"),
+        "manifest icon type must agree with the .svg src"
+    );
+}
+
+// ── 14c. Rate limiting (mutating + compute-heavy surface) ────────────────────
+
+#[tokio::test]
+async fn compute_heavy_route_is_rate_limited_with_429_and_retry_after() {
+    // The only other backpressure is `scan_semaphore`, which bounds *running*
+    // scans, not *request rate*. A rapid loop of a compute-heavy GET must hit a
+    // `429` with a `Retry-After` header in the shared `{ "error": … }` shape,
+    // so a runaway SPA bug or hostile same-device tab can't pin the phone.
+    let app = test_app("rate-limit");
+    // The token bucket starts full (RATE_LIMIT_CAPACITY tokens) and refills at a
+    // fixed per-second rate; a tight serial loop well past the burst exhausts it.
+    let mut saw_429 = false;
+    let mut retry_after = String::new();
+    for _ in 0..200 {
+        let resp = app
+            .clone()
+            .oneshot(get("/api/v1/scans/nope/network"))
+            .await
+            .unwrap();
+        if resp.status() == 429 {
+            saw_429 = true;
+            retry_after = resp
+                .headers()
+                .get("retry-after")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or("")
+                .to_string();
+            let json = body_json(resp).await;
+            assert!(
+                json.get("error").is_some(),
+                "429 must use the shared error shape: {json}"
+            );
+            break;
+        }
+    }
+    assert!(
+        saw_429,
+        "a 200-request burst of a compute-heavy GET must trip the rate limit"
+    );
+    assert!(
+        !retry_after.is_empty() && retry_after.parse::<u64>().is_ok(),
+        "429 must carry a numeric Retry-After (whole seconds), got {retry_after:?}"
+    );
+}
+
+#[tokio::test]
+async fn cheap_reads_are_never_rate_limited() {
+    // Liveness traffic (`/health`) and the SPA document are uncharged, so the
+    // limiter can never interfere with the console's normal operation — a tight
+    // loop of cheap GETs always returns 200.
+    let app = test_app("rate-limit-cheap");
+    for _ in 0..300 {
+        let resp = app.clone().oneshot(get("/api/v1/health")).await.unwrap();
+        assert_eq!(resp.status(), 200, "cheap reads must never be rate-limited");
+    }
+}
+
+#[tokio::test]
 async fn dossier_upload_creates_a_complete_scan_with_entities() {
     // Wiring: a dossier file uploaded as a raw text body (the Termux/Chrome UI
     // path) must parse via the shared cli::import path and land as a normal,
@@ -887,6 +1058,7 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/scans/import")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "text/plain")
         .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
@@ -926,6 +1098,7 @@ async fn dossier_upload_derives_and_persists_entity_relations() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/scans/import")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "text/plain")
         .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
@@ -949,6 +1122,7 @@ async fn dossier_upload_rejects_unrecognised_format() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/scans/import")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "text/plain")
         .header("x-hse-csrf", "1")
         .body(Body::from(
@@ -968,15 +1142,24 @@ async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
     // `/scans/import` route raises the limit to scan_handlers::MAX_UPLOAD_BYTES;
     // this proves a >2 MB upload is buffered and parsed, not 413'd.
     let app = test_app("import-large");
+    // A handful of real, distinct entries so the parse does real work and yields
+    // entities, followed by a large block of inert prose (no `Entry #`, no
+    // `key: value` field, no URL — lines the dossier parser ignores) to push the
+    // body past axum's 2 MB default. Padding with inert lines rather than ~73k
+    // relatable entities keeps the test's intent (prove a >2 MB body is buffered
+    // and parsed, not 413'd) without triggering the import's super-linear
+    // relation-derivation pass over tens of thousands of entities.
     let mut dossier = String::with_capacity(2_300_000);
-    dossier.push_str("Entry #1\n\u{2022} email: lead@frostcorp.io\n");
-    let mut i = 2u32;
-    while dossier.len() < 2_200_000 {
-        // Each entry is a valid, distinct record so the parse does real work.
+    for i in 1u32..=8 {
         dossier.push_str(&format!(
             "Entry #{i}\n\u{2022} email: user{i}@frostcorp.io\n"
         ));
-        i += 1;
+    }
+    // One ~80-char inert line, repeated until the body clears 2 MiB.
+    let filler_line = "x".repeat(78);
+    while dossier.len() < 2_200_000 {
+        dossier.push_str(&filler_line);
+        dossier.push('\n');
     }
     assert!(
         dossier.len() > 2 * 1024 * 1024,
@@ -986,6 +1169,7 @@ async fn dossier_upload_accepts_body_larger_than_axum_default_limit() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/scans/import")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "text/plain")
         .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
@@ -1151,6 +1335,7 @@ async fn settings_keys_put_forbidden_without_flag() {
     let mut req = Request::builder()
         .method("PUT")
         .uri("/api/v1/settings/keys")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "application/json")
         .body(Body::from(body))
         .unwrap();
@@ -1227,6 +1412,7 @@ async fn settings_toggles_put_rejects_non_loopback_peer() {
     let mut req = Request::builder()
         .method("PUT")
         .uri("/api/v1/settings/toggles")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"key":"engine.google","enabled":false}"#))
         .unwrap();
@@ -1246,6 +1432,7 @@ async fn settings_toggles_put_rejects_unknown_key() {
     let mut req = Request::builder()
         .method("PUT")
         .uri("/api/v1/settings/toggles")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "application/json")
         .body(Body::from(
             r#"{"key":"module.not_a_real_module","enabled":false}"#,
@@ -2090,6 +2277,7 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
     let mut post = Request::builder()
         .method("POST")
         .uri("/api/v1/keys/pool/revoke")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "application/json")
         .body(Body::from(r#"{"service":"shodan","id":"deadbeef"}"#))
         .unwrap();
@@ -2113,6 +2301,7 @@ async fn keys_pool_rotate_is_write_gated() {
     let mut post = Request::builder()
         .method("POST")
         .uri("/api/v1/keys/pool/rotate")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "application/json")
         .body(Body::from(
             r#"{"service":"shodan","id":"deadbeef","new":"NEW-VAL"}"#,
@@ -2517,10 +2706,13 @@ async fn scan_import_requires_csrf_header() {
     let app = test_app("csrf");
     let dossier = "Entry #1:\nEMAILS: a@b.com\n";
     // A text/plain POST WITHOUT the custom header is a CORS simple request — the
-    // CSRF vector — and must be blocked with 403.
+    // CSRF vector — and must be blocked with 403. A loopback `Host` is supplied so
+    // the request clears the rebind guard and the 403 is unambiguously the CSRF
+    // refusal, not a missing-Host rejection.
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/scans/import")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "text/plain")
         .body(Body::from(dossier))
         .unwrap();
@@ -2535,8 +2727,8 @@ async fn scan_import_requires_csrf_header() {
     let req = Request::builder()
         .method("POST")
         .uri("/api/v1/scans/import")
+        .header("host", "127.0.0.1:8080")
         .header("content-type", "text/plain")
-        .header("x-hse-csrf", "1")
         .header("x-hse-csrf", "1")
         .body(Body::from(dossier))
         .unwrap();

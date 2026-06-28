@@ -69,3 +69,41 @@ fn expired_entry_returns_none() {
         "ttl=0 entry must be treated as already expired"
     );
 }
+
+#[test]
+fn prune_archive_deletes_only_expired_rows() {
+    let store = open_temp();
+    let fresh = vec![make_entity("8.8.8.8")];
+    let stale = vec![make_entity("7.7.7.7")];
+    // One long-lived entry and one already-expired (ttl=0) entry.
+    store
+        .archive_module_result("mod:ip_address:8.8.8.8", 3600, &fresh)
+        .unwrap();
+    store
+        .archive_module_result("mod:ip_address:7.7.7.7", 0, &stale)
+        .unwrap();
+
+    let pruned = store.prune_archive().expect("prune");
+    assert_eq!(pruned, 1, "exactly the expired row must be pruned");
+
+    // The fresh entry survives and is still served from cache.
+    let kept = store
+        .lookup_module_result_fresh("mod:ip_address:8.8.8.8")
+        .unwrap()
+        .expect("fresh entry must survive prune");
+    assert_eq!(kept.len(), 1);
+    assert_eq!(kept[0].value, "8.8.8.8");
+
+    // A second prune is a no-op now that the stale row is gone.
+    assert_eq!(store.prune_archive().expect("prune"), 0);
+}
+
+#[test]
+fn prune_archive_empty_cache_is_noop() {
+    let store = open_temp();
+    assert_eq!(
+        store.prune_archive().expect("prune"),
+        0,
+        "pruning an empty cache removes nothing"
+    );
+}

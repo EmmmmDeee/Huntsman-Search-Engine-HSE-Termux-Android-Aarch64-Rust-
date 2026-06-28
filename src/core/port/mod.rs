@@ -132,6 +132,17 @@ pub trait StoragePort: Send + Sync {
     fn prune_events(&self, _max_age_secs: u64, _max_rows: usize) -> Result<usize> {
         Ok(0)
     }
+
+    /// Garbage-collect the inter-scan entity cache: delete `raw_archive` rows
+    /// whose TTL has lapsed. Returns the number pruned. Default no-op so
+    /// non-`Store` ports (e.g. test doubles) need not implement it; the real
+    /// impl lives on `Store`. Called at each scan boundary so a long-lived
+    /// `serve`/`live`/`radar` process that scans many distinct targets can't
+    /// grow the cache table unbounded (it is otherwise pruned only at startup),
+    /// mirroring [`StoragePort::prune_events`].
+    fn prune_archive(&self) -> Result<usize> {
+        Ok(0)
+    }
 }
 
 #[cfg(test)]

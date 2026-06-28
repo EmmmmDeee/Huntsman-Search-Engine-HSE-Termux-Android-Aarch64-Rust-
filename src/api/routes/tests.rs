@@ -68,6 +68,47 @@ use super::*;
     }
 
     #[test]
+    fn state_changing_methods_classified() {
+        for m in [Method::POST, Method::PUT, Method::DELETE, Method::PATCH] {
+            assert!(is_state_changing(&m), "{m} mutates state");
+        }
+        for m in [Method::GET, Method::HEAD, Method::OPTIONS] {
+            assert!(!is_state_changing(&m), "{m} is read-only");
+        }
+    }
+
+    #[test]
+    fn token_bucket_throttles_then_refills() {
+        use std::net::{IpAddr, Ipv4Addr};
+        // Tiny bucket: capacity 2, 1 token/sec, so the third immediate call is
+        // denied; then rewinding the bucket's clock ~1.1s restores one token.
+        let rl = RateLimiter::new(2.0, 1.0);
+        let ip = IpAddr::V4(Ipv4Addr::LOCALHOST);
+        assert!(rl.try_acquire(ip), "1st within capacity");
+        assert!(rl.try_acquire(ip), "2nd within capacity");
+        assert!(!rl.try_acquire(ip), "3rd exceeds capacity → denied");
+        {
+            let mut b = rl.buckets.lock();
+            if let Some(bucket) = b.get_mut(&ip) {
+                bucket.last_refill -= std::time::Duration::from_millis(1100);
+            }
+        }
+        assert!(rl.try_acquire(ip), "a token refilled after ~1s");
+    }
+
+    #[test]
+    fn retry_after_constant_matches() {
+        // The `429` header literal must equal the numeric constant (a const fn
+        // can't format it), so bumping the constant can't silently leave the
+        // header stale.
+        assert_eq!(
+            const_retry_after(),
+            RATE_LIMIT_RETRY_AFTER_SECS.to_string(),
+            "Retry-After literal must track RATE_LIMIT_RETRY_AFTER_SECS"
+        );
+    }
+
+    #[test]
     fn if_none_match_hits_star_exact_and_list() {
         let etag = concat!("\"", env!("CARGO_PKG_VERSION"), "\"");
         assert!(if_none_match_hit("*", etag), "wildcard matches");
@@ -251,4 +292,180 @@ use super::*;
             checked >= 20,
             "expected the SPA scan presets to name many modules, saw {checked}"
         );
+    }
+
+    // ── CORS allow-headers regression guard ────────────────────────────────────
+
+    #[test]
+    fn cors_allow_headers_never_includes_csrf() {
+        // The `/scans/import` CSRF defence depends on `X-HSE-CSRF` NOT being
+        // CORS-allow-listed: its absence forces a cross-origin import to preflight
+        // and fail. A future maintainer who "fixes CORS" by allow-listing it would
+        // silently re-open the import to a forgeable simple request. Pin it.
+        for h in CORS_ALLOW_HEADERS {
+            assert_ne!(
+                h.as_str(),
+                "x-hse-csrf",
+                "X-HSE-CSRF must never be in the CORS allow-headers set — it is the \
+                 import CSRF token, and allow-listing it removes the import CSRF defence"
+            );
+        }
+        // Positive control: the SPA's same-origin requests need `Content-Type`
+        // cross-checked, so the set is not vacuously empty.
+        assert!(
+            CORS_ALLOW_HEADERS.contains(&header::CONTENT_TYPE),
+            "CONTENT_TYPE must remain in the CORS allow-headers set"
+        );
+    }
+
+    // ── Rate-limiter token bucket: per-peer isolation ──────────────────────────
+
+    #[test]
+    fn rate_limiter_keys_buckets_per_peer() {
+        // Two distinct peers must not share a bucket — exhausting one leaves the
+        // other untouched (matters on a non-loopback bind serving many clients).
+        let limiter = RateLimiter::new(1.0, 0.0);
+        let a = IpAddr::from([127, 0, 0, 1]);
+        let b = IpAddr::from([127, 0, 0, 2]);
+        assert!(limiter.try_acquire(a));
+        assert!(!limiter.try_acquire(a), "peer A exhausted");
+        assert!(
+            limiter.try_acquire(b),
+            "peer B has its own bucket, unaffected by A"
+        );
+    }
+
+    // ── Rate-limit request classifier ──────────────────────────────────────────
+
+    #[test]
+    fn rate_limit_classifier_charges_mutations_and_heavy_gets_only() {
+        // Every state-changing method is charged, regardless of path.
+        for m in [Method::POST, Method::PUT, Method::DELETE, Method::PATCH] {
+            assert!(
+                is_rate_limited_request(&m, "/api/v1/scans"),
+                "{m} must be rate-limited"
+            );
+        }
+        // Compute-heavy analysis GETs are charged.
+        for path in [
+            "/api/v1/scans/abc/network",
+            "/api/v1/scans/abc/benchmark",
+            "/api/v1/scans/abc/communities",
+            "/api/v1/scans/abc/report.json",
+            "/api/v1/scans/abc/graph.gexf",
+        ] {
+            assert!(
+                is_rate_limited_request(&Method::GET, path),
+                "{path} must be rate-limited"
+            );
+        }
+        // Cheap reads and the long-lived SSE streams are NEVER charged.
+        for path in [
+            "/api/v1/health",
+            "/api/v1/version",
+            "/api/v1/scans",
+            "/api/v1/scans/abc/events",
+            "/api/v1/live/abc/events",
+            "/",
+            "/favicon.svg",
+            "/static/jquery.min.js",
+        ] {
+            assert!(
+                !is_rate_limited_request(&Method::GET, path),
+                "{path} must NOT be rate-limited"
+            );
+        }
+    }
+
+    // ── DNS-rebind guard: h2 :authority is enforced as HOST ─────────────────────
+
+    #[tokio::test]
+    async fn h2_authority_is_enforced_as_host() {
+        // On HTTP/2 the browser sends `:authority`, not `Host`; axum/hyper map it
+        // into the `HeaderMap`'s HOST entry before our middleware runs. This test
+        // pins that the allowlist enforces that mapped value: a request carrying a
+        // mismatched Host (the post-mapping state of a rebind `:authority`) is
+        // rejected with 403, while an allow-listed one passes.
+        use axum::routing::get;
+        use tower::ServiceExt as _;
+
+        let allowed = Arc::new(host_allowlist("127.0.0.1:8080").expect("loopback allowlist"));
+        let app = Router::new()
+            .route("/probe", get(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    enforce_host_allowlist(Arc::clone(&allowed), req, next)
+                },
+            ));
+
+        // Allow-listed authority (mapped to HOST) passes.
+        let ok = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/probe")
+                    .header(header::HOST, "127.0.0.1:8080")
+                    .body(axum::body::Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(ok.status(), StatusCode::OK);
+
+        // Rebind authority (attacker domain mapped to HOST) is rejected.
+        let rebind = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/probe")
+                    .header(header::HOST, "evil.example.com:8080")
+                    .body(axum::body::Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(rebind.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn host_less_mutation_is_rejected_but_safe_get_passes() {
+        // A legitimate browser always sends Host/:authority, so a header-less
+        // mutation is never a real same-origin SPA request — reject it. A
+        // header-less GET (non-browser local tooling) is tolerated.
+        use axum::routing::get;
+        use tower::ServiceExt as _;
+
+        let allowed = Arc::new(host_allowlist("127.0.0.1:8080").expect("loopback allowlist"));
+        let app = Router::new()
+            .route("/probe", get(|| async { "ok" }).post(|| async { "ok" }))
+            .layer(axum::middleware::from_fn(
+                move |req: axum::extract::Request, next: axum::middleware::Next| {
+                    enforce_host_allowlist(Arc::clone(&allowed), req, next)
+                },
+            ));
+
+        // Host-less GET: tolerated.
+        let safe = app
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/probe")
+                    .body(axum::body::Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(safe.status(), StatusCode::OK);
+
+        // Host-less POST: rejected.
+        let mutation = app
+            .oneshot(
+                axum::http::Request::builder()
+                    .method(Method::POST)
+                    .uri("/probe")
+                    .body(axum::body::Body::empty())
+                    .expect("request builds"),
+            )
+            .await
+            .expect("router responds");
+        assert_eq!(mutation.status(), StatusCode::FORBIDDEN);
     }

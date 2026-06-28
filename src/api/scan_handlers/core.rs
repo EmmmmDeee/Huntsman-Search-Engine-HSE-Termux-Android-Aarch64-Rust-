@@ -577,22 +577,48 @@ pub async fn scan_batch(
         return bad_request("batch too large (max 50)");
     }
 
-    let mut scan_ids = Vec::with_capacity(requests.len());
-    for req in requests {
-        let (scan, target) = match super::build_scan_from_request(req) {
-            Ok(pair) => pair,
-            Err(msg) => {
-                scan_ids.push(json!({ "error": msg }));
-                continue;
+    // Validate every request and run all (up to 50) SQLite upserts on ONE
+    // blocking thread, not request-by-request on the async reactor — the same
+    // spawn_blocking discipline scan_import and the analysis handlers use. On a
+    // 2-worker Termux reactor, 50 sequential synchronous upserts inline would
+    // stall every concurrent request (SSE reactor included). The blocking task
+    // returns a per-request outcome plus the `(scan, target)` pairs that
+    // persisted; `spawn_scan` (which itself `tokio::spawn`s) is then called back
+    // on the async side, since it must run on the runtime, not the blocking pool.
+    enum Outcome {
+        Queued(Box<Scan>, Box<Target>),
+        Failed(String),
+    }
+    let store = Arc::clone(&s.store);
+    let outcomes = match tokio::task::spawn_blocking(move || {
+        let mut outcomes = Vec::with_capacity(requests.len());
+        for req in requests {
+            match super::build_scan_from_request(req) {
+                Ok((scan, target)) => match store.upsert_scan(&scan) {
+                    Ok(()) => outcomes.push(Outcome::Queued(Box::new(scan), Box::new(target))),
+                    Err(e) => outcomes.push(Outcome::Failed(e.to_string())),
+                },
+                Err(msg) => outcomes.push(Outcome::Failed(msg)),
             }
-        };
-        if let Err(e) = s.store.upsert_scan(&scan) {
-            scan_ids.push(json!({ "error": e.to_string() }));
-            continue;
         }
-        let sid = scan.id.clone();
-        spawn_scan(&s, scan, target);
-        scan_ids.push(json!({ "scan_id": sid, "status": "queued" }));
+        outcomes
+    })
+    .await
+    {
+        Ok(o) => o,
+        Err(e) => return internal_error(&format!("batch task failed: {e}")),
+    };
+
+    let mut scan_ids = Vec::with_capacity(outcomes.len());
+    for outcome in outcomes {
+        match outcome {
+            Outcome::Queued(scan, target) => {
+                let sid = scan.id.clone();
+                spawn_scan(&s, *scan, *target);
+                scan_ids.push(json!({ "scan_id": sid, "status": "queued" }));
+            }
+            Outcome::Failed(msg) => scan_ids.push(json!({ "error": msg })),
+        }
     }
 
     (
