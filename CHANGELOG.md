@@ -11,6 +11,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Shared maximum-raw-data extractor brings OathNet stealer logs to parity with
+  SeekNow (`util`-style functional refactor).** SeekNow's verbose "long tail"
+  pass — device fingerprints (HWID / MAC / hostname → `DeviceId`/`MacAddress`),
+  employer, extra social handles, multi-part addresses, and a catch-all that
+  turns *every remaining scalar field* into an `Other(field)` node — was
+  module-private to `see_know`, while `oathnet_pro`'s stealer path surfaced only
+  Url / Email / Domain / Credential and left the defining payload of an
+  infostealer log (the captured machine fingerprint and detail tail) buried in
+  evidence. That pass is now a single shared, source-parameterised
+  `modules::breach_rich::extract_rich_detail`: `see_know` delegates to it
+  (byte-for-byte identical output — its full test suite is unchanged) and
+  `oathnet_pro`'s stealer extractor now calls it too, so both paid pools mine the
+  identical field set and can't drift. The deliberate stealer-URL policy is
+  preserved on both sides (the capture URL stays a `Url`; its host is **not**
+  minted as a `Domain`, avoiding the platform-infrastructure expansion and
+  cross-victim false-correlation that was empirically rejected). Proven: shared
+  unit tests (device fingerprints as non-`breach` context, catch-all vs noise
+  suppression, source-tag parameterisation), a new oathnet stealer
+  characterization, see_know's unchanged suite, and the full gate (clippy
+  `--all-targets -D warnings`, fmt, 4145 lib tests).
 - **Fully autonomous investigation — no seed input required.** The New Scan UI no
   longer forces the operator to choose a target: a new "Auto-Investigate" button
   (and `POST /api/v1/scan/auto`) ranks every entity the platform has already

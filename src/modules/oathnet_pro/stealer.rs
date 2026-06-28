@@ -1,8 +1,11 @@
 //! Stealer-log entity extraction for OathNet results.
 //!
 //! Builds Url / Credential / Domain leads from the stealer-context fields of a
-//! breach record — kept separate from the breach-PII path and the parent's
-//! `Module` wiring. Reaches shared parent items through `use super::*`.
+//! breach record, then runs the shared [`crate::modules::breach_rich`]
+//! maximum-raw-data pass to surface the long tail (device fingerprints, extra
+//! handles, every remaining scalar) — kept separate from the breach-PII path and
+//! the parent's `Module` wiring. Reaches shared parent items through
+//! `use super::*`.
 
 use super::*;
 
@@ -39,7 +42,12 @@ pub(super) fn push_stealer_entity(
 ///     pipeline (HIBP/emailrep/epieos);
 ///   * `domain` array values that pass [`looks_like_domain`](crate::util::domains::looks_like_domain),
 ///     filtering out reverse-DNS app packages and bare IPs;
-///   * a `username@url` `Credential` pairing.
+///   * a `username@url` `Credential` pairing;
+///   * the **maximum-raw-data long tail** — device fingerprints (HWID / MAC /
+///     hostname), extra social handles, employer, and every remaining scalar
+///     field — via the shared [`crate::modules::breach_rich`] pass that
+///     `see_know` also uses, so both stealer consumers extract one identical
+///     field set.
 ///
 /// A redacted `UPGRADE_TO_SEE` password is never emitted verbatim — only a
 /// first/last-character hint (taken char-wise so a multi-byte value can't
@@ -175,6 +183,24 @@ pub(super) fn extract_stealer_entities(
             );
         }
     }
+
+    // Maximum-raw-data long tail: the defining payload of an infostealer log —
+    // device fingerprints (HWID / MAC / hostname), extra social handles,
+    // employer, and every remaining scalar field — surfaced as first-class,
+    // pivotable entities via the shared provider-agnostic pass that see_know also
+    // uses, so the two stealer consumers extract the identical field set and
+    // can't drift. A stealer row is the subject's own captured machine/identity
+    // (`is_target`), so its rich entities need no candidate demotion. The shared
+    // pass uses `@`-namespaced dedup keys disjoint from this path's, so the
+    // primary Url/Email/Domain/Credential leads above are never duplicated.
+    crate::modules::breach_rich::extract_rich_detail(
+        item,
+        scan_id,
+        "oathnet-pro",
+        &ev,
+        seen,
+        result,
+    );
 }
 
 // ─── Field validation (objective, static — no network) ──────────────────────

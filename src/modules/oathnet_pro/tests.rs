@@ -180,6 +180,48 @@ use super::*;
     }
 
     #[test]
+    fn stealer_row_surfaces_device_fingerprints_and_long_tail() {
+        use serde_json::json;
+        // The defining payload of an infostealer log — machine fingerprints and
+        // the verbose detail tail — must now surface as pivotable entities
+        // (shared `breach_rich` pass), not stay locked in evidence.
+        let item = json!({
+            "username": "victim@example.com",
+            "url": "https://accounts.example.com/login",
+            "hwid": "9F8E7D6C5B4A3210",
+            "hostname": "DESKTOP-VICTIM",
+            "country": "US",
+            "ip_country_code": "us",
+            "gender": "M",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        let find = |k: EntityKind, v: &str| {
+            result.entities.iter().find(|e| e.kind == k && e.value == v)
+        };
+        // Device fingerprints → DeviceId, tagged context (provider + device),
+        // NOT `breach` (infrastructure, not leaked PII).
+        let dev = find(EntityKind::DeviceId, "9F8E7D6C5B4A3210").expect("hwid → DeviceId");
+        assert!(dev.tags.iter().any(|t| t == "oathnet-pro"));
+        assert!(dev.tags.iter().any(|t| t == "device"));
+        assert!(!dev.tags.iter().any(|t| t == "breach"));
+        assert!(find(EntityKind::DeviceId, "DESKTOP-VICTIM").is_some());
+        // Long-tail scalar → Other(field) raw-data node.
+        assert!(find(EntityKind::Other("gender".into()), "M").is_some());
+        // The primary stealer leads are still present and un-duplicated.
+        assert_eq!(
+            result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::Url && e.value.contains("accounts.example.com"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
     fn stealer_android_app_package_is_not_minted_as_domain() {
         use serde_json::json;
         // Real shape from a live oathnet stealer-search row (Android credential):

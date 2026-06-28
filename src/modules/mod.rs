@@ -27,6 +27,7 @@ pub mod austlii;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
+pub mod breach_rich;
 pub mod breach_timezone;
 pub mod cell_intel;
 pub mod cell_local;
