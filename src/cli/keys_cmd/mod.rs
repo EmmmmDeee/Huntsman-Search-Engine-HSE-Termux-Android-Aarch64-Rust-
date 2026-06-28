@@ -140,6 +140,10 @@ pub enum KeysAction {
         /// key into the rotation pool for reuse (the self-funding loop).
         #[arg(long)]
         promote: bool,
+        /// Show the resellable inventory: proven-live keys ranked by resale value
+        /// (highest ROI tier first — Multiplier > Expansion > Terminal).
+        #[arg(long)]
+        resellable: bool,
     },
     /// List supported service names and their categories.
     Services,
@@ -441,8 +445,59 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             verify,
             verified,
             promote,
+            resellable,
         } => {
             use crate::util::key_vault;
+
+            if resellable {
+                let mut entries = key_vault::resellable_entries();
+                if let Some(ref s) = service {
+                    let lower = s.to_lowercase();
+                    entries.retain(|e| e.service.to_lowercase() == lower);
+                }
+                if entries.is_empty() {
+                    println!(
+                        "No proven-live (resellable) keys banked yet — run `hse keys bank --verify` first."
+                    );
+                    println!("Bank file: {}", key_vault::vault_path().display());
+                    return Ok(());
+                }
+                if reveal {
+                    eprintln!(
+                        "# WARNING: --reveal prints PLAINTEXT keys. Treat the output as a secret."
+                    );
+                }
+                let multipliers = entries
+                    .iter()
+                    .filter(|e| e.roi() == crate::util::key_roi::KeyRoi::Multiplier)
+                    .count();
+                println!(
+                    "RESELLABLE INVENTORY — {} proven-live key(s), {multipliers} top-tier multiplier(s). Highest resale value first.\n",
+                    entries.len()
+                );
+                println!(
+                    "{:<11} {:<18} {:<24} {:<9} SOURCE",
+                    "ROI", "SERVICE", "KEY", "VERIFIED"
+                );
+                println!("{}", "-".repeat(80));
+                for e in &entries {
+                    let key = if reveal {
+                        e.key_value.clone()
+                    } else {
+                        mask_key(&e.key_value)
+                    };
+                    println!(
+                        "{:<11} {:<18} {:<24} {:<9} {}",
+                        e.roi().label(),
+                        e.service,
+                        key,
+                        format!("✓×{}", e.verified_count),
+                        e.provider,
+                    );
+                }
+                println!("\nBank file: {}", key_vault::vault_path().display());
+                return Ok(());
+            }
 
             if census {
                 let rows = key_vault::osint_provider_census();

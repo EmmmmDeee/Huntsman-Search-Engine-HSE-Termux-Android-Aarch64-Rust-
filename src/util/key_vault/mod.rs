@@ -243,6 +243,16 @@ impl VaultEntry {
     pub fn is_osint(&self) -> bool {
         self.osint_category().is_some()
     }
+
+    /// This key's resale-value tier, derived from its `service` via
+    /// [`crate::util::key_roi`]: a `Multiplier` key cascades into discovering more
+    /// keys (highest resale value), an `Expansion` key yields many entities, and a
+    /// `Terminal` key is one-and-done. Combined with [`Self::is_verified`] (proven
+    /// to work) this ranks the bank's resellable capacity.
+    #[must_use]
+    pub fn roi(&self) -> crate::util::key_roi::KeyRoi {
+        crate::util::key_roi::classify(&self.service)
+    }
 }
 
 /// Return all vault entries, ordered by `last_seen_at DESC`. Returns an empty
@@ -336,6 +346,32 @@ pub fn verified_entries() -> Vec<VaultEntry> {
             .then(a.service.cmp(&b.service))
     });
     v
+}
+
+/// The bank's resellable inventory: every PROVEN-live key
+/// ([`VaultEntry::is_verified`]) ranked by resale value — highest
+/// [`crate::util::key_roi`] tier first (`Multiplier` > `Expansion` > `Terminal`),
+/// then most-confirmed, then most-rediscovered, then service. A verified key is
+/// one demonstrated to work, so it has standalone value; ordering by ROI surfaces
+/// the credentials that unlock the most downstream capacity (and thus the most
+/// further keys) first. Empty when nothing has been verified yet.
+pub fn resellable_entries() -> Vec<VaultEntry> {
+    rank_resellable(verified_entries())
+}
+
+/// Pure resale-value ranking of an already-verified entry set — highest ROI tier
+/// first, then most-confirmed / most-rediscovered / service. Split out from
+/// [`resellable_entries`] (which reads the vault) so the ordering is unit-tested
+/// without a live database.
+fn rank_resellable(mut entries: Vec<VaultEntry>) -> Vec<VaultEntry> {
+    entries.sort_by(|a, b| {
+        b.roi()
+            .cmp(&a.roi())
+            .then(b.verified_count.cmp(&a.verified_count))
+            .then(b.discovery_count.cmp(&a.discovery_count))
+            .then(a.service.cmp(&b.service))
+    });
+    entries
 }
 
 /// Record one LIVE confirmation of a banked key: increment its `verified_count`
@@ -516,6 +552,42 @@ mod tests {
         assert_eq!(e.len(), 1, "legacy row preserved through migration");
         assert_eq!(e[0].verified_count, 0, "legacy row backfills to unverified");
         assert!(write_verification(&conn, "dh-key-abcdef", 20).unwrap());
+    }
+
+    #[test]
+    fn roi_classifies_resale_value_by_service() {
+        use crate::util::key_roi::KeyRoi;
+        // Cascading providers (find more keys) are the highest resale value.
+        assert_eq!(entry("shodan").roi(), KeyRoi::Multiplier);
+        assert_eq!(entry("dehashed").roi(), KeyRoi::Multiplier);
+        // Many-entity but non-cascading.
+        assert_eq!(entry("wigle").roi(), KeyRoi::Expansion);
+        // One-and-done.
+        assert_eq!(entry("abuseipdb").roi(), KeyRoi::Terminal);
+    }
+
+    #[test]
+    fn rank_resellable_orders_by_roi_then_confirmations() {
+        let mut shodan = entry("shodan"); // Multiplier
+        shodan.verified_count = 1;
+        let mut wigle = entry("wigle"); // Expansion
+        wigle.verified_count = 2;
+        let mut abuse = entry("abuseipdb"); // Terminal, most-confirmed
+        abuse.verified_count = 9;
+        let mut shodan2 = entry("shodan"); // Multiplier, more confirmations
+        shodan2.verified_count = 5;
+
+        let ranked = rank_resellable(vec![abuse, wigle, shodan, shodan2]);
+        let order: Vec<(&str, u32)> = ranked
+            .iter()
+            .map(|e| (e.service.as_str(), e.verified_count))
+            .collect();
+        // Multipliers first (most-confirmed first within a tier), then Expansion,
+        // then Terminal — regardless of raw confirmation counts across tiers.
+        assert_eq!(
+            order,
+            vec![("shodan", 5), ("shodan", 1), ("wigle", 2), ("abuseipdb", 9)]
+        );
     }
 
     #[test]
