@@ -1274,6 +1274,51 @@ fn readme_module_overview_count_matches_registry() {
     );
 }
 
+/// The `docs/MODULES.md` catalogue header — `## Catalogue (N modules: F free ·
+/// K key-gated · P paid)` — must match the live registry size AND its cost
+/// breakdown. The per-row presence test (`modules_md_lists_every_registered_
+/// module`) does NOT cover this hand-written headline, so it silently drifted
+/// (observed stale at "163" while the registry held 165). This guard turns the
+/// headline into a mechanical check: add/remove a module, or change a module's
+/// `cost()`, without updating the header and it fails here — the same
+/// drift-proofing the README already has in
+/// `readme_module_overview_count_matches_registry`.
+#[test]
+fn modules_md_catalogue_header_matches_registry() {
+    let doc = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/MODULES.md"))
+        .expect("docs/MODULES.md must exist");
+    let modules = huntsman_search_engine::modules::registry();
+    let total = modules.len();
+    let (mut free, mut key_gated, mut paid) = (0usize, 0usize, 0usize);
+    for m in &modules {
+        match m.cost().as_str() {
+            "free" => free += 1,
+            "key_gated" => key_gated += 1,
+            "paid" => paid += 1,
+            other => panic!("unexpected module cost `{other}` for `{}`", m.name()),
+        }
+    }
+    let header = doc
+        .lines()
+        .find(|l| l.starts_with("## Catalogue ("))
+        .expect("docs/MODULES.md must carry a `## Catalogue (...)` header");
+    // Each fragment is matched independently so the failure message points at the
+    // exact field that drifted, and the `·` separators / spacing are free to vary.
+    for needle in [
+        format!("{total} modules"),
+        format!("{free} free"),
+        format!("{key_gated} key-gated"),
+        format!("{paid} paid"),
+    ] {
+        assert!(
+            header.contains(&needle),
+            "docs/MODULES.md catalogue header is stale — expected `{needle}` \
+             (registry: {total} modules = {free} free · {key_gated} key-gated · \
+             {paid} paid). Header is: {header:?}"
+        );
+    }
+}
+
 /// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
 /// compiled binary must carry NO AI / ML / LLM / cloud-inference / vector /
 /// embedding dependency, so every runtime capability is deterministic Rust that
