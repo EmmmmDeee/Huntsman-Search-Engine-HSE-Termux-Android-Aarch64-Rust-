@@ -96,6 +96,16 @@ pub struct KeyEntry {
     /// now-revoked key). `None` for a key added directly.
     #[serde(default)]
     pub rotated_at: Option<u64>,
+    /// Independent corroboration count: how many times this exact key has been
+    /// re-observed or re-confirmed *beyond* its first sighting — duplicate
+    /// harvests of the same value (folded in by [`super::KeyPool::add`]) and live
+    /// re-validations. `0` for a freshly-added unique key. A corroborated key is
+    /// far more likely a genuine, valuable credential, so it earns a clamped
+    /// confidence bonus in [`Self::health_score`] and is retained preferentially
+    /// by the pool's pruning and rotation. This is the rotation-pool analogue of
+    /// the retention bank's verified-duplicate `verified_count`.
+    #[serde(default)]
+    pub corroboration: u32,
 }
 
 impl KeyEntry {
@@ -116,6 +126,7 @@ impl KeyEntry {
             source_entity: None,
             environment: None,
             rotated_at: None,
+            corroboration: 0,
         }
     }
 
@@ -123,6 +134,21 @@ impl KeyEntry {
     #[must_use]
     pub fn environment(&self) -> &str {
         self.environment.as_deref().unwrap_or("default")
+    }
+
+    /// Record one independent re-observation or live re-confirmation of this key
+    /// (a verified duplicate), saturating so a perpetually re-harvested key can
+    /// never overflow the counter.
+    pub fn record_corroboration(&mut self) {
+        self.corroboration = self.corroboration.saturating_add(1);
+    }
+
+    /// True once this key has been corroborated by at least one independent
+    /// re-observation or live re-confirmation beyond its first sighting — proven,
+    /// preferentially-retained capacity.
+    #[must_use]
+    pub fn is_corroborated(&self) -> bool {
+        self.corroboration > 0
     }
 
     pub fn is_usable(&self) -> bool {
@@ -170,7 +196,15 @@ impl KeyEntry {
     ///    the higher tier reads as slightly healthier. The reliability and tier
     ///    weights sum to `1.0`, so the bonus is deliberately small — it can nudge
     ///    ordering but never lift a failing key above a reliable lower-tier peer.
-    /// 4. **Availability scales the result (multiplier in `0.0..=1.0`).** A key
+    /// 4. **Corroboration adds a clamped confidence bonus (weight
+    ///    [`CORROBORATION_W`]).** A key independently re-observed or re-confirmed
+    ///    several times is very likely a genuine, valuable credential, so it earns
+    ///    a small lift — added ON TOP of the reliability+tier sum and clamped with
+    ///    it to the same `1.0` ceiling. An uncorroborated key (`corroboration == 0`)
+    ///    gets no bonus, so its score is unchanged; a fresh top-tier key already
+    ///    sits at `1.0`, so the clamp means corroboration only ever raises a
+    ///    *sub-ceiling* key toward full health, never past it.
+    /// 5. **Availability scales the result (multiplier in `0.0..=1.0`).** A key
     ///    whose rate-limit cooldown has NOT elapsed is healthy in the long run but
     ///    useless right now, so the score is scaled down hard ([`COOLDOWN_AVAIL`]).
     ///    A key inside the post-recovery grace window is scaled less
@@ -179,7 +213,8 @@ impl KeyEntry {
     ///
     /// Consequently a fully-reliable, top-tier, fully-available key scores exactly
     /// `1.0`; a poor success rate, a non-top tier, or an active cooldown are what
-    /// pull it down toward (but never below) `0.0`.
+    /// pull it down toward (but never below) `0.0`, while corroboration nudges a
+    /// sub-ceiling key back up toward `1.0`.
     #[must_use]
     pub fn health_score(&self, now: u64) -> f64 {
         // (1) Dead credentials have no health to grade — short-circuit to zero so
@@ -189,14 +224,19 @@ impl KeyEntry {
             KeyStatus::Untested | KeyStatus::Active | KeyStatus::RateLimited => {}
         }
 
-        // (2) Reliability base + (3) tier bonus. The weights sum to 1.0, so the
-        //     maximum pre-availability score is exactly 1.0 (fully reliable, top
-        //     tier) and the tier bonus can never dominate reliability.
+        // (2) Reliability base + (3) tier bonus. RELIABILITY_W + TIER_W = 1.0, so
+        //     this sum alone maxes at exactly 1.0 (fully reliable, top tier) and
+        //     the tier bonus can never dominate reliability.
         let reliability = RELIABILITY_W * self.success_rate();
         let tier_bonus = TIER_W * tier_fraction(self.tier);
-        let base = reliability + tier_bonus;
+        // (4) Corroboration confidence bonus, clamped with the base to the 1.0
+        //     ceiling: it lifts a sub-ceiling key toward full health when the key
+        //     has been independently re-confirmed, but leaves an uncorroborated
+        //     key (bonus 0.0) and an already-ceiling key untouched.
+        let corroboration_bonus = CORROBORATION_W * corroboration_fraction(self.corroboration);
+        let base = (reliability + tier_bonus + corroboration_bonus).min(1.0);
 
-        // (4) Scale by how usable the key is *right now*.
+        // (5) Scale by how usable the key is *right now*.
         base * self.availability_factor(now)
     }
 
@@ -284,13 +324,14 @@ const ERROR_BACKOFF_COUNT: u64 = 3;
 
 // ── `health_score` weighting ──────────────────────────────────────────────────
 //
-// The two additive weights sum to exactly 1.0, so a fully-reliable, top-tier,
-// fully-available key scores 1.0 and nothing can exceed that ceiling. Reliability
-// dominates so heavily that the tier term spans only `TIER_W` of the range: a
-// fresh key of ANY tier still scores "high" (>= 1 - TIER_W ≈ 0.95), with tier just
-// a mild nudge among otherwise-equal keys — deliberately small so it can never
-// outweigh a real reliability gap. The availability multipliers are applied
-// *after* this sum (see `KeyEntry::availability_factor`).
+// The two *base* weights (`RELIABILITY_W` + `TIER_W`) sum to exactly 1.0, so the
+// reliability+tier sum alone scores a fully-reliable, top-tier key at 1.0.
+// Reliability dominates so heavily that the tier term spans only `TIER_W` of the
+// range: a fresh key of ANY tier still scores "high" (>= 1 - TIER_W ≈ 0.95), with
+// tier just a mild nudge among otherwise-equal keys — deliberately small so it can
+// never outweigh a real reliability gap. The corroboration bonus (`CORROBORATION_W`)
+// is then added and the total clamped to 1.0, and finally the availability
+// multipliers are applied (see `KeyEntry::availability_factor`).
 
 /// Weight of the success-rate term in [`KeyEntry::health_score`] — the dominant
 /// reliability signal. With `TIER_W` it sums to `1.0`.
@@ -302,6 +343,14 @@ const RELIABILITY_W: f64 = 0.95;
 /// high and the bonus can never outweigh a real reliability gap. With
 /// `RELIABILITY_W` it sums to `1.0`.
 const TIER_W: f64 = 0.05;
+
+/// Weight of the corroboration confidence bonus in [`KeyEntry::health_score`].
+/// Added on top of the reliability+tier sum and clamped to the `1.0` ceiling, so
+/// an independently re-confirmed key reads as healthier — bounded so even an
+/// infinitely-corroborated key can lift a sub-ceiling score by at most this much,
+/// and never above 1.0. An uncorroborated key gets exactly `0.0` here, leaving
+/// every previously-computed score unchanged.
+const CORROBORATION_W: f64 = 0.10;
 
 /// Availability multiplier for a key whose rate-limit cooldown has NOT yet elapsed
 /// — long-run healthy but unusable right now, so its `health_score` is scaled down
@@ -325,4 +374,15 @@ fn tier_fraction(tier: KeyTier) -> f64 {
         KeyTier::Standard => 2.0 / 3.0,
         KeyTier::Premium => 1.0,
     }
+}
+
+/// Map a corroboration count to a `0.0..=1.0` confidence fraction with
+/// diminishing returns for the bonus in [`KeyEntry::health_score`]: `0`
+/// confirmations ⇒ `0.0` (no bonus), and each additional independent confirmation
+/// adds less than the last, asymptotically approaching `1.0`. `1 - 1/(1+corr)`
+/// yields `0.0, 0.5, 0.667, 0.75, …` for `corr = 0, 1, 2, 3`. Pure and total over
+/// all `u32` (the `+1` denominator can never be zero, so there is no division by
+/// zero and no `NaN`).
+fn corroboration_fraction(corroboration: u32) -> f64 {
+    1.0 - 1.0 / (1.0 + f64::from(corroboration))
 }
