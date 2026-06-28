@@ -1,7 +1,9 @@
 //! Pool persistence: load from / save to `~/.huntsman/key_pool.json`.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 
+use super::KeyEntry;
 use super::pool::{KeyPool, PoolData};
 
 pub fn pool_path() -> PathBuf {
@@ -21,48 +23,19 @@ pub fn load_pool() -> KeyPool {
         Err(_) => return KeyPool::new(),
     };
 
-    // Strict parse first — the overwhelmingly common clean case.
-    if let Ok(data) = serde_json::from_str::<PoolData>(&content) {
-        return KeyPool::from_data(data);
-    }
-
-    // Lenient salvage: a SINGLE unreadable entry (e.g. an unknown `status` enum
-    // written by a newer build and then read by a downgrade, or a partially-
-    // written record) must NOT discard EVERY harvested key. Re-parse the services
-    // map with each entry as raw JSON, deserialize the entries independently, and
-    // keep the good ones.
-    if let Ok(raw) =
-        serde_json::from_str::<std::collections::HashMap<String, Vec<serde_json::Value>>>(&content)
-    {
-        let mut services: std::collections::HashMap<String, Vec<super::KeyEntry>> =
-            std::collections::HashMap::new();
-        let mut dropped = 0usize;
-        for (svc, entries) in raw {
-            let good: Vec<super::KeyEntry> = entries
-                .into_iter()
-                .filter_map(|v| match serde_json::from_value::<super::KeyEntry>(v) {
-                    Ok(entry) => Some(entry),
-                    Err(_) => {
-                        dropped += 1;
-                        None
-                    }
-                })
-                .collect();
-            if !good.is_empty() {
-                services.insert(svc, good);
-            }
-        }
+    if let Some((data, dropped)) = parse_pool_text(&content) {
         if dropped > 0 {
             tracing::warn!(
                 "key pool at {}: dropped {dropped} unreadable entr(ies), kept the rest",
                 path.display()
             );
         }
-        return KeyPool::from_data(PoolData { services });
+        return KeyPool::from_data(data);
     }
 
-    // Not even valid JSON → back up under a UNIQUE (timestamped) name so a second
-    // failed load can't clobber the only prior backup, then start fresh.
+    // Not even a recoverable pool object → back up under a UNIQUE (timestamped)
+    // name so a second failed load can't clobber the only prior backup, then
+    // start fresh.
     let stamp = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
@@ -74,6 +47,72 @@ pub fn load_pool() -> KeyPool {
     );
     let _ = std::fs::rename(&path, &backup);
     KeyPool::new()
+}
+
+/// Shape mirror of [`PoolData`] whose entries stay raw [`serde_json::Value`]s, so
+/// the lenient salvage can deserialize the *recoverable* entries one-by-one even
+/// when a sibling entry is unreadable (e.g. an unknown `status` enum written by a
+/// newer build and read back by a downgrade).
+///
+/// `deny_unknown_fields` is load-bearing: without it, a bare `{svc: [..]}` map
+/// (no `services` key) would parse as this struct with `services` defaulting to
+/// empty and silently swallow the whole file. Denying unknown fields makes such a
+/// file fail this parse so it falls through to the bare-map interpretation.
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPoolData {
+    #[serde(default)]
+    services: HashMap<String, Vec<serde_json::Value>>,
+}
+
+/// Parse pool JSON, tolerating a single unreadable entry. Returns the recovered
+/// [`PoolData`] together with the number of entries dropped during salvage, or
+/// `None` when the text is not even a recoverable pool object (the caller then
+/// backs the file up and starts fresh).
+///
+/// A strict [`PoolData`] parse is tried first — the overwhelmingly common clean
+/// case (0 dropped). If that fails because ONE entry is unreadable, a strict parse
+/// of the whole file would discard EVERY harvested key; instead the services map
+/// is re-read with each entry as raw JSON and only the unreadable ones are
+/// dropped. Both the canonical `{"services": {svc: [..]}}` shape that `save_pool`
+/// writes AND a bare `{svc: [..]}` map are accepted, so a hand-edited or legacy
+/// file still salvages.
+///
+/// Extracted from `load_pool` (which owns the file IO and backup) so the recovery
+/// logic is pure and unit-tested without touching `$HOME`.
+fn parse_pool_text(content: &str) -> Option<(PoolData, usize)> {
+    // Strict parse first — the overwhelmingly common clean case.
+    if let Ok(data) = serde_json::from_str::<PoolData>(content) {
+        return Some((data, 0));
+    }
+
+    // Lenient salvage: a SINGLE unreadable entry must NOT discard EVERY harvested
+    // key. Accept the wrapped `{"services": {..}}` shape (the format `save_pool`
+    // persists) first, then a bare `{svc: [..]}` map, re-reading each entry as raw
+    // JSON so the readable siblings survive.
+    let raw = serde_json::from_str::<RawPoolData>(content)
+        .map(|r| r.services)
+        .or_else(|_| serde_json::from_str::<HashMap<String, Vec<serde_json::Value>>>(content))
+        .ok()?;
+
+    let mut services: HashMap<String, Vec<KeyEntry>> = HashMap::new();
+    let mut dropped = 0usize;
+    for (svc, entries) in raw {
+        let good: Vec<KeyEntry> = entries
+            .into_iter()
+            .filter_map(|v| match serde_json::from_value::<KeyEntry>(v) {
+                Ok(entry) => Some(entry),
+                Err(_) => {
+                    dropped += 1;
+                    None
+                }
+            })
+            .collect();
+        if !good.is_empty() {
+            services.insert(svc, good);
+        }
+    }
+    Some((PoolData { services }, dropped))
 }
 
 pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {
@@ -115,5 +154,72 @@ pub fn save_pool_best_effort(pool: &KeyPool) {
             path = %pool_path().display(),
             "failed to persist harvested API keys — they will be lost when the process exits"
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn strict_parse_of_the_persisted_shape_drops_nothing() {
+        // The exact shape `save_pool` writes: PoolData = {"services": {svc: [..]}}.
+        let json = r#"{"services":{"intelx":[{"value":"k","status":"untested"}]}}"#;
+        let (data, dropped) = parse_pool_text(json).expect("clean pool parses");
+        assert_eq!(dropped, 0);
+        assert_eq!(data.services["intelx"].len(), 1);
+        assert_eq!(data.services["intelx"][0].value, "k");
+    }
+
+    #[test]
+    fn lenient_salvage_keeps_good_entries_when_a_sibling_is_unreadable() {
+        // Regression: previously the salvage parsed the file as a bare
+        // `HashMap<String, Vec<Value>>`, which does NOT match the persisted
+        // `{"services": {..}}` shape — so a single unreadable entry forced a full
+        // backup-and-reset, discarding EVERY harvested key. The good sibling must
+        // now survive while only the bad entry (unknown status enum) is dropped.
+        let json = r#"{"services":{"shodan":[
+            {"value":"good-key","status":"active"},
+            {"value":"bad-key","status":"from_the_future"}
+        ]}}"#;
+        let (data, dropped) = parse_pool_text(json).expect("recoverable pool");
+        assert_eq!(dropped, 1, "only the unreadable entry is dropped");
+        let shodan = data.services.get("shodan").expect("service retained");
+        assert_eq!(shodan.len(), 1, "the readable sibling survives");
+        assert_eq!(shodan[0].value, "good-key");
+    }
+
+    #[test]
+    fn bare_map_shape_also_salvages() {
+        // A hand-edited / legacy bare `{svc: [..]}` map (no "services" wrapper)
+        // still salvages rather than resetting the pool.
+        let json = r#"{"hunter":[{"value":"x","status":"active"}]}"#;
+        let (data, dropped) = parse_pool_text(json).expect("bare map recoverable");
+        assert_eq!(dropped, 0);
+        assert_eq!(data.services["hunter"][0].value, "x");
+    }
+
+    #[test]
+    fn unrecoverable_text_returns_none() {
+        assert!(parse_pool_text("not json at all").is_none());
+    }
+
+    #[test]
+    fn corroboration_round_trips_through_persistence() {
+        // The field added in 1/7 survives a save→load cycle via serde, and a
+        // pre-existing file without the field still loads (serde default → 0).
+        let mut e = KeyEntry::new("k");
+        e.corroboration = 4;
+        let mut services = HashMap::new();
+        services.insert("shodan".to_string(), vec![e]);
+        let json = serde_json::to_string(&PoolData { services }).unwrap();
+        let (data, dropped) = parse_pool_text(&json).expect("round-trips");
+        assert_eq!(dropped, 0);
+        assert_eq!(data.services["shodan"][0].corroboration, 4);
+
+        // A legacy record with no corroboration field defaults to 0.
+        let legacy = r#"{"services":{"shodan":[{"value":"k","status":"active"}]}}"#;
+        let (legacy_data, _) = parse_pool_text(legacy).expect("legacy parses");
+        assert_eq!(legacy_data.services["shodan"][0].corroboration, 0);
     }
 }
