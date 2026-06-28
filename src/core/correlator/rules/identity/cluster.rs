@@ -184,43 +184,65 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
         return Vec::new();
     }
 
-    // Real-world identifiers the platform accounts themselves exposed.
-    let resolved: Vec<&Entity> = entities
+    // Real-world identifiers the platform accounts themselves exposed, each
+    // carried with the PLATFORM sources that published it. Pairing on shared
+    // source is what makes the resolution per-alias rather than global: only an
+    // account that exposed BOTH the handle and the identifier links them.
+    fn platform_sources(e: &Entity) -> BTreeSet<&str> {
+        e.corroborating_sources()
+            .into_iter()
+            .filter(|&s| matches!(source_family(s), "code" | "forum" | "social" | "presence"))
+            .collect()
+    }
+    let resolved: Vec<(&Entity, BTreeSet<&str>)> = entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Person))
-        .filter(|e| {
-            e.corroborating_sources()
-                .iter()
-                .any(|s| matches!(source_family(s), "code" | "forum" | "social"))
+        .filter_map(|e| {
+            let srcs = platform_sources(e);
+            (!srcs.is_empty()).then_some((e, srcs))
         })
         .collect();
     if resolved.is_empty() {
         return Vec::new();
     }
 
-    let resolved_uids: Vec<String> = resolved.iter().map(|e| e.uid.clone()).collect();
     aliases
         .iter()
-        .map(|(alias, fams)| {
+        .filter_map(|(alias, fams)| {
+            // Link ONLY to identifiers that share a publishing source with THIS
+            // alias — the same platform account exposed both. A platform-sourced
+            // identifier with no shared account is an unrelated stranger and is
+            // not fused. (Fixes the prior behaviour, which extended EVERY
+            // platform-sourced identifier onto EVERY alias, regardless of account
+            // — the exact fusion this rule's doc promises it avoids.)
+            let alias_srcs = platform_sources(alias);
+            let linked: Vec<&Entity> = resolved
+                .iter()
+                .filter(|(_, srcs)| !srcs.is_disjoint(&alias_srcs))
+                .map(|(e, _)| *e)
+                .collect();
+            if linked.is_empty() {
+                return None;
+            }
             let fam_list: Vec<&str> = fams.iter().copied().collect();
             let mut uids = vec![alias.uid.clone()];
-            uids.extend(resolved_uids.iter().cloned());
-            Correlation {
+            uids.extend(linked.iter().map(|e| e.uid.clone()));
+            Some(Correlation {
                 rule_id: "AU-046".into(),
                 rule_name: "Cross-platform identity resolution".into(),
                 severity: Severity::High,
                 description: format!(
-                    "Alias '{}' (confirmed across {}: {}) resolves to {} real-world identifier(s) via its platform accounts",
+                    "Alias '{}' (confirmed across {}: {}) resolves to {} real-world identifier(s) its platform accounts published",
                     alias.value,
                     fam_list.len(),
                     fam_list.join(", "),
-                    resolved.len()
+                    linked.len()
                 ),
                 entity_uids: uids,
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
-            }
+            })
         })
         .collect()
 }

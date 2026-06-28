@@ -3486,6 +3486,32 @@ fn au046_resolves_an_alias_to_platform_exposed_identifiers() {
 }
 
 #[test]
+fn au046_does_not_fuse_an_identifier_from_an_account_the_alias_does_not_control() {
+    // The alias is confirmed across github (code) + reddit (forum). A separate
+    // platform-sourced email exists, but it was exposed by gitlab — a platform
+    // the alias has NO shared account/source with, i.e. an unrelated stranger.
+    // AU-046 must NOT link it. (Regression: the rule used to extend EVERY
+    // platform-sourced identifier onto EVERY alias, fusing unrelated people
+    // surfaced under one name scan into a single false identity.)
+    let mut handle = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        handle.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    let mut stranger = Entity::new(EntityKind::Email, "someone-else@example.com", 0.7, "scan");
+    stranger.add_evidence(Evidence::new("gitlab_user", "maintainer email"));
+
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &[handle, stranger],
+        "scan",
+        0,
+    );
+    assert!(
+        hits.is_empty(),
+        "an identifier from an account the alias does not control must not be fused"
+    );
+}
+
+#[test]
 fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
     // Regression for a live person-scan: `from` (a bare function word) and `dns`
     // (a 3-char acronym) were mis-extracted as usernames and, "confirmed" across
