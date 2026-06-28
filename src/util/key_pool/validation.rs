@@ -8,8 +8,16 @@ use crate::util::service_defs::{KeyPlacement, ServiceDef, find_service};
 
 /// Add a key and validate it immediately against the service endpoint.
 /// If valid, marks it Active and stores it. If invalid, marks it Invalid
-/// but still stores it (won't be used by next_key).
-/// Returns true if the key is valid and was stored.
+/// but still stores it (won't be used by next_key). Returns true if the key is
+/// valid.
+///
+/// When the key is already pooled in an unsettled state (Untested / Exhausted /
+/// RateLimited), the fresh live verdict is written back to the existing entry, so
+/// a proven-live harvested key never lingers as Untested and the validate-once
+/// cache is honoured on subsequent calls (no wasted quota re-confirming it). A
+/// successful confirmation also corroborates the key (a proven credential ranks
+/// healthier and is retained preferentially — the self-funding signal) and is
+/// recorded in the retention bank as a verified duplicate.
 ///
 /// `discovered_by` records provenance for `keys list` reporting: pass
 /// `Some(source)` for a key that came from imported/scanned data, `None` for an
@@ -46,29 +54,49 @@ pub async fn add_and_validate(
         entry.discovered_by = discovered_by;
     }
 
-    if let Some(valid) = validate_key(service, key_value).await {
-        if valid {
-            entry.status = KeyStatus::Active;
-            entry.last_validated = Some(crate::core::entity::unix_now());
-            let added = pool.add(service, entry);
-            if added {
-                super::persistence::save_pool_best_effort(&pool);
-                tracing::info!(service, "validated and stored API key");
-            }
-            true
-        } else {
-            entry.status = KeyStatus::Invalid;
-            entry.last_validated = Some(crate::core::entity::unix_now());
-            pool.add(service, entry);
-            super::persistence::save_pool_best_effort(&pool);
-            tracing::warn!(service, "API key failed validation — stored as invalid");
-            false
-        }
-    } else {
+    let Some(valid) = validate_key(service, key_value).await else {
+        // No validator for this service: store the key as-is (Untested) so it is
+        // still available to the rotation, and persist.
         pool.add(service, entry);
         super::persistence::save_pool_best_effort(&pool);
-        false
+        return false;
+    };
+
+    entry.status = if valid {
+        KeyStatus::Active
+    } else {
+        KeyStatus::Invalid
+    };
+    entry.last_validated = Some(crate::core::entity::unix_now());
+    if valid {
+        // A live confirmation is an independent corroboration: a proven key ranks
+        // healthier and is retained preferentially by the pool — the self-funding
+        // signal that biases rotation toward credentials known to work.
+        entry.record_corroboration();
     }
+
+    let newly_added = pool.add(service, entry);
+    if !newly_added {
+        // The key was already pooled in an unsettled state (Untested / Exhausted /
+        // RateLimited): `add` folded this observation in as corroboration but kept
+        // the OLD status. Settle it to the fresh live verdict so a proven-live
+        // harvested key stops reading as Untested and the validate-once cache is
+        // honoured on the next call.
+        pool.mark_validated(service, key_value, valid);
+    }
+    super::persistence::save_pool_best_effort(&pool);
+
+    if valid {
+        // Perpetual self-funding accrual: record the live confirmation in the
+        // retention bank too (a verified duplicate). No-op when the key is not
+        // banked — the bank records it with full provenance at scan finalisation,
+        // and a later confirmation then accrues against it.
+        let _ = crate::util::key_vault::record_verification(key_value);
+        tracing::info!(service, "validated and stored API key");
+    } else {
+        tracing::warn!(service, "API key failed validation — stored as invalid");
+    }
+    valid
 }
 
 pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
