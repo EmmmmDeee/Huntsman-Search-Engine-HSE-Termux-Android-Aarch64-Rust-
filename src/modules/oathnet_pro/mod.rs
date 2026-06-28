@@ -72,6 +72,15 @@ impl Module for OathnetPro {
         ModuleCost::Paid
     }
 
+    /// This module's `key_harvest` pass mints `ApiKey` entities and pools
+    /// credentials from breach/stealer corpora — it DISCOVERS keys other modules
+    /// then consume. The concurrent dispatcher therefore runs it synchronously in
+    /// Phase 1, so its harvested keys hot-inject into the shared context before the
+    /// remaining modules spawn and clone it (the key-cascade-first guarantee).
+    fn discovers_keys(&self) -> bool {
+        true
+    }
+
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,

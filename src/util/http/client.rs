@@ -29,7 +29,9 @@ pub fn build_client() -> reqwest::Client {
 /// matched to its scan in a proxy's or upstream's access log — closing the loop
 /// logs → services → external calls. The id is non-secret (the scan id). A header
 /// value must be visible ASCII; a non-conforming id falls back to the plain
-/// client rather than panicking.
+/// client rather than panicking, logging a `tracing::warn!` breadcrumb so an
+/// operator can see why `x-huntsman-trace` went missing instead of the header
+/// vanishing silently.
 pub fn build_client_with_trace(trace_id: &str) -> reqwest::Client {
     use reqwest::header::{HeaderMap, HeaderName, HeaderValue};
     let mut headers = HeaderMap::new();

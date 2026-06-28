@@ -284,7 +284,7 @@ pub async fn run() -> Result<()> {
         }
         Command::Modules { category, json } => modules::cmd_modules(category, json),
         Command::Engines { json } => engines::cmd_engines(json).await,
-        Command::Config { key, value } => config::cmd_config(key, value),
+        Command::Config { key, value, json } => config::cmd_config(key, value, json),
         Command::Diagnostics { json } => diagnostics::cmd_diagnostics(json).await,
         Command::Audit {
             csv,

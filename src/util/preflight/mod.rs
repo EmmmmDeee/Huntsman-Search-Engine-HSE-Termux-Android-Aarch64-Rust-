@@ -78,8 +78,13 @@ pub fn should_skip_external_ip(ip: &str) -> bool {
 ///   * **NAT64** `64:ff9b::a.b.c.d` — Android cellular networks commonly run
 ///     NAT64/464XLAT, so `64:ff9b::<private-v4>` is a real on-device SSRF vector;
 ///   * **6to4** `2002:<v4>::/48`;
-///   * **Teredo** `2001:0000::/32` — the obfuscated mapped-client IPv4 in the
-///     low 32 bits (RFC 4380), de-obfuscated and judged;
+///   * **Teredo** `2001:0000::/32` (RFC 4380) — BOTH embedded v4s are judged:
+///     the plaintext Teredo *server* in octets 4..8 and the obfuscated *client*
+///     in the low 32 bits (de-obfuscated by XOR 0xff), so a Teredo address
+///     embedding a private server or client is rejected;
+///   * **ISATAP** modified-EUI-64 interface IDs (`<prefix>::0:5efe:a.b.c.d`,
+///     RFC 5214) — the trailing v4 is decoded for ANY prefix (link-local, ULA,
+///     or global), not only when the prefix is itself link-local;
 ///   * deprecated **IPv4-compatible** `::a.b.c.d`.
 ///
 /// Shared by the string host gate and the HTTP client's SSRF DNS filter.
@@ -99,9 +104,11 @@ pub fn is_private_addr(addr: std::net::IpAddr) -> bool {
                 // link-local mask (& 0xC0 == 0x80) does NOT cover it, so
                 // fec0::1 previously classified as public.
                 || (v6.octets()[0] == 0xfe && (v6.octets()[1] & 0xC0) == 0xC0)
-                // v6 forms embedding a routable IPv4 (NAT64 / 6to4 /
-                // IPv4-compatible): judge the embedded v4 by the v4 rules.
-                || embedded_ipv4(v6).is_some_and(is_private_v4)
+                // v6 forms embedding a routable IPv4 (NAT64 / 6to4 / Teredo /
+                // ISATAP / IPv4-compatible): judge every embedded v4 by the v4
+                // rules — a single address can carry more than one (Teredo
+                // tunnels both a server and a client v4), so ALL are checked.
+                || embedded_ipv4_any_private(v6)
         }
     }
 }
@@ -126,11 +133,32 @@ fn is_private_v4(v4: std::net::Ipv4Addr) -> bool {
         || v4.octets()[0] >= 240
 }
 
-/// Extract the IPv4 address embedded in a v6 address that the host may route to
-/// the underlying v4 — NAT64 (well-known `64:ff9b::/96` and the RFC 8215
-/// local-use `64:ff9b:1::/48`), 6to4 (`2002::/16`), Teredo (`2001:0000::/32`),
-/// and the deprecated IPv4-compatible (`::a.b.c.d`). IPv4-MAPPED (`::ffff:/96`)
-/// is already folded by `to_canonical` before [`is_private_addr`]'s V6 arm.
+/// True if **any** IPv4 address embedded in `v6` (NAT64 / 6to4 / Teredo /
+/// ISATAP / IPv4-compatible) is private/reserved per [`is_private_v4`].
+///
+/// Most embedded-v4 forms carry a single routable v4, returned by
+/// [`embedded_ipv4`]. Two forms carry an *additional* v4 that the single-value
+/// helper cannot express, so they are judged here directly:
+///   * **Teredo** also embeds a plaintext *server* IPv4 (octets 4..8) alongside
+///     the obfuscated client; an internal Teredo server is its own SSRF vector.
+///   * **ISATAP** embeds the v4 in a modified-EUI-64 interface ID for ANY
+///     prefix, so it is decoded independently of the prefix-based forms (a ULA
+///     or global prefix with a `5efe` interface ID was previously missed).
+fn embedded_ipv4_any_private(v6: std::net::Ipv6Addr) -> bool {
+    embedded_ipv4(v6).is_some_and(is_private_v4)
+        || teredo_server_ipv4(v6).is_some_and(is_private_v4)
+        || isatap_ipv4(v6).is_some_and(is_private_v4)
+}
+
+/// Extract the *primary* routable IPv4 embedded in a v6 address — NAT64
+/// (well-known `64:ff9b::/96` and the RFC 8215 local-use `64:ff9b:1::/48`),
+/// 6to4 (`2002::/16`), the Teredo *client* (`2001:0000::/32`), and the
+/// deprecated IPv4-compatible (`::a.b.c.d`). IPv4-MAPPED (`::ffff:/96`) is
+/// already folded by `to_canonical` before [`is_private_addr`]'s V6 arm.
+///
+/// Forms carrying a *second* embedded v4 (the plaintext Teredo server) or one
+/// that is prefix-independent (ISATAP) are handled by
+/// [`embedded_ipv4_any_private`], which calls this plus the dedicated decoders.
 fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     let o = v6.octets();
     let v4 = |a, b, c, d| std::net::Ipv4Addr::new(a, b, c, d);
@@ -149,8 +177,8 @@ fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
     // (peer) IPv4 is the last 32 bits, OBFUSCATED by a bitwise-NOT (XOR 0xff per
     // octet); de-obfuscate and judge it, since a Teredo address embedding a
     // private/loopback peer is the same embedded-v4 SSRF vector as NAT64/6to4.
-    // (The Teredo *server* address in octets 4..8 is plaintext but is the relay,
-    // not the resource the URL targets; the client address is the routable peer.)
+    // (The plaintext Teredo *server* in octets 4..8 is judged separately by
+    // `teredo_server_ipv4` so both embedded v4s are covered.)
     if o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x00 && o[3] == 0x00 {
         return Some(v4(!o[12], !o[13], !o[14], !o[15]));
     }
@@ -180,6 +208,50 @@ fn embedded_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
         }
     }
 
+    None
+}
+
+/// Decode the plaintext Teredo *server* IPv4 (RFC 4380): a Teredo address
+/// `2001:0000:<server-v4>:…` carries the server's IPv4 unobfuscated in octets
+/// 4..8. The server is the relay the tunnel terminates on, so a Teredo literal
+/// naming an *internal* server (e.g. `2001:0:7f00:1::`, server 127.0.0.1) is an
+/// embedded-v4 SSRF vector in the same class as the client address. `None` when
+/// `v6` is not in the Teredo prefix or the server field is `0.0.0.0`
+/// (unspecified — judged by the v4 rules anyway, kept out to avoid a redundant
+/// "this network" hit on a malformed literal).
+fn teredo_server_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let o = v6.octets();
+    if o[0] == 0x20 && o[1] == 0x01 && o[2] == 0x00 && o[3] == 0x00 {
+        let server = std::net::Ipv4Addr::new(o[4], o[5], o[6], o[7]);
+        if !server.is_unspecified() {
+            return Some(server);
+        }
+    }
+    None
+}
+
+/// Decode the IPv4 embedded in an ISATAP modified-EUI-64 interface ID (RFC
+/// 5214): the low 64 bits take the form `00:00:5e:fe:a.b.c.d` (octets 8..12 ==
+/// `00 00 5e fe`, octets 12..16 == the v4). ISATAP carries the v4 in the
+/// *interface ID*, so it is independent of the network prefix — a link-local
+/// `fe80::5efe:a.b.c.d`, a ULA `fd00::5efe:a.b.c.d`, or a global prefix all
+/// route the host to the embedded v4. The prefix-based checks in
+/// [`is_private_addr`] only catch the link-local case (via the fe80::/10 mask),
+/// leaving a ULA/global ISATAP address embedding a private v4 classified public
+/// before this decoder. `u`/`g` bits in octet 8 are ignored (locally
+/// administered ISATAP IDs clear them); `None` for a `0.0.0.0` payload.
+fn isatap_ipv4(v6: std::net::Ipv6Addr) -> Option<std::net::Ipv4Addr> {
+    let o = v6.octets();
+    // Interface-ID signature 00:00:5e:fe. The leading 0x00 also covers the
+    // `u`/`g` bits, so only the canonical universally-administered ISATAP form
+    // is matched — locally-administered variants are vanishingly rare and not a
+    // standard tunnel endpoint.
+    if o[8] == 0x00 && o[9] == 0x00 && o[10] == 0x5e && o[11] == 0xfe {
+        let cand = std::net::Ipv4Addr::new(o[12], o[13], o[14], o[15]);
+        if !cand.is_unspecified() {
+            return Some(cand);
+        }
+    }
     None
 }
 

@@ -391,6 +391,72 @@ fn prune_degraded_spares_low_use_keys() {
 }
 
 #[test]
+fn prune_terminal_drops_aged_dead_keys_but_keeps_recent_and_live() {
+    let pool = KeyPool::new();
+    let now = 1_000_000u64;
+
+    // An old revoked key: dead and untouched for well over the retention window.
+    let mut old_revoked = KeyEntry::new("old-revoked");
+    old_revoked.status = KeyStatus::Revoked;
+    old_revoked.last_used = Some(now - 10_000);
+    pool.add("shodan", old_revoked);
+
+    // A recently-revoked key: dead but inside the window — must be retained so a
+    // freshly-compromised credential stays visible for audit.
+    let mut fresh_revoked = KeyEntry::new("fresh-revoked");
+    fresh_revoked.status = KeyStatus::Revoked;
+    fresh_revoked.last_used = Some(now - 10);
+    pool.add("shodan", fresh_revoked);
+
+    // An old INVALID key: also terminal, also aged out.
+    let mut old_invalid = KeyEntry::new("old-invalid");
+    old_invalid.status = KeyStatus::Invalid;
+    old_invalid.last_validated = Some(now - 10_000);
+    pool.add("shodan", old_invalid);
+
+    // A live Active key with NO timestamps: must never be touched regardless of age.
+    let mut live = KeyEntry::new("live");
+    live.status = KeyStatus::Active;
+    pool.add("shodan", live);
+
+    // Retain anything active within the last hour.
+    let pruned = pool.prune_terminal(3_600, now);
+    assert_eq!(pruned, 2, "both aged terminal keys pruned");
+    assert_eq!(pool.entry_status("shodan", "old-revoked"), None);
+    assert_eq!(pool.entry_status("shodan", "old-invalid"), None);
+    assert_eq!(
+        pool.entry_status("shodan", "fresh-revoked"),
+        Some(KeyStatus::Revoked),
+        "a recently-revoked key is kept inside the retention window"
+    );
+    assert_eq!(
+        pool.entry_status("shodan", "live"),
+        Some(KeyStatus::Active),
+        "live keys are never compacted, even with no timestamps"
+    );
+    // The lone usable key is still served and the round-robin start stayed in range.
+    assert_eq!(pool.next_key("shodan").as_deref(), Some("live"));
+}
+
+#[test]
+fn prune_terminal_does_not_bump_generation() {
+    // Compacting dead keys makes no NEW key injectable, so the engine's
+    // hot_inject_keys dirty-flag must stay put.
+    let pool = KeyPool::new();
+    pool.add("shodan", KeyEntry::new("k"));
+    assert!(pool.revoke("shodan", "k"));
+    let gen_before = pool.generation();
+    // Far-future `now` so the just-revoked key (no explicit timestamp) ages out.
+    let pruned = pool.prune_terminal(0, crate::core::entity::unix_now() + 1);
+    assert_eq!(pruned, 1, "the revoked key is compacted");
+    assert_eq!(
+        pool.generation(),
+        gen_before,
+        "compaction is not a new-key event — generation is stable"
+    );
+}
+
+#[test]
 fn entry_status_reports_pooled_key_verdict() {
     let pool = KeyPool::new();
     pool.add("shodan", KeyEntry::new("k1"));
@@ -672,4 +738,65 @@ fn key_tier_as_str_matches_snake_case_serde_wire_form() {
         let wire = serde_json::to_value(tier).unwrap();
         assert_eq!(wire, serde_json::Value::String(want.to_string()));
     }
+}
+
+#[test]
+fn generation_bumps_only_on_a_genuinely_new_key() {
+    // The engine's `hot_inject_keys` dirty-flag depends on this exact contract:
+    // `generation()` advances when (and only when) a NEW key is admitted, so a
+    // sweep is skipped whenever the counter is unchanged.
+    let pool = KeyPool::new();
+    let g0 = pool.generation();
+    assert_eq!(g0, 0, "fresh empty pool starts at generation 0");
+
+    // Admitting a new poolable key advances the generation.
+    assert!(pool.add("shodan", KeyEntry::new("key-1")));
+    let g1 = pool.generation();
+    assert!(g1 > g0, "a new key must bump the generation");
+
+    // A duplicate value is rejected and must NOT advance the generation —
+    // otherwise the engine would re-sweep on every no-op re-discovery.
+    assert!(!pool.add("shodan", KeyEntry::new("key-1")));
+    assert_eq!(
+        pool.generation(),
+        g1,
+        "a rejected duplicate must not bump the generation"
+    );
+
+    // A second distinct key advances it again.
+    assert!(pool.add("shodan", KeyEntry::new("key-2")));
+    assert!(
+        pool.generation() > g1,
+        "a second new key bumps it once more"
+    );
+
+    // Telemetry-only mutations (selection, error marking) must NOT advance it —
+    // they don't make a new key available to inject.
+    let g_after_adds = pool.generation();
+    let _ = pool.next_key("shodan");
+    pool.record_error("shodan", "key-1");
+    assert_eq!(
+        pool.generation(),
+        g_after_adds,
+        "next_key / record_error are telemetry, not new keys — generation is stable"
+    );
+}
+
+#[test]
+fn from_data_seeds_generation_for_a_non_empty_pool() {
+    // A pool loaded from disk WITH keys must seed its generation above 0 so the
+    // engine's first `hot_inject_keys` (which starts its memo at 0) sees a changed
+    // counter and performs the initial sweep that injects the persisted keys.
+    let mut data = PoolData::default();
+    data.services
+        .insert("shodan".to_string(), vec![KeyEntry::new("persisted")]);
+    let loaded = KeyPool::from_data(data);
+    assert!(
+        loaded.generation() > 0,
+        "a non-empty loaded pool must seed generation above the engine's initial 0 memo"
+    );
+
+    // An empty loaded pool stays at 0 so the first inject correctly short-circuits.
+    let empty = KeyPool::from_data(PoolData::default());
+    assert_eq!(empty.generation(), 0, "an empty loaded pool stays at 0");
 }

@@ -67,6 +67,10 @@ impl Module for Ip2Location {
         8_000
     }
 
+    fn cache_ttl_secs(&self) -> u64 {
+        86_400
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Infrastructure
     }

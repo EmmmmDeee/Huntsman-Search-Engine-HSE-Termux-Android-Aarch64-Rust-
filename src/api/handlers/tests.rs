@@ -45,6 +45,94 @@ use crate::api::scan_export::csv_escape;
         assert_eq!(empty, super::ScanStatsAgg::default());
     }
 
+    // ── /stats budget registry: no-silent-drift guard ───────────────────
+
+    /// Every provider registered in `budget_providers()` MUST be surfaced in the
+    /// rendered `/stats` budget section. This is the project's standard
+    /// no-silent-drift guard: a new `QuotaBudget`-backed provider added to the
+    /// registry but accidentally dropped from the render (or a render that stops
+    /// honouring the dotted-nesting convention) fails here rather than silently
+    /// vanishing from operator-facing quota telemetry.
+    #[test]
+    fn stats_surfaces_every_budget_provider() {
+        let rendered = super::stats_budget_map();
+        for (name, _snapshot) in super::budget_providers() {
+            // Resolve the (possibly one-level-nested) name against the rendered
+            // map and assert the full five-field budget block is present.
+            let block = match name.split_once('.') {
+                Some((parent, child)) => rendered
+                    .get(parent)
+                    .and_then(serde_json::Value::as_object)
+                    .and_then(|o| o.get(child)),
+                None => rendered.get(name),
+            }
+            .unwrap_or_else(|| panic!("/stats must surface budget provider `{name}`"));
+            for field in [
+                "scan_used",
+                "scan_cap",
+                "session_used",
+                "session_cap",
+                "quota_exhausted",
+            ] {
+                assert!(
+                    block.get(field).is_some(),
+                    "provider `{name}` block missing field `{field}`"
+                );
+            }
+        }
+        // WiGLE's out-of-band account status is folded into its block; assert the
+        // asymmetry stays contained (and surfaced) rather than rotting away.
+        let account = rendered
+            .get("wigle")
+            .and_then(serde_json::Value::as_object)
+            .and_then(|o| o.get("account"))
+            .expect("wigle block must carry its account status");
+        for field in ["verified", "user", "last_polled_ts"] {
+            assert!(
+                account.get(field).is_some(),
+                "wigle.account missing field `{field}`"
+            );
+        }
+    }
+
+    /// The dotted-name renderer nests exactly one level: a flat name stays at the
+    /// top, `a.b` lands at `map["a"]["b"]`, and two dotted entries sharing a
+    /// parent merge into one object (not clobber).
+    #[test]
+    fn insert_budget_nests_one_level() {
+        let mut map = serde_json::Map::new();
+        super::insert_budget(&mut map, "flat", serde_json::json!({"k": 1}));
+        super::insert_budget(&mut map, "parent.first", serde_json::json!({"k": 2}));
+        super::insert_budget(&mut map, "parent.second", serde_json::json!({"k": 3}));
+        assert_eq!(map.get("flat").and_then(|v| v.get("k")), Some(&1.into()));
+        let parent = map
+            .get("parent")
+            .and_then(serde_json::Value::as_object)
+            .expect("parent must be an object");
+        assert_eq!(parent.get("first").and_then(|v| v.get("k")), Some(&2.into()));
+        assert_eq!(parent.get("second").and_then(|v| v.get("k")), Some(&3.into()));
+    }
+
+    // ── Cross-scan loopback gate (entity_get / search_entities) ──────────
+
+    /// `loopback_only` allows loopback and absent peers, refuses a non-loopback
+    /// peer — the cross-scan exfiltration gate the two cross-scan reads share.
+    #[test]
+    fn loopback_only_gates_non_loopback_peer() {
+        use std::net::SocketAddr;
+        // Absent connect-info → allowed (unit-test / untrusted-bootstrap path).
+        assert!(super::loopback_only(None, "x").is_none());
+        // Loopback peer → allowed (the default loopback bind, a no-op gate).
+        let lo: SocketAddr = "127.0.0.1:5555".parse().unwrap();
+        assert!(super::loopback_only(Some(&lo), "x").is_none());
+        let lo6: SocketAddr = "[::1]:5555".parse().unwrap();
+        assert!(super::loopback_only(Some(&lo6), "x").is_none());
+        // Non-loopback peer → 403 (the exfiltration case on a network bind).
+        let lan: SocketAddr = "192.168.1.50:5555".parse().unwrap();
+        let resp = super::loopback_only(Some(&lan), "x").expect("non-loopback must be refused");
+        assert_eq!(resp.status(), axum::http::StatusCode::FORBIDDEN);
+    }
+
     #[test]
     fn csv_escape_plain() {
         assert_eq!(csv_escape("hello"), "hello");

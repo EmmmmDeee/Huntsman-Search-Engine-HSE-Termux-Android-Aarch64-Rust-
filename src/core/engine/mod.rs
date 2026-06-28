@@ -62,7 +62,7 @@ use enrich::{
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
 };
-use timeout::resolve_timeout;
+use timeout::{resolve_timeout, soft_deadline_majority_reached, target_soft_deadline_ms};
 // Used only by the dispatch-related tests retained in this file.
 #[cfg(test)]
 use crate::core::{error::Error, module::ModuleCost};
@@ -435,12 +435,25 @@ impl ScanEngine {
                 is_expansion: false,
                 seed_kind: target.kind,
             };
+            // The seed round attributes no lineage (there is no parent above the
+            // seed), so its inserted-uid sink is a throwaway the caller discards.
+            let mut seed_new_uids: Vec<String> = Vec::new();
             let mut dstate = DispatchState {
                 entity_map: &mut entity_map,
                 stats: &mut stats,
                 dispatched: &mut *dispatched,
+                new_uids: &mut seed_new_uids,
             };
-            if let Err(e) = self.dispatch_target(&cx, &mut ctx, &mut dstate).await {
+            // Memo of the key-pool generation at the last hot-inject sweep; the
+            // dispatcher uses it to short-circuit the per-module key-inject when
+            // no new key has appeared since (see `dispatch::DispatchCx` /
+            // `hot_inject_keys`). Seeded at 0 so the first module's inject still
+            // performs the initial full sweep.
+            let mut inject_gen = 0u64;
+            if let Err(e) = self
+                .dispatch_target(&cx, &mut ctx, &mut dstate, &mut inject_gen)
+                .await
+            {
                 warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
             }
         }
@@ -1270,8 +1283,15 @@ impl ScanEngine {
         }
 
         let by_uid: HashMap<&str, &Entity> = ents.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let mut before: HashSet<String> = HashSet::new();
+        // Reused across probes to capture lineage: the uids each probe's dispatch
+        // newly INSERTED (pushed by `finalise_module_result`), so a `DerivedFrom`
+        // edge is attributed to exactly those children — without snapshotting the
+        // whole entity_map key set before every probe and rescanning it after.
+        let mut new_uids: Vec<String> = Vec::new();
         let mut probed = 0usize;
+        // Key-pool generation memo for the per-module hot-inject short-circuit
+        // across this gap-fill's probe dispatches (see `hot_inject_keys`).
+        let mut inject_gen = 0u64;
 
         for probe in probes {
             if probed >= MAX_PROBES
@@ -1316,8 +1336,9 @@ impl ScanEngine {
                 ..opts.clone()
             };
 
-            before.clear();
-            before.extend(entity_map.keys().cloned());
+            // Reset the inserted-uid sink so it captures only THIS probe's
+            // newly-surfaced entities for the lineage attribution below.
+            new_uids.clear();
             {
                 let cx = DispatchCx {
                     scan_id,
@@ -1330,14 +1351,22 @@ impl ScanEngine {
                     entity_map: &mut *entity_map,
                     stats: &mut *stats,
                     dispatched: &mut *dispatched,
+                    new_uids: &mut new_uids,
                 };
-                if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
+                if let Err(e) = self
+                    .dispatch_target(&cx, ctx, &mut dstate, &mut inject_gen)
+                    .await
+                {
                     warn!(scan_id, error = %e, "gap-fill dispatch failed (continuing)");
                 }
             }
             // New entities this probe surfaced are derived from the gap endpoint.
-            for (uid, child) in entity_map.iter() {
-                if !before.contains(uid) {
+            // `new_uids` holds exactly the uids the dispatch INSERTED (merges into
+            // pre-existing entities are excluded by `finalise_module_result`), so
+            // we read each child's confidence straight from the map by uid instead
+            // of rescanning the whole entity_map.
+            for uid in &new_uids {
+                if let Some(child) = entity_map.get(uid) {
                     relations.push(Relation::new(
                         uid.as_str(),
                         probe.endpoint_uid.as_str(),
@@ -1385,17 +1414,27 @@ impl ScanEngine {
             relations,
             emitted_corr,
         } = state;
-        // Reused across candidates to capture lineage: the set of entity UIDs
-        // present *before* a candidate's dispatch, so new UIDs afterward are
-        // children that candidate surfaced. Reusing the buffer avoids a
-        // per-candidate allocation; the key clones are bounded by max_entities.
-        let mut before: HashSet<String> = HashSet::new();
+        // Reused across candidates to capture lineage: the uids each candidate's
+        // dispatch newly INSERTED, pushed into this sink by
+        // `finalise_module_result`. Reading the sink replaces the old
+        // snapshot-all-keys-then-rescan-the-whole-map pattern, which was
+        // O(entities) per candidate — quadratic across a round on a
+        // `max_entities`-filled graph (up to 4096 keys). Now lineage attribution is
+        // O(new entities). Reusing one buffer across candidates avoids a
+        // per-candidate allocation; it is cleared before each dispatch.
+        let mut new_uids: Vec<String> = Vec::new();
+        // Key-pool generation memo for the hot-inject short-circuit. Shared by the
+        // per-ROUND refresh below and every candidate's per-MODULE inject inside
+        // `dispatch_target`, persisting across the whole expansion so a no-new-key
+        // round costs one atomic load per inject instead of a full service-table
+        // sweep + per-service pool lock (see `hot_inject_keys`).
+        let mut inject_gen = 0u64;
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round. Keys
             // discovered during the previous round (oathnet_pro breach data,
             // api_key_probe validation, web_crawler scraping) become available
             // to this round's modules automatically.
-            hot_inject_keys(&mut ctx.keys);
+            hot_inject_keys(&mut ctx.keys, &mut inject_gen);
 
             // Refresh SeekNow's per-round budget so it is utilised in EVERY
             // iteration (not just until a wide first round drains it). The
@@ -1741,14 +1780,13 @@ impl ScanEngine {
                     );
                     return stop;
                 }
-                // Snapshot UIDs before dispatch so we can attribute the
-                // entities this candidate surfaces back to its parent.
-                before.clear();
-                before.extend(entity_map.keys().cloned());
+                // Reset the inserted-uid sink so it captures only THIS candidate's
+                // newly-surfaced entities for lineage attribution below.
+                new_uids.clear();
                 {
-                    // Re-borrow the mutable accumulator trio into a
-                    // `DispatchState` for this candidate; the block scopes the
-                    // borrows so the lineage attribution below is free to read
+                    // Re-borrow the mutable accumulator set (including the lineage
+                    // sink) into a `DispatchState` for this candidate; the block
+                    // scopes the borrows so the attribution below is free to read
                     // `entity_map` again.
                     let cx = DispatchCx {
                         scan_id,
@@ -1761,21 +1799,28 @@ impl ScanEngine {
                         entity_map: &mut *entity_map,
                         stats: &mut *stats,
                         dispatched: &mut *dispatched,
+                        new_uids: &mut new_uids,
                     };
-                    if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
+                    if let Err(e) = self
+                        .dispatch_target(&cx, ctx, &mut dstate, &mut inject_gen)
+                        .await
+                    {
                         // Per-target dispatch errors are already surfaced as
                         // ModuleError events; we keep going through the round.
                         warn!(scan_id, error = %e, "dispatch_target failed (continuing)");
                     }
                 }
-                // Record a DerivedFrom edge for every entity newly created by
-                // this candidate's dispatch (merges into existing entities are
-                // not "new" and are skipped, avoiding cross-round edge spam).
-                // Direction is child -> parent: the new entity (`uid`) was
-                // *derived from* the parent it was expanded out of (`parent_uid`),
-                // matching the `DerivedFrom` edge name.
-                for (uid, child) in entity_map.iter() {
-                    if !before.contains(uid) {
+                // Record a DerivedFrom edge for every entity newly created by this
+                // candidate's dispatch. `finalise_module_result` pushes only
+                // INSERTED uids into `new_uids` (merges into existing entities are
+                // excluded there), so cross-round edge spam is avoided exactly as
+                // the old before-set filter did — and we read each child's
+                // confidence straight from the map by uid instead of rescanning
+                // every entity. Direction is child -> parent: the new entity
+                // (`uid`) was *derived from* the parent it was expanded out of
+                // (`parent_uid`), matching the `DerivedFrom` edge name.
+                for uid in &new_uids {
+                    if let Some(child) = entity_map.get(uid) {
                         relations.push(Relation::new(
                             uid.as_str(),
                             parent_uid.as_str(),

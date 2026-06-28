@@ -6,6 +6,7 @@
 //! and produce byte-identical output to the HTTP endpoints.
 
 use axum::{
+    body::{Body, Bytes},
     extract::{Path, Query, State},
     http::{HeaderMap, StatusCode, header},
     response::IntoResponse,
@@ -107,6 +108,45 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             csv_escape(&evidence_urls),
             csv_escape(&evidence),
             csv_escape(&tags),
+        );
+    }
+    body
+}
+
+/// Canonical CSV rendering for a scan's **correlations** — the tabular,
+/// spreadsheet-shaped counterpart to [`entities_to_csv`]. Correlations are
+/// first-class scan output (severity, rule, description, the entity UIDs they
+/// bridge) but were previously machine-readable only via the JSON `report`
+/// blob; this lets an operator load them into the same Excel/LibreOffice
+/// pipelines the entity CSV targets. Shared by the `hse export --format
+/// correlations-csv` CLI subcommand so the CLI and any HTTP caller produce
+/// byte-identical output. Every cell passes through [`csv_escape`] (RFC-4180 +
+/// OWASP formula-injection defanging), identical to the entity CSV.
+///
+/// `entity_uids` is the SHA-256 UID set the rule bridged, `|`-joined into one
+/// cell exactly as the entity CSV joins its multi-valued `sources`/`tags`
+/// columns, so a downstream tool can split on `|` uniformly across both files.
+pub(crate) fn correlations_to_csv(correlations: &[crate::core::correlator::Correlation]) -> String {
+    use std::fmt::Write as _;
+    let mut body = String::with_capacity(96 + correlations.len() * 160);
+    // `rank` is the severity × max-child-C_eff ordering score (highest-value
+    // first); `entity_uids` lets a spreadsheet join back to the entity CSV by UID.
+    body.push_str(
+        "rule_id,rule_name,severity,rank,description,entity_count,entity_uids,observed_at\n",
+    );
+    for c in correlations {
+        let uids = c.entity_uids.join("|");
+        let _ = writeln!(
+            body,
+            "{},{},{},{:.3},{},{},{},{}",
+            csv_escape(&c.rule_id),
+            csv_escape(&c.rule_name),
+            csv_escape(&c.severity.to_string()),
+            c.rank,
+            csv_escape(&c.description),
+            c.entity_uids.len(),
+            csv_escape(&uids),
+            c.ts,
         );
     }
     body
@@ -448,7 +488,16 @@ fn download_response_etag(
     let short_id: String = scan_id.chars().take(12).collect();
     let filename = format!("hse-{ext}-{short_id}.{ext}");
     let disposition = format!("attachment; filename=\"{filename}\"");
-    let mut resp = (StatusCode::OK, body).into_response();
+    // Stream the body in fixed-size frames rather than handing axum one
+    // contiguous buffer. The String is already rendered (and already hashed for
+    // the ETag above), so this doesn't avoid the render — but it does stop a
+    // large dossier (`report.json`/`debug.txt` of a several-hundred-entity scan)
+    // from being re-buffered as a single response payload on top of the source
+    // String. On the ~low-RAM Termux/aarch64 target that halves peak footprint
+    // for the big exports, and lets the downstream `CompressionLayer` gzip frame
+    // by frame instead of materialising the whole compressed body at once. The
+    // 304 fast path above never reaches here, so conditional GET is unaffected.
+    let mut resp = (StatusCode::OK, chunked_stream(body)).into_response();
     let headers = resp.headers_mut();
     headers.insert(
         header::CONTENT_TYPE,
@@ -462,6 +511,46 @@ fn download_response_etag(
     }
     headers.insert(header::CACHE_CONTROL, cache);
     resp
+}
+
+/// Frame size for [`chunked_stream`]. 64 KiB is large enough that even a
+/// several-hundred-KiB dossier streams in a handful of frames (negligible
+/// per-frame overhead) yet small enough that no single buffer dominates RAM on
+/// the low-memory Termux/aarch64 target — the constant this whole streaming path
+/// exists to bound.
+const EXPORT_CHUNK_BYTES: usize = 64 * 1024;
+
+/// Turn an owned, already-rendered export `body` into a stream of `Bytes` frames
+/// for [`axum::body::Body::from_stream`], so the response body is delivered (and
+/// gzipped by the downstream `CompressionLayer`) frame by frame instead of as one
+/// contiguous payload re-buffered on top of the source `String`.
+///
+/// The `String` is moved into a [`Bytes`] once (a single, reference-counted
+/// allocation — no copy), then sliced into `EXPORT_CHUNK_BYTES`-sized windows with
+/// [`Bytes::slice`], which shares the backing buffer rather than copying. Peak
+/// additional memory is therefore O(1) over the rendered body, which is the point
+/// on a low-RAM device. `Bytes` is axum's own re-export, so it is the exact type
+/// `Body::from_stream` wants — no separate `bytes` dependency, no version skew.
+/// The stream is infallible, so its error type is [`std::convert::Infallible`] and
+/// `Body::from_stream`'s `Into<BoxError>` bound is satisfied trivially.
+fn chunked_stream(body: String) -> Body {
+    use futures::StreamExt as _;
+    let bytes = Bytes::from(body);
+    let len = bytes.len();
+    // Cursor-driven unfold: the closure owns the shared buffer plus a byte
+    // offset and yields the next window each poll, with no per-frame allocation
+    // beyond `Bytes::slice`'s reference-counted handle into the same buffer.
+    let frames = futures::stream::unfold((bytes, 0usize), move |(buf, pos)| async move {
+        if pos >= len {
+            return None;
+        }
+        let end = (pos + EXPORT_CHUNK_BYTES).min(len);
+        let frame = buf.slice(pos..end);
+        Some((frame, (buf, end)))
+    });
+    // `Body::from_stream` needs `S::Error: Into<BoxError>`; the stream cannot
+    // fail, so wrap each frame in `Ok` with the uninhabited `Infallible` error.
+    Body::from_stream(frames.map(Ok::<Bytes, std::convert::Infallible>))
 }
 
 /// A weak ETag (`W/"<hex>"`) over `bytes` — a cheap 64-bit content hash that

@@ -432,8 +432,7 @@ async fn enforce_host_allowlist(
         // Present `Host`: must be in the loopback allowlist (the rebind case).
         Some(host) => {
             if !allowed.contains(&host.to_ascii_lowercase()) {
-                return (StatusCode::FORBIDDEN, "host not in loopback allowlist")
-                    .into_response();
+                return (StatusCode::FORBIDDEN, "host not in loopback allowlist").into_response();
             }
         }
         // Absent `Host`: tolerate safe methods, reject mutations (defence-in-depth).

@@ -484,6 +484,103 @@ fn validate_for_kind_dispatches() {
     assert!(validate_for_kind("anything-else", "value").valid);
 }
 
+#[test]
+fn validate_for_kind_coordinates_distinguishes_parse_from_range() {
+    // A non-numeric component reports the precise component, not a range error.
+    let r = validate_for_kind("coordinates", "abc,153.03");
+    assert!(!r.valid);
+    assert_eq!(r.reason, "coord.parse");
+    assert!(r.detail.contains("lat"));
+    let r = validate_for_kind("coordinates", "-27.47,xyz");
+    assert!(!r.valid);
+    assert_eq!(r.reason, "coord.parse");
+    assert!(r.detail.contains("lon"));
+    // Genuine out-of-range still surfaces the range reason, not a parse error.
+    assert_eq!(
+        validate_for_kind("coordinates", "99.0,0.0").reason,
+        "coord.lat_oob"
+    );
+    // Missing separator is a shape error.
+    assert_eq!(
+        validate_for_kind("coordinates", "1.0 2.0").reason,
+        "coord.shape"
+    );
+}
+
+#[test]
+fn validate_for_kind_covers_structured_kinds() {
+    // IP — valid routable address passes; documentation range and junk fail.
+    assert!(validate_for_kind("ip_address", "8.8.8.8").valid);
+    assert!(validate_for_kind("ip_address", "2606:4700:4700::1111").valid);
+    assert_eq!(
+        validate_for_kind("ip_address", "999.1.1.1").reason,
+        "ip.parse"
+    );
+    assert_eq!(
+        validate_for_kind("ip_address", "192.0.2.1").reason,
+        "ip.bogus"
+    );
+
+    // CIDR — well-formed block passes; bad prefix / shape fail.
+    assert!(validate_for_kind("cidr", "192.0.2.0/24").valid);
+    assert!(validate_for_kind("cidr", "2001:db8::/48").valid);
+    assert_eq!(
+        validate_for_kind("cidr", "192.0.2.0/33").reason,
+        "cidr.prefix"
+    );
+    assert_eq!(validate_for_kind("cidr", "192.0.2.0").reason, "cidr.shape");
+    assert_eq!(validate_for_kind("cidr", "notanip/24").reason, "cidr.parse");
+
+    // MAC — 6 hex octets in any accepted separator form.
+    assert!(validate_for_kind("mac_address", "AA:BB:CC:DD:EE:FF").valid);
+    assert!(validate_for_kind("mac_address", "aabb.ccdd.eeff").valid);
+    assert!(validate_for_kind("mac_address", "AABBCCDDEEFF").valid);
+    assert_eq!(
+        validate_for_kind("mac_address", "AA:BB:CC:DD:EE").reason,
+        "mac.shape"
+    );
+    assert_eq!(
+        validate_for_kind("mac_address", "ZZ:BB:CC:DD:EE:FF").reason,
+        "mac.shape"
+    );
+
+    // ABN/ACN — checksum-validated, not merely digit-counted.
+    assert!(validate_for_kind("abn_acn", "51824753556").valid); // valid ABN
+    assert!(validate_for_kind("abn_acn", "51 824 753 556").valid); // spaced ABN
+    assert!(validate_for_kind("abn_acn", "004085616").valid); // valid ACN
+    assert_eq!(
+        validate_for_kind("abn_acn", "51824753557").reason,
+        "abn.checksum"
+    );
+    assert_eq!(
+        validate_for_kind("abn_acn", "000000018").reason,
+        "acn.checksum"
+    );
+    assert_eq!(validate_for_kind("abn_acn", "12345").reason, "abn.shape");
+
+    // Crypto — recognised wallet shapes pass; junk fails.
+    assert!(validate_for_kind("crypto_address", "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa").valid);
+    assert!(
+        validate_for_kind(
+            "crypto_address",
+            "0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045"
+        )
+        .valid
+    );
+    assert_eq!(
+        validate_for_kind("crypto_address", "hello").reason,
+        "crypto.shape"
+    );
+
+    // URL — absolute http(s) of plausible length passes; bad scheme / short fail.
+    assert!(validate_for_kind("url", "https://example.com").valid);
+    assert_eq!(
+        validate_for_kind("url", "ftp://example.com").reason,
+        "url.scheme"
+    );
+    assert_eq!(validate_for_kind("url", "http://a").reason, "url.short");
+}
+
 mod confusable_tests {
     use super::super::{
         confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,

@@ -200,6 +200,11 @@ impl Module for KeyDiscovererModule {
     fn cost(&self) -> huntsman_search_engine::core::module::ModuleCost {
         huntsman_search_engine::core::module::ModuleCost::Paid
     }
+    // Declares itself a key DISCOVERER so the concurrent dispatcher runs it in the
+    // synchronous Phase 1 (ahead of Phase 2's consumer), mirroring oathnet_pro.
+    fn discovers_keys(&self) -> bool {
+        true
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::Email)
     }

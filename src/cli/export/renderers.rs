@@ -35,6 +35,23 @@ pub(super) fn render_gexf(store: &Store, sid: &str) -> Result<String> {
     ))
 }
 
+/// CSV of the scan's **correlator hits** — the spreadsheet-shaped counterpart to
+/// `--format csv` (which carries only entities). Correlations are first-class
+/// scan output (severity, rule, description, the entity UIDs they bridge) and are
+/// surfaced in the table/dossier/full/debug/report views, but previously the only
+/// machine-readable export of them was the JSON `report` blob; an operator wanting
+/// them in Excel/LibreOffice had no tabular form. This closes that gap with the
+/// same OWASP formula-injection-defanged escaping the entity CSV uses, so the two
+/// CSVs are interchangeable in the same downstream pipelines.
+///
+/// The correlator only ever runs on the **confirmed** entity set (candidates are
+/// quarantined before it fires), so its output is already the subject-only view —
+/// no extra filtering is needed here for parity with `render_csv`.
+pub(super) fn render_correlations_csv(store: &Store, sid: &str) -> Result<String> {
+    let correlations = store.correlations_for_scan(sid)?;
+    Ok(crate::api::scan_export::correlations_to_csv(&correlations))
+}
+
 /// The **full dossier** — Huntsman's standard of maximum output detail. Emits
 /// EVERY entity (including quarantined `candidate` rows — nothing is hidden),
 /// each with its confidence/corroboration/tags and its COMPLETE evidence chain:

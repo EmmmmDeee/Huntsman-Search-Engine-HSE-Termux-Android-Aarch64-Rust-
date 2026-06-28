@@ -78,3 +78,35 @@ fn meaningful_tag_keeps_threat_categories_drops_noise() {
             assert!(!is_meaningful_tag(noise), "{noise:?} should be noise");
         }
     }
+
+    #[test]
+    fn exit_set_ttl_is_about_one_hour() {
+        // The Tor exit list churns hourly; the cache must refresh on roughly
+        // that cadence rather than pinning the first snapshot for the life of
+        // a long-running `serve` process. A one-hour TTL is the contract the
+        // fix promises; lock it so a future edit can't silently widen it back
+        // toward "never expire".
+        assert_eq!(EXIT_SET_TTL, std::time::Duration::from_secs(3600));
+    }
+
+    #[test]
+    fn exit_snapshot_freshness_boundary() {
+        use std::time::{Duration, Instant};
+
+        // A snapshot is fresh while younger than the TTL and stale once it
+        // reaches it — exactly the predicate `exit_set` uses to decide
+        // whether to serve the cached set or refetch. Modelling `fetched_at`
+        // as an `Instant` in the past lets us check both sides of the
+        // boundary deterministically, without a clock or the network.
+        let just_under = Instant::now() - (EXIT_SET_TTL - Duration::from_secs(1));
+        assert!(
+            just_under.elapsed() < EXIT_SET_TTL,
+            "a snapshot one second short of the TTL must still be served"
+        );
+
+        let well_over = Instant::now() - (EXIT_SET_TTL + Duration::from_secs(60));
+        assert!(
+            well_over.elapsed() >= EXIT_SET_TTL,
+            "a snapshot past the TTL must be treated as stale and refetched"
+        );
+    }

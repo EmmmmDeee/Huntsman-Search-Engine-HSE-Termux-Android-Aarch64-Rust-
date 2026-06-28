@@ -161,6 +161,64 @@ use super::*;
     }
 
     #[test]
+    fn teredo_embedded_private_v4_rejected() {
+        // Teredo (2001:0000::/32, RFC 4380) carries TWO embedded v4s: the
+        // plaintext server in octets 4..8 and the obfuscated client (XOR 0xff)
+        // in the low 32 bits. Both are embedded-v4 SSRF vectors; both rejected.
+
+        // Private SERVER, irrelevant client → server octets 4..8 = 127.0.0.1.
+        assert!(
+            is_private_ip("2001:0:7f00:1::"),
+            "Teredo with internal server 127.0.0.1 must be refused"
+        );
+        // Public server 8.8.8.8, but obfuscated CLIENT decodes to 127.0.0.1
+        // (80ff:fffe = !7f00:0001), isolating the client decode path.
+        assert!(
+            is_private_ip("2001:0:808:808::80ff:fffe"),
+            "Teredo with internal client 127.0.0.1 must be refused"
+        );
+        // Public server AND public client (client a9fe… → not used here): a
+        // Teredo wrapping only public v4s must still pass. Server 8.8.8.8,
+        // client !0808:0808 = f7f7:f7f7 = 247.247.247.247 (public).
+        assert!(
+            !is_private_ip("2001:0:808:808::f7f7:f7f7"),
+            "Teredo wrapping only public v4s stays allowed"
+        );
+    }
+
+    #[test]
+    fn isatap_embedded_private_v4_rejected() {
+        // ISATAP modified-EUI-64 interface IDs (…:0:5efe:a.b.c.d, RFC 5214)
+        // embed the v4 in the interface ID, so it routes for ANY prefix. The
+        // prefix masks only catch the link-local case; a ULA/global prefix with
+        // a 5efe interface ID embedding a private v4 was previously public.
+
+        // Global (Google) prefix + ISATAP interface ID embedding cloud metadata.
+        assert!(
+            is_private_ip("2607:f8b0::5efe:a9fe:a9fe"),
+            "global-prefix ISATAP embedding 169.254.169.254 must be refused"
+        );
+        // Global prefix + ISATAP embedding 127.0.0.1.
+        assert!(
+            is_private_ip("2607:f8b0::5efe:7f00:1"),
+            "global-prefix ISATAP embedding 127.0.0.1 must be refused"
+        );
+        // Same global prefix, ISATAP embedding a PUBLIC v4 (8.8.8.8) → allowed:
+        // the gate judges the embedded v4, it does not blanket-ban 5efe IDs, and
+        // the bare global prefix itself is public.
+        assert!(
+            !is_private_ip("2607:f8b0::5efe:808:808"),
+            "global-prefix ISATAP embedding a public v4 stays allowed"
+        );
+        // The bare global prefix without a 5efe interface ID stays public —
+        // confirms the ISATAP decode (not the prefix) drove the rejections.
+        assert!(
+            !is_private_ip("2607:f8b0::1"),
+            "bare global prefix is public"
+        );
+    }
+
+    #[test]
     fn non_ip_strings_return_false() {
         assert!(!is_private_ip(""));
         assert!(!is_private_ip("not-an-ip"));

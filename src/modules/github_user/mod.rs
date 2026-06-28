@@ -167,27 +167,15 @@ impl Module for GithubUser {
         {
             ev = ev.with_attr("twitter", tw);
             u_entity.tag("twitter-linked");
-            // Emit the Twitter handle as a first-class Username so it becomes a
-            // pivot target for username_search / social_probe in the next round.
-            // Confidence 0.70: self-asserted on a confirmed GitHub profile.
-            let mut tw_entity = Entity::new(EntityKind::Username, tw, 0.70, &ctx.scan_id);
-            tw_entity.tag("twitter");
-            tw_entity.tag("social-profile");
-            tw_entity.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Twitter handle from GitHub profile @{}", user.login),
-                )
-                .with_attr("twitter", tw)
-                .with_attr("github_login", &user.login)
-                .with_attr("source", "github_profile"),
-            );
-            result.push(tw_entity);
         }
         u_entity.add_evidence(ev);
         result.push(u_entity);
 
-        // Twitter username → separate Username entity for cross-platform correlation.
+        // Twitter username → separate Username entity for cross-platform
+        // correlation. Emitted once: the `@`-stripped, trimmed handle becomes a
+        // first-class pivot target for username_search / social_probe in the
+        // next round. Confidence 0.70: self-asserted on a confirmed GitHub
+        // profile.
         if let Some(tw) = user
             .twitter_username
             .as_deref()
@@ -198,13 +186,16 @@ impl Module for GithubUser {
             if !handle.is_empty() {
                 let mut tw_e = Entity::new(EntityKind::Username, handle, 0.70, &ctx.scan_id);
                 tw_e.tag("twitter");
+                tw_e.tag("social-profile");
                 tw_e.tag("derived");
                 tw_e.add_evidence(
                     Evidence::new(
                         SRC,
                         format!("Twitter handle from GitHub profile @{}", user.login),
                     )
-                    .with_attr("github_login", &user.login),
+                    .with_attr("twitter", handle)
+                    .with_attr("github_login", &user.login)
+                    .with_attr("source", "github_profile"),
                 );
                 result.push(tw_e);
             }

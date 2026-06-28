@@ -1,6 +1,7 @@
 use super::dossier::join_or_dash;
 use super::renderers::{
-    render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_report,
+    render_correlations_csv, render_csv, render_debug_bundle, render_full, render_gexf,
+    render_json, render_report,
 };
 use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 use crate::storage::Store;
@@ -87,6 +88,77 @@ fn structured_exports_quarantine_candidates_but_full_retains_them() {
     assert!(
         full.contains("Random Stranger"),
         "the full bundle retains quarantined rows for transparency"
+    );
+}
+
+#[test]
+fn correlations_csv_exports_the_correlator_hits_tabularly() {
+    // The tabular-export gap: correlations were machine-readable only via the
+    // JSON `report` blob; `--format correlations-csv` now emits them in the same
+    // spreadsheet shape as the entity CSV, joinable back by `entity_uids`.
+    use crate::core::correlator::{Correlation, Severity};
+    use crate::core::entity::{Entity, EntityKind};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("corr_csv.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let scan = Scan::new(
+        "scan-corrcsv",
+        Target::new(TargetKind::Email, "x@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+    store
+        .upsert_entities_batch(&[Entity::new(
+            EntityKind::Email,
+            "x@example-real.com",
+            0.8,
+            "scan-corrcsv",
+        )])
+        .unwrap();
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-076",
+            "Email-username local-part identity bridge",
+            Severity::High,
+            "alice@ ↔ username alice".to_string(),
+            vec!["uid-a".to_string(), "uid-b".to_string()],
+            "scan-corrcsv",
+            1_700_000_000,
+        ))
+        .unwrap();
+
+    let out = render_correlations_csv(&store, "scan-corrcsv").unwrap();
+    // Header is the documented column set.
+    assert!(out.starts_with(
+        "rule_id,rule_name,severity,rank,description,entity_count,entity_uids,observed_at\n"
+    ));
+    // The row carries the rule, its severity, the bridged UID set (|-joined),
+    // and the count — joinable back to the entity CSV by UID.
+    assert!(out.contains("AU-076"));
+    assert!(out.contains("HIGH"));
+    assert!(out.contains("uid-a|uid-b"));
+    assert!(out.contains(",2,")); // entity_count
+    assert!(out.contains("1700000000")); // observed_at
+}
+
+#[test]
+fn correlations_csv_is_empty_header_only_when_no_rules_fired() {
+    // A scan with no correlations exports just the header — distinguishable from
+    // a typo'd id (which `resolve_scan_id` rejects loudly) and stable for a
+    // diffing pipeline.
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("corr_empty.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-empty",
+        Target::new(TargetKind::Email, "y@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+
+    let out = render_correlations_csv(&store, "scan-empty").unwrap();
+    assert_eq!(
+        out,
+        "rule_id,rule_name,severity,rank,description,entity_count,entity_uids,observed_at\n"
     );
 }
 
@@ -288,6 +360,7 @@ fn export_formats_determinism_audit() {
     let store_fmts: &[(&str, StoreFmt)] = &[
         ("json", render_json),
         ("csv", render_csv),
+        ("correlations-csv", render_correlations_csv),
         ("gexf", render_gexf),
     ];
     for (name, render) in store_fmts {

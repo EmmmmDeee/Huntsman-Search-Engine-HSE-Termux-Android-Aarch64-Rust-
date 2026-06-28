@@ -391,8 +391,28 @@ pub(super) fn flag_geo_discordant_namesakes(entities: &mut [Entity]) -> usize {
 /// round and by the next expansion round. Idempotent — only fills gaps, never
 /// overwrites an operator-supplied key. Shared by `run_expansion` (per-round
 /// refresh) and both dispatchers (per-module hot-inject).
-pub(super) fn hot_inject_keys(keys: &mut HashMap<String, String>) {
+///
+/// `last_gen` is the caller's memo of the key-pool generation at its previous
+/// sweep ([`crate::util::key_pool::KeyPool::generation`]). When the pool's
+/// generation is unchanged NO new key has been admitted since, so the full
+/// `service_defs()` scan + per-service pool probe is pure waste — the function
+/// short-circuits on a single relaxed atomic load. This is the hot path: on an
+/// ~80-module sequential round most per-module calls find nothing new, and
+/// without the gate each one paid an 80-entry table scan and an
+/// [`crate::util::key_pool::KeyPool::next_key`] lock per service. Callers seed
+/// their memo at `0`; the pool seeds its generation at ≥1 whenever it holds
+/// keys, so the FIRST call still performs the initial full sweep that injects
+/// the operator's persisted keys, then short-circuits until a new key appears.
+pub(super) fn hot_inject_keys(keys: &mut HashMap<String, String>, last_gen: &mut u64) {
     let pool = crate::util::key_pool::global_pool();
+    // `generation` is a reserved-keyword-safe name (Rust 2024 reserves `gen`).
+    let pool_gen = pool.generation();
+    if pool_gen == *last_gen {
+        // No key admitted to the pool since our last sweep — nothing to inject.
+        // (A single atomic load; the common case on every no-new-key module.)
+        return;
+    }
+    *last_gen = pool_gen;
     for svc in crate::util::key_pool::service_defs() {
         if keys.contains_key(svc.env_var) {
             continue;

@@ -223,14 +223,22 @@ pub enum Command {
         key: Option<String>,
         /// `on` / `off` to set the toggle; omit to just show its value.
         value: Option<String>,
+        /// Emit the toggle inventory as JSON (same `groups` shape as
+        /// `/api/v1/settings/toggles`) so the Web UI / scripts can read it
+        /// without scraping the `● on / ○ off` listing.
+        #[arg(long)]
+        json: bool,
     },
     /// Run ALL diagnostics in one pass: environment (doctor) + module/core
-    /// self-test (selftest) + search-engine liveness (engines). Exits non-zero
-    /// if any section fails. The one command to verify a fresh install.
+    /// self-test (selftest) + search-engine liveness (engines) + runtime
+    /// surfaces (scan-DB integrity/WAL, OpenCelliD cells, egress proxy pool,
+    /// webhook config). Exits non-zero if any section fails. The one command to
+    /// verify a fresh install.
     #[command(visible_alias = "diag", visible_alias = "check")]
     Diagnostics {
-        /// Emit machine-readable JSON for the sections that support it
-        /// (selftest, engines); doctor remains human-readable.
+        /// Emit one top-level machine-readable JSON summary —
+        /// `{"ok": bool, "sections": {name: "ok"|"fail"}, "failed": [..]}` — so
+        /// CI can gate on a single structured pass/fail object.
         #[arg(long)]
         json: bool,
     },
@@ -424,6 +432,10 @@ pub enum Command {
     /// JSON           — `[{ kind, value, ... }, ...]` flat entity list
     /// CSV            — operator-friendly tabular form (same shape as
     ///                  the `/api/v1/scans/{id}/entities.csv` endpoint)
+    /// Correlations-csv — the correlator's hits in tabular form
+    ///                  (rule_id, rule_name, severity, rank, description,
+    ///                  entity_count, entity_uids, observed_at); joins back
+    ///                  to the entity CSV by the `|`-separated entity_uids
     /// GEXF           — Gephi/Cytoscape-importable graph with
     ///                  scan-id + observed_at on every node
     /// Report         — pretty-printed JSON dossier (scan + entities +
@@ -441,7 +453,7 @@ pub enum Command {
         /// Scan ID (or `latest` for the most-recent completed scan).
         #[arg(short, long)]
         scan_id: String,
-        /// Output format: json | csv | gexf | report | full | debug. Default `json`.
+        /// Output format: json | csv | correlations-csv | gexf | report | full | debug. Default `json`.
         #[arg(short, long, default_value = "json")]
         format: String,
         /// File path to write to. Omit for stdout.

@@ -1,5 +1,5 @@
 //! `hse export` — dump a previous scan's entities in JSON / CSV /
-//! GEXF / pretty-JSON-report.
+//! correlations-CSV / GEXF / pretty-JSON-report.
 //!
 //! Resolves the scan id (or `latest` → most-recent completed scan in
 //! the store), renders the entities in the chosen format, and writes
@@ -37,6 +37,11 @@ pub(super) async fn cmd_export(
     let body = match format.to_lowercase().as_str() {
         "json" => renderers::render_json(&store, &sid)?,
         "csv" => renderers::render_csv(&store, &sid)?,
+        // The correlator's hits in the same spreadsheet-loadable shape as `csv`
+        // (which carries only entities) — close the tabular-export gap so the
+        // correlations aren't JSON-`report`-only. Joins back to the entity CSV by
+        // the `|`-separated SHA-256 `entity_uids` column.
+        "correlations-csv" => renderers::render_correlations_csv(&store, &sid)?,
         "gexf" => renderers::render_gexf(&store, &sid)?,
         "report" => renderers::render_report(&store, &sid, include_infra)?,
         // `full` always includes infra — it is the maximum-detail format.
@@ -44,7 +49,7 @@ pub(super) async fn cmd_export(
         "debug" => render_debug_bundle(&store, &sid)?,
         other => {
             return Err(Error::Other(format!(
-                "unknown --format '{other}'. Valid: json, csv, gexf, report, full, debug"
+                "unknown --format '{other}'. Valid: json, csv, correlations-csv, gexf, report, full, debug"
             )));
         }
     };
@@ -54,11 +59,11 @@ pub(super) async fn cmd_export(
             eprintln!("exported {} bytes to {path}", body.len());
         }
         None => {
-            // stdout — `write_all` (not `println!`) so NO trailing newline is
-            // appended. Every renderer returns UTF-8 text (GEXF is XML, not
-            // binary), so byte-safety isn't the concern; byte-EXACTNESS is: the
-            // `full`/`debug` bundles are diffed for byte-determinism, and an
-            // extra `\n` would break that reproducibility.
+            // stdout — use `write_all` (not `println!`) so NO trailing newline
+            // is appended. Every renderer returns a UTF-8 `String`, so this is
+            // not about binary safety: it is about byte-EXACT output. The
+            // `full`/`debug` bundles are diffed for byte-determinism, and a
+            // spurious `\n` would break that reproducibility.
             use std::io::Write as _;
             std::io::stdout()
                 .write_all(body.as_bytes())

@@ -1,6 +1,7 @@
 //! `PoolData` and `KeyPool` — the in-memory pool structure and all mutation methods.
 
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
@@ -39,6 +40,27 @@ fn clamp_rr_index(rr_index: &mut HashMap<String, usize>, service: &str, new_len:
     {
         *idx %= new_len;
     }
+}
+
+/// The most recent activity timestamp (unix seconds) recorded against a key,
+/// used by [`KeyPool::prune_terminal`] to age out dead credentials. Takes the
+/// maximum across every timestamp the entry carries — last use, last validation,
+/// rotation, and discovery — so a key only ages once ALL of its recorded
+/// activity is older than the retention window. A key with no timestamp at all
+/// (e.g. a freshly-imported, never-used Revoked entry) returns `0`, so it is
+/// treated as maximally old and becomes eligible the moment the operator runs a
+/// compaction — there is no telemetry to preserve for it.
+fn last_activity(entry: &KeyEntry) -> u64 {
+    [
+        entry.last_used,
+        entry.last_validated,
+        entry.rotated_at,
+        entry.discovered_at,
+    ]
+    .into_iter()
+    .flatten()
+    .max()
+    .unwrap_or(0)
 }
 
 /// Per-status key counts for one service — the breakdown surfaced inside a
@@ -97,6 +119,16 @@ pub struct ServiceHealth {
 
 pub struct KeyPool {
     pub(super) data: Mutex<PoolData>,
+    /// Monotonic counter bumped every time [`KeyPool::add`] admits a NEW key
+    /// (and once at construction for any keys loaded from disk). It is the cheap
+    /// dirty-flag that lets the engine's per-module `hot_inject_keys` cascade
+    /// skip the full `service_defs()` sweep + per-service pool probe when no new
+    /// key has appeared since the last inject: a single relaxed atomic load
+    /// replaces ~80 lock acquisitions per sequential round on the common
+    /// no-new-key path. Bumped only on a genuine *new key available* event (not
+    /// on `next_key` telemetry writes, revoke, or rotate's revoke half), so a
+    /// changed generation always means there is potentially a key to inject.
+    generation: AtomicU64,
 }
 
 impl Default for KeyPool {
@@ -109,13 +141,31 @@ impl KeyPool {
     pub fn new() -> Self {
         Self {
             data: Mutex::new(PoolData::default()),
+            generation: AtomicU64::new(0),
         }
     }
 
     pub fn from_data(data: PoolData) -> Self {
+        // Seed the generation at 1 when the pool loads with any keys, so the
+        // engine's first `hot_inject_keys` (which starts from generation 0) sees
+        // a changed counter and performs the initial full sweep that injects the
+        // operator's persisted keys. A pool that loads empty stays at 0 and the
+        // first inject correctly short-circuits.
+        let seed = u64::from(!data.services.is_empty());
         Self {
             data: Mutex::new(data),
+            generation: AtomicU64::new(seed),
         }
+    }
+
+    /// Current generation of the key pool — bumped each time a NEW key is
+    /// admitted via [`Self::add`]. Cheap (a single relaxed atomic load) so the
+    /// engine can gate its full `hot_inject_keys` sweep on `generation()` having
+    /// changed since the previous inject, avoiding the per-service pool probe on
+    /// the common no-new-key path.
+    #[must_use]
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::Relaxed)
     }
 
     pub fn add(&self, service: &str, key: KeyEntry) -> bool {
@@ -136,6 +186,13 @@ impl KeyPool {
             return false;
         }
         entries.push(key);
+        // A genuinely-new key is now poolable: bump the dirty-flag so the engine's
+        // next `hot_inject_keys` performs its full sweep instead of short-circuiting.
+        // Relaxed is sufficient — the engine only needs to observe *that* the value
+        // changed, and the subsequent pool probe takes the data lock (which provides
+        // the ordering for the keys it reads). Done while holding the lock so the
+        // counter and the new entry become visible together.
+        self.generation.fetch_add(1, Ordering::Relaxed);
         true
     }
 
@@ -400,6 +457,59 @@ impl KeyPool {
                 e.tier >= KeyTier::Standard
                     || e.use_count < min_uses
                     || e.success_rate() >= min_success_rate
+            });
+            let after = entries.len();
+            if after < before {
+                pruned += before - after;
+                shrunk.push((service.clone(), after));
+            }
+        }
+        for (service, len) in shrunk {
+            clamp_rr_index(&mut data.rr_index, &service, len);
+        }
+        pruned
+    }
+
+    /// Drop terminal-state keys (`Revoked` / `Invalid`) whose most recent activity
+    /// is older than `retain_secs` seconds, returning the number compacted. The
+    /// audit-preserving counterpart to [`Self::prune_degraded`]: `Revoked` is a
+    /// one-way flip and `Invalid` is set by the validator, so without compaction a
+    /// long-lived install accumulates dead entries forever — every one is re-scanned
+    /// on each [`Self::next_key`] selection and re-serialised to disk on every
+    /// `save`, so the on-device JSON and the per-selection scan grow without bound
+    /// across the install lifetime (cf. the historic 6 MB `generic_hex` bloat).
+    ///
+    /// This is **explicitly operator-invoked** and **retention-windowed** so audit
+    /// intent is preserved: a key revoked or invalidated within `retain_secs` is
+    /// kept so a recently-compromised credential stays visible in the pool's
+    /// history; only entries dead *and* untouched for the whole window are dropped.
+    /// "Activity" is the newest of the entry's use / validation / rotation /
+    /// discovery timestamps (see `last_activity`); a terminal key with no timestamp
+    /// at all carries no telemetry to preserve and is eligible immediately. Live
+    /// statuses (`Untested`/`Active`/`Exhausted`/`RateLimited`) are never touched —
+    /// `Exhausted` and `RateLimited` recover, so they are not terminal here.
+    ///
+    /// `now` is passed in (rather than sampled internally) so the caller can use the
+    /// single `crate::core::entity::unix_now()` it already sampled and so the cutoff
+    /// is testable. As with the other shrink paths, each affected service's
+    /// round-robin start is clamped afterwards to keep `rr_index` tracking the live
+    /// vec. The generation counter is deliberately NOT bumped: removing dead keys
+    /// makes no NEW key available to inject, so the engine's `hot_inject_keys`
+    /// dirty-flag must stay put.
+    pub fn prune_terminal(&self, retain_secs: u64, now: u64) -> usize {
+        let cutoff = now.saturating_sub(retain_secs);
+        let mut data = self.data.lock();
+        let mut pruned = 0;
+        // Services whose vec shrank, clamped after the borrow ends (see
+        // `prune_degraded` for the same two-phase pattern).
+        let mut shrunk: Vec<(String, usize)> = Vec::new();
+        for (service, entries) in &mut data.services {
+            let before = entries.len();
+            entries.retain(|e| {
+                let terminal = matches!(e.status, KeyStatus::Revoked | KeyStatus::Invalid);
+                // Keep non-terminal keys, and terminal keys still inside the
+                // retention window (last activity at/after the cutoff).
+                !terminal || last_activity(e) >= cutoff
             });
             let after = entries.len();
             if after < before {

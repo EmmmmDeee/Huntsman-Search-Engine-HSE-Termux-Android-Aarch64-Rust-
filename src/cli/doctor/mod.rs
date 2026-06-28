@@ -93,6 +93,20 @@ pub(super) async fn cmd_doctor() -> Result<()> {
              apply upgrades and silently no-ops. Install it: pkg install git"
         );
     }
+    // Resolve the upgrade source directory the same way `hse update` does
+    // (`HUNTSMAN_INSTALL_DIR` → `~/hse` and friends → binary-path traversal,
+    // see crate::cli::update::find_install_dir). If it can't be found, `hse
+    // update` has nothing to `git pull`/rebuild and reports "Source directory
+    // not found" — report it here so a broken upgrade path is diagnosable
+    // before the operator reaches for the command.
+    match crate::cli::update::find_install_dir() {
+        Some(dir) => println!("  install dir: {}", dir.display()),
+        None => println!(
+            "  install dir: NOT FOUND — `hse update` has no local source to upgrade from\n             \
+             (sets $HUNTSMAN_INSTALL_DIR, checks ~/hse, then walks up from the binary).\n             \
+             Re-run the installer to (re)establish it."
+        ),
+    }
 
     println!("\nModules ({} registered):", mods.len());
     let mut by_cost = std::collections::BTreeMap::<&str, usize>::new();

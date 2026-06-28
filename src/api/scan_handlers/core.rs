@@ -47,6 +47,54 @@ fn default_seed_from_env() -> Option<(crate::core::scan::TargetKind, String)> {
     Some((crate::core::scan::TargetKind::detect(&v), v))
 }
 
+/// Assemble the autonomous candidate pool from recent scans — the single source of
+/// truth for what the autonomous ranker / planner sees.
+///
+/// Reads the most recent scans ([`crate::core::port::StoragePort::list_scans`], a
+/// fixed window of 50) and deduplicates their entities by UID into one pool. When
+/// `with_relations` is set it *also* deduplicates the relations by id (needed by the
+/// identity-aware ranker in [`scan_auto`]); the score-only planner used by
+/// [`scan_auto_plan`] / [`scan_auto_sweep`] passes `false` and gets an empty
+/// relation vec without paying for the relation reads. Centralising this here means
+/// the candidate-pool construction can't drift between the three autonomous handlers
+/// (the LOW finding): a change to the window, the dedup rule, or the inclusion
+/// criteria is made once and applies to all of them.
+///
+/// Blocking (it does synchronous SQLite reads), so callers MUST run it inside a
+/// `tokio::task::spawn_blocking` — keeping the 2-worker async reactor free, the same
+/// discipline used across the analysis handlers. A store error on any read aborts
+/// and propagates.
+pub(crate) fn assemble_autonomous_pool(
+    store: &dyn crate::core::port::StoragePort,
+    with_relations: bool,
+) -> crate::core::error::Result<(
+    Vec<crate::core::entity::Entity>,
+    Vec<crate::core::relation::Relation>,
+)> {
+    use std::collections::HashSet;
+
+    let scans = store.list_scans(50)?;
+    let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
+    let mut rels: Vec<crate::core::relation::Relation> = Vec::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut rel_seen: HashSet<String> = HashSet::new();
+    for sc in &scans {
+        for e in store.entities_for_scan(&sc.id)? {
+            if seen.insert(e.uid.clone()) {
+                pool.push(e);
+            }
+        }
+        if with_relations {
+            for r in store.relations_for_scan(&sc.id)? {
+                if rel_seen.insert(r.id.clone()) {
+                    rels.push(r);
+                }
+            }
+        }
+    }
+    Ok((pool, rels))
+}
+
 /// `POST /api/v1/scan/auto` — fully autonomous investigation, NO seed input.
 ///
 /// The platform discovers, prioritises and investigates on its own: it ranks the
@@ -66,27 +114,14 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     // the individual it knows the most about (not three handles of one person).
     // Identity-aware ranking is a strict generalisation of the flat ranker — with
     // no relations it yields the same order — so this is fully backward-compatible.
-    // All store work on the blocking pool so the async workers stay free.
+    // All store work on the blocking pool so the async workers stay free. Pool
+    // assembly is shared with the plan / sweep handlers via assemble_autonomous_pool
+    // (with_relations: true — the identity-aware ranker consumes the co-reference
+    // graph) so the candidate set can't drift across the three autonomous paths.
     let store = Arc::clone(&s.store);
     let selected = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<Option<crate::core::engine::ClusteredTarget>> {
-            let scans = store.list_scans(50)?;
-            let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
-            let mut rels: Vec<crate::core::relation::Relation> = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
-            let mut rel_seen: HashSet<String> = HashSet::new();
-            for sc in &scans {
-                for e in store.entities_for_scan(&sc.id)? {
-                    if seen.insert(e.uid.clone()) {
-                        pool.push(e);
-                    }
-                }
-                for r in store.relations_for_scan(&sc.id)? {
-                    if rel_seen.insert(r.id.clone()) {
-                        rels.push(r);
-                    }
-                }
-            }
+            let (pool, rels) = assemble_autonomous_pool(store.as_ref(), true)?;
             // Degree from the realised cross-scan observation count; a store error
             // on a point lookup degrades to 0 (neutral leverage) rather than failing
             // the whole selection. Nothing is excluded — every pivotable candidate
@@ -197,16 +232,10 @@ pub async fn scan_auto_plan(
     let store = Arc::clone(&s.store);
     let planned = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
-            let scans = store.list_scans(50)?;
-            let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
-            for sc in &scans {
-                for e in store.entities_for_scan(&sc.id)? {
-                    if seen.insert(e.uid.clone()) {
-                        pool.push(e);
-                    }
-                }
-            }
+            // Shared pool assembly (with_relations: false — the score-only planner
+            // doesn't consume the co-reference graph, so the relation reads are
+            // skipped). Same candidate set as scan_auto / scan_auto_sweep.
+            let (pool, _rels) = assemble_autonomous_pool(store.as_ref(), false)?;
             let exclude = HashSet::new();
             Ok(crate::core::engine::plan_autonomous_sweep(
                 &pool,
@@ -272,16 +301,10 @@ pub async fn scan_auto_sweep(
     let store = Arc::clone(&s.store);
     let planned = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
-            let scans = store.list_scans(50)?;
-            let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
-            let mut seen: HashSet<String> = HashSet::new();
-            for sc in &scans {
-                for e in store.entities_for_scan(&sc.id)? {
-                    if seen.insert(e.uid.clone()) {
-                        pool.push(e);
-                    }
-                }
-            }
+            // Shared pool assembly (with_relations: false — the score-only planner
+            // doesn't consume the co-reference graph). Same candidate set as
+            // scan_auto / scan_auto_plan, so the autonomous paths can't drift.
+            let (pool, _rels) = assemble_autonomous_pool(store.as_ref(), false)?;
             let exclude = HashSet::new();
             Ok(crate::core::engine::plan_autonomous_sweep(
                 &pool,

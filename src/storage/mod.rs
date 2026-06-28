@@ -765,6 +765,49 @@ impl Store {
         Ok(())
     }
 
+    /// Persist a batch of events under one transaction.
+    ///
+    /// In autocommit mode each `insert_event` is its own implicit transaction,
+    /// so a burst of N events costs N WAL commits (N fsyncs at
+    /// `synchronous=NORMAL`). Wrapping the whole batch in a single
+    /// `unchecked_transaction` collapses that to one commit — the fsync win the
+    /// async DB-writer's batching is designed to realise. All-or-nothing: any
+    /// error rolls the whole batch back. JSON serialization happens before the
+    /// connection lock is taken so the critical section holds only the inserts.
+    pub fn insert_events_batch(&self, events: &[Event]) -> Result<()> {
+        if events.is_empty() {
+            return Ok(());
+        }
+        // Serialize outside the lock — `serde_json` is the expensive part and
+        // must not extend the time the connection mutex is held (the serve
+        // side reads under the same lock). Each row carries only the JSON; the
+        // scalar columns are read back from `events` during the insert loop.
+        let mut json_rows: Vec<String> = Vec::with_capacity(events.len());
+        for event in events {
+            json_rows.push(serde_json::to_string(event)?);
+        }
+        let conn = self.conn.lock();
+        // Mirrors upsert_entities_batch: rolls back on drop if a commit is
+        // never reached.
+        let tx = conn.unchecked_transaction()?;
+        {
+            let mut stmt = tx.prepare_cached(
+                "INSERT INTO events(scan_id, ts, event_type, data_json)
+                 VALUES(?1, ?2, ?3, ?4)",
+            )?;
+            for (event, json) in events.iter().zip(json_rows.iter()) {
+                stmt.execute(params![
+                    event.scan_id,
+                    event.ts as i64,
+                    event.kind.event_type_str(),
+                    json
+                ])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     pub fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -870,6 +913,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn insert_event(&self, event: &Event) -> Result<()> {
         Store::insert_event(self, event)
+    }
+
+    fn insert_events_batch(&self, events: &[Event]) -> Result<()> {
+        Store::insert_events_batch(self, events)
     }
 
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>> {

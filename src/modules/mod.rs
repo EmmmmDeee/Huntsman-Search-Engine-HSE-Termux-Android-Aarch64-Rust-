@@ -23,6 +23,7 @@ pub mod au_people;
 pub mod au_property;
 pub mod au_seifa;
 pub mod au_unclaimed;
+pub mod austender;
 pub mod austlii;
 pub mod bgpview;
 pub mod bitbucket_user;
@@ -49,6 +50,7 @@ pub mod crtsh;
 pub mod dehashed;
 pub mod device_sensors;
 pub mod devto;
+pub mod dfat_sanctions;
 pub mod discord_snowflake;
 pub mod disposable_check;
 pub mod dns_axfr;
@@ -431,6 +433,8 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         // Australian + global public-records / corporate registries
         Arc::new(opencorporates::OpenCorporates),
         Arc::new(au_unclaimed::AuUnclaimed),
+        Arc::new(austender::AusTender),
+        Arc::new(dfat_sanctions::DfatSanctions),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),
         Arc::new(asic_persons::AsicPersons),

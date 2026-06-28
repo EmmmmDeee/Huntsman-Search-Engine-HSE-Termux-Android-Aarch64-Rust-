@@ -106,6 +106,15 @@ impl Module for AuProperty {
 
         let mut all_entities: Vec<Entity> = Vec::new();
 
+        // Records a hard failure (transport error or non-success status — most
+        // importantly a 403/429 block or throttle) from the FIRST source that
+        // hits one. State land-title portals are government registers that
+        // frequently rate-limit; if every queried source is blocked and zero
+        // records are extracted, this is surfaced as a module error so the
+        // operator can distinguish "no property records" from "the register
+        // blocked us". Best-effort fallthrough across sources is preserved.
+        let mut block_error: Option<crate::core::error::Error> = None;
+
         // ── NSW Spatial / ELVIS cadastral ─────────────────────────────────
         // ELVIS name search endpoint — surname + given name query.
         let nsw_url = format!(
@@ -113,21 +122,25 @@ impl Module for AuProperty {
             crate::util::http::urlencode(last),
             crate::util::http::urlencode(first),
         );
-        if let Ok(resp) = ctx
+        match ctx
             .http
             .get(&nsw_url)
             .header("Accept", "application/json,text/html")
             .header("User-Agent", ua)
             .send_tagged(SRC)
             .await
-            && resp.status().is_success()
-            && let Some(body) = read_body_capped(resp, 1_000_000).await
         {
-            all_entities.extend(
-                parse_nsw_response(&body, full_name)
-                    .iter()
-                    .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-            );
+            Ok(resp) if resp.status().is_success() => {
+                if let Some(body) = read_body_capped(resp, 1_000_000).await {
+                    all_entities.extend(
+                        parse_nsw_response(&body, full_name)
+                            .iter()
+                            .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                    );
+                }
+            }
+            Ok(resp) => block_error = Some(crate::util::http::http_status_error(SRC, resp).await),
+            Err(e) => block_error = Some(e),
         }
 
         // ── VIC MapShare ──────────────────────────────────────────────────
@@ -137,21 +150,33 @@ impl Module for AuProperty {
                  &request=GetFeature&typeName=CADASTRE:PARCEL&outputFormat=application/json\
                  &CQL_FILTER=OWNER_NAME+LIKE+%27{encoded_sname}%25%27&maxFeatures=10"
             );
-            if let Ok(resp) = ctx
+            match ctx
                 .http
                 .get(&vic_url)
                 .header("Accept", "application/json,text/html")
                 .header("User-Agent", ua)
                 .send_tagged(SRC)
                 .await
-                && resp.status().is_success()
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
             {
-                all_entities.extend(
-                    parse_vic_response(&body, full_name)
-                        .iter()
-                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                );
+                Ok(resp) if resp.status().is_success() => {
+                    if let Some(body) = read_body_capped(resp, 1_000_000).await {
+                        all_entities.extend(
+                            parse_vic_response(&body, full_name)
+                                .iter()
+                                .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                        );
+                    }
+                }
+                Ok(resp) => {
+                    if block_error.is_none() {
+                        block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+                    }
+                }
+                Err(e) => {
+                    if block_error.is_none() {
+                        block_error = Some(e);
+                    }
+                }
             }
         }
 
@@ -160,22 +185,43 @@ impl Module for AuProperty {
             let qld_url = format!(
                 "https://www.qld.gov.au/environment/land/title/searching/owners?owner={encoded_full}"
             );
-            if let Ok(resp) = ctx
+            match ctx
                 .http
                 .get(&qld_url)
                 .header("Accept", "text/html,application/xhtml+xml")
                 .header("User-Agent", ua)
                 .send_tagged(SRC)
                 .await
-                && resp.status().is_success()
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
             {
-                all_entities.extend(
-                    parse_qld_response(&body, full_name)
-                        .iter()
-                        .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
-                );
+                Ok(resp) if resp.status().is_success() => {
+                    if let Some(body) = read_body_capped(resp, 1_000_000).await {
+                        all_entities.extend(
+                            parse_qld_response(&body, full_name)
+                                .iter()
+                                .flat_map(|rec| record_to_entities(rec, &ctx.scan_id)),
+                        );
+                    }
+                }
+                Ok(resp) => {
+                    if block_error.is_none() {
+                        block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+                    }
+                }
+                Err(e) => {
+                    if block_error.is_none() {
+                        block_error = Some(e);
+                    }
+                }
             }
+        }
+
+        // Every queried register was blocked or errored and nothing was
+        // extracted — report a module error rather than a clean empty result so
+        // the engine logs a distinguishable failure.
+        if all_entities.is_empty()
+            && let Some(err) = block_error
+        {
+            return Err(err);
         }
 
         // Dedup by (kind, value) — different portals may agree on the same suburb.

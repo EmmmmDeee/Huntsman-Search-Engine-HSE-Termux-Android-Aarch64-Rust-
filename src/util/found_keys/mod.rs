@@ -27,7 +27,7 @@
 //! module surfaced the data.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{LazyLock, Mutex, MutexGuard};
+use std::sync::{Arc, LazyLock, Mutex, MutexGuard};
 
 tokio::task_local! {
     /// The `scan_id` of the scan whose modules are executing on this task. Set by
@@ -37,7 +37,12 @@ tokio::task_local! {
     /// attribute a discovered key to the right scan under `hse serve`'s concurrent
     /// scans, **without** threading `scan_id` through the whole util HTTP layer.
     /// Unset outside a scan (e.g. unit tests) ⇒ the default `""` bucket.
-    static SCAN: String;
+    ///
+    /// Held as `Arc<str>` (not `String`) so the concurrent dispatcher can re-scope
+    /// each spawned per-module task with a cheap refcount bump — `Arc::clone` of
+    /// the round's shared scan id — instead of a fresh per-task `String`
+    /// allocation on a phone running ~80 modules/round.
+    static SCAN: Arc<str>;
 }
 
 /// Run `f` with the current-scan ambient set to `scan_id`, so any [`scan_body`]
@@ -46,13 +51,18 @@ tokio::task_local! {
 /// allow-listed `core → util` leaf in `tests/architecture.rs`, the one exception to
 /// "found_keys is driven through the module hook": reset/drain bridge to
 /// `core::entity` (so they stay in the hook), but the scan-scope ambient does not.
-pub async fn with_scan<F: std::future::Future>(scan_id: String, f: F) -> F::Output {
-    SCAN.scope(scan_id, f).await
+///
+/// Accepts `impl Into<Arc<str>>` so a caller holding an `Arc<str>` scan id (the
+/// concurrent dispatcher) passes a clone with no allocation, while a caller
+/// holding a `String` / `&str` (the per-scan `run_with_ledger` wrapper) converts
+/// once, as before.
+pub async fn with_scan<F: std::future::Future>(scan_id: impl Into<Arc<str>>, f: F) -> F::Output {
+    SCAN.scope(scan_id.into(), f).await
 }
 
 /// The scan currently executing on this task, or `""` when unscoped.
-fn current_scan() -> String {
-    SCAN.try_with(String::clone).unwrap_or_default()
+fn current_scan() -> Arc<str> {
+    SCAN.try_with(Arc::clone).unwrap_or_else(|_| Arc::from(""))
 }
 
 /// Test-only synchronous scope: run `f` with the scan ambient set (mirrors
@@ -60,7 +70,7 @@ fn current_scan() -> String {
 /// `SINK`-serialising lock). The production path uses the async [`with_scan`].
 #[cfg(test)]
 fn with_scan_sync<R>(scan_id: &str, f: impl FnOnce() -> R) -> R {
-    SCAN.sync_scope(scan_id.to_string(), f)
+    SCAN.sync_scope(Arc::from(scan_id), f)
 }
 
 /// A foreign API key found in response data, with provenance.
@@ -195,7 +205,9 @@ pub fn scan_body(provider: &str, query: &str, body: &str) {
     // Split the borrow so the shared `own` set and the per-scan bucket can be
     // touched at once.
     let Sink { per_scan, own } = &mut *g;
-    let bucket = per_scan.entry(scan).or_default();
+    // `per_scan` is keyed by `String`; convert the `Arc<str>` ambient once here on
+    // the rare hit path (hits are sparse, so this allocation is not hot).
+    let bucket = per_scan.entry(scan.to_string()).or_default();
     for (service, key) in hits {
         // Exclude our own auth credentials — the operator already has those.
         if own.contains(&key) {

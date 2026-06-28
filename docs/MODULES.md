@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (161 modules: 128 free · 28 key-gated · 5 paid)
+## Catalogue (163 modules: 130 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -58,11 +58,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `keybase` | username | free | no | 100 | person, username, email, domain, address |
 | `username_variants` | username | free | **yes** | 98 | username |
 
-### people (16)
+### people (17)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `oathnet_pro` | email, username, phone, full_name, ip_address, domain | paid | no | 127 | email, username, phone, person, ip_address, address, url, domain |
+| `dfat_sanctions` | full_name, organisation | free | no | 87 | person, organisation |
 | `name_intel` | full_name | free | **yes** | 97 | username, email, url |
 | `wikidata` | full_name, organisation | free | no | 96 | person, organisation, domain, username, url |
 | `seon` | email, phone | key_gated | no | 95 | person |
@@ -124,11 +125,12 @@ records. The engine knows nothing else — every module is a one-file change.
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
-### corporate (13)
+### corporate (14)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `au_business_id` | abn_acn | free | **yes** | 104 | abn_acn |
+| `austender` | organisation, full_name, abn_acn | free | no | 110 | organisation, abn_acn, address, coordinates |
 | `asic_director` | full_name | free | no | 89 | organisation, abn_acn, address |
 | `asic_persons` | full_name | free | no | 112 | person, organisation, abn_acn, address |
 | `asic_business_names` | organisation | free | no | 111 | organisation, abn_acn |

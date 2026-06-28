@@ -595,43 +595,83 @@ impl Module for AuPeople {
 
         let mut result = ModuleResult::new();
 
+        // Records a hard failure (transport error or non-success status — most
+        // importantly a 403/429 block, captcha wall, or throttle) from the
+        // PRIMARY source (White Pages AU). If every source fails this way and
+        // zero entities are produced, this is surfaced as a module error so the
+        // operator can tell "subject has no records" from "the directory blocked
+        // us" — a critical distinction for a frequently rate-limited residential
+        // scraper. Best-effort fallthrough to the secondary source is preserved.
+        let mut block_error: Option<crate::core::error::Error> = None;
+
         // White Pages AU search.
         let wp_url = format!(
             "https://www.whitepages.com.au/residential/search/{}+{}",
             crate::util::http::urlencode(first),
             crate::util::http::urlencode(last),
         );
-        if let Ok(resp) = ctx
+        match ctx
             .http
             .get(&wp_url)
             .header("Accept", "text/html,application/xhtml+xml")
             .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
             .await
-            && resp.status().is_success()
-            && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
-            result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
-            result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
+            Ok(resp) if resp.status().is_success() => {
+                if let Some(html) = read_body_capped(resp, 1_000_000).await {
+                    result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
+                    result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
+                }
+            }
+            // Non-success status (403/429/5xx/captcha) — record a distinguishable
+            // block so a fully-blocked scrape never reports as a clean empty result.
+            Ok(resp) => {
+                block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+            }
+            // Transport error (DNS, TLS, connect, timeout) — already module-tagged.
+            Err(e) => block_error = Some(e),
         }
 
-        // True People Search AU.
+        // True People Search AU (secondary). Best-effort: a failure here only
+        // becomes the surfaced error if the primary did not already record one.
         let tps_url = format!(
             "https://www.truepeoplesearch.com.au/results?name={}",
             crate::util::http::urlencode(full_name),
         );
-        if let Ok(resp) = ctx
+        match ctx
             .http
             .get(&tps_url)
             .header("Accept", "text/html,application/xhtml+xml")
             .header("User-Agent", crate::util::http::UA_BROWSER)
             .send_tagged(SRC)
             .await
-            && resp.status().is_success()
-            && let Some(html) = read_body_capped(resp, 1_000_000).await
         {
-            result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
-            result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
+            Ok(resp) if resp.status().is_success() => {
+                if let Some(html) = read_body_capped(resp, 1_000_000).await {
+                    result.extend(parse_tps_html(&html, full_name, &ctx.scan_id));
+                    result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
+                }
+            }
+            Ok(resp) => {
+                if block_error.is_none() {
+                    block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+                }
+            }
+            Err(e) => {
+                if block_error.is_none() {
+                    block_error = Some(e);
+                }
+            }
+        }
+
+        // Every source was blocked or errored and nothing was extracted — report
+        // a module error rather than a clean empty result, so the engine logs a
+        // distinguishable failure (`stats.errored` + `ModuleError` event).
+        if result.entities.is_empty()
+            && let Some(err) = block_error
+        {
+            return Err(err);
         }
 
         // Emit a Person anchor for the name if we got any results — confirms

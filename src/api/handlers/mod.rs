@@ -4,12 +4,12 @@
 // `(StatusCode, Json)`, and `Sse<...>` freely. Error paths emit a
 // `{"error": "..."}` JSON body with the appropriate status.
 
-use std::{convert::Infallible, sync::Arc};
+use std::{convert::Infallible, net::SocketAddr, sync::Arc};
 
 use axum::{
     Json,
-    extract::{Path, State},
-    http::{HeaderMap, StatusCode, header},
+    extract::{ConnectInfo, FromRequestParts, Path, State},
+    http::{HeaderMap, StatusCode, header, request::Parts},
     response::{
         IntoResponse,
         sse::{Event as SseEvent, KeepAlive, Sse},
@@ -75,6 +75,58 @@ pub(crate) fn bad_request(msg: impl Into<String>) -> axum::response::Response {
 /// (e.g. a failed CSRF/loopback check). One shape for every refusal.
 pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
     (StatusCode::FORBIDDEN, Json(json!({ "error": msg.into() }))).into_response()
+}
+
+/// The connecting peer's socket address, read from the request's
+/// [`ConnectInfo<SocketAddr>`] extension. Unlike axum's `ConnectInfo<SocketAddr>`
+/// extractor (which *rejects* with `500` when the extension is absent), this
+/// always succeeds, yielding `None` when no connect-info was installed — a unit
+/// test built without a real listener, or any path the serve bootstrap doesn't
+/// stamp. That graceful-absence semantics is what lets the cross-scan reads gate
+/// on the peer without a mandatory extractor that would `500` those callers; the
+/// real `hse serve` bootstrap installs `ConnectInfo<SocketAddr>` via
+/// `into_make_service_with_connect_info`, so on a live bind the address is always
+/// present and [`loopback_only`] enforces the gate.
+///
+/// `pub` only because it appears in the signature of the `pub` cross-scan
+/// handlers (`entity_get` / `search_entities`); it is an internal request
+/// extractor, not part of any consumed API.
+pub struct PeerAddr(Option<SocketAddr>);
+
+impl<S: Send + Sync> FromRequestParts<S> for PeerAddr {
+    type Rejection = Infallible;
+
+    async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Infallible> {
+        Ok(Self(
+            parts
+                .extensions
+                .get::<ConnectInfo<SocketAddr>>()
+                .map(|ci| ci.0),
+        ))
+    }
+}
+
+/// Loopback-only access gate for the **cross-scan** read endpoints
+/// (`/entities/{uid}`, `/search`). These two leak the most sensitive data on
+/// the whole surface — a specific entity's full record plus every scan it
+/// appears in, and arbitrary substring search across ALL scans — so on a
+/// non-loopback bind they are a cross-scan data-exfiltration surface reachable
+/// by any allowed origin. Returns `Some(403)` to short-circuit the handler when
+/// the peer is present and non-loopback, mirroring the key endpoints'
+/// `!peer.ip().is_loopback()` guard.
+///
+/// `peer` is `None` when no connect-info is installed (see [`PeerAddr`]):
+/// absent connect-info degrades to **allow**, exactly as the rate limiter's
+/// "absent → single global bucket, still correct" fallback does. The real
+/// `hse serve` bootstrap always installs `ConnectInfo<SocketAddr>`, so on a live
+/// non-loopback bind the peer is always present and the gate is enforced.
+fn loopback_only(peer: Option<&SocketAddr>, what: &str) -> Option<axum::response::Response> {
+    match peer {
+        Some(addr) if !addr.ip().is_loopback() => {
+            Some(forbidden(format!("{what} is loopback-only")))
+        }
+        _ => None,
+    }
 }
 
 /// The canonical list envelope every list endpoint returns:
@@ -198,49 +250,135 @@ pub async fn stats(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let modules = s.engine.modules().len();
     let live_sessions = s.live.list().len();
 
-    // Surface SeekNow + OathNet + WiGLE budget consumption so operators
-    // can see how much of each daily quota the current process has
-    // burned. All providers share `util::budget::QuotaBudget` so the
-    // wire format is identical; WiGLE has four sub-budgets (geo /
-    // bssid / cell / bluetooth) so its block nests one level deeper.
-    let seeknow = budget_block(crate::util::see_know::budget_snapshot());
-    let oathnet = budget_block(crate::util::oathnet::budget_snapshot());
-    let wigle = crate::modules::wigle::budget_snapshot();
-    let wigle_account = crate::modules::wigle::account_status();
-    let wigle_block = json!({
-        "geo":       budget_block(wigle.geo),
-        "bssid":     budget_block(wigle.bssid),
-        "cell":      budget_block(wigle.cell),
-        "bluetooth": budget_block(wigle.bluetooth),
-        "account":   {
-            // `verified == false` means the WiGLE account has not yet
-            // confirmed the email-verification step, which gates the
-            // database queries (operator-facing warning). `null` means
-            // we haven't polled `/profile/user` yet this process. WiGLE
-            // exposes no per-call usage endpoint, so quota counts aren't
-            // reported here.
-            "verified":           wigle_account.verified,
-            "user":               wigle_account.user,
-            "last_polled_ts":     wigle_account.last_polled_ts,
-        },
-    });
+    // Surface every quota-spending provider's budget consumption so operators
+    // can see how much of each daily quota the current process has burned. The
+    // set of providers is the single-source-of-truth registry
+    // [`budget_providers`] — NOT a hand-maintained list inlined here — so a new
+    // `util::budget::QuotaBudget`-backed provider auto-appears the moment it is
+    // registered, and the `stats_surfaces_every_budget_provider` guard rejects a
+    // provider that is registered but silently dropped from this section. All
+    // providers share `util::budget::QuotaBudget`, so the per-provider wire shape
+    // ([`budget_block`]) is identical. The flat registry is rendered into the
+    // existing top-level shape via [`insert_budget`]: flat names (`seeknow`,
+    // `oathnet`) land at the top, dotted names (`wigle.geo`, …) nest one level
+    // into the `wigle` block — preserving the on-the-wire contract the SPA and
+    // the `tests/api.rs` stats assertions read.
+    let budgets = stats_budget_map();
 
-    (
-        StatusCode::OK,
-        Json(json!({
-            "scans_total": scans.len(),
-            "scans_by_status": by_status,
-            "entities_total": total_entities,
-            "modules_deduped_total": total_deduped,
-            "modules": modules,
-            "live_sessions": live_sessions,
-            "version": crate::VERSION,
-            "seeknow": seeknow,
-            "oathnet": oathnet,
-            "wigle":   wigle_block,
-        })),
-    )
-        .into_response()
+    // Start from the fixed scan-statistics envelope, then splice in each
+    // provider's budget block at the top level. Spreading the registry-built map
+    // (rather than naming each provider) is what keeps a new provider from being
+    // silently dropped here.
+    let mut body = serde_json::Map::new();
+    body.insert("scans_total".into(), json!(scans.len()));
+    body.insert("scans_by_status".into(), json!(by_status));
+    body.insert("entities_total".into(), json!(total_entities));
+    body.insert("modules_deduped_total".into(), json!(total_deduped));
+    body.insert("modules".into(), json!(modules));
+    body.insert("live_sessions".into(), json!(live_sessions));
+    body.insert("version".into(), json!(crate::VERSION));
+    for (name, block) in budgets {
+        body.insert(name, block);
+    }
+
+    (StatusCode::OK, Json(Value::Object(body))).into_response()
+}
+
+/// Render the registry ([`budget_providers`]) into the top-level budget shape the
+/// `/api/v1/stats` body carries: each flat provider as its own key, each dotted
+/// sub-budget nested one level (so `wigle.geo` → `wigle.geo`), and WiGLE's
+/// out-of-band account status folded into the `wigle` block. Split out of
+/// [`stats`] so the no-silent-drift guard (`stats_surfaces_every_budget_provider`)
+/// can assert directly against the rendered map without a live store or async
+/// handler.
+fn stats_budget_map() -> serde_json::Map<String, Value> {
+    let mut budgets = serde_json::Map::new();
+    for (name, snapshot) in budget_providers() {
+        insert_budget(&mut budgets, name, budget_block(snapshot()));
+    }
+    // WiGLE's email-verification/account status — the one provider that exposes
+    // it. Folded into WiGLE's own block (a sub-key of `wigle`) rather than a
+    // sibling top-level key so the asymmetry is contained to WiGLE and the flat
+    // budget registry stays uniform. `wigle` is always present (the registry
+    // registers its sub-budgets), so the entry is created by then.
+    if let Some(wigle) = budgets.get_mut("wigle").and_then(Value::as_object_mut) {
+        wigle.insert("account".to_string(), wigle_account_block());
+    }
+    budgets
+}
+
+/// Resolver for one provider's live budget snapshot — a plain `fn` pointer so
+/// the registry [`budget_providers`] is a flat `const`-shaped table.
+type BudgetSnapshotFn = fn() -> crate::util::budget::BudgetSnapshot;
+
+/// One registry row: the provider's `/stats` key and its snapshot resolver.
+type BudgetProvider = (&'static str, BudgetSnapshotFn);
+
+/// Single source of truth for the budget-snapshot providers surfaced on
+/// `/api/v1/stats`. Each entry yields `(name, snapshot_fn)`; the `name` is the
+/// provider's `/stats` key (a flat name lands at the top level, a dotted name
+/// nests one level — see [`insert_budget`]), and `snapshot_fn` resolves the live
+/// [`crate::util::budget::BudgetSnapshot`] for that provider at request time.
+///
+/// Driving [`stats`] from this list (rather than inlining each provider) is the
+/// project's standard no-silent-drift discipline: a new `QuotaBudget`-backed
+/// provider is surfaced by adding one row here, and the
+/// `stats_surfaces_every_budget_provider` guard fails the build if a registered
+/// provider is ever dropped from the rendered `/stats` body. WiGLE's per-type
+/// sub-budgets (`geo` / `bssid` / `cell` / `bluetooth`) are flattened into the
+/// nested `wigle` block by the dotted-name entries; the renderer reads the dot
+/// as a one-level nesting so the wire shape (`wigle.geo`, …) is preserved.
+fn budget_providers() -> Vec<BudgetProvider> {
+    let wigle_geo: BudgetSnapshotFn = || crate::modules::wigle::budget_snapshot().geo;
+    let wigle_bssid: BudgetSnapshotFn = || crate::modules::wigle::budget_snapshot().bssid;
+    let wigle_cell: BudgetSnapshotFn = || crate::modules::wigle::budget_snapshot().cell;
+    let wigle_bt: BudgetSnapshotFn = || crate::modules::wigle::budget_snapshot().bluetooth;
+    vec![
+        ("seeknow", crate::util::see_know::budget_snapshot),
+        ("oathnet", crate::util::oathnet::budget_snapshot),
+        ("wigle.geo", wigle_geo),
+        ("wigle.bssid", wigle_bssid),
+        ("wigle.cell", wigle_cell),
+        ("wigle.bluetooth", wigle_bt),
+    ]
+}
+
+/// WiGLE's non-budget account status — the email-verification flag, resolved
+/// user handle, and last-poll timestamp. Unlike the budget snapshots this has no
+/// per-call quota counter (WiGLE exposes no usage endpoint), so it is rendered
+/// separately and attached to WiGLE's block. `verified == false` means the
+/// account has not completed email verification (which gates database queries —
+/// an operator-facing warning); `null` means `/profile/user` has not been polled
+/// yet this process.
+fn wigle_account_block() -> Value {
+    let acct = crate::modules::wigle::account_status();
+    json!({
+        "verified":       acct.verified,
+        "user":           acct.user,
+        "last_polled_ts": acct.last_polled_ts,
+    })
+}
+
+/// Insert a `budget_block` into `map`, honouring a single `.`-separated nesting
+/// level: a flat `"seeknow"` lands at the top, while `"wigle.geo"` lands as
+/// `map["wigle"]["geo"]`, auto-creating the intermediate object. Keeps the
+/// registry flat (one row per sub-budget) while the rendered shape stays nested
+/// (`wigle.geo`, …), so [`budget_providers`] is the sole list to extend and the
+/// wire contract is unchanged.
+fn insert_budget(map: &mut serde_json::Map<String, Value>, name: &str, block: Value) {
+    match name.split_once('.') {
+        Some((parent, child)) => {
+            let entry = map
+                .entry(parent.to_string())
+                .or_insert_with(|| Value::Object(serde_json::Map::new()));
+            if let Some(obj) = entry.as_object_mut() {
+                obj.insert(child.to_string(), block);
+            }
+        }
+        None => {
+            map.insert(name.to_string(), block);
+        }
+    }
 }
 
 /// Convert a [`crate::util::budget::BudgetSnapshot`] into the
@@ -379,11 +517,28 @@ pub async fn modules_graph(State(s): State<Arc<AppState>>) -> Json<Value> {
     }))
 }
 
+/// `GET /api/v1/entities/{uid}` — cross-scan entity point lookup.
+///
+/// CROSS-SCAN — this is one of the two endpoints (with [`search_entities`]) that
+/// cross every scan boundary: it returns the entity's full record **plus the
+/// `scan_ids` of every scan it appears in**, so a single call leaks the most
+/// sensitive aggregate on the surface. On a non-loopback bind that makes it a
+/// cross-scan exfiltration vector reachable by any allowed origin, so it carries
+/// the same loopback-only [`loopback_only`] gate the key endpoints use. On the
+/// default loopback bind the gate is a no-op (every peer is loopback).
+///
+/// It is also a stable point lookup, so it sets a weak ETag
+/// (`observed_at` + observation count) for cheap `304` revalidation — see the
+/// inline note at the validator.
 pub async fn entity_get(
     State(s): State<Arc<AppState>>,
     Path(uid): Path<String>,
+    PeerAddr(peer): PeerAddr,
     req_headers: HeaderMap,
 ) -> impl IntoResponse {
+    if let Some(resp) = loopback_only(peer.as_ref(), "entity lookup") {
+        return resp;
+    }
     match s.store.get_entity(&uid) {
         Ok(Some(entity)) => {
             let scan_ids = match s.store.scan_ids_for_entity(&uid) {
@@ -460,10 +615,21 @@ fn if_none_match_hit(if_none_match: &str, etag: &str) -> bool {
         .any(|t| t.trim() == "*" || strip(t) == want)
 }
 
+/// `GET /api/v1/search?q=…` — arbitrary substring search across **all scans**.
+///
+/// CROSS-SCAN — the broadest leak on the surface: an unscoped substring match
+/// over every entity in every scan. Like [`entity_get`] it crosses every scan
+/// boundary, so on a non-loopback bind it is a cross-scan exfiltration vector
+/// and carries the same loopback-only [`loopback_only`] gate; on the default
+/// loopback bind the gate is a no-op.
 pub async fn search_entities(
     State(s): State<Arc<AppState>>,
+    PeerAddr(peer): PeerAddr,
     axum::extract::Query(params): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    if let Some(resp) = loopback_only(peer.as_ref(), "cross-scan search") {
+        return resp;
+    }
     let query = match params.get("q") {
         Some(q) if !q.trim().is_empty() && q.len() <= 256 => q.trim(),
         Some(q) if q.len() > 256 => {
@@ -499,6 +665,17 @@ pub async fn search_entities(
 // `text/event-stream` content-type the `EventSource` client requires; the
 // `scan_events_endpoint_is_server_sent_events` test in `tests/api.rs` pins
 // that wire contract.
+//
+// EVENT-TAG CONTRACT — the discriminator is the JSON `type` field of each
+// frame's body (the serde tag of `core::event::EventKind`, snake_case), NOT a
+// named SSE `event:` line; `spa.html`'s `mapEvent` switches on that `type`. The
+// emitted entity tag is `entity_found` (`EventKind::EntityFound`), consumed by
+// `mapEvent`. There is deliberately **no** `evidence_found` event: per-finding
+// evidence is not its own stream message — it is carried inside the
+// `entity_found` payload, in `entity.evidence`, and rendered from there. So the
+// only entity-discovery tag on the wire is `entity_found`; `evidence_found` is
+// not a defined `EventKind` variant, not in `event_type_str()`, and not handled
+// in `mapEvent`, because no such frame is ever produced.
 
 const SSE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
 

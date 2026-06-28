@@ -5,20 +5,21 @@
 //! - **IpAddress** targets → OTX pulse lookup AND Tor exit-relay check.
 //! - **Domain** targets   → OTX pulse lookup only (Tor list is IP-only).
 //!
-//! The Tor exit-relay list is fetched once and cached via `OnceCell` so
-//! subsequent calls within the same process are free. A transient network
-//! failure on the first fetch leaves the cache uninitialised, allowing
-//! the next scan to retry.
+//! The Tor exit-relay list is fetched and cached behind a 1-hour TTL so
+//! subsequent calls within the same process are free, while a long-running
+//! `serve` process still picks up relay churn instead of pinning the first
+//! snapshot for the lifetime of the binary. A transient network failure
+//! leaves the cache empty (or its previous fresh-but-now-stale copy), so
+//! the next scan retries rather than caching a failure.
 //!
 //! Free, no API key required.
 
 use std::collections::HashSet;
-use std::sync::Arc;
-use std::time::Duration;
+use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde::Deserialize;
-use tokio::sync::OnceCell;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -55,9 +56,38 @@ struct Pulse {
 
 // ── Tor exit-relay cache ───────────────────────────────────────────
 
-/// Successful fetches are memoised here. Stored as `Arc<HashSet<…>>` so
+/// How long a fetched exit-relay snapshot is considered fresh.
+///
+/// The public Tor exit list churns continuously (relays come and go
+/// hourly), so a process-global memoise-forever cache hands out stale
+/// verdicts — false negatives for relays added after the first fetch and
+/// false positives for ones decommissioned since. One hour balances
+/// staleness against re-fetch cost: a `serve` process refreshes at most
+/// once per hour per worker contention window, an individual `scan`
+/// invocation fetches at most once.
+const EXIT_SET_TTL: Duration = Duration::from_secs(60 * 60);
+
+/// TTL'd snapshot of the Tor exit-relay set.
+///
+/// `None` means "never successfully fetched" (or the previous attempt
+/// failed and we cleared nothing because there was nothing to clear).
+/// `Some((fetched_at, set))` is a snapshot stamped with the [`Instant`] it
+/// was fetched; it is served until `fetched_at.elapsed() >= EXIT_SET_TTL`,
+/// after which the next caller refetches. Stored as `Arc<HashSet<…>>` so
 /// readers get a cheap clone-of-pointer rather than the whole set.
-static EXIT_SET: OnceCell<Arc<HashSet<String>>> = OnceCell::const_new();
+///
+/// A transient fetch failure never overwrites a still-held snapshot, so a
+/// briefly-unreachable upstream degrades to "serve the last-known set"
+/// rather than "lose the cache". A failure with no prior snapshot leaves
+/// the cell `None`, so the next scan retries from scratch.
+type ExitSnapshot = (Instant, Arc<HashSet<String>>);
+static EXIT_SET: OnceLock<Mutex<Option<ExitSnapshot>>> = OnceLock::new();
+
+/// Lazy handle to the snapshot cell. The `Mutex` is allocated on first
+/// touch so a process that never resolves an IP target pays nothing.
+fn exit_cell() -> &'static Mutex<Option<ExitSnapshot>> {
+    EXIT_SET.get_or_init(|| Mutex::new(None))
+}
 
 /// Fetch + parse, with a single timeout covering BOTH the request and
 /// body download.
@@ -90,16 +120,50 @@ async fn fetch_exit_set(http: &reqwest::Client) -> Option<HashSet<String>> {
     if set.is_empty() { None } else { Some(set) }
 }
 
-/// Returns `Some` on cache hit or successful fresh fetch; `None` when
-/// the upstream is unreachable AND we have no cached copy.
+/// Returns `Some` on a fresh-cache hit or successful fetch; `None` when
+/// the upstream is unreachable AND we hold no snapshot at all.
+///
+/// Freshness is checked under the cell lock, which is released *before*
+/// the network fetch — the `std::sync::Mutex` is never held across an
+/// `.await`, so a slow upstream can't block other workers from reading a
+/// snapshot they already have. A stale-but-present snapshot is preferred
+/// over a failed refetch, so a flaky network degrades gracefully.
 async fn exit_set(http: &reqwest::Client) -> Option<Arc<HashSet<String>>> {
-    if let Some(s) = EXIT_SET.get() {
-        return Some(Arc::clone(s));
+    // Fast path: serve a still-fresh snapshot without touching the network.
+    // The previous snapshot (if any) is also captured so a failed refetch
+    // can fall back to it rather than losing the cache entirely.
+    let previous = {
+        // `lock()` only errors on poisoning (a panic while holding the
+        // guard). None of the code under this lock can panic, so recover
+        // the inner value instead of propagating: a poisoned cache should
+        // refetch, not wedge the module forever.
+        let guard = exit_cell()
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        match guard.as_ref() {
+            Some((fetched_at, set)) if fetched_at.elapsed() < EXIT_SET_TTL => {
+                return Some(Arc::clone(set));
+            }
+            Some((_, set)) => Some(Arc::clone(set)),
+            None => None,
+        }
+    };
+
+    // Slow path: snapshot missing or stale. Fetch with the lock released.
+    match fetch_exit_set(http).await {
+        Some(fetched) => {
+            let arc = Arc::new(fetched);
+            let mut guard = exit_cell()
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner);
+            *guard = Some((Instant::now(), Arc::clone(&arc)));
+            Some(arc)
+        }
+        // Refetch failed: serve the stale snapshot if we have one (better a
+        // ~1h-old verdict than none), else leave the cell untouched so the
+        // next scan retries from scratch.
+        None => previous,
     }
-    let fetched = fetch_exit_set(http).await?;
-    let arc = Arc::new(fetched);
-    let _ = EXIT_SET.set(Arc::clone(&arc));
-    Some(EXIT_SET.get().map_or(arc, Arc::clone))
 }
 
 // ── Module ─────────────────────────────────────────────────────────

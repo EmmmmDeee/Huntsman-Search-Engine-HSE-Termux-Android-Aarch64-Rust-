@@ -514,6 +514,99 @@ fn redact_over_masks_bare_key_param_after_boundary() {
     assert!(r.contains("page=2"), "got: {r}");
 }
 
+#[test]
+fn redact_strips_authorization_and_signature_param_echoes() {
+    // Several APIs reflect signed-request params (`sig`/`signature`/`sas_token`)
+    // and even an `Authorization` header value into their error bodies. Each must
+    // be masked while a trailing benign param survives so the message still reads.
+    for (param, value) in [
+        ("authorization", "BearerABC123XYZ"),
+        ("sig", "SIGVALUE0123456"),
+        ("signature", "SIGNATURE789ABC"),
+        ("sas_token", "SASTOKENVALUE00"),
+        ("sas", "SASVALUE1234567"),
+        ("password", "P4ssw0rdSecret0"),
+        ("pwd", "PwdSecretValue0"),
+    ] {
+        let s = format!("HTTP 403: rejected ?{param}={value}&page=2");
+        let r = redact_credentials(&s);
+        assert!(!r.contains(value), "{param} value leaked: {r}");
+        assert!(
+            r.contains(&format!("{param}=***")),
+            "{param} not masked: {r}"
+        );
+        assert!(
+            r.contains("page=2"),
+            "trailing param dropped for {param}: {r}"
+        );
+    }
+}
+
+#[test]
+fn redact_masks_url_userinfo_credentials() {
+    // A key riding as basic-auth userinfo (`scheme://KEY:x@host`) has no `name=`
+    // delimiter, so only the userinfo pass can catch it. Host and path must
+    // survive so the operator still sees which endpoint failed.
+    let r = redact_credentials(
+        "request failed for https://APIKEY987SECRET:x@host.example/v1/lookup?q=1",
+    );
+    assert!(
+        !r.contains("APIKEY987SECRET"),
+        "userinfo credential leaked: {r}"
+    );
+    assert!(
+        r.contains("://***@host.example"),
+        "userinfo not masked: {r}"
+    );
+    assert!(r.contains("/v1/lookup?q=1"), "host/path lost: {r}");
+}
+
+#[test]
+fn redact_does_not_over_mask_plain_at_addresses() {
+    // A `user@host` with no `scheme://` userinfo region (an email / mailto in a
+    // human-readable error) must NOT be touched by the userinfo pass.
+    let r = redact_credentials("Quota exceeded, contact admin@billing.example for an upgrade");
+    assert_eq!(
+        r,
+        "Quota exceeded, contact admin@billing.example for an upgrade"
+    );
+}
+
+#[test]
+fn redact_masks_bearer_header_and_bare_jwt() {
+    // keys.rs harvests JWTs up to 4096 chars; redact must keep a leaked JWT out of
+    // the persisted events table / SSE stream whether it arrives as an echoed
+    // `Authorization: Bearer <jwt>` header or a bare `eyJ…` token in a JSON body.
+    let jwt = "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.\
+               SflKxwRJSMeKKF2QT4fwpMeJf36POk6yJV_adQssw5c";
+
+    let header = redact_credentials(&format!("upstream said: Authorization: Bearer {jwt}"));
+    assert!(!header.contains(jwt), "bearer-header JWT leaked: {header}");
+    assert!(
+        header.contains("Bearer ***"),
+        "the `Bearer ` prefix must survive so the shape stays legible: {header}"
+    );
+
+    let body = redact_credentials(&format!("{{\"detail\":\"token {jwt} has expired\"}}"));
+    assert!(!body.contains(jwt), "bare-body JWT leaked: {body}");
+    assert!(
+        body.contains("***"),
+        "bare JWT must be replaced with the mask: {body}"
+    );
+}
+
+#[test]
+fn redact_does_not_mask_eyj_prefixed_identifier_without_dot() {
+    // A JWT always carries `.` segment separators; an `eyJ…`-prefixed identifier
+    // with no dot is not a token and must be left intact (no false-positive mask).
+    let r = redact_credentials("field=eyJustAnIdentifier next=ok");
+    assert!(
+        r.contains("eyJustAnIdentifier"),
+        "non-JWT identifier over-masked: {r}"
+    );
+    assert!(r.contains("next=ok"), "got: {r}");
+}
+
 #[tokio::test]
 async fn read_text_reads_body_with_module_tagged_errors() {
     // The text counterpart to json_decode: returns the body verbatim, and (unlike

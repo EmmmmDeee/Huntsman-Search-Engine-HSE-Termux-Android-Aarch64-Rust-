@@ -277,6 +277,22 @@ pub trait Module: Send + Sync {
         0
     }
 
+    /// Whether this module DISCOVERS API keys that later modules then consume
+    /// (e.g. `oathnet_pro`, whose key-harvest pass mints `ApiKey` entities and
+    /// pools the credentials from breach/stealer corpora).
+    ///
+    /// Default `false`. The concurrent dispatcher runs the small set of
+    /// key-discovering [`ModuleCost::Paid`] modules SYNCHRONOUSLY first, so their
+    /// freshly-harvested keys hot-inject into the shared context before the rest
+    /// of the modules are spawned and clone it — seeding the key cascade. A
+    /// non-discovering Paid module (one that only *spends* keys) leaves this
+    /// `false` so it runs concurrently in the second phase, recovering the
+    /// paid-API overlap a fully-sequential Phase 1 would forfeit. Only override to
+    /// `true` when the module genuinely makes new keys available mid-scan.
+    fn discovers_keys(&self) -> bool {
+        false
+    }
+
     /// The MITRE ATT&CK® Reconnaissance (TA0043) technique IDs this module's
     /// collection implements.
     ///

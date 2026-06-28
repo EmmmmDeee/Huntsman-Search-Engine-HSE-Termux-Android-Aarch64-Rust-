@@ -128,3 +128,43 @@ use super::*;
         );
         assert!(TrimmedMod.termux_timeout_ms() < DefaultMod.termux_timeout_ms());
     }
+
+    #[test]
+    fn soft_deadline_is_three_quarters_of_slowest_module() {
+        let opts = ScanOptions::default(); // no module_timeout_ms override
+        // The Termux per-module cap (45 s) ⇒ a ~33.75 s straggler bound, well
+        // under the full 45 s the JoinSet would otherwise block on for a single
+        // hung module after its productive peers have joined.
+        assert_eq!(target_soft_deadline_ms(&opts, 45_000), Some(33_750));
+        assert_eq!(target_soft_deadline_ms(&opts, 8_000), Some(6_000));
+        // Nothing spawned (or a degenerate zero budget) ⇒ no bound to apply.
+        assert_eq!(target_soft_deadline_ms(&opts, 0), None);
+    }
+
+    #[test]
+    fn soft_deadline_disabled_under_operator_pinned_timeout() {
+        // An operator who pinned --module-timeout asked for exactly that budget on
+        // every module; honour it verbatim (the same opt-out the per-module cap
+        // follows) — no straggler abort.
+        let opts = ScanOptions {
+            module_timeout_ms: Some(20_000),
+            ..ScanOptions::default()
+        };
+        assert_eq!(target_soft_deadline_ms(&opts, 45_000), None);
+    }
+
+    #[test]
+    fn majority_arms_the_deadline_only_past_two_thirds() {
+        // Empty set is never a majority — nothing to bound.
+        assert!(!soft_deadline_majority_reached(0, 0));
+        assert!(!soft_deadline_majority_reached(0, 3));
+        // 2/3 is the threshold: with 3 spawned it arms at 2, not at 1.
+        assert!(!soft_deadline_majority_reached(1, 3));
+        assert!(soft_deadline_majority_reached(2, 3));
+        assert!(soft_deadline_majority_reached(3, 3));
+        // With 8 spawned the productive majority is 6 (ceil of 16/3).
+        assert!(!soft_deadline_majority_reached(5, 8));
+        assert!(soft_deadline_majority_reached(6, 8));
+        // A single-module target arms as soon as it joins (1*3 >= 1*2).
+        assert!(soft_deadline_majority_reached(1, 1));
+    }

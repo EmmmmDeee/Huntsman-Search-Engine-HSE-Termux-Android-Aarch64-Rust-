@@ -96,6 +96,17 @@ impl Module for AuElectoral {
         let encoded = crate::util::http::urlencode(full_name);
         let mut all_entities: Vec<Entity> = Vec::new();
 
+        // Records a hard failure (transport error or non-success status — most
+        // importantly a 403/429 block or throttle) from the FIRST commission that
+        // hits one. Electoral-roll endpoints are government registers that
+        // frequently rate-limit; previously the body was read regardless of
+        // status, so a block page simply yielded no division and reported a clean
+        // empty result. If every commission is blocked and zero entities are
+        // produced, this is surfaced as a module error so the operator can tell
+        // "not enrolled / no match" from "the register blocked us". Best-effort
+        // fallthrough across the commissions is preserved.
+        let mut block_error: Option<crate::core::error::Error> = None;
+
         // ── AEC national lookup ──────────────────────────────────────────
         let (first, last) = split_name(full_name);
         if !last.is_empty() {
@@ -104,89 +115,148 @@ impl Module for AuElectoral {
                 crate::util::http::urlencode(last),
                 crate::util::http::urlencode(first),
             );
-            if let Ok(resp) = ctx
+            match ctx
                 .http
                 .get(&aec_url)
                 .header("Accept", "text/html,application/xhtml+xml")
                 .header("User-Agent", crate::util::http::UA_BROWSER)
                 .send_tagged(SRC)
                 .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
             {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
+                Ok(resp) if resp.status().is_success() => {
+                    if let Some(body) = read_body_capped(resp, 1_000_000).await
+                        && let Some((div, suburb)) = extract_division(&body)
+                    {
+                        all_entities.extend(build_electoral_entities(
+                            &div,
+                            suburb.as_deref(),
+                            full_name,
+                            &ctx.scan_id,
+                        ));
+                    }
+                }
+                Ok(resp) => {
+                    block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+                }
+                Err(e) => block_error = Some(e),
             }
         }
 
         // ── NSW Electoral Commission ─────────────────────────────────────
         if all_entities.is_empty() {
             let nsw_url = format!("https://check.elections.nsw.gov.au/search?name={encoded}");
-            if let Ok(resp) = ctx
+            match ctx
                 .http
                 .get(&nsw_url)
                 .header("Accept", "text/html,application/xhtml+xml")
                 .header("User-Agent", crate::util::http::UA_BROWSER)
                 .send_tagged(SRC)
                 .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
             {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
+                Ok(resp) if resp.status().is_success() => {
+                    if let Some(body) = read_body_capped(resp, 1_000_000).await
+                        && let Some((div, suburb)) = extract_division(&body)
+                    {
+                        all_entities.extend(build_electoral_entities(
+                            &div,
+                            suburb.as_deref(),
+                            full_name,
+                            &ctx.scan_id,
+                        ));
+                    }
+                }
+                Ok(resp) => {
+                    if block_error.is_none() {
+                        block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+                    }
+                }
+                Err(e) => {
+                    if block_error.is_none() {
+                        block_error = Some(e);
+                    }
+                }
             }
         }
 
         // ── Victorian Electoral Commission ────────────────────────────────
         if all_entities.is_empty() {
             let vec_url = format!("https://check.vec.vic.gov.au/search?name={encoded}");
-            if let Ok(resp) = ctx
+            match ctx
                 .http
                 .get(&vec_url)
                 .header("Accept", "text/html,application/xhtml+xml")
                 .header("User-Agent", crate::util::http::UA_BROWSER)
                 .send_tagged(SRC)
                 .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
             {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
+                Ok(resp) if resp.status().is_success() => {
+                    if let Some(body) = read_body_capped(resp, 1_000_000).await
+                        && let Some((div, suburb)) = extract_division(&body)
+                    {
+                        all_entities.extend(build_electoral_entities(
+                            &div,
+                            suburb.as_deref(),
+                            full_name,
+                            &ctx.scan_id,
+                        ));
+                    }
+                }
+                Ok(resp) => {
+                    if block_error.is_none() {
+                        block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+                    }
+                }
+                Err(e) => {
+                    if block_error.is_none() {
+                        block_error = Some(e);
+                    }
+                }
             }
         }
 
         // ── ECQ Queensland ───────────────────────────────────────────────
         if all_entities.is_empty() {
             let ecq_url = format!("https://enrol.ecq.qld.gov.au/check?name={encoded}");
-            if let Ok(resp) = ctx
+            match ctx
                 .http
                 .get(&ecq_url)
                 .header("Accept", "text/html,application/xhtml+xml")
                 .header("User-Agent", crate::util::http::UA_BROWSER)
                 .send_tagged(SRC)
                 .await
-                && let Some(body) = read_body_capped(resp, 1_000_000).await
-                && let Some((div, suburb)) = extract_division(&body)
             {
-                all_entities.extend(build_electoral_entities(
-                    &div,
-                    suburb.as_deref(),
-                    full_name,
-                    &ctx.scan_id,
-                ));
+                Ok(resp) if resp.status().is_success() => {
+                    if let Some(body) = read_body_capped(resp, 1_000_000).await
+                        && let Some((div, suburb)) = extract_division(&body)
+                    {
+                        all_entities.extend(build_electoral_entities(
+                            &div,
+                            suburb.as_deref(),
+                            full_name,
+                            &ctx.scan_id,
+                        ));
+                    }
+                }
+                Ok(resp) => {
+                    if block_error.is_none() {
+                        block_error = Some(crate::util::http::http_status_error(SRC, resp).await);
+                    }
+                }
+                Err(e) => {
+                    if block_error.is_none() {
+                        block_error = Some(e);
+                    }
+                }
             }
+        }
+
+        // Every commission was blocked or errored and nothing was extracted —
+        // report a module error rather than a clean empty result so the engine
+        // logs a distinguishable failure.
+        if all_entities.is_empty()
+            && let Some(err) = block_error
+        {
+            return Err(err);
         }
 
         let mut result = ModuleResult::new();

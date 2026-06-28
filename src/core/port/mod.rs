@@ -70,6 +70,27 @@ pub trait StoragePort: Send + Sync {
 
     // ── Events ─────────────────────────────────────────────────────────────
     fn insert_event(&self, event: &Event) -> Result<()>;
+
+    /// Persist a batch of events under a single transaction.
+    ///
+    /// The async DB-writer actor (`core::engine::writer`) drains a burst of
+    /// `EntityFound`/`EvidenceFound` events into one slice and hands it here so
+    /// the whole batch collapses to a single WAL commit (one fsync at
+    /// `synchronous=NORMAL`) instead of one per event — a material win on
+    /// low-power aarch64 during breach-heavy scans that emit thousands of
+    /// events in a burst.
+    ///
+    /// The default implementation loops over [`StoragePort::insert_event`] so
+    /// test doubles and alternative backends remain correct without the
+    /// transaction optimisation; the SQLite `Store` overrides it to wrap the
+    /// inserts in one `unchecked_transaction`.
+    fn insert_events_batch(&self, events: &[Event]) -> Result<()> {
+        for event in events {
+            self.insert_event(event)?;
+        }
+        Ok(())
+    }
+
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 
     // ── Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN) ────────────────

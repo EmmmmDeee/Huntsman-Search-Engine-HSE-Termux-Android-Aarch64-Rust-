@@ -142,6 +142,11 @@ pub(super) struct DispatchOutcome {
     /// `Module` object is gone by join time. `finalise_module_result` stamps
     /// each admitted entity with an `attack:<ID>` tag per technique.
     pub(super) attack_techniques: &'static [&'static str],
+    /// True when the task served this result from the inter-scan entity cache
+    /// (it probed the cache OFF the reactor and skipped `process()`). The join
+    /// loop counts it under `stats.cached` and skips the re-archive — the row it
+    /// just read is already fresh, so re-writing it would be pure waste.
+    pub(super) cache_hit: bool,
 }
 
 /// Stable archive key for the inter-scan entity cache: `module:kind:value`
@@ -152,6 +157,26 @@ fn archive_key(name: &str, target: &Target) -> String {
     let entity_kind = target.kind.to_entity_kind();
     let normalised = normalise(&entity_kind, &target.value);
     format!("{}:{}:{}", name, target.kind.canonical_str(), normalised)
+}
+
+/// True when `module` is a key-DISCOVERING [`ModuleCost::Paid`] module — the only
+/// kind that must run synchronously, *before* the concurrent phase, so the keys it
+/// harvests hot-inject into the shared context the spawned modules clone.
+///
+/// `oathnet_pro` is the canonical case: its `key_harvest` pass mints `ApiKey`
+/// entities (and pools the credentials) from breach/stealer corpora, feeding the
+/// cascade that lets web_crawler / search_engines / the keyed providers light up
+/// mid-scan. It declares itself via [`Module::discovers_keys`] — a type-owned flag
+/// rather than a hardcoded name list here, so the decision follows module renames
+/// and new discoverers (and test doubles) opt in without touching the engine.
+///
+/// Every OTHER Paid module (dehashed, intelx, see_know, proxycurl) only *spends*
+/// keys — none discovers another's — so it leaves the flag `false` and folds into
+/// the concurrent Phase 2 set, recovering the paid-API overlap a fully-sequential
+/// Phase 1 would forfeit, while the discoverers still go first.
+#[inline]
+fn is_phase1_paid(module: &dyn Module) -> bool {
+    matches!(module.cost(), ModuleCost::Paid) && module.discovers_keys()
 }
 
 /// Distinct *corroborating* evidence-source count for the entity a `target`
@@ -354,15 +379,25 @@ pub(super) struct DispatchCx<'a> {
 }
 
 /// Mutable per-scan dispatch accumulators threaded through every module run: the
-/// working entity set (merged by uid), the run/skip/error/dedup tallies, and the
-/// paid-dedup ledger (each `module × normalised-target` fired at most once). One
-/// `&mut` borrow replaces three always-together out-parameters; the fields are
-/// borrowed separately at their use sites so the entity merge, the stat bump,
-/// and the ledger insert never contend.
+/// working entity set (merged by uid), the run/skip/error/dedup tallies, the
+/// paid-dedup ledger (each `module × normalised-target` fired at most once), and
+/// the lineage sink (the uids this dispatch newly INSERTED). One `&mut` borrow
+/// replaces four always-together out-parameters; the fields are borrowed
+/// separately at their use sites so the entity merge, the stat bump, the ledger
+/// insert, and the lineage push never contend.
 pub(super) struct DispatchState<'a> {
     pub(super) entity_map: &'a mut HashMap<String, Entity>,
     pub(super) stats: &'a mut ModuleStats,
     pub(super) dispatched: &'a mut DispatchLog,
+    /// Append-only sink for the uids `finalise_module_result` *inserts* (never
+    /// the ones it merges into an existing entity). The caller clears it before a
+    /// candidate's `dispatch_target` and reads it after to attribute lineage —
+    /// recording a `DerivedFrom` edge for each newly-surfaced child — instead of
+    /// snapshotting the whole `entity_map` key set before every dispatch and
+    /// rescanning the whole map after. That snapshot+rescan was O(entities) per
+    /// candidate (quadratic across a round on a `max_entities`-filled graph); this
+    /// is O(new entities) and reuses one buffer the caller owns.
+    pub(super) new_uids: &'a mut Vec<String>,
 }
 
 impl super::ScanEngine {
@@ -448,7 +483,16 @@ impl super::ScanEngine {
             Ok(Ok(mut mr)) => {
                 // A completed dispatch (even an empty one) proves the provider is
                 // reachable — clear any failure streak so a recovered source is
-                // trusted again immediately.
+                // trusted again immediately. This is intentional even when
+                // `mr.entities` is empty: the module contract is that a degraded
+                // provider (rate limit, quota, soft 429) returns `Err` (which DOES
+                // feed the breaker via the arms above), so a clean empty `Ok`
+                // genuinely means "reachable, nothing to report" and must not be
+                // counted as a failure. A provider that wraps a rate limit in an
+                // HTTP 200 + empty body is a module-contract bug to fix at the
+                // module (it should surface that as `Err`), not something the
+                // engine guesses at here — guessing would penalise the many
+                // legitimately-empty queries.
                 super::circuit::record_success(name);
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
@@ -456,10 +500,22 @@ impl super::ScanEngine {
                         && entity.confidence < min
                     {
                         // Visible like every other admission drop ("never a
-                        // black box") — this was the one silent rejection.
+                        // black box") — this was the one silent rejection. Stays
+                        // UNCONDITIONAL (per-emission): a low-confidence re-emission
+                        // of an already-admitted value is dropped on its own merits.
                         self.emit_excluded(cx.scan_id, &entity, "below_min_confidence");
                         continue;
                     }
+                    // Admission memoization: a value whose UID is already in the
+                    // working set passed the full value-PURE gauntlet on its first
+                    // admission. The homoglyph + gibberish scans below are functions
+                    // of the value alone (kind-gated), so their verdict cannot change
+                    // for the same UID within one scan — skip them on a re-emission
+                    // (a second module, or a cache replay, surfacing the same value)
+                    // and merge straight through. UID = SHA-256 over the normalised
+                    // (kind, value), so an equal UID is an exact value match. The
+                    // per-EMISSION `min_confidence` check above already ran.
+                    let already_admitted = state.entity_map.contains_key(&entity.uid);
                     // Drop guaranteed-bogus IPs (documentation / reserved /
                     // benchmark ranges, e.g. 192.0.2.1 scraped off a tutorial
                     // page) at admission so they never enter the graph, fire
@@ -525,19 +581,25 @@ impl super::ScanEngine {
                     // Drop a cross-script homograph for any human-text kind, and a
                     // gibberish random string for Person, at admission — neither is
                     // ever the subject. Both gates are conservative (a real
-                    // accented name never trips them — see the validators).
-                    if matches!(
-                        entity.kind,
-                        crate::core::entity::EntityKind::Person
-                            | crate::core::entity::EntityKind::Address
-                            | crate::core::entity::EntityKind::Username
-                            | crate::core::entity::EntityKind::Organisation
-                    ) && crate::core::validation::is_confusable_mixed_script(&entity.value)
+                    // accented name never trips them — see the validators). These
+                    // two are the costliest passes (full Unicode-script + entropy
+                    // scans), so `already_admitted` elides them on a repeat of a
+                    // value that already cleared them once this scan.
+                    if !already_admitted
+                        && matches!(
+                            entity.kind,
+                            crate::core::entity::EntityKind::Person
+                                | crate::core::entity::EntityKind::Address
+                                | crate::core::entity::EntityKind::Username
+                                | crate::core::entity::EntityKind::Organisation
+                        )
+                        && crate::core::validation::is_confusable_mixed_script(&entity.value)
                     {
                         self.emit_excluded(cx.scan_id, &entity, "confusable_homoglyph");
                         continue;
                     }
-                    if entity.kind == crate::core::entity::EntityKind::Person
+                    if !already_admitted
+                        && entity.kind == crate::core::entity::EntityKind::Person
                         && crate::core::validation::looks_like_gibberish_name(&entity.value)
                     {
                         self.emit_excluded(cx.scan_id, &entity, "gibberish_value");
@@ -573,6 +635,15 @@ impl super::ScanEngine {
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
+                        // A genuinely NEW uid: record it in the lineage sink so the
+                        // caller can attribute a `DerivedFrom` edge to exactly this
+                        // child without snapshotting the whole entity_map key set
+                        // before the dispatch and rescanning it after. A merge into
+                        // an existing entity is deliberately NOT recorded — it is
+                        // not a freshly-surfaced node, so emitting an edge for it
+                        // would be cross-round spam (the old "not in `before`"
+                        // filter excluded a merged uid for the same reason).
+                        state.new_uids.push(entity.uid.clone());
                         state.entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;
@@ -589,18 +660,75 @@ impl super::ScanEngine {
         }
     }
 
+    /// Probe the inter-scan entity cache for `key` OFF the reactor.
+    ///
+    /// `Store::lookup_module_result_fresh` is a synchronous rusqlite call
+    /// (`conn.lock()` + a prepared `SELECT`); invoking it directly from the async
+    /// dispatch loop stalls a tokio worker on the SQLite lock — exactly the
+    /// reactor-blocking the rest of the engine avoids via `spawn_blocking`
+    /// (`finalise_scan`). On a 4–8-thread aarch64 pool that stall serialises the
+    /// whole dispatch pipeline behind the DB. Routing the probe through
+    /// `spawn_blocking` (the store is an `Arc<dyn StoragePort>`, so cloning the
+    /// handle is a cheap refcount bump and gives the closure a `'static` owner)
+    /// keeps the worker free while the lock is held. A miss / error returns
+    /// `None` so the caller falls through to the live provider, identical to the
+    /// inline form's `Ok(Some(..))` match.
+    async fn cache_lookup(&self, key: String) -> Option<Vec<Entity>> {
+        let store = Arc::clone(&self.store);
+        match tokio::task::spawn_blocking(move || store.lookup_module_result_fresh(&key)).await {
+            Ok(Ok(hit)) => hit,
+            // A failed lookup (DB error) or a JoinError is treated as a cache
+            // miss: best-effort, never fatal to the scan.
+            Ok(Err(_)) | Err(_) => None,
+        }
+    }
+
+    /// Archive a module's entities under `key` OFF the reactor, best-effort but
+    /// OBSERVABLE.
+    ///
+    /// Mirrors [`Self::cache_lookup`]: `Store::archive_module_result` is a
+    /// synchronous `conn.lock()` + `INSERT OR REPLACE`, so it runs in
+    /// `spawn_blocking` to keep the reactor unblocked. Unlike the previous
+    /// `let _ = …`, a persistent write failure (disk full, WAL lock) is now
+    /// logged at `debug` — the cache silently never warming would degrade every
+    /// repeat scan with no diagnostic, violating the "no silent failures"
+    /// invariant. It stays non-fatal (the live result is already finalised), only
+    /// no longer silent.
+    async fn cache_archive(&self, key: String, ttl_secs: u64, entities: Vec<Entity>, name: &str) {
+        let store = Arc::clone(&self.store);
+        match tokio::task::spawn_blocking(move || {
+            store.archive_module_result(&key, ttl_secs, &entities)
+        })
+        .await
+        {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => debug!(module = name, error = %e, "cache archive failed"),
+            Err(e) => debug!(module = name, error = %e, "cache archive task failed"),
+        }
+    }
+
     /// Dispatch every accepting module against `cx.target`. Picks the
     /// sequential or concurrent codepath based on `cx.opts.max_concurrent`.
+    ///
+    /// `inject_gen` is the caller's scan-wide memo of the key-pool generation at
+    /// the last [`super::hot_inject_keys`] sweep; it is threaded through so the
+    /// per-module hot-inject can short-circuit when no new key has appeared since.
+    /// Persisting it across targets within a round (rather than resetting per
+    /// target) means a no-new-key round costs one atomic load per module instead
+    /// of a full `service_defs()` scan + per-service pool lock.
     pub(super) async fn dispatch_target(
         &self,
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        inject_gen: &mut u64,
     ) -> Result<()> {
         if cx.opts.max_concurrent == 0 {
-            self.dispatch_target_sequential(cx, ctx, state).await
+            self.dispatch_target_sequential(cx, ctx, state, inject_gen)
+                .await
         } else {
-            self.dispatch_target_concurrent(cx, ctx, state).await
+            self.dispatch_target_concurrent(cx, ctx, state, inject_gen)
+                .await
         }
     }
 
@@ -638,6 +766,7 @@ impl super::ScanEngine {
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        inject_gen: &mut u64,
     ) -> Result<()> {
         // O(1) dispatch-index lookup replaces the O(M) accepts() scan.
         // Modules are already priority-sorted within each bucket so we
@@ -682,11 +811,13 @@ impl super::ScanEngine {
                 continue;
             }
 
-            // Inter-scan entity cache (C9): check before dispatching.
+            // Inter-scan entity cache (C9): check before dispatching. The probe
+            // runs OFF the reactor (`cache_lookup` → `spawn_blocking`) so a held
+            // SQLite lock never stalls a tokio worker on this hot per-module path.
             let ttl = module.cache_ttl_secs();
             let cache_key = (ttl > 0).then(|| archive_key(name, cx.target));
             if let Some(ref key) = cache_key
-                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
+                && let Some(cached) = self.cache_lookup(key.clone()).await
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
@@ -698,7 +829,7 @@ impl super::ScanEngine {
                     state,
                     module.attack_techniques(),
                 );
-                super::hot_inject_keys(&mut ctx.keys);
+                super::hot_inject_keys(&mut ctx.keys, inject_gen);
                 if ctx.cancel.is_cancelled() {
                     return Ok(());
                 }
@@ -734,17 +865,22 @@ impl super::ScanEngine {
             ))
             .await;
 
-            // Inter-scan entity cache (C9): archive a successful result.
+            // Inter-scan entity cache (C9): archive a successful result OFF the
+            // reactor, with the write failure now logged (no longer `let _ =`)
+            // so a cache that silently never warms is observable. The entities
+            // are cloned because `finalise_module_result` below still consumes
+            // `result`; the clone is bounded by one module's emission.
             if let Some(ref key) = cache_key
                 && let Ok(Ok(ref mr)) = result
                 && !mr.entities.is_empty()
             {
-                let _ = self.store.archive_module_result(key, ttl, &mr.entities);
+                self.cache_archive(key.clone(), ttl, mr.entities.clone(), name)
+                    .await;
             }
 
             self.finalise_module_result(cx, name, result, state, module.attack_techniques());
 
-            super::hot_inject_keys(&mut ctx.keys);
+            super::hot_inject_keys(&mut ctx.keys, inject_gen);
 
             // Re-check the cancel flag before the throttle sleep so an
             // operator cancel between modules doesn't pay the full
@@ -765,33 +901,39 @@ impl super::ScanEngine {
     /// Concurrent dispatcher (max_concurrent > 0). Launches up to `opts.max_concurrent`
     /// modules at a time via a Semaphore; collects results as tasks complete.
     ///
-    /// Paid modules run synchronously first (key-discovery-first pattern):
-    /// oathnet_pro, dehashed, intelx discover API keys that hot-inject into
-    /// ctx before the remaining modules are spawned concurrently. Without this,
-    /// all modules launch with a cloned ctx that lacks discovered keys.
+    /// Only the key-DISCOVERING Paid modules (those [`is_phase1_paid`] accepts —
+    /// e.g. `oathnet_pro`, via [`Module::discovers_keys`]) run synchronously first
+    /// (key-discovery-first pattern): they harvest API keys that hot-inject into
+    /// `ctx` before the remaining modules are spawned concurrently, so the cascade
+    /// is seeded. Every OTHER Paid module only spends keys (none discovers
+    /// another's), so it folds into the concurrent Phase 2 set — recovering
+    /// paid-API overlap that the old "all Paid run sequentially" model needlessly
+    /// serialised.
     async fn dispatch_target_concurrent(
         &self,
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
+        inject_gen: &mut u64,
     ) -> Result<()> {
         use tokio::sync::Semaphore;
         use tokio::task::JoinSet;
 
         // O(1) dispatch-index lookup — only modules accepting `target.kind`
-        // are even considered. Phase 1 then filters to Paid. We iterate
-        // indices directly rather than allocating a `Vec<Arc<dyn Module>>`
-        // and Arc-cloning per target; on the hot path this saves a heap
-        // allocation + N atomic increments per dispatch.
+        // are even considered. Phase 1 then filters to the key-DISCOVERING
+        // Paid modules. We iterate indices directly rather than allocating a
+        // `Vec<Arc<dyn Module>>` and Arc-cloning per target; on the hot path
+        // this saves a heap allocation + N atomic increments per dispatch.
 
-        // Phase 1: Run Paid modules synchronously so discovered keys are
-        // available via hot-inject before the concurrent phase begins.
+        // Phase 1: Run the key-DISCOVERING Paid modules synchronously so the keys
+        // they harvest are available via hot-inject before the concurrent phase
+        // begins. Non-discovering Paid modules are left for Phase 2.
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         for &idx in self.graph.modules_for(cx.target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
-            if !matches!(module.cost(), ModuleCost::Paid) {
+            if !is_phase1_paid(&**module) {
                 continue;
             }
             if ctx.cancel.is_cancelled() {
@@ -819,11 +961,13 @@ impl super::ScanEngine {
                 self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
                 continue;
             }
-            // Inter-scan entity cache (C9): check before dispatching.
+            // Inter-scan entity cache (C9): check before dispatching, OFF the
+            // reactor (`cache_lookup` → `spawn_blocking`) so the SQLite lock can't
+            // stall a tokio worker.
             let ttl = module.cache_ttl_secs();
             let cache_key = (ttl > 0).then(|| archive_key(name, cx.target));
             if let Some(ref key) = cache_key
-                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
+                && let Some(cached) = self.cache_lookup(key.clone()).await
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
@@ -835,7 +979,7 @@ impl super::ScanEngine {
                     state,
                     module.attack_techniques(),
                 );
-                super::hot_inject_keys(&mut ctx.keys);
+                super::hot_inject_keys(&mut ctx.keys, inject_gen);
                 continue;
             }
 
@@ -858,19 +1002,21 @@ impl super::ScanEngine {
                 target = %cx.target.value
             ))
             .await;
-            // Inter-scan entity cache (C9): archive a successful result.
+            // Inter-scan entity cache (C9): archive a successful result OFF the
+            // reactor, with the write failure logged (no longer `let _ =`).
             if let Some(ref key) = cache_key
                 && let Ok(Ok(ref mr)) = result
                 && !mr.entities.is_empty()
             {
-                let _ = self.store.archive_module_result(key, ttl, &mr.entities);
+                self.cache_archive(key.clone(), ttl, mr.entities.clone(), name)
+                    .await;
             }
             self.finalise_module_result(cx, name, result, state, module.attack_techniques());
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
             // discover MORE keys.
-            super::hot_inject_keys(&mut ctx.keys);
+            super::hot_inject_keys(&mut ctx.keys, inject_gen);
         }
 
         // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
@@ -880,6 +1026,13 @@ impl super::ScanEngine {
         // candidate during candidate-list construction.
         let sem = Arc::new(Semaphore::new(cx.opts.max_concurrent));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
+        // Per-target straggler bound (see `timeout::target_soft_deadline_ms`):
+        // count the tasks actually spawned and track the slowest module's
+        // resolved timeout, so the drain can arm a soft deadline once the
+        // productive majority has joined and abort the tail instead of blocking
+        // on a single hung module for its full cap.
+        let mut spawned: usize = 0;
+        let mut max_module_timeout_ms: u64 = 0;
         let scan_id_arc: Arc<str> = cx.scan_id.into();
         // Share one context across all spawned modules in this round instead of
         // deep-cloning the keys map + scan_id per dispatch. Modules take
@@ -888,12 +1041,24 @@ impl super::ScanEngine {
         // low-RAM phone with ~80 modules/round.
         let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
 
+        // Cloning `store` once here (an `Arc<dyn StoragePort>` refcount bump) lets
+        // each spawned task run its OWN cache probe via `spawn_blocking`, instead
+        // of the dispatcher serially probing the DB before every permit acquire —
+        // which (per the perf finding) prevented Phase 2 from achieving real
+        // concurrency at all (module N+1 couldn't launch while N's probe was in
+        // flight). The probe now overlaps the rest of the pipeline.
+        let store = Arc::clone(&self.store);
+
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         for &idx in self.graph.modules_for(cx.target.kind) {
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
-            if matches!(module.cost(), ModuleCost::Paid) {
+            // Skip ONLY the key-discovering Paid modules — they already ran in
+            // Phase 1. Non-discovering Paid modules (dehashed, intelx, see_know,
+            // proxycurl) fall through and run concurrently here, recovering the
+            // paid-API overlap the old "all Paid sequential" model gave up.
+            if is_phase1_paid(&**module) {
                 continue;
             }
             if ctx.cancel.is_cancelled() {
@@ -924,29 +1089,14 @@ impl super::ScanEngine {
 
             // Inter-scan entity cache (C9): capture TTL + key before spawning
             // (module and target are moved into the task and unavailable at join).
+            // The cache PROBE itself is deferred INTO the task (after the permit)
+            // so a miss no longer blocks the spawn pipeline on a serial DB read.
             let ttl_secs = module.cache_ttl_secs();
             let cache_key = if ttl_secs > 0 {
                 archive_key(name, cx.target)
             } else {
                 String::new()
             };
-
-            // Cache hit: feed result directly without spawning a task.
-            if ttl_secs > 0
-                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(&cache_key)
-            {
-                state.stats.cached += 1;
-                debug!(module = name, "cache hit — replaying archived entities");
-                let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(
-                    cx,
-                    name,
-                    Ok(Ok(mr)),
-                    state,
-                    module.attack_techniques(),
-                );
-                continue;
-            }
 
             let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
                 break;
@@ -957,8 +1107,16 @@ impl super::ScanEngine {
             let ctx = Arc::clone(&ctx_shared);
             let emitter = self.emitter.clone();
             let sid = Arc::clone(&scan_id_arc);
+            let task_store = Arc::clone(&store);
             let throttle_ms = cx.opts.throttle_ms;
             let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
+            // Track the per-target straggler bound inputs: one more task is being
+            // spawned, and the slowest module's timeout governs the soft deadline
+            // (`timeout::target_soft_deadline_ms`). Counted at the spawn — not at
+            // the candidate scan — so cache hits and gated/deduped modules that
+            // never spawn don't inflate the majority denominator.
+            spawned += 1;
+            max_module_timeout_ms = max_module_timeout_ms.max(module_timeout_ms);
             // Capture the producing module's ATT&CK Reconnaissance techniques
             // before the spawn: `module` is unavailable at the join site (only a
             // `DispatchOutcome` is). `&'static [&'static str]` is Copy, so it
@@ -970,49 +1128,146 @@ impl super::ScanEngine {
             // tokio task-locals do NOT propagate across `spawn`, so without this the
             // concurrent path's `scan_body` calls would land in the unscoped bucket
             // and be lost at drain (PROBLEM_TREE T2.11). `with_scan` is the
-            // allow-listed pure `core → util::found_keys` leaf.
-            let scope_sid = sid.to_string();
-            set.spawn(crate::util::found_keys::with_scan(scope_sid, async move {
-                let _permit = permit;
+            // allow-listed pure `core → util::found_keys` leaf. Pass an `Arc<str>`
+            // clone (refcount bump) — `with_scan` takes `impl Into<Arc<str>>`, so
+            // this avoids the per-task `String` re-allocation the old `to_string()`
+            // paid on top of the already-shared `sid`.
+            set.spawn(crate::util::found_keys::with_scan(
+                Arc::clone(&sid),
+                async move {
+                    let _permit = permit;
 
-                log_module_dispatch(name, &target);
-                emitter.emit(
-                    &sid,
-                    EventKind::ModuleStart {
-                        module: name.into(),
-                    },
-                );
+                    log_module_dispatch(name, &target);
+                    emitter.emit(
+                        &sid,
+                        EventKind::ModuleStart {
+                            module: name.into(),
+                        },
+                    );
 
-                // `.instrument()` (not an ambient span) because a spawned task
-                // does NOT inherit the dispatcher's current span — without it the
-                // external HTTP logs from this concurrently-running module would
-                // be context-less. Carries {scan_id, module, target} for the same
-                // end-to-end trace the sequential path gets.
-                let result =
-                    run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
-                        .instrument(tracing::info_span!(
-                            "module",
-                            module = name,
-                            scan_id = %sid,
-                            target = %target.value
-                        ))
-                        .await;
+                    // Cache PROBE inside the task, OFF the reactor via
+                    // `spawn_blocking`: on a hit we skip `process()` entirely and
+                    // hand the archived entities straight back as the result
+                    // (flagged `cache_hit` so the join loop counts it and skips a
+                    // re-archive); on a miss we run the module. Doing this here —
+                    // not before the permit — means module N+1 launches while N's
+                    // DB read is still in flight.
+                    let cached = if ttl_secs > 0 {
+                        let probe_key = cache_key.clone();
+                        let probe_store = Arc::clone(&task_store);
+                        match tokio::task::spawn_blocking(move || {
+                            probe_store.lookup_module_result_fresh(&probe_key)
+                        })
+                        .await
+                        {
+                            Ok(Ok(hit)) => hit,
+                            // DB error / JoinError ⇒ treat as a miss (best-effort).
+                            Ok(Err(_)) | Err(_) => None,
+                        }
+                    } else {
+                        None
+                    };
+                    if let Some(entities) = cached {
+                        debug!(module = name, "cache hit — replaying archived entities");
+                        return DispatchOutcome {
+                            name,
+                            result: Ok(Ok(ModuleResult { entities })),
+                            ttl_secs,
+                            cache_key,
+                            attack_techniques,
+                            cache_hit: true,
+                        };
+                    }
 
-                if throttle_ms > 0 {
-                    sleep(Duration::from_millis(throttle_ms)).await;
-                }
+                    // `.instrument()` (not an ambient span) because a spawned task
+                    // does NOT inherit the dispatcher's current span — without it the
+                    // external HTTP logs from this concurrently-running module would
+                    // be context-less. Carries {scan_id, module, target} for the same
+                    // end-to-end trace the sequential path gets.
+                    let result = run_module_guarded(
+                        module_timeout_ms,
+                        name,
+                        module_arc.process(&target, &ctx),
+                    )
+                    .instrument(tracing::info_span!(
+                        "module",
+                        module = name,
+                        scan_id = %sid,
+                        target = %target.value
+                    ))
+                    .await;
 
-                DispatchOutcome {
-                    name,
-                    result,
-                    ttl_secs,
-                    cache_key,
-                    attack_techniques,
-                }
-            }));
+                    if throttle_ms > 0 {
+                        sleep(Duration::from_millis(throttle_ms)).await;
+                    }
+
+                    DispatchOutcome {
+                        name,
+                        result,
+                        ttl_secs,
+                        cache_key,
+                        attack_techniques,
+                        cache_hit: false,
+                    }
+                },
+            ));
         }
 
-        while let Some(joined) = set.join_next().await {
+        // Per-target straggler soft deadline (see `timeout::target_soft_deadline_ms`
+        // and the module docs): a fraction of the slowest spawned module's
+        // timeout, applied only AFTER a productive majority has joined. `None`
+        // (operator pinned `module_timeout_ms`, or nothing spawned) preserves the
+        // exact legacy drain — a plain `join_next()` with no extra timer. The
+        // deadline `Instant` is computed lazily the moment the majority is first
+        // reached, so it measures the tail FROM that point, not from spawn.
+        let soft_deadline_ms = super::target_soft_deadline_ms(cx.opts, max_module_timeout_ms);
+        let mut joined_count: usize = 0;
+        let mut straggler_deadline: Option<tokio::time::Instant> = None;
+        let mut aborted_stragglers = false;
+        loop {
+            // Arm the deadline once the productive majority has joined (and a bound
+            // exists, and we haven't already cut the tail). Computed here — not at
+            // spawn — so the straggler budget is measured from when the bulk of the
+            // yield landed, which is exactly the tail we want to bound.
+            if straggler_deadline.is_none()
+                && !aborted_stragglers
+                && let Some(ms) = soft_deadline_ms
+                && super::soft_deadline_majority_reached(joined_count, spawned)
+            {
+                straggler_deadline = Some(tokio::time::Instant::now() + Duration::from_millis(ms));
+            }
+
+            let joined = match straggler_deadline {
+                // Deadline armed: race the next join against it. On elapse, abort
+                // the in-flight stragglers ONCE and fall back to draining their
+                // (now-cancelled) joins so accounting stays exact — every spawned
+                // task is still joined, just as a cancelled outcome.
+                Some(deadline) => {
+                    tokio::select! {
+                        biased;
+                        next = set.join_next() => match next {
+                            Some(j) => j,
+                            None => break,
+                        },
+                        _ = tokio::time::sleep_until(deadline), if !aborted_stragglers => {
+                            warn!(
+                                joined = joined_count,
+                                spawned,
+                                "per-target soft deadline reached — aborting straggler modules"
+                            );
+                            set.abort_all();
+                            aborted_stragglers = true;
+                            continue;
+                        }
+                    }
+                }
+                // No bound (or majority not yet reached): plain drain.
+                None => match set.join_next().await {
+                    Some(j) => j,
+                    None => break,
+                },
+            };
+            joined_count += 1;
             // Operator/wall-time cancel during the drain: abort the remaining
             // in-flight modules so a single dispatch's post-cancel tail is
             // bounded to near-zero instead of up to one module-timeout (8
@@ -1043,16 +1298,23 @@ impl super::ScanEngine {
                     continue;
                 }
             };
-            // Inter-scan entity cache (C9): archive before finalise consumes the result.
-            if outcome.ttl_secs > 0
+            if outcome.cache_hit {
+                // The task served this from the inter-scan cache: count it and do
+                // NOT re-archive (the row it just read is already fresh).
+                state.stats.cached += 1;
+            } else if outcome.ttl_secs > 0
                 && let Ok(Ok(ref mr)) = outcome.result
                 && !mr.entities.is_empty()
             {
-                let _ = self.store.archive_module_result(
-                    &outcome.cache_key,
+                // Inter-scan entity cache (C9): archive a fresh LIVE result OFF the
+                // reactor, with the write failure logged (no longer `let _ =`).
+                self.cache_archive(
+                    outcome.cache_key.clone(),
                     outcome.ttl_secs,
-                    &mr.entities,
-                );
+                    mr.entities.clone(),
+                    outcome.name,
+                )
+                .await;
             }
             self.finalise_module_result(
                 cx,

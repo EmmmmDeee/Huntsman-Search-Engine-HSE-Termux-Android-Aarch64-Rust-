@@ -74,8 +74,15 @@ impl TargetKind {
     /// Map an entity kind to a target kind, so an entity produced by one
     /// module can become the input target for another module.
     ///
-    /// Returns `None` for entity kinds that have no natural scan target
-    /// (organisations, MACs, raw URLs, credentials, etc.).
+    /// Returns `None` only for the three terminal (non-pivotable) kinds —
+    /// [`EntityKind::Credential`], [`EntityKind::Password`] and
+    /// [`EntityKind::Other`]. **This is deliberate, not a coverage gap:** a
+    /// credential or password is reported evidence, never a value to launch a
+    /// fresh scan against; and `Other(String)` is an untyped catch-all with no
+    /// validator or module routing, so a module emitting `Other` intentionally
+    /// produces a leaf node that is never re-queued as a pivot target. Every
+    /// other variant round-trips through [`Self::to_entity_kind`] and so is a
+    /// valid pivot — do **not** "fix" the three `None` arms below into targets.
     pub fn from_entity_kind(kind: &EntityKind) -> Option<Self> {
         match kind {
             EntityKind::Email => Some(Self::Email),
@@ -97,6 +104,9 @@ impl TargetKind {
             EntityKind::DeviceId => Some(Self::DeviceId),
             EntityKind::Ssid => Some(Self::Ssid),
             EntityKind::TrackingId => Some(Self::TrackingId),
+            // Deliberately terminal: a credential/password is reported evidence
+            // (never a scan seed), and `Other` is an untyped catch-all with no
+            // validator or module routing — so each is a leaf, never a pivot.
             EntityKind::Credential | EntityKind::Password | EntityKind::Other(_) => None,
         }
     }

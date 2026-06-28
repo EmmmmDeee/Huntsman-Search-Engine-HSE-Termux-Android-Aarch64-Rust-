@@ -184,12 +184,18 @@ impl QuotaBudget {
             .saturating_sub(self.scan_count.load(Ordering::Acquire))
     }
 
-    /// Charge one query against both per-scan and per-session counters.
-    /// Callers MUST gate on `remaining()` before incrementing.
+    /// Charge one query against both per-scan and per-session counters,
+    /// *without* a cap check. **Test-only.**
     ///
-    /// Prefer [`Self::try_increment`] for new code: `remaining()`-then-`increment()`
-    /// is a non-atomic check-then-act, so concurrent callers can all observe
-    /// room and then all increment past the cap.
+    /// Production has fully migrated to [`Self::try_increment`], which reserves
+    /// against both caps in a single atomic step. The bare `increment()` is the
+    /// racy non-atomic check-then-act half of the old `remaining()`-then-
+    /// `increment()` gate: concurrent callers could all observe room and then all
+    /// charge past the cap. It is gated behind `#[cfg(test)]` so that dangerous
+    /// path cannot exist in a release build; the unit tests still use it as a
+    /// convenient unconditional counter bump for asserting reset/snapshot
+    /// behaviour, where the lack of a cap check is exactly what's wanted.
+    #[cfg(test)]
     pub fn increment(&self) {
         self.scan_count.fetch_add(1, Ordering::Relaxed);
         self.session_count.fetch_add(1, Ordering::Relaxed);
@@ -236,8 +242,11 @@ impl QuotaBudget {
             })
             .is_err()
         {
-            // Session ceiling hit — undo the per-scan reservation. Saturating so
-            // a (race-free, but defensive) double-rollback can't underflow.
+            // Session ceiling hit — undo the per-scan reservation. This path runs
+            // exactly once per failed call, so the rollback is not itself a double
+            // decrement; `saturating_sub` is a purely defensive guard so that even
+            // an unexpected extra decrement (e.g. a future refactor) can never
+            // underflow the counter past zero.
             let _ = self
                 .scan_count
                 .fetch_update(Ordering::AcqRel, Ordering::Relaxed, |n| {

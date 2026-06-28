@@ -140,6 +140,74 @@ use super::*;
         );
     }
 
+    // ── correlations_to_csv ─────────────────────────────────────────────────
+
+    #[test]
+    fn correlations_to_csv_assembles_header_and_escaped_rows() {
+        use crate::core::correlator::{Correlation, Severity};
+
+        // Empty input still emits exactly the column header — the spreadsheet
+        // pipeline parses this row to know the schema even on a no-hit scan.
+        assert_eq!(
+            correlations_to_csv(&[]).trim_end(),
+            "rule_id,rule_name,severity,rank,description,entity_count,entity_uids,observed_at"
+        );
+
+        let mut c = Correlation::new(
+            "AU-076",
+            "Email-username local-part identity bridge",
+            Severity::High,
+            "alice@host ↔ username alice, exact".to_string(), // comma forces quoting
+            vec!["uid-a".to_string(), "uid-b".to_string()],
+            "scan-x",
+            1_700_000_000,
+        );
+        c.rank = 2.5;
+        let csv = correlations_to_csv(&[c]);
+        let lines: Vec<&str> = csv.lines().collect();
+        assert_eq!(lines.len(), 2, "header + exactly one row per correlation");
+
+        let row = lines[1];
+        // Column order + 3-dp rank formatting.
+        assert!(
+            row.starts_with("AU-076,"),
+            "rule_id must lead the row: {row}"
+        );
+        assert!(row.contains(",HIGH,2.500,"), "severity/rank drifted: {row}");
+        // The comma-bearing description is RFC-4180 quoted, proving the row
+        // routes assembled fields through csv_escape like the entity CSV.
+        assert!(
+            row.contains("\"alice@host ↔ username alice, exact\""),
+            "description not escaped through csv_escape: {row}"
+        );
+        // entity_uids `|`-joined (joinable back to the entity CSV) + count + ts.
+        assert!(row.contains(",2,uid-a|uid-b,1700000000"), "uid/count/ts: {row}");
+    }
+
+    #[test]
+    fn correlations_to_csv_defangs_formula_injection() {
+        use crate::core::correlator::{Correlation, Severity};
+        // A hostile rule description starting with `=` must be neutralised the
+        // same way the entity CSV neutralises a hostile value (OWASP CSV-injection).
+        let c = Correlation::new(
+            "AU-001",
+            "rule",
+            Severity::Low,
+            "=cmd|'/c calc'!A1".to_string(),
+            vec!["uid".to_string()],
+            "scan-x",
+            0,
+        );
+        let csv = correlations_to_csv(&[c]);
+        let row = csv.lines().nth(1).unwrap();
+        // Defanged with a leading `'` (no outer RFC-4180 quoting is needed — the
+        // payload carries no comma/quote/newline), exactly as the entity CSV does.
+        assert!(
+            row.contains(",'=cmd|'/c calc'!A1,"),
+            "formula not defanged with leading quote: {row}"
+        );
+    }
+
     // ── AU-059 best_location emit→extract contract ───────────────────────────
 
     /// Build a tagged AU `Coordinates` entity for a given source, mirroring the
@@ -255,4 +323,54 @@ use super::*;
         assert!((lat - direct.lat).abs() < 1e-9);
         assert!((lon - direct.lon).abs() < 1e-9);
         assert_eq!(fix["geohash"].as_str().unwrap(), direct.geohash);
+    }
+
+    // ── chunked_stream (export body streaming) ───────────────────────────────
+
+    /// Drain a streamed [`axum::body::Body`] back into one `Vec<u8>`. The
+    /// streaming export path must be byte-for-byte identical to handing axum the
+    /// whole String, so every test below reassembles the frames and compares.
+    /// Uses axum's own `into_data_stream` + `futures::StreamExt` (both already
+    /// direct deps) so no extra crate is pulled in just to test this.
+    async fn drain(body: axum::body::Body) -> Vec<u8> {
+        use futures::StreamExt as _;
+        let mut out = Vec::new();
+        let mut frames = body.into_data_stream();
+        while let Some(frame) = frames.next().await {
+            out.extend_from_slice(&frame.expect("export body stream is infallible"));
+        }
+        out
+    }
+
+    #[tokio::test]
+    async fn chunked_stream_reassembles_multiframe_body_byte_for_byte() {
+        // A body several chunks long (> EXPORT_CHUNK_BYTES) must stream and
+        // reassemble to exactly the input — the frame-boundary slicing is the
+        // whole risk here, so prove the seams add/drop nothing.
+        let big: String = (0..EXPORT_CHUNK_BYTES * 3 + 777)
+            .map(|i| (b'a' + (i % 26) as u8) as char)
+            .collect();
+        let got = drain(chunked_stream(big.clone())).await;
+        assert_eq!(got, big.as_bytes(), "multi-frame stream must round-trip");
+    }
+
+    #[tokio::test]
+    async fn chunked_stream_handles_small_and_empty_bodies() {
+        // Body smaller than one frame → a single frame, identical bytes.
+        let small = "kind,value\nemail,a@b.com\n".to_string();
+        assert_eq!(drain(chunked_stream(small.clone())).await, small.as_bytes());
+        // Empty body → zero frames → empty payload (the degenerate but valid
+        // export, e.g. an immediate 304-then-200 race producing no rows).
+        assert!(drain(chunked_stream(String::new())).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn chunked_stream_preserves_utf8_multibyte_payload() {
+        // Slicing is on byte offsets, not char boundaries — that is correct for a
+        // wire body (HTTP frames are byte windows, reassembled losslessly), so a
+        // multibyte UTF-8 export (AU localities carry non-ASCII) must survive even
+        // when a frame edge lands mid-codepoint.
+        let unit = "Ñoño café — Wagga Wagga 🇦🇺 ";
+        let body: String = unit.repeat(EXPORT_CHUNK_BYTES / unit.len() + 5);
+        assert_eq!(drain(chunked_stream(body.clone())).await, body.as_bytes());
     }
