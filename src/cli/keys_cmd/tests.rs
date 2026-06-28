@@ -11,6 +11,8 @@ use super::{bank_row, char_prefix, mask_key};
             discovery_count: count,
             first_seen_at: 0,
             last_seen_at: 0,
+            verified_count: 0,
+            last_verified_at: None,
         }
     }
 
@@ -23,6 +25,18 @@ use super::{bank_row, char_prefix, mask_key};
         assert!(row.contains("AKIA…MPLE"), "key masked by default: {row}");
         assert!(row.contains("×3"), "discovery count shown: {row}");
         assert!(!row.contains("AKIAIOSFODNN7EXAMPLE"), "full key hidden");
+    }
+
+    #[test]
+    fn bank_row_shows_verified_duplicate_count_when_proven_live() {
+        let mut e = vault_entry("shodan", "AKIAIOSFODNN7EXAMPLE", 3);
+        // Unverified: a dash, never a phantom tick.
+        assert!(bank_row(&e, false).contains(" - "), "unverified shows '-'");
+        e.verified_count = 2;
+        e.last_verified_at = Some(123);
+        let row = bank_row(&e, false);
+        assert!(e.is_verified());
+        assert!(row.contains("✓×2"), "verified-duplicate count shown: {row}");
     }
 
     #[test]

