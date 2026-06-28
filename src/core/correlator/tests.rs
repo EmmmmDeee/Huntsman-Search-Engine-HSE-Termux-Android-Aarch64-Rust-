@@ -6697,3 +6697,71 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
         "an elapsed budget must stop the relation-rule pass immediately"
     );
 }
+
+// ── AU-106 — Australian authoritative-register convergence ───────────────────
+
+#[test]
+fn au106_adverse_register_is_high_severity() {
+    // An organisation in the company register AND flagged by the banned register
+    // (one merged entity carrying both evidence sources) is a High finding.
+    let mut org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.85, "s");
+    org.add_evidence(Evidence::new("asic_companies", "registered company"));
+    org.add_evidence(Evidence::new("asic_banned_orgs", "disqualified"));
+    let r = super::rules::rule_au_106_au_register_convergence(&[org], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-106");
+    assert_eq!(r[0].severity, super::Severity::High);
+    assert!(
+        r[0].description.contains("adverse") && r[0].description.contains("asic_banned_orgs"),
+        "High finding must name the adverse register: {}",
+        r[0].description
+    );
+}
+
+#[test]
+fn au106_two_identity_registers_is_medium() {
+    // Corroborated across two authoritative identity registers (no adverse) →
+    // Medium "register convergence".
+    let mut org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.85, "s");
+    org.add_evidence(Evidence::new("asic_companies", "registered company"));
+    org.add_evidence(Evidence::new("agor", "government body"));
+    let r = super::rules::rule_au_106_au_register_convergence(&[org], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(
+        r[0].description
+            .contains("2 authoritative Australian registers"),
+        "Medium finding must cite the register count: {}",
+        r[0].description
+    );
+}
+
+#[test]
+fn au106_single_identity_register_does_not_fire() {
+    // A single authoritative register is an identity attestation, not a
+    // cross-register convergence — AU-106 must stay silent (AU-003 covers the
+    // generic single/cross-source corroboration).
+    let mut org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.85, "s");
+    org.add_evidence(Evidence::new("asic_companies", "registered company"));
+    assert!(super::rules::rule_au_106_au_register_convergence(&[org], "s", 0).is_empty());
+}
+
+#[test]
+fn au106_ignores_non_register_sources_and_kinds() {
+    // A non-register source (a breach pool) on an org must not count; and a
+    // non-corporate kind (an email) is never a register subject.
+    let mut org = Entity::new(EntityKind::Organisation, "Acme Pty Ltd", 0.85, "s");
+    org.add_evidence(Evidence::new("asic_companies", "registered company"));
+    org.add_evidence(Evidence::new("hibp", "breach"));
+    assert!(
+        super::rules::rule_au_106_au_register_convergence(&[org], "s", 0).is_empty(),
+        "one register + one non-register source is not convergence"
+    );
+    let mut email = Entity::new(EntityKind::Email, "a@example.com", 0.85, "s");
+    email.add_evidence(Evidence::new("asic_companies", "x"));
+    email.add_evidence(Evidence::new("agor", "x"));
+    assert!(
+        super::rules::rule_au_106_au_register_convergence(&[email], "s", 0).is_empty(),
+        "an email is not a register subject"
+    );
+}

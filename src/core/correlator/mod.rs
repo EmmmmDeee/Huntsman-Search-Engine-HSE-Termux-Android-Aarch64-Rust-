@@ -250,6 +250,11 @@ const RULES: &[RuleFn] = &[
     // AU-097: subject's IP/ASN belongs to an Australian ISP (Telstra/Optus/TPG/…)
     // or AARNet — a network-layer AU residency/affiliation signal.
     rule_au_097_au_isp_network,
+    // AU-106: a confirmed organisation/person/ABN whose merged evidence spans an
+    // adverse Australian register (High) or two-or-more authoritative identity
+    // registers (Medium) — fuses the agor/asic_*/abn register cluster into one
+    // analyst-facing finding.
+    rule_au_106_au_register_convergence,
     // AU-095: ranked exposure-intelligence portfolio over all harvested ApiKey
     // entities (provider × criticality × detection) — a revoke-first priority
     // order, complementing AU-021's flat per-key findings. Catalogue-only.
