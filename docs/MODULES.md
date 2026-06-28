@@ -136,6 +136,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `asic_persons` | full_name | free | no | 112 | person, organisation, abn_acn, address |
 | `asic_business_names` | organisation | free | no | 111 | organisation, abn_acn |
 | `asic_banned_orgs` | organisation | free | no | 112 | organisation, abn_acn |
+| `asic_banned_persons` | full_name, organisation | free | no | 113 | person, address |
 | `au_unclaimed` | full_name, organisation | free | no | 114 | address, coordinates, organisation, person |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
 | `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
