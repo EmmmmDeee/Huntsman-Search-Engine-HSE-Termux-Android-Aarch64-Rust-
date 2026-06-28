@@ -717,3 +717,20 @@ fn merge_pool_into_env_uses_any_usable_key() {
         "a usable pooled key should be merged into the env: {map:?}"
     );
 }
+
+#[test]
+fn curl_config_escape_neutralises_quote_backslash_and_newlines() {
+    // A value that tries to break out of the double-quoted config directive:
+    // the embedded quote, backslash, and newline must all be escaped so the
+    // secret stays a single inert quoted token (and never lands on argv).
+    let raw = "ab\"c\\d\ne\tf";
+    let esc = super::validation::curl_config_escape(raw);
+    assert_eq!(esc, "ab\\\"c\\\\d\\ne\\tf");
+    // No raw line terminator survives — a directive is one line.
+    assert!(!esc.contains('\n') && !esc.contains('\r'));
+    // A clean key is passed through verbatim.
+    assert_eq!(
+        super::validation::curl_config_escape("sk-AbC123"),
+        "sk-AbC123"
+    );
+}

@@ -77,9 +77,87 @@ pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
     Some(result)
 }
 
+/// Escape a value for a curl `--config` double-quoted argument.
+///
+/// curl's config parser unescapes `\\`, `\"`, `\t`, `\n`, `\r`, `\v` inside a
+/// quoted value. Escaping backslash/quote stops the secret breaking out of the
+/// quoting; escaping the line terminators stops a stray control byte in a key
+/// from prematurely ending the directive (a multi-line value is otherwise a
+/// parse error). The result is wrapped in double quotes by the caller.
+pub(super) fn curl_config_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\t' => out.push_str("\\t"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            _ => out.push(c),
+        }
+    }
+    out
+}
+
 async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
+    use tokio::io::AsyncWriteExt;
+
     let timeout_ms = 10_000u64;
     let secs = (timeout_ms / 1000).to_string();
+
+    // Build the curl config that carries the secret. Every directive that
+    // embeds the key — the auth header, the basic-auth credential, or the
+    // query-string URL — goes here and is fed to curl over stdin via
+    // `--config -`, NOT on the command line. The argv of a process is
+    // world-readable through `/proc/<pid>/cmdline`, so a `-H "X: <key>"` or
+    // `-u <key>` argument leaks the credential to any other local UID for the
+    // lifetime of the probe; the config-on-stdin path keeps it off argv.
+    let mut config = String::new();
+    match sdef.key_header {
+        KeyPlacement::QueryParam(param) => {
+            // Percent-encode the key before it enters the query string: an
+            // unencoded `&`, `#`, `+`, or space would otherwise split the
+            // parameter or corrupt the value, mis-probing the endpoint.
+            let enc = crate::util::http::urlencode(key);
+            let url = if sdef.test_url.contains('?') {
+                if sdef.test_url.ends_with('=') {
+                    format!("{}{}", sdef.test_url, enc)
+                } else {
+                    format!("{}&{}={}", sdef.test_url, param, enc)
+                }
+            } else {
+                format!("{}?{}={}", sdef.test_url, param, enc)
+            };
+            config.push_str(&format!("url = \"{}\"\n", curl_config_escape(&url)));
+        }
+        KeyPlacement::Header(header) => {
+            config.push_str(&format!(
+                "url = \"{}\"\n",
+                curl_config_escape(sdef.test_url)
+            ));
+            config.push_str(&format!(
+                "header = \"{}\"\n",
+                curl_config_escape(&format!("{header}: {key}"))
+            ));
+        }
+        KeyPlacement::BasicAuth => {
+            config.push_str(&format!(
+                "url = \"{}\"\n",
+                curl_config_escape(sdef.test_url)
+            ));
+            config.push_str(&format!("user = \"{}\"\n", curl_config_escape(key)));
+        }
+        KeyPlacement::BearerAuth => {
+            config.push_str(&format!(
+                "url = \"{}\"\n",
+                curl_config_escape(sdef.test_url)
+            ));
+            config.push_str(&format!(
+                "header = \"{}\"\n",
+                curl_config_escape(&format!("Authorization: bearer {key}"))
+            ));
+        }
+    }
 
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args([
@@ -90,40 +168,31 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
         "%{http_code}",
         "--max-time",
         &secs,
+        // Read the secret-bearing directives from stdin, not argv.
+        "--config",
+        "-",
     ]);
-
-    match sdef.key_header {
-        KeyPlacement::QueryParam(param) => {
-            let url = if sdef.test_url.contains('?') {
-                if sdef.test_url.ends_with('=') {
-                    format!("{}{}", sdef.test_url, key)
-                } else {
-                    format!("{}&{}={}", sdef.test_url, param, key)
-                }
-            } else {
-                format!("{}?{}={}", sdef.test_url, param, key)
-            };
-            cmd.args(["--", &url]);
-        }
-        KeyPlacement::Header(header) => {
-            let h = format!("{header}: {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
-        }
-        KeyPlacement::BasicAuth => {
-            cmd.args(["-u", key, "--", sdef.test_url]);
-        }
-        KeyPlacement::BearerAuth => {
-            let h = format!("Authorization: bearer {key}");
-            cmd.args(["-H", &h, "--", sdef.test_url]);
-        }
-    }
-
+    cmd.stdin(std::process::Stdio::piped());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::null());
     cmd.kill_on_drop(true);
 
-    let output = tokio::time::timeout(Duration::from_millis(timeout_ms + 2000), cmd.output())
+    let run = async {
+        let mut child = cmd.spawn().ok()?;
+        // Write the config and close stdin so curl sees EOF. The payload is a
+        // few short lines — far under the pipe buffer — so writing it in full
+        // before reading stdout cannot deadlock.
+        let mut stdin = child.stdin.take()?;
+        stdin.write_all(config.as_bytes()).await.ok()?;
+        stdin.shutdown().await.ok()?;
+        drop(stdin);
+        child.wait_with_output().await.ok()
+    };
+
+    let output = tokio::time::timeout(Duration::from_millis(timeout_ms + 2000), run)
         .await
         .ok()
-        .and_then(std::result::Result::ok);
+        .flatten();
 
     let Some(output) = output else { return false };
     let code = String::from_utf8_lossy(&output.stdout);
