@@ -197,6 +197,43 @@ fn write_batch(
     Ok(keys.len())
 }
 
+/// Retain a pool/operator-held key in the permanent bank as a durable backstop,
+/// so the self-funding inventory survives loss of the JSON pool file and stays
+/// available for future cross-reference.
+///
+/// INSERT-OR-IGNORE only: a key already banked — e.g. one independently found in
+/// a breach/stealer corpus — is left completely untouched, so its real discovery
+/// provenance and `discovery_count` are never clobbered by the mirror. A brand-new
+/// pool key is recorded with `provider = "key_pool"` provenance. Best-effort — a
+/// write failure logs and is ignored. The row existing is also what lets a later
+/// [`record_verification`] accrue verified duplicates for the key.
+pub fn retain_pool_key(service: &str, key: &str) {
+    let now = crate::core::entity::unix_now();
+    if let Err(e) = open().and_then(|conn| insert_pool_key(&conn, service, key, now)) {
+        tracing::warn!(error = %e, "key_vault: failed to retain pool key");
+    }
+}
+
+/// INSERT-OR-IGNORE a pool-held key. Returns `true` only when a NEW row was
+/// inserted (the key was not already banked). Pure over the passed connection so
+/// the non-clobbering behaviour is unit-tested on an in-memory DB.
+fn insert_pool_key(
+    conn: &Connection,
+    service: &str,
+    key: &str,
+    now: u64,
+) -> rusqlite::Result<bool> {
+    let now_i = now as i64;
+    let n = conn.execute(
+        "INSERT OR IGNORE INTO found_keys
+            (key_value, service, provider, query, first_scan_id, last_scan_id,
+             discovery_count, first_seen_at, last_seen_at)
+         VALUES (?1, ?2, 'key_pool', 'operator-pool', 'key_pool', 'key_pool', 1, ?3, ?3)",
+        params![key, service, now_i],
+    )?;
+    Ok(n > 0)
+}
+
 // ── Query helpers ─────────────────────────────────────────────────────────────
 
 /// A key entry read back from the vault.
@@ -552,6 +589,49 @@ mod tests {
         assert_eq!(e.len(), 1, "legacy row preserved through migration");
         assert_eq!(e[0].verified_count, 0, "legacy row backfills to unverified");
         assert!(write_verification(&conn, "dh-key-abcdef", 20).unwrap());
+    }
+
+    #[test]
+    fn retaining_a_pool_key_inserts_once_without_clobbering_breach_provenance() {
+        let conn = Connection::open_in_memory().unwrap();
+        ensure_schema(&conn).unwrap();
+
+        // A brand-new pool key is inserted with key_pool provenance.
+        assert!(insert_pool_key(&conn, "shodan", "pool-key", 100).unwrap());
+        // Re-retaining it is an idempotent no-op (no duplicate, no count inflation).
+        assert!(!insert_pool_key(&conn, "shodan", "pool-key", 200).unwrap());
+
+        // A key already banked from a real breach scan must keep its provenance —
+        // the mirror must never overwrite discovery intelligence.
+        write_batch(&conn, &[test_key("dehashed", "breach-key")], "scan-xyz", 50).unwrap();
+        assert!(
+            !insert_pool_key(&conn, "dehashed", "breach-key", 300).unwrap(),
+            "existing breach row is left untouched"
+        );
+        let rows = query_all(&conn).unwrap();
+        let breach = rows.iter().find(|e| e.key_value == "breach-key").unwrap();
+        assert_eq!(
+            breach.provider, "test_module",
+            "breach provenance preserved, not clobbered by the pool mirror"
+        );
+        assert_eq!(breach.first_scan_id, "scan-xyz");
+
+        // The retained pool key is present and accrues verified duplicates.
+        assert!(write_verification(&conn, "pool-key", 400).unwrap());
+        let pool_row = query_all(&conn)
+            .unwrap()
+            .into_iter()
+            .find(|e| e.key_value == "pool-key")
+            .unwrap();
+        assert_eq!(pool_row.provider, "key_pool");
+        assert_eq!(
+            pool_row.discovery_count, 1,
+            "no count inflation from re-mirror"
+        );
+        assert_eq!(
+            pool_row.verified_count, 1,
+            "retained key accrues verified duplicates"
+        );
     }
 
     #[test]

