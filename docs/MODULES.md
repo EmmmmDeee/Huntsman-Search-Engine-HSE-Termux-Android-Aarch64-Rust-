@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (170 modules: 137 free · 28 key-gated · 5 paid)
+## Catalogue (171 modules: 138 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -139,6 +139,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `asic_banned_orgs` | organisation | free | no | 112 | organisation, abn_acn |
 | `asic_banned_persons` | full_name, organisation | free | no | 113 | person, address |
 | `asic_afs_licensees` | organisation, full_name, abn_acn | free | no | 109 | organisation, abn_acn, address, coordinates |
+| `asic_afs_representatives` | full_name, organisation, abn_acn | free | no | 106 | person, abn_acn, address |
 | `asic_credit_licensees` | organisation, full_name, abn_acn | free | no | 108 | organisation, abn_acn, address, coordinates |
 | `asic_registered_auditors` | organisation, full_name, abn_acn | free | no | 107 | organisation, abn_acn, address |
 | `asic_liquidators` | full_name | free | no | 110 | person, organisation, address |

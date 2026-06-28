@@ -39,6 +39,7 @@ const AU_IDENTITY_REGISTERS: &[&str] = &[
     "asic_persons",
     "asic_business_names",
     "asic_afs_licensees",
+    "asic_afs_representatives",
     "asic_credit_licensees",
     "asic_registered_auditors",
     "asic_liquidators",
