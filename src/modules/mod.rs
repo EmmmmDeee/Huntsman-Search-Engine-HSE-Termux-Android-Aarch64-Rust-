@@ -9,6 +9,7 @@ pub mod abn_lookup;
 pub mod abuseipdb;
 pub mod acma_rrl;
 pub mod acnc_charities;
+pub mod agor;
 pub mod ahpra;
 pub mod api_key_probe;
 pub mod app_links;
@@ -434,6 +435,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(opencorporates::OpenCorporates),
         Arc::new(au_unclaimed::AuUnclaimed),
         Arc::new(austender::AusTender),
+        Arc::new(agor::Agor),
         Arc::new(dfat_sanctions::DfatSanctions),
         Arc::new(au_people::AuPeople),
         Arc::new(asic_director::AsicDirector),

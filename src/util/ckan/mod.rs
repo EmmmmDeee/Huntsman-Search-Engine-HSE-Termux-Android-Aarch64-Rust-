@@ -69,6 +69,49 @@ pub fn datastore_search_url(action_base: &str, resource_id: &str, q: &str, limit
     )
 }
 
+/// The CKAN `action/package_show` response envelope.
+///
+/// Used to resolve a dataset's *current* datastore-active resource id at runtime
+/// rather than pinning a single id that goes stale when the publisher rotates the
+/// resource each quarter (e.g. the AGOR register on `data.gov.au`).
+#[derive(Debug, Deserialize)]
+pub struct PackageResponse {
+    #[serde(default)]
+    pub success: Option<bool>,
+    #[serde(default)]
+    pub result: Option<Package>,
+}
+
+/// The `result` object of a [`PackageResponse`]: a dataset and its resources.
+#[derive(Debug, Deserialize)]
+pub struct Package {
+    #[serde(default)]
+    pub resources: Vec<Resource>,
+}
+
+/// One resource (file/datastore) attached to a [`Package`].
+#[derive(Debug, Deserialize)]
+pub struct Resource {
+    #[serde(default)]
+    pub id: Option<String>,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub datastore_active: Option<bool>,
+}
+
+/// Build a CKAN `package_show` URL for `dataset_id` on a portal's `action_base`.
+///
+/// `dataset_id` is url-encoded so a slug containing reserved characters can't
+/// break out of the value.
+#[must_use]
+pub fn package_show_url(action_base: &str, dataset_id: &str) -> String {
+    format!(
+        "{action_base}/package_show?id={}",
+        crate::util::http::urlencode(dataset_id)
+    )
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

@@ -131,6 +131,7 @@ records. The engine knows nothing else — every module is a one-file change.
 |---|---|---|---|---|---|
 | `au_business_id` | abn_acn | free | **yes** | 104 | abn_acn |
 | `austender` | organisation, full_name, abn_acn | free | no | 110 | organisation, abn_acn, address, coordinates |
+| `agor` | organisation, full_name, abn_acn | free | no | 110 | organisation, abn_acn, address, coordinates, domain |
 | `asic_director` | full_name | free | no | 89 | organisation, abn_acn, address |
 | `asic_persons` | full_name | free | no | 112 | person, organisation, abn_acn, address |
 | `asic_business_names` | organisation | free | no | 111 | organisation, abn_acn |
