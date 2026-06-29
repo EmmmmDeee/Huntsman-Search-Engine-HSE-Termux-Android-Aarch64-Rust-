@@ -32,6 +32,37 @@ fn au_postcode_reads_value_token_then_evidence() {
 }
 
 #[test]
+fn au_postcode_ignores_a_leading_us_street_number() {
+    // Real captured US breach addresses (Huntsman scan 90b936dc…). The leading
+    // 4-digit STREET NUMBER must not be read as an AU postcode — the real ZIP is a
+    // 5-digit value that trails, so only it is a candidate and it is rejected for
+    // length. Without this the Missouri street number "1019" resolved as an AU
+    // postcode and dragged the foreign record into the subject's geo footprint.
+    let us = Entity::new(
+        EntityKind::Address,
+        "1019 Winston Dr, Jefferson City, MO, 65101",
+        0.25,
+        "s",
+    );
+    assert!(au_postcode(&us).is_none());
+    let us2 = Entity::new(
+        EntityKind::Address,
+        "5528 North 73rd Avenue, Glendale, AZ, 85303",
+        0.25,
+        "s",
+    );
+    assert!(au_postcode(&us2).is_none());
+    // A genuine AU value still resolves from its trailing postcode.
+    let au = Entity::new(
+        EntityKind::Address,
+        "12 Smith St, Beerwah QLD 4519",
+        0.25,
+        "s",
+    );
+    assert_eq!(au_postcode(&au).as_deref(), Some("4519"));
+}
+
+#[test]
 fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
     // Subject's confirmed GPS near Woodford, QLD; a coarse 0.4 guess must NOT
     // anchor (only ≥0.60 confirmed fixes do).

@@ -54,6 +54,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Offline geocoder: a foreign STREET NUMBER is no longer misread as an
+  Australian postcode.** `util::city_coords` resolved an address by scanning for a
+  4-digit token and treating it as an AU postcode. On an overseas address the real
+  postal code is a 5-digit ZIP (no 4-digit token), so the geocoder grabbed the
+  leading 4-digit *street number* and mapped it to an Australian region — minting a
+  false `Coordinates` entity. Real execution evidence (debug bundle, scan
+  `90b936dc…`): of nine US breach-record addresses turned into coordinates, **seven
+  (78%)** landed in Australia — "5528 North 73rd Avenue, Glendale, AZ" → South
+  Australia, "1019 Winston Dr, Jefferson City, MO" → Sydney, "3145 Rochambeau Ave,
+  Bronx, NY" → Melbourne — while the two with a tabulated US city (Miami, Las Vegas)
+  resolved correctly. The fix anchors the embedded-postcode fallback on the address's
+  *final* numeric run (an AU postcode comes LAST, the street number LEADS) and gates
+  it behind a non-AU-country guard, so a foreign suburb earns no coordinate rather
+  than borrowing an Australian one. The identical root-cause class was fixed in two
+  sibling paths that consume the same breach data: `address_au::state_code` (its
+  bare-postcode rung was attributing a US street number's range to an AU state, e.g.
+  Arizona → "SA") and `core::geo_family::au_postcode` (the family geo-corroboration
+  postcode reader). Proven by regression tests in all three modules seeded from the
+  verbatim captured addresses, plus the full gate (fmt, clippy `--all-targets -D
+  warnings`, lib tests).
 - **best-location estimate: a coordinate's `lat,lon` digits are no longer
   misread as a postcode.** The postcode rung excluded a token like `…,151.2093`
   → "2093"; `Coordinates` are now excluded from that rung (a coordinate's location

@@ -31,10 +31,43 @@ pub fn city_coords(addr: &str) -> Option<(f64, f64)> {
     // but its suburb is in the long tail CITIES doesn't tabulate — the address
     // still earns a coordinate (exact suburb centroid when known, else region
     // grain) instead of silently dropping out of the geo footprint.
-    if let Some(pc) = au_postcode_in(trimmed) {
+    // The embedded-postcode fallback is an *Australian* heuristic, so it must not
+    // fire on an address that explicitly names a non-AU country: a foreign suburb
+    // we don't tabulate must earn no coordinate rather than borrow an Australian
+    // one. (The final-run anchoring above already rejects the common case — a
+    // foreign 5-digit ZIP leaves no 4-digit trailing run — and this guard closes
+    // the residual where an overseas postcode is itself 4 digits.)
+    if !mentions_non_au_country(&lower)
+        && let Some(pc) = au_postcode_in(trimmed)
+    {
         return postcode_coords(pc).or_else(|| au_postcode_region(pc));
     }
     None
+}
+
+/// Whether `lower` (an already-lowercased address/location string) explicitly
+/// names a country or nation that is definitively NOT Australia.
+///
+/// Used to gate the embedded-AU-postcode fallback in [`city_coords`] so a clearly
+/// overseas address never borrows an Australian coordinate from a 4-digit token
+/// that merely falls in an AU postcode range. Multi-word nations are matched as
+/// phrases; the short ISO-style codes are matched as whole alphanumeric tokens so
+/// they cannot fire inside an ordinary word. Australia and its state names are
+/// never listed, so a genuine AU address is never gated. Pure; no I/O.
+fn mentions_non_au_country(lower: &str) -> bool {
+    const PHRASES: &[&str] = &["united states", "united kingdom", "new zealand"];
+    if PHRASES.iter().any(|p| lower.contains(p)) {
+        return true;
+    }
+    // Whole-token codes/names. "wales" is deliberately absent — it is a substring
+    // of "New South Wales" and would gate legitimate NSW addresses.
+    const TOKENS: &[&str] = &[
+        "usa", "us", "uk", "gb", "nz", "canada", "england", "scotland", "ireland", "germany",
+        "france",
+    ];
+    lower
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|tok| TOKENS.contains(&tok))
 }
 
 /// Resolve a bare 4-digit AU postcode to an approximate `(lat, lon)`.
@@ -155,18 +188,29 @@ pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
 
 /// Extract the AU postcode embedded in a free-text address string.
 ///
-/// An AU address places its 4-digit postcode LAST (`"… SUBURB STATE 4000"`), so
-/// this scans every run of consecutive digits and returns the last 4-digit token
-/// that is a real assigned AU postcode ([`crate::util::address_au::state_for_postcode`]).
-/// Taking the last *valid* token is what keeps a 4-digit STREET number (which
-/// comes first) from being mistaken for the postcode — `"4000 Gold Coast Hwy,
-/// … QLD 4217"` yields `4217`, not `4000` — and the assigned-range gate rejects
-/// incidental 4-digit noise (a year, a unit count) outside any postcode span.
-/// Returns `None` when the string carries no assigned AU postcode. Pure; no I/O.
+/// An AU address places its 4-digit postcode LAST (`"… SUBURB STATE 4000"`) — it
+/// is the *final* run of digits in the string, with the street number leading.
+/// So this takes only the LAST numeric run and accepts it solely when it is a
+/// real assigned 4-digit AU postcode ([`crate::util::address_au::state_for_postcode`]).
+///
+/// Anchoring on the final run (rather than the last 4-digit token *anywhere*) is
+/// what keeps a 4-digit STREET number from being mistaken for the postcode. The
+/// previous "last 4-digit token" heuristic broke on overseas addresses: a US
+/// address ends in a 5-digit ZIP (not a 4-digit token), so the only 4-digit token
+/// left was the leading street number — `"5528 North 73rd Avenue, Glendale, AZ,
+/// 85303"` resolved `5528` as an SA postcode and manufactured a false Australian
+/// coordinate (observed across real breach records). Now the final run there is
+/// `"85303"` (5 digits → rejected) and the leading `5528` is never considered, so
+/// the address earns no AU fix. A genuine AU address still resolves: `"4000 Gold
+/// Coast Hwy, … QLD 4217"` → final run `4217` (the street number `4000` leads, so
+/// it is not the final run). Returns `None` when the trailing run is not an
+/// assigned 4-digit AU postcode. Pure; no I/O.
 fn au_postcode_in(addr: &str) -> Option<&str> {
-    addr.split(|c: char| !c.is_ascii_digit())
-        .filter(|t| t.len() == 4)
-        .rfind(|t| crate::util::address_au::state_for_postcode(t).is_some())
+    let last_run = addr
+        .split(|c: char| !c.is_ascii_digit())
+        .rfind(|t| !t.is_empty())?;
+    (last_run.len() == 4 && crate::util::address_au::state_for_postcode(last_run).is_some())
+        .then_some(last_run)
 }
 
 const CITIES: &[(&str, f64, f64)] = &[

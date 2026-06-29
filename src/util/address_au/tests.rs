@@ -73,6 +73,28 @@ use super::*;
     }
 
     #[test]
+    fn state_code_does_not_read_a_leading_us_street_number_as_an_au_postcode() {
+        // Real captured US breach-record addresses (Huntsman scan 90b936dc…). A
+        // 4-digit US STREET NUMBER must not be mistaken for an AU postcode: the
+        // real ZIP is 5 digits and trails, so the final numeric run is rejected and
+        // the leading street number is never considered. Each must yield NO AU
+        // state — e.g. an Arizona address must not resolve to "SA".
+        for addr in [
+            "5528 North 73rd Avenue, Glendale, AZ, 85303, US",
+            "1019 Winston Dr, Jefferson City, MO, 65101, US",
+            "9025 W. 84th St N, Valley Center, KS, 67147, US",
+            "3145 Rochambeau Ave, Bronx, NY, 10467, US",
+            "3809 Slalom Dr, Billings, MT, 59102, US",
+        ] {
+            assert_eq!(state_code(addr), None, "no AU state for US address {addr:?}");
+        }
+        // The trailing-postcode path still works: a genuine AU postcode-only string
+        // (no state word, so it reaches step 3) still resolves.
+        assert_eq!(state_code("PO Box, 3001"), Some("VIC"));
+        assert_eq!(state_code("Beerwah 4519"), Some("QLD"));
+    }
+
+    #[test]
     fn locality_key_folds_postcode_variants_but_keeps_streets_distinct() {
         // Same suburb, two granularities → one key.
         assert_eq!(

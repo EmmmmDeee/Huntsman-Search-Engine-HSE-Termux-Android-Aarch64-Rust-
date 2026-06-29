@@ -62,10 +62,17 @@ pub fn au_postcode(e: &Entity) -> Option<String> {
             .filter(|n| (800..=7999).contains(n))
             .map(|_| t.to_string())
     };
-    for tok in e.value.split(|c: char| !c.is_ascii_digit()) {
-        if let Some(pc) = valid(tok) {
-            return Some(pc);
-        }
+    // An AU address names its postcode LAST, so only the FINAL run of digits is a
+    // candidate — this stops a LEADING 4-digit street number (from a foreign
+    // address whose real postcode is a 5-digit ZIP) being read as an AU postcode,
+    // e.g. "1019 Winston Dr, Jefferson City, MO, 65101" → not "1019".
+    if let Some(last) = e
+        .value
+        .split(|c: char| !c.is_ascii_digit())
+        .rfind(|t| !t.is_empty())
+        && let Some(pc) = valid(last)
+    {
+        return Some(pc);
     }
     e.evidence
         .iter()

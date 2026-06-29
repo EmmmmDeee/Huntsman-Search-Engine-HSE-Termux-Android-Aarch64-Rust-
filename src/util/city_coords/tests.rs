@@ -164,3 +164,122 @@ use super::*;
             "exact centroid beats the region centroid for a tabulated postcode"
         );
     }
+
+    /// Inside the Australian mainland+Tasmania bounding box.
+    fn in_australia(lat: f64, lon: f64) -> bool {
+        (-44.0..=-10.0).contains(&lat) && (112.0..=154.0).contains(&lon)
+    }
+
+    /// The nine real address→coordinate derivations captured in a production scan
+    /// (Huntsman debug bundle, scan `90b936dc…`, target "Matthew Diegmann"): US
+    /// breach-record addresses the geo pass turned into `coordinates` entities.
+    /// SEVEN of the nine resolved to *Australian* region centroids because a
+    /// 4-digit US STREET NUMBER was misread as an Australian postcode — e.g.
+    /// "Glendale AZ" → South Australia, "Jefferson City MO" → Sydney, "Bronx NY" →
+    /// Melbourne. The two that resolved correctly (Miami, Las Vegas) matched a US
+    /// city name in `CITIES` before the postcode fallback. These are the verbatim
+    /// inputs, replayed through the real function as the regression oracle.
+    const REAL_US_BREACH_ADDRESSES: &[&str] = &[
+        "5528 North 73rd Avenue, Glendale, AZ, 85303, US",
+        "1019 Winston Dr, Jefferson City, MO, 65101, US",
+        "3425 North Moorings Way, Miami, FL, 10007, US",
+        "3025 Arden Ridge Dr., Suwanee, GA, 30024, US",
+        "9025 W. 84th St N, Valley Center, KS, 67147, US",
+        "4530 Donald Creek Ave, Las Vegas, NV, 89141, US",
+        "7512 somerset blvd, Paramount, CA, 90723, US",
+        "3145 Rochambeau Ave, Bronx, NY, 10467, US",
+        "3809 Slalom Dr, Billings, MT, 59102, US",
+    ];
+
+    #[test]
+    fn real_us_breach_addresses_never_geocode_to_australia() {
+        for addr in REAL_US_BREACH_ADDRESSES {
+            if let Some((lat, lon)) = city_coords(addr) {
+                assert!(
+                    !in_australia(lat, lon),
+                    "US address {addr:?} resolved to Australian coords ({lat},{lon})"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn tabulated_us_cities_still_resolve_to_the_us() {
+        // The two captures that resolved correctly matched a US city name in
+        // CITIES before the postcode fallback — that path must keep working, and
+        // land in the northern hemisphere (positive latitude), never in AU.
+        let (lat, _) = city_coords("3425 North Moorings Way, Miami, FL, 10007, US")
+            .expect("Miami is tabulated in CITIES");
+        assert!(lat > 0.0, "Miami resolves to the US, not the southern hemisphere");
+        let (lat, _) = city_coords("4530 Donald Creek Ave, Las Vegas, NV, 89141, US")
+            .expect("Las Vegas is tabulated in CITIES");
+        assert!(lat > 0.0, "Las Vegas resolves to the US, not the southern hemisphere");
+    }
+
+    #[test]
+    fn untabulated_us_suburbs_earn_no_coordinate() {
+        // The seven untabulated US suburbs used to manufacture an AU region fix
+        // from their leading 4-digit street number. Now each cleanly misses
+        // rather than fabricating a false Australian location.
+        for addr in [
+            "5528 North 73rd Avenue, Glendale, AZ, 85303, US",
+            "1019 Winston Dr, Jefferson City, MO, 65101, US",
+            "3025 Arden Ridge Dr., Suwanee, GA, 30024, US",
+            "9025 W. 84th St N, Valley Center, KS, 67147, US",
+            "7512 somerset blvd, Paramount, CA, 90723, US",
+            "3145 Rochambeau Ave, Bronx, NY, 10467, US",
+            "3809 Slalom Dr, Billings, MT, 59102, US",
+        ] {
+            assert!(
+                city_coords(addr).is_none(),
+                "untabulated US address {addr:?} must not fabricate a coordinate"
+            );
+        }
+    }
+
+    #[test]
+    fn leading_street_number_is_not_read_as_postcode_without_a_country_tag() {
+        // Prove the final-run anchoring fixes the root cause independently of the
+        // non-AU country guard: with the country stripped, the leading 4-digit
+        // street number still must not resolve as an AU postcode.
+        assert!(
+            city_coords("5528 North 73rd Avenue, Glendale, 85303").is_none(),
+            "leading street number 5528 must not read as an SA postcode"
+        );
+        assert!(
+            city_coords("9025 W. 84th St N, Valley Center, 67147").is_none(),
+            "leading street number 9025 must not read as a QLD postcode"
+        );
+    }
+
+    #[test]
+    fn au_address_still_resolves_with_the_non_au_guard_in_place() {
+        use crate::util::geohash::haversine_km;
+        // Untabulated AU suburb, postcode trailing, explicit AU country suffix —
+        // must still earn its coordinate. The guard lists only non-AU nations, so
+        // "Australia" never gates a genuine AU address.
+        let (lat, lon) = city_coords("9 Coral St, Maleny QLD 4552, Australia")
+            .expect("a trailing AU postcode resolves even with a country suffix");
+        assert!(haversine_km(lat, lon, -26.729, 152.7554) < 5.0);
+    }
+
+    #[test]
+    fn non_au_country_guard_blocks_a_foreign_four_digit_postcode() {
+        // A NZ postcode is 4 digits and 4310 falls in an AU range — without the
+        // guard it would borrow an Australian fix. The explicit nation name blocks
+        // it; a tabulated NZ city still resolves via CITIES (which runs first).
+        assert!(city_coords("10 Queen St, Smalltown, New Zealand 4310").is_none());
+        assert!(city_coords("Auckland, New Zealand").is_some());
+    }
+
+    #[test]
+    fn non_au_country_detector_does_not_gate_new_south_wales() {
+        // "wales" inside "New South Wales" must NOT read as a non-AU signal.
+        assert!(!mentions_non_au_country(
+            "100 george st, sydney, new south wales 2000"
+        ));
+        assert!(mentions_non_au_country("100 main st, glendale, az, 85303, us"));
+        assert!(mentions_non_au_country(
+            "10 queen st, smalltown, new zealand 4310"
+        ));
+    }

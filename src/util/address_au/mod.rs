@@ -230,13 +230,23 @@ pub fn state_code(text: &str) -> Option<&'static str> {
     if let Some(id) = STATE_NAMES_MATCHER.find_id(text) {
         return Some(STATE_NAMES[id].1);
     }
-    // 3) Any 4-digit run that maps to a postcode range.
-    for tok in text.split(|c: char| !c.is_ascii_digit()) {
-        if tok.len() == 4
-            && let Some(s) = state_for_postcode(tok)
-        {
-            return Some(s);
-        }
+    // 3) The TRAILING 4-digit run, when it maps to a postcode range. An AU address
+    //    places its postcode LAST, so only the FINAL run of digits is a postcode
+    //    candidate — never a LEADING 4-digit street number. Anchoring on the final
+    //    run is what stops a foreign address from being mis-attributed to an AU
+    //    state: "5528 North 73rd Avenue, Glendale, AZ, 85303" used to return "SA"
+    //    because its real ZIP "85303" is 5 digits, leaving the street number "5528"
+    //    as the only 4-digit token; now the final run is "85303" (rejected) and
+    //    "5528" is never considered. (Steps 1–2 already short-circuit a genuine AU
+    //    address via its explicit state code/name, so this last-resort path only
+    //    ever sees state-less postcode text.)
+    if let Some(last) = text
+        .split(|c: char| !c.is_ascii_digit())
+        .rfind(|t| !t.is_empty())
+        && last.len() == 4
+        && let Some(s) = state_for_postcode(last)
+    {
+        return Some(s);
     }
     None
 }
