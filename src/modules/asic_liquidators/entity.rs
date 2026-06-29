@@ -29,28 +29,6 @@ pub(super) fn pick_resource(resources: &[Resource]) -> Option<String> {
     current.or_else(|| active.iter().find_map(|r| r.id.clone()))
 }
 
-/// Split a value into its significant alphanumeric whole-word tokens
-/// (case-preserved). Order-independent: a `"SURNAME, FIRSTNAME"` register name
-/// and a `"Firstname Surname"` seed tokenise to the same (unordered) set.
-fn tokens(s: &str) -> Vec<&str> {
-    s.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect()
-}
-
-/// True if `name` contains every token of the seed `query` as a *whole word*
-/// (case-insensitive), comparing token-set-wise so the register's
-/// `"SURNAME, FIRSTNAME"` format matches a `"Firstname Surname"` seed regardless
-/// of order. Whole-word (not substring) so `"li"` doesn't match inside `"Ali"`.
-pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words = tokens(name);
-    let seed = tokens(query);
-    !seed.is_empty()
-        && seed
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
-}
-
 /// Build the geocodable locality string from the recorded address parts. Returns
 /// `None` when nothing locates.
 pub(super) fn liquidator_locality(rec: &Map<String, Value>) -> Option<String> {
@@ -125,7 +103,7 @@ pub(super) fn records_to_entities(
             continue;
         };
         let name = raw_name.replace('\u{a0}', " ");
-        let exact = name_matches_query(&name, query);
+        let exact = crate::util::target_match::name_all_tokens_match(&name, query);
         let conf = if exact {
             PERSON_EXACT
         } else {

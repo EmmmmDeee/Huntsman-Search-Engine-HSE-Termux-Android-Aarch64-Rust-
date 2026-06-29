@@ -96,6 +96,34 @@ impl TargetMatch {
     }
 }
 
+/// Whole-word, all-token, order-independent, case-insensitive name match: every
+/// token of `query` must appear as a whole word in `candidate`.
+///
+/// The single shared definition of the conservative name-field comparison the
+/// data.gov.au register modules (`agor`, the `asic_*` family) use to decide an
+/// *exact* name hit before promoting a row to full confidence — previously
+/// copied verbatim into ten module `entity.rs` files. Tokenisation splits on any
+/// non-alphanumeric run, so it is agnostic to the register's name shape: a
+/// register's `"SURNAME, FIRSTNAME"` and a seed's `"First Surname"` both reduce
+/// to the same token set and match regardless of order, while the whole-word
+/// requirement blocks a substring false-positive (`"Acme"` does not match
+/// `"ACMEX"`, `"Ben"` does not match `"Benjamin"`). An empty `query` never
+/// matches — a blank seed must not promote every row.
+#[must_use]
+pub fn name_all_tokens_match(candidate: &str, query: &str) -> bool {
+    fn tokens(s: &str) -> Vec<&str> {
+        s.split(|c: char| !c.is_alphanumeric())
+            .filter(|t| !t.is_empty())
+            .collect()
+    }
+    let words = tokens(candidate);
+    let seed = tokens(query);
+    !seed.is_empty()
+        && seed
+            .iter()
+            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

@@ -75,20 +75,6 @@ pub(super) fn looks_like_org(name: &str) -> bool {
         .any(|w| SUFFIXES.iter().any(|s| w.eq_ignore_ascii_case(s)))
 }
 
-/// True if `name` contains every token of the seed `query` as a *whole word*
-/// (case-insensitive), comparing token-set-wise so the register's
-/// `"SURNAME, FIRSTNAME"` (person) or `"NAME PTY LTD"` (org) format matches a
-/// seed regardless of order. Whole-word (not substring) so `"li"` doesn't match
-/// inside `"Ali"`.
-pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words = tokens(name);
-    let seed = tokens(query);
-    !seed.is_empty()
-        && seed
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
-}
-
 /// True if the row's recorded ABN/ACN equals the seed's digits exactly (only
 /// meaningful when the seed is an `AbnAcn`). A digit-only equality so spacing
 /// never defeats the match.
@@ -107,7 +93,8 @@ pub(super) fn record_is_exact(rec: &Map<String, Value>, query: &str, abn_query: 
     if abn_query && abn_matches_query(rec, query) {
         return true;
     }
-    field_str(rec, "CRED_REP_NAME").is_some_and(|n| name_matches_query(&n, query))
+    field_str(rec, "CRED_REP_NAME")
+        .is_some_and(|n| crate::util::target_match::name_all_tokens_match(&n, query))
 }
 
 /// Build the geocodable locality string from the recorded address parts

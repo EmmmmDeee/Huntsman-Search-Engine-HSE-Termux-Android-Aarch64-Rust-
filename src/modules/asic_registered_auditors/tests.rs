@@ -1,6 +1,6 @@
 use super::entity::{
-    acn_matches_query, auditor_evidence, auditor_locality, name_matches_query, pick_resource,
-    record_is_exact, records_to_entities,
+    acn_matches_query, auditor_evidence, auditor_locality, pick_resource, record_is_exact,
+    records_to_entities,
 };
 use super::*;
 use crate::core::entity::EntityKind;
@@ -69,8 +69,14 @@ fn acn_seed_matches_recorded_acn_exactly() {
 
 #[test]
 fn name_seed_matches_whole_word() {
-    assert!(name_matches_query("ACME AUDIT PTY LTD", "Acme Audit"));
-    assert!(!name_matches_query("ACME AUDIT PTY LTD", "Acme Holdings"));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "ACME AUDIT PTY LTD",
+        "Acme Audit"
+    ));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "ACME AUDIT PTY LTD",
+        "Acme Holdings"
+    ));
 }
 
 #[test]

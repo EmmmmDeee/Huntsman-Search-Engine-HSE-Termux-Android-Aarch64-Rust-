@@ -1,6 +1,6 @@
 use super::entity::{
-    abn_matches_query, name_matches_query, pick_resource, record_is_exact, records_to_entities,
-    smsf_evidence, smsf_locality, status_is_suspended,
+    abn_matches_query, pick_resource, record_is_exact, records_to_entities, smsf_evidence,
+    smsf_locality, status_is_suspended,
 };
 use super::*;
 use crate::core::entity::EntityKind;
@@ -66,11 +66,23 @@ fn pick_resource_prefers_current_then_first_active() {
 #[test]
 fn plain_first_last_matches_and_whole_word_guards() {
     // SMSF_NAME is plain "First Last" — a "First Last" seed matches directly.
-    assert!(name_matches_query("Benjamin Jenkins", "Benjamin Jenkins"));
-    assert!(name_matches_query("Benjamin Jenkins", "jenkins benjamin"));
-    assert!(!name_matches_query("Benjamin Jenkins", "Mary Jenkins"));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "Benjamin Jenkins",
+        "Benjamin Jenkins"
+    ));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "Benjamin Jenkins",
+        "jenkins benjamin"
+    ));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "Benjamin Jenkins",
+        "Mary Jenkins"
+    ));
     // Whole word, not substring: "Ben" must not match inside "Benjamin".
-    assert!(!name_matches_query("Benjamin Jenkins", "Ben Jenkins"));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "Benjamin Jenkins",
+        "Ben Jenkins"
+    ));
 }
 
 #[test]

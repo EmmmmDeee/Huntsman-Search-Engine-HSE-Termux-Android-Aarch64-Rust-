@@ -1,6 +1,6 @@
 use super::entity::{
-    abn_matches_query, licensee_coords, licensee_evidence, licensee_locality, name_matches_query,
-    pick_resource, record_is_exact, records_to_entities,
+    abn_matches_query, licensee_coords, licensee_evidence, licensee_locality, pick_resource,
+    record_is_exact, records_to_entities,
 };
 use super::*;
 use crate::core::entity::EntityKind;
@@ -71,12 +71,12 @@ fn abn_seed_matches_recorded_abn_exactly() {
 
 #[test]
 fn name_seed_matches_whole_word() {
-    assert!(name_matches_query(
+    assert!(crate::util::target_match::name_all_tokens_match(
         "ACME FINANCIAL PTY LTD",
         "Acme Financial"
     ));
     // Missing a seed token → not a match.
-    assert!(!name_matches_query(
+    assert!(!crate::util::target_match::name_all_tokens_match(
         "ACME FINANCIAL PTY LTD",
         "Acme Holdings"
     ));

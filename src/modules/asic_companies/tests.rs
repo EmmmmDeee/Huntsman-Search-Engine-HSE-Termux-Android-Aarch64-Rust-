@@ -1,6 +1,5 @@
 use super::entity::{
-    acn_matches_query, company_evidence, name_matches_query, pick_resource, record_is_exact,
-    records_to_entities,
+    acn_matches_query, company_evidence, pick_resource, record_is_exact, records_to_entities,
 };
 use super::*;
 use crate::core::entity::EntityKind;
@@ -77,10 +76,19 @@ fn acn_seed_matches_recorded_acn_exactly() {
 
 #[test]
 fn name_seed_matches_whole_word() {
-    assert!(name_matches_query("ACME WIDGETS PTY LTD", "Acme Widgets"));
-    assert!(!name_matches_query("ACME WIDGETS PTY LTD", "Acme Holdings"));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "ACME WIDGETS PTY LTD",
+        "Acme Widgets"
+    ));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "ACME WIDGETS PTY LTD",
+        "Acme Holdings"
+    ));
     // A common token must not match inside another word.
-    assert!(!name_matches_query("ACMEX PTY LTD", "Acme"));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "ACMEX PTY LTD",
+        "Acme"
+    ));
 }
 
 #[test]

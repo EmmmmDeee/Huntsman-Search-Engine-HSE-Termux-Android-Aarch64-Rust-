@@ -1,6 +1,6 @@
 use super::entity::{
-    abn_matches_query, looks_like_org, name_matches_query, pick_resource, record_is_exact,
-    records_to_entities, rep_evidence, rep_locality,
+    abn_matches_query, looks_like_org, pick_resource, record_is_exact, records_to_entities,
+    rep_evidence, rep_locality,
 };
 use super::*;
 use crate::core::entity::EntityKind;
@@ -72,11 +72,23 @@ fn org_person_shape_detection() {
 
 #[test]
 fn surname_comma_first_matches_first_surname_seed() {
-    assert!(name_matches_query("WEAVER, BRUCE", "Bruce Weaver"));
-    assert!(name_matches_query("WEAVER, BRUCE", "weaver bruce"));
-    assert!(!name_matches_query("WEAVER, BRUCE", "Jane Weaver"));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "WEAVER, BRUCE",
+        "Bruce Weaver"
+    ));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "WEAVER, BRUCE",
+        "weaver bruce"
+    ));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "WEAVER, BRUCE",
+        "Jane Weaver"
+    ));
     // Whole word, not substring: must not match inside "WEAVERLY".
-    assert!(!name_matches_query("WEAVERLY, BRUCE", "Bruce Weaver"));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "WEAVERLY, BRUCE",
+        "Bruce Weaver"
+    ));
 }
 
 #[test]

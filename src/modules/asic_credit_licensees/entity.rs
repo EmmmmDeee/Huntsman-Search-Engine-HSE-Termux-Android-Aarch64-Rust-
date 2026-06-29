@@ -29,30 +29,10 @@ pub(super) fn pick_resource(resources: &[Resource]) -> Option<String> {
     current.or_else(|| active.iter().find_map(|r| r.id.clone()))
 }
 
-/// Split a value into its significant alphanumeric whole-word tokens
-/// (case-preserved).
-fn tokens(s: &str) -> Vec<&str> {
-    s.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect()
-}
-
 /// Keep only the ASCII digits of a value (ABN/ACN comparison is digit-only:
 /// `"51 824 753 556"` and `"51824753556"` are the same identifier).
 fn digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
-}
-
-/// True if `name` contains every token of the seed `query` as a *whole word*
-/// (case-insensitive). Whole-word (not substring) so a seed token like `"li"`
-/// doesn't match inside `"Ali"`.
-pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words = tokens(name);
-    let seed = tokens(query);
-    !seed.is_empty()
-        && seed
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 /// True if the row's recorded ABN/ACN equals the seed's digits exactly (only
@@ -73,7 +53,8 @@ pub(super) fn record_is_exact(rec: &Map<String, Value>, query: &str, abn_query: 
     if abn_query && abn_matches_query(rec, query) {
         return true;
     }
-    field_str(rec, "CRED_LIC_NAME").is_some_and(|n| name_matches_query(&n, query))
+    field_str(rec, "CRED_LIC_NAME")
+        .is_some_and(|n| crate::util::target_match::name_all_tokens_match(&n, query))
 }
 
 /// Build the geocodable locality string from the recorded address parts

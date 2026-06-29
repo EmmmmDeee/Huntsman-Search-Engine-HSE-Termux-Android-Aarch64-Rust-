@@ -61,25 +61,6 @@ pub(super) fn body_abn(rec: &Map<String, Value>) -> Option<String> {
     (digits.len() == 11).then_some(digits)
 }
 
-/// True if `name` contains every token of the seed `query` as a *whole word*
-/// (case-insensitive). Whole-word (not substring) so a seed token like `"tax"`
-/// doesn't match inside `"taxation"`. Tokenises on non-alphanumeric boundaries
-/// and compares with `eq_ignore_ascii_case` (no per-token `String` allocation).
-pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words: Vec<&str> = name
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    let tokens: Vec<&str> = query
-        .split(|c: char| !c.is_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .collect();
-    !tokens.is_empty()
-        && tokens
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
-}
-
 /// Whether this row is an exact match for the seed.
 ///
 /// * ABN seed (`abn_query`): the body's ABN equals the seed's 11 digits — an
@@ -91,7 +72,7 @@ pub(super) fn record_is_exact(rec: &Map<String, Value>, query: &str, abn_query: 
     }
     field_str(rec, "Title")
         .as_deref()
-        .is_some_and(|n| name_matches_query(n, query))
+        .is_some_and(|n| crate::util::target_match::name_all_tokens_match(n, query))
 }
 
 /// Build the geocodable head-office locality string from the address fields

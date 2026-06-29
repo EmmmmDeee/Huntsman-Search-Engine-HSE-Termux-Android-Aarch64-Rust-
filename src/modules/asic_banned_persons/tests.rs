@@ -1,6 +1,4 @@
-use super::entity::{
-    name_matches_query, person_evidence, person_locality, pick_resource, records_to_entities,
-};
+use super::entity::{person_evidence, person_locality, pick_resource, records_to_entities};
 use super::*;
 use crate::core::entity::EntityKind;
 use crate::core::module::{ModuleCategory, ModuleCost};
@@ -81,12 +79,24 @@ fn pick_resource_prefers_current_then_first_active() {
 fn surname_comma_first_matches_first_surname_seed() {
     // The register stores "SURNAME, FIRSTNAME"; a "Firstname Surname" seed must
     // match regardless of order.
-    assert!(name_matches_query("SMITH, JOHN", "John Smith"));
-    assert!(name_matches_query("SMITH, JOHN", "smith john"));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "SMITH, JOHN",
+        "John Smith"
+    ));
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "SMITH, JOHN",
+        "smith john"
+    ));
     // Missing a seed token → not a match.
-    assert!(!name_matches_query("SMITH, JOHN", "Jane Smith"));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "SMITH, JOHN",
+        "Jane Smith"
+    ));
     // Whole word, not substring: "smith" must not match inside "SMITHSON".
-    assert!(!name_matches_query("SMITHSON, JOHN", "John Smith"));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "SMITHSON, JOHN",
+        "John Smith"
+    ));
 }
 
 #[test]

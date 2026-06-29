@@ -1,6 +1,6 @@
 use super::entity::{
-    body_abn, body_evidence, head_office_locality, name_matches_query, pick_resource,
-    record_is_exact, records_to_entities,
+    body_abn, body_evidence, head_office_locality, pick_resource, record_is_exact,
+    records_to_entities,
 };
 use super::*;
 use crate::core::entity::EntityKind;
@@ -95,20 +95,29 @@ fn pick_resource_falls_back_to_first_active_when_no_date() {
 
 #[test]
 fn name_match_is_whole_word_not_substring() {
-    assert!(name_matches_query("Australian Taxation Office", "taxation"));
-    assert!(name_matches_query(
+    assert!(crate::util::target_match::name_all_tokens_match(
+        "Australian Taxation Office",
+        "taxation"
+    ));
+    assert!(crate::util::target_match::name_all_tokens_match(
         "Australian Taxation Office",
         "taxation office"
     ));
     // Order-independent, punctuation-split.
-    assert!(name_matches_query(
+    assert!(crate::util::target_match::name_all_tokens_match(
         "Department of the Treasury",
         "treasury department"
     ));
     // A loose full-text hit that lacks a seed token is NOT exact.
-    assert!(!name_matches_query("Tax Practitioners Board", "taxation"));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "Tax Practitioners Board",
+        "taxation"
+    ));
     // Whole word, not substring: "tax" must not match inside "taxation".
-    assert!(!name_matches_query("Australian Taxation Office", "tax"));
+    assert!(!crate::util::target_match::name_all_tokens_match(
+        "Australian Taxation Office",
+        "tax"
+    ));
 }
 
 #[test]

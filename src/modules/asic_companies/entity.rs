@@ -33,30 +33,9 @@ pub(super) fn pick_resource(resources: &[Resource]) -> Option<String> {
     current.or_else(|| active.iter().find_map(|r| r.id.clone()))
 }
 
-/// Split a value into its significant alphanumeric whole-word tokens
-/// (case-preserved).
-fn tokens(s: &str) -> Vec<&str> {
-    s.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| !t.is_empty())
-        .collect()
-}
-
 /// Keep only the ASCII digits of a value (ACN comparison is digit-only).
 fn digits(s: &str) -> String {
     s.chars().filter(char::is_ascii_digit).collect()
-}
-
-/// True if `name` contains every token of the seed `query` as a *whole word*
-/// (case-insensitive). Whole-word (not substring) so a seed token like `"li"`
-/// doesn't match inside `"Ali"` — the conservative gate that stops a common
-/// token promoting unrelated companies across the 4.4M-row register.
-pub(super) fn name_matches_query(name: &str, query: &str) -> bool {
-    let words = tokens(name);
-    let seed = tokens(query);
-    !seed.is_empty()
-        && seed
-            .iter()
-            .all(|tok| words.iter().any(|w| w.eq_ignore_ascii_case(tok)))
 }
 
 /// True if the row's recorded ACN equals the seed's digits exactly (only
@@ -77,7 +56,8 @@ pub(super) fn record_is_exact(rec: &Map<String, Value>, query: &str, abn_query: 
     if abn_query && acn_matches_query(rec, query) {
         return true;
     }
-    field_str(rec, "Company Name").is_some_and(|n| name_matches_query(&n, query))
+    field_str(rec, "Company Name")
+        .is_some_and(|n| crate::util::target_match::name_all_tokens_match(&n, query))
 }
 
 /// Attach every present register field to a company's evidence so nothing the
