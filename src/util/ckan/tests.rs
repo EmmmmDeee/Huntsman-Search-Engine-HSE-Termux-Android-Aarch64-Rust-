@@ -88,3 +88,32 @@ use super::*;
         assert_eq!(no_total.total, None);
         assert!(no_total.records.is_empty());
     }
+
+    #[test]
+    fn resource_cache_hits_within_ttl_and_expires_after() {
+        // Distinct slug per test so the process-global cache can't collide with
+        // another test (or a real resolve) running in the same binary.
+        let slug = "test-cache-slug-ttl";
+        let now = 1_000_000u64;
+        assert_eq!(cached_resource(slug, now), None, "cold cache is a miss");
+        cache_resource(slug, "res-abc", now, RESOURCE_TTL_SECS);
+        assert_eq!(
+            cached_resource(slug, now + 60),
+            Some("res-abc".to_string()),
+            "within TTL → hit"
+        );
+        assert_eq!(
+            cached_resource(slug, now + RESOURCE_TTL_SECS),
+            None,
+            "at/after expiry → miss (caller re-resolves)"
+        );
+    }
+
+    #[test]
+    fn resource_cache_overwrite_replaces_id_and_expiry() {
+        let slug = "test-cache-slug-overwrite";
+        let now = 2_000_000u64;
+        cache_resource(slug, "old", now, 100);
+        cache_resource(slug, "new", now, 100);
+        assert_eq!(cached_resource(slug, now + 10), Some("new".to_string()));
+    }

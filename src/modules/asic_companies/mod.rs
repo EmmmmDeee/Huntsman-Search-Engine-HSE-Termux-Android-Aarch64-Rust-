@@ -152,20 +152,35 @@ impl Module for AsicCompanies {
 
         // Step 1: resolve the current datastore-active resource id (preferring the
         // "Current" resource, never the "Help File").
-        let pkg: PackageResponse = fetch_json(
-            &ctx.http,
-            SRC,
-            &crate::util::ckan::package_show_url(ACTION_BASE, DATASET_ID),
-        )
-        .await?;
-        if pkg.success == Some(false) {
-            return Err(crate::core::error::Error::module(
+        // Reuse the shared TTL cache so a warm `serve`/`live` process skips the
+        // `package_show` round-trip — one request per slug per window instead of
+        // one per scan.
+        let now = crate::core::entity::unix_now();
+        let resource_id = if let Some(id) = crate::util::ckan::cached_resource(DATASET_ID, now) {
+            id
+        } else {
+            let pkg: PackageResponse = fetch_json(
+                &ctx.http,
                 SRC,
-                "CKAN package_show returned success=false (bad dataset id or portal error)",
-            ));
-        }
-        let Some(resource_id) = pkg.result.and_then(|p| entity::pick_resource(&p.resources)) else {
-            return Ok(ModuleResult::new());
+                &crate::util::ckan::package_show_url(ACTION_BASE, DATASET_ID),
+            )
+            .await?;
+            if pkg.success == Some(false) {
+                return Err(crate::core::error::Error::module(
+                    SRC,
+                    "CKAN package_show returned success=false (bad dataset id or portal error)",
+                ));
+            }
+            let Some(id) = pkg.result.and_then(|p| entity::pick_resource(&p.resources)) else {
+                return Ok(ModuleResult::new());
+            };
+            crate::util::ckan::cache_resource(
+                DATASET_ID,
+                &id,
+                now,
+                crate::util::ckan::RESOURCE_TTL_SECS,
+            );
+            id
         };
 
         // Step 2: full-text search the resolved resource.

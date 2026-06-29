@@ -8,6 +8,9 @@
 //! contract, not per-portal), so they live here once rather than being
 //! re-implemented — and re-tested — in each module.
 
+use std::collections::HashMap;
+use std::sync::{Mutex, OnceLock};
+
 use serde::Deserialize;
 use serde_json::{Map, Value};
 
@@ -110,6 +113,53 @@ pub fn package_show_url(action_base: &str, dataset_id: &str) -> String {
         "{action_base}/package_show?id={}",
         crate::util::http::urlencode(dataset_id)
     )
+}
+
+/// Default time-to-live (seconds) for a cached datastore-resource resolution.
+///
+/// `package_show` maps a stable dataset slug to the id of its *current*
+/// datastore-active resource. Publishers rotate that resource on a slow cadence
+/// (the AGOR / ASIC registers refresh roughly quarterly), so re-running
+/// `package_show` on every scan is a wasted round-trip — and on a metered /
+/// battery-bound Termux link every CKAN module otherwise spends TWO requests per
+/// scan (resolve + search). Six hours is far shorter than any real rotation
+/// window, so a cached id is never meaningfully stale, while a long-lived
+/// `serve` / `live` process collapses the resolve step to one request per slug
+/// per window.
+pub const RESOURCE_TTL_SECS: u64 = 6 * 3600;
+
+/// Process-global resolved-resource cache: dataset slug -> (resource_id, expiry).
+/// `std::sync::Mutex` (matching `util::response_cache`); the critical section is
+/// a single map probe/insert, never held across an `.await`, so it cannot stall
+/// the reactor.
+fn resource_cache() -> &'static Mutex<HashMap<String, (String, u64)>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, (String, u64)>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// The cached current resource id for `slug`, if present and not yet expired at
+/// `now` (unix seconds). A miss — absent or expired — returns `None`, so the
+/// caller falls back to a live `package_show` resolve and records the result via
+/// [`cache_resource`]. `now` is passed in (not read here) so this layer stays
+/// free of any `core` time dependency. Lock poisoning degrades to a miss: the
+/// cache is a best-effort optimisation, never a correctness dependency.
+#[must_use]
+pub fn cached_resource(slug: &str, now: u64) -> Option<String> {
+    let guard = resource_cache().lock().ok()?;
+    let (id, expiry) = guard.get(slug)?;
+    (now < *expiry).then(|| id.clone())
+}
+
+/// Record `resource_id` as the current resolution for `slug`, valid for `ttl`
+/// seconds from `now`. Best-effort: a poisoned lock is silently ignored (the next
+/// resolve simply re-fetches). Pass [`RESOURCE_TTL_SECS`] for the default window.
+pub fn cache_resource(slug: &str, resource_id: &str, now: u64, ttl: u64) {
+    if let Ok(mut guard) = resource_cache().lock() {
+        guard.insert(
+            slug.to_string(),
+            (resource_id.to_string(), now.saturating_add(ttl)),
+        );
+    }
 }
 
 #[cfg(test)]
