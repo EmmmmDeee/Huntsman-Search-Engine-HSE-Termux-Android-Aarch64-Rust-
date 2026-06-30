@@ -131,6 +131,32 @@ pub fn is_common_collision(hash: &str) -> bool {
     crack_common(hash).is_some()
 }
 
+/// Whether `plaintext` is one of the [`COMMON_PASSWORDS`] (case-insensitive). A
+/// common password is shared by countless unrelated people, so it is NOT an
+/// identity-linking secret — the dual of [`is_common_collision`] for the cleartext
+/// side.
+#[must_use]
+pub fn is_common_password(plaintext: &str) -> bool {
+    let p = plaintext.trim().to_ascii_lowercase();
+    COMMON_PASSWORDS.contains(&p.as_str())
+}
+
+/// The MD5 / SHA-1 / SHA-256 / SHA-512 hex digests of `plaintext` — the candidate
+/// representations the SAME password would take if a different breach stored it
+/// hashed. A correlator recomputes these for the plaintexts ALREADY in hand and
+/// bridges a leaked plaintext to the same password leaked as a hash elsewhere —
+/// a dictionary match (MITRE ATT&CK T1110.002) over the scan's own recovered
+/// secrets, never a brute force. Offline; no I/O.
+#[must_use]
+pub fn digests_of(plaintext: &str) -> [String; 4] {
+    [
+        md5_hex(plaintext),
+        sha1_hex(plaintext),
+        sha256_hex(plaintext),
+        sha512_hex(plaintext),
+    ]
+}
+
 fn md5_hex(s: &str) -> String {
     hex::encode(md5::Md5::digest(s.as_bytes()))
 }

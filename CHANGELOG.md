@@ -11,6 +11,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Cross-representation credential linking — a plaintext leaked in one breach now
+  bridges to the SAME password leaked as a HASH in another.** AU-105 recomputes the
+  MD5/SHA-1/SHA-256/SHA-512 digests of every UNCOMMON plaintext password already in
+  hand (`util::hashcat::digests_of`) and, in a second pass, unifies a leaked hash
+  that matches one of them with that plaintext's reuse group. So an account whose
+  breach leaked the cleartext and an account whose breach leaked only the digest of
+  the same password are recognised as one reused secret across both breaches
+  (graded High — the plaintext is known). It is a dictionary match (MITRE ATT&CK
+  T1110.002) over the scan's OWN recovered secrets — never a brute force, no GPU,
+  no network, adding ZERO query noise (pure offline synthesis of results already
+  collected). Common passwords are excluded from the bridge (a shared
+  `md5("password")` is a collision, not a link), so the synergy only strengthens
+  precise links. Termux aarch64 / no-root safe. Proven by new tests (the
+  plaintext→hash bridge spanning two breaches, `digests_of` round-trip,
+  case-insensitive common-password membership) and the full gate.
 - **Offline hash intelligence (`util::hashcat`) — a "hashcat-lite" that empowers
   raw breach hashes without a GPU, a network call, or root (Termux aarch64 safe).**
   A new shared module turns a raw password digest into intelligence three ways:

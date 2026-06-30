@@ -1267,15 +1267,26 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     // grouping key (`p:`/`h:` namespaced) -> (plaintext?, distinct breaches, uids).
     let mut by_secret: BTreeMap<String, (bool, BTreeSet<String>, BTreeSet<String>)> =
         BTreeMap::new();
+    // Bridge from each UNCOMMON plaintext's candidate digests back to the plaintext,
+    // so a leaked HASH of that same password (in another breach) unifies with the
+    // plaintext group: cross-representation reuse. Offline — only the plaintexts
+    // already in hand are hashed, never a brute force (MITRE T1110.002, dictionary).
+    let mut digest_bridge: std::collections::HashMap<String, String> =
+        std::collections::HashMap::new();
+
+    // The breach a record came from — the unit reuse is measured across.
+    let breach_of = |ev: &crate::core::entity::Evidence| -> String {
+        ev.attributes
+            .get("dbname")
+            .or_else(|| ev.attributes.get("breach"))
+            .map_or(ev.source.as_str(), String::as_str)
+            .to_string()
+    };
+
+    // Pass 1 — plaintext secrets, and the digest bridge for the uncommon ones.
     for e in entities {
         for ev in &e.evidence {
-            // The breach this record came from — the unit reuse is measured across.
-            let breach = ev
-                .attributes
-                .get("dbname")
-                .or_else(|| ev.attributes.get("breach"))
-                .map_or(ev.source.as_str(), String::as_str)
-                .to_string();
+            let breach = breach_of(ev);
             for k in PLAINTEXT_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
                     let s = v.trim();
@@ -1287,24 +1298,51 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
                         ));
                         entry.1.insert(breach.clone());
                         entry.2.insert(e.uid.clone());
+                        // A COMMON password is shared by unrelated people, so its
+                        // digests must not bridge (that would be a collision link).
+                        if !crate::util::hashcat::is_common_password(s) {
+                            for d in crate::util::hashcat::digests_of(s) {
+                                digest_bridge.entry(d).or_insert_with(|| s.to_string());
+                            }
+                        }
                     }
                 }
             }
+        }
+    }
+
+    // Pass 2 — hashes. A hash that equals a candidate digest of a known plaintext
+    // unifies with that plaintext's group (cross-representation reuse); otherwise a
+    // non-common hash groups by its own value, and a common-password hash is a
+    // collision and is skipped (offline `crack_common`).
+    for e in entities {
+        for ev in &e.evidence {
+            let breach = breach_of(ev);
             for k in HASH_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
                     let s = v.trim();
-                    // Skip a hash whose plaintext is a known common password
-                    // (offline `crack_common`): the same `md5("password")` recurs
-                    // for countless unrelated people, so sharing it is NOT an
-                    // identity link — grouping on it would manufacture false reuse
-                    // findings. Hash intelligence here reduces noise, not adds it.
-                    if s.len() >= 8
-                        && !s.contains('@')
-                        && !crate::util::hashcat::is_common_collision(s)
-                    {
-                        let entry = by_secret
-                            .entry(format!("h:{}", s.to_lowercase()))
-                            .or_insert((false, BTreeSet::new(), BTreeSet::new()));
+                    if s.len() < 8 || s.contains('@') {
+                        continue;
+                    }
+                    let lower = s.to_lowercase();
+                    let hex_len = lower.bytes().take_while(u8::is_ascii_hexdigit).count();
+                    let bridged = matches!(hex_len, 32 | 40 | 64 | 128)
+                        .then(|| digest_bridge.get(&lower[..hex_len]))
+                        .flatten();
+                    if let Some(plaintext) = bridged {
+                        let entry = by_secret.entry(format!("p:{plaintext}")).or_insert((
+                            true,
+                            BTreeSet::new(),
+                            BTreeSet::new(),
+                        ));
+                        entry.1.insert(breach.clone());
+                        entry.2.insert(e.uid.clone());
+                    } else if !crate::util::hashcat::is_common_collision(s) {
+                        let entry = by_secret.entry(format!("h:{lower}")).or_insert((
+                            false,
+                            BTreeSet::new(),
+                            BTreeSet::new(),
+                        ));
                         entry.1.insert(breach.clone());
                         entry.2.insert(e.uid.clone());
                     }

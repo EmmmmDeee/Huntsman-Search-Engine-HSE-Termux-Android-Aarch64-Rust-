@@ -90,3 +90,23 @@ fn crack_common_resolves_famous_weak_hashes_and_none_for_strong() {
     assert!(is_common_collision("5f4dcc3b5aa765d61d8327deb882cf99"));
     assert!(!is_common_collision("00112233445566778899aabbccddeeff"));
 }
+
+#[test]
+fn digests_of_produces_the_four_resolvable_digests() {
+    // The four digests a plaintext would take if stored hashed — exactly what
+    // `crack_common` resolves, proving the bridge and the table agree.
+    let d = digests_of("password");
+    assert_eq!(d.len(), 4);
+    assert_eq!(crack_common(&d[0]), Some("password")); // md5
+    assert_eq!(crack_common(&d[1]), Some("password")); // sha1
+    assert_eq!(crack_common(&d[2]), Some("password")); // sha256
+    assert_eq!(crack_common(&d[3]), Some("password")); // sha512
+}
+
+#[test]
+fn is_common_password_flags_membership_case_insensitively() {
+    assert!(is_common_password("password"));
+    assert!(is_common_password("PASSWORD"));
+    assert!(is_common_password("  qwerty "));
+    assert!(!is_common_password("Tr0ub4dor&3xY-uncommon"));
+}

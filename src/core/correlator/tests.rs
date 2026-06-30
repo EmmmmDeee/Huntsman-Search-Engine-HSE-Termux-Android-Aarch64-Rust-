@@ -3158,6 +3158,39 @@ fn au105_does_not_link_on_a_common_password_hash_collision() {
 }
 
 #[test]
+fn au105_bridges_a_plaintext_to_the_same_password_leaked_as_a_hash() {
+    // The synergy: account A leaked the PLAINTEXT in one breach; account B leaked a
+    // HASH of the SAME (uncommon) password in another. Recomputing the plaintext's
+    // digests offline bridges them into ONE reuse finding spanning both breaches —
+    // High, because the plaintext is known. No brute force, no network query.
+    let pw = "Tr0ub4dor&3xY-uncommon";
+    let digs = crate::util::hashcat::digests_of(pw);
+    let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.9, "s");
+    a.add_evidence(
+        Evidence::new("b", "rec")
+            .with_attr("dbname", "breach1")
+            .with_attr("password", pw),
+    );
+    let mut b = Entity::new(EntityKind::Username, "alias", 0.9, "s");
+    b.add_evidence(
+        Evidence::new("b", "rec")
+            .with_attr("dbname", "breach2")
+            .with_attr("password_hash", digs[1].as_str()), // sha1(pw)
+    );
+    let r = super::rules::rule_au_105_credential_reuse(&[a, b], "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "plaintext + its hash across two breaches = one reuse"
+    );
+    assert_eq!(
+        r[0].severity,
+        Severity::High,
+        "the plaintext is known → High"
+    );
+}
+
+#[test]
 fn au105_silent_for_a_single_use_secret() {
     // A password seen in only ONE breach is not reuse → no finding.
     let mut e = Entity::new(EntityKind::Email, "s@x.com", 0.9, "s");
