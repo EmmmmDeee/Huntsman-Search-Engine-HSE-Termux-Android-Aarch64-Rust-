@@ -11,6 +11,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`see_know` breach/stealer hashes now get the same offline hash intelligence as
+  DeHashed/OathNet.** Its credential path minted a bare `Password` entity for a
+  leaked hash and stopped there, while the sibling pools classify and crack it. It
+  now applies `util::hashcat`: a hash value gains `hash:<algo>` + `crackable:fast|slow`
+  tags, an appended salt is flagged `salted`, and a common-password digest is
+  reverse-looked-up offline (`crack_common`) — surfacing the recovered plaintext as
+  a first-class `Password` node tagged `cracked`/`from-hash`. Pure, no network, no
+  GPU (Termux-safe); a plaintext password is unaffected (`identify_hash` → `None`).
+  Regression-tested (md5 of a common password → algorithm/crackable/cracked tags +
+  the recovered plaintext; a plaintext password gains no hash tags).
+- **`trove_au` now emits each newspaper article as a pivotable `Url` source instead
+  of dropping it.** `TroveArticle` deserialized `id`/`title_id`/`snippet`/`url` but
+  the module folded only the first five headlines into one org-evidence attribute
+  and threw the rest away — including the direct Trove article link. Each article's
+  `url` is now a `Url` entity tagged `trove`/`newspaper-archive`/`source-document`,
+  carrying the title/date/snippet/id on its evidence (the no-omission directive), so
+  a dated Australian newspaper mention becomes a navigable, correlatable artifact.
+  Capped, http-only, deduped, deterministic. The extraction was refactored into a
+  pure `build_entities` and unit-tested (org + per-article Url, dedup, url-less
+  skip, no-hits empty).
 - **Domain seeds get a progressive subdomain-walk dork.** Subdomain discovery rode
   on a single `site:{v} -site:www.{v}` dork; a second dork now also excludes the
   common subdomains (`mail`/`blog`/`shop`/`m`), pushing the engine to reveal the

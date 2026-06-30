@@ -87,7 +87,9 @@ impl Module for TroveAu {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Organisation];
+        // The org headline, plus each newspaper article as a pivotable Url source
+        // (deserialized all along, previously dropped).
+        const KINDS: &[EntityKind] = &[EntityKind::Organisation, EntityKind::Url];
         KINDS
     }
 
@@ -120,16 +122,14 @@ impl Module for TroveAu {
         };
 
         let body: TroveResp = crate::util::http::json_decode(SRC, resp).await?;
-        let mut result = ModuleResult::new();
 
         let zones = match body.response.and_then(|r| r.zone) {
             Some(z) => z,
-            None => return Ok(result),
+            None => return Ok(ModuleResult::new()),
         };
 
         let mut total_hits: u64 = 0;
         let mut articles: Vec<TroveArticle> = Vec::new();
-
         for zone in zones {
             if let Some(records) = zone.records {
                 if let Some(t) = records.total {
@@ -141,39 +141,81 @@ impl Module for TroveAu {
             }
         }
 
-        if total_hits == 0 {
-            return Ok(result);
-        }
-
-        let mut org = Entity::new(
-            EntityKind::Organisation,
+        Ok(build_entities(
             target.value.trim(),
-            0.65,
+            total_hits,
+            &articles,
             &ctx.scan_id,
-        );
-        org.tag("trove");
-        org.tag("newspaper-archive");
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!(
-                "Trove newspaper archive: {total_hits} mentions of '{}'",
-                target.value.trim()
-            ),
-        )
-        .with_attr("total_hits", total_hits.to_string());
-
-        for article in articles.iter().take(5) {
-            if let Some(title) = &article.title
-                && let Some(date) = &article.date
-            {
-                ev = ev.with_attr("article", format!("{date}: {title}"));
-            }
-        }
-
-        org.add_evidence(ev);
-        result.push(org);
-
-        Ok(result)
+        ))
     }
+}
+
+/// Build the org headline plus a pivotable `Url` SOURCE per newspaper article.
+/// Pure (no I/O) so the extraction is unit-tested directly. Returns empty when
+/// the archive reported no hits.
+fn build_entities(
+    target_value: &str,
+    total_hits: u64,
+    articles: &[TroveArticle],
+    scan_id: &str,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    if total_hits == 0 {
+        return result;
+    }
+
+    let mut org = Entity::new(EntityKind::Organisation, target_value, 0.65, scan_id);
+    org.tag("trove");
+    org.tag("newspaper-archive");
+    let mut ev = Evidence::new(
+        SRC,
+        format!("Trove newspaper archive: {total_hits} mentions of '{target_value}'"),
+    )
+    .with_attr("total_hits", total_hits.to_string());
+    for article in articles.iter().take(5) {
+        if let Some(title) = &article.title
+            && let Some(date) = &article.date
+        {
+            ev = ev.with_attr("article", format!("{date}: {title}"));
+        }
+    }
+    org.add_evidence(ev);
+    result.push(org);
+
+    // Surface each article as a pivotable `Url` SOURCE — a dated Australian
+    // newspaper mention of the subject the operator can open and read. The
+    // url / id / title / snippet were deserialized into `TroveArticle` all along
+    // but never emitted; only the headline+date were folded into the org evidence
+    // above. Capped, http-only, deduped, deterministic (input order).
+    let mut seen_urls = std::collections::HashSet::new();
+    for article in articles.iter().take(10) {
+        let Some(u) = article.url.as_deref() else {
+            continue;
+        };
+        if !(u.starts_with("http://") || u.starts_with("https://"))
+            || !seen_urls.insert(u.to_string())
+        {
+            continue;
+        }
+        let mut url_e = Entity::new(EntityKind::Url, u, 0.55, scan_id);
+        url_e.tag("trove");
+        url_e.tag("newspaper-archive");
+        url_e.tag("source-document");
+        let mut uev = Evidence::new(SRC, "Trove newspaper article mentioning the subject");
+        if let Some(t) = &article.title {
+            uev = uev.with_attr("title", t);
+        }
+        if let Some(d) = &article.date {
+            uev = uev.with_attr("date", d);
+        }
+        if let Some(s) = &article.snippet {
+            uev = uev.with_attr("snippet", s);
+        }
+        if let Some(id) = &article.id {
+            uev = uev.with_attr("article_id", id);
+        }
+        url_e.add_evidence(uev);
+        result.push(url_e);
+    }
+    result
 }

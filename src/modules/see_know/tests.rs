@@ -394,6 +394,78 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn extract_entities_enriches_a_breach_hash_with_offline_intelligence() {
+        use serde_json::json;
+        // A breach row carrying a leaked HASH (not a plaintext). The credential path
+        // must apply the same offline hash intelligence dehashed/oathnet do: classify
+        // the algorithm + crackability and reverse-look-up a common-password digest
+        // to recover its plaintext. md5("password") is the canonical weak hash.
+        let item = json!({
+            "dbname": "TestBreach",
+            "email": "victim@example.com",
+            "hash": "5f4dcc3b5aa765d61d8327deb882cf99",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim@example.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let pw_hash = result
+            .entities
+            .iter()
+            .find(|e| {
+                e.kind == EntityKind::Password
+                    && e.value == "5f4dcc3b5aa765d61d8327deb882cf99"
+            })
+            .expect("the hash must surface as a Password entity");
+        assert!(pw_hash.has_tag("password-hash"), "must classify as a hash");
+        assert!(pw_hash.has_tag("hash:md5"), "must identify the algorithm");
+        assert!(
+            pw_hash.has_tag("crackable:fast"),
+            "an unsalted md5 is fast-crackable"
+        );
+        assert!(
+            pw_hash.has_tag("cracked"),
+            "a common-password digest must be flagged cracked"
+        );
+        // The recovered plaintext becomes a first-class node.
+        let plain = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == "password")
+            .expect("the cracked plaintext must surface as a Password entity");
+        assert!(plain.has_tag("cracked") && plain.has_tag("from-hash"));
+
+        // A PLAINTEXT password must NOT be mis-enriched (no hash tags, no recovery).
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_entities(
+            &json!({"dbname": "T", "email": "x@y.com", "password": "hunter2"}),
+            "x@y.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen2,
+            &mut result2,
+        );
+        let plain_pw = result2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Password && e.value == "hunter2")
+            .expect("plaintext password still surfaces");
+        assert!(
+            !plain_pw.has_tag("password-hash") && !plain_pw.has_tag("cracked"),
+            "a plaintext password must not gain hash tags"
+        );
+    }
+
+    #[test]
     fn extract_rich_detail_surfaces_the_whole_record() {
         use serde_json::json;
         // A fat record with the long tail SeekNow returns: composed name, org,

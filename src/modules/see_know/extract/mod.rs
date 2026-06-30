@@ -366,12 +366,51 @@ pub(super) fn extract_entities(
             }
             crate::util::extract::CredentialField::Secret => {
                 if seen.insert(format!("@pw:{p}")) {
+                    // Offline hash intelligence ("hashcat-lite"), the same enrichment
+                    // dehashed/oathnet apply: classify the algorithm + crackability,
+                    // flag an appended salt, and reverse-look-up a common-password
+                    // digest — all pure, no network, no GPU (Termux-safe). A see_know
+                    // stealer/breach HASH is now as pivotable as a dehashed one; a
+                    // plaintext password is unaffected (`identify_hash` → None).
+                    let mut tags: Vec<String> = vec!["credential".to_string()];
+                    if let Some((algo, fast)) = crate::util::hashcat::identify_hash(p) {
+                        tags.push("password-hash".to_string());
+                        tags.push(format!("hash:{algo}"));
+                        tags.push(
+                            if fast {
+                                "crackable:fast"
+                            } else {
+                                "crackable:slow"
+                            }
+                            .to_string(),
+                        );
+                    }
+                    if crate::util::hashcat::is_salted(p) {
+                        tags.push("salted".to_string());
+                    }
+                    let cracked = crate::util::hashcat::crack_common(p);
+                    if cracked.is_some() {
+                        tags.push("cracked".to_string());
+                    }
+                    let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
                     push_breach_entity(
                         result,
                         Entity::new(EntityKind::Password, p, 0.75, scan_id),
                         &ev,
-                        &["credential"],
+                        &tag_refs,
                     );
+                    // A recovered plaintext (the subject's weak password laid bare)
+                    // becomes a first-class node, exactly as the dehashed path does.
+                    if let Some(pt) = cracked
+                        && seen.insert(format!("@pw:{}", pt.to_lowercase()))
+                    {
+                        push_breach_entity(
+                            result,
+                            Entity::new(EntityKind::Password, pt, 0.78, scan_id),
+                            &ev,
+                            &["cracked", "weak-password", "from-hash"],
+                        );
+                    }
                     break;
                 }
             }
