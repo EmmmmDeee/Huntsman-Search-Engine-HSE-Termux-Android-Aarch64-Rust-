@@ -12,6 +12,78 @@ use crate::core::{
 use crate::util::geo::parse_coords;
 
 #[test]
+fn wifi_ap_entities_emit_each_aps_own_observed_position() {
+    // Query centre far from the APs so a mislabel (using the query point) is
+    // obvious.
+    let (qlat, qlon) = (-27.0, 153.0);
+    let net = |netid: &str, tri: Option<(f64, f64)>| Network {
+        ssid: None,
+        netid: Some(netid.into()),
+        encryption: None,
+        lastupdt: None,
+        trilat: tri.map(|t| t.0),
+        trilong: tri.map(|t| t.1),
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    };
+    let results = vec![
+        net("AA:BB:CC:DD:EE:01", Some((-27.4766, 153.0280))), // real position
+        net("AA:BB:CC:DD:EE:02", None),                       // no position
+        net("AA:BB:CC:DD:EE:03", Some((0.0, 0.0))),           // null-island → invalid
+    ];
+    let ents = wifi_ap_entities(&results, qlat, qlon, "-27.0,153.0", "scan");
+
+    // Every BSSID becomes a MacAddress pivot...
+    let macs: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .collect();
+    assert_eq!(macs.len(), 3);
+    // ...but only the AP with a real, non-null-island position yields a
+    // first-class Coordinates node (geoint), at its OWN location.
+    let coords: Vec<_> = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .collect();
+    assert_eq!(
+        coords.len(),
+        1,
+        "only the located AP emits a Coordinates node"
+    );
+    assert_eq!(coords[0].value, "-27.476600,153.028000");
+    assert!(coords[0].has_tag("wifi-observed") && coords[0].has_tag("geoint"));
+
+    // The located AP's MacAddress carries ITS OWN coordinates, not the query
+    // centre (the previous mislabel). MacAddress values normalise to lowercase.
+    let ap1 = macs
+        .iter()
+        .find(|e| e.value == "aa:bb:cc:dd:ee:01")
+        .unwrap();
+    assert_eq!(
+        ap1.evidence[0]
+            .attributes
+            .get("coordinates")
+            .map(String::as_str),
+        Some("-27.476600,153.028000")
+    );
+    // The position-less AP falls back to the query centre for its MAC attr and
+    // mints no Coordinates node.
+    let ap2 = macs
+        .iter()
+        .find(|e| e.value == "aa:bb:cc:dd:ee:02")
+        .unwrap();
+    assert_eq!(
+        ap2.evidence[0]
+            .attributes
+            .get("coordinates")
+            .map(String::as_str),
+        Some("-27.000000,153.000000")
+    );
+}
+
+#[test]
 fn accepts_coordinates_and_mac_address() {
     let m = Wigle;
     assert!(m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));

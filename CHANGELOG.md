@@ -11,6 +11,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **AU data depth — two registries/sources now surface data they fetched and dropped
+  (verified by a partitioned dropped-field/un-modelled sweep; the strict
+  deserialized-but-dropped class was confirmed exhausted across infra and
+  identity/breach modules first).**
+  - **`austlii` emits every fetched court/legislation reference, not just the first
+    10.** The request asks AustLII for `results=20` and `extract_case_links` applies
+    no cap, but the emit loop took only `.take(10)` — silently dropping up to half a
+    subject's Australian court-judgment / legislation `Url` hits. A hoisted
+    `MAX_DOCS = 20` now drives the request param, the take, and the org summary, so
+    every reference becomes a `court-judgment` `Url` (no-omission directive). The
+    emission was refactored into a pure `build_entities` and unit-tested.
+  - **`wigle` now emits each WiFi AP's OWN observed position and stops mislabelling
+    it.** The WiFi geo path built its only `Coordinates` from the QUERY centre and
+    tagged every returned BSSID with `coordinates = <query point>`, using each AP's
+    real `trilat`/`trilong` only as a ranking distance — while the cell/BSSID paths
+    already emit per-record coordinates. The densest WiGLE source was discarding its
+    own geoint. A new pure `wifi_ap_entities` fixes the BSSID coordinate to the AP's
+    own trilaterated position and emits each located AP as a first-class
+    `wifi-observed`/`geoint` `Coordinates` node (AU-state tagged, null-island/`0,0`
+    rejected via `geo::is_valid_coords`). Unit-tested.
 - **Execution-order perfection: the primary search-engine pass now schedules
   reliable/proven engines FIRST under the concurrency limit.** The primary pass
   fans out to engines `ENGINE_CONCURRENCY` (6) at a time, but iterated `ENGINES`

@@ -434,40 +434,14 @@ impl Module for Wigle {
             }
         }
 
-        // ── Top MAC addresses (AP BSSIDs) for device correlation ────
-        let mut macs: Vec<(&str, f64)> = body
-            .results
-            .iter()
-            .filter_map(|n| {
-                let mac = n.netid.as_deref()?;
-                let dlat = n.trilat.unwrap_or(lat) - lat;
-                let dlon = n.trilong.unwrap_or(lon) - lon;
-                let dist = (dlat * dlat + dlon * dlon).sqrt();
-                Some((mac, dist))
-            })
-            .collect();
-        macs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
-        macs.dedup_by_key(|m| m.0);
-
-        result.extend(macs.iter().take(5).filter_map(|(mac, _)| {
-            if mac.len() < 12 {
-                return None;
-            }
-            let mut e = Entity::new(EntityKind::MacAddress, *mac, 0.60, &ctx.scan_id);
-            e.tag("wigle");
-            e.tag("wifi-ap");
-            let mut ev = Evidence::new(SRC, format!("WiFi AP near {}", target.value))
-                .with_attr("coordinates", &target.value);
-            if let Some(oui) = crate::util::oui::classify_mac(mac) {
-                e.tag(format!("vendor:{}", oui.vendor));
-                e.tag(format!("device:{}", oui.class.as_str()));
-                ev = ev
-                    .with_attr("vendor", oui.vendor)
-                    .with_attr("device_class", oui.class.as_str());
-            }
-            e.add_evidence(ev);
-            Some(e)
-        }));
+        // ── Top MAC addresses (AP BSSIDs) + each AP's OWN observed position ──
+        result.extend(wifi_ap_entities(
+            &body.results,
+            lat,
+            lon,
+            &target.value,
+            &ctx.scan_id,
+        ));
 
         // ── Potentiation: cell-tower + Bluetooth observations ──────
         let cell_fut = async {
@@ -526,6 +500,91 @@ impl NetworkKind {
             Self::Bluetooth => "bluetooth",
         }
     }
+}
+
+/// Build the per-AP entities for the WiFi geo path: the five nearest BSSIDs as
+/// `MacAddress` device pivots AND — crucially — each AP's OWN WiGLE-trilaterated
+/// position as a first-class `geoint` `Coordinates` node. The WiFi path
+/// previously tagged every BSSID with the QUERY centre and discarded each AP's
+/// real `trilat`/`trilong`, while the cell/BSSID paths already emit them — so the
+/// densest WiGLE source threw away its own observed coordinates and mislabelled
+/// each AP's location as the query point. APs are ranked by distance from the
+/// query centre (closest first); a record with no usable position falls back to
+/// the query point for ranking and the MAC's `coordinates` attr, but yields no
+/// phantom `Coordinates` node. **Pure** (offline OUI/geo lookups only).
+fn wifi_ap_entities(
+    results: &[Network],
+    qlat: f64,
+    qlon: f64,
+    query_label: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
+    // (BSSID, distance-from-query-centre, the AP's own position if WiGLE gave one).
+    type ApRank<'a> = (&'a str, f64, Option<(f64, f64)>);
+    let mut macs: Vec<ApRank> = results
+        .iter()
+        .filter_map(|n| {
+            let mac = n.netid.as_deref()?;
+            let ap = match (n.trilat, n.trilong) {
+                (Some(t), Some(g)) if crate::util::geo::is_valid_coords(t, g) => Some((t, g)),
+                _ => None,
+            };
+            let (alat, alon) = ap.unwrap_or((qlat, qlon));
+            let dist = ((alat - qlat).powi(2) + (alon - qlon).powi(2)).sqrt();
+            Some((mac, dist, ap))
+        })
+        .collect();
+    macs.sort_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal));
+    macs.dedup_by_key(|m| m.0);
+
+    let mut out = Vec::new();
+    for &(mac, _, ap) in macs.iter().take(5) {
+        if mac.len() < 12 {
+            continue;
+        }
+        // The AP's OWN trilaterated position when WiGLE provides it (each AP is
+        // observed at its own spot, not the query centre); fall back to the query
+        // point only when the record carries no position.
+        let (clat, clon) = ap.unwrap_or((qlat, qlon));
+        let coord_val = format!("{clat:.6},{clon:.6}");
+
+        let mut e = Entity::new(EntityKind::MacAddress, mac, 0.60, scan_id);
+        e.tag("wigle");
+        e.tag("wifi-ap");
+        let mut ev = Evidence::new(SRC, format!("WiFi AP near {query_label}"))
+            .with_attr("coordinates", &coord_val);
+        if let Some(oui) = crate::util::oui::classify_mac(mac) {
+            e.tag(format!("vendor:{}", oui.vendor));
+            e.tag(format!("device:{}", oui.class.as_str()));
+            ev = ev
+                .with_attr("vendor", oui.vendor)
+                .with_attr("device_class", oui.class.as_str());
+        }
+        e.add_evidence(ev);
+        out.push(e);
+
+        // Emit the AP's actual observed position as a first-class geoint node —
+        // only when WiGLE gave a real per-AP position (no phantom from the
+        // query-point fallback).
+        if let Some((alat, alon)) = ap {
+            let mut ce = Entity::new(EntityKind::Coordinates, &coord_val, 0.70, scan_id);
+            ce.tag("wigle");
+            ce.tag("wifi-observed");
+            ce.tag("geoint");
+            if let Some(state) = crate::util::geo::au_state_for_coords(alat, alon) {
+                ce.tag(format!("au-state:{state}"));
+                ce.tag("country:AU");
+            }
+            ce.add_evidence(
+                Evidence::new(SRC, format!("WiGLE-observed position of WiFi AP {mac}"))
+                    .with_attr("bssid", mac)
+                    .with_attr("latitude", format!("{alat:.6}"))
+                    .with_attr("longitude", format!("{alon:.6}")),
+            );
+            out.push(ce);
+        }
+    }
+    out
 }
 
 pub(super) fn is_generic_ssid(s: &str) -> bool {

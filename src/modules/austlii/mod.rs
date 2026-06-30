@@ -20,6 +20,13 @@ use crate::util::http::RequestBuilderExt;
 const SRC: &str = "austlii";
 const SEARCH_URL: &str = "https://www.austlii.edu.au/cgi-bin/sinosrch.cgi";
 
+/// Cap on AustLII document references surfaced — matched to the `results=` the
+/// request asks for, so every fetched court-judgment / legislation reference
+/// becomes a `Url` (no-omission directive). Previously the request asked for 20
+/// but only the first 10 were emitted, silently dropping up to half a subject's
+/// AU legal-record hits.
+const MAX_DOCS: usize = 20;
+
 pub struct AustLii;
 
 /// Extract legal-document hyperlinks from an AustLII search-results page.
@@ -105,8 +112,9 @@ impl Module for AustLii {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let query = crate::util::http::urlencode(target.value.trim());
-        let url =
-            format!("{SEARCH_URL}?query={query}&method=auto&results=20&filter=results&format=html");
+        let url = format!(
+            "{SEARCH_URL}?query={query}&method=auto&results={MAX_DOCS}&filter=results&format=html"
+        );
 
         let resp = ctx.http.get(&url).send_tagged(SRC).await?;
         if !resp.status().is_success() {
@@ -123,42 +131,46 @@ impl Module for AustLii {
             return Ok(ModuleResult::new());
         }
 
-        let mut result = ModuleResult::new();
-
-        for (doc_url, title) in links.iter().take(10) {
-            let mut url_ent = Entity::new(EntityKind::Url, doc_url, 0.70, &ctx.scan_id);
-            url_ent.tag("court-judgment");
-            url_ent.tag("austlii");
-            url_ent.add_evidence(
-                Evidence::new(SRC, format!("AustLII document: {title}"))
-                    .with_attr("title", title)
-                    .with_attr("source", "austlii.edu.au"),
-            );
-            result.push(url_ent);
-        }
-
-        if links.len() >= 2 && matches!(target.kind, TargetKind::Organisation) {
-            let mut org = Entity::new(
-                EntityKind::Organisation,
-                target.value.trim(),
-                0.55,
-                &ctx.scan_id,
-            );
-            org.tag("legal-record");
-            org.tag("austlii");
-            org.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!(
-                        "AustLII: {} legal document references found",
-                        links.len().min(10)
-                    ),
-                )
-                .with_attr("source", "austlii.edu.au"),
-            );
-            result.push(org);
-        }
-
-        Ok(result)
+        Ok(build_entities(&links, target, &ctx.scan_id))
     }
+}
+
+/// Map the extracted AustLII document links to entities. **Pure** (no network):
+/// each link (up to [`MAX_DOCS`], matched to the request's `results=`) becomes a
+/// `court-judgment` `Url`, and an Organisation target with ≥2 references also
+/// gets a `legal-record` Organisation summary. Split out of `process` so the
+/// no-omission cap is unit-testable without a network round-trip.
+fn build_entities(links: &[(String, String)], target: &Target, scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
+
+    for (doc_url, title) in links.iter().take(MAX_DOCS) {
+        let mut url_ent = Entity::new(EntityKind::Url, doc_url, 0.70, scan_id);
+        url_ent.tag("court-judgment");
+        url_ent.tag("austlii");
+        url_ent.add_evidence(
+            Evidence::new(SRC, format!("AustLII document: {title}"))
+                .with_attr("title", title)
+                .with_attr("source", "austlii.edu.au"),
+        );
+        result.push(url_ent);
+    }
+
+    if links.len() >= 2 && matches!(target.kind, TargetKind::Organisation) {
+        let mut org = Entity::new(EntityKind::Organisation, target.value.trim(), 0.55, scan_id);
+        org.tag("legal-record");
+        org.tag("austlii");
+        org.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "AustLII: {} legal document references found",
+                    links.len().min(MAX_DOCS)
+                ),
+            )
+            .with_attr("source", "austlii.edu.au"),
+        );
+        result.push(org);
+    }
+
+    result
 }

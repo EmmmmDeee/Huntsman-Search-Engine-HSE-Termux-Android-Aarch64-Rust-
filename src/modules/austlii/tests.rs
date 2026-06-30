@@ -1,6 +1,35 @@
-use super::{AustLii, extract_case_links};
+use super::{AustLii, build_entities, extract_case_links};
+use crate::core::entity::EntityKind;
 use crate::core::module::{Module, ModuleCost};
 use crate::core::scan::{Target, TargetKind};
+
+#[test]
+fn build_entities_emits_all_fetched_docs_not_just_the_first_ten() {
+    // The request asks for results=20 and extract_case_links applies no cap, so
+    // every fetched court/legislation reference must become a Url (no-omission).
+    let links: Vec<(String, String)> = (0..15)
+        .map(|i| {
+            (
+                format!("https://www.austlii.edu.au/au/cases/cth/HCA/2023/{i}.html"),
+                format!("Case {i} [2023] HCA {i}"),
+            )
+        })
+        .collect();
+    let target = Target::new(TargetKind::Organisation, "Acme Corp");
+    let res = build_entities(&links, &target, "scan");
+    let urls = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .count();
+    assert_eq!(urls, 15, "all 15 fetched documents must emit, not just 10");
+    // Organisation summary still emitted for an org target with >=2 refs.
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Organisation && e.has_tag("legal-record"))
+    );
+}
 
 #[test]
 fn module_metadata() {
