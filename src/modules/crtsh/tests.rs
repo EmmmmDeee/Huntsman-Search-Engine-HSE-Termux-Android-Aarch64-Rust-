@@ -30,6 +30,18 @@ fn produces_declares_the_issuer_organisation() {
 }
 
 #[test]
+fn parse_dn_org_extracts_first_nonempty_o_field() {
+    // The X.509 DN org parser gates the entire issuer-Organisation emit branch.
+    assert_eq!(parse_dn_org("C=US, O=Let's Encrypt, CN=E5"), Some("Let's Encrypt"));
+    // First O= wins when several are present.
+    assert_eq!(parse_dn_org("O=Acme Pty Ltd, O=Second"), Some("Acme Pty Ltd"));
+    // No O= field → None.
+    assert_eq!(parse_dn_org("CN=foo, C=AU"), None);
+    // Empty O= value → None (not an empty-string Organisation).
+    assert_eq!(parse_dn_org("CN=foo, O=, C=AU"), None);
+}
+
+#[test]
 fn crt_entry_deser() {
     let json = r#"[{"common_name":"www.example.com","name_value":"www.example.com\nexample.com","issuer_name":"Let's Encrypt","not_before":"2024-01-01","not_after":"2024-04-01","serial_number":"abc123"}]"#;
     let entries: Vec<CrtEntry> = serde_json::from_str(json).unwrap();

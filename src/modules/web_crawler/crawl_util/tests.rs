@@ -350,3 +350,56 @@ use super::*;
             state.queue
         );
     }
+
+    #[test]
+    fn extract_api_keys_from_body_gates_length_and_rejects_non_poolable() {
+        // Hermetic characterization of the credential-harvester (previously
+        // untested despite mutating the process-global key pool). It splits the
+        // body into bare words, so it can only ever classify PREFIX keys (github,
+        // aws, …) — none of which are poolable OSINT providers — and the
+        // context-only OSINT keys never fire without surrounding text. So a
+        // web-scraped key is correctly NEVER added to the pool here. We scope to a
+        // unique domain so the assertion is isolated from any concurrent test.
+        let pool = crate::util::key_pool::global_pool();
+        let domain = "crawlutil-test.example";
+        let scraped = || -> usize {
+            pool.snapshot()
+                .services
+                .values()
+                .flatten()
+                .filter(|e| {
+                    e.discovered_by
+                        .as_deref()
+                        .is_some_and(|d| d == format!("web_crawler:{domain}"))
+                })
+                .count()
+        };
+        assert_eq!(scraped(), 0, "precondition: a clean pool for this domain");
+
+        // (1) Length gate: <16 or >200 chars are never classified.
+        extract_api_keys_from_body("short ghp_x", domain);
+        // (2) A VALID github token is classified by identify_api_key but github is
+        //     not a poolable provider, so pool.add rejects it.
+        extract_api_keys_from_body(
+            "github_token=ghp_aBc1deFG2HiJK3lmnoPqrStUVwXyZA end",
+            domain,
+        );
+        // (3) An obvious placeholder is rejected by identify_api_key outright.
+        extract_api_keys_from_body("ghp_your_token_here_xxxxxxxxxxxx", domain);
+
+        assert_eq!(
+            scraped(),
+            0,
+            "web_crawler must not add length-gated / non-poolable keys to the global pool"
+        );
+
+        // Defensive cleanup: if a future detection change DID add anything for this
+        // domain, remove it so the global pool stays hermetic (in-memory only).
+        for (svc, entries) in pool.snapshot().services {
+            for e in entries {
+                if e.discovered_by.as_deref() == Some(&format!("web_crawler:{domain}")) {
+                    pool.remove(&svc, &e.value);
+                }
+            }
+        }
+    }

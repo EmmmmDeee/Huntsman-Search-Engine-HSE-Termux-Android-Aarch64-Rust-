@@ -130,3 +130,59 @@ fn blank_name_yields_nothing() {
     assert!(build_company_entities(&company(r#"{"name":"   "}"#), 1, "s").is_empty());
     assert!(build_company_entities(&company("{}"), 1, "s").is_empty());
 }
+
+fn officer(json: &str) -> OcOfficer {
+    serde_json::from_str(json).unwrap()
+}
+
+#[test]
+fn officer_au_with_company_emits_org_acn_and_person() {
+    // The officer-search path mirrors the company path but was entirely untested.
+    let o = officer(
+        r#"{"name":"Jane Roe","position":"director","company":{"name":"Acme Pty Ltd","company_number":"123456789","jurisdiction_code":"au","current_status":"Active"}}"#,
+    );
+    let ents = build_officer_entities(&o, 9, "s");
+    let org = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Organisation)
+        .expect("company → Organisation");
+    assert_eq!(org.value, "Acme Pty Ltd");
+    assert!(org.has_tag("country:AU") && org.has_tag("active"));
+    // AU + non-empty company_number → AbnAcn.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::AbnAcn && e.value == "123456789")
+    );
+    // Multi-word officer name → Person.
+    assert!(
+        ents.iter()
+            .any(|e| e.kind == EntityKind::Person && e.value == "Jane Roe")
+    );
+}
+
+#[test]
+fn officer_non_au_jurisdiction_emits_no_company_number() {
+    let o = officer(
+        r#"{"name":"John Smith","company":{"name":"Globex Inc","company_number":"C12345","jurisdiction_code":"us"}}"#,
+    );
+    let ents = build_officer_entities(&o, 1, "s");
+    assert!(
+        ents.iter().all(|e| e.kind != EntityKind::AbnAcn),
+        "a non-AU company number must not become an AbnAcn"
+    );
+    // Org still emitted (no country:AU tag), Person still emitted.
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Organisation));
+    assert!(ents.iter().any(|e| e.kind == EntityKind::Person));
+}
+
+#[test]
+fn officer_single_token_name_yields_no_person() {
+    // A mononym (no space) is not minted as a Person (avoids a junk identity).
+    let o = officer(
+        r#"{"name":"madonna","company":{"name":"Acme","jurisdiction_code":"au","company_number":""}}"#,
+    );
+    let ents = build_officer_entities(&o, 1, "s");
+    assert!(ents.iter().all(|e| e.kind != EntityKind::Person));
+    // Empty company_number → no AbnAcn even for AU.
+    assert!(ents.iter().all(|e| e.kind != EntityKind::AbnAcn));
+}
