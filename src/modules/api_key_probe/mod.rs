@@ -75,24 +75,37 @@ impl Module for ApiKeyProbe {
 
         let mut result = ModuleResult::new();
         let all_probes = probes();
-        let mut tasks = Vec::new();
+        // `JoinSet`, not a `Vec<JoinHandle<_>>`: dropping a `JoinSet` aborts
+        // every task still running in it, whereas dropping a `Vec` of bare
+        // `JoinHandle`s only detaches them — the spawned tasks (and their
+        // `kill_on_drop` curl subprocesses) keep running. The engine wraps
+        // this whole `process()` future in `tokio::time::timeout` at
+        // `max_timeout_ms` (90s); without this, a `process()` future dropped
+        // by that outer timeout left every still-in-flight probe (each its
+        // own curl subprocess, independently bounded only by its own 12s
+        // budget) running for up to 12 more unaccounted-for seconds on the
+        // runtime after the engine had already moved on. The index travels
+        // with each result since `join_next` resolves in completion order,
+        // not spawn order, but the probe lookup below needs the original.
+        let mut tasks: tokio::task::JoinSet<(usize, Option<String>)> = tokio::task::JoinSet::new();
 
-        for probe in &all_probes {
+        for (i, probe) in all_probes.iter().enumerate() {
             let key = key.to_string();
             let (url, headers) = (probe.url_builder)(&key);
-            tasks.push(tokio::spawn(async move {
-                probe_endpoint(&url, &key, &headers).await
-            }));
+            tasks.spawn(async move { (i, probe_endpoint(&url, &key, &headers).await) });
         }
 
         let pool = key_pool::global_pool();
         let mut identified = Vec::new();
 
-        for (i, task) in tasks.into_iter().enumerate() {
+        while let Some(joined) = tasks.join_next().await {
+            let Ok((i, response)) = joined else {
+                continue;
+            };
             let probe = &all_probes[i];
-            let response = match task.await {
-                Ok(Some(body)) => body,
-                _ => continue,
+            let response = match response {
+                Some(body) => body,
+                None => continue,
             };
 
             let json: Value = match serde_json::from_str(&response) {

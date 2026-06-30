@@ -91,3 +91,51 @@ use super::*;
         assert!(!m.is_passive());
         assert_eq!(m.cost(), ModuleCost::Free);
     }
+
+    #[tokio::test]
+    async fn timed_out_process_aborts_in_flight_probe_tasks_not_just_detaches_them() {
+        // Regression: `process()` used to collect probe tasks in a
+        // `Vec<JoinHandle<_>>`. Dropping a `Vec` of bare `JoinHandle`s only
+        // DETACHES each task — it keeps running (and its kill_on_drop curl
+        // subprocess keeps the OS process alive) even after the engine's outer
+        // per-module `tokio::time::timeout` declares the module "timed out" and
+        // drops the `process()` future. Switching to a `JoinSet` fixes this:
+        // dropping a `JoinSet` aborts every task still running in it. Proven
+        // here without any network/curl: a synthetic slow "probe" sets a flag
+        // only if allowed to run to completion.
+        //
+        // Uses REAL time (not paused): a paused-clock + `time::advance` setup
+        // was tried first and produced a false pass for *both* the buggy
+        // Vec<JoinHandle> pattern and the JoinSet fix — `time::advance` does
+        // not drive forward a task whose JoinHandle was already dropped and
+        // is no longer being polled by anyone, so it never discriminated
+        // between the two. Verified directly (a throwaway harness outside
+        // this crate) that with real time the buggy pattern DOES set the
+        // flag (proving this test would have caught it) while the fix
+        // doesn't — only the real-time version is trustworthy here.
+        let completed = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let flag = completed.clone();
+
+        let probe_future = async {
+            let mut tasks: tokio::task::JoinSet<()> = tokio::task::JoinSet::new();
+            tasks.spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            });
+            while tasks.join_next().await.is_some() {}
+        };
+
+        // Mirrors `run_module_guarded`'s outer timeout wrapping `process()`,
+        // here shorter than the spawned task's sleep so it fires first.
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(20), probe_future).await;
+
+        // Real-time wait past the spawned task's sleep — every opportunity
+        // for it to wrongly set the flag if it were merely detached.
+        tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+        assert!(
+            !completed.load(std::sync::atomic::Ordering::SeqCst),
+            "JoinSet must abort its in-flight task when dropped by the outer \
+             timeout — a bare Vec<JoinHandle<_>> would let it run to completion"
+        );
+    }
