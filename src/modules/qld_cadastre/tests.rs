@@ -94,6 +94,30 @@ use super::*;
     }
 
     #[test]
+    fn build_all_features_emits_every_parcel_deduping_the_shared_coordinate() {
+        // Two intersecting parcels at one query point (a boundary / strata hit):
+        // every parcel must surface, not just the first (the no-omission policy).
+        let f1 = Feature {
+            attributes: attrs(&[("lotplan", "12RP123456"), ("locality", "NUNDAH")]),
+        };
+        let f2 = Feature {
+            attributes: attrs(&[("lotplan", "13RP123456"), ("locality", "NUNDAH")]),
+        };
+        let out = build_all_features("-27.4766,153.0166", &[f1, f2], "s");
+        // BOTH parcels' lot/plans must survive (carried as `lotplan:` tags on the
+        // per-parcel entities; the engine's value-merge later unions them). The
+        // previous `.next()`-only path dropped the second parcel entirely.
+        assert!(
+            out.iter().any(|e| e.has_tag("lotplan:12RP123456")),
+            "first parcel must be emitted"
+        );
+        assert!(
+            out.iter().any(|e| e.has_tag("lotplan:13RP123456")),
+            "second parcel must be emitted (previously dropped)"
+        );
+    }
+
+    #[test]
     fn build_entities_empty_when_no_parcel_or_locality() {
         let a = attrs(&[("tenure", "Freehold")]);
         assert!(build_entities("-27.45,153.04", &a, "s").is_empty());

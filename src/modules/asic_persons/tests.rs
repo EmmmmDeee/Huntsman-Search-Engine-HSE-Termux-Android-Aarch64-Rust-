@@ -67,9 +67,21 @@ fn adviser_emits_person_licensee_abns_and_address() {
         .collect();
     assert!(abns.contains(&"12345678901".to_string()));
     assert!(abns.contains(&"98765432109".to_string()));
-    // Registered address.
-    assert!(e.iter().any(|x| x.kind == EntityKind::Address
-        && x.value.eq_ignore_ascii_case("SYDNEY NSW 2000")));
+    // Registered address — now tagged with its AU jurisdiction and inline-geocoded
+    // so it reaches the AU geo correlators like every other AU register module.
+    let addr = e
+        .iter()
+        .find(|x| x.kind == EntityKind::Address && x.value.eq_ignore_ascii_case("SYDNEY NSW 2000"))
+        .expect("registered address");
+    assert!(
+        addr.has_tag("au-state:NSW") && addr.has_tag("country:AU"),
+        "register address must carry its AU jurisdiction"
+    );
+    assert!(
+        e.iter()
+            .any(|x| x.kind == EntityKind::Coordinates && x.has_tag("au-state:NSW")),
+        "the register address must inline-geocode to an AU Coordinates anchor"
+    );
 }
 
 #[test]

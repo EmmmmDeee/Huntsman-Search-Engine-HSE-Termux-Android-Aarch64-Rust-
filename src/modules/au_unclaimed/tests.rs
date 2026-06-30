@@ -112,6 +112,35 @@ mod qld {
     }
 
     #[test]
+    fn sender_name_emits_payer_company_organisation() {
+        // The SenderName — the employer/estate/insurer that LODGED the money — must
+        // surface as a `sender-company` Organisation (the T1591.002 business
+        // relationship), previously parsed into evidence and then dropped.
+        let raw = r#"{"result":{"total":1,"records":[
+            {"_id":8,"Owner":"Jane Citizen","Amount":"500.00","SenderName":"GLOBEX EMPLOYMENT PTY LTD","PCode":"4000"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .unwrap()
+            .result
+            .unwrap()
+            .records;
+        let ents = records_to_entities(&recs, 1, "Jane Citizen", true, "s");
+        let sender = ents
+            .iter()
+            .find(|e| {
+                e.kind == EntityKind::Organisation
+                    && e.tags.iter().any(|t| t.as_str() == "sender-company")
+            })
+            .expect("SenderName company must emit a sender-company Organisation");
+        assert!(
+            sender.value.to_uppercase().contains("GLOBEX"),
+            "got {}",
+            sender.value
+        );
+        assert!(sender.tags.iter().any(|t| t.as_str() == "country:AU"));
+    }
+
+    #[test]
     fn parses_records_into_geo_addresses_tagged_qld_source() {
         let resp = sample();
         let result = resp.result.unwrap();

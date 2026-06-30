@@ -413,6 +413,36 @@ pub(super) fn records_to_entities(
                     org
                 }),
         );
+
+        // The SENDER is the employer / estate / insurer that LODGED the unclaimed
+        // money (a former employer, a dividend issuer) — the T1591.002 Business
+        // Relationship the module header claims but never emitted: `SenderName` was
+        // parsed into evidence (above) and then dropped. Mine it for company names
+        // exactly like the owner, so the payer enters the graph and pivots into
+        // abn_lookup / opencorporates, linking the subject to the business behind
+        // the money.
+        if let Some(sender) = &sender {
+            out.extend(
+                crate::util::abn::company_names(sender)
+                    .into_iter()
+                    .map(|company| {
+                        let mut org =
+                            Entity::new(EntityKind::Organisation, &company, find_conf, scan_id);
+                        org.tag(SRC);
+                        org.tag("unclaimed-money");
+                        org.tag("country:AU");
+                        org.tag("sender-company");
+                        let oev = Evidence::new(
+                            SRC,
+                            format!("Company that lodged unclaimed money: {company}"),
+                        )
+                        .with_attr("register", "QLD Public Trustee unclaimed monies")
+                        .with_attr("paid_to_owner", &owner);
+                        org.add_evidence(oev);
+                        org
+                    }),
+            );
+        }
     }
     out
 }

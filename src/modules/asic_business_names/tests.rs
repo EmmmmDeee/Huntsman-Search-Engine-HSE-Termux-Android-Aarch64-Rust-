@@ -33,6 +33,23 @@ fn emits_registered_name_and_holder_abn() {
 }
 
 #[test]
+fn registered_state_emits_au_state_address() {
+    // BN_STATE_OF_REG was parsed into evidence but never became a geo anchor; it
+    // must now emit a "{state}, Australia" Address tagged au-state, like the
+    // sibling AU registries, so the jurisdiction reaches the AU geo correlators.
+    let mut seen = std::collections::HashSet::new();
+    let mut r = ModuleResult::new();
+    emit_business_name(&rec(REC), "scan", &mut seen, &mut r);
+    let addr = r
+        .entities
+        .iter()
+        .find(|x| x.kind == EntityKind::Address)
+        .expect("BN_STATE_OF_REG must emit an AU-state Address");
+    assert_eq!(addr.value, "QLD, Australia");
+    assert!(addr.has_tag("au-state:QLD") && addr.has_tag("country:AU"));
+}
+
+#[test]
 fn abn_is_deduped_across_records() {
     let mut seen = std::collections::HashSet::new();
     let mut r = ModuleResult::new();

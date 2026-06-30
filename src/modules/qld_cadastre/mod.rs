@@ -198,14 +198,31 @@ impl Module for QldCadastre {
             .await
             .map_err(|e| Error::module(SRC, e))?;
 
-        let Some(feature) = body.features.into_iter().next() else {
-            return Ok(ModuleResult::new());
-        };
-
         let mut result = ModuleResult::new();
-        result.entities = build_entities(&target.value, &feature.attributes, &ctx.scan_id);
+        result.entities = build_all_features(&target.value, &body.features, &ctx.scan_id);
         Ok(result)
     }
+}
+
+/// Build entities for EVERY intersecting cadastral parcel, not just the first. A
+/// point query at a boundary, on strata / stacked cadastre, or where the DCDB
+/// returns several intersecting polygons yields multiple features; emitting only
+/// `features[0]` dropped the rest — omitting AU government parcel data (lot/plan,
+/// locality, tenure) the no-omission directive requires.
+///
+/// No de-duplication here: parcels at one point share the query Coordinates value
+/// AND (when in one suburb) the locality Address value, distinguished only by
+/// their `lotplan:` TAG. The engine's downstream value-merge folds the shared
+/// values into one entity while UNIONing those per-parcel tags, so every parcel's
+/// lot/plan survives — whereas a value-dedup here would silently drop all but the
+/// first parcel's lotplan. Pure, bounded (`MAX_FEATURES`), deterministic.
+fn build_all_features(coord: &str, features: &[Feature], scan_id: &str) -> Vec<Entity> {
+    const MAX_FEATURES: usize = 8;
+    features
+        .iter()
+        .take(MAX_FEATURES)
+        .flat_map(|feature| build_entities(coord, &feature.attributes, scan_id))
+        .collect()
 }
 
 #[cfg(test)]

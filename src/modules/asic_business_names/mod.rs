@@ -78,7 +78,11 @@ impl Module for AsicBusinessNames {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Organisation, EntityKind::AbnAcn];
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Organisation,
+            EntityKind::AbnAcn,
+            EntityKind::Address,
+        ];
         KINDS
     }
 
@@ -201,6 +205,32 @@ fn emit_business_name(
                 .with_attr("business_name", &bn_name),
         );
         result.push(e);
+    }
+
+    // The state of registration is a coarse AU jurisdiction anchor. Emit it as a
+    // "{state}, Australia" Address tagged au-state — exactly as abn_lookup/acnc do
+    // — so the registered jurisdiction participates in the AU geo/jurisdiction
+    // correlators (AU-052/053/090) instead of dying in the evidence attr.
+    if let Some(state) = field(rec, "BN_STATE_OF_REG")
+        .as_deref()
+        .and_then(crate::util::address_au::state_code)
+    {
+        let addr_value = format!("{state}, Australia");
+        let mut addr = Entity::new(EntityKind::Address, &addr_value, 0.42, scan_id);
+        addr.tag("au");
+        addr.tag("asic");
+        addr.tag("business-name");
+        addr.tag("country:AU");
+        addr.tag(format!("au-state:{state}"));
+        addr.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("ASIC business name `{bn_name}` registered in {state}"),
+            )
+            .with_attr("state", state)
+            .with_attr("business_name", &bn_name),
+        );
+        result.push(addr);
     }
 }
 

@@ -103,6 +103,7 @@ impl Module for AsicPersons {
             EntityKind::Organisation,
             EntityKind::AbnAcn,
             EntityKind::Address,
+            EntityKind::Coordinates,
         ];
         KINDS
     }
@@ -406,16 +407,46 @@ fn push_address(
         return;
     }
     let addr = parts.join(" ");
+    // The AU state of the register address, resolved once and reused for both the
+    // Address and Coordinates tags so this register participates in the AU
+    // geo/jurisdiction correlators like every other AU module.
+    let sc = crate::util::address_au::state_code(&addr);
     let mut a = Entity::new(EntityKind::Address, &addr, 0.55, scan_id);
     a.tag("au");
     a.tag("asic");
     a.tag(tag);
+    a.tag("country:AU");
+    if let Some(s) = sc {
+        a.tag(format!("au-state:{s}"));
+    }
     a.add_evidence(
         Evidence::new(SRC, format!("Registered address for {person}"))
             .with_attr("address", &addr)
             .with_attr("source", "asic-register"),
     );
     result.push(a);
+
+    // Inline-geocode the register address to a Coordinates anchor (offline
+    // gazetteer) so the registered locality enters the AU geo correlators
+    // (AU-052/053) immediately, without waiting on a network forward-geocode —
+    // exactly as the sibling AU register modules do.
+    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&addr) {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+        c.tag("au");
+        c.tag("asic");
+        c.tag("addr-derived");
+        c.tag("geoint");
+        c.tag("country:AU");
+        if let Some(s) = sc {
+            c.tag(format!("au-state:{s}"));
+        }
+        c.add_evidence(
+            Evidence::new(SRC, format!("Geocoded register address for {person}"))
+                .with_attr("source_address", &addr),
+        );
+        result.push(c);
+    }
 }
 
 /// A non-empty, non-`"null"` trimmed string field (JSON string or number).

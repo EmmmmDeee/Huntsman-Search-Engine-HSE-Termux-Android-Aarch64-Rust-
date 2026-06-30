@@ -11,6 +11,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **AU government-register extraction depth — four registries now emit data they
+  fetched and dropped (the no-omission directive).**
+  - `qld_cadastre` emitted only the FIRST intersecting parcel (`features.next()`),
+    silently dropping the rest at a boundary / strata / stacked-cadastre point. It
+    now emits every parcel (bounded), so each lot/plan survives (the engine's
+    value-merge unions the per-parcel `lotplan:` tags).
+  - `au_unclaimed` parsed `SenderName` — the employer/estate/insurer that LODGED
+    the money — into evidence and dropped it, leaving its own T1591.002 Business
+    Relationships promise unfulfilled. It now mines the sender for company names
+    and emits each as a `sender-company` Organisation that pivots into
+    abn_lookup/opencorporates.
+  - `asic_business_names` read `BN_STATE_OF_REG` into evidence but, unlike every
+    sibling AU registry, never turned it into geo. It now emits a `"{state},
+    Australia"` Address tagged `au-state`/`country:AU` so the jurisdiction reaches
+    the AU geo correlators.
+  - `asic_persons` built register Addresses with no `au-state`/`country:AU` tag and
+    no Coordinates. They are now jurisdiction-tagged and inline-geocoded (offline
+    gazetteer), so register addresses enter the AU geo correlators like every other
+    AU module.
+  All four are struct-field-grounded, deterministic, and regression-tested.
 - **New correlator rule AU-106 — a shared device fingerprint links accounts to one
   controller.** The device-level analogue of AU-047 (reused secret) and AU-048
   (shared key): a hardware/machine fingerprint (`hwid`/`machine_id`, surfaced as a
