@@ -1846,3 +1846,79 @@ fn every_literal_constructed_entity_kind_is_declared_in_produces() {
         "expected many literal EntityKind constructions, saw {kinds_checked}"
     );
 }
+
+#[test]
+fn every_checked_feature_flag_is_registered() {
+    // Toggle contract (checked ⊆ registered): a `"feature.X"` switch read
+    // anywhere OUTSIDE the settings module must name a key registered in
+    // FEATURE_TOGGLES — otherwise the operator can never see or control it (the
+    // web/CLI toggle catalogue, `hse config`, and the write guard all gate on
+    // `is_feature_key`/FEATURE_TOGGLES). Sound by construction: it scans string
+    // literals only, and skips `src/util/settings` (the registry + the named
+    // constants live there, so their literals are registration, not usage). The
+    // reverse direction (no registered toggle is dead) is covered by the read
+    // sites every FEATURE_TOGGLES key carries plus
+    // `feature_toggles_length_matches_registration`.
+    use huntsman_search_engine::util::settings::is_feature_key;
+
+    fn walk(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                if p.ends_with("util/settings") {
+                    continue; // the registry + const defs — literals here are registration
+                }
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src");
+    let mut files = Vec::new();
+    walk(Path::new(root), &mut files);
+
+    const NEEDLE: &str = "\"feature.";
+    let mut violations: Vec<String> = Vec::new();
+    let mut checked = 0usize;
+    for path in &files {
+        let Ok(src) = fs::read_to_string(path) else {
+            continue;
+        };
+        let mut rest = src.as_str();
+        while let Some(p) = rest.find(NEEDLE) {
+            rest = &rest[p + 1..]; // step past the opening quote
+            let key: String = rest.chars().take_while(|c| *c != '"').collect();
+            // Only well-formed `feature.<ident>` keys (ignore a bare prefix).
+            if key.len() > "feature.".len()
+                && key[8..].chars().all(|c| c.is_ascii_lowercase() || c == '_')
+            {
+                checked += 1;
+                if !is_feature_key(&key) {
+                    let v = format!("{key} [{}]", path.display());
+                    if !violations.contains(&v) {
+                        violations.push(v);
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "feature flag(s) read via a \"feature.*\" literal but NOT registered in \
+         FEATURE_TOGGLES — the operator can't toggle them; register each:\n  {}",
+        violations.join("\n  ")
+    );
+    // Floor: the codebase checks several literal feature flags (regional, recall,
+    // auto_update, update_notify, …); a refactor that breaks the scan can't make
+    // this guard vacuously pass.
+    assert!(
+        checked >= 3,
+        "expected several literal feature.* checks outside settings, saw {checked}"
+    );
+}
