@@ -22,13 +22,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   from the result URL — so a snippet that named the subject's other profiles
   ("also at `https://github.com/alice`") dropped them. A new pure
   `extract_urls_from_text` pulls `http(s)` URLs embedded in the snippet body, and
-  the social-host ones are run through the SAME `is_social_host` + `score_username`
-  gate the result-URL path uses (weak term-overlap scores stay candidate-
-  quarantined, deduped against the result-URL pass), emitting `Username` entities
-  tagged `snippet-link`. Zero extra HTTP — the snippet is already fetched — and no
-  new noise surface (identical precision gates). New unit test (URL extraction +
-  punctuation trim + dedup) and a wiring test (snippet GitHub handle surfaced;
-  non-social-host link rejected); full gate.
+  each is mined two ways: (a) any whose path carries a target term becomes a `Url`
+  pivot — a confirmed profile (handle path == seed on a canonical host) at high
+  confidence, every other path-match candidate-quarantined (stricter than the
+  result-URL path, so an incidentally-linked page can't masquerade as the
+  subject's own); (b) the social-host ones additionally run through the SAME
+  `is_social_host` + `score_username` gate the result-URL path uses (weak
+  term-overlap scores stay candidate-quarantined), emitting `Username` entities.
+  Both tagged `snippet-link`, deduped against the result-URL pass. Zero extra HTTP
+  — the snippet is already fetched — and no new confirmed-tier noise surface
+  (identical/stricter precision gates). New unit test (URL extraction + punctuation
+  trim + dedup) and wiring tests (snippet GitHub handle + confirmed-profile Url
+  surfaced; non-matching link rejected; non-canonical path-match stays candidate);
+  full gate.
 - **Free search-engine scraping maximised — denser pages, deeper paging, the
   federated social cluster, and every proven-live engine in the pivot/recycle
   passes.** Four keyless, deterministic, Termux-safe levers on `search_engines`:

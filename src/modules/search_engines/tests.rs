@@ -1420,14 +1420,14 @@ fn snippet_embedded_social_link_emits_username() {
         query: "kylo4kylo".to_string(),
     }];
     let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
-    // The `snippet-link` tag is unique to the snippet miner (the seed's own parent
-    // Username entity carries no such tag), so key the assertion on it.
+    // The snippet GitHub link yields BOTH the handle and a confirmed-profile Url,
+    // each tagged `snippet-link` (unique to the snippet miner — the seed's own
+    // parent entity carries no such tag), so key the assertions on kind + tag.
     let uname = res
         .entities
         .iter()
-        .find(|e| e.has_tag("snippet-link"))
+        .find(|e| e.kind == EntityKind::Username && e.has_tag("snippet-link"))
         .expect("snippet-embedded github handle must be extracted as a Username");
-    assert_eq!(uname.kind, EntityKind::Username);
     assert_eq!(uname.value, "kylo4kylo");
     assert!(uname.has_tag("social-profile"));
     // Strong term overlap (the handle IS the seed) → not quarantined.
@@ -1435,20 +1435,53 @@ fn snippet_embedded_social_link_emits_username() {
         !uname.has_tag("candidate"),
         "an exact-handle match must not be candidate-quarantined"
     );
+    let url_e = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Url && e.has_tag("snippet-link"))
+        .expect("snippet-embedded github profile must be extracted as a Url");
+    assert!(url_e.value.contains("github.com/kylo4kylo"));
+    assert!(
+        url_e.has_tag("confirmed-profile"),
+        "handle==seed on a canonical host is a confirmed profile"
+    );
 
-    // A snippet link to a NON-social host (a news/blog URL) must NOT mint a handle.
+    // A snippet link to a NON-social host whose path carries NO target term yields
+    // neither a handle nor a Url.
     let results2 = vec![SearchResult {
         url: "https://news.example.com/a".to_string(),
         title: "x".to_string(),
-        snippet: "see https://news.example.com/author/kylo4kylo".to_string(),
+        snippet: "see https://blog.example.com/unrelated-post".to_string(),
         engine: "mojeek",
         query: "kylo4kylo".to_string(),
     }];
     let res2 = build_entities(&target, "s", &results2, &url_engine_counts(&results2));
     assert!(
         !res2.entities.iter().any(|e| e.has_tag("snippet-link")),
-        "a non-social-host snippet link must not produce a snippet-link username"
+        "a non-social, non-matching snippet link must produce nothing"
     );
+
+    // SAFETY: a path-matching snippet page on a NON-canonical host is never
+    // promoted to a confirmed profile — it stays candidate-quarantined.
+    let results3 = vec![SearchResult {
+        url: "https://news.example.com/x".to_string(),
+        title: "x".to_string(),
+        snippet: "portfolio at https://devfolio.io/kylo4kylo today".to_string(),
+        engine: "mojeek",
+        query: "kylo4kylo".to_string(),
+    }];
+    let res3 = build_entities(&target, "s", &results3, &url_engine_counts(&results3));
+    for e in res3
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url && e.has_tag("snippet-link"))
+    {
+        assert!(
+            e.has_tag("candidate") && !e.has_tag("confirmed-profile"),
+            "a non-canonical-host snippet page must be candidate-quarantined, not confirmed: {}",
+            e.value
+        );
+    }
 }
 
 #[test]

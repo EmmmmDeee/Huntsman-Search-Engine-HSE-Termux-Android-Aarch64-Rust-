@@ -448,6 +448,43 @@ pub(super) fn build_entities(
         // the shared `@username:` key, so a handle found both ways emits once.
         for snippet_url in extract_urls_from_text(&combined_text) {
             let s_host = extract_host(&snippet_url);
+            if s_host.is_empty() {
+                continue;
+            }
+
+            // (a) A subject-relevant page NAMED in the snippet (its path carries a
+            // target term) is a Url pivot the result URL didn't carry — a
+            // portfolio, repo, or profile the subject's page links to. A confirmed
+            // profile (handle path == seed on a canonical host) is high-value; any
+            // other path-match is a secondary mention, emitted CANDIDATE-tier
+            // (quarantined from confirmed correlation) so an incidentally-linked
+            // page can't masquerade as the subject's own. Stricter than the
+            // result-URL path, which promotes a bare path-match to 0.50.
+            if url_matches_target(&snippet_url, &terms)
+                && seen_domains.insert(format!("@url:{}", canonicalize_url(&snippet_url)))
+            {
+                let confirmed = is_confirmed_profile(target, &snippet_url, &s_host);
+                let mut e = Entity::new(
+                    EntityKind::Url,
+                    &snippet_url,
+                    if confirmed { 0.80 } else { 0.40 },
+                    scan_id,
+                );
+                e.tag("search-discovered");
+                e.tag("snippet-link");
+                if confirmed {
+                    e.tag("confirmed-profile");
+                } else {
+                    e.tag("candidate");
+                }
+                e.add_evidence(build_search_evidence(r));
+                result.push(e);
+            }
+
+            // (b) A social-host profile link → the handle, via the SAME username
+            // gate the result URL uses (score_username term-overlap; weak scores
+            // stay candidate-quarantined). Deduped against the result-URL pass via
+            // the shared `@username:` key, so a handle found both ways emits once.
             if !is_social_host(&s_host) {
                 continue;
             }
