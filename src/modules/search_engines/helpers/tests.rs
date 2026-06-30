@@ -20,6 +20,58 @@ fn strip_tags_decodes_entities_in_titles_and_snippets() {
 }
 
 #[test]
+fn strip_tags_drops_inline_svg_path_data() {
+    // Real Startpage capture (debug bundle, scan 90b936dc…, entity [187]
+    // beitbirth): an inline `<svg>` "Visit in Anonymous View" icon whose path data
+    // carries a stray `>` leaked `…5.09083Z" fill="#6573ff"` into the page_title.
+    // The SVG subtree must be dropped, leaving only the visible label.
+    let html = "<svg viewBox=\"0 0 14 14\"><path d=\"M0 0 0.5>76417C13.5327 3.90021 11.4 5.09083Z\" fill=\"#6573ff\"></path></svg>Visit in Anonymous View";
+    let got = strip_tags(html, 200);
+    assert_eq!(got, "Visit in Anonymous View");
+    assert!(!got.contains("fill="));
+    assert!(!got.contains("#6573ff"));
+    assert!(!got.contains("5.09083Z"));
+}
+
+#[test]
+fn strip_tags_inserts_word_boundary_between_adjacent_elements() {
+    // Real Yahoo SERP shape: adjacent block elements must not fuse their text into
+    // "Facebookhttps…".
+    assert_eq!(
+        strip_tags(
+            "<h3>Facebook</h3><span>https://www.facebook.com › sam</span><b>Sam Diegmann - Facebook</b>",
+            200
+        ),
+        "Facebook https://www.facebook.com › sam Sam Diegmann - Facebook"
+    );
+    assert!(!strip_tags("<h3>Facebook</h3><span>https://x</span>", 200).contains("Facebookhttps"));
+}
+
+#[test]
+fn extract_snippet_near_does_not_dump_anchor_tag_attributes() {
+    // Real Startpage capture: the snippet slice begins right after the matched
+    // href URL — INSIDE the `<a …>` tag. Its attributes (rel/target/aria-label/
+    // data-testid/class) must not surface as snippet text.
+    let href = "https://www.instagram.com/beitbirth/";
+    let html = format!(
+        "<a href=\"{href}\" rel=\"noopener nofollow\" target=\"_blank\" aria-label=\"{href}\" data-testid=\"result-favicon\" class=\"favicon-link css-n7c8hp\">Instagram</a><p>Beit Birth profile</p>"
+    );
+    let snip = extract_snippet_near(&html, href, 200);
+    assert!(
+        !snip.contains("rel=\"noopener"),
+        "snippet leaked rel attr: {snip}"
+    );
+    assert!(
+        !snip.contains("data-testid"),
+        "snippet leaked data-testid: {snip}"
+    );
+    assert!(
+        !snip.contains("favicon-link"),
+        "snippet leaked class: {snip}"
+    );
+}
+
+#[test]
 fn decode_html_entities_does_not_double_decode_escaped_entities() {
     // `&amp;lt;` is the ESCAPED form of the literal text `&lt;` — it must
     // round-trip to `&lt;`, never collapse all the way to `<`.

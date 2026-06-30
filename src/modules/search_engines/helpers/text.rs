@@ -57,6 +57,18 @@ pub(in crate::modules::search_engines) fn extract_snippet_near(
         None => return String::new(),
     };
     let pos = ceil_char_boundary(html, raw);
+    // If the anchor match lands INSIDE an open tag — a SERP href URL inside
+    // `<a href="URL" …>` — the next markup char is that tag's own `>`; advance
+    // past it so strip_tags doesn't begin mid-tag and dump the remaining
+    // attributes (rel / target / aria-label / data-testid / class) as snippet
+    // text. But when the anchor is plain text (the next markup char is `<`, a new
+    // tag), the text right after it is real snippet content and must be kept.
+    let rest = &html[pos..];
+    let pos = match (rest.find('<'), rest.find('>')) {
+        (Some(lt), Some(gt)) if gt < lt => ceil_char_boundary(html, pos + gt + 1),
+        (None, Some(gt)) => ceil_char_boundary(html, pos + gt + 1),
+        _ => pos,
+    };
     let end = ceil_char_boundary(html, (pos + 1600).min(html.len()));
     let raw_text = strip_tags(&html[pos..end], max_len);
     clean_snippet(&raw_text)
@@ -90,14 +102,29 @@ pub(in crate::modules::search_engines) fn clean_snippet(s: &str) -> String {
 /// for markup and dropped. Without this, titles/snippets reached the user as
 /// raw `Smith &amp; Sons — O&#39;Brien`, which looks garbled and unverifiable.
 pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize) -> String {
+    // Remove inline subtrees that never carry visible result text but DO contain
+    // markup or raw data — an inline `<svg>` icon's `d="…"` path, `<style>`,
+    // `<script>`. A stray `>` inside such a block (common in SVG path data)
+    // desynchronises the tag scanner below and leaks the block's raw bytes
+    // (`…5.09083Z" fill="#6573ff"`) into the title/snippet.
+    let cleaned = strip_inline_blocks(html);
     let mut out = String::with_capacity(max_len);
     let mut in_tag = false;
-    for c in html.chars() {
+    for c in cleaned.chars() {
         if out.len() >= max_len {
             break;
         }
         match c {
-            '<' => in_tag = true,
+            '<' => {
+                // A tag opening is a soft word boundary so adjacent elements
+                // (`</h3><span>`) do not fuse into "Facebookhttps…". The same
+                // `!ends_with(' ') && !is_empty()` guards used for whitespace
+                // prevent a leading or doubled space.
+                if !in_tag && !out.is_empty() && !out.ends_with(' ') {
+                    out.push(' ');
+                }
+                in_tag = true;
+            }
             '>' => in_tag = false,
             _ if !in_tag => {
                 if c.is_whitespace() {
@@ -112,6 +139,36 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
         }
     }
     decode_html_entities(out.trim())
+}
+
+/// Remove inline `<svg>` / `<style>` / `<script>` subtrees wholesale, replacing
+/// each with a single space (a word boundary). Case-insensitive; an unclosed
+/// block is dropped to end-of-string. These elements carry markup or raw data,
+/// never the visible result text a title/snippet wants, so dropping them before
+/// the tag scanner runs is both correct and what stops their stray `>`
+/// characters from corrupting the output.
+fn strip_inline_blocks(html: &str) -> String {
+    let lower0 = html.to_ascii_lowercase();
+    if !(lower0.contains("<svg") || lower0.contains("<style") || lower0.contains("<script")) {
+        return html.to_string();
+    }
+    let mut s = html.to_string();
+    for tag in ["svg", "style", "script"] {
+        let open = format!("<{tag}");
+        let close = format!("</{tag}>");
+        loop {
+            let lower = s.to_ascii_lowercase();
+            let Some(start) = lower.find(&open) else {
+                break;
+            };
+            let end = match lower[start..].find(&close) {
+                Some(rel) => start + rel + close.len(),
+                None => s.len(),
+            };
+            s.replace_range(start..end, " ");
+        }
+    }
+    s
 }
 
 /// Extract the most relevant sentence fragment from a snippet by
