@@ -218,7 +218,7 @@ fn core_does_not_import_util_directly() {
                 // (`is_proxy_registrant`) and the public-suffix-based
                 // registrable-domain extractor (`registrable_domain`). Used by
                 // `core::relation::builders` (derive_co_ownership) and
-                // `core::correlator::rules::org` (AU-076/AU-077) to collapse
+                // `core::correlator::rules::org` (AU-109/AU-110) to collapse
                 // same-site subdomains and exclude privacy-proxy registrants.
                 && !line.contains("util::domains::is_proxy_registrant")
                 && !line.contains("util::domains::registrable_domain")
@@ -1193,17 +1193,47 @@ fn has_nonzero_len_assert(line: &str) -> bool {
 /// crypto) plus `mod.rs`; the rule-wiring and rule-id guards scan the union, so
 /// they keep working regardless of how the rules are partitioned across files.
 fn correlator_rules_source() -> String {
+    // Recurse into subdirectories (`geo/`, `identity/`, `location/`) — a flat
+    // `fs::read_dir` would silently skip them (a directory has no `.rs`
+    // extension, so the filter drops it entirely), leaving ~46 rules across 3
+    // whole subdirectories unscanned by every guard built on this helper
+    // (`every_defined_correlation_rule_is_dispatched`,
+    // `correlation_rule_ids_match_their_function_number`,
+    // `no_two_correlation_rule_functions_share_a_number`). A dead or
+    // mis-numbered rule confined to one of those subdirectories would compile,
+    // dispatch, and fire while every one of those safety nets stayed silent.
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(p);
+            }
+        }
+    }
+
     let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/core/correlator/rules");
-    let mut out = String::new();
-    let mut files: Vec<_> = fs::read_dir(&dir)
-        .expect("correlator/rules/ must exist")
-        .filter_map(Result::ok)
-        .map(|e| e.path())
-        .filter(|p| p.extension().is_some_and(|x| x == "rs"))
-        .collect();
+    let mut files = Vec::new();
+    walk(&dir, &mut files);
     files.sort(); // deterministic concatenation order
+
+    let mut out = String::new();
     for p in files {
-        out.push_str(&fs::read_to_string(&p).expect("rule file readable"));
+        let text = fs::read_to_string(&p).expect("rule file readable");
+        // Truncate at the file's own `#[cfg(test)]` boundary (always at file
+        // end by this codebase's convention — see `geo/mod.rs`/`location/mod.rs`
+        // for the inline form). Without this, a trailing test module's
+        // `assert_eq!(.., "AU-NNN")` for one rule reads as a SUBSEQUENT
+        // emission of whichever rule function was declared last in the file,
+        // producing a false `correlation_rule_ids_match_their_function_number`
+        // mismatch the moment the file under scan has more than one rule and
+        // an inline (not split-out) test module.
+        let code = text.split("#[cfg(test)]").next().unwrap_or(&text);
+        out.push_str(code);
         out.push('\n');
     }
     out
@@ -1326,6 +1356,126 @@ fn correlation_rule_ids_match_their_function_number() {
         mismatches.is_empty(),
         "correlation rule_id does not match its function number (copy-paste \
          mis-attribution / colliding dedup key): {mismatches:?}"
+    );
+}
+
+/// No two DIFFERENT rule functions may claim the same `AU-NNN` number.
+///
+/// [`correlation_rule_ids_match_their_function_number`] only checks that a
+/// function's OWN emitted id matches ITS OWN number — it has no notion of any
+/// OTHER function, so two independently-written, independently-dispatched,
+/// independently-tested rules (e.g. `rule_au_076_email_username_localpart_bridge`
+/// in `identity/account.rs` and the former `rule_au_076_shared_registrant` in
+/// `org.rs`) can each individually satisfy it while silently colliding on one
+/// `rule_id`. That id is the dedup/supersede key `storage::upsert_correlation`
+/// queries on (`WHERE scan_id = ?1 AND rule_id = ?2`), so a collision makes two
+/// semantically unrelated findings overwrite/merge into one, corrupting
+/// whichever fires second. This exact collision shipped once — a missed
+/// renumbering from a 2026-06-25 `origin/main` merge that unioned two
+/// independently-numbered rule sets (see `docs/SOLUTION_TREE.md`) — and was
+/// only caught by a dedicated audit, not by the test suite. This closes that
+/// gap permanently: a number is collected with EVERY distinct
+/// `rule_au_<NNN>_<name>` function that declares it, and fails if any number
+/// has more than one distinct owner.
+#[test]
+fn no_two_correlation_rule_functions_share_a_number() {
+    let src = correlator_rules_source();
+    let mut owners: std::collections::BTreeMap<u32, Vec<String>> =
+        std::collections::BTreeMap::new();
+
+    for line in src.lines() {
+        let Some(i) = line.find("fn rule_au_") else {
+            continue;
+        };
+        let after = &line[i + "fn rule_au_".len()..];
+        let digit_end = after
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(after.len());
+        if digit_end == 0 {
+            continue;
+        }
+        let Ok(n) = after[..digit_end].parse::<u32>() else {
+            continue;
+        };
+        let name_start = i + "fn ".len();
+        let name_end = line[name_start..]
+            .find('(')
+            .map_or(line.len(), |p| name_start + p);
+        let full_name = line[name_start..name_end].trim().to_string();
+        let names = owners.entry(n).or_default();
+        if !names.contains(&full_name) {
+            names.push(full_name);
+        }
+    }
+
+    let collisions: Vec<String> = owners
+        .into_iter()
+        .filter(|(_, names)| names.len() > 1)
+        .map(|(n, names)| format!("AU-{n:03}: {names:?}"))
+        .collect();
+
+    assert!(
+        collisions.is_empty(),
+        "two different rule functions claim the same AU-NNN number — they will \
+         collide on storage's (scan_id, rule_id) dedup/supersede key and corrupt \
+         each other's findings; assign the newer rule an unused number: \
+         {collisions:?}"
+    );
+}
+
+/// Every HTTP response body read in `src/modules` and `src/core` must go
+/// through a CAPPED reader (`util::http::{read_text, read_json_text,
+/// fetch_json*, read_body_capped}`), never a raw `reqwest::Response::text()`.
+///
+/// The raw call buffers the WHOLE body in RAM with no upper bound before the
+/// caller ever inspects it — exactly the OOM-on-Termux pattern
+/// `util::http::fetch`'s `JSON_BODY_CAP` (32 MiB) and its capped helpers exist
+/// to close off. One module (`pypi_user`'s XML-RPC step) called the raw method
+/// directly and went unnoticed until a dedicated audit found it: every OTHER
+/// body read in the tree had already been migrated to a capped helper, so the
+/// established convention gave no compile-time or test signal that this one
+/// call site had been missed. This closes that gap permanently: the raw
+/// method is only legitimate inside `util::http` itself, where it backs the
+/// capped wrappers.
+#[test]
+fn no_module_reads_an_http_body_without_a_size_cap() {
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                walk(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs") {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut offenders = Vec::new();
+    for sub in ["modules", "core"] {
+        let mut files = Vec::new();
+        walk(&root.join(sub), &mut files);
+        files.sort();
+        for p in files {
+            let text = fs::read_to_string(&p).expect("source file readable");
+            for (i, line) in text.lines().enumerate() {
+                let trimmed = line.trim_start();
+                if trimmed.starts_with("//") {
+                    continue; // doc/explanatory comments may mention the pattern
+                }
+                if line.contains(".text().await") {
+                    offenders.push(format!("{}:{}", p.display(), i + 1));
+                }
+            }
+        }
+    }
+
+    assert!(
+        offenders.is_empty(),
+        "raw, uncapped reqwest::Response::text().await outside util::http — \
+         use util::http::read_text / read_json_text / fetch_json* instead, or \
+         read_body_capped for a non-erroring truncated read: {offenders:?}"
     );
 }
 

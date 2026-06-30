@@ -216,12 +216,12 @@ pub(in crate::core::correlator) fn rule_au_033_abn_organisation_link(
 
 /// Delegates to [`crate::util::domains::is_proxy_registrant`] — single source
 /// of truth for the privacy-proxy / WHOIS-redaction exclusion used by both
-/// AU-076 and `core::relation::builders::derive_co_ownership`.
+/// AU-109 and `core::relation::builders::derive_co_ownership`.
 fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
     crate::util::domains::is_proxy_registrant(value, is_email)
 }
 
-/// AU-076 — Shared-registrant domain co-ownership.
+/// AU-109 — Shared-registrant domain co-ownership.
 ///
 /// Groups the `RegisteredBy` edges (Domain → registrant Organisation/Email,
 /// derived from WHOIS/RDAP by `relation::builders::derive_registration`) by
@@ -240,7 +240,7 @@ fn is_proxy_registrant(value: &str, is_email: bool) -> bool {
 /// EXCLUDED — only a real registrant identity links the estate. Severity High,
 /// matching AU-044's shared-ownership tier. Deterministic: registrants iterated
 /// in uid order, member domains sorted by uid.
-pub(in crate::core::correlator) fn rule_au_076_shared_registrant(
+pub(in crate::core::correlator) fn rule_au_109_shared_registrant(
     entities: &[Entity],
     relations: &[Relation],
     scan_id: &str,
@@ -307,7 +307,7 @@ pub(in crate::core::correlator) fn rule_au_076_shared_registrant(
         uids.extend(domains.iter().map(|u| (*u).to_string()));
 
         out.push(Correlation::new(
-            "AU-076",
+            "AU-109",
             "Shared registrant (domain co-ownership)",
             Severity::High,
             format!(
@@ -327,19 +327,19 @@ pub(in crate::core::correlator) fn rule_au_076_shared_registrant(
 }
 
 /// Upper bound on DISTINCT registrable domains sharing one dedicated IP for
-/// AU-077 to read the co-tenancy as probable co-ownership rather than shared
+/// AU-110 to read the co-tenancy as probable co-ownership rather than shared
 /// hosting. A real operator estate is a handful of sites; a single IP serving
 /// many *distinct* sites is a reseller / shared-hosting box — the high-fan-out
 /// shared-infra case AU-031 already aggregates as noise.
 const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
 
-/// AU-077 — Shared dedicated-IP domain co-hosting (probable co-ownership).
+/// AU-110 — Shared dedicated-IP domain co-hosting (probable co-ownership).
 ///
 /// Groups the `ResolvesTo` edges (Domain → IpAddress, from DNS) by IP. When a
 /// SMALL set of ≥2 DISTINCT registrable domains resolve to one DEDICATED IP they
 /// are probably co-owned — the reverse-IP clustering pivot for an actor's estate.
 ///
-/// This is the IP counterpart to AU-076 (shared registrant) at LOWER severity
+/// This is the IP counterpart to AU-109 (shared registrant) at LOWER severity
 /// (Medium vs High): a dedicated IP can still host a few unrelated small sites,
 /// whereas a registrant contractually holds the domains. The finding is framed
 /// as a lead to verify (against registrant / page content), not a conclusion.
@@ -358,7 +358,7 @@ const MAX_CO_HOSTED_REGISTRABLE: usize = 5;
 ///
 /// Severity Medium. Deterministic: IPs iterated in uid order, member domains and
 /// the named registrable set sorted.
-pub(in crate::core::correlator) fn rule_au_077_shared_hosting_ip(
+pub(in crate::core::correlator) fn rule_au_110_shared_hosting_ip(
     entities: &[Entity],
     relations: &[Relation],
     scan_id: &str,
@@ -424,7 +424,7 @@ pub(in crate::core::correlator) fn rule_au_077_shared_hosting_ip(
         uids.extend(domains.iter().map(|u| (*u).to_string()));
 
         out.push(Correlation::new(
-            "AU-077",
+            "AU-110",
             "Co-hosted on dedicated IP (probable co-ownership)",
             Severity::Medium,
             format!(

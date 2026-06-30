@@ -6463,10 +6463,10 @@ fn au071_robust_identity_cluster_fires_on_a_redundantly_bound_cluster() {
     assert_eq!(out[0].rule_id, "AU-071");
 }
 
-// ── AU-076 — shared-registrant domain co-ownership (relation rule) ──────────
+// ── AU-109 — shared-registrant domain co-ownership (relation rule) ──────────
 
 #[test]
-fn au076_fires_on_shared_registrant_org() {
+fn au109_fires_on_shared_registrant_org() {
     use crate::core::relation::{Relation, RelationKind};
     // Two distinct domains both RegisteredBy the same genuine Organisation →
     // one High co-ownership finding naming both domains and the registrant.
@@ -6489,9 +6489,9 @@ fn au076_fires_on_shared_registrant_org() {
             "s",
         ),
     ];
-    let r = rule_au_076_shared_registrant(&[d1.clone(), d2.clone(), org.clone()], &rels, "s", 0);
+    let r = rule_au_109_shared_registrant(&[d1.clone(), d2.clone(), org.clone()], &rels, "s", 0);
     assert_eq!(r.len(), 1, "shared registrant must fire one correlation");
-    assert_eq!(r[0].rule_id, "AU-076");
+    assert_eq!(r[0].rule_id, "AU-109");
     assert_eq!(r[0].severity, Severity::High);
     assert!(r[0].entity_uids.contains(&org.uid));
     assert!(r[0].entity_uids.contains(&d1.uid));
@@ -6502,7 +6502,7 @@ fn au076_fires_on_shared_registrant_org() {
 }
 
 #[test]
-fn au076_fires_on_shared_registrant_email() {
+fn au109_fires_on_shared_registrant_email() {
     use crate::core::relation::{Relation, RelationKind};
     // A personal (freemail) registrant email shared across two domains is a
     // genuine co-ownership signal — only infra/proxy mailboxes are excluded.
@@ -6525,15 +6525,15 @@ fn au076_fires_on_shared_registrant_email() {
             "s",
         ),
     ];
-    let r = rule_au_076_shared_registrant(&[d1, d2, email.clone()], &rels, "s", 0);
+    let r = rule_au_109_shared_registrant(&[d1, d2, email.clone()], &rels, "s", 0);
     assert_eq!(r.len(), 1);
-    assert_eq!(r[0].rule_id, "AU-076");
+    assert_eq!(r[0].rule_id, "AU-109");
     assert!(r[0].description.contains("registrant email"));
     assert!(r[0].entity_uids.contains(&email.uid));
 }
 
 #[test]
-fn au076_no_fire_on_privacy_proxy_registrant() {
+fn au109_no_fire_on_privacy_proxy_registrant() {
     use crate::core::relation::{Relation, RelationKind};
     // The critical false-positive guard: domains sharing a WHOIS privacy proxy
     // (Domains By Proxy / WhoisGuard / an `abuse@` registrar role) must NOT be
@@ -6560,7 +6560,7 @@ fn au076_no_fire_on_privacy_proxy_registrant() {
             ),
         ];
         let r =
-            rule_au_076_shared_registrant(&[d1.clone(), d2.clone(), who.clone()], &rels, "s", 0);
+            rule_au_109_shared_registrant(&[d1.clone(), d2.clone(), who.clone()], &rels, "s", 0);
         assert!(
             r.is_empty(),
             "privacy-proxy registrant '{}' must not link domains, got {r:?}",
@@ -6570,7 +6570,7 @@ fn au076_no_fire_on_privacy_proxy_registrant() {
 }
 
 #[test]
-fn au076_no_fire_on_single_domain_or_redacted() {
+fn au109_no_fire_on_single_domain_or_redacted() {
     use crate::core::relation::{Relation, RelationKind};
     let d1 = Entity::new(EntityKind::Domain, "solo.example", 0.8, "s");
     let org = Entity::new(EntityKind::Organisation, "Solo Trader", 0.8, "s");
@@ -6582,7 +6582,7 @@ fn au076_no_fire_on_single_domain_or_redacted() {
         0.8,
         "s",
     )];
-    assert!(rule_au_076_shared_registrant(&[d1.clone(), org], &rels, "s", 0).is_empty());
+    assert!(rule_au_109_shared_registrant(&[d1.clone(), org], &rels, "s", 0).is_empty());
     // A "REDACTED FOR PRIVACY" placeholder registrant is excluded even with two
     // domains (substring marker `redacted`/`privacy`).
     let d2 = Entity::new(EntityKind::Domain, "solo2.example", 0.8, "s");
@@ -6603,11 +6603,11 @@ fn au076_no_fire_on_single_domain_or_redacted() {
             "s",
         ),
     ];
-    assert!(rule_au_076_shared_registrant(&[d1, d2, redacted], &rels2, "s", 0).is_empty());
+    assert!(rule_au_109_shared_registrant(&[d1, d2, redacted], &rels2, "s", 0).is_empty());
 }
 
 #[test]
-fn au076_deterministic_across_edge_order() {
+fn au109_deterministic_across_edge_order() {
     use crate::core::relation::{Relation, RelationKind};
     let d1 = Entity::new(EntityKind::Domain, "x.example", 0.8, "s");
     let d2 = Entity::new(EntityKind::Domain, "y.example", 0.8, "s");
@@ -6622,8 +6622,8 @@ fn au076_deterministic_across_edge_order() {
         )
     };
     let ents = [d1.clone(), d2.clone(), org.clone()];
-    let r1 = rule_au_076_shared_registrant(&ents, &[mk(&d1, &org), mk(&d2, &org)], "s", 0);
-    let r2 = rule_au_076_shared_registrant(&ents, &[mk(&d2, &org), mk(&d1, &org)], "s", 0);
+    let r1 = rule_au_109_shared_registrant(&ents, &[mk(&d1, &org), mk(&d2, &org)], "s", 0);
+    let r2 = rule_au_109_shared_registrant(&ents, &[mk(&d2, &org), mk(&d1, &org)], "s", 0);
     assert_eq!(r1.len(), 1);
     assert_eq!(
         r1[0].description, r2[0].description,
@@ -6632,9 +6632,9 @@ fn au076_deterministic_across_edge_order() {
     assert_eq!(r1[0].entity_uids, r2[0].entity_uids);
 }
 
-// ── AU-077 — shared dedicated-IP co-hosting (relation rule) ─────────────────
+// ── AU-110 — shared dedicated-IP co-hosting (relation rule) ─────────────────
 
-/// Build a Domain→IpAddress `ResolvesTo` edge for the AU-077 fixtures.
+/// Build a Domain→IpAddress `ResolvesTo` edge for the AU-110 fixtures.
 fn resolves(d: &Entity, ip: &Entity) -> crate::core::relation::Relation {
     use crate::core::relation::{Relation, RelationKind};
     Relation::new(
@@ -6647,19 +6647,19 @@ fn resolves(d: &Entity, ip: &Entity) -> crate::core::relation::Relation {
 }
 
 #[test]
-fn au077_fires_on_two_distinct_sites_one_dedicated_ip() {
+fn au110_fires_on_two_distinct_sites_one_dedicated_ip() {
     // Two DIFFERENT sites on one non-CDN, routable IP → Medium co-hosting lead.
     let d1 = Entity::new(EntityKind::Domain, "alpha-site.com", 0.8, "s");
     let d2 = Entity::new(EntityKind::Domain, "beta-site.org", 0.8, "s");
     let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
     let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
-    let r = rule_au_077_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+    let r = rule_au_110_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
     assert_eq!(
         r.len(),
         1,
         "two distinct sites on one dedicated IP must fire"
     );
-    assert_eq!(r[0].rule_id, "AU-077");
+    assert_eq!(r[0].rule_id, "AU-110");
     assert_eq!(r[0].severity, Severity::Medium);
     assert!(r[0].entity_uids.contains(&ip.uid));
     assert!(r[0].entity_uids.contains(&d1.uid));
@@ -6670,7 +6670,7 @@ fn au077_fires_on_two_distinct_sites_one_dedicated_ip() {
 }
 
 #[test]
-fn au077_no_fire_on_subdomains_of_one_site() {
+fn au110_no_fire_on_subdomains_of_one_site() {
     // Co-RESIDENCE, not co-ownership: www/api/blog of ONE site share its origin
     // IP. All reduce to one registrable domain → must NOT fire.
     let d1 = Entity::new(EntityKind::Domain, "www.example.com", 0.8, "s");
@@ -6678,7 +6678,7 @@ fn au077_no_fire_on_subdomains_of_one_site() {
     let d3 = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
     let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
     let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip), resolves(&d3, &ip)];
-    let r = rule_au_077_shared_hosting_ip(&[d1, d2, d3, ip], &rels, "s", 0);
+    let r = rule_au_110_shared_hosting_ip(&[d1, d2, d3, ip], &rels, "s", 0);
     assert!(
         r.is_empty(),
         "one site's own subdomains are co-residence, not co-ownership: {r:?}"
@@ -6686,7 +6686,7 @@ fn au077_no_fire_on_subdomains_of_one_site() {
 }
 
 #[test]
-fn au077_no_fire_on_cdn_or_nonroutable_ip() {
+fn au110_no_fire_on_cdn_or_nonroutable_ip() {
     // Guard 1: a Cloudflare edge (104.16/13) and non-routable IPs each front
     // unrelated sites — co-tenancy, never co-ownership.
     let d1 = Entity::new(EntityKind::Domain, "alpha-site.com", 0.8, "s");
@@ -6694,7 +6694,7 @@ fn au077_no_fire_on_cdn_or_nonroutable_ip() {
     for ip_val in ["104.16.5.5", "192.168.1.10", "203.0.113.7"] {
         let ip = Entity::new(EntityKind::IpAddress, ip_val, 0.8, "s");
         let rels = vec![resolves(&d1, &ip), resolves(&d2, &ip)];
-        let r = rule_au_077_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
+        let r = rule_au_110_shared_hosting_ip(&[d1.clone(), d2.clone(), ip.clone()], &rels, "s", 0);
         assert!(
             r.is_empty(),
             "{ip_val}: CDN/non-routable IP must not link, got {r:?}"
@@ -6703,7 +6703,7 @@ fn au077_no_fire_on_cdn_or_nonroutable_ip() {
 }
 
 #[test]
-fn au077_no_fire_on_shared_hosting_fanout() {
+fn au110_no_fire_on_shared_hosting_fanout() {
     // Guard 3: many distinct sites on one IP → shared hosting, skipped.
     let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
     let mut ents = vec![ip.clone()];
@@ -6718,7 +6718,7 @@ fn au077_no_fire_on_shared_hosting_fanout() {
         rels.push(resolves(&d, &ip));
         ents.push(d);
     }
-    let r = rule_au_077_shared_hosting_ip(&ents, &rels, "s", 0);
+    let r = rule_au_110_shared_hosting_ip(&ents, &rels, "s", 0);
     assert!(
         r.is_empty(),
         "8 distinct sites on one IP is shared hosting, not co-ownership: {r:?}"
