@@ -76,7 +76,14 @@ impl Module for Psbdmp {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Url];
+        // The paste `Url`s, plus the SEED identity re-emitted as paste-exposed so
+        // the exposure attaches to the subject's own email/username/domain entity.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Url,
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Domain,
+        ];
         KINDS
     }
 
@@ -92,22 +99,53 @@ impl Module for Psbdmp {
             Ok(r) => r,
             Err(_) => return Ok(result),
         };
-        extract(&resp, term, &ctx.scan_id, &mut result);
+        extract(&resp, term, target.kind, &ctx.scan_id, &mut result);
         Ok(result)
     }
 }
 
+/// The identity [`EntityKind`] for a paste-exposed seed of the given target kind.
+/// [`Psbdmp::accepts`] only admits these three, so a real seed always maps; the
+/// `None` arm is a defensive fallback that simply skips the seed-identity emission.
+fn seed_entity_kind(kind: TargetKind) -> Option<EntityKind> {
+    match kind {
+        TargetKind::Email => Some(EntityKind::Email),
+        TargetKind::Username => Some(EntityKind::Username),
+        TargetKind::Domain => Some(EntityKind::Domain),
+        _ => None,
+    }
+}
+
 /// Turn a psbdmp search response into entities. Pure of I/O (unit-tested).
-fn extract(resp: &SearchResp, term: &str, scan_id: &str, result: &mut ModuleResult) {
+///
+/// Emits one `Url` per distinct paste (tagged [`tags::PASTE_EXPOSED`]) AND — the
+/// piece the Url-only emission left implicit — the SEED IDENTITY itself
+/// (email/username/domain), tagged paste-exposed + breach and carrying the paste
+/// count and earliest paste date. Because entities merge by value, that seed
+/// entity folds into the target, so the subject's own record shows the exposure
+/// and its temporal anchor and identity-level breach correlation can see it — not
+/// just the orphan paste URLs AU-043 counts. The module doc-comment's "marks the
+/// seed as paste-exposed" promise is now actually fulfilled.
+fn extract(
+    resp: &SearchResp,
+    term: &str,
+    kind: TargetKind,
+    scan_id: &str,
+    result: &mut ModuleResult,
+) {
     if resp.data.is_empty() {
         return;
     }
-    // Mark the seed as paste-exposed so the correlator can corroborate it
-    // against the other breach sources.
     let mut seen = std::collections::HashSet::new();
-    result.extend(resp.data.iter().filter_map(|paste| {
-        if paste.id.is_empty() || !seen.insert(paste.id.clone()) {
-            return None;
+    // Earliest paste date by lexical min over the API's `YYYY-MM-DD …` strings —
+    // deterministic, no clock; lexical order is chronological for that ISO form.
+    let mut earliest: Option<&str> = None;
+    for paste in &resp.data {
+        if paste.id.is_empty() || !seen.insert(paste.id.as_str()) {
+            continue;
+        }
+        if !paste.date.is_empty() {
+            earliest = Some(earliest.map_or(paste.date.as_str(), |e| e.min(paste.date.as_str())));
         }
         let url = format!("https://pastebin.com/{}", paste.id);
         let ev = [
@@ -132,8 +170,34 @@ fn extract(resp: &SearchResp, term: &str, scan_id: &str, result: &mut ModuleResu
         e.tag(SRC);
         e.tag(tags::PASTE_EXPOSED);
         e.add_evidence(ev);
-        Some(e)
-    }));
+        result.push(e);
+    }
+
+    let paste_count = seen.len();
+    if paste_count == 0 {
+        return;
+    }
+    // The seed identity itself, re-emitted paste-exposed so the exposure attaches
+    // to the subject (merges by value into the target entity), carrying the count
+    // and the temporal anchor that the Url-only emission discarded.
+    if let Some(seed_kind) = seed_entity_kind(kind) {
+        let summary = match earliest {
+            Some(d) => format!("{term} appears in {paste_count} public paste(s); earliest {d}"),
+            None => format!("{term} appears in {paste_count} public paste(s)"),
+        };
+        let mut ev = Evidence::new(SRC, summary)
+            .with_attr("search_term", term)
+            .with_attr("paste_count", paste_count.to_string());
+        if let Some(d) = earliest {
+            ev = ev.with_attr("earliest_paste", d);
+        }
+        let mut seed = Entity::new(seed_kind, term, 0.55, scan_id);
+        seed.tag(SRC);
+        seed.tag(tags::PASTE_EXPOSED);
+        seed.tag(tags::BREACH);
+        seed.add_evidence(ev);
+        result.push(seed);
+    }
 }
 
 #[cfg(test)]

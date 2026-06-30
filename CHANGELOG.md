@@ -131,6 +131,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`psbdmp` now actually marks the SEED identity as paste-exposed, not just the
+  orphan paste URLs.** The module's doc-comment promised to "mark the seed as
+  paste-exposed so the correlator can corroborate it", but `extract` only ever
+  emitted pastebin `Url` entities — so AU-043 counted the pastes while the
+  subject's own email/username/domain carried no exposure tag and no temporal
+  signal. It now also re-emits the seed identity (which merges by value into the
+  target entity) tagged `paste-exposed` + `breach`, carrying the paste count and
+  the EARLIEST paste date (lexical min over the API's ISO date strings —
+  deterministic, no clock). The exposure and its temporal anchor now attach to the
+  subject's record and are visible to identity-level breach correlation, not just
+  to the URL-counting AU-043. `produces()` widened to Email/Username/Domain
+  accordingly. Regression-tested (seed emitted + tagged + dated across all three
+  seed kinds, order-independent earliest-date) and the full gate.
 - **Reused-secret identity merge now links USERNAME-keyed accounts, not just
   emails (AU-047).** The rule's own documentation promised to tie identities on a
   shared unique secret "(the email/username the breach record carries)", but the
