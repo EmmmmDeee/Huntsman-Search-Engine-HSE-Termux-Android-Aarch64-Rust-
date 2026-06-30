@@ -191,28 +191,36 @@ fn check_module_registry() -> Check {
     )
 }
 
-/// The O(1) dispatch index exactly matches a naive `accepts()` scan for every
-/// target kind — the load-bearing wiring invariant (a mismatch silently drops
-/// a module from a kind it should serve).
+/// The O(1) dispatch index contains every module that accepts a given kind —
+/// the load-bearing wiring invariant (a module missing from its bucket silently
+/// never runs for that kind). This is the SUBSET direction, not equality: a
+/// module that value-gates `accepts()` (a name needs a space, a URL must be an
+/// image / social host) declares the kind via an explicit `consumes()` override,
+/// so the index legitimately holds MORE than a generic probe accepts. (Equality
+/// here is what masked four modules whose `consumes()` had collapsed to empty.)
 fn check_dispatch_graph() -> Check {
     let modules = crate::modules::registry();
     let graph = ModuleGraph::build(&modules);
-    for &kind in ALL_TARGET_KINDS {
-        let probe = Target::new(kind, "graph-probe");
-        let naive = modules.iter().filter(|m| m.accepts(&probe)).count();
-        let indexed = graph.modules_for(kind).len();
-        if naive != indexed {
-            return check(
-                "modules.dispatch_graph",
-                Status::Fail,
-                format!("{kind:?}: naive scan={naive} vs dispatch index={indexed}"),
-            );
+    for (idx, m) in modules.iter().enumerate() {
+        for &kind in ALL_TARGET_KINDS {
+            if m.accepts(&Target::new(kind, "graph-probe"))
+                && !graph.modules_for(kind).contains(&idx)
+            {
+                return check(
+                    "modules.dispatch_graph",
+                    Status::Fail,
+                    format!(
+                        "{} accepts {kind:?} but is missing from its dispatch bucket",
+                        m.name()
+                    ),
+                );
+            }
         }
     }
     check(
         "modules.dispatch_graph",
         Status::Pass,
-        "dispatch index matches accepts() for every target kind",
+        "every accepting module is in its kind's dispatch bucket",
     )
 }
 
@@ -222,13 +230,34 @@ fn check_dispatch_graph() -> Check {
 fn check_consumes_accepts() -> Check {
     let modules = crate::modules::registry();
     let mut violations = Vec::new();
+    let mut dead = Vec::new();
     for m in &modules {
         let declared = m.consumes();
+        // Floor: a module that consumes NOTHING is in no dispatch bucket and can
+        // never run. A value-gated accepts() (a name needs a space, a URL must be
+        // an image / social host) whose author forgot the consumes() override
+        // collapses to exactly this — and the probe-subset check below can't see
+        // it (the probe itself fails the gate, so an empty consumes() looks
+        // "consistent" with zero probed accepts).
+        if declared.is_empty() {
+            dead.push(m.name());
+        }
         for &kind in ALL_TARGET_KINDS {
             if m.accepts(&Target::new(kind, PROBE_VALUE)) && !declared.contains(&kind) {
                 violations.push(format!("{}/{kind:?}", m.name()));
             }
         }
+    }
+    if !dead.is_empty() {
+        return check(
+            "modules.consumes_accepts",
+            Status::Fail,
+            format!(
+                "module(s) with empty consumes() — dead at runtime (override \
+                 consumes() to declare the value-gated kind): {}",
+                dead.join(", ")
+            ),
+        );
     }
     if violations.is_empty() {
         check(

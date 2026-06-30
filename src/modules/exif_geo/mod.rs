@@ -120,6 +120,15 @@ impl Module for ExifGeo {
         matches!(t.kind, TargetKind::Url) && looks_like_image_url(&t.value)
     }
 
+    /// `accepts()` value-gates (the URL must look like an image), so the default
+    /// probe-based `consumes()` is empty — which would leave this module out of
+    /// the Url dispatch bucket and silently never run on any image URL. Declare
+    /// the kind explicitly; the per-target `accepts()` re-check at dispatch keeps
+    /// the image-URL filter so it still only runs on actual images.
+    fn consumes(&self) -> Vec<TargetKind> {
+        vec![TargetKind::Url]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Image download + parse. 12s catches slow CDN tail latency
         // without making the engine wait on dead URLs.

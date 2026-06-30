@@ -246,6 +246,15 @@ impl Module for AsicDirector {
         t.kind == TargetKind::FullName && t.value.trim().contains(' ')
     }
 
+    /// `accepts()` value-gates (a name must have ≥2 tokens), so the default
+    /// probe-based `consumes()` is empty — which would leave this module out of
+    /// the FullName dispatch bucket and silently never run. Declare the kind
+    /// explicitly; the engine still re-applies `accepts()` to each real target
+    /// at dispatch, so the multi-word value filter is preserved.
+    fn consumes(&self) -> Vec<TargetKind> {
+        vec![TargetKind::FullName]
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Corporate
     }

@@ -1834,24 +1834,61 @@ fn every_declared_produced_pivot_has_a_consumer() {
 // ── ModuleGraph / dispatch index / expansion strategy ──────────────────────
 
 #[test]
-fn module_graph_dispatch_index_matches_real_registry_accepts() {
-    // Every module that accepts(target_kind) must show up in the
-    // dispatch_index bucket for that kind. Anything missing means the
-    // engine would skip a module that should have run.
+fn module_graph_dispatch_index_includes_every_accepting_module() {
+    // Every module that accepts a target of a given kind MUST appear in that
+    // kind's dispatch bucket, or the engine would skip a module that should run.
+    //
+    // This checks the SUBSET direction (accepts ⊆ index), not equality: a module
+    // that value-gates accepts() (a name must contain a space, a URL must be an
+    // image / a social host) declares the kind via an explicit `consumes()`
+    // override, so it is correctly indexed even though a generic probe value
+    // fails its shape gate. The old equality form assumed `consumes()` == the
+    // probe-accept set, which is precisely what masked the four modules that had
+    // collapsed to an empty `consumes()` and were dead at runtime
+    // (`every_registered_module_consumes_at_least_one_kind` guards that floor).
     use huntsman_search_engine::core::dependency::{ALL_TARGET_KINDS, ModuleGraph};
     let modules = huntsman_search_engine::modules::registry();
     let graph = ModuleGraph::build(&modules);
 
-    for kind in ALL_TARGET_KINDS {
-        let probe = Target::new(*kind, "graph-probe");
-        let accepts_naive: usize = modules.iter().filter(|m| m.accepts(&probe)).count();
-        let accepts_indexed = graph.modules_for(*kind).len();
-        assert_eq!(
-            accepts_naive, accepts_indexed,
-            "dispatch index mismatch for {kind:?}: naive scan={accepts_naive} \
-             vs graph={accepts_indexed}",
-        );
+    for (idx, m) in modules.iter().enumerate() {
+        for kind in ALL_TARGET_KINDS {
+            if m.accepts(&Target::new(*kind, "graph-probe")) {
+                assert!(
+                    graph.modules_for(*kind).contains(&idx),
+                    "{} accepts {kind:?} for the probe value but is missing from \
+                     its dispatch bucket — it would never run for that kind",
+                    m.name()
+                );
+            }
+        }
     }
+}
+
+#[test]
+fn every_registered_module_consumes_at_least_one_kind() {
+    // A module whose `consumes()` is empty is in NO dispatch bucket — it can
+    // never run, however well-implemented. The default `consumes()` probes
+    // `accepts()` with PROBE_VALUE; a module that VALUE-gates `accepts()` (a name
+    // must contain a space, a URL must be an image / a social host) fails that
+    // probe and silently collapses to empty `consumes()` unless it overrides the
+    // method — exactly how asic_director / au_people / exif_geo / social_location
+    // were dead at runtime. The dispatch-index guard above cannot catch this: it
+    // feeds the SAME failing probe to both sides, so they agree at zero. This
+    // guard asserts the real invariant — a registered module must consume
+    // something — so a value-gated `accepts()` that forgets the `consumes()`
+    // override fails CI instead of shipping a module that never runs.
+    let modules = huntsman_search_engine::modules::registry();
+    let dead: Vec<&str> = modules
+        .iter()
+        .filter(|m| m.consumes().is_empty())
+        .map(|m| m.name())
+        .collect();
+    assert!(
+        dead.is_empty(),
+        "module(s) with empty consumes() — dead at runtime (in no dispatch \
+         bucket, so the engine never dispatches them). If accepts() value-gates, \
+         override consumes() to declare the kind(s) it accepts: {dead:?}"
+    );
 }
 
 #[test]

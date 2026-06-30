@@ -45,6 +45,15 @@ impl Module for SocialLocation {
         SUPPORTED_HOSTS.iter().any(|h| lower.contains(h))
     }
 
+    /// `accepts()` value-gates (the URL host must be a supported social site),
+    /// so the default probe-based `consumes()` is empty — which would leave this
+    /// module out of the Url dispatch bucket and silently never run. Declare the
+    /// kind explicitly; the per-target `accepts()` re-check at dispatch keeps the
+    /// supported-host filter.
+    fn consumes(&self) -> Vec<TargetKind> {
+        vec![TargetKind::Url]
+    }
+
     fn category(&self) -> ModuleCategory {
         ModuleCategory::Geo
     }
