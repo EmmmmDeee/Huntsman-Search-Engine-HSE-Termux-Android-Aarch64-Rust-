@@ -225,3 +225,31 @@ use super::*;
         let b = normalise_address_key("Sydney NSW");
         assert_eq!(a, b, "comma vs space must dedup to same key");
     }
+
+    #[test]
+    fn extract_urls_from_text_pulls_embedded_links_and_trims_punctuation() {
+        // A snippet naming the subject's other profiles.
+        let urls = extract_urls_from_text(
+            "Bio: see https://github.com/alice and http://twitter.com/alice_b, plus https://example.com.",
+        );
+        assert_eq!(
+            urls,
+            vec![
+                "https://github.com/alice".to_string(),
+                "http://twitter.com/alice_b".to_string(),
+                "https://example.com".to_string(),
+            ],
+            "embedded http(s) URLs extracted; trailing comma/period trimmed"
+        );
+        // Plain prose with no links yields nothing.
+        assert!(extract_urls_from_text("just a plain bio with no links").is_empty());
+        // A bare "http" word without the scheme separator is not a URL.
+        assert!(extract_urls_from_text("the http protocol is old").is_empty());
+        // De-duplication, and the bare-scheme guard (too short to be a real URL).
+        let dd = extract_urls_from_text("https://x.io/a https://x.io/a https://");
+        assert_eq!(
+            dd,
+            vec!["https://x.io/a".to_string()],
+            "deduped; bare scheme dropped"
+        );
+    }

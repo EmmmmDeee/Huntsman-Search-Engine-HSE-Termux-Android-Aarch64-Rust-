@@ -11,6 +11,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Search snippets are now mined for the subject's OTHER profile links, not just
+  emails/phones/addresses.** `build_entities` already extracted Email/Phone/
+  Address/Org/ABN from each result's title+snippet but harvested usernames only
+  from the result URL — so a snippet that named the subject's other profiles
+  ("also at `https://github.com/alice`") dropped them. A new pure
+  `extract_urls_from_text` pulls `http(s)` URLs embedded in the snippet body, and
+  the social-host ones are run through the SAME `is_social_host` + `score_username`
+  gate the result-URL path uses (weak term-overlap scores stay candidate-
+  quarantined, deduped against the result-URL pass), emitting `Username` entities
+  tagged `snippet-link`. Zero extra HTTP — the snippet is already fetched — and no
+  new noise surface (identical precision gates). New unit test (URL extraction +
+  punctuation trim + dedup) and a wiring test (snippet GitHub handle surfaced;
+  non-social-host link rejected); full gate.
 - **Free search-engine scraping maximised — denser pages, deeper paging, the
   federated social cluster, and every proven-live engine in the pivot/recycle
   passes.** Four keyless, deterministic, Termux-safe levers on `search_engines`:

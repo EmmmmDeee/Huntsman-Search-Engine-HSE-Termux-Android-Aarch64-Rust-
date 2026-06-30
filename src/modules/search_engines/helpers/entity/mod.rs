@@ -7,7 +7,7 @@ use super::*;
 mod extractors;
 pub(in crate::modules::search_engines) use extractors::{
     extract_abn_acn_from_text, extract_addresses_from_text, extract_emails_from_text,
-    extract_organisations_from_text, extract_phones_from_text,
+    extract_organisations_from_text, extract_phones_from_text, extract_urls_from_text,
 };
 
 /// Score how strongly a discovered username is connected to the target.

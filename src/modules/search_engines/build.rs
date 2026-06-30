@@ -437,6 +437,43 @@ pub(super) fn build_entities(
                 }
             }
         }
+
+        // Snippet-embedded social-profile links: the result URL is one page, but
+        // its snippet often names the subject's OTHER profiles ("also at
+        // https://github.com/alice"). Mine social-host URLs from the snippet body
+        // and run them through the SAME username gate the result URL uses, so the
+        // precision is identical (score_username term-overlap; weak scores stay
+        // candidate-quarantined) — only the source URL differs. Zero extra HTTP:
+        // the snippet is already fetched. Deduped against the result-URL pass via
+        // the shared `@username:` key, so a handle found both ways emits once.
+        for snippet_url in extract_urls_from_text(&combined_text) {
+            let s_host = extract_host(&snippet_url);
+            if !is_social_host(&s_host) {
+                continue;
+            }
+            let Some(uname) = extract_path_username(&snippet_url) else {
+                continue;
+            };
+            let lower_user = uname.to_lowercase();
+            if lower_user.len() < 3
+                || is_navigation_path(&lower_user)
+                || !seen_domains.insert(format!("@username:{lower_user}"))
+            {
+                continue;
+            }
+            let (score, confidence) = score_username(&lower_user, &s_host, &terms, r);
+            if score >= 1 {
+                let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
+                e.tag("search-discovered");
+                e.tag("social-profile");
+                e.tag("snippet-link");
+                if score < 3 {
+                    e.tag("candidate");
+                }
+                e.add_evidence(build_search_evidence(r));
+                result.push(e);
+            }
+        }
     }
 
     // Extract family members: people sharing the target's last name found in

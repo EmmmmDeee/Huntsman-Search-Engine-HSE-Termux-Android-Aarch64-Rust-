@@ -611,3 +611,50 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
     }
     phones
 }
+
+/// Extract `http(s)` URLs embedded in a free-text snippet/title body.
+///
+/// A SERP snippet frequently names the subject's OTHER profiles ("also on
+/// `https://github.com/alice`") that the result URL itself doesn't carry. This
+/// scans for each `http://`/`https://` occurrence, takes the following run of
+/// non-delimiter characters, and trims trailing sentence punctuation. The caller
+/// filters the hosts (e.g. to social platforms) and applies its own
+/// relevance/username gates — this only finds the candidate URLs. De-duplicated,
+/// first-seen order, bounded to `MAX_SNIPPET_URLS` so a link-stuffed snippet
+/// can't balloon allocation. Pure.
+pub(in crate::modules::search_engines) fn extract_urls_from_text(text: &str) -> Vec<String> {
+    const MAX_SNIPPET_URLS: usize = 12;
+    let mut out: Vec<String> = Vec::new();
+    let mut rest = text;
+    while let Some(pos) = rest.find("http") {
+        let cand = &rest[pos..];
+        if cand.starts_with("http://") || cand.starts_with("https://") {
+            // Stop at whitespace or a delimiter that never appears mid-URL.
+            let end = cand
+                .find(|c: char| {
+                    c.is_whitespace()
+                        || matches!(
+                            c,
+                            '"' | '\'' | '<' | '>' | '|' | '\\' | '^' | '`' | '{' | '}'
+                        )
+                })
+                .unwrap_or(cand.len());
+            // Trim trailing punctuation that commonly abuts a URL in prose.
+            let url = cand[..end].trim_end_matches(|c: char| {
+                matches!(c, '.' | ',' | ')' | ']' | '!' | '?' | ';' | ':')
+            });
+            // Longer than the bare scheme, and not already collected.
+            if url.len() > "https://".len() && !out.iter().any(|u| u == url) {
+                out.push(url.to_string());
+                if out.len() >= MAX_SNIPPET_URLS {
+                    break;
+                }
+            }
+            rest = &cand[end..];
+        } else {
+            // "http" not followed by "://" — step past it and keep scanning.
+            rest = &cand[4..];
+        }
+    }
+    out
+}

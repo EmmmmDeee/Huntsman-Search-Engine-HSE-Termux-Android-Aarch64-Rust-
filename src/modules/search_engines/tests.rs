@@ -1406,6 +1406,52 @@ fn corroboration_count_survives_dedup() {
 }
 
 #[test]
+fn snippet_embedded_social_link_emits_username() {
+    // The result URL is a news article (no profile path), but its snippet names
+    // the subject's GitHub — the snippet-link miner must still surface the handle,
+    // gated by the same score_username term-overlap as the result-URL path.
+    let target = Target::new(TargetKind::Username, "kylo4kylo");
+    let results = vec![SearchResult {
+        url: "https://news.example.com/article/12345".to_string(),
+        title: "Developer spotlight".to_string(),
+        snippet: "kylo4kylo ships often — see https://github.com/kylo4kylo for their repos."
+            .to_string(),
+        engine: "mojeek",
+        query: "kylo4kylo".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    // The `snippet-link` tag is unique to the snippet miner (the seed's own parent
+    // Username entity carries no such tag), so key the assertion on it.
+    let uname = res
+        .entities
+        .iter()
+        .find(|e| e.has_tag("snippet-link"))
+        .expect("snippet-embedded github handle must be extracted as a Username");
+    assert_eq!(uname.kind, EntityKind::Username);
+    assert_eq!(uname.value, "kylo4kylo");
+    assert!(uname.has_tag("social-profile"));
+    // Strong term overlap (the handle IS the seed) → not quarantined.
+    assert!(
+        !uname.has_tag("candidate"),
+        "an exact-handle match must not be candidate-quarantined"
+    );
+
+    // A snippet link to a NON-social host (a news/blog URL) must NOT mint a handle.
+    let results2 = vec![SearchResult {
+        url: "https://news.example.com/a".to_string(),
+        title: "x".to_string(),
+        snippet: "see https://news.example.com/author/kylo4kylo".to_string(),
+        engine: "mojeek",
+        query: "kylo4kylo".to_string(),
+    }];
+    let res2 = build_entities(&target, "s", &results2, &url_engine_counts(&results2));
+    assert!(
+        !res2.entities.iter().any(|e| e.has_tag("snippet-link")),
+        "a non-social-host snippet link must not produce a snippet-link username"
+    );
+}
+
+#[test]
 fn email_seed_emits_no_bare_external_domains() {
     // An email (non-domain) seed's SERP hits — platform, freemail, broker, or
     // even an unrelated personal blog — are all just "where a mention
