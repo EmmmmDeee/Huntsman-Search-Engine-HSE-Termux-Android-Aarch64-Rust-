@@ -561,6 +561,11 @@ impl super::ScanEngine {
                     // Before the emit so the event log (and the recovery rebuild)
                     // carries it too.
                     super::tag_breach_sector(&mut entity);
+                    // Categorise shared/third-party infrastructure (cloud buckets,
+                    // hosting/CDN endpoints, analytics ids) as platform-infra so the
+                    // default report shows only subject-owned entities. Before the
+                    // emit so the event log + recovery rebuild carry the tag too.
+                    super::tag_platform_infra(&mut entity);
                     self.emit(
                         cx.scan_id,
                         EventKind::EntityFound {

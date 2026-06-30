@@ -304,6 +304,32 @@ pub(super) fn tag_breach_sector(entity: &mut crate::core::entity::Entity) {
     }
 }
 
+/// Stamp `platform-infra` on shared / third-party infrastructure so the default
+/// report can suppress it (restorable via `--include-infra` / `--output full`)
+/// and the location rules keep it out of the subject's physical footprint. The
+/// three product-defined infrastructure classes:
+///   * a **cloud-storage** bucket (`cloud-storage` tag),
+///   * a **datacenter/CDN hosting** endpoint ([`crate::core::tags::HOSTING`]),
+///   * a third-party **analytics / tag id** ([`crate::core::entity::EntityKind::TrackingId`]).
+///
+/// Never matches a subject-owned identity (Person/Email/Username/Phone/Address/…),
+/// so it can only ever demote infrastructure, never a real finding. Idempotent;
+/// the underlying entities are still stored and correlated — only the default
+/// *view* hides them. One chokepoint so every producer of these classes is
+/// categorised identically (the same wiring pattern as [`tag_breach_sector`]).
+pub(super) fn tag_platform_infra(entity: &mut crate::core::entity::Entity) {
+    use crate::core::{entity::EntityKind, tags};
+    if entity.has_tag(tags::PLATFORM_INFRA) {
+        return;
+    }
+    let is_infra = entity.has_tag("cloud-storage")
+        || entity.has_tag(tags::HOSTING)
+        || entity.kind == EntityKind::TrackingId;
+    if is_infra {
+        entity.tag(tags::PLATFORM_INFRA);
+    }
+}
+
 /// Harvest any API keys embedded in an entity's value or evidence attributes into
 /// the global key pool (the force-multiplier loop: a key found in breach/leak data
 /// unlocks more modules). Best-effort and side-effecting only on the pool; the
@@ -506,5 +532,65 @@ mod tests {
     fn seed_anchor_entity_skips_blank_value() {
         let t = Target::new(TargetKind::Username, "   ");
         assert!(seed_anchor_entity(&t, "s").is_none());
+    }
+
+    // ── tag_platform_infra ────────────────────────────────────────────────────
+
+    #[test]
+    fn tag_platform_infra_marks_the_three_infrastructure_classes() {
+        use crate::core::tags::PLATFORM_INFRA;
+        // 1. cloud-storage bucket.
+        let mut bucket = Entity::new(EntityKind::Url, "https://x.s3.amazonaws.com/", 0.6, "s");
+        bucket.tag("cloud-storage");
+        tag_platform_infra(&mut bucket);
+        assert!(
+            bucket.has_tag(PLATFORM_INFRA),
+            "cloud bucket → platform-infra"
+        );
+
+        // 2. datacenter/CDN hosting endpoint.
+        let mut host = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        host.tag(crate::core::tags::HOSTING);
+        tag_platform_infra(&mut host);
+        assert!(host.has_tag(PLATFORM_INFRA), "hosting IP → platform-infra");
+
+        // 3. third-party analytics / tag id.
+        let mut tid = Entity::new(EntityKind::TrackingId, "UA-12345-1", 0.6, "s");
+        tag_platform_infra(&mut tid);
+        assert!(tid.has_tag(PLATFORM_INFRA), "TrackingId → platform-infra");
+    }
+
+    #[test]
+    fn tag_platform_infra_never_marks_a_subject_owned_identity() {
+        use crate::core::tags::PLATFORM_INFRA;
+        for kind in [
+            EntityKind::Person,
+            EntityKind::Email,
+            EntityKind::Username,
+            EntityKind::Phone,
+            EntityKind::Address,
+            EntityKind::Domain,
+        ] {
+            let mut e = Entity::new(kind.clone(), "subject-value", 0.7, "s");
+            tag_platform_infra(&mut e);
+            assert!(
+                !e.has_tag(PLATFORM_INFRA),
+                "a subject-owned {kind:?} must never be demoted to infrastructure"
+            );
+        }
+    }
+
+    #[test]
+    fn tag_platform_infra_is_idempotent() {
+        use crate::core::tags::PLATFORM_INFRA;
+        let mut e = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        e.tag(crate::core::tags::HOSTING);
+        tag_platform_infra(&mut e);
+        tag_platform_infra(&mut e);
+        assert_eq!(
+            e.tags.iter().filter(|t| *t == PLATFORM_INFRA).count(),
+            1,
+            "the tag must not be duplicated on a second pass"
+        );
     }
 }

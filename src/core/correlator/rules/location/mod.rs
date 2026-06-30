@@ -178,7 +178,7 @@ fn person_login_ip_coords(entities: &[Entity]) -> Vec<(&Entity, (f64, f64))> {
             e.kind == EntityKind::Coordinates
                 && !e.has_tag("hosting")
                 && !e.has_tag("proxy")
-                && !e.has_tag("platform-infra")
+                && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
         })
         .filter(|e| {
             e.evidence.iter().any(|ev| {
@@ -818,7 +818,9 @@ pub(crate) fn best_au_location_estimate(entities: &[Entity]) -> Option<AuLocatio
     let best_phone = entities
         .iter()
         .filter(|e| {
-            e.kind == EntityKind::Phone && e.confidence >= 0.40 && !e.has_tag("platform-infra")
+            e.kind == EntityKind::Phone
+                && e.confidence >= 0.40
+                && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
         })
         .filter_map(|e| {
             let (slug, _name, _states) = crate::util::address_au::au_phone_region(&e.value)?;
@@ -938,10 +940,9 @@ pub(crate) fn au_location_corroboration(entities: &[Entity]) -> Option<LocationC
             uid: e.uid.clone(),
         });
     }
-    for e in entities
-        .iter()
-        .filter(|e| e.kind != EntityKind::Coordinates && !e.has_tag("platform-infra"))
-    {
+    for e in entities.iter().filter(|e| {
+        e.kind != EntityKind::Coordinates && !e.has_tag(crate::core::tags::PLATFORM_INFRA)
+    }) {
         let Some(pc) = crate::core::geo_family::au_postcode(e) else {
             continue;
         };

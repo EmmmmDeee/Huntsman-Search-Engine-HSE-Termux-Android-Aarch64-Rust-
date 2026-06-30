@@ -24,6 +24,13 @@ pub const COARSE: &str = "coarse";
 /// coordinates that geolocate a hosting IP (e.g. a Cloudflare edge), so the
 /// area-of-operation rule (AU-052) can exclude them from a person's footprint.
 pub const HOSTING: &str = "hosting";
+/// Shared / third-party **platform infrastructure** — cloud-storage buckets,
+/// datacenter/CDN hosting endpoints, and third-party analytics IDs. Not
+/// subject-owned, so the default report ([`crate::api::scan_export`]) suppresses
+/// it (restorable via `--include-infra` / `--output full`) and the location
+/// rules keep it out of the subject's physical footprint. Stamped by the
+/// `tag_platform_infra` enrichment pass in [`crate::core::engine`].
+pub const PLATFORM_INFRA: &str = "platform-infra";
 /// A WHOIS/RDAP **registrant** location — the domain owner's filing or privacy
 /// address (often a registrar's privacy service), not the scan subject's home.
 /// Carried by the address/coordinates a WHOIS record yields so the geo rules

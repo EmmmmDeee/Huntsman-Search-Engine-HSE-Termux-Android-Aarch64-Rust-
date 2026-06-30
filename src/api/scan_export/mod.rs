@@ -168,7 +168,7 @@ pub(crate) fn build_scan_report(
     // `include_infra=true` (via `--include-infra` or `--output full`) restores
     // them.
     if !include_infra {
-        entities.retain(|e| !e.has_tag("platform-infra"));
+        entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA));
     }
     let correlations = store.correlations_for_scan(scan_id)?;
     let best_location = extract_au_location_fix(&correlations, &entities);
