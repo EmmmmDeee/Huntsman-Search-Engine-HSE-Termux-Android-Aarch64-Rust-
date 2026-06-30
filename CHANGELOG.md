@@ -54,6 +54,42 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Offline geocoder: a US ZIP+4 add-on is no longer read as an AU postcode.**
+  Follow-up to the foreign-street-number fix below. `util::city_coords` anchors on
+  the address's final numeric run, but a US ZIP+4 (`NNNNN-NNNN`) ends in a 4-digit
+  run — the `+4` extension — so `"… , NV, 89436-9322"` resolved `9322` to the QLD
+  region (Brisbane). Real evidence: debug bundle entity [21] geocoded two ZIP+4
+  breach addresses to Brisbane. `au_postcode_in` now rejects a trailing 4-digit run
+  immediately preceded by `<5 digits>-` (a ZIP+4 add-on, never an AU postcode),
+  while a genuine `"… QLD 4217"` still resolves. Regression-tested from the captured
+  ZIP+4 addresses.
+- **Search-engine evidence: titles/snippets no longer leak SVG path data or HTML
+  attribute soup.** `search_engines` rendered garbled `page_title`/`snippet`
+  evidence — observed across multiple real results (debug bundle entities [187]
+  `beitbirth`, `saucecreativeagency`): an inline result-icon `<svg>` whose path data
+  carries a stray `>` desynchronised the tag scanner and dumped `…5.09083Z"
+  fill="#6573ff"` into the title, and the snippet slice began *inside* the `<a …>`
+  tag, dumping its `rel`/`target`/`aria-label`/`class` attributes as text. `strip_tags`
+  now removes `<svg>`/`<style>`/`<script>` subtrees wholesale and treats a tag
+  opening as a word boundary (so adjacent elements no longer fuse into
+  `Facebookhttps…`), and `extract_snippet_near` advances past the enclosing tag
+  only when the anchor sits inside one. Regression-tested from the captured SERP
+  markup.
+- **`name_intel`: the `source_name` evidence attribute records the cleaned name,
+  not the raw target.** A re-expansion pass can feed a quote/comma-contaminated
+  breach Person value (`"Matthew Diegmann",`) back in as the target; `name_intel`
+  wrote it verbatim into `source_name`, so on merge the attribute accumulated the
+  junk `"Matthew Diegmann",; Matthew Diegmann` (observed on 27 of 49 `source_name`
+  lines). It now records `display_full()` — the quote/comma-stripped reconstruction
+  the clean seed also produces — so the attribute is identical across runs and never
+  contaminates.
+- **Breach extraction: the SQL `\N` NULL sentinel is no longer admitted as data.**
+  MySQL/Postgres dumps write `\N` for an absent column (303 such name fields in one
+  real SeekNow export); `val_str` admitted it as a non-empty string, so `breach_rich`
+  composed a `"\N \N"` Person and surfaced `\N` long-tail/country nodes. A shared
+  `util::json::is_null_sentinel` now treats `\N` as absent at the `breach_rich`
+  name-compose and catch-all paths and the `see_know` country path. Exact match, so
+  a real surname `Null` or the province `Nan` is never dropped. Regression-tested.
 - **Exposure Index: a CONFIRMED subject breach is now counted, not scored zero.**
   The breach component tallied distinct corpora only from the `dbname` evidence
   key — the key the per-record *co-occurrence* rows use, and those rows are
