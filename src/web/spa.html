@@ -2397,6 +2397,9 @@ async function renderAudit(host, id){
   if ((sh.engines_blocked||[]).length) shBits.push(`blocked: ${sh.engines_blocked.map(esc).join(', ')}`);
   const me = sh.module_errors||{}; const meKeys = Object.keys(me);
   if (meKeys.length) shBits.push(`module errors: ${meKeys.map(k=>esc(k)+'×'+me[k]).join(', ')}`);
+  // HTTP transport failures during the scan — a reliability signal the API has
+  // always computed (source_health.http_failures) but the panel never showed.
+  if (sh.http_failures) shBits.push(`HTTP failures: ${sh.http_failures}`);
   // Expansion ledger: every pivot the recursion declined to follow, by reason —
   // makes the recursion non-black-box. identity_mismatch is the recall-relevant
   // one (lift with --expand-all-identities); the rest are expected hygiene.
@@ -2410,7 +2413,7 @@ async function renderAudit(host, id){
         <div class="val" style="color:${col}">${r.score}<span style="font-size:14px;color:#999">/100</span></div></div></div>
       <div class="col-sm-9 col-xs-6"><div class="stat-card" style="text-align:left">
         <div class="lab">Grade</div><div style="font-size:15px;color:${col};font-weight:600">${esc(r.grade||'')}</div>
-        <div class="text-muted" style="margin-top:4px">${r.entity_total} entities · ${r.tiers.verified} verified · ${r.tiers.probable} probable · ${r.tiers.candidate} candidate · ${Math.round((r.noise_ratio||0)*100)}% noise</div>
+        <div class="text-muted" style="margin-top:4px">${r.entity_total} entities · ${r.tiers.verified} verified · ${r.tiers.probable} probable · ${r.tiers.candidate} candidate · ${Math.round((r.noise_ratio||0)*100)}% noise${r.quarantined?` · <span style="color:#8a6d3b">${r.quarantined} quarantined</span>`:''}</div>
         ${(r.geo&&r.geo.coord_count)?`<div class="text-muted" style="margin-top:2px">geo: ${r.geo.coord_count} fix(es) / ${r.geo.source_count} source(s) · spread ${Math.round(r.geo.max_spread_km)} km · ${r.geo.has_consensus?'consensus':'no consensus'}${r.geo.outliers?` · <span style="color:#d9534f">${r.geo.outliers} outlier(s)</span>`:''}</div>`:''}
       </div></div>
     </div>
@@ -2419,7 +2422,7 @@ async function renderAudit(host, id){
     ${exBits.length?`<div class="alert alert-info" style="padding:8px 12px"><b>Expansion ledger:</b> ${exBits.join(' · ')}</div>`:''}
     <h4 style="margin-top:6px">Findings ${r.findings.length?`<span class="badge">${r.findings.length}</span>`:''}</h4>
     ${findings || '<div class="alert alert-success">✓ No weaknesses detected — results are individualised and verifiable.</div>'}
-    <p class="text-muted" style="font-size:12px;margin-top:10px">Same audit as <code>hse audit --scan-id ${esc(id)}</code>. Re-run after fixes to confirm the score improves.</p>`;
+    <p class="text-muted" style="font-size:12px;margin-top:10px">${sh.log_lines_parsed?`Audited ${sh.log_lines_parsed} scan-log line(s). `:''}Same audit as <code>hse audit --scan-id ${esc(id)}</code>. Re-run after fixes to confirm the score improves.</p>`;
 }
 
 /* ── Status tab ── */
