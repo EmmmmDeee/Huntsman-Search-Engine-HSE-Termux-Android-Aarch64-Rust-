@@ -236,6 +236,17 @@ fn core_does_not_import_util_directly() {
                 // same leaf category as `state_code`. AU-104 uses it to name the
                 // bank behind an exposed BSB in breach/stealer data.
                 && !line.contains("util::bsb::bsb_institution")
+                // Pure, dependency-free OFFLINE hash intelligence (no state, no
+                // I/O, no network, no GPU — Termux-safe), same leaf category as
+                // `bsb` / `sim_anonymity`: the common-password denylist
+                // (`is_common_password`), the offline digest table
+                // (`digests_of` / `is_common_collision`). AU-105 (credential
+                // reuse) uses them to bridge a leaked plaintext to the SAME
+                // password leaked as a hash without admitting a common-password
+                // collision as a link.
+                && !line.contains("util::hashcat::is_common_password")
+                && !line.contains("util::hashcat::digests_of")
+                && !line.contains("util::hashcat::is_common_collision")
         })
         .collect();
     assert!(

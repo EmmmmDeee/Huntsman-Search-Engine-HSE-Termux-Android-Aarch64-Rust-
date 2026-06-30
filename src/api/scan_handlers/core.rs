@@ -516,6 +516,17 @@ pub async fn scan_import(
     scan.finished_at = Some(unix_now());
     scan.entity_count = entity_count;
 
+    // Cross-entry enrichment (relation derivation + the correlator) is pairwise
+    // WITHIN same-key buckets, so a pathological single-domain dossier — e.g.
+    // tens of thousands of `*@one-domain.tld` rows — degrades to a multi-minute
+    // O(n²) pass that would lock a 2-core Termux phone (a 16 MB upload can hold
+    // ~500k rows). The import's PRIMARY contract — persist every parsed entity —
+    // is met unconditionally below; only the best-effort enrichment is bounded,
+    // so a huge upload always COMPLETES. A realistic dossier (well under the cap)
+    // still gets full relations + correlations; a larger one stores every entity
+    // and can be correlated on demand via `/scans/{id}/rerun`.
+    const IMPORT_ENRICH_MAX_ENTITIES: usize = 5_000;
+
     // Persist scan, entities, relations, and correlations on a blocking thread
     // so SQLite commits don't stall the 2-worker async reactor.
     let store = Arc::clone(&s.store);
@@ -524,6 +535,11 @@ pub async fn scan_import(
         match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
+            // Device-safety bound: skip the O(n²) enrichment on a pathologically
+            // large import (entities are already persisted above; nothing lost).
+            if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
+                return Ok((0usize, 0usize));
+            }
             let mut relations = 0usize;
             for r in &crate::core::relation::derive_all(&entities, &sid2) {
                 if store.upsert_relation(r).is_ok() {

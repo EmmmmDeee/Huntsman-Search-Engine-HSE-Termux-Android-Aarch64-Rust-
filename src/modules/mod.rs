@@ -27,7 +27,13 @@ pub mod austlii;
 pub mod bgpview;
 pub mod bitbucket_user;
 pub mod bluesky_user;
-pub mod breach_rich;
+// Shared "maximum raw data" breach/stealer extractor — a `pub(crate)` HELPER
+// (no `Module` impl), consumed by see_know / oathnet_pro / dehashed via
+// `crate::modules::breach_rich::extract_rich_detail`, not a registered module.
+// `pub(crate)` (like `profile_kit`) keeps it crate-internal and out of the
+// `every_declared_module_is_registered` guard, which flags an unregistered
+// `pub mod` as dead-at-runtime.
+pub(crate) mod breach_rich;
 pub mod breach_timezone;
 pub mod cell_intel;
 pub mod cell_local;
