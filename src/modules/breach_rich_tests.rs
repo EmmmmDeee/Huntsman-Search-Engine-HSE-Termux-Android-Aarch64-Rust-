@@ -113,6 +113,92 @@ fn sql_null_sentinel_names_are_not_composed_into_a_person() {
 }
 
 #[test]
+fn hardware_serials_become_deviceid_without_duplicate_other_nodes() {
+    // A globally-unique IMEI / hardware serial is a strong single-device anchor;
+    // it must be typed as DeviceId (so AU-106 can link on it), and — because it
+    // is also skip-listed — must NOT additionally leak a duplicate `Other` node
+    // from the catch-all's distinct dedup namespace.
+    let item = json!({
+        "imei": "359881234567890",
+        "serial": "C02ABCXYZ123",
+        "serial_number": "SN-998877",
+        "email": "a@x.com",
+    });
+    let r = run(&item, "oathnet-pro");
+    for v in ["359881234567890", "C02ABCXYZ123", "SN-998877"] {
+        assert!(has(&r, EntityKind::DeviceId, v), "{v} → DeviceId");
+    }
+    assert!(
+        !r.entities
+            .iter()
+            .any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "imei" || k == "serial" || k == "serial_number")),
+        "a serial typed as DeviceId must not also emit a duplicate Other node"
+    );
+    // DeviceId carries the device/stealer tags AU-106's siblings expect.
+    let dev = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::DeviceId && e.value == "359881234567890")
+        .unwrap();
+    assert!(dev.tags.iter().any(|t| t == "device"));
+}
+
+#[test]
+fn absence_and_redaction_markers_never_mint_typed_nodes() {
+    // A record where every value-bearing field is an absence marker: the SQL
+    // NULL `\N` (303 such fields in one real export) or a provider redaction
+    // placeholder. NONE of these is data — they must mint zero graph nodes, or
+    // two records each carrying `\N`/`REDACTED` in `company`/`city` would yield
+    // identical `Organisation("\N")`/`Address("\N")` nodes and falsely co-occur.
+    let item = json!({
+        "company": "\\N",
+        "employer": "REDACTED",
+        "organization": "UPGRADE_TO_SEE_FULL",
+        "telegram": "\\N",
+        "skype": "UPGRADE_TO_SEE",
+        "city": "\\N",
+        "state": "REDACTED",
+        "street": "UPGRADE_TO_SEE_FULL",
+        "gender": "REDACTED",
+        "hwid": "REDACTED",
+    });
+    let r = run(&item, "see-know");
+    let by_kind = |k: &dyn Fn(&EntityKind) -> bool| r.entities.iter().filter(|e| k(&e.kind)).count();
+    assert_eq!(
+        by_kind(&|k| matches!(k, EntityKind::Organisation)),
+        0,
+        "redaction/NULL markers must not become Organisation nodes"
+    );
+    assert_eq!(
+        by_kind(&|k| matches!(k, EntityKind::Address)),
+        0,
+        "redaction/NULL markers must not become Address nodes"
+    );
+    assert_eq!(
+        by_kind(&|k| matches!(k, EntityKind::Username)),
+        0,
+        "redaction/NULL markers must not become Username nodes"
+    );
+    assert_eq!(
+        by_kind(&|k| matches!(k, EntityKind::DeviceId)),
+        0,
+        "a REDACTED hwid must not become a DeviceId node"
+    );
+    assert_eq!(
+        by_kind(&|k| matches!(k, EntityKind::Other(_))),
+        0,
+        "a REDACTED long-tail field must not become an Other node"
+    );
+    // Positive control: real values in the same fields DO surface.
+    let real = run(
+        &json!({"company": "Acme Pty Ltd", "city": "Brisbane", "telegram": "alice"}),
+        "see-know",
+    );
+    assert!(has(&real, EntityKind::Organisation, "Acme Pty Ltd"));
+    assert!(has(&real, EntityKind::Username, "telegram:alice"));
+}
+
+#[test]
 fn source_tag_is_parameterised() {
     let item = json!({ "gender": "F" });
     let see = run(&item, "see-know");

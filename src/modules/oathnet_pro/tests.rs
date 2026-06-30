@@ -614,6 +614,16 @@ use super::*;
     }
 
     #[test]
+    fn produces_declares_harvested_key_and_crypto_kinds() {
+        // The shared key_harvest path (extract_api_keys_from_item) emits ApiKey
+        // and CryptoAddress; produces() must declare them so the producer graph
+        // matches the actual emissions.
+        let kinds = OathnetPro.produces();
+        assert!(kinds.contains(&EntityKind::ApiKey));
+        assert!(kinds.contains(&EntityKind::CryptoAddress));
+    }
+
+    #[test]
     fn attack_techniques_reflect_breach_pool_not_role_identification() {
         use crate::core::attack;
         let t = OathnetPro.attack_techniques();

@@ -735,6 +735,9 @@ use crate::core::entity::Entity;
         assert!(kinds.contains(&EntityKind::Username));
         assert!(kinds.contains(&EntityKind::Phone));
         assert!(kinds.contains(&EntityKind::ApiKey));
+        // The shared key_harvest path also emits CryptoAddress — declared so the
+        // producer graph matches what process() actually emits.
+        assert!(kinds.contains(&EntityKind::CryptoAddress));
     }
 
     #[tokio::test]

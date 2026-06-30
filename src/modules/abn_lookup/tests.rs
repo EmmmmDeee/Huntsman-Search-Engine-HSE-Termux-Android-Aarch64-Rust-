@@ -94,6 +94,70 @@ fn parse_name_search_response() {
 }
 
 #[test]
+fn name_results_are_not_truncated_at_the_old_cap_of_ten() {
+    // The ABR MatchingNames endpoint sets no server-side cap, so every ranked
+    // candidate must survive (no-omission directive). Build 12 distinct hits.
+    let entries: Vec<_> = (0..12)
+        .map(|i| {
+            serde_json::json!({
+                "Abn": format!("1941577636{i:02}"),
+                "Name": format!("CANDIDATE {i} PTY LTD"),
+                "NameType": "Entity Name",
+                "State": "VIC",
+                "Postcode": "3000",
+                "Score": 90
+            })
+        })
+        .collect();
+    let data = serde_json::json!({ "Names": entries });
+    let mut result = ModuleResult::new();
+    parse_name_results(&data, "CANDIDATE", "test", &mut result);
+    let orgs = result
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .count();
+    assert_eq!(orgs, 12, "all 12 ranked candidates must emit, not just 10");
+}
+
+#[test]
+fn all_distinct_trading_names_are_emitted() {
+    // A single ABN past the old take(5) cap must still surface every distinct
+    // registered trading name.
+    let data = serde_json::json!({
+        "Abn": "19415776361",
+        "EntityName": "PARENTCO PTY LTD",
+        "EntityTypeCode": "PRV",
+        "AbnStatus": "Active",
+        "AddressState": "VIC",
+        "AddressPostcode": "3000",
+        "BusinessName": [
+            "Trade One", "Trade Two", "Trade Three",
+            "Trade Four", "Trade Five", "Trade Six", "Trade Seven"
+        ]
+    });
+    let mut result = ModuleResult::new();
+    parse_abn_result(&data, "test", &mut result);
+    for n in [
+        "Trade One",
+        "Trade Two",
+        "Trade Three",
+        "Trade Four",
+        "Trade Five",
+        "Trade Six",
+        "Trade Seven",
+    ] {
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Organisation && e.value == n),
+            "trading name {n:?} must be emitted"
+        );
+    }
+}
+
+#[test]
 fn parse_empty_response() {
     let data = serde_json::json!({"Message": "No records found"});
     let mut result = ModuleResult::new();

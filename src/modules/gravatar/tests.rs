@@ -41,6 +41,17 @@ use super::*;
         assert!(has(EntityKind::Address, "Brisbane, QLD"));
         assert!(has(EntityKind::Url, "https://gravatar.com/matt"));
         assert!(has(EntityKind::Url, "https://javery.dev"));
+        // The owner's self-asserted link label (UrlEntry.title) is now carried
+        // as `link_title` evidence on the personal-URL entity.
+        let blog = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value == "https://javery.dev")
+            .expect("personal url entity");
+        assert_eq!(
+            blog.evidence[0].attributes.get("link_title").map(String::as_str),
+            Some("Blog")
+        );
         // Bare platform usernames (platform tag, not prefixed value) + their URLs.
         assert!(has(EntityKind::Username, "javery"), "github username bare");
         assert!(has(EntityKind::Username, "mattd"), "twitter username bare");

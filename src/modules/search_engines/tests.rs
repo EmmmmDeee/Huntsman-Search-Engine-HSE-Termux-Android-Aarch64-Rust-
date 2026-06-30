@@ -710,6 +710,18 @@ fn is_social_host_accepts_canonical_rejects_subdomains() {
         "mobile.twitter.com",
         "www.pinterest.com",
         "x.com",
+        // Profile-root developer/messaging/micro-blog hosts (and their www alias)
+        // newly admitted so the dorked handles are mined.
+        "gitlab.com",
+        "www.gitlab.com",
+        "bitbucket.org",
+        "t.me",
+        "vk.com",
+        "ok.ru",
+        "keybase.io",
+        "about.me",
+        "dev.to",
+        "twitch.tv",
     ] {
         assert!(is_social_host(h), "{h} should be a social host");
     }
@@ -724,6 +736,12 @@ fn is_social_host_accepts_canonical_rejects_subdomains() {
         "help.instagram.com",
         "music.youtube.com",
         "notreallytwitter.com", // suffix look-alike must not match
+        // Arbitrary subdomains of the newly-added profile-root hosts are docs/
+        // API endpoints, not profile servers — they must still reject.
+        "docs.gitlab.com",
+        "developer.gitlab.com",
+        "api.telegram.org",
+        "blog.twitch.tv",
     ] {
         assert!(!is_social_host(h), "{h} must NOT be a social host");
     }

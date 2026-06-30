@@ -124,6 +124,10 @@ impl Module for OathnetPro {
             EntityKind::Credential,
             EntityKind::Password,
             EntityKind::Organisation,
+            // Harvested from leaked records by the shared key_harvest emit path
+            // (extract_api_keys_from_item) — emitted all along but undeclared.
+            EntityKind::ApiKey,
+            EntityKind::CryptoAddress,
         ];
         KINDS
     }

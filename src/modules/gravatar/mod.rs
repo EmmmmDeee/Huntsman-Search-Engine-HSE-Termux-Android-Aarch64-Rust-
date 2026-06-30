@@ -253,14 +253,34 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
         }
     }
 
-    // Profile + avatar URLs, and any personal URLs the owner listed.
+    // Profile + avatar URLs.
     [entry.profile_url.as_deref(), entry.thumbnail_url.as_deref()]
         .into_iter()
         .flatten()
-        .chain(entry.urls.iter().filter_map(|u| u.value.as_deref()))
         .map(str::trim)
         .filter(|u| u.starts_with("http"))
         .for_each(|u| push(result, EntityKind::Url, u, 0.60, &[]));
+
+    // Personal URLs the owner listed — each carries the owner's self-asserted
+    // link label (`title`, e.g. "Blog"/"Portfolio") as `link_title` evidence,
+    // which was deserialized into `UrlEntry.title` but previously dropped.
+    for u in &entry.urls {
+        if let Some(val) = u
+            .value
+            .as_deref()
+            .map(str::trim)
+            .filter(|v| v.starts_with("http"))
+        {
+            let mut e = Entity::new(EntityKind::Url, val, 0.60, scan_id);
+            e.tag(SRC);
+            let mut prov = ev.clone();
+            if let Some(t) = u.title.as_deref().map(str::trim).filter(|t| !t.is_empty()) {
+                prov = prov.with_attr("link_title", t);
+            }
+            e.add_evidence(prov);
+            result.push(e);
+        }
+    }
 
     // Linked social accounts — each becomes a bare Username pivot (tagged with
     // the platform name) so it deduplicates correctly with usernames discovered

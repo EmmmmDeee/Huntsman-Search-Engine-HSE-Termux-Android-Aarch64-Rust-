@@ -88,6 +88,8 @@ fn build_entities_emits_org_and_per_article_url_sources() {
         Some("ACME COMPANY NOTICE")
     );
     assert!(attrs.get("snippet").is_some(), "snippet preserved");
+    // The publishing masthead id (titleId) is now carried as provenance.
+    assert_eq!(attrs.get("masthead_id").map(String::as_str), Some("35"));
 
     // No hits → empty result.
     assert!(
@@ -95,4 +97,30 @@ fn build_entities_emits_org_and_per_article_url_sources() {
             .entities
             .is_empty()
     );
+}
+
+#[test]
+fn all_fetched_articles_emit_url_sources_not_just_the_first_ten() {
+    use super::{TroveArticle, build_entities};
+    use crate::core::entity::EntityKind;
+
+    // The request asks for n=20 and process collects every returned article, so
+    // articles past the former take(10) cap must still become Url sources.
+    let articles: Vec<TroveArticle> = (0..20)
+        .map(|i| TroveArticle {
+            id: Some(format!("{i}")),
+            title: Some(format!("Mention {i}")),
+            date: Some("1925-01-01".into()),
+            title_id: None,
+            snippet: None,
+            url: Some(format!("https://trove.nla.gov.au/newspaper/article/{i}")),
+        })
+        .collect();
+    let res = build_entities("Acme Pty Ltd", 20, &articles, "scan");
+    let urls = res
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Url)
+        .count();
+    assert_eq!(urls, 20, "all 20 fetched articles must emit a Url source");
 }

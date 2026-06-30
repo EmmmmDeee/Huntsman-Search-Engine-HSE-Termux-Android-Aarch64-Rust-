@@ -186,9 +186,10 @@ fn build_entities(
     // newspaper mention of the subject the operator can open and read. The
     // url / id / title / snippet were deserialized into `TroveArticle` all along
     // but never emitted; only the headline+date were folded into the org evidence
-    // above. Capped, http-only, deduped, deterministic (input order).
+    // above. Capped to the requested page size (n=20), http-only, deduped,
+    // deterministic (input order).
     let mut seen_urls = std::collections::HashSet::new();
-    for article in articles.iter().take(10) {
+    for article in articles.iter().take(20) {
         let Some(u) = article.url.as_deref() else {
             continue;
         };
@@ -213,6 +214,12 @@ fn build_entities(
         }
         if let Some(id) = &article.id {
             uev = uev.with_attr("article_id", id);
+        }
+        // The publishing masthead's Trove title id (provenance: which newspaper
+        // ran the mention) — deserialized via the `titleId` rename but otherwise
+        // dropped.
+        if let Some(tid) = &article.title_id {
+            uev = uev.with_attr("masthead_id", tid);
         }
         url_e.add_evidence(uev);
         result.push(url_e);

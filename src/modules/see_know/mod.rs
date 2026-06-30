@@ -141,6 +141,9 @@ impl Module for SeekNow {
             EntityKind::Credential,
             EntityKind::Url,
             EntityKind::ApiKey,
+            // `CryptoAddress` is emitted by the same shared key_harvest path as
+            // `ApiKey` (extract_api_keys_from_item) but was omitted here.
+            EntityKind::CryptoAddress,
             EntityKind::MacAddress,
             EntityKind::DeviceId,
             EntityKind::Password,

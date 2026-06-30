@@ -474,8 +474,10 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
 
 /// AU-106 — Shared device fingerprint links accounts.
 ///
-/// A hardware / machine fingerprint (`hwid`, `machine_id`, …, surfaced as a
-/// `DeviceId` by the breach/stealer rich-detail extractor) recorded against two
+/// A hardware / machine fingerprint (`hwid`, `machine_id`, a hardware
+/// serial/`imei`, surfaced as a `DeviceId`, or a stealer-logged router `bssid`
+/// surfaced as a `device`-tagged `MacAddress`, by the breach/stealer rich-detail
+/// extractor) recorded against two
 /// or more DISTINCT identities means those accounts were used on the SAME
 /// physical machine — almost certainly one controller. This is the device-level
 /// analogue of AU-047 (a reused secret) and AU-048 (a shared key): a stealer log
@@ -501,9 +503,18 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
     // id, and must never link people (hwid/machine_id GUIDs are far longer).
     const MIN_FP_LEN: usize = 12;
 
+    // A `DeviceId` (hwid/machine_id/serial/imei) OR a breach-sourced router
+    // `MacAddress` (BSSID). The `device` tag — applied only by the breach/stealer
+    // rich-detail extractor — isolates a stealer-logged BSSID from a LAN/Wi-Fi MAC
+    // surfaced by `local_net`/`signal_radar`/`wifi_intel` (tagged `wifi-ap`/
+    // `local-arp`, never `device`); those also carry no email/username evidence,
+    // so they independently fail the ≥2-handles gate below.
     let devices: Vec<&Entity> = entities
         .iter()
-        .filter(|e| e.kind == EntityKind::DeviceId)
+        .filter(|e| {
+            e.kind == EntityKind::DeviceId
+                || (e.kind == EntityKind::MacAddress && e.has_tag("device"))
+        })
         .collect();
     if devices.is_empty() {
         return Vec::new();

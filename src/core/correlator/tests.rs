@@ -3285,6 +3285,51 @@ fn au106_links_accounts_sharing_a_unique_device_fingerprint() {
 }
 
 #[test]
+fn au106_links_accounts_sharing_a_breach_router_bssid_or_imei() {
+    // A stealer-logged router BSSID (a `device`-tagged MacAddress) shared across
+    // two DISTINCT accounts is the same single-device co-location proof as a hwid.
+    let mut mac = Entity::new(EntityKind::MacAddress, "aa:bb:cc:dd:ee:ff", 0.60, "scan");
+    mac.tag("device");
+    mac.add_evidence(Evidence::new("oathnet", "r1").with_attr("username", "ghost_91"));
+    mac.add_evidence(Evidence::new("oathnet", "r2").with_attr("username", "nightcrawler"));
+    let u1 = Entity::new(EntityKind::Username, "ghost_91", 0.6, "scan");
+    let u2 = Entity::new(EntityKind::Username, "nightcrawler", 0.6, "scan");
+    let hits = super::rules::rule_au_106_shared_device_identity(
+        &[mac.clone(), u1.clone(), u2.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "a shared BSSID across 2 accounts must link them"
+    );
+    assert_eq!(hits[0].rule_id, "AU-106");
+    assert!(hits[0].entity_uids.contains(&mac.uid));
+
+    // SAFETY: a LAN/Wi-Fi MAC surfaced by local_net/wifi_intel is NOT tagged
+    // `device`, so the same address with the same accounts must not link people.
+    let mut lan = Entity::new(EntityKind::MacAddress, "aa:bb:cc:dd:ee:ff", 0.60, "scan");
+    lan.tag("wifi-ap");
+    lan.add_evidence(Evidence::new("wifi_intel", "r1").with_attr("username", "ghost_91"));
+    lan.add_evidence(Evidence::new("wifi_intel", "r2").with_attr("username", "nightcrawler"));
+    assert!(
+        super::rules::rule_au_106_shared_device_identity(&[lan], "scan", 0).is_empty(),
+        "a non-`device` Wi-Fi MAC must never link identities"
+    );
+
+    // A shared 15-digit IMEI (typed DeviceId) across two accounts also fires.
+    let mut imei = Entity::new(EntityKind::DeviceId, "359881234567890", 0.55, "scan");
+    imei.tag("device");
+    imei.add_evidence(Evidence::new("see-know", "r1").with_attr("username", "ghost_91"));
+    imei.add_evidence(Evidence::new("see-know", "r2").with_attr("username", "nightcrawler"));
+    assert!(
+        !super::rules::rule_au_106_shared_device_identity(&[imei, u1, u2], "scan", 0).is_empty(),
+        "a shared IMEI across 2 accounts must link them"
+    );
+}
+
+#[test]
 fn au107_names_the_breach_stated_employer() {
     // A breach-tagged Organisation (0.50) — the employer field of a breach record —
     // is named as the subject's affiliation; one source is Medium.

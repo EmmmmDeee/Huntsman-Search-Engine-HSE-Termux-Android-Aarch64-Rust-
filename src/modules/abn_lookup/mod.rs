@@ -28,6 +28,18 @@ pub(super) const SRC: &str = "abn_lookup";
 const KEY_ENV: &str = "HUNTSMAN_ABR_GUID";
 pub(super) const BASE_URL: &str = "https://abr.business.gov.au/json";
 
+/// Cap on ABR `MatchingNames` candidates expanded into entities. Matches the
+/// sibling AU government registers (`asic_persons`, `asic_business_names`,
+/// `acnc_charities`, `gleif_lei` all bound at 100) — high enough that no genuine
+/// API-ranked result is omitted, honouring the no-omission directive. The ABR
+/// `MatchingNames.aspx` endpoint sets no server-side cap, so the full ranked
+/// candidate set must be walked here.
+pub(super) const MAX_NAME_HITS: usize = 100;
+
+/// Cap on registered trading names (`BusinessName`) expanded per ABN. A single
+/// ABN realistically holds far fewer; this only guards a pathological record.
+pub(super) const MAX_TRADING_NAMES: usize = 25;
+
 pub struct AbnLookup;
 
 #[async_trait]

@@ -266,7 +266,14 @@ impl Module for CrtSh {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::Email];
+        // `Organisation` is the non-public issuing CA mined from the certificate
+        // (build_entities); it was emitted but undeclared, hiding a corporate
+        // pivot edge from the producer graph.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Domain,
+            EntityKind::Email,
+            EntityKind::Organisation,
+        ];
         KINDS
     }
 

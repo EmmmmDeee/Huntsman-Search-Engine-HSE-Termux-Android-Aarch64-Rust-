@@ -24,7 +24,18 @@ use crate::core::{
     module::ModuleResult,
     tags,
 };
+use crate::util::extract::is_placeholder_secret;
 use crate::util::json::{is_null_sentinel, val_str};
+
+/// A value that is an *absence/redaction marker*, not real data: a SQL NULL
+/// sentinel (`\N`, written for an empty column in dumped exports) or a provider
+/// redaction placeholder (`UPGRADE_TO_SEE_FULL`, `REDACTED`, bracketed
+/// `[NULL]`/`[FAIL]`…). Such a value must NEVER mint a graph node — two records
+/// that each carry `\N`/`REDACTED` in, say, `company` would otherwise both yield
+/// an `Organisation("\N")` node and falsely co-occur, poisoning correlation.
+fn is_absent_marker(s: &str) -> bool {
+    is_null_sentinel(s) || is_placeholder_secret(s)
+}
 
 /// Field names already turned into typed entities by the providers' primary
 /// extractors (or deliberately suppressed as structural/metadata noise). The
@@ -76,6 +87,10 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "computer_name",
     "machine",
     "hostname",
+    "imei",
+    "serial",
+    "serial_number",
+    "device_serial",
     "telegram",
     "skype",
     "facebook",
@@ -212,11 +227,12 @@ pub fn extract_rich_detail(
     let last = val_str(item, "last_name").or_else(|| val_str(item, "lastname"));
     if let (Some(f), Some(l)) = (&first, &last) {
         let full = format!("{} {}", f.trim(), l.trim());
-        // A SQL NULL (`\N`) in either name component is absence, not a name —
-        // never compose a `"\N \N"` (nor a half-real `"\N Smith"`) Person from it.
+        // A SQL NULL (`\N`) or redaction marker in either name component is
+        // absence, not a name — never compose a `"\N \N"` (nor a half-real
+        // `"\N Smith"` / `"REDACTED Smith"`) Person from it.
         if full.len() >= 3
-            && !is_null_sentinel(f)
-            && !is_null_sentinel(l)
+            && !is_absent_marker(f)
+            && !is_absent_marker(l)
             && seen.insert(format!("@person:{}", full.to_lowercase()))
         {
             push_breach_entity(
@@ -233,6 +249,7 @@ pub fn extract_rich_detail(
     for k in ["company", "employer", "organization", "organisation", "org"] {
         if let Some(o) = val_str(item, k)
             && o.len() >= 2
+            && !is_absent_marker(&o)
             && seen.insert(format!("@org:{}", o.to_lowercase()))
         {
             push_breach_entity(
@@ -249,6 +266,7 @@ pub fn extract_rich_detail(
     for k in ["mac", "mac_address", "bssid"] {
         if let Some(m) = val_str(item, k)
             && m.len() >= 12
+            && !is_absent_marker(&m)
             && seen.insert(format!("@mac:{}", m.to_lowercase()))
         {
             push_context_entity(
@@ -269,9 +287,19 @@ pub fn extract_rich_detail(
         "computer_name",
         "machine",
         "hostname",
+        // Hardware serials / mobile equipment ids — globally-unique device
+        // anchors. A shared IMEI/serial across ≥2 accounts is strong single-device
+        // co-location proof; typed as DeviceId so AU-106 (shared-device identity)
+        // consumes them. (Also in RICH_DETAIL_SKIP so the catch-all does not also
+        // mint a duplicate `Other("imei")` from the distinct `@other:` namespace.)
+        "imei",
+        "serial",
+        "serial_number",
+        "device_serial",
     ] {
         if let Some(d) = val_str(item, k)
             && d.len() >= 3
+            && !is_absent_marker(&d)
             && seen.insert(format!("@device:{k}:{}", d.to_lowercase()))
         {
             push_context_entity(
@@ -297,6 +325,7 @@ pub fn extract_rich_detail(
     ] {
         if let Some(h) = val_str(item, k)
             && h.len() >= 2
+            && !is_absent_marker(&h)
             && seen.insert(format!("@{plat}:{}", h.to_lowercase()))
         {
             push_breach_entity(
@@ -328,6 +357,7 @@ pub fn extract_rich_detail(
     ] {
         if let Some(p) = val_str(item, k)
             && p.len() >= 2
+            && !is_absent_marker(&p)
         {
             if seen.insert(format!("@addr-part:{k}:{}", p.to_lowercase())) {
                 push_breach_entity(
@@ -342,7 +372,9 @@ pub fn extract_rich_detail(
         }
     }
     if addr_parts.len() >= 2 {
-        if let Some(c) = val_str(item, "country") {
+        if let Some(c) = val_str(item, "country")
+            && !is_absent_marker(&c)
+        {
             addr_parts.push(c);
         }
         let composed = addr_parts.join(", ");
@@ -391,7 +423,7 @@ pub fn extract_rich_detail(
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => n.to_string(),
         };
-        if val.is_empty() || val.len() > 2000 || is_null_sentinel(&val) {
+        if val.is_empty() || val.len() > 2000 || is_absent_marker(&val) {
             continue;
         }
         if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {

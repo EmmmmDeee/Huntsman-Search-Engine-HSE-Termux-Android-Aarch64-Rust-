@@ -15,7 +15,8 @@ use super::SRC;
 /// `Organisation` (confidence trimmed if the ABN is cancelled), the `AbnAcn`
 /// identifier, the registered `Address`, an inline `Coordinates` anchor
 /// (postcode → suburb centroid, falling back to state) for the AU geo rules
-/// AU-052/053, up to five trading `BusinessName`s, and — when the entity type
+/// AU-052/053, the registered trading `BusinessName`s (up to
+/// [`MAX_TRADING_NAMES`](super::MAX_TRADING_NAMES)), and — when the entity type
 /// is an individual/sole-trader — a `Person`. A non-empty `Message` field (the
 /// ABR's "no match"/error marker) or a missing `EntityName` is a no-op, so a
 /// miss adds nothing. Every emitted entity is tagged `abr`/`country:AU`,
@@ -124,7 +125,7 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
     }
 
     if let Some(names) = data.get("BusinessName").and_then(|v| v.as_array()) {
-        for bn in names.iter().take(5) {
+        for bn in names.iter().take(super::MAX_TRADING_NAMES) {
             if let Some(name) = bn
                 .as_str()
                 .or_else(|| bn.get("Value").and_then(|v| v.as_str()))
@@ -154,7 +155,7 @@ pub(super) fn parse_abn_result(data: &Value, scan_id: &str, result: &mut ModuleR
 
 /// Expand the ranked `MatchingNames` candidate list into entities.
 ///
-/// Walks up to the top 10 `Names` entries, mapping each ABR match `Score`
+/// Walks up to [`MAX_NAME_HITS`](super::MAX_NAME_HITS) `Names` entries, mapping each ABR match `Score`
 /// (0-100) onto an entity confidence band, and emits the `Organisation`,
 /// `AbnAcn`, registered `Address`, and an inline `Coordinates` anchor per
 /// candidate — the multi-result analogue of [`parse_abn_result`], scored a
@@ -172,7 +173,7 @@ pub(super) fn parse_name_results(
         _ => return,
     };
 
-    for entry in names.iter().take(10) {
+    for entry in names.iter().take(super::MAX_NAME_HITS) {
         let abn = str_field(entry, "Abn").unwrap_or_default();
         let name = str_field(entry, "Name").unwrap_or_default();
         let name_type = str_field(entry, "NameType").unwrap_or_default();

@@ -255,6 +255,24 @@ const SOCIAL_HOSTS: &[&str] = &[
     "bsky.app",
     "mastodon.social",
     "threads.net",
+    // Profile-ROOT developer / messaging / micro-blog hosts whose FIRST path
+    // segment is the user handle (gitlab.com/<h>, bitbucket.org/<h>, t.me/<h>,
+    // vk.com/<h>, ok.ru/<h>, keybase.io/<h>, about.me/<h>, dev.to/<h>,
+    // twitch.tv/<h>). The query ladder already dorks all of these, but the
+    // EXACT-match gate below silently discarded their returned handles before any
+    // Username/cross-platform-pivot/confirmed-profile/display-name extraction.
+    // Deliberately EXCLUDES steamcommunity.com (/id|/profiles), stackoverflow.com
+    // (/users) and gravatar.com (/avatar) — their first segment is a navigation
+    // word, not the handle, so `is_navigation_path` would (correctly) drop them.
+    "gitlab.com",
+    "bitbucket.org",
+    "t.me",
+    "vk.com",
+    "ok.ru",
+    "keybase.io",
+    "about.me",
+    "dev.to",
+    "twitch.tv",
 ];
 
 /// Fetch one engine's full contribution for a query — page 0 plus its own

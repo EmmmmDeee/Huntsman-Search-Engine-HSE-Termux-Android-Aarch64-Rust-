@@ -11,6 +11,55 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Adversarial-discovery sweep — eight code-grounded potentiations (every one a
+  field the engine already fetched/produced but dropped, or a free signal in reach).**
+  - **`breach_rich` no longer poisons the graph with absence/redaction markers.**
+    The shared rich-detail pass minted `Organisation`/`Address`/`Username`/`Other`
+    nodes from a SQL-NULL `\N` or a provider redaction placeholder
+    (`UPGRADE_TO_SEE_FULL`/`REDACTED`) — two records each carrying `\N` in `company`
+    would both yield `Organisation("\N")` and falsely co-occur. A new
+    `is_absent_marker` (`is_null_sentinel` ∪ `is_placeholder_secret`) now guards
+    every value-bearing loop (name/org/device/social/address + catch-all). Highest
+    groundedness; fires for every breach provider that routes through the pass.
+  - **`abn_lookup` stops truncating the flagship AU government register.** Name
+    matches were capped at 10 and trading names at 5 against a no-server-cap ABR
+    endpoint; both now use named ceilings (`MAX_NAME_HITS=100`,
+    `MAX_TRADING_NAMES=25`) matching every sibling AU register — no ranked result
+    omitted.
+  - **`search_engines` now mines the profile-root hosts it already dorks.** The
+    `is_social_host` allow-list omitted a dozen hosts whose first path segment IS
+    the handle (`gitlab.com`, `bitbucket.org`, `t.me`, `vk.com`, `ok.ru`,
+    `keybase.io`, `about.me`, `dev.to`, `twitch.tv`) — the query ladder asked
+    engines for them, but every returned handle was discarded before any
+    Username/cross-platform-pivot/confirmed-profile/display-name extraction.
+    Navigation-prefixed hosts (steam/stackoverflow/gravatar) deliberately excluded.
+  - **AU-106 (shared-device identity) now consumes the breach device signals it was
+    starved of.** Hardware serials / IMEIs (`imei`/`serial`/`serial_number`/
+    `device_serial`) are re-typed from inert `Other` to first-class `DeviceId`
+    (and added to `RICH_DETAIL_SKIP` so no duplicate `Other` leaks), and the rule
+    now also links on a stealer-logged router BSSID (a `device`-tagged
+    `MacAddress`) — gated so a LAN/Wi-Fi MAC never links strangers. A shared
+    globally-unique IMEI/serial or router BSSID across ≥2 accounts is the strongest
+    single-device co-location proof.
+  - **`trove_au` emits Url sources for all 20 fetched articles** (was `take(10)`
+    against an `n=20` request — half the dated newspaper-mention pivots were
+    dropped), and carries each article's publishing-masthead id (`titleId`) as
+    `masthead_id` provenance.
+  - **`netlas` surfaces three `fields=*` fields it decoded and dropped**: the SSL
+    certificate's issuing CA (`ssl_issuer`), the HTTP page `<title>` (`http_title`,
+    often the owning org/product), and the HTTP `status_code` (`http_status`) — all
+    folded onto the IP entity's evidence. The post-decode body was refactored into
+    a pure, unit-tested `build_entities`.
+  - **`gravatar` carries the owner's self-asserted link label** (`UrlEntry.title`,
+    e.g. "Blog"/"Portfolio") as `link_title` evidence on each personal-URL entity
+    (was deserialized then dropped).
+  - **`produces()` declarations corrected to match emissions** (graph-observability
+    accuracy): `crtsh` declares the issuing-CA `Organisation` it emits;
+    `oathnet_pro` declares the `ApiKey`+`CryptoAddress` its shared key-harvest path
+    emits; `see_know` adds the `CryptoAddress` it was missing.
+  All eight are offline, deterministic, and regression-tested; surfaced by a
+  multi-modal finder sweep with per-finding adversarial verification against the
+  real code and the architecture invariants.
 - **Two new correlator rules + one potentiation mine breach data the engine already
   held but never synthesised.**
   - **AU-107 — subject's breach-stated employer/affiliation.** A breach/stealer

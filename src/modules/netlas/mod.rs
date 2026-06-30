@@ -201,268 +201,313 @@ impl Module for Netlas {
         };
 
         let body: NetlasResp = crate::util::http::json_decode(SRC, resp).await?;
-        let mut result = ModuleResult::new();
+        Ok(build_entities(&body, target.value.trim(), &ctx.scan_id))
+    }
+}
 
-        let mut all_emails: Vec<String> = Vec::new();
-        let mut all_cert_domains: Vec<String> = Vec::new();
-        let mut cert_orgs: Vec<String> = Vec::new();
-        let mut port_list: Vec<String> = Vec::new();
-        let mut jarm_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut cve_list: Vec<String> = Vec::new();
-        let mut tech_list: Vec<String> = Vec::new();
-        let mut isp_val: Option<String> = None;
-        let mut geo_val: Option<(f64, f64, String, String)> = None;
-        let mut ssl_cn: Option<String> = None;
-        let mut ip_val: Option<String> = None;
+/// Map a decoded Netlas response to entities. **Pure** (no network/IO): the
+/// network shell owns auth/transport, this owns the response→entity mapping
+/// (unit-testable without a key). Accumulates host facts across `body.items`,
+/// then emits the IP entity — carrying the port/JARM/SSL/CVE/tech/ISP evidence
+/// plus the previously-dropped `ssl_issuer` (issuing CA), `http_title` and
+/// `http_status` — the ISP and cert-subject Organisations, the geo
+/// Coordinates/Address, the SAN Domains, and the SSL/HTTP-extracted Emails.
+/// `target_value` is the queried value used as the IP fallback; an empty item
+/// set yields an empty result.
+fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> ModuleResult {
+    let mut result = ModuleResult::new();
 
-        for item in &body.items {
-            let Some(data) = &item.data else { continue };
+    let mut all_emails: Vec<String> = Vec::new();
+    let mut all_cert_domains: Vec<String> = Vec::new();
+    let mut cert_orgs: Vec<String> = Vec::new();
+    let mut port_list: Vec<String> = Vec::new();
+    let mut jarm_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut cve_list: Vec<String> = Vec::new();
+    let mut tech_list: Vec<String> = Vec::new();
+    let mut isp_val: Option<String> = None;
+    let mut geo_val: Option<(f64, f64, String, String)> = None;
+    let mut ssl_cn: Option<String> = None;
+    let mut ip_val: Option<String> = None;
+    let mut ssl_issuer: Option<String> = None;
+    let mut http_title: Option<String> = None;
+    let mut http_status: Option<u16> = None;
 
-            if let Some(ip) = &data.ip
-                && ip_val.is_none()
-            {
-                ip_val = Some(ip.clone());
-            }
-            if let Some(p) = data.port {
-                let proto = data.protocol.as_deref().unwrap_or("tcp");
-                port_list.push(format!("{p}/{proto}"));
-            }
-            if let Some(j) = data.jarm.as_deref().filter(|s| !s.is_empty()) {
-                jarm_seen.insert(j.to_string());
-            }
-            if let Some(isp) = data.isp.as_deref().filter(|s| !s.is_empty())
-                && isp_val.is_none()
-            {
-                isp_val = Some(isp.to_string());
-            }
-            if let Some(geo) = &data.geo
-                && geo_val.is_none()
-                && let (Some(lat), Some(lon)) = (geo.latitude, geo.longitude)
-                && (lat.abs() > 0.001 || lon.abs() > 0.001)
-            {
-                geo_val = Some((
-                    lat,
-                    lon,
-                    geo.country.clone().unwrap_or_default(),
-                    geo.city.clone().unwrap_or_default(),
-                ));
-            }
-            if let Some(cert) = &data.certificate {
-                if let Some(subj) = &cert.subject {
-                    if let Some(cn) = subj.common_name.as_deref().filter(|s| !s.is_empty())
-                        && ssl_cn.is_none()
-                    {
-                        ssl_cn = Some(cn.to_string());
-                    }
-                    if let Some(emails) = &subj.email {
-                        all_emails.extend(emails.iter().cloned());
-                    }
-                    // OV/EV certificates carry the verified organisation name in
-                    // the Subject O field — a confirmed legal entity name.
-                    if let Some(orgs) = &subj.organization {
-                        cert_orgs.extend(orgs.iter().filter(|o| !o.is_empty()).cloned());
-                    }
+    for item in &body.items {
+        let Some(data) = &item.data else { continue };
+
+        if let Some(ip) = &data.ip
+            && ip_val.is_none()
+        {
+            ip_val = Some(ip.clone());
+        }
+        if let Some(p) = data.port {
+            let proto = data.protocol.as_deref().unwrap_or("tcp");
+            port_list.push(format!("{p}/{proto}"));
+        }
+        if let Some(j) = data.jarm.as_deref().filter(|s| !s.is_empty()) {
+            jarm_seen.insert(j.to_string());
+        }
+        if let Some(isp) = data.isp.as_deref().filter(|s| !s.is_empty())
+            && isp_val.is_none()
+        {
+            isp_val = Some(isp.to_string());
+        }
+        if let Some(geo) = &data.geo
+            && geo_val.is_none()
+            && let (Some(lat), Some(lon)) = (geo.latitude, geo.longitude)
+            && (lat.abs() > 0.001 || lon.abs() > 0.001)
+        {
+            geo_val = Some((
+                lat,
+                lon,
+                geo.country.clone().unwrap_or_default(),
+                geo.city.clone().unwrap_or_default(),
+            ));
+        }
+        if let Some(cert) = &data.certificate {
+            if let Some(subj) = &cert.subject {
+                if let Some(cn) = subj.common_name.as_deref().filter(|s| !s.is_empty())
+                    && ssl_cn.is_none()
+                {
+                    ssl_cn = Some(cn.to_string());
                 }
-                if let Some(emails) = &cert.emails {
+                if let Some(emails) = &subj.email {
                     all_emails.extend(emails.iter().cloned());
                 }
-                if let Some(doms) = &cert.domains {
-                    all_cert_domains.extend(doms.iter().cloned());
+                // OV/EV certificates carry the verified organisation name in
+                // the Subject O field — a confirmed legal entity name.
+                if let Some(orgs) = &subj.organization {
+                    cert_orgs.extend(orgs.iter().filter(|o| !o.is_empty()).cloned());
                 }
             }
-            if let Some(http_data) = &data.http
-                && let Some(emails) = &http_data.emails
-            {
+            if let Some(emails) = &cert.emails {
                 all_emails.extend(emails.iter().cloned());
             }
-            if let Some(whois) = &data.whois
-                && let Some(net) = &whois.net
-                && let Some(emails) = &net.emails
+            if let Some(doms) = &cert.domains {
+                all_cert_domains.extend(doms.iter().cloned());
+            }
+            // Issuing CA common name — the certificate authority that signed
+            // the cert. Fetched via fields=* but previously dropped.
+            if ssl_issuer.is_none()
+                && let Some(iss) = cert
+                    .issuer
+                    .as_ref()
+                    .and_then(|i| i.common_name.as_deref())
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
             {
+                ssl_issuer = Some(iss.to_string());
+            }
+        }
+        if let Some(http_data) = &data.http {
+            if let Some(emails) = &http_data.emails {
                 all_emails.extend(emails.iter().cloned());
             }
-            if let Some(cves) = &data.cve {
-                for cve in cves.iter().take(5) {
-                    if let Some(n) = &cve.name {
-                        cve_list.push(n.clone());
-                    }
+            // HTTP <title> (often the owning org/product) and status code —
+            // decoded via fields=* but previously dropped.
+            if http_title.is_none()
+                && let Some(t) = http_data
+                    .title
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            {
+                http_title = Some(t.to_string());
+            }
+            if http_status.is_none() {
+                http_status = http_data.status_code;
+            }
+        }
+        if let Some(whois) = &data.whois
+            && let Some(net) = &whois.net
+            && let Some(emails) = &net.emails
+        {
+            all_emails.extend(emails.iter().cloned());
+        }
+        if let Some(cves) = &data.cve {
+            for cve in cves.iter().take(5) {
+                if let Some(n) = &cve.name {
+                    cve_list.push(n.clone());
                 }
             }
-            if let Some(techs) = &data.technologies {
-                tech_list.extend(techs.iter().cloned());
-            }
         }
+        if let Some(techs) = &data.technologies {
+            tech_list.extend(techs.iter().cloned());
+        }
+    }
 
-        if body.items.is_empty() {
-            return Ok(result);
-        }
+    if body.items.is_empty() {
+        return result;
+    }
 
-        // Emit IP entity.
-        let ip_str = ip_val.as_deref().unwrap_or(target.value.trim());
-        let mut ip_entity = Entity::new(EntityKind::IpAddress, ip_str, 0.85, &ctx.scan_id);
-        ip_entity.tag("netlas");
-        port_list.sort();
-        port_list.dedup();
-        let mut ev = Evidence::new(SRC, format!("Netlas intelligence for {ip_str}"))
-            .with_attr("port_count", port_list.len().to_string());
-        if !port_list.is_empty() {
-            ev = ev.with_attr(
-                "open_ports",
-                port_list
-                    .iter()
-                    .take(20)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-        }
-        if let Some(j) = jarm_seen.iter().next() {
-            ev = ev.with_attr("jarm_fingerprint", j);
-        }
-        if let Some(cn) = ssl_cn.as_deref() {
-            ev = ev.with_attr("ssl_cn", cn);
-        }
-        if !cve_list.is_empty() {
-            ev = ev.with_attr(
-                "cves",
-                cve_list
-                    .iter()
-                    .take(5)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-        }
-        if !tech_list.is_empty() {
-            tech_list.sort();
-            tech_list.dedup();
-            ev = ev.with_attr(
-                "technologies",
-                tech_list
-                    .iter()
-                    .take(10)
-                    .cloned()
-                    .collect::<Vec<_>>()
-                    .join(","),
-            );
-        }
-        if let Some(isp) = &isp_val {
-            ev = ev.with_attr("isp", isp);
-        }
-        ip_entity.add_evidence(ev);
-        result.push(ip_entity);
+    // Emit IP entity.
+    let ip_str = ip_val.as_deref().unwrap_or(target_value);
+    let mut ip_entity = Entity::new(EntityKind::IpAddress, ip_str, 0.85, scan_id);
+    ip_entity.tag("netlas");
+    port_list.sort();
+    port_list.dedup();
+    let mut ev = Evidence::new(SRC, format!("Netlas intelligence for {ip_str}"))
+        .with_attr("port_count", port_list.len().to_string());
+    if !port_list.is_empty() {
+        ev = ev.with_attr(
+            "open_ports",
+            port_list
+                .iter()
+                .take(20)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    if let Some(j) = jarm_seen.iter().next() {
+        ev = ev.with_attr("jarm_fingerprint", j);
+    }
+    if let Some(cn) = ssl_cn.as_deref() {
+        ev = ev.with_attr("ssl_cn", cn);
+    }
+    if let Some(iss) = ssl_issuer.as_deref() {
+        ev = ev.with_attr("ssl_issuer", iss);
+    }
+    if let Some(t) = http_title.as_deref() {
+        ev = ev.with_attr("http_title", t);
+    }
+    if let Some(code) = http_status {
+        ev = ev.with_attr("http_status", code.to_string());
+    }
+    if !cve_list.is_empty() {
+        ev = ev.with_attr(
+            "cves",
+            cve_list
+                .iter()
+                .take(5)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    if !tech_list.is_empty() {
+        tech_list.sort();
+        tech_list.dedup();
+        ev = ev.with_attr(
+            "technologies",
+            tech_list
+                .iter()
+                .take(10)
+                .cloned()
+                .collect::<Vec<_>>()
+                .join(","),
+        );
+    }
+    if let Some(isp) = &isp_val {
+        ev = ev.with_attr("isp", isp);
+    }
+    ip_entity.add_evidence(ev);
+    result.push(ip_entity);
 
-        // ISP → Organisation entity.
-        let isp_lc = isp_val
-            .as_deref()
-            .map(|s| s.trim().to_ascii_lowercase())
-            .filter(|s| !s.is_empty());
-        if let Some(isp) = isp_val.as_deref().filter(|s| s.len() >= 3) {
-            let mut org = Entity::new(EntityKind::Organisation, isp, 0.60, &ctx.scan_id);
-            org.tag("netlas");
-            org.tag("isp");
-            org.add_evidence(
-                Evidence::new(SRC, format!("ISP for {ip_str}: {isp}"))
-                    .with_attr("source", "netlas"),
-            );
-            result.push(org);
-        }
+    // ISP → Organisation entity.
+    let isp_lc = isp_val
+        .as_deref()
+        .map(|s| s.trim().to_ascii_lowercase())
+        .filter(|s| !s.is_empty());
+    if let Some(isp) = isp_val.as_deref().filter(|s| s.len() >= 3) {
+        let mut org = Entity::new(EntityKind::Organisation, isp, 0.60, scan_id);
+        org.tag("netlas");
+        org.tag("isp");
+        org.add_evidence(
+            Evidence::new(SRC, format!("ISP for {ip_str}: {isp}")).with_attr("source", "netlas"),
+        );
+        result.push(org);
+    }
 
-        // SSL Subject O field → Organisation entity (OV/EV certs only).
-        // Deduplicate and skip values that match the ISP already emitted.
-        cert_orgs.sort();
-        cert_orgs.dedup();
-        for cert_org in cert_orgs.iter().take(3) {
-            let org_lc = cert_org.trim().to_ascii_lowercase();
-            if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
-                continue;
-            }
-            let mut oe = Entity::new(
-                EntityKind::Organisation,
-                cert_org.trim(),
-                0.70,
-                &ctx.scan_id,
+    // SSL Subject O field → Organisation entity (OV/EV certs only).
+    // Deduplicate and skip values that match the ISP already emitted.
+    cert_orgs.sort();
+    cert_orgs.dedup();
+    for cert_org in cert_orgs.iter().take(3) {
+        let org_lc = cert_org.trim().to_ascii_lowercase();
+        if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
+            continue;
+        }
+        let mut oe = Entity::new(EntityKind::Organisation, cert_org.trim(), 0.70, scan_id);
+        oe.tag("netlas");
+        oe.tag("ssl-subject-org");
+        oe.add_evidence(
+            Evidence::new(
+                SRC,
+                format!("SSL/TLS certificate Subject O for {ip_str}: {cert_org}"),
+            )
+            .with_attr("ip", ip_str)
+            .with_attr("cert_org", cert_org.as_str()),
+        );
+        result.push(oe);
+    }
+
+    // Geolocation → Coordinates + Address.
+    if let Some((lat, lon, country, city)) = geo_val {
+        let coord_str = format!("{lat:.6},{lon:.6}");
+        let mut geo_e = Entity::new(EntityKind::Coordinates, &coord_str, 0.60, scan_id);
+        geo_e.tag("netlas");
+        geo_e.tag("geoint");
+        if !country.is_empty() {
+            geo_e.tag(format!(
+                "country:{}",
+                country.to_uppercase().replace(' ', "")
+            ));
+        }
+        geo_e.add_evidence(
+            Evidence::new(SRC, format!("Netlas geolocation for {ip_str}"))
+                .with_attr("latitude", lat.to_string())
+                .with_attr("longitude", lon.to_string())
+                .with_attr("country", &country)
+                .with_attr("city", &city),
+        );
+        result.push(geo_e);
+
+        if !city.is_empty() && !country.is_empty() {
+            let addr_str = format!("{city}, {country}");
+            let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.55, scan_id);
+            addr.tag("netlas");
+            addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
+            result.push(addr);
+        }
+    }
+
+    // SSL/TLS SAN domains → Domain entities for BFS.
+    all_cert_domains.sort();
+    all_cert_domains.dedup();
+    for dom in all_cert_domains.iter().take(20) {
+        let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
+        if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
+            let mut de = Entity::new(EntityKind::Domain, dom, 0.70, scan_id);
+            de.tag("netlas");
+            de.tag("ssl-san");
+            de.add_evidence(
+                Evidence::new(SRC, format!("SSL/TLS SAN domain for {ip_str}"))
+                    .with_attr("ip", ip_str),
             );
-            oe.tag("netlas");
-            oe.tag("ssl-subject-org");
-            oe.add_evidence(
+            result.push(de);
+        }
+    }
+
+    // Extracted emails → Email entities for BFS.
+    all_emails.sort();
+    all_emails.dedup();
+    for email in all_emails.iter().take(10) {
+        let email = email.to_lowercase();
+        if crate::util::extract::looks_like_email(&email) {
+            let mut e = Entity::new(EntityKind::Email, &email, 0.65, scan_id);
+            e.tag("netlas");
+            e.tag("ssl-extracted");
+            e.add_evidence(
                 Evidence::new(
                     SRC,
-                    format!("SSL/TLS certificate Subject O for {ip_str}: {cert_org}"),
+                    format!("Email extracted from SSL/HTTP data for {ip_str}"),
                 )
-                .with_attr("ip", ip_str)
-                .with_attr("cert_org", cert_org.as_str()),
+                .with_attr("emails_extracted", &email),
             );
-            result.push(oe);
+            result.push(e);
         }
-
-        // Geolocation → Coordinates + Address.
-        if let Some((lat, lon, country, city)) = geo_val {
-            let coord_str = format!("{lat:.6},{lon:.6}");
-            let mut geo_e = Entity::new(EntityKind::Coordinates, &coord_str, 0.60, &ctx.scan_id);
-            geo_e.tag("netlas");
-            geo_e.tag("geoint");
-            if !country.is_empty() {
-                geo_e.tag(format!(
-                    "country:{}",
-                    country.to_uppercase().replace(' ', "")
-                ));
-            }
-            geo_e.add_evidence(
-                Evidence::new(SRC, format!("Netlas geolocation for {ip_str}"))
-                    .with_attr("latitude", lat.to_string())
-                    .with_attr("longitude", lon.to_string())
-                    .with_attr("country", &country)
-                    .with_attr("city", &city),
-            );
-            result.push(geo_e);
-
-            if !city.is_empty() && !country.is_empty() {
-                let addr_str = format!("{city}, {country}");
-                let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.55, &ctx.scan_id);
-                addr.tag("netlas");
-                addr.add_evidence(Evidence::new(SRC, format!("Netlas location for {ip_str}")));
-                result.push(addr);
-            }
-        }
-
-        // SSL/TLS SAN domains → Domain entities for BFS.
-        all_cert_domains.sort();
-        all_cert_domains.dedup();
-        for dom in all_cert_domains.iter().take(20) {
-            let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
-            if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
-                let mut de = Entity::new(EntityKind::Domain, dom, 0.70, &ctx.scan_id);
-                de.tag("netlas");
-                de.tag("ssl-san");
-                de.add_evidence(
-                    Evidence::new(SRC, format!("SSL/TLS SAN domain for {ip_str}"))
-                        .with_attr("ip", ip_str),
-                );
-                result.push(de);
-            }
-        }
-
-        // Extracted emails → Email entities for BFS.
-        all_emails.sort();
-        all_emails.dedup();
-        for email in all_emails.iter().take(10) {
-            let email = email.to_lowercase();
-            if crate::util::extract::looks_like_email(&email) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.65, &ctx.scan_id);
-                e.tag("netlas");
-                e.tag("ssl-extracted");
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Email extracted from SSL/HTTP data for {ip_str}"),
-                    )
-                    .with_attr("emails_extracted", &email),
-                );
-                result.push(e);
-            }
-        }
-
-        Ok(result)
     }
+
+    result
 }

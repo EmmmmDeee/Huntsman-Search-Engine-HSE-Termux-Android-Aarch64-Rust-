@@ -22,6 +22,14 @@ fn description_non_empty() {
 }
 
 #[test]
+fn produces_declares_the_issuer_organisation() {
+    // build_entities emits the non-public issuing CA as an Organisation; the
+    // producer graph must declare it.
+    assert!(CrtSh.produces().contains(&EntityKind::Organisation));
+    assert!(CrtSh.produces().contains(&EntityKind::Domain));
+}
+
+#[test]
 fn crt_entry_deser() {
     let json = r#"[{"common_name":"www.example.com","name_value":"www.example.com\nexample.com","issuer_name":"Let's Encrypt","not_before":"2024-01-01","not_after":"2024-04-01","serial_number":"abc123"}]"#;
     let entries: Vec<CrtEntry> = serde_json::from_str(json).unwrap();
