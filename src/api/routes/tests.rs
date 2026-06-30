@@ -239,6 +239,76 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_styles_every_entity_kind() {
+        // Rendering contract: every `EntityKind` a module can produce must have a
+        // distinct `.k-<snake_case>` pill style, or it renders as an
+        // undifferentiated default pill in Browse / the graph. The list is the
+        // serde snake_case tags of `core::entity::EntityKind`; a drift count
+        // against the enum keeps it honest when a kind is added.
+        const KIND_STYLES: &[&str] = &[
+            "abn_acn",
+            "address",
+            "api_key",
+            "asn",
+            "cidr",
+            "coordinates",
+            "credential",
+            "crypto_address",
+            "device_id",
+            "domain",
+            "email",
+            "ip_address",
+            "mac_address",
+            "organisation",
+            "other",
+            "password",
+            "person",
+            "phone",
+            "ssid",
+            "tracking_id",
+            "url",
+            "username",
+        ];
+        for k in KIND_STYLES {
+            assert!(
+                SPA_HTML.contains(&format!(".k-{k}{{")),
+                "SPA has no `.k-{k}` pill style — EntityKind `{k}` renders as a \
+                 default/undifferentiated pill; add a colour"
+            );
+        }
+        // Drift guard: pin to the real enum (every variant is a bare unit ident
+        // except the `Other(String)` tuple, so count both forms).
+        let src = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/src/core/entity/mod.rs"
+        ))
+        .expect("entity source readable");
+        let body = src
+            .split_once("pub enum EntityKind {")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("EntityKind enum present");
+        let variant_count = body
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                // 4-space-indented PascalCase ident, ending `,` or `(…` — not a
+                // doc line (`///`) or attribute (`#`).
+                l.starts_with("    ")
+                    && !l.starts_with("        ")
+                    && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+            })
+            .count();
+        assert_eq!(
+            variant_count,
+            KIND_STYLES.len(),
+            "core::entity::EntityKind has {variant_count} variants but the SPA \
+             pill-style list pins {} — add the new kind's `.k-<snake_case>` style",
+            KIND_STYLES.len()
+        );
+    }
+
+    #[test]
     fn embedded_spa_renders_every_event_kind() {
         // Event contract: every `EventKind` variant the engine/live loop emits
         // over the bus must have a friendly `mapEvent` case in the SPA, or it
