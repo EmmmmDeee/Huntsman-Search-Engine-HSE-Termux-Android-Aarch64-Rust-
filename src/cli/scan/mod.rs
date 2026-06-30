@@ -255,7 +255,24 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
 
+    // Wire an operator Ctrl-C to the engine's cooperative cancel flag — without
+    // this, SIGINT falls through to the OS default (immediate process kill),
+    // skipping `finalise_scan` entirely: the scan row stays stuck at `Running`
+    // forever and any in-flight module tasks are simply abandoned mid-request
+    // rather than stopped. Cloning the handle before `ctx` moves into `run`
+    // lets this listener signal the SAME flag the engine polls; once `run`
+    // returns (normally or via cooperative cancellation, which persists a
+    // clean `Aborted` scan with everything collected so far) the listener is
+    // aborted so it doesn't outlive the scan.
+    let cancel_on_ctrl_c = ctx.cancel.clone();
+    let ctrl_c_listener = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            eprintln!("\nstopping scan…");
+            cancel_on_ctrl_c.cancel();
+        }
+    });
     let scan = engine.run(scan, target, ctx).await?;
+    ctrl_c_listener.abort();
     let entities = store.entities_for_scan(&sid)?;
     let correlations = store.correlations_for_scan(&sid)?;
     let relations = store.relations_for_scan(&sid)?;

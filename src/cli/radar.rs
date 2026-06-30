@@ -22,6 +22,35 @@ use super::{build_runtime, color_confidence, truncate, use_color};
 
 use crate::core::engine::LOCAL_PASSIVE_MODULES as SENSOR_MODULES;
 
+/// Run one sub-scan (a sensor sweep or a pivot), racing an operator Ctrl-C
+/// against it. A press signals the scan's OWN cooperative-cancel flag (so it
+/// winds down promptly via `finalise_scan`'s clean `Aborted` path — the same
+/// mechanism `--max-wall-time`'s watchdog uses — rather than running to its
+/// own completion while the operator waits) AND sets `stop`, so the radar's
+/// outer sweep loop breaks immediately afterwards instead of starting another
+/// pivot/sweep. Without this, Ctrl-C during an in-flight sub-scan was only
+/// observed once the engine returned on its own, silently deferring the
+/// operator's stop request for however long that sub-scan took.
+async fn run_sub_scan(
+    engine: &crate::core::engine::ScanEngine,
+    scan: Scan,
+    target: Target,
+    ctx: ModuleContext,
+    stop: &std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Result<Scan> {
+    let cancel = ctx.cancel.clone();
+    let stop_flag = Arc::clone(stop);
+    let listener = tokio::spawn(async move {
+        if tokio::signal::ctrl_c().await.is_ok() {
+            stop_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            cancel.cancel();
+        }
+    });
+    let result = engine.run(scan, target, ctx).await;
+    listener.abort();
+    result
+}
+
 pub(super) async fn cmd_radar(
     interval: u64,
     depth: u32,
@@ -58,8 +87,11 @@ pub(super) async fn cmd_radar(
     let (store, bus, engine) = build_runtime(1024)?;
     let mut seen_entities: HashSet<String> = HashSet::new();
     let mut sweep_num = 0u32;
+    // Set by `run_sub_scan` the moment Ctrl-C interrupts an in-flight sweep or
+    // pivot, so the loop stops immediately rather than starting another one.
+    let radar_stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
 
-    loop {
+    'sweeps: loop {
         sweep_num += 1;
         if let Some(max) = sweeps
             && sweep_num > max
@@ -102,7 +134,12 @@ pub(super) async fn cmd_radar(
             proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
-        let sweep_result = engine.run(sweep_scan, sweep_target, sweep_ctx).await?;
+        let sweep_result =
+            run_sub_scan(&engine, sweep_scan, sweep_target, sweep_ctx, &radar_stop).await?;
+        if radar_stop.load(std::sync::atomic::Ordering::Relaxed) {
+            eprintln!("\nradar stopped");
+            break 'sweeps;
+        }
         let sweep_entities = store.entities_for_scan(&sweep_sid)?;
 
         // Phase 2: Identify NEW entities (not seen in previous sweeps)
@@ -180,7 +217,12 @@ pub(super) async fn cmd_radar(
                     proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
                 };
 
-                let result = engine.run(pivot_scan, pivot_target, pivot_ctx).await?;
+                let result =
+                    run_sub_scan(&engine, pivot_scan, pivot_target, pivot_ctx, &radar_stop).await?;
+                if radar_stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    eprintln!("\nradar stopped");
+                    break 'sweeps;
+                }
                 let pivot_entities = store.entities_for_scan(&pivot_sid)?;
 
                 // Add pivot results to seen set
