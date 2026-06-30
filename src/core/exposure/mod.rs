@@ -148,16 +148,37 @@ pub fn assess(entities: &[Entity], correlations: &[Correlation]) -> ExposureInde
 /// Breach corpus breadth: distinct named breach/stealer databases the subject
 /// appears in (12 pts each, capped). More corpora ⇒ wider, longer-lived exposure.
 fn breach_component(confirmed: &[&Entity]) -> ExposureComponent {
+    // A breach-corpus name reaches us under one of several evidence keys. A
+    // per-record co-occurrence row stamps `dbname`, but the SUBJECT's own
+    // aggregate hit stamps `top_dbnames` (oathnet_pro) or `breaches`
+    // (xposed_or_not) — each a comma-separated list of corpus names. Reading only
+    // `dbname` scored a confirmed subject breach as zero: in a real scan the
+    // subject's TLDRtech appearance — asserted by BOTH oathnet_pro (`top_dbnames`)
+    // and xposed_or_not (`breaches`) — was missed because neither uses `dbname`,
+    // while the only `dbname`-bearing rows were non-subject candidates (already
+    // excluded from `confirmed`). Read every corpus key, splitting the lists.
+    const CORPUS_KEYS: &[&str] = &["dbname", "top_dbnames", "breaches"];
     let mut dbs: BTreeSet<String> = BTreeSet::new();
     for e in confirmed {
         if !(e.has_tag(crate::core::tags::BREACH) || e.has_tag(crate::core::tags::STEALER_LOG)) {
             continue;
         }
         for ev in &e.evidence {
-            if let Some(db) = ev.attributes.get("dbname") {
-                let db = db.trim().to_lowercase();
-                if !db.is_empty() && db != "unknown" {
-                    dbs.insert(db);
+            for key in CORPUS_KEYS {
+                let Some(raw) = ev.attributes.get(*key) else {
+                    continue;
+                };
+                for name in raw.split(',') {
+                    // Fold to an alphanumeric-only lowercase key so the one corpus
+                    // written two ways ("tldr.tech" vs "TLDRtech") counts once.
+                    let norm: String = name
+                        .chars()
+                        .filter(|c| c.is_alphanumeric())
+                        .flat_map(char::to_lowercase)
+                        .collect();
+                    if !norm.is_empty() && norm != "unknown" {
+                        dbs.insert(norm);
+                    }
                 }
             }
         }

@@ -54,6 +54,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Exposure Index: a CONFIRMED subject breach is now counted, not scored zero.**
+  The breach component tallied distinct corpora only from the `dbname` evidence
+  key — the key the per-record *co-occurrence* rows use, and those rows are
+  non-subject candidates that are already excluded from the confirmed set. The
+  subject's OWN aggregate breach hit carries its corpus name under `top_dbnames`
+  (oathnet_pro) or `breaches` (xposed_or_not), so in a real scan (debug bundle,
+  scan `90b936dc…`) a subject confirmed in the TLDRtech breach by BOTH sources
+  scored `Breach exposure 0/35 — no named breach corpus appearances`, understating
+  the headline index by 12 points despite a `password_risk` flag on the same
+  finding. The component now reads every corpus key, splits the comma-separated
+  lists, and folds spelling variants of one corpus (`tldr.tech` / `TLDRtech`) to a
+  single count so it is neither missed nor double-counted. Regression tests seeded
+  from the captured evidence shape; full gate (fmt, clippy `--all-targets -D
+  warnings`, rustdoc lints, 4156 lib tests).
 - **Offline geocoder: a foreign STREET NUMBER is no longer misread as an
   Australian postcode.** `util::city_coords` resolved an address by scanning for a
   4-digit token and treating it as an AU postcode. On an overseas address the real

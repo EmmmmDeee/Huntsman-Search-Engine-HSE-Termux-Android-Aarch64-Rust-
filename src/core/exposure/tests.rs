@@ -63,6 +63,47 @@ fn breach_corpora_accumulate_and_cap() {
 }
 
 #[test]
+fn subject_aggregate_breach_hit_is_counted_not_just_per_row_dbname() {
+    // Real captured shape (debug bundle, scan 90b936dc...): the SUBJECT's confirmed
+    // email carries its TLDRtech breach appearance under `top_dbnames` (oathnet_pro)
+    // and `breaches` (xposed_or_not) — never `dbname`, which only the per-row
+    // co-occurrence rows use. Reading only `dbname` scored this 0; it must now count
+    // the corpus, and fold the two spellings ("tldr.tech" / "TLDRtech") into one.
+    let mut email = Entity::new(EntityKind::Email, "matthewdiegmann@gmail.com", 0.92, "s");
+    email.tag(crate::core::tags::BREACH);
+    email.add_evidence(
+        Evidence::new("oathnet-pro", "OathNet: 1 breach record(s) — tldr.tech")
+            .with_attr("hits", "1")
+            .with_attr("top_dbnames", "tldr.tech"),
+    );
+    email.add_evidence(
+        Evidence::new("xposed_or_not", "Found in 1 breach(es)")
+            .with_attr("count", "1")
+            .with_attr("breaches", "TLDRtech"),
+    );
+    let idx = assess(&[email], &[]);
+    // One named corpus — 12, not 0 (the bug) and not 24 (double-counting the two
+    // spellings of the same breach).
+    assert_eq!(component(&idx, "Breach exposure").score, 12);
+}
+
+#[test]
+fn top_dbnames_list_counts_each_distinct_corpus_and_drops_unknown() {
+    // `top_dbnames` is a comma-separated list (seen in the real Person aggregate
+    // hit). Each distinct named corpus counts once; the literal "unknown" filler
+    // and duplicates do not.
+    let mut e = Entity::new(EntityKind::Person, "Subject", 0.85, "s");
+    e.tag(crate::core::tags::BREACH);
+    e.add_evidence(Evidence::new("oathnet-pro", "aggregate").with_attr(
+        "top_dbnames",
+        "abrigo.com, bcdtravel.com, unknown, abrigo.com",
+    ));
+    let idx = assess(&[e], &[]);
+    // Two distinct corpora (abrigo.com, bcdtravel.com) → 24.
+    assert_eq!(component(&idx, "Breach exposure").score, 24);
+}
+
+#[test]
 fn sensitive_pii_flags_score_once_per_category() {
     let mut gov = Entity::new(EntityKind::Person, "Dana Whitlock", 0.8, "s");
     gov.add_evidence(Evidence::new("oathnet-pro", "rec").with_attr("tfn", "123456782"));
