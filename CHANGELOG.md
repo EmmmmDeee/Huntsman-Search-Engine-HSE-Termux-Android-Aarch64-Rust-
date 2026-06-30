@@ -40,7 +40,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
     now also links on a stealer-logged router BSSID (a `device`-tagged
     `MacAddress`) — gated so a LAN/Wi-Fi MAC never links strangers. A shared
     globally-unique IMEI/serial or router BSSID across ≥2 accounts is the strongest
-    single-device co-location proof.
+    single-device co-location proof. Well-known BIOS/SMBIOS placeholder serials
+    (`To Be Filled By O.E.M.`, `System Serial Number`, `Default string`, …) and
+    trivial all-zero/broadcast MACs are rejected at the producer
+    (`is_placeholder_fingerprint`) so a non-unique placeholder can never link two
+    unrelated machines.
   - **`trove_au` emits Url sources for all 20 fetched articles** (was `take(10)`
     against an `n=20` request — half the dated newspaper-mention pivots were
     dropped), and carries each article's publishing-masthead id (`titleId`) as

@@ -144,6 +144,48 @@ fn hardware_serials_become_deviceid_without_duplicate_other_nodes() {
 }
 
 #[test]
+fn bios_placeholder_serials_and_trivial_macs_are_not_typed_as_devices() {
+    // Stealer logs capture SMBIOS/dmidecode placeholders verbatim from boards
+    // whose OEM never set a real serial — the SAME string recurs across thousands
+    // of UNRELATED machines, so it must never become a DeviceId (which AU-106
+    // would then use to falsely link two strangers as one machine). Likewise a
+    // trivial all-zero / broadcast MAC is not a real device anchor.
+    for placeholder in [
+        "To Be Filled By O.E.M.",
+        "System Serial Number",
+        "Default string",
+        "Not Specified",
+        "0000000000",
+        "Default",
+    ] {
+        let r = run(&json!({ "serial": placeholder }), "oathnet-pro");
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::DeviceId),
+            "placeholder serial {placeholder:?} must not become a DeviceId"
+        );
+    }
+    // Trivial MACs.
+    for mac in ["00:00:00:00:00:00", "FF:FF:FF:FF:FF:FF"] {
+        let r = run(&json!({ "bssid": mac }), "oathnet-pro");
+        assert!(
+            !r.entities.iter().any(|e| e.kind == EntityKind::MacAddress),
+            "trivial MAC {mac:?} must not become a device MacAddress"
+        );
+    }
+    // Positive control: a real serial / MAC still types as a device.
+    let real = run(
+        &json!({ "serial": "C02ABCXYZ123", "bssid": "AA:BB:CC:11:22:33" }),
+        "oathnet-pro",
+    );
+    assert!(has(&real, EntityKind::DeviceId, "C02ABCXYZ123"));
+    assert!(
+        real.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::MacAddress)
+    );
+}
+
+#[test]
 fn absence_and_redaction_markers_never_mint_typed_nodes() {
     // A record where every value-bearing field is an absence marker: the SQL
     // NULL `\N` (303 such fields in one real export) or a provider redaction

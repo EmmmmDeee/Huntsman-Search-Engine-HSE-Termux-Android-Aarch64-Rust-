@@ -37,6 +37,56 @@ fn is_absent_marker(s: &str) -> bool {
     is_null_sentinel(s) || is_placeholder_secret(s)
 }
 
+/// A hardware-fingerprint value that is a well-known BIOS/SMBIOS/dmidecode
+/// PLACEHOLDER (or a trivial all-zero / broadcast filler), not a real per-machine
+/// id. Infostealer logs capture these verbatim from boards whose OEM never burned
+/// a real serial, so the SAME string recurs across thousands of UNRELATED
+/// machines — typing it as a `DeviceId`/`MacAddress` would defeat AU-106's
+/// uniqueness assumption and let a shared placeholder falsely link two strangers
+/// as "one physical machine". Compared case-insensitively and whitespace-trimmed.
+fn is_placeholder_fingerprint(s: &str) -> bool {
+    let t = s.trim();
+    if t.is_empty() {
+        return true;
+    }
+    // Trivial all-zero / all-`F` fillers, ignoring separators (`00:00:..`,
+    // `00000000`, the null GUID, `FF-FF-..`/broadcast MAC).
+    let core: String = t.chars().filter(char::is_ascii_alphanumeric).collect();
+    if !core.is_empty()
+        && (core.bytes().all(|b| b == b'0') || core.bytes().all(|b| b == b'f' || b == b'F'))
+    {
+        return true;
+    }
+    // Documented SMBIOS / dmidecode placeholder strings.
+    let u = t.to_ascii_uppercase();
+    matches!(
+        u.as_str(),
+        "TO BE FILLED BY O.E.M."
+            | "TO BE FILLED BY OEM."
+            | "TO BE FILLED BY OEM"
+            | "SYSTEM SERIAL NUMBER"
+            | "CHASSIS SERIAL NUMBER"
+            | "BASE BOARD SERIAL NUMBER"
+            | "DEFAULT STRING"
+            | "NOT SPECIFIED"
+            | "NOT APPLICABLE"
+            | "NOT AVAILABLE"
+            | "SERIAL NUMBER"
+            | "SYSTEM MANUFACTURER"
+            | "SYSTEM PRODUCT NAME"
+            | "DEFAULT"
+            | "NONE"
+            | "UNKNOWN"
+            | "O.E.M."
+            | "OEM"
+            | "STANDARD"
+            | "INVALID"
+            | "N/A"
+            | "NA"
+            | "NULL"
+    )
+}
+
 /// Field names already turned into typed entities by the providers' primary
 /// extractors (or deliberately suppressed as structural/metadata noise). The
 /// catch-all pass skips these so it only emits the *long tail* — every other
@@ -267,6 +317,7 @@ pub fn extract_rich_detail(
         if let Some(m) = val_str(item, k)
             && m.len() >= 12
             && !is_absent_marker(&m)
+            && !is_placeholder_fingerprint(&m)
             && seen.insert(format!("@mac:{}", m.to_lowercase()))
         {
             push_context_entity(
@@ -300,6 +351,7 @@ pub fn extract_rich_detail(
         if let Some(d) = val_str(item, k)
             && d.len() >= 3
             && !is_absent_marker(&d)
+            && !is_placeholder_fingerprint(&d)
             && seen.insert(format!("@device:{k}:{}", d.to_lowercase()))
         {
             push_context_entity(
