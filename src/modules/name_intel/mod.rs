@@ -69,18 +69,22 @@ impl Module for NameIntel {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
-        let Some(name) = permute::parse(&target.value) else {
-            return Ok(result);
-        };
         let sid = &ctx.scan_id;
-        // Record the CLEANED, canonical display name in `source_name` — not the raw
+        // Parse the name into tokens for the DERIVED identifiers below. `parse`
+        // returns `None` for a single-token name (a mononym — "Madonna",
+        // "Sukarno"); the subject anchor must NOT depend on it (see below).
+        let parsed = permute::parse(&target.value);
+        // CLEANED, canonical display name recorded in `source_name` — not the raw
         // `target.value`. A re-expansion pass can feed a quote/comma-contaminated
-        // breach-derived Person value (`"Matthew Diegmann",`) back in as the target;
-        // writing that verbatim made every derived entity's evidence accumulate the
-        // junk (`"Matthew Diegmann",; Matthew Diegmann`) on merge. `display_full()`
-        // is the quote/comma-stripped reconstruction the clean seed also produces,
-        // so the attribute stays identical across runs and never contaminates.
-        let display = name.display_full();
+        // breach-derived Person value (`"Matthew Diegmann",`) back in as the
+        // target; writing that verbatim made every derived entity's evidence
+        // accumulate the junk on merge. `display_full()` is the quote/comma-
+        // stripped reconstruction the clean seed also produces; for an unparseable
+        // mononym the trimmed seed itself is already that clean form.
+        let display = match &parsed {
+            Some(name) => name.display_full(),
+            None => target.value.trim().to_string(),
+        };
 
         // ── Subject anchor ──────────────────────────────────────────────────
         // Emit the Person the operator named as the seed FIRST, so every derived
@@ -88,11 +92,15 @@ impl Module for NameIntel {
         // dossier is a pile of orphan handles, and the person-cluster correlators
         // AU-002/AU-020 have no Person to fire on). Probable-tier: it is the
         // operator's asserted subject, not a guess — but unverified externally.
-        // Emitted before the handle gate so non-Latin names get a subject too.
+        // ALWAYS emitted — before the parse gate and the handle gate — so a
+        // single-token name (which `permute::parse` can't split) and a non-Latin
+        // name both still get a subject node. Without this a mononym FullName seed
+        // vanished from its own report (no engine fallback: `seed_anchor_entity`
+        // delegates FullName here).
         if !crate::core::validation::is_placeholder_entity(&EntityKind::Person, &target.value) {
             let mut person = Entity::new(
                 EntityKind::Person,
-                name.display_full(),
+                display.clone(),
                 permute::SUBJECT_CONF,
                 sid,
             );
@@ -107,6 +115,12 @@ impl Module for NameIntel {
             );
             result.push(person);
         }
+
+        // The DERIVED identifiers (username/email permutations, pivots) need a
+        // parseable ≥2-token name; a mononym yields only the anchor above.
+        let Some(name) = parsed else {
+            return Ok(result);
+        };
 
         // Non-Latin names ASCII-fold to empty handle tokens; skip username/email
         // permutation (which would be meaningless) but still emit search pivots

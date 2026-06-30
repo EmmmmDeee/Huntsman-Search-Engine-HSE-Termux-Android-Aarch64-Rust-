@@ -110,7 +110,13 @@ use super::*;
     }
 
     #[tokio::test]
-    async fn single_token_name_yields_nothing() {
+    async fn single_token_name_yields_only_the_subject_anchor() {
+        // A mononym ("Madonna", "Sukarno") can't split into first/last, so there
+        // are no derived usernames/emails — but the operator's subject must STILL
+        // be anchored as a node in its own report. `seed_anchor_entity` delegates
+        // FullName to this module, so it is the SOLE anchor for a name seed; if it
+        // emitted nothing here the subject would vanish entirely (the bug this
+        // fixes), breaking the always-anchored invariant.
         let m = NameIntel;
         let out = m
             .process(
@@ -119,7 +125,18 @@ use super::*;
             )
             .await
             .unwrap();
-        assert!(out.entities.is_empty());
+        assert_eq!(
+            out.entities.len(),
+            1,
+            "a mononym yields exactly the subject anchor (no derived identifiers)"
+        );
+        let p = &out.entities[0];
+        assert_eq!(p.kind, EntityKind::Person);
+        assert_eq!(p.value, "Madonna");
+        assert!(
+            p.has_tag("seed") && p.has_tag("subject"),
+            "the anchor must carry the seed/subject tags"
+        );
     }
 
     #[tokio::test]
