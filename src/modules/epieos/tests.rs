@@ -86,13 +86,23 @@ fn extracts_full_profile_with_review_rating_and_text() {
             .any(|p| p.value == "Jane Q Doe" && p.has_tag("platform:skype"))
     );
 
-    // Skype handle → Username.
+    // Usernames: the Skype handle + the Google account id pivot (google:<id>),
+    // which was previously deserialized into evidence and never surfaced.
     let users: Vec<&Entity> = es
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
         .collect();
-    assert_eq!(users.len(), 1);
-    assert_eq!(users[0].value, "jane.doe");
+    assert_eq!(users.len(), 2);
+    assert!(
+        users
+            .iter()
+            .any(|u| u.value == "jane.doe" && u.has_tag("platform:skype"))
+    );
+    assert!(
+        users
+            .iter()
+            .any(|u| u.value == "google:1234567890" && u.has_tag("platform:google"))
+    );
 
     // Addresses: the Skype location + the reviewed place (with rating + text).
     let addrs: Vec<&Entity> = es

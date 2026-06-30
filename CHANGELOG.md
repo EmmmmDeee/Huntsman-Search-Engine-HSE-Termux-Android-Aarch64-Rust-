@@ -11,6 +11,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`epieos` surfaces the Google account id as a pivot (`google:<id>` Username),
+  not just an evidence attr.** The id was deserialized, tagged `google-account`,
+  and confined to evidence — now it is a first-class `Username` (the
+  `platform:handle` convention breach_rich/keybase use) that the cross-platform
+  username rules can link on. Regression-tested.
+- **`hibp` attaches the per-breach FULL-FIDELITY detail to the EMAIL entity, not
+  only the derived Domains.** The pure `breach_evidence` (description, dates, logo,
+  data classes) and `tag_breach_quality` (`breach-fabricated`/`breach-sensitive`/…)
+  helpers were applied only to the derived `Domain` entities, so an email scan —
+  the common case — dropped the rich per-breach record. They are now applied to the
+  email entity too (the summary evidence stays the headline; these add the detail).
 - **AU government-register extraction depth — four registries now emit data they
   fetched and dropped (the no-omission directive).**
   - `qld_cadastre` emitted only the FIRST intersecting parcel (`features.next()`),

@@ -342,6 +342,17 @@ impl Hibp {
                     .unwrap_or(""),
             ),
         );
+        // Attach the per-breach FULL-FIDELITY detail (description, dates, logo,
+        // affected data classes, quality flags) and the per-breach quality tags
+        // (`breach-fabricated`/`breach-sensitive`/…) to the EMAIL entity itself.
+        // These existing pure helpers were applied only to the derived Domain
+        // entities, so an email scan — the common case — dropped the rich
+        // per-breach record the no-omission policy requires. The summary evidence
+        // above stays evidence[0] (the headline); these add the detail beneath it.
+        for breach in &breaches {
+            email_ent.add_evidence(breach_evidence(breach));
+            tag_breach_quality(&mut email_ent, breach);
+        }
         result.push(email_ent);
 
         // Extract data classes to tag risk level — short-circuit scan per flag.

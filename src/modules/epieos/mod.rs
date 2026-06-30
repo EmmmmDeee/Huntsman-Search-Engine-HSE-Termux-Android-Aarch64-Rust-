@@ -110,6 +110,19 @@ pub(super) fn build_entities(target: &Target, body: &EpieosResp, scan_id: &str) 
     if let Some(gid) = nonempty(&body.google_id) {
         ev = ev.with_attr("google_id", gid);
         entity.tag("google-account");
+        // Surface the Google account id as a first-class pivot — a `google:<id>`
+        // Username (the platform:handle convention breach_rich/keybase use) — not
+        // just an evidence attr. The id is a stable Google identity that the
+        // cross-platform username rules can link on; it was deserialized and then
+        // confined to evidence.
+        let mut g = Entity::new(EntityKind::Username, format!("google:{gid}"), 0.65, scan_id);
+        g.tag("epieos");
+        g.tag("platform:google");
+        g.add_evidence(
+            Evidence::new(SRC, format!("Google account id for {email}"))
+                .with_attr("google_id", gid),
+        );
+        out.push(g);
     }
     if let Some(name) = nonempty(&body.name) {
         ev = ev.with_attr("name", name);
