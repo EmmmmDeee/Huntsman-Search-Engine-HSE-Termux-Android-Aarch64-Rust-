@@ -199,6 +199,22 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_wires_the_per_scan_analysis_endpoints() {
+        // Per-scan endpoints that were implemented + routed but the SPA never
+        // surfaced. Each is now a section in the scan report; guard the wiring so
+        // they cannot silently become dead-from-the-UI again.
+        for path in ["/benchmark", "/identities"] {
+            assert!(
+                SPA_HTML.contains(path),
+                "SPA report must fetch the {path} per-scan endpoint"
+            );
+        }
+        // The render sections must be composed into the report.
+        assert!(SPA_HTML.contains("renderIdentities("));
+        assert!(SPA_HTML.contains("renderBenchmark("));
+    }
+
+    #[test]
     fn external_resource_scanner_flags_a_cdn_but_not_a_local_or_anchor() {
         // Guard the guard: the scanner must catch a real external resource load,
         // ignore same-origin ones, and ignore navigational <a> links.

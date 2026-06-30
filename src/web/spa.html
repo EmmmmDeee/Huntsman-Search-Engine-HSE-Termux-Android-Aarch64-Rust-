@@ -638,6 +638,8 @@ const API = {
   // Pivot nodes: the graph's high-connectivity intermediaries (betweenness centrality).
   pivots:     id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/pivots'),
   gaps:       id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/gaps'),
+  // Consolidated benchmark scorecard (HTTP twin of `hse benchmark`).
+  benchmark: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/benchmark'),
   auditScan: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/audit'),
   create:    body=>API._req('/api/v1/scans',{method:'POST',body}),
   // Fully autonomous scan — NO seed input; the server auto-selects the highest
@@ -1715,6 +1717,7 @@ async function renderReport(host, id, scan){
   host.innerHTML = `
     <div id="rpt-metrics"></div>
     <div id="rpt-network"  style="margin-top:18px"></div>
+    <div id="rpt-identities" style="margin-top:18px"></div>
     <div id="rpt-leads"    style="margin-top:18px"></div>
     <div id="rpt-timeline" style="margin-top:18px"></div>
     <div id="rpt-communities" style="margin-top:18px"></div>
@@ -1723,12 +1726,14 @@ async function renderReport(host, id, scan){
     <div id="rpt-gaps"     style="margin-top:18px"></div>
     <div id="rpt-path"     style="margin-top:18px"></div>
     <div id="rpt-duplicates" style="margin-top:18px"></div>
+    <div id="rpt-benchmark" style="margin-top:18px"></div>
     <div id="rpt-corr"     style="margin-top:18px"></div>
     <div id="rpt-audit"    style="margin-top:18px"></div>`;
   // Each renderer owns its sub-section (and its own async fetch); composing them
   // reuses the synthesis already built rather than duplicating any logic.
   renderMetrics($('#rpt-metrics'), id);
   renderNetwork($('#rpt-network'), id);
+  renderIdentities($('#rpt-identities'), id);
   renderLeads($('#rpt-leads'), id);
   renderTimeline($('#rpt-timeline'), id);
   renderCommunities($('#rpt-communities'), id);
@@ -1737,6 +1742,7 @@ async function renderReport(host, id, scan){
   renderGaps($('#rpt-gaps'), id);
   renderPathTool($('#rpt-path'), id);
   renderDuplicates($('#rpt-duplicates'), id);
+  renderBenchmark($('#rpt-benchmark'), id);
   renderCorrelations($('#rpt-corr'));
   renderAudit($('#rpt-audit'), id);
 }
@@ -2150,6 +2156,51 @@ async function renderDuplicates(host, id){
     </div>`;
   }
   host.innerHTML = html;
+}
+
+/* ── Identities — people-centric co-reference resolution (which selectors name
+      the same individual). Powered by /scans/{id}/identities. ── */
+async function renderIdentities(host, id){
+  let data;
+  try { data = await API.identities(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  const refs = (data && data.coreferences) || [];
+  if (!refs.length){ host.innerHTML = ''; return; }
+  let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-user"></i>&nbsp;Resolved identities</h4>
+    <p class="text-muted" style="font-size:12px;margin-bottom:8px">${refs.length} selector pair${refs.length===1?'':'s'} that score as the same individual (≥ ${esc(data.min_score)}).</p>`;
+  for (const r of refs){
+    const sig = (r.signals||[]).map(s=>`<span class="label label-default">${esc(s)}</span>`).join(' ');
+    html += `<div style="margin-bottom:6px;padding:6px 10px;border-left:3px solid #5bc0de;background:rgba(91,192,222,0.07)">
+      <div><code>${esc(r.value_a)}</code> <span class="text-muted">≈</span> <code>${esc(r.value_b)}</code>
+        <span class="pull-right text-muted" style="font-size:11px">score ${(Number(r.score)||0).toFixed(2)}</span></div>
+      <div style="margin-top:2px">${sig}</div>
+    </div>`;
+  }
+  host.innerHTML = html;
+}
+
+/* ── Benchmark scorecard — HTTP twin of `hse benchmark`. /scans/{id}/benchmark. ── */
+async function renderBenchmark(host, id){
+  let data;
+  try { data = await API.benchmark(id); }
+  catch(e){ host.innerHTML = ''; return; }
+  if (!data){ host.innerHTML = ''; return; }
+  const sc = data.scorecard || {};
+  const pct = v => Math.round((Number(v)||0)*100)+'%';
+  const row = (k,v) => `<tr><td>${esc(k)}</td><td class="text-right">${esc(v)}</td></tr>`;
+  host.innerHTML = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-dashboard"></i>&nbsp;Benchmark scorecard</h4>
+    <div class="table-responsive"><table class="table table-condensed"><tbody>
+      ${row('Entities', sc.total_entities!=null?sc.total_entities:0)}
+      ${row('Relations', sc.total_relations!=null?sc.total_relations:0)}
+      ${row('Modules run', data.modules_run!=null?data.modules_run:0)}
+      ${row('Modules errored', data.modules_errored!=null?data.modules_errored:0)}
+      ${row('Modules timed out', data.modules_timed_out!=null?data.modules_timed_out:0)}
+      ${row('Pivot count', data.pivot_count!=null?data.pivot_count:0)}
+      ${row('Entities/sec', (Number(data.entities_per_sec)||0).toFixed(2))}
+      ${row('Multi-hop depth', sc.multi_hop_depth!=null?sc.multi_hop_depth:0)}
+      ${row('Graph coverage', pct(sc.graph_coverage))}
+      ${row('Corroborated fraction', pct(sc.corroborated_fraction))}
+    </tbody></table></div>`;
 }
 
 /* ── Relations tab — typed edges from the recursive crawl (provenance) ── */
