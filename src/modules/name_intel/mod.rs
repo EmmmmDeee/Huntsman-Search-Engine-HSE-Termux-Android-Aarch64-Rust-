@@ -73,6 +73,14 @@ impl Module for NameIntel {
             return Ok(result);
         };
         let sid = &ctx.scan_id;
+        // Record the CLEANED, canonical display name in `source_name` — not the raw
+        // `target.value`. A re-expansion pass can feed a quote/comma-contaminated
+        // breach-derived Person value (`"Matthew Diegmann",`) back in as the target;
+        // writing that verbatim made every derived entity's evidence accumulate the
+        // junk (`"Matthew Diegmann",; Matthew Diegmann`) on merge. `display_full()`
+        // is the quote/comma-stripped reconstruction the clean seed also produces,
+        // so the attribute stays identical across runs and never contaminates.
+        let display = name.display_full();
 
         // ── Subject anchor ──────────────────────────────────────────────────
         // Emit the Person the operator named as the seed FIRST, so every derived
@@ -95,7 +103,7 @@ impl Module for NameIntel {
                     SRC,
                     format!("Scan subject — '{}' provided as the seed", target.value),
                 )
-                .with_attr("source_name", &target.value),
+                .with_attr("source_name", &display),
             );
             result.push(person);
         }
@@ -113,7 +121,7 @@ impl Module for NameIntel {
                 e.tag("name-derived");
                 e.add_evidence(
                     Evidence::new(SRC, format!("Username '{}' derived from name", u.handle))
-                        .with_attr("source_name", &target.value),
+                        .with_attr("source_name", &display),
                 );
                 result.push(e);
             }
@@ -135,7 +143,7 @@ impl Module for NameIntel {
                     SRC,
                     format!("Speculative email '{addr}' permuted from name"),
                 )
-                .with_attr("source_name", &target.value)
+                .with_attr("source_name", &display)
                 .with_attr("gravatar", permute::gravatar_url(addr)),
             );
             result.push(e);
@@ -153,7 +161,7 @@ impl Module for NameIntel {
                     format!("{} pivot for '{}'", piv.platform, name.display_full()),
                 )
                 .with_attr("platform", piv.platform)
-                .with_attr("source_name", &target.value),
+                .with_attr("source_name", &display),
             );
             result.push(e);
         }

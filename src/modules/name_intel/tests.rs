@@ -82,6 +82,34 @@ use super::*;
     }
 
     #[tokio::test]
+    async fn source_name_attribute_is_cleaned_not_the_raw_contaminated_target() {
+        // A re-expansion pass can feed a quote/comma-contaminated breach Person
+        // value back in as the target. Every emitted entity's `source_name`
+        // evidence attribute must record the CLEANED display name, never the raw
+        // `"Matthew Diegmann",`, so a later merge can't accumulate the observed
+        // junk `"Matthew Diegmann",; Matthew Diegmann`.
+        let m = NameIntel;
+        let out = m
+            .process(
+                &Target::new(TargetKind::FullName, "\"Matthew Diegmann\","),
+                &ctx("scan-z"),
+            )
+            .await
+            .unwrap();
+        assert!(!out.entities.is_empty(), "the contaminated name still parses");
+        for e in &out.entities {
+            for ev in &e.evidence {
+                if let Some(sn) = ev.attributes.get("source_name") {
+                    assert_eq!(
+                        sn, "Matthew Diegmann",
+                        "source_name must be the cleaned name, not the raw target"
+                    );
+                }
+            }
+        }
+    }
+
+    #[tokio::test]
     async fn single_token_name_yields_nothing() {
         let m = NameIntel;
         let out = m
