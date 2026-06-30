@@ -1129,6 +1129,17 @@ async function renderNewScan(v){
         </p>
         <button id="auto-go" class="btn btn-danger" type="button" onclick="autoInvestigate()"><i class="glyphicon glyphicon-flash"></i>&nbsp;Auto-Investigate</button>
         <span id="auto-status" class="text-muted" style="margin-left:10px;font-style:italic">zero input — investigates the highest-value known entity</span>
+        <hr style="margin:12px 0">
+        <div class="form-inline" style="margin-bottom:6px">
+          <button id="auto-plan-go" class="btn btn-default btn-sm" type="button" onclick="autoQueuePreview()"><i class="glyphicon glyphicon-eye-open"></i>&nbsp;Preview queue</button>
+          <span class="text-muted" style="margin-left:8px;font-size:12px">— the ranked, diversity-aware order the platform would investigate next; <b>dispatches nothing</b></span>
+        </div>
+        <div class="form-inline" style="margin-bottom:6px">
+          <button id="auto-sweep-go" class="btn btn-warning btn-sm" type="button" onclick="autoSweepGo()"><i class="glyphicon glyphicon-flash"></i>&nbsp;Auto-sweep top</button>
+          <input id="auto-sweep-breadth" type="number" class="form-control input-sm" value="5" min="1" max="25" style="width:64px">
+          <span class="text-muted" style="margin-left:8px;font-size:12px">— dispatch the top N queued targets in one input-free call (spread across kinds)</span>
+        </div>
+        <div id="auto-plan-out" style="margin-top:8px"></div>
       </div>
     </div>
 
@@ -1539,6 +1550,70 @@ async function autoInvestigate(){
     if (typeof alertify !== 'undefined') alertify.error(msg.includes('nothing to investigate')
       ? 'No data yet — run one scan or import a file to seed the intelligence base, then Auto-Investigate.'
       : msg);
+  }
+}
+
+/* Read-only preview of the diversity-aware autonomous queue — what the platform
+   would investigate next, in order, and why. Dispatches nothing; renders the
+   ranked list into #auto-plan-out so the operator can see the execution order
+   before committing. Mirrors /api/v1/scan/auto/plan. */
+async function autoQueuePreview(){
+  const btn = $('#auto-plan-go'), out = $('#auto-plan-out');
+  if (btn){ btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Planning…'; }
+  try {
+    const p = await API.autoPlan(20);
+    const q = (p && p.queue) || [];
+    if (!q.length){
+      if (out) out.innerHTML = '<div class="text-muted" style="font-size:12px">No high-leverage identifier to queue yet — run one scan or import a file to seed the base.</div>';
+      return;
+    }
+    let rows = q.map((t,i)=>`<tr>
+      <td class="text-right text-muted">${i+1}</td>
+      <td>${kindPill(t.kind)}</td>
+      <td><code>${esc(t.value)}</code></td>
+      <td class="text-right">${(Number(t.score)||0).toFixed(3)}</td>
+      <td class="text-right text-muted" title="distinct prior investigations that observed this value">${t.cross_scan_degree!=null?t.cross_scan_degree:0}</td>
+    </tr>`).join('');
+    if (out) out.innerHTML = `<div class="table-responsive">
+      <table class="table table-condensed" style="margin-bottom:4px">
+        <thead><tr><th class="text-right">#</th><th>Kind</th><th>Value</th><th class="text-right">Score</th><th class="text-right">Degree</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table>
+      <div class="text-muted" style="font-size:11px">${q.length} queued · ${p.kinds_covered!=null?p.kinds_covered:0} kind${(p.kinds_covered===1)?'':'s'} covered · ${p.considered!=null?p.considered:0} considered · diversity ${esc(p.diversity)}</div>
+    </div>`;
+  } catch(e){
+    if (out) out.innerHTML = '<div class="text-danger" style="font-size:12px">Plan failed: '+esc((e&&e.message)||'unknown error')+'</div>';
+  } finally {
+    if (btn){ btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-eye-open"></i>&nbsp;Preview queue'; }
+  }
+}
+
+/* Fully autonomous MULTI-target sweep — NO seed input. Plans the diversity-aware
+   queue and dispatches its top `breadth` targets in one call, each an ordinary
+   comprehensive scan. Mirrors /api/v1/scan/auto/sweep. */
+async function autoSweepGo(){
+  const btn = $('#auto-sweep-go'), out = $('#auto-plan-out');
+  const breadth = Math.max(1, Math.min(25, parseInt(($('#auto-sweep-breadth')||{}).value || '5', 10) || 5));
+  if (btn){ btn.disabled = true; btn.innerHTML = '<i class="glyphicon glyphicon-refresh glyphicon-spin"></i>&nbsp;Sweeping…'; }
+  try {
+    const r = await API.autoSweep(breadth);
+    const dispatched = (r && r.dispatched) || [];
+    const ok = dispatched.filter(d=>d && d.scan_id);
+    toast(`Autonomous sweep dispatched ${ok.length} scan${ok.length===1?'':'s'}`);
+    if (out){
+      const links = ok.map(d=>`<a href="#/scaninfo?id=${encodeURIComponent(d.scan_id)}&tab=log"><code>${esc((d.kind?d.kind+' = ':'')+(d.value||d.scan_id))}</code></a>`).join('<br>');
+      out.innerHTML = links
+        ? `<div style="font-size:12px"><b>Dispatched ${ok.length} scan${ok.length===1?'':'s'}:</b><br>${links}</div>`
+        : '<div class="text-muted" style="font-size:12px">Nothing dispatched.</div>';
+    }
+    render();
+  } catch(e){
+    const msg = (e && e.message) ? e.message : 'autonomous sweep failed';
+    if (out) out.innerHTML = '<div class="text-danger" style="font-size:12px">'+esc(msg.includes('nothing to investigate')
+      ? 'No data yet — run one scan or import a file to seed the intelligence base, then sweep.'
+      : msg)+'</div>';
+  } finally {
+    if (btn){ btn.disabled = false; btn.innerHTML = '<i class="glyphicon glyphicon-flash"></i>&nbsp;Auto-sweep top'; }
   }
 }
 

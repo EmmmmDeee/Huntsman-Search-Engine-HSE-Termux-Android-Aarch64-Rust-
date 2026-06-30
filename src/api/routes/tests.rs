@@ -215,6 +215,30 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_wires_the_autonomous_plan_and_sweep_endpoints() {
+        // The autonomous loop's read-only queue preview (/scan/auto/plan) and the
+        // multi-target sweep (/scan/auto/sweep) are routed + tested server-side but
+        // were dead-from-the-UI: the API methods existed yet no control invoked
+        // them. Both are now wired into the New-Scan "Autonomous investigation"
+        // panel; guard that the call sites stay present.
+        for path in ["/scan/auto/plan", "/scan/auto/sweep"] {
+            assert!(
+                SPA_HTML.contains(path),
+                "SPA must fetch the {path} autonomous endpoint"
+            );
+        }
+        // The handlers must be invoked from real UI controls, not merely defined.
+        assert!(
+            SPA_HTML.contains("autoQueuePreview(") && SPA_HTML.contains("autoSweepGo("),
+            "SPA must wire the queue-preview + auto-sweep controls"
+        );
+        assert!(
+            SPA_HTML.contains("API.autoPlan(") && SPA_HTML.contains("API.autoSweep("),
+            "the controls must call the autoPlan/autoSweep API methods"
+        );
+    }
+
+    #[test]
     fn external_resource_scanner_flags_a_cdn_but_not_a_local_or_anchor() {
         // Guard the guard: the scanner must catch a real external resource load,
         // ignore same-origin ones, and ignore navigational <a> links.
