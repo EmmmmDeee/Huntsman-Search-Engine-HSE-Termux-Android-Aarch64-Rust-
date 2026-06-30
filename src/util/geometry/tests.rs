@@ -528,3 +528,110 @@ use self::{
     EnclosingCircle as _, GeoFootprint as _, LocationFix as _, convex_hull_latlon as _,
     polygon_centroid_latlon as _,
 };
+
+// ── Property tests: estimators are total, finite, and geometrically sound ─────
+//
+// The geometry layer is the location-fix backbone yet (unlike `coords`, `entity`
+// and `str_util`) carried no property coverage. These pin the two invariants a
+// location estimator must never break: it never panics on a degenerate point set
+// (empty / single / pair / duplicate / collinear), and it never emits a non-finite
+// or out-of-hull coordinate — over the same finite, in-range domain `parse_coords`
+// is already proven to produce.
+mod prop {
+    use proptest::prelude::*;
+
+    use crate::util::geohash::haversine_km;
+    use crate::util::geometry::{
+        geo_footprint, geometric_median, location_fix, median_distance_km, min_enclosing_circle,
+        point_in_convex_hull, weighted_centroid, weighted_geometric_median,
+    };
+
+    /// A finite, in-range sighting — the only domain these estimators ever see
+    /// (entity `Coordinates` values come from `parse_coords`, which the
+    /// `parse_is_total` / `parsed_values_are_always_in_range` properties pin to
+    /// finite, in-range pairs).
+    fn coord() -> impl Strategy<Value = (f64, f64)> {
+        (-90.0f64..=90.0, -180.0f64..=180.0)
+    }
+    fn finite2((a, b): (f64, f64)) -> bool {
+        a.is_finite() && b.is_finite()
+    }
+
+    proptest! {
+        /// Totality + finiteness: no estimator panics on any finite point set —
+        /// including the empty / single / pair / duplicate / collinear cases the
+        /// `?`-guards short-circuit — and every numeric field it returns is finite,
+        /// with every radius / diameter non-negative.
+        #[test]
+        fn estimators_are_total_and_finite(
+            pts in prop::collection::vec(coord(), 0..=12),
+            wpts in prop::collection::vec((coord(), 0.01f64..=1.0), 0..=12),
+        ) {
+            if let Some(c) = min_enclosing_circle(&pts) {
+                prop_assert!(finite2(c.center));
+                prop_assert!(c.radius_km.is_finite() && c.radius_km >= 0.0);
+            }
+            if let Some(f) = geo_footprint(&pts) {
+                prop_assert!(finite2(f.centroid));
+                prop_assert!(f.diameter_km.is_finite() && f.diameter_km >= 0.0);
+                prop_assert!(f.hull.iter().all(|&v| finite2(v)));
+            }
+            if let Some(m) = geometric_median(&pts) {
+                prop_assert!(finite2(m));
+            }
+            if let Some(m) = weighted_geometric_median(&wpts) {
+                prop_assert!(finite2(m));
+            }
+            if let Some(c) = weighted_centroid(&wpts) {
+                prop_assert!(finite2(c));
+            }
+            let r = median_distance_km(pts.first().copied().unwrap_or((0.0, 0.0)), &pts);
+            prop_assert!(r.is_finite() && r >= 0.0);
+            let _ = point_in_convex_hull(&pts, (0.0, 0.0)); // never panics
+            if let Some(fix) = location_fix(&wpts) {
+                prop_assert!(finite2(fix.weighted_centroid) && finite2(fix.geometric_median));
+                prop_assert!(fix.median_radius_km.is_finite() && fix.median_radius_km >= 0.0);
+                prop_assert!(fix.enclosing.radius_km.is_finite() && fix.enclosing.radius_km >= 0.0);
+            }
+        }
+
+        /// The minimum enclosing circle truly encloses every input point: its
+        /// reported radius is the greatest great-circle distance from the centre to
+        /// any sighting, so none can fall outside it.
+        #[test]
+        fn mec_encloses_all_points(pts in prop::collection::vec(coord(), 1..=12)) {
+            if let Some(c) = min_enclosing_circle(&pts) {
+                for &(lat, lon) in &pts {
+                    let d = haversine_km(c.center.0, c.center.1, lat, lon);
+                    prop_assert!(
+                        d <= c.radius_km + 1e-6,
+                        "point {d:.6} km lies outside r={:.6} km",
+                        c.radius_km
+                    );
+                }
+            }
+        }
+
+        /// The confidence-weighted centroid is a convex combination of the
+        /// sightings, so it can never escape their latitude/longitude bounding box.
+        #[test]
+        fn weighted_centroid_stays_in_bbox(
+            wpts in prop::collection::vec((coord(), 0.01f64..=1.0), 1..=12),
+        ) {
+            if let Some((clat, clon)) = weighted_centroid(&wpts) {
+                let mut mnla = f64::INFINITY;
+                let mut mxla = f64::NEG_INFINITY;
+                let mut mnlo = f64::INFINITY;
+                let mut mxlo = f64::NEG_INFINITY;
+                for &((la, lo), _) in &wpts {
+                    mnla = mnla.min(la);
+                    mxla = mxla.max(la);
+                    mnlo = mnlo.min(lo);
+                    mxlo = mxlo.max(lo);
+                }
+                prop_assert!(clat >= mnla - 1e-6 && clat <= mxla + 1e-6);
+                prop_assert!(clon >= mnlo - 1e-6 && clon <= mxlo + 1e-6);
+            }
+        }
+    }
+}
