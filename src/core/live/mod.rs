@@ -448,6 +448,42 @@ async fn session_loop(
     mark_stopped(&inner, &live_id);
 }
 
+/// Terminal (Completed/Stopped) sessions retained for `GET /api/v1/live/{id}`
+/// lookups after a session ends. Unlike `cancels` (pruned on completion, see
+/// below), `sessions` had no bound at all: every live invocation that ever
+/// finished left a permanent record — each carrying its own
+/// `scan_ids`/`scan_id_order`, up to [`SCAN_ID_CAP`] entries apiece — so a
+/// long-running `hse serve` process accumulated megabytes of dead session
+/// history over weeks of uptime with no way to reclaim it short of a
+/// restart. 100 keeps a generous recent history (`list()`/lookups stay
+/// useful) while bounding total growth.
+const MAX_TERMINAL_SESSIONS: usize = 100;
+
+/// Drop the oldest terminal sessions once their count exceeds
+/// [`MAX_TERMINAL_SESSIONS`]. Running sessions are never evicted here — that
+/// eviction (by active-session count, not history) is `start`'s
+/// `MAX_SESSIONS` job. Ties broken by id, matching `start`/`list`'s ordering
+/// convention so the choice of which same-second session survives is
+/// deterministic, not a `HashMap`-iteration coin flip. Takes the bare map
+/// (not `&LiveInner`) so it's testable without constructing an engine/bus/
+/// http client.
+fn prune_terminal_sessions(sessions: &RwLock<HashMap<String, LiveSession>>) {
+    let mut sessions = sessions.write();
+    let mut terminal: Vec<(String, u64)> = sessions
+        .iter()
+        .filter(|(_, s)| s.status != LiveStatus::Running)
+        .map(|(id, s)| (id.clone(), s.started_at))
+        .collect();
+    if terminal.len() <= MAX_TERMINAL_SESSIONS {
+        return;
+    }
+    terminal.sort_by(|a, b| a.1.cmp(&b.1).then_with(|| a.0.cmp(&b.0)));
+    let excess = terminal.len() - MAX_TERMINAL_SESSIONS;
+    for (id, _) in terminal.into_iter().take(excess) {
+        sessions.remove(&id);
+    }
+}
+
 fn mark_completed(inner: &LiveInner, live_id: &str, reason: &'static str) {
     if let Some(s) = inner.sessions.write().get_mut(live_id) {
         s.status = LiveStatus::Completed;
@@ -455,8 +491,10 @@ fn mark_completed(inner: &LiveInner, live_id: &str, reason: &'static str) {
     // Session has ended — no further `stop()` calls can meaningfully act on
     // it, so drop the AtomicBool entry to bound `cancels` map growth in
     // long-running `hse serve` processes. The `sessions` entry stays so
-    // GET /api/v1/live/{id} keeps returning the completed record.
+    // GET /api/v1/live/{id} keeps returning the completed record (bounded by
+    // `prune_terminal_sessions`, below).
     inner.cancels.write().remove(live_id);
+    prune_terminal_sessions(&inner.sessions);
     let _ = inner.bus.send(Event::new(
         live_id,
         EventKind::LiveStop {
@@ -476,9 +514,10 @@ fn mark_stopped(inner: &LiveInner, live_id: &str) {
             s.status = LiveStatus::Stopped;
         }
     }
-    // Same cleanup as `mark_completed` — drop the cancel flag once the
-    // session is terminal. See note there.
+    // Same cleanup as `mark_completed` — drop the cancel flag and bound
+    // session-history growth once the session is terminal. See notes there.
     inner.cancels.write().remove(live_id);
+    prune_terminal_sessions(&inner.sessions);
     if emit_event {
         let _ = inner.bus.send(Event::new(
             live_id,

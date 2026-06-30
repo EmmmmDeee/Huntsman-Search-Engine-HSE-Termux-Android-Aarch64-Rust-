@@ -150,3 +150,108 @@ use super::*;
         s.record_scan(format!("scan-{}", SCAN_ID_CAP - 1));
         assert_eq!(s.scan_ids.len(), before);
     }
+
+    fn mk_session(id: &str, status: LiveStatus, started_at: u64) -> LiveSession {
+        LiveSession {
+            id: id.to_string(),
+            target: Target::new(TargetKind::Email, "x@y.com"),
+            scan_options: ScanOptions::default(),
+            live_options: LiveOptions::default(),
+            status,
+            started_at,
+            last_iteration_at: None,
+            iteration: 0,
+            scan_ids: std::collections::HashSet::new(),
+            scan_id_order: VecDeque::new(),
+        }
+    }
+
+    #[test]
+    fn prune_terminal_sessions_bounds_history_oldest_first() {
+        // Regression: `sessions` had no bound at all — every live invocation
+        // that ever finished left a permanent record for the life of a `serve`
+        // process. Build well past the cap and confirm the oldest terminal
+        // sessions are evicted while recent ones survive.
+        let map: HashMap<String, LiveSession> = (0..MAX_TERMINAL_SESSIONS + 50)
+            .map(|i| {
+                let status = if i % 2 == 0 {
+                    LiveStatus::Completed
+                } else {
+                    LiveStatus::Stopped
+                };
+                (format!("live-{i}"), mk_session(&format!("live-{i}"), status, i as u64))
+            })
+            .collect();
+        let sessions = RwLock::new(map);
+
+        prune_terminal_sessions(&sessions);
+
+        let remaining = sessions.read();
+        assert_eq!(
+            remaining.len(),
+            MAX_TERMINAL_SESSIONS,
+            "terminal session count must be capped, not merely reduced"
+        );
+        for i in 0..50 {
+            assert!(
+                !remaining.contains_key(&format!("live-{i}")),
+                "the oldest sessions must be evicted first"
+            );
+        }
+        for i in 50..MAX_TERMINAL_SESSIONS + 50 {
+            assert!(
+                remaining.contains_key(&format!("live-{i}")),
+                "recent sessions must be retained"
+            );
+        }
+    }
+
+    #[test]
+    fn prune_terminal_sessions_never_evicts_running_sessions() {
+        // Running sessions are active scans, not history — they must survive
+        // regardless of how many terminal sessions also exist, and regardless
+        // of how old they are relative to the terminal ones.
+        let mut map: HashMap<String, LiveSession> = (0..MAX_TERMINAL_SESSIONS + 20)
+            .map(|i| {
+                (
+                    format!("done-{i}"),
+                    mk_session(&format!("done-{i}"), LiveStatus::Completed, i as u64),
+                )
+            })
+            .collect();
+        map.insert(
+            "still-running".to_string(),
+            mk_session("still-running", LiveStatus::Running, 0),
+        );
+        let sessions = RwLock::new(map);
+
+        prune_terminal_sessions(&sessions);
+
+        let remaining = sessions.read();
+        assert!(
+            remaining.contains_key("still-running"),
+            "a Running session must never be evicted by terminal-history pruning"
+        );
+        assert_eq!(
+            remaining.len(),
+            MAX_TERMINAL_SESSIONS + 1,
+            "cap applies to terminal sessions only, plus the one Running session"
+        );
+    }
+
+    #[test]
+    fn prune_terminal_sessions_is_a_no_op_under_the_cap() {
+        let map: HashMap<String, LiveSession> = (0..5)
+            .map(|i| {
+                (
+                    format!("live-{i}"),
+                    mk_session(&format!("live-{i}"), LiveStatus::Stopped, i as u64),
+                )
+            })
+            .collect();
+        let sessions = RwLock::new(map);
+
+        prune_terminal_sessions(&sessions);
+
+        assert_eq!(sessions.read().len(), 5, "under the cap, nothing is evicted");
+    }
