@@ -53,6 +53,37 @@ use super::*;
     }
 
     #[test]
+    fn extract_mints_correlatable_pgp_key_credential() {
+        // The key fingerprint becomes a Credential `pgp:<fp>` tagged `pgp-key`,
+        // its evidence naming every bound email — the artifact AU-048 links
+        // across accounts (the PGP analogue of github_user's ssh-key).
+        let body = "info:1:1\n\
+            pub:ABCDEF0123456789ABCDEF0123456789ABCDEF01:1:4096:1500000000::\n\
+            uid:Jordan%20Avery%20%3Cmatt%40example.com%3E:1500000000::\n\
+            uid:Jordan%20Avery%20%3Cm.avery%40work.com%3E:1500000000::\n";
+        let mut r = ModuleResult::new();
+        extract(body, "matt@example.com", "scan", &mut r);
+
+        let cred = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Credential)
+            .expect("PGP key minted as a Credential");
+        // Stable, lowercased value so the same key dedups across scans.
+        assert_eq!(cred.value, "pgp:abcdef0123456789abcdef0123456789abcdef01");
+        assert!(cred.has_tag("pgp-key") && cred.has_tag("public-key") && cred.has_tag("pgp"));
+        // Both bound controllers (queried + alternate) are named via the `email`
+        // attr AU-048 reads, so a key shared by two identities links them.
+        let emails: std::collections::BTreeSet<&str> = cred
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("email").map(String::as_str))
+            .collect();
+        assert!(emails.contains("matt@example.com"));
+        assert!(emails.contains("m.avery@work.com"));
+    }
+
+    #[test]
     fn extract_is_quiet_on_no_keys() {
         let mut r = ModuleResult::new();
         extract("info:1:0\n", "x@y.com", "scan", &mut r);

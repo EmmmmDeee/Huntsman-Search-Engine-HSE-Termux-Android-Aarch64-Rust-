@@ -66,7 +66,13 @@ impl Module for Pgp {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        const KINDS: &[EntityKind] = &[EntityKind::Person, EntityKind::Email];
+        // Credential: the key fingerprint as a correlatable artifact (the PGP
+        // analogue of github_user's ssh-key) that AU-048 links across accounts.
+        const KINDS: &[EntityKind] = &[
+            EntityKind::Person,
+            EntityKind::Email,
+            EntityKind::Credential,
+        ];
         KINDS
     }
 
@@ -108,6 +114,12 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
     // the `uid:` lines that follow it.
     let mut seen_person = std::collections::HashSet::new();
     let mut seen_email = std::collections::HashSet::new();
+    // fingerprint → every email bound to that key (the queried one plus each UID
+    // email). Becomes a correlatable Credential below, the PGP analogue of
+    // github_user's ssh-key: a key bound to two distinct controllers is the
+    // AU-048 "shared public key links accounts" signal.
+    let mut key_emails: std::collections::BTreeMap<String, std::collections::BTreeSet<String>> =
+        std::collections::BTreeMap::new();
 
     for line in body.lines() {
         if let Some(rest) = line.strip_prefix("pub:") {
@@ -140,8 +152,16 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
         }
         if let Some(email) = email {
             let lower = email.to_lowercase();
+            if lower.contains('@') && !fingerprint.is_empty() {
+                // Bind EVERY UID email (including the queried one) to the key, so
+                // the Credential carries the full controller set for AU-048.
+                key_emails
+                    .entry(fingerprint.clone())
+                    .or_default()
+                    .insert(lower.clone());
+            }
             // Alternate emails bound to the same key are the high-value pivot;
-            // the queried email itself adds nothing new.
+            // the queried email itself adds nothing new as a standalone entity.
             if lower.contains('@') && lower != query_lower && seen_email.insert(lower) {
                 let mut e = Entity::new(EntityKind::Email, email, 0.70, scan_id);
                 e.tag(SRC);
@@ -150,6 +170,31 @@ fn extract(body: &str, query_email: &str, scan_id: &str, result: &mut ModuleResu
                 result.push(e);
             }
         }
+    }
+
+    // Mint each key as a fingerprinted, CORRELATABLE Credential — value
+    // `pgp:<fp>` so the SAME key recovered for two different seeds dedups to one
+    // artifact carrying both controllers' emails, which AU-048 then links (the
+    // exact mechanism github_user's `ssh:<fp>` artifact uses). The queried email
+    // is always bound (the key matched it), so a key whose UIDs name a second,
+    // distinct identity fires the link even within a single scan.
+    for (fp, emails) in key_emails {
+        if fp.is_empty() {
+            continue;
+        }
+        let value = format!("pgp:{}", fp.to_lowercase());
+        let mut cred = Entity::new(EntityKind::Credential, &value, 0.85, scan_id);
+        cred.tag("pgp-key");
+        cred.tag("public-key");
+        cred.tag(SRC);
+        for email in &emails {
+            cred.add_evidence(
+                Evidence::new(SRC, format!("PGP public key {fp} bound to {email}"))
+                    .with_attr("email", email)
+                    .with_attr("key_fingerprint", &fp),
+            );
+        }
+        result.push(cred);
     }
 }
 
