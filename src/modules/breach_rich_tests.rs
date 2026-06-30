@@ -93,6 +93,26 @@ fn catch_all_surfaces_long_tail_scalars_but_skips_noise() {
 }
 
 #[test]
+fn sql_null_sentinel_names_are_not_composed_into_a_person() {
+    // Real breach/stealer dumps write the SQL NULL `\N` for an absent column —
+    // 303 such name fields in one real SeekNow export. It must never compose a
+    // "\N \N" (nor a half-real "\N Smith") Person.
+    let both_null = run(&json!({"first_name": "\\N", "last_name": "\\N"}), "see-know");
+    assert!(!both_null.entities.iter().any(|e| e.kind == EntityKind::Person));
+    let half_null = run(&json!({"first_name": "\\N", "last_name": "Smith"}), "see-know");
+    assert!(!half_null.entities.iter().any(|e| e.kind == EntityKind::Person));
+    // A `\N` in a long-tail scalar field is also dropped, not surfaced as a node.
+    let field_null = run(&json!({"city_1": "\\N"}), "see-know");
+    assert!(!field_null.entities.iter().any(|e| matches!(&e.kind, EntityKind::Other(_))));
+    // Positive control: a genuine name (incl. the real surname "Null") still composes.
+    assert!(has(
+        &run(&json!({"first_name": "Anna", "last_name": "Null"}), "see-know"),
+        EntityKind::Person,
+        "Anna Null"
+    ));
+}
+
+#[test]
 fn source_tag_is_parameterised() {
     let item = json!({ "gender": "F" });
     let see = run(&item, "see-know");

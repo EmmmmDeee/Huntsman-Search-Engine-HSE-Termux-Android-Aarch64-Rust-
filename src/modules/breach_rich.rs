@@ -24,7 +24,7 @@ use crate::core::{
     module::ModuleResult,
     tags,
 };
-use crate::util::json::val_str;
+use crate::util::json::{is_null_sentinel, val_str};
 
 /// Field names already turned into typed entities by the providers' primary
 /// extractors (or deliberately suppressed as structural/metadata noise). The
@@ -212,7 +212,13 @@ pub fn extract_rich_detail(
     let last = val_str(item, "last_name").or_else(|| val_str(item, "lastname"));
     if let (Some(f), Some(l)) = (&first, &last) {
         let full = format!("{} {}", f.trim(), l.trim());
-        if full.len() >= 3 && seen.insert(format!("@person:{}", full.to_lowercase())) {
+        // A SQL NULL (`\N`) in either name component is absence, not a name —
+        // never compose a `"\N \N"` (nor a half-real `"\N Smith"`) Person from it.
+        if full.len() >= 3
+            && !is_null_sentinel(f)
+            && !is_null_sentinel(l)
+            && seen.insert(format!("@person:{}", full.to_lowercase()))
+        {
             push_breach_entity(
                 result,
                 Entity::new(EntityKind::Person, &full, 0.60, scan_id),
@@ -385,7 +391,7 @@ pub fn extract_rich_detail(
             Value::Bool(b) => b.to_string(),
             Value::Number(n) => n.to_string(),
         };
-        if val.is_empty() || val.len() > 2000 {
+        if val.is_empty() || val.len() > 2000 || is_null_sentinel(&val) {
             continue;
         }
         if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {

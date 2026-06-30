@@ -19,6 +19,19 @@ pub fn val_str_or(item: &Value, keys: &[&str]) -> Option<String> {
     keys.iter().find_map(|k| val_str(item, k))
 }
 
+/// Whether `s` is the SQL NULL sentinel (`\N`) that MySQL/Postgres dump exports
+/// write for an ABSENT column. Breach/stealer dumps carry it literally in name,
+/// city, and other fields (303 occurrences in one real SeekNow export), where it
+/// is value-absence — never a real value. Extractors must treat it as missing so
+/// it cannot mint a `"\N \N"` Person or a `"\N"` Address. Exact match (trimmed,
+/// case-insensitive) so a legitimate value is never dropped: unlike the ambiguous
+/// `null` / `nan` / `none` tokens (a real surname `Null`, the Thai province
+/// `Nan`), `\N` collides with no genuine value.
+#[must_use]
+pub fn is_null_sentinel(s: &str) -> bool {
+    s.trim().eq_ignore_ascii_case("\\N")
+}
+
 /// Like [`val_str`] but also coerces a JSON **number** to its canonical string
 /// form. Breach/stealer dumps routinely encode identifiers and codes as JSON
 /// numbers rather than strings — `{"discordid": 123456789012345678}` (a Discord
@@ -142,6 +155,22 @@ mod tests {
     fn val_str_or_returns_none_when_all_absent() {
         let v = json!({"x": ""});
         assert!(val_str_or(&v, &["a", "b"]).is_none());
+    }
+
+    #[test]
+    fn is_null_sentinel_matches_sql_null_not_real_values() {
+        // The MySQL/Postgres `\N` (303x in a real SeekNow export) is absence.
+        assert!(is_null_sentinel("\\N"));
+        assert!(is_null_sentinel("  \\N  "));
+        assert!(is_null_sentinel("\\n"));
+        // Genuine values that merely look null-ish are NOT dropped: the surname
+        // "Null", the province "Nan", or any text containing the letters.
+        assert!(!is_null_sentinel("Null"));
+        assert!(!is_null_sentinel("Nan"));
+        assert!(!is_null_sentinel("none"));
+        assert!(!is_null_sentinel("N"));
+        assert!(!is_null_sentinel("Diegmann"));
+        assert!(!is_null_sentinel(""));
     }
 
     #[test]

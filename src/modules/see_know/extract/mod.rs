@@ -282,6 +282,7 @@ pub(super) fn extract_entities(
         }
     }
     if let Some(country) = val_str(item, "country")
+        && !crate::util::json::is_null_sentinel(&country)
         && seen.insert(format!("@country:{country}"))
     {
         if let Some((lat, lon)) = crate::util::city_coords::city_coords(&country) {
