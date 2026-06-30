@@ -11,6 +11,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Free search-engine scraping maximised — denser pages, deeper paging, the
+  federated social cluster, and every proven-live engine in the pivot/recycle
+  passes.** Four keyless, deterministic, Termux-safe levers on `search_engines`:
+  (1) the per-engine result ceiling rose 20→30 to KEEP rows already on the page —
+  `bing`/`google`/`yahoo` already request 30 per page, so the old cap fetched then
+  discarded 10 at zero HTTP cost (`google &num`/`yahoo &n` lifted to 30 with their
+  pagination offsets kept in lockstep); (2) `MAX_PAGES` 2→3 pulls one more page
+  from the six engines with a PROVEN paginator (the keyless `paginate: None`
+  engines are untouched), each extra page self-clamping to the deadline so deeper
+  paging can never overrun the Termux time budget; (3) a federated/new-social
+  `site:bsky.app OR site:mastodon.social OR site:threads.net` dork added to the
+  Username, FullName and Email-local-part ladders, with those hosts added to
+  `SOCIAL_HOSTS` so the pivot/confirmed-profile passes mine their handles; (4) the
+  second-order username-pivot and entity-recycle passes now fan out across the
+  reliable core PLUS every engine PROVEN LIVE this scan (via the session
+  `ever_hit` liveness map), instead of only three static engines — multiplying
+  cross-platform linkage through the engines that actually produced results,
+  bounded by a fan-out cap and the per-request deadline. New deterministic unit
+  test (`pivot_engine_set` union/sort/cap/fallback) and the full gate.
 - **Cross-representation credential linking — a plaintext leaked in one breach now
   bridges to the SAME password leaked as a HASH in another.** AU-105 recomputes the
   MD5/SHA-1/SHA-256/SHA-512 digests of every UNCOMMON plaintext password already in

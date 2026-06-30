@@ -6,10 +6,9 @@
 
 use futures::StreamExt;
 
-use super::engines::reliable_engines;
 use super::fetch::fetch_one;
 use super::helpers::*;
-use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host};
+use super::{ENGINE_CONCURRENCY, engine_enabled, is_social_host, proven_live_engines};
 use crate::core::module::{ModuleContext, ModuleResult};
 
 pub(super) async fn recycle_entities(
@@ -19,7 +18,7 @@ pub(super) async fn recycle_entities(
     _primary_results: &[SearchResult],
     deadline: std::time::Instant,
 ) {
-    let reliable = reliable_engines();
+    let reliable = proven_live_engines();
 
     let mut recycle_queries: Vec<String> = Vec::new();
     let mut seen_queries: HashSet<String> = HashSet::new();

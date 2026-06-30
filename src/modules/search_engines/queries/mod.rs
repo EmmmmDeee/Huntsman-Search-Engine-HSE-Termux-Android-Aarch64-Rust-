@@ -35,6 +35,10 @@ pub(super) fn build_queries_fullname(v: &str) -> Vec<String> {
         q.push(format!(
             "{fl} site:instagram.com OR site:github.com OR site:reddit.com"
         ));
+        // Federated / new-social cluster — keyless, profile-bearing.
+        q.push(format!(
+            "\"{v}\" site:bsky.app OR site:mastodon.social OR site:threads.net"
+        ));
         q.push(format!("\"{v}\" email OR contact OR profile"));
         q.push(format!(
             "\"{v}\" site:peekyou.com OR site:spokeo.com \
@@ -397,6 +401,9 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                     "\"{local}\" site:soundcloud.com OR site:instagram.com \
                      OR site:youtube.com OR site:tiktok.com"
                 ));
+                q.push(format!(
+                    "\"{local}\" site:bsky.app OR site:mastodon.social OR site:threads.net"
+                ));
                 q.push(format!("\"{local}\" address OR location OR city"));
                 q.push(format!(
                     "\"{local}\" site:whitepages.com.au OR site:locatefamily.com \
@@ -451,6 +458,9 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                  OR site:reddit.com OR site:instagram.com"
             ),
             format!("\"{v}\" site:linkedin.com OR site:facebook.com OR site:tiktok.com"),
+            // Federated / new-social cluster — keyless, profile-bearing, and rising
+            // fast for identity footprints the legacy networks miss.
+            format!("\"{v}\" site:bsky.app OR site:mastodon.social OR site:threads.net"),
             format!(
                 "\"{v}\" site:peekyou.com OR site:nuwber.com \
                  OR site:spokeo.com OR site:pipl.com"

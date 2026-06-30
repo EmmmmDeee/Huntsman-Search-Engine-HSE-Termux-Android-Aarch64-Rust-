@@ -30,16 +30,18 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         name: "yahoo",
         build_url: |q| {
             format!(
-                "https://search.yahoo.com/search?p={}&n=20",
+                "https://search.yahoo.com/search?p={}&n=30",
                 crate::util::http::urlencode(q)
             )
         },
         build_post: None,
         paginate: Some(|q, page| {
+            // `b=` is a 1-based result offset; it MUST track the `n=30` page size
+            // so consecutive pages don't overlap.
             format!(
-                "https://search.yahoo.com/search?p={}&n=20&b={}",
+                "https://search.yahoo.com/search?p={}&n=30&b={}",
                 crate::util::http::urlencode(q),
-                1 + page * 20
+                1 + page * 30
             )
         }),
         ua: crate::util::curl::UA_MOBILE,
@@ -106,16 +108,18 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         name: "google",
         build_url: |q| {
             format!(
-                "https://www.google.com/search?q={}&num=20",
+                "https://www.google.com/search?q={}&num=30",
                 crate::util::http::urlencode(q)
             )
         },
         build_post: None,
         paginate: Some(|q, page| {
+            // `start=` is a 0-based result offset; it MUST track the `num=30` page
+            // size so consecutive pages don't overlap.
             format!(
-                "https://www.google.com/search?q={}&num=20&start={}",
+                "https://www.google.com/search?q={}&num=30&start={}",
                 crate::util::http::urlencode(q),
-                page * 20
+                page * 30
             )
         }),
         ua: crate::util::curl::UA_MOBILE,

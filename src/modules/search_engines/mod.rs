@@ -70,8 +70,19 @@ use crate::core::{
 
 pub struct SearchEngines;
 
-const MAX_RESULTS_PER_ENGINE: usize = 20;
-const MAX_PAGES: usize = 2;
+/// Per-engine result ceiling for ONE fetched page. Several engines already
+/// REQUEST up to 30 results per page (`bing &count=30`, `google &num=30`,
+/// `yahoo &n=30`), so a cap of 20 fetched-then-discarded the extra 10 at zero
+/// HTTP cost; lifting it to 30 keeps every row already on the page. Cross-engine
+/// corroboration compounds the gain — more URLs accrue a multi-engine count.
+const MAX_RESULTS_PER_ENGINE: usize = 30;
+/// How many pages to pull from an engine that exposes a paginator (first query
+/// only). `1..MAX_PAGES` ⇒ page 0 plus this many extra pages, fetched ONLY from
+/// the engines with a `paginate` fn (the 6 proven ones — yahoo/bing/aol/google/
+/// brave/mojeek); the keyless `paginate: None` engines are untouched. Each extra
+/// page self-clamps to the deadline, so deeper paging can never overrun the
+/// Termux time budget. 2→3 adds one more page of the strongest indexes.
+const MAX_PAGES: usize = 3;
 const MAX_ACCUMULATED_RESULTS: usize = 2000;
 /// How many engine fetches run at once in the primary pass. Bounded concurrency so
 /// a scan reaches ALL engines within budget (a 17-deep serial sweep timed out
@@ -164,6 +175,62 @@ fn record_hit(name: &'static str) {
     live.ever_hit = true;
 }
 
+/// Cap on the second-order (pivot / recycle) engine fan-out. The pivot grid is
+/// `pivots × engines`, so this bounds the request multiplier; the per-request
+/// deadline self-clamp remains the hard wall-time guarantee — this just keeps the
+/// fan-out proportionate on a low-power Termux radio.
+const PIVOT_ENGINE_CAP: usize = 8;
+
+/// The engine set for the second-order pivot / recycle passes: the reliable core
+/// ([`engines::reliable_engines`]) UNIONed with every engine PROVEN LIVE this
+/// scan — one that returned ≥1 result, so [`record_hit`] set its `ever_hit`.
+///
+/// The pivot and recycle passes are where the core cross-platform OSINT linkage
+/// is realised (username → profiles, email/person → address), yet they previously
+/// ran through only the three static reliable engines even when yahoo / bing /
+/// brave / ecosia had proven live in the primary pass this very scan. Reusing
+/// every proven engine multiplies that second-order discovery. Falls back to the
+/// reliable core when nothing is proven yet. Deterministic: union by name,
+/// name-sorted, capped at [`PIVOT_ENGINE_CAP`] (the per-request deadline
+/// self-clamp bounds wall-time regardless).
+///
+/// Private to the module: the sibling `extract` recycler and this module's pivot
+/// pass reach it via `super::`, so it never needs `pub(super)` (which would
+/// over-expose it past the module-private `EngineSpec` return type).
+fn proven_live_engines() -> Vec<&'static EngineSpec> {
+    let proven: std::collections::BTreeSet<&'static str> = SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .iter()
+        .filter(|(_, live)| live.ever_hit)
+        .map(|(name, _)| *name)
+        .collect();
+    pivot_engine_set(&proven)
+}
+
+/// Pure core of [`proven_live_engines`]: the reliable core UNIONed with the
+/// `proven` engine names, resolved to deterministic, capped [`EngineSpec`]s.
+/// Split out from the process-global liveness read so the union/sort/cap logic is
+/// unit-tested without the shared `SESSION_EMPTY_COUNTS` map. An empty `proven`
+/// set yields exactly the reliable core; a `proven` name absent from [`ENGINES`]
+/// is silently dropped (no phantom engine). **Pure.**
+fn pivot_engine_set(proven: &std::collections::BTreeSet<&'static str>) -> Vec<&'static EngineSpec> {
+    if proven.is_empty() {
+        // Nothing proven yet (e.g. the recycler running before any hit) — keep the
+        // established reliable-core floor rather than an empty fan-out.
+        return reliable_engines();
+    }
+    // Always include the reliable core so the pivot/recycle floor never regresses.
+    let mut names: std::collections::BTreeSet<&'static str> =
+        reliable_engines().iter().map(|e| e.name).collect();
+    names.extend(proven.iter().copied());
+    let mut specs: Vec<&'static EngineSpec> =
+        ENGINES.iter().filter(|e| names.contains(e.name)).collect();
+    specs.sort_by(|a, b| a.name.cmp(b.name));
+    specs.truncate(PIVOT_ENGINE_CAP);
+    specs
+}
+
 const SOCIAL_HOSTS: &[&str] = &[
     "facebook.com",
     "linkedin.com",
@@ -181,6 +248,13 @@ const SOCIAL_HOSTS: &[&str] = &[
     "tumblr.com",
     "linktr.ee",
     "medium.com",
+    // Federated / new-social cluster — keyless, well-indexed, profile-bearing
+    // paths (bsky.app/profile/<handle>, mastodon.social/@<handle>,
+    // threads.net/@<handle>). Added so the username-pivot pass and
+    // confirmed-profile detection mine these handles like the legacy networks.
+    "bsky.app",
+    "mastodon.social",
+    "threads.net",
 ];
 
 /// Fetch one engine's full contribution for a query — page 0 plus its own
@@ -460,15 +534,18 @@ impl Module for SearchEngines {
             }
 
             if !pivots.is_empty() && !ctx.cancel.is_cancelled() {
-                // Flatten the (pivot × reliable engine) grid into one batch and
-                // fetch it with the same bounded concurrency as the primary pass —
-                // each request self-clamps to the deadline.
-                let reliable = reliable_engines();
+                // Flatten the (pivot × engine) grid into one batch and fetch it
+                // with the same bounded concurrency as the primary pass — each
+                // request self-clamps to the deadline. The engine set is the
+                // reliable core PLUS every engine proven live this scan, so the
+                // cross-platform pivot runs through all the engines that actually
+                // produced results, not just the static three.
+                let pivot_engines = proven_live_engines();
                 let jobs: Vec<_> = pivots
                     .iter()
                     .take(10)
                     .flat_map(|pq| {
-                        reliable
+                        pivot_engines
                             .iter()
                             .filter(|e| engine_enabled(e.name) && !dead_engines.contains(e.name))
                             .map(move |e| {

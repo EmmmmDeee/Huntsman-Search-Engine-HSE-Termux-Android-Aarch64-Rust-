@@ -1913,3 +1913,55 @@ fn proven_engine_tolerates_long_block_streaks() {
         "a later hit revives a silenced engine"
     );
 }
+
+#[test]
+fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
+    use std::collections::BTreeSet;
+
+    // No engine proven yet → exactly the reliable core, in its established order
+    // (the second-order pivot/recycle floor must never regress).
+    let core: Vec<&str> = pivot_engine_set(&BTreeSet::new())
+        .iter()
+        .map(|e| e.name)
+        .collect();
+    let reliable_names: Vec<&str> = reliable_engines().iter().map(|e| e.name).collect();
+    assert_eq!(
+        core, reliable_names,
+        "no proven engines → reliable core unchanged"
+    );
+
+    // Proven engines union in alongside the reliable core.
+    let proven: BTreeSet<&'static str> = ["yahoo", "bing", "ecosia"].into_iter().collect();
+    let names: Vec<&str> = pivot_engine_set(&proven).iter().map(|e| e.name).collect();
+    for r in ["metager", "swisscows", "dogpile"] {
+        assert!(names.contains(&r), "reliable core engine {r} must remain");
+    }
+    for p in ["yahoo", "bing", "ecosia"] {
+        assert!(names.contains(&p), "proven engine {p} must be included");
+    }
+    // Deterministic: strictly name-sorted (independent of the racy liveness map),
+    // de-duplicated, and bounded by the fan-out cap.
+    let mut sorted = names.clone();
+    sorted.sort_unstable();
+    sorted.dedup();
+    assert_eq!(
+        names, sorted,
+        "output must be name-sorted and deduped for determinism"
+    );
+    assert!(
+        pivot_engine_set(&proven).len() <= PIVOT_ENGINE_CAP,
+        "fan-out must stay capped at PIVOT_ENGINE_CAP"
+    );
+
+    // A proven name absent from the registry is silently dropped (no panic, no
+    // phantom engine): the result is just the reliable core.
+    let bogus: BTreeSet<&'static str> = ["__not_a_real_engine__"].into_iter().collect();
+    let mut only_core: Vec<&str> = pivot_engine_set(&bogus).iter().map(|e| e.name).collect();
+    only_core.sort_unstable();
+    let mut expect = reliable_names.clone();
+    expect.sort_unstable();
+    assert_eq!(
+        only_core, expect,
+        "an unknown proven name resolves to just the reliable core"
+    );
+}
