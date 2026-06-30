@@ -2583,6 +2583,66 @@ fn au073_derives_subject_age_from_dob() {
 }
 
 #[test]
+fn au073_tolerates_a_multibyte_dob_without_panicking() {
+    // Regression: a breach DOB whose first 8 bytes look ISO ("YYYY-MM-", with
+    // ASCII dashes at indices 4 and 7) but whose 9th byte begins a MULTIBYTE
+    // UTF-8 char (here `€`, three bytes at indices 8..11) passed `normalise_dob`
+    // verbatim via its non-ISO else-branch and then reached `age_from_dob`, whose
+    // guard only checked the two dashes and the length — so `dob[8..10]` sliced
+    // through the middle of the `€` and panicked. The correlator runs OUTSIDE the
+    // engine's per-module `catch_unwind`, so that panic crashed the whole scan on
+    // adversarial breach input. It must degrade to "no derived age", never panic.
+    const TS: u64 = 1_767_225_600; // 2026-01-01
+    let mut p = Entity::new(EntityKind::Person, "Jerome Despal", 0.9, "s");
+    p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", "1980-11-€X"));
+    let mut e = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+    e.add_evidence(Evidence::new("see_know", "breach").with_attr("dob", "1980-11-€X"));
+    let r = super::rules::rule_au_073_subject_date_of_birth(&[p, e], "s", TS);
+    let f = r
+        .iter()
+        .find(|c| c.description.contains("1980-11-€X"))
+        .expect("the non-ISO DOB still fires as a (no-age) correlation");
+    assert!(
+        !f.description.contains("age "),
+        "no age is derived from a non-ISO DOB: {}",
+        f.description
+    );
+}
+
+#[test]
+fn au073_never_panics_on_a_multibyte_dob_at_any_byte_position() {
+    // Generalises the regression above: slide a 3-byte char (`€`) through every
+    // byte position of an otherwise-ISO date so it straddles each of the
+    // `dob[0..4]`/`dob[5..7]`/`dob[8..10]` slice boundaries in turn, then add a
+    // 4-byte emoji, all-multibyte, control, short and empty forms. The rule must
+    // tolerate every one (no panic) — proving the byte-slice DOB parser is
+    // boundary-safe on arbitrary breach input, not just the one captured shrink.
+    const TS: u64 = 1_767_225_600;
+    let base = "1980-11-08";
+    let mut inputs: Vec<String> = (0..=base.len())
+        .map(|i| format!("{}€{}", &base[..i], &base[i..]))
+        .collect();
+    for s in [
+        "",
+        "€",
+        "--------",
+        "1980-11-",
+        "1980-€1-08",
+        "1980-11-0😀",
+        "😀😀😀😀-11-08",
+        "19\u{0}0-11-08",
+    ] {
+        inputs.push(s.to_string());
+    }
+    for dob in inputs {
+        let mut p = Entity::new(EntityKind::Person, "X Y", 0.9, "s");
+        p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("dob", dob.as_str()));
+        // The assertion is simply that this returns without panicking.
+        let _ = super::rules::rule_au_073_subject_date_of_birth(&[p], "s", TS);
+    }
+}
+
+#[test]
 fn au073_age_advances_after_the_birthday() {
     // Same DOB, ts = 2026-12-01 (after the July birthday) → age 34.
     const TS_2026_12_01: u64 = 1_796_083_200;

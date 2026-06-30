@@ -126,7 +126,21 @@ fn normalise_dob(raw: &str) -> Option<String> {
 /// leaves it implicit; this makes it explicit. Pure.
 pub(in crate::core::correlator) fn age_from_dob(dob: &str, now_unix: u64) -> Option<u32> {
     let b = dob.as_bytes();
-    if dob.len() < 10 || b[4] != b'-' || b[7] != b'-' {
+    // Require a strict ASCII `YYYY-MM-DD` head before slicing. The dash + length
+    // check alone let a value whose "digits" were actually multibyte UTF-8 — a
+    // breach DOB such as `1980-11-€X`, where `€` is three bytes at indices 8..11 —
+    // reach `dob[8..10]`, which then sliced through the middle of the char and
+    // panicked (the correlator runs outside the engine's per-module catch_unwind,
+    // so that crashed the whole scan). Validating each digit run on the raw bytes
+    // keeps every str-slice below on an ASCII char boundary AND in range
+    // (`dob.len() >= 10` guarantees byte indices 0..10 exist).
+    if dob.len() < 10
+        || b[4] != b'-'
+        || b[7] != b'-'
+        || !b[0..4].iter().all(u8::is_ascii_digit)
+        || !b[5..7].iter().all(u8::is_ascii_digit)
+        || !b[8..10].iter().all(u8::is_ascii_digit)
+    {
         return None;
     }
     let y: i64 = dob[0..4].parse().ok()?;
