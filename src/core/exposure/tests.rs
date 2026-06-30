@@ -196,6 +196,34 @@ fn candidate_entities_are_excluded() {
 }
 
 #[test]
+fn candidate_stranger_batch_top_dbnames_do_not_inflate_breach_exposure() {
+    // Real failure shape (debug bundle, scan 90b936dc... from a pre-`breach_parent_entity`
+    // build): a broad full_name search returned a page of ~100 strangers, summarised
+    // as a breach batch whose `top_dbnames` lists many corpora none of which are the
+    // subject's. Current code demotes such a non-matching aggregate to `candidate`,
+    // so it must contribute nothing. This locks in that the `top_dbnames` key — read
+    // since the subject-breach fix — cannot let a quarantined stranger batch inflate
+    // the subject's breach-corpus count (the count must reflect CONFIRMED hits only).
+    let mut stranger_batch = Entity::new(EntityKind::Person, "Matthew Diegmann", 0.25, "s");
+    stranger_batch.tag(crate::core::tags::BREACH);
+    stranger_batch.tag(crate::core::tags::CANDIDATE);
+    stranger_batch.add_evidence(
+        Evidence::new("oathnet-pro", "OathNet: 100 breach record(s) — abrigo.com")
+            .with_attr("hits", "100")
+            .with_attr("top_dbnames", "abrigo.com, bcdtravel.com, heritage.org"),
+    );
+    // A genuine CONFIRMED subject corpus alongside the quarantined batch.
+    let mut real = Entity::new(EntityKind::Email, "subj@x.com", 0.92, "s");
+    real.tag(crate::core::tags::BREACH);
+    real.add_evidence(Evidence::new("oathnet-pro", "match").with_attr("top_dbnames", "tldr.tech"));
+
+    let idx = assess(&[stranger_batch, real], &[]);
+    // Only the confirmed corpus (tldr.tech) counts → 12; the candidate batch's three
+    // corpora are excluded, never reaching 48/35.
+    assert_eq!(component(&idx, "Breach exposure").score, 12);
+}
+
+#[test]
 fn speculative_low_confidence_findings_do_not_inflate_exposure() {
     // 30 name-permutation username GUESSES at 0.45 (bare single-source speculation,
     // c_effective < 0.5) must NOT count toward exposure — a real scan of a name
