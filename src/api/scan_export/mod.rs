@@ -83,10 +83,29 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
             }
         }
         let evidence_urls = urls.join(" | ");
+        // Append each evidence's full attribute record (the same `k = v` detail
+        // the dossier renderer prints per evidence row) after its summary, so
+        // the CSV's own self-verifiable promise holds for hard evidentiary
+        // fields (a leaked DOB, a password hash, …) that a module recorded as
+        // structured `attributes` rather than folding into prose. `BTreeMap`
+        // iteration is already key-sorted, so output stays deterministic
+        // without an extra sort.
         let evidence = e
             .evidence
             .iter()
-            .map(|ev| format!("[{}] {}", ev.source, ev.summary))
+            .map(|ev| {
+                let attrs: Vec<String> = ev
+                    .attributes
+                    .iter()
+                    .filter(|(_, v)| !v.is_empty())
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect();
+                if attrs.is_empty() {
+                    format!("[{}] {}", ev.source, ev.summary)
+                } else {
+                    format!("[{}] {} ({})", ev.source, ev.summary, attrs.join("; "))
+                }
+            })
             .collect::<Vec<_>>()
             .join(" || ");
 

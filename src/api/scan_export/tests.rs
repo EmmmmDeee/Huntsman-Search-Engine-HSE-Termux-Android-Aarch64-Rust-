@@ -175,6 +175,58 @@ use super::*;
         );
     }
 
+    #[test]
+    fn csv_evidence_column_carries_structured_attributes_not_just_summary() {
+        // Regression: the CSV documents itself as making "every row
+        // self-verifiable... without reconstructing anything from the value
+        // alone", but only the prose `summary` was ever written — a module
+        // that records hard evidentiary detail (a leaked DOB, a password hash)
+        // as structured `attributes` rather than folding it into prose text was
+        // silently dropped from the export, even though the SPA's evidence
+        // panel and the full dossier both show it in full.
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::Person, "Jordan Avery", 0.80, "src");
+        e.add_evidence(
+            Evidence::new("breach_rich", "breach record found")
+                .with_attr("date_of_birth", "1990-04-12")
+                .with_attr("password_hash", "5f4dcc3b5aa765d61d8327deb882cf99"),
+        );
+        let csv = entities_to_csv(&[e]);
+        let row = csv.lines().nth(1).unwrap();
+        assert!(
+            row.contains("date_of_birth=1990-04-12"),
+            "structured DOB attribute missing from CSV evidence cell: {row}"
+        );
+        assert!(
+            row.contains("password_hash=5f4dcc3b5aa765d61d8327deb882cf99"),
+            "structured password_hash attribute missing from CSV evidence cell: {row}"
+        );
+        assert!(
+            row.contains("[breach_rich] breach record found"),
+            "the prose summary must still be present alongside the attributes: {row}"
+        );
+    }
+
+    #[test]
+    fn csv_evidence_column_omits_empty_attribute_values() {
+        // An attribute present with an empty value (a module that recorded the
+        // key but had nothing to put in it) must not pollute the cell with a
+        // bare trailing `key=`.
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "src");
+        e.add_evidence(Evidence::new("some_module", "found it").with_attr("country", ""));
+        let csv = entities_to_csv(&[e]);
+        let row = csv.lines().nth(1).unwrap();
+        assert!(
+            !row.contains("country="),
+            "an empty attribute value must not be emitted: {row}"
+        );
+        assert!(
+            row.contains("[some_module] found it"),
+            "summary must be unaffected: {row}"
+        );
+    }
+
     // ── AU-059 best_location emit→extract contract ───────────────────────────
 
     /// Build a tagged AU `Coordinates` entity for a given source, mirroring the

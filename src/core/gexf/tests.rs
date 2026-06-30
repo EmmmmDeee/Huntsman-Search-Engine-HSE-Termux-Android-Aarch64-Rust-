@@ -143,6 +143,8 @@ use super::*;
         use crate::core::relation::{Relation, RelationKind};
         let mut a = Entity::new(EntityKind::Domain, "example.com", 0.9, "s");
         a.add_evidence(Evidence::new("crtsh", "cert"));
+        a.tag("breach");
+        a.tag("geoint");
         let mut b = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
         b.add_evidence(Evidence::new("crtsh", "cert"));
         let rel = Relation::new(
@@ -169,6 +171,7 @@ use super::*;
       <attribute id="3" title="classification" type="string"/>
       <attribute id="4" title="corroboration" type="integer"/>
       <attribute id="5" title="coreness" type="integer"/>
+      <attribute id="6" title="tags" type="string"/>
     </attributes>
     <nodes>
       <node id="ed152b32b035" label="example.com">
@@ -179,6 +182,7 @@ use super::*;
           <attvalue for="3" value="VERIFIED"/>
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
+          <attvalue for="6" value="breach|geoint"/>
         </attvalues>
       </node>
       <node id="df4bda23ac18" label="blog.example.com">
@@ -189,6 +193,7 @@ use super::*;
           <attvalue for="3" value="VERIFIED"/>
           <attvalue for="4" value="1"/>
           <attvalue for="5" value="1"/>
+          <attvalue for="6" value=""/>
         </attvalues>
       </node>
     </nodes>

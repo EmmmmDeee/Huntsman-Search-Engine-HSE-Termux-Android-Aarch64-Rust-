@@ -106,13 +106,21 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
         xml,
         r#"      <attribute id="5" title="coreness" type="integer"/>"#
     );
+    let _ = writeln!(
+        xml,
+        r#"      <attribute id="6" title="tags" type="string"/>"#
+    );
     let _ = writeln!(xml, r#"    </attributes>"#);
 }
 
-/// One `<node>` element with its six `<attvalue>`s. The id is the truncated
+/// One `<node>` element with its seven `<attvalue>`s. The id is the truncated
 /// uid (see [`short_uid`]) so relation/co-occurrence edges can reference it.
 /// `coreness` is the k-core index (0 = isolated periphery, higher = more
-/// deeply embedded in a densely-connected cluster).
+/// deeply embedded in a densely-connected cluster). `tags` is `|`-joined (the
+/// same convention the CSV export's `tags` column uses) so an analyst working
+/// purely from the Gephi import — e.g. to filter/colour `breach`/`candidate`
+/// (quarantine) nodes — isn't forced back to the CSV/JSON for data the SPA
+/// already shows as pills.
 fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
     let label = xml_escape(&e.value);
     let _ = writeln!(
@@ -143,6 +151,11 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         e.corroboration
     );
     let _ = writeln!(xml, r#"          <attvalue for="5" value="{coreness}"/>"#);
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="6" value="{}"/>"#,
+        xml_escape(&e.tags.join("|"))
+    );
     let _ = writeln!(xml, r#"        </attvalues>"#);
     let _ = writeln!(xml, r#"      </node>"#);
 }
