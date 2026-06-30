@@ -112,6 +112,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Reused-secret identity merge now links USERNAME-keyed accounts, not just
+  emails (AU-047).** The rule's own documentation promised to tie identities on a
+  shared unique secret "(the email/username the breach record carries)", but the
+  implementation counted only distinct *emails* to fire — so a unique salted hash
+  shared across two distinct usernames (the very common `username` + hash dump
+  shape, with no email) went unlinked, a dead end for handle reverse-search. An
+  account is now identified by its email local-part **or** its username, both
+  folded to one canonical handle (the AU-048 scheme); ≥2 distinct handles fire the
+  link. The fold preserves the original single-record safety — an email and its
+  matching username from ONE record collapse to one handle and cannot self-fire a
+  phantom "2 accounts" link — while two genuinely different handles sharing the
+  unique secret now merge regardless of breach count. No new false-positive surface:
+  the salted-hash / entropy / common-password precision gates are unchanged, and the
+  rule still runs only on the confirmed (quarantine-filtered) view. Regression-tested
+  (username-keyed merge, same-record self-link resistance, email↔different-username
+  cross-pivot) and the full gate.
 - **Offline geocoder: a US ZIP+4 add-on is no longer read as an AU postcode.**
   Follow-up to the foreign-street-number fix below. `util::city_coords` anchors on
   the address's final numeric run, but a US ZIP+4 (`NNNNN-NNNN`) ends in a 4-digit

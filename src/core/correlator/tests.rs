@@ -3828,6 +3828,92 @@ fn au047_links_on_password_entity_and_credits_unique_sources() {
 }
 
 #[test]
+fn au047_links_username_keyed_accounts_and_resists_single_record_self_link() {
+    // Potentiation: a breach footprint keyed by USERNAME (username + hash, no
+    // email — a very common dump shape) must link its accounts on a shared unique
+    // secret exactly as an email-keyed one does, so reverse-searching a handle is
+    // not a dead end. Previously AU-047 counted only distinct EMAILS to fire, so a
+    // unique hash shared across two usernames went unlinked despite the rule's own
+    // documented intent to link on "email/username".
+    let mut by_username = Entity::new(
+        EntityKind::Password,
+        "$2b$12$usernamekeyedreuse00",
+        0.6,
+        "scan",
+    );
+    by_username.tag("password-hash");
+    // Two DISTINCT usernames (no email anywhere) carry the identical salted hash.
+    for u in ["ghost_91", "nightcrawler"] {
+        by_username.add_evidence(Evidence::new("oathnet", "breach").with_attr("username", u));
+    }
+    let u1 = Entity::new(EntityKind::Username, "ghost_91", 0.6, "scan");
+    let u2 = Entity::new(EntityKind::Username, "nightcrawler", 0.6, "scan");
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &[by_username.clone(), u1.clone(), u2.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "a unique hash across 2 distinct usernames must link them (username-keyed reverse search)"
+    );
+    assert_eq!(hits[0].severity, super::Severity::Critical);
+    assert!(
+        hits[0].entity_uids.contains(&u1.uid) && hits[0].entity_uids.contains(&u2.uid),
+        "both username identities must be linked into the controller cluster"
+    );
+
+    // SAME-RECORD SAFETY: one record carrying an email and its MATCHING username
+    // is ONE account — the handles collapse to a single canonical handle, so no
+    // phantom "2 accounts" link is manufactured from a single record.
+    let mut one_account = Entity::new(
+        EntityKind::Password,
+        "$2b$12$oneaccounttwoids0000",
+        0.6,
+        "scan",
+    );
+    one_account.tag("password-hash");
+    one_account.add_evidence(
+        Evidence::new("oathnet", "breach")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice"),
+    );
+    let em = Entity::new(EntityKind::Email, "alice@example.com", 0.6, "scan");
+    let un = Entity::new(EntityKind::Username, "alice", 0.6, "scan");
+    assert!(
+        super::rules::rule_au_047_reused_secret_identity(&[one_account, em, un], "scan", 0)
+            .is_empty(),
+        "an email and its matching username from one record are one account, not a link"
+    );
+
+    // A unique hash shared across an email and a GENUINELY DIFFERENT username
+    // (distinct handles) still links — the cross-representation reverse pivot.
+    let mut cross = Entity::new(
+        EntityKind::Password,
+        "$2b$12$crossrepresentation0",
+        0.6,
+        "scan",
+    );
+    cross.tag("password-hash");
+    cross.add_evidence(Evidence::new("oathnet", "breach").with_attr("email", "burner@proton.me"));
+    cross.add_evidence(Evidence::new("oathnet", "breach").with_attr("username", "bob_work"));
+    let e3 = Entity::new(EntityKind::Email, "burner@proton.me", 0.6, "scan");
+    let u3 = Entity::new(EntityKind::Username, "bob_work", 0.6, "scan");
+    let hits = super::rules::rule_au_047_reused_secret_identity(
+        &[cross, e3.clone(), u3.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "a unique hash across an email and a different-handle username must link them"
+    );
+    assert!(hits[0].entity_uids.contains(&e3.uid) && hits[0].entity_uids.contains(&u3.uid));
+}
+
+#[test]
 fn au018_includes_full_member_set_so_finalize_supersedes_live() {
     use super::rules::rule_au_018_email_address_colocation;
     // Regression: a live "Haigen Bamford" scan persisted AU-018 twice

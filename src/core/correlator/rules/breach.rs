@@ -305,7 +305,13 @@ fn distinct_sources(secret: &Entity) -> BTreeSet<String> {
 /// (see [`Secret::classify`]) is observed against **≥2 distinct identities**
 /// (the email/username the breach record carries in its evidence), those
 /// identities are tied to a single controller: someone reused a secret across
-/// accounts they kept otherwise separate. The linkable set covers all the
+/// accounts they kept otherwise separate. An account is identified by its email
+/// local-part **or** its username (folded to one canonical handle, the same
+/// scheme AU-048 uses for shared public keys), so a username-keyed breach
+/// footprint (`username` + hash, no email — a very common dump shape) links its
+/// accounts exactly as an email-keyed one does, while an email and its matching
+/// username from the SAME record collapse to one handle and can't self-fire. The
+/// linkable set covers all the
 /// legitimate cross-correlation join-keys — a salted hash / crypto address /
 /// API key, a **reused high-entropy plaintext password**, and a **session /
 /// cookie token** — while the entropy + denylist gates keep a *common* password
@@ -355,13 +361,12 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
 
     let mut out = Vec::new();
     for (secret, class) in secrets {
-        // The distinct ACCOUNTS this exact secret was seen against. Keyed on the
-        // email — the account identifier — drawn from the breach-record evidence
-        // the importer accumulates onto the secret (one evidence record per
-        // entry). Counting emails (not also usernames) is deliberate: an email
-        // and a username from the SAME record are one account, so admitting both
-        // would false-fire on a single record; the real signal is the secret
-        // spanning ≥2 distinct emails, i.e. ≥2 separate accounts.
+        // The distinct ACCOUNTS this exact secret was seen against, drawn from the
+        // breach-record evidence the importer accumulates onto the secret (one
+        // record per entry). An account is identified by its email and/or its
+        // username, so a username-keyed footprint (`username` + hash, no email —
+        // a very common dump shape) links its accounts just as an email-keyed one
+        // does. Both identifier kinds are collected here…
         let emails: BTreeSet<String> = secret
             .evidence
             .iter()
@@ -369,11 +374,6 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
             .map(|v| v.trim().to_lowercase())
             .filter(|v| v.contains('@'))
             .collect();
-        if emails.len() < 2 {
-            continue;
-        }
-        // Usernames co-located in those same records — linked as implicated
-        // identities, but never counted toward the ≥2-account firing gate above.
         let usernames: BTreeSet<String> = secret
             .evidence
             .iter()
@@ -381,6 +381,25 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
             .map(|v| v.trim().to_lowercase())
             .filter(|v| !v.is_empty())
             .collect();
+
+        // …then folded to distinct CONTROLLER HANDLES — the email local-part or
+        // the username, separator-insensitive (the same canonicalisation AU-048
+        // applies to key-linked accounts). Folding to a handle is the single-record
+        // safety: an email and the matching username from ONE record
+        // ("alice@x.com" + "alice") collapse to one handle and cannot self-fire,
+        // while two genuinely different handles ("alice@x.com" + "bob_work")
+        // sharing the unique secret do. ≥2 distinct handles is the
+        // ≥2-separate-accounts firing gate.
+        let handles: BTreeSet<String> = emails
+            .iter()
+            .map(|e| e.split('@').next().unwrap_or(e))
+            .chain(usernames.iter().map(String::as_str))
+            .map(canonical_handle)
+            .filter(|h| !h.is_empty())
+            .collect();
+        if handles.len() < 2 {
+            continue;
+        }
 
         // The secret plus every implicated identity entity present in scope, in
         // entity order. Walks the pre-built identity index, not all entities.
@@ -423,7 +442,15 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
                 named.join(", ")
             )
         };
-        let listed: Vec<&str> = emails.iter().take(6).map(String::as_str).collect();
+        // List the implicated identifiers (emails first, then usernames). The
+        // separate-account COUNT is the distinct-handle count, which de-dupes an
+        // email and the matching username down to the one controller they name.
+        let listed: Vec<&str> = emails
+            .iter()
+            .chain(usernames.iter())
+            .take(6)
+            .map(String::as_str)
+            .collect();
 
         out.push(Correlation {
             rule_id: "AU-047".into(),
@@ -432,7 +459,7 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
             description: format!(
                 "A single reused {} ties {} otherwise-separate accounts to one controller{} — secret reuse across accounts: {}",
                 class.label(),
-                emails.len(),
+                handles.len(),
                 source_clause,
                 listed.join(", ")
             ),
