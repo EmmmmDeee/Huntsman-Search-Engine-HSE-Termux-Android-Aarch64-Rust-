@@ -4,8 +4,48 @@
 //! `use super::*` (each parser is re-exported into the parent's scope).
 
 use super::{
-    deduplicate_by_uid, entities_from_upload, looks_like_dossier, parse_dossier, parse_oathnet_html,
+    ImportFormat, deduplicate_by_uid, detect_import_format, entities_from_upload,
+    looks_like_dossier, parse_dossier, parse_oathnet_html,
 };
+
+#[test]
+fn detect_import_format_is_content_based_not_extension_gated() {
+    // The bug: the CLI only recognised a dossier/combined/stealer/OathNet-report
+    // text export under a `.txt` extension, so the SAME content saved under any
+    // other name (or none) was mis-routed to the JSON parser and rejected. The
+    // detector now keys on CONTENT, so the format is identical regardless of the
+    // filename — and the CLI and web upload share this one decision.
+    let dossier = "Entry #1:\n   \u{2022} email: a@b.com\n";
+    for path in ["dump.dat", "dump.txt", "breach", "x.json", ""] {
+        assert_eq!(
+            detect_import_format(path, dossier),
+            ImportFormat::Dossier,
+            "dossier content must be detected regardless of the filename ({path:?})"
+        );
+    }
+    // A JSON object wins before the text heuristics (so a `{`-body is never
+    // mis-keyed), by content alone — no `.json` extension required.
+    assert_eq!(
+        detect_import_format("export", "{\"exportInfo\":{}}"),
+        ImportFormat::OathnetJson
+    );
+    // HTML by content even without the `.html` extension.
+    assert_eq!(
+        detect_import_format("page", "<!doctype html><html></html>"),
+        ImportFormat::OathnetHtml
+    );
+    // CSV by the `.csv` hint even when the content is ambiguous.
+    assert_eq!(
+        detect_import_format("table.csv", "a,b,c\n1,2,3"),
+        ImportFormat::DehashedCsv
+    );
+    // Unrecognised plain text falls to the OathNet-TXT catch-all (graceful — the
+    // same final `else` the web upload uses), never a hard error.
+    assert_eq!(
+        detect_import_format("notes.dat", "just some unstructured prose"),
+        ImportFormat::OathnetTxt
+    );
+}
 
 /// The upload dispatcher parses UNTRUSTED text from the web endpoint, so it
 /// must never panic — not on truncation, not on a multibyte codepoint landing

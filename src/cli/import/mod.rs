@@ -46,80 +46,100 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     let body = std::fs::read_to_string(path)
         .map_err(|e| Error::Other(format!("cannot read {path}: {e}")))?;
 
-    let is_html = path.ends_with(".html")
-        || body.trim_start().starts_with("<!")
-        || body.trim_start().starts_with("<html");
-    let is_txt = path.ends_with(".txt") && !is_html;
-
-    if is_html {
-        return cmd_import_html(&body, output).await;
-    }
-    if is_txt {
-        // A Combined Search breach-aggregator export (`[N]` records of
-        // `Label:`/value pairs) is its own shape — route it first.
-        if looks_like_combined_search(&body) {
-            return cmd_import_combined(&body, output).await;
+    // Dispatch on the shared, CONTENT-based detector so a file imports the same
+    // whether it arrives via the CLI (here) or the browser
+    // (`entities_from_upload`). The previous code gated the combined / dossier /
+    // stealer / OathNet-report text formats behind a `.txt` extension, so a
+    // breach/dossier export saved under any other name (or none) was mis-routed
+    // to the JSON parser and rejected as "invalid JSON" — silently dropping a
+    // legitimate import the UI accepted fine.
+    match detect_import_format(path, &body) {
+        ImportFormat::OathnetHtml => cmd_import_html(&body, output).await,
+        ImportFormat::OathnetJson => {
+            let doc: serde_json::Value = serde_json::from_str(&body)
+                .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
+            let export_info = doc.get("exportInfo").and_then(|v| v.as_object());
+            let query = export_info
+                .and_then(|ei| ei.get("query"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            let date = export_info
+                .and_then(|ei| ei.get("exportDate"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown");
+            note(
+                output,
+                format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
+            );
+            let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
+            let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
+            deduplicate_by_uid(&mut entities);
+            print_import_stats(&stats, entities.len(), output);
+            persist_and_report(&sid, &entities, output).await;
+            import_json_output(&entities, &stats, query, date, path, output)
         }
-        // A breach/dossier compilation (`Entry #N:` blocks of `• key: value`
-        // fields, plus `USERNAMES:`/`EMAILS:`/`PASSWORDS:` `-> value` lists) is a
-        // different shape from the OathNet stealer-log TXT — route it to the
-        // dossier parser, which correlates each entry's fields into individualised
-        // entities carrying the full record (name, birthdate, country, hash, …).
-        if looks_like_dossier(&body) {
-            return cmd_import_dossier(&body, output).await;
-        }
-        // A Stealerlogs victim export (`Module: Stealerlogs` / `Victims:` / `[N]`
-        // blocks of `Credentials:` + `Domains:`) — the victim-centric stealer
-        // format, routed before the catch-all TXT which can't parse its nested
-        // `[N]` structure.
-        if looks_like_stealerlogs(&body) {
-            return cmd_import_stealerlogs(&body, output).await;
-        }
-        // An OathNet SEARCH REPORT (`=== DATABASE LOGS ===` of `Entry N:` plain
-        // `key: value` blocks) — distinct from the OathNet stealer-log TXT, and
-        // routed before it because both carry the `=== OSINT ENRICHMENT` marker
-        // the TXT catch-all keys on.
-        if looks_like_oathnet_report(&body) {
-            return cmd_import_oathnet_report(&body, output).await;
-        }
-        return cmd_import_txt(&body, output).await;
+        ImportFormat::CombinedSearch => cmd_import_combined(&body, output).await,
+        ImportFormat::Dossier => cmd_import_dossier(&body, output).await,
+        ImportFormat::Stealerlogs => cmd_import_stealerlogs(&body, output).await,
+        ImportFormat::OathnetReport => cmd_import_oathnet_report(&body, output).await,
+        ImportFormat::HseCsv => cmd_import_hse_csv(&body, output).await,
+        ImportFormat::DehashedCsv => cmd_import_csv(&body, output).await,
+        ImportFormat::OathnetTxt => cmd_import_txt(&body, output).await,
     }
+}
 
-    // HSE's own CSV export (round-trip) — checked first, before the generic
-    // `.csv` → DeHashed routing, by its exact header.
-    if looks_like_hse_csv(&body) {
-        return cmd_import_hse_csv(&body, output).await;
+/// The detected import format — one variant per parser. The single source of
+/// truth both the CLI ([`cmd_import`]) and the web upload ([`entities_from_upload`])
+/// dispatch on, so the two can never drift on which format a file is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ImportFormat {
+    OathnetHtml,
+    OathnetJson,
+    CombinedSearch,
+    Dossier,
+    Stealerlogs,
+    OathnetReport,
+    HseCsv,
+    DehashedCsv,
+    /// Catch-all: an OathNet stealer-log TXT (and any unrecognised plain text).
+    OathnetTxt,
+}
+
+/// Classify an import body by CONTENT (never by extension alone), so a breach
+/// export imports identically under any filename. `path` only contributes the
+/// `.html`/`.csv` hints layered on top of the content checks; pass `""` when
+/// there is no file (the web upload). Pure — no I/O — so the whole detection
+/// matrix is unit-tested directly.
+pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
+    let head = body.trim_start();
+    // HTML first (by content or the `.html` hint).
+    if path.ends_with(".html") || head.starts_with("<!") || head.starts_with("<html") {
+        return ImportFormat::OathnetHtml;
     }
-    // A DeHashed CSV export (by extension or by its header columns) — a breach
-    // table, not OathNet JSON.
-    if path.ends_with(".csv") || looks_like_dehashed_csv(&body) {
-        return cmd_import_csv(&body, output).await;
+    // A JSON object before the text heuristics, so a JSON body can never be
+    // mis-keyed by a `looks_like_*` substring match.
+    if head.starts_with('{') {
+        return ImportFormat::OathnetJson;
     }
-
-    let doc: serde_json::Value =
-        serde_json::from_str(&body).map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
-
-    let export_info = doc.get("exportInfo").and_then(|v| v.as_object());
-    let query = export_info
-        .and_then(|ei| ei.get("query"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-    let date = export_info
-        .and_then(|ei| ei.get("exportDate"))
-        .and_then(|v| v.as_str())
-        .unwrap_or("unknown");
-
-    note(
-        output,
-        format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
-    );
-
-    let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
-    let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
-    deduplicate_by_uid(&mut entities);
-    print_import_stats(&stats, entities.len(), output);
-    persist_and_report(&sid, &entities, output).await;
-    import_json_output(&entities, &stats, query, date, path, output)
+    if looks_like_combined_search(body) {
+        return ImportFormat::CombinedSearch;
+    }
+    if looks_like_dossier(body) {
+        return ImportFormat::Dossier;
+    }
+    if looks_like_stealerlogs(body) {
+        return ImportFormat::Stealerlogs;
+    }
+    if looks_like_oathnet_report(body) {
+        return ImportFormat::OathnetReport;
+    }
+    if looks_like_hse_csv(body) {
+        return ImportFormat::HseCsv;
+    }
+    if path.ends_with(".csv") || looks_like_dehashed_csv(body) {
+        return ImportFormat::DehashedCsv;
+    }
+    ImportFormat::OathnetTxt
 }
 
 /// Render parsed import entities to stdout for the text-import paths (HTML / TXT
@@ -169,28 +189,22 @@ pub(crate) async fn entities_from_upload(
     body: &str,
     sid: &str,
 ) -> Result<(Vec<crate::core::entity::Entity>, &'static str)> {
-    let head = body.trim_start();
-    let (mut entities, label) = if head.starts_with("<!") || head.starts_with("<html") {
-        (parse_oathnet_html(body, sid), "oathnet-html")
-    } else if head.starts_with('{') {
-        let doc: serde_json::Value =
-            serde_json::from_str(body).map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
-        (parse_oathnet_json(&doc, sid).await.0, "oathnet-json")
-    } else if looks_like_combined_search(body) {
-        (parse_combined_search(body, sid).0, "combined-search")
-    } else if looks_like_dossier(body) {
-        (parse_dossier(body, sid).0, "dossier")
-    } else if looks_like_stealerlogs(body) {
-        (parse_stealerlogs(body, sid).0, "stealerlogs")
-    } else if looks_like_oathnet_report(body) {
-        (parse_oathnet_report(body, sid).0, "oathnet-report")
-    } else if looks_like_hse_csv(body) {
-        (parse_hse_csv(body, sid).0, "hse-csv")
-    } else if looks_like_dehashed_csv(body) {
-        (parse_dehashed_csv(body, sid).0, "dehashed-csv")
-    } else {
-        // The catch-all text format: an OathNet stealer-log TXT.
-        (parse_oathnet_txt(body, sid).0, "oathnet-txt")
+    // Same content-based detector the CLI dispatches on (no path → content only),
+    // so the browser upload and `hse import` can never disagree on a file's format.
+    let (mut entities, label) = match detect_import_format("", body) {
+        ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), "oathnet-html"),
+        ImportFormat::OathnetJson => {
+            let doc: serde_json::Value = serde_json::from_str(body)
+                .map_err(|e| Error::Other(format!("invalid JSON: {e}")))?;
+            (parse_oathnet_json(&doc, sid).await.0, "oathnet-json")
+        }
+        ImportFormat::CombinedSearch => (parse_combined_search(body, sid).0, "combined-search"),
+        ImportFormat::Dossier => (parse_dossier(body, sid).0, "dossier"),
+        ImportFormat::Stealerlogs => (parse_stealerlogs(body, sid).0, "stealerlogs"),
+        ImportFormat::OathnetReport => (parse_oathnet_report(body, sid).0, "oathnet-report"),
+        ImportFormat::HseCsv => (parse_hse_csv(body, sid).0, "hse-csv"),
+        ImportFormat::DehashedCsv => (parse_dehashed_csv(body, sid).0, "dehashed-csv"),
+        ImportFormat::OathnetTxt => (parse_oathnet_txt(body, sid).0, "oathnet-txt"),
     };
     deduplicate_by_uid(&mut entities);
     for e in &mut entities {
