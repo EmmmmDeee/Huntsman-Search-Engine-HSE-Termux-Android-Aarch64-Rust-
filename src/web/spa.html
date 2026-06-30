@@ -3350,8 +3350,17 @@ function wireUpdate(){
         const b = $('#update-badge'); if(b) b.style.display='none';
       } else {
         html = `<span class="text-warning"><b>${s.commits_behind}</b> update(s) available.</span>`;
-        const b = $('#update-badge');
-        if(b){ b.textContent = s.commits_behind; b.style.display=''; }
+        // The navbar badge is the proactive, unsolicited "notification" the
+        // feature.update_notify toggle governs (its doc: "shows a badge and
+        // notification when commits are available") — gate it here too, not
+        // just in pollUpdateBadge(), since this same element is also set on
+        // every Settings-page status refresh. The on-page status TEXT above
+        // is left ungated: the operator navigated here specifically to check,
+        // so it stays truthful regardless of the notify toggle.
+        if (s.update_notify) {
+          const b = $('#update-badge');
+          if(b){ b.textContent = s.commits_behind; b.style.display=''; }
+        }
       }
       if (s.last_checked){
         html += ` <span class="text-muted" style="font-size:11px">Last checked: ${esc(fmtDate(s.last_checked))}</span>`;
@@ -3424,13 +3433,16 @@ function showRestartOverlay(){
   }, 2500);
 }
 
-/* Lightweight navbar badge update — called at boot and not on every render. */
+/* Lightweight navbar badge update — called at boot and not on every render.
+   Gated on feature.update_notify: "update-available notification" is exactly
+   this badge per the toggle's own doc, so an operator who turns it off must
+   not keep seeing it merely because they reload the page. */
 async function pollUpdateBadge(){
   try {
     const s = await API.updateStatus();
     const b = $('#update-badge');
     if (!b) return;
-    if (s.commits_behind > 0){
+    if (s.update_notify && s.commits_behind > 0){
       b.textContent = s.commits_behind;
       b.style.display = '';
     }
