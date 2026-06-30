@@ -156,6 +156,36 @@ use super::*;
     }
 
     #[test]
+    fn normalise_phone_ten_digit_leading_zero_requires_a_real_au_trunk_digit() {
+        // Regression: the 10-digit `0…` branch lacked the trunk-digit gate
+        // its 9-digit sibling already enforces, so any 10-digit string
+        // starting with `0` was fabricated into a non-existent Australian
+        // number. A French local mobile "0612345678" has lead digit `6`,
+        // which is not a real AU national-significant-number lead (`8`
+        // itself IS a valid AU lead — SA/WA/NT geographic — so a foreign
+        // number coincidentally sharing a valid AU lead digit is an
+        // inherent, irreducible ambiguity this gate narrows but cannot
+        // fully eliminate; rejecting the clearly-wrong leads 0/1/6/9 is the
+        // confirmed bug this fixes).
+        assert_eq!(normalise_phone("0612345678"), None);
+        for lead in ['2', '3', '4', '5', '7', '8'] {
+            let local = format!("0{lead}12345678");
+            assert!(
+                normalise_phone(&local).is_some(),
+                "a real AU trunk digit {lead} must still normalise: {local}"
+            );
+        }
+        for lead in ['0', '1', '6', '9'] {
+            let local = format!("0{lead}12345678");
+            assert_eq!(
+                normalise_phone(&local),
+                None,
+                "lead digit {lead} is not a real AU trunk code: {local}"
+            );
+        }
+    }
+
+    #[test]
     fn au_phone_region_maps_geographic_area_codes() {
         // The four geographic area codes → region + member states.
         assert_eq!(

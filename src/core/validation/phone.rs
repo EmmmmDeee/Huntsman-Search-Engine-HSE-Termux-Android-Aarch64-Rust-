@@ -63,8 +63,22 @@ pub fn to_e164_au(s: &str) -> Option<String> {
         return validate_phone_e164(&e164).valid.then_some(e164);
     }
 
-    // AU local: a leading-`0` national number (`0` + 9 digits = 10).
-    if compact.len() == 10 && compact.starts_with('0') {
+    // AU local: a leading-`0` national number (`0` + 9 digits = 10). The
+    // second digit must be a real ACMA AU national-significant-number lead
+    // (2/3/4/5/7/8 — geographic fixed-line, mobile, or VoIP; see
+    // `modules::phone_au::classify_au_phone`, the canonical AU line-type
+    // classifier this admission gate feeds). Without this check, ANY 10-digit
+    // string starting with `0` — e.g. an Irish local mobile "087 123 4567" —
+    // was silently re-typed as a fully-formed Australian number by prepending
+    // `+61`, fabricating a non-existent AU phone (and its derived
+    // mobile/fixed-line/jurisdiction classification) from a foreign one.
+    if compact.len() == 10
+        && compact.starts_with('0')
+        && matches!(
+            compact.as_bytes()[1],
+            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
+        )
+    {
         let e164 = format!("+61{}", &compact[1..]);
         return validate_phone_e164(&e164).valid.then_some(e164);
     }
@@ -109,5 +123,46 @@ mod e164_au_tests {
         // Junk / too-short.
         assert_eq!(to_e164_au("12345"), None);
         assert_eq!(to_e164_au("not a phone"), None);
+    }
+
+    #[test]
+    fn ten_digit_leading_zero_requires_a_real_au_trunk_digit() {
+        // Regression: a 10-digit string starting with `0` was admitted
+        // regardless of its second digit, fabricating an Australian number
+        // from any foreign local-format phone that happened to be 10 digits.
+        // A French local mobile, "06 12 34 56 78", compacts to "0612345678"
+        // — lead digit `6` is not a real AU national-significant-number lead,
+        // so this must NOT be admitted as `+61612345678` (verified to
+        // previously yield exactly that fabricated AU number before this gate
+        // existed). Note `8` itself IS a real AU lead (SA/WA/NT geographic),
+        // so a foreign number whose second digit coincidentally matches a
+        // valid AU lead is an inherent, irreducible ambiguity this gate
+        // narrows but cannot fully eliminate — it rejects the clearly-wrong
+        // leads (0/1/6/9), which is the confirmed bug this fixes.
+        assert_eq!(to_e164_au("06 12 34 56 78"), None);
+        // Every valid ACMA AU national-significant-number lead still admits.
+        for (lead, kind) in [
+            ('2', "NSW/ACT geographic"),
+            ('3', "VIC/TAS geographic"),
+            ('4', "mobile"),
+            ('5', "VoIP"),
+            ('7', "QLD geographic"),
+            ('8', "SA/WA/NT geographic"),
+        ] {
+            let local = format!("0{lead}12345678");
+            assert!(
+                to_e164_au(&local).is_some(),
+                "a real AU {kind} number (lead {lead}) must still be admitted: {local}"
+            );
+        }
+        // Leads that are not valid AU national-significant-number digits.
+        for lead in ['0', '1', '6', '9'] {
+            let local = format!("0{lead}12345678");
+            assert_eq!(
+                to_e164_au(&local),
+                None,
+                "lead digit {lead} is not a real AU trunk code: {local}"
+            );
+        }
     }
 }

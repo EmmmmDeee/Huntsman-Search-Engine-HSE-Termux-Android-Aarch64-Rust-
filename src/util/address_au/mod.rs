@@ -279,7 +279,21 @@ pub fn normalise_phone(s: &str) -> Option<String> {
     if digits.starts_with("0061") {
         return Some(format!("+{}", &digits[2..]));
     }
-    if digits.starts_with('0') && digits.len() == 10 {
+    // The second digit must be a real ACMA AU national-significant-number
+    // lead (2/3/4/5/7/8), matching the gate the 9-digit branch below already
+    // enforces. Without this, any 10-digit string starting with `0` —
+    // including a foreign local-format number that happens to be 10 digits,
+    // e.g. an Irish local mobile "087 123 4567" — was silently re-typed as a
+    // fully-formed Australian number, fabricating a non-existent AU phone
+    // that then leaks into generated search-query formats (`oathnet_batch`)
+    // and the AU-102 phone-jurisdiction correlation key.
+    if digits.starts_with('0')
+        && digits.len() == 10
+        && matches!(
+            digits.as_bytes()[1],
+            b'2' | b'3' | b'4' | b'5' | b'7' | b'8'
+        )
+    {
         return Some(format!("+61{}", &digits[1..]));
     }
     if digits.len() == 9
