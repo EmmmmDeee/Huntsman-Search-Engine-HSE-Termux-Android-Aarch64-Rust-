@@ -2003,6 +2003,27 @@ async fn keys_status_endpoint_returns_service_summary_shape() {
 }
 
 #[tokio::test]
+async fn keys_patterns_endpoint_returns_detector_catalogue_shape() {
+    // The key-shape detector catalogue powers the SPA "Key diagnostics" coverage
+    // line. Previously this endpoint had zero test coverage. Wire contract:
+    // `{ count, unique_services, patterns[] }` with count == patterns.len().
+    let app = test_app("keys-patterns");
+    let resp = app.oneshot(get("/api/v1/keys/patterns")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let j = body_json(resp).await;
+    let patterns = j["patterns"].as_array().expect("patterns array");
+    assert_eq!(j["count"].as_u64().unwrap() as usize, patterns.len());
+    assert!(
+        j["unique_services"].as_u64().unwrap() >= 1,
+        "the catalogue must cover at least one service"
+    );
+    assert!(
+        !patterns.is_empty(),
+        "the detector catalogue must be non-empty"
+    );
+}
+
+#[tokio::test]
 async fn selftest_endpoint_returns_structured_report() {
     // GET /api/v1/selftest runs the full module + feature suite on demand and
     // returns the structured report the Web UI renders.

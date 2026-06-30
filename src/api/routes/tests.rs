@@ -183,6 +183,22 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_wires_the_key_diagnostics_endpoints() {
+        // The /keys/status + /keys/patterns operator-telemetry endpoints exist and
+        // are tested server-side; this guards that the SPA actually FETCHES them
+        // (the Settings "Key diagnostics" panel) so they cannot silently revert to
+        // dead-from-the-UI endpoints.
+        assert!(
+            SPA_HTML.contains("/api/v1/keys/status"),
+            "SPA must call /api/v1/keys/status (Key diagnostics panel)"
+        );
+        assert!(
+            SPA_HTML.contains("/api/v1/keys/patterns"),
+            "SPA must call /api/v1/keys/patterns (detector-coverage telemetry)"
+        );
+    }
+
+    #[test]
     fn external_resource_scanner_flags_a_cdn_but_not_a_local_or_anchor() {
         // Guard the guard: the scanner must catch a real external resource load,
         // ignore same-origin ones, and ignore navigational <a> links.

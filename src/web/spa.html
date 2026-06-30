@@ -672,6 +672,10 @@ const API = {
   poolGet:    ()=>API._req('/api/v1/keys/pool'),
   poolRevoke: body=>API._req('/api/v1/keys/pool/revoke',{method:'POST',body}),
   poolRotate: body=>API._req('/api/v1/keys/pool/rotate',{method:'POST',body}),
+  // Operator diagnostics: per-service key-pool health/quota + the detector
+  // coverage catalogue. Surfaced read-only in Settings (loopback-only).
+  keysStatus:   ()=>API._req('/api/v1/keys/status'),
+  keysPatterns: ()=>API._req('/api/v1/keys/patterns'),
   togglesGet: ()=>API._req('/api/v1/settings/toggles'),
   togglesPut: body=>API._req('/api/v1/settings/toggles',{method:'PUT',body}),
   stats:     ()=>API._req('/api/v1/stats'),
@@ -2888,6 +2892,10 @@ async function renderOpts(v){
   // block the rest of Settings from rendering.
   let pool = null;
   try { pool = await API.poolGet(); } catch { pool = null; }
+  // Best-effort operator diagnostics (loopback-only; never block Settings).
+  let kstatus = null, kpatterns = null;
+  try { kstatus = await API.keysStatus(); } catch { kstatus = null; }
+  try { kpatterns = await API.keysPatterns(); } catch { kpatterns = null; }
 
   v.innerHTML = `
     <h2>Settings</h2>
@@ -2920,6 +2928,7 @@ async function renderOpts(v){
     </div>
 
     ${poolPanel(pool, data.write_enabled)}
+    ${keysDiagPanel(kstatus, kpatterns)}
 
     <div class="panel panel-default">
       <div class="panel-heading"><b>Capability toggles</b>
@@ -3272,6 +3281,37 @@ function poolPanel(pool, writeEnabled){
           <thead><tr><th>Key</th><th>Status</th><th>Env</th><th class="text-right">Usage</th><th></th></tr></thead>
           <tbody>${rows}</tbody>
         </table></div>
+      </div>
+    </div>`;
+}
+/* Read-only operator telemetry: per-service key-pool health/quota (/keys/status)
+   + the detector coverage catalogue size (/keys/patterns). Surfaces the dashboard
+   diagnostics the handlers were built for but the SPA never showed. */
+function keysDiagPanel(status, patterns){
+  const svcs = (status && status.services) || [];
+  const rows = svcs.map(s=>`<tr>
+      <td><b>${esc(s.service)}</b></td>
+      <td class="text-right">${s.total}</td><td class="text-right">${s.active}</td>
+      <td class="text-right">${s.rate_limited}</td><td class="text-right">${s.exhausted}</td>
+      <td class="text-right">${s.invalid}</td><td class="text-right">${s.untested}</td>
+      <td class="text-right">${s.revoked}</td><td class="text-right">${s.uses}</td>
+      <td class="text-right">${s.errors}</td>
+      <td class="text-right">${Math.round((s.avg_health||0)*100)}%</td>
+    </tr>`).join('');
+  const cov = patterns
+    ? `<p class="text-muted" style="font-size:12px">Detector coverage: <b>${esc(patterns.count)}</b> key-shape patterns across <b>${esc(patterns.unique_services)}</b> services.</p>`
+    : '';
+  return `
+    <div class="panel panel-default">
+      <div class="panel-heading"><b>Key diagnostics</b>
+        <span class="text-muted pull-right" style="font-size:12px">per-service pool health · loopback-only</span>
+      </div>
+      <div class="panel-body">
+        ${cov}
+        ${svcs.length ? `<div class="table-responsive"><table class="table table-condensed">
+          <thead><tr><th>Service</th><th class="text-right">Total</th><th class="text-right">Active</th><th class="text-right">Rate-lim</th><th class="text-right">Exh.</th><th class="text-right">Invalid</th><th class="text-right">Untested</th><th class="text-right">Revoked</th><th class="text-right">Uses</th><th class="text-right">Errors</th><th class="text-right">Health</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table></div>` : '<p class="text-muted" style="font-size:12px">No keys in the pool yet.</p>'}
       </div>
     </div>`;
 }
