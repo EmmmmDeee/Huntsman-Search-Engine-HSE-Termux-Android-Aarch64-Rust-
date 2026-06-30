@@ -34,7 +34,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{fetch_json_or_404, read_text, urlencode};
 
 const SRC: &str = "pypi_user";
 const MAX_PACKAGES: usize = 30;
@@ -318,7 +318,12 @@ impl Module for PypiUser {
         if !xml_resp.status().is_success() {
             return Ok(ModuleResult::new());
         }
-        let xml_text = xml_resp.text().await?;
+        // Bounded read: a raw `resp.text().await` buffers the WHOLE body before
+        // this module ever looks at it — a hostile/compromised/MITM'd upstream
+        // could stream an unbounded payload into RAM on a memory-constrained
+        // Termux device. `read_text` is the same capped helper every other body
+        // read in the codebase uses (see `util::http::fetch`'s `JSON_BODY_CAP`).
+        let xml_text = read_text(SRC, xml_resp).await?;
         let packages = parse_user_packages(&xml_text);
         if packages.is_empty() {
             return Ok(ModuleResult::new());
