@@ -28,7 +28,10 @@ const SRC: &str = "asic_banned_orgs";
 const CKAN: &str = "https://data.gov.au/data/api/3/action/datastore_search";
 /// ASIC – Banned and Disqualified Organisations dataset (data.gov.au resource).
 const RES: &str = "ced03961-e6f7-4263-895a-0fd1d7996043";
-const MAX_HITS: usize = 5;
+/// Max matched records surfaced. Raised to the query `limit` so no genuine
+/// banned-organisation record is omitted (directive: never omit an API-derived
+/// AU government result).
+const MAX_HITS: usize = 100;
 
 pub struct AsicBannedOrgs;
 
@@ -102,7 +105,7 @@ impl Module for AsicBannedOrgs {
 }
 
 async fn ckan_query(ctx: &ModuleContext, name: &str) -> Vec<Map<String, Value>> {
-    let url = format!("{CKAN}?resource_id={RES}&limit=20&q={}", urlencode(name));
+    let url = format!("{CKAN}?resource_id={RES}&limit=100&q={}", urlencode(name));
     let Ok(resp) = ctx
         .http
         .get(&url)

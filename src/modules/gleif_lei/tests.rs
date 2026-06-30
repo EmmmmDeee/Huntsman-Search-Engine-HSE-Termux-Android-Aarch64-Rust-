@@ -167,7 +167,7 @@ fn query_url_encodes_brackets_and_value() {
     // form-encoded by `urlencode` (space -> '+', which servers decode back).
     let u = query_url("BHP Group");
     assert!(u.contains("filter%5Bentity.legalName%5D=BHP+Group"), "{u}");
-    assert!(u.contains("page%5Bsize%5D=10"), "{u}");
+    assert!(u.contains("page%5Bsize%5D=100"), "{u}");
 }
 
 #[test]

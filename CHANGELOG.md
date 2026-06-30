@@ -168,8 +168,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   tool (human or Claude). Deterministic; the byte-reproducibility guarantee holds.
 
 ### Changed
-- **AU-076 (email↔username local-part bridge) is consolidated by canonical
-  handle.** A name seed derives many email permutations and many username forms
+- **AU government-register result caps raised so no genuine API result is
+  omitted.** Several AU open-data modules silently dropped real records beyond a
+  small rank: QLD unclaimed-money (`MAX_RECORDS` 20), ASIC persons/banned (`5`),
+  ASIC business names (`8`), ACNC charities (`20`), and GLEIF LEI (`10`) — each
+  bounding both the CKAN/GLEIF query `limit` and the rows emitted. They now fetch
+  and surface up to 100 (the per-row name classifiers still gate quality), so a
+  subject's full register footprint reaches the graph (directive: never omit an
+  API-derived AU government result). The multiplicative geo fan-outs in QLD
+  unclaimed (postcodes→suburbs) are raised to a generous-but-bounded 25 each so a
+  real set is never truncated without putting a low-RAM device on a pathological
+  enumeration path; the global per-scan entity cap remains the ultimate safety.
   that all canonicalise to the same handle, so the per-pair emission produced an
   N×M flood of identical High findings (observed: 80 rows for one subject). It now
   emits ONE finding per canonical handle, listing every email form and every

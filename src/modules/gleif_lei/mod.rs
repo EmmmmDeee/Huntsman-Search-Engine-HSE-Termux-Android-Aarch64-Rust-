@@ -1,7 +1,7 @@
 //! Global Legal Entity Identifier (GLEIF) lookup (keyless, free).
 //!
 //! Endpoint: `GET https://api.gleif.org/api/v1/lei-records`
-//!           `?filter[entity.legalName]={name}&page[size]=10`
+//!           `?filter[entity.legalName]={name}&page[size]=100`
 //! Auth:     none — GLEIF publishes the global LEI index as a public,
 //!           keyless JSON:API (the authoritative ISO 17442 registry of legal
 //!           entities that trade in financial markets, ~2.7M records).
@@ -40,9 +40,11 @@ mod tests;
 
 pub(super) const SRC: &str = "gleif_lei";
 
-/// Cap on rows turned into entities for one seed. LEI name search is precise; a
-/// handful covers the genuine matches without flooding the graph.
-pub(super) const MAX_RECORDS: usize = 10;
+/// Cap on rows turned into entities for one seed — bounds both the GLEIF
+/// `page[size]` and the rows emitted. Raised so every genuine LEI name match
+/// surfaces (directive: never omit an API-derived result); LEI name search is
+/// precise, so this is a generous ceiling a real query stays well under.
+pub(super) const MAX_RECORDS: usize = 100;
 
 // Confidence tiers, aligned with the gov/corporate band and the noisy-OR
 // expansion floor (0.50): exact name matches pivot immediately; loose candidates

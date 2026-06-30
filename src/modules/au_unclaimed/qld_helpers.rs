@@ -25,12 +25,19 @@ pub(super) const SRC: &str = "qld_unclaimed";
 pub(super) const ACTION_BASE: &str = "https://www.data.qld.gov.au/api/3/action";
 /// Public Trustee unclaimed-monies datastore resource id.
 pub(super) const RESOURCE_ID: &str = "872065ae-ddfd-4b5f-ad15-e1935dadd883";
-/// Per-query record cap for the QLD register pass.
-pub(super) const MAX_RECORDS: usize = 20;
+/// Per-query record cap for the QLD register pass — bounds both the CKAN `limit`
+/// and the rows turned into entities. Raised so a person's FULL set of Public
+/// Trustee records surfaces (directive: never omit an API-derived AU government
+/// result); a real subject has far fewer than this.
+pub(super) const MAX_RECORDS: usize = 100;
 /// Cap on the number of exact-match postcodes fanned out to suburb enumeration.
-pub(super) const POSTCODE_CAP: usize = 6;
-/// Cap on the localities emitted per resolved postcode.
-pub(super) const SUBURB_CAP: usize = 8;
+/// Each postcode triggers its own locality lookup, so this stays bounded — a
+/// person's register postcodes are realistically a handful, so 25 never truncates
+/// a real set while keeping the geo fan-out off a low-RAM device's worst case.
+pub(super) const POSTCODE_CAP: usize = 25;
+/// Cap on the localities emitted per resolved postcode (a postcode spans a
+/// bounded set of suburbs; 25 covers it).
+pub(super) const SUBURB_CAP: usize = 25;
 
 /// A 4-digit Australian postcode, else `None`.
 pub(super) fn postcode(rec: &Map<String, Value>) -> Option<String> {

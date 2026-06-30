@@ -2,7 +2,7 @@
 //! (keyless, free).
 //!
 //! Endpoint: `GET https://data.gov.au/data/api/3/action/datastore_search`
-//!           `?resource_id={RESOURCE_ID}&q={name}&limit=20`
+//!           `?resource_id={RESOURCE_ID}&q={name}&limit=100`
 //! Auth:     none — the ACNC publishes the full national Register of Australian
 //!           charities on `data.gov.au` (CKAN) as a public, datastore-active
 //!           resource (~65k charities, refreshed regularly).
@@ -54,13 +54,14 @@ pub(super) const ACTION_BASE: &str = "https://data.gov.au/data/api/3/action";
 /// register under a new resource this is the single value to update.
 pub(super) const RESOURCE_ID: &str = "8fb32972-24e9-4c95-885e-7140be51be8a";
 
-/// Cap on rows turned into entities for one seed — a generic single-word query
-/// can match thousands of charities; we keep the highest-ranked handful so a
-/// single seed doesn't flood the graph.
-pub(super) const MAX_RECORDS: usize = 20;
+/// Cap on rows turned into entities for one seed — bounds both the CKAN `limit`
+/// and the rows emitted. Raised so a charity-name search surfaces its full set of
+/// genuine matches (directive: never omit an API-derived AU government result);
+/// the per-row whole-word classifier still keeps loosely-related rows out.
+pub(super) const MAX_RECORDS: usize = 100;
 
 /// Max other/trading names fanned out per charity.
-pub(super) const MAX_TRADING_NAMES: usize = 5;
+pub(super) const MAX_TRADING_NAMES: usize = 25;
 
 // Confidence tiers. Exact hits (name contains every seed token) are authoritative
 // federal-registry matches and sit above the 0.50 expansion floor so they pivot;

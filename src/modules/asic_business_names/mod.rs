@@ -28,8 +28,10 @@ const SRC: &str = "asic_business_names";
 const CKAN: &str = "https://data.gov.au/data/api/3/action/datastore_search";
 /// ASIC – Business Names dataset (data.gov.au resource).
 const RES: &str = "55ad4b1c-5eeb-44ea-8b29-d410da431be3";
-/// Max matched registrations surfaced (trading names collide heavily).
-const MAX_HITS: usize = 8;
+/// Max matched registrations surfaced. Raised to the query `limit` so no genuine
+/// business-name registration is omitted (directive: never omit an API-derived
+/// AU government result).
+const MAX_HITS: usize = 100;
 
 pub struct AsicBusinessNames;
 
@@ -108,7 +110,7 @@ impl Module for AsicBusinessNames {
 
 /// Query the Business Names datastore by free-text name. Best-effort.
 async fn ckan_query(ctx: &ModuleContext, name: &str) -> Vec<Map<String, Value>> {
-    let url = format!("{CKAN}?resource_id={RES}&limit=25&q={}", urlencode(name));
+    let url = format!("{CKAN}?resource_id={RES}&limit=100&q={}", urlencode(name));
     let Ok(resp) = ctx
         .http
         .get(&url)

@@ -47,8 +47,10 @@ const BANNED_RES: &str = "741da9e3-7e0c-458e-830c-c518698e1788";
 const ADVISER_RES: &str = "91d80440-5787-46fc-99de-0c1d93e6cc9f";
 /// ASIC – Credit Representative dataset (mortgage/finance brokers).
 const CREDIT_RES: &str = "999d9e92-df2c-4d6d-b580-321dcd205292";
-/// Max matched records surfaced per register (name collisions on common names).
-const MAX_HITS: usize = 5;
+/// Max matched records surfaced per register. Raised to the query `limit` so no
+/// genuine register hit is omitted (directive: never omit an API-derived AU
+/// government result); the per-row name classifier still gates quality.
+const MAX_HITS: usize = 100;
 
 pub struct AsicPersons;
 
@@ -153,7 +155,7 @@ impl Module for AsicPersons {
 /// transport/parse failure yields no records, never a scan error.
 async fn ckan_query(ctx: &ModuleContext, resource_id: &str, name: &str) -> Vec<Map<String, Value>> {
     let url = format!(
-        "{CKAN}?resource_id={resource_id}&limit=20&q={}",
+        "{CKAN}?resource_id={resource_id}&limit=100&q={}",
         urlencode(name)
     );
     let Ok(resp) = ctx
