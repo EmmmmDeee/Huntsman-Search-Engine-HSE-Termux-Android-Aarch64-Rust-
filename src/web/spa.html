@@ -2692,7 +2692,11 @@ const NODE_COLOR = {
   email:'#31708f', domain:'#3c763d', username:'#2c7c40', phone:'#8a6d3b',
   ip_address:'#31708f', asn:'#5a4d8a', person:'#3c763d', credential:'#9b1f9b',
   password:'#9b1f9b', address:'#a94442', coordinates:'#8a4b1f', organisation:'#5a4d8a',
-  abn_acn:'#8a6d3b', url:'#31708f', mac_address:'#666', device_id:'#666', other:'#888'
+  abn_acn:'#8a6d3b', url:'#31708f', mac_address:'#666', device_id:'#666',
+  // Kinds that previously fell back to the undifferentiated '#888' grey (matched
+  // to their Browse pill colours so a kind reads the same in both surfaces).
+  cidr:'#31708f', crypto_address:'#b8860b', api_key:'#c0392b', ssid:'#2c6e6a', tracking_id:'#5e4b8a',
+  other:'#888'
 };
 
 function buildD3Graph(){

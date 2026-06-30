@@ -269,11 +269,26 @@ use super::*;
             "url",
             "username",
         ];
+        // The Browse/report pill surface — a `.k-<kind>` CSS rule.
         for k in KIND_STYLES {
             assert!(
                 SPA_HTML.contains(&format!(".k-{k}{{")),
                 "SPA has no `.k-{k}` pill style — EntityKind `{k}` renders as a \
                  default/undifferentiated pill; add a colour"
+            );
+        }
+        // The graph surface — a NODE_COLOR entry. A kind missing here renders as
+        // the undifferentiated '#888' grey node, indistinguishable from `other`.
+        let node_colors = SPA_HTML
+            .split_once("const NODE_COLOR = {")
+            .and_then(|(_, b)| b.split_once("};"))
+            .map(|(b, _)| b)
+            .expect("NODE_COLOR map present in SPA");
+        for k in KIND_STYLES {
+            assert!(
+                node_colors.contains(&format!("{k}:")),
+                "EntityKind `{k}` has no NODE_COLOR entry — it renders as a grey \
+                 default node in the graph; add a colour matching its pill"
             );
         }
         // Drift guard: pin to the real enum (every variant is a bare unit ident
