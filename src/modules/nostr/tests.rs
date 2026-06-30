@@ -205,3 +205,14 @@ async fn nostr_live_resolves_nip05() {
         "expected fiatjaf's known pubkey from the live NIP-05 document"
     );
 }
+
+#[test]
+fn freemail_domains_are_not_nip05_probed_custom_domains_are() {
+    // A freemail provider serves no /.well-known/nostr.json → a certain 404, so
+    // it is not probed; a custom domain might self-host NIP-05, so it is.
+    for d in ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com"] {
+        assert!(!nip05_worth_probing(d), "{d} (freemail) must be skipped");
+    }
+    assert!(nip05_worth_probing("fiatjaf.com"));
+    assert!(nip05_worth_probing("example.org"));
+}

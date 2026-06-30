@@ -121,13 +121,15 @@ impl Module for Nostr {
             TargetKind::Email => {
                 if looks_like_email(v)
                     && let Some((name, domain)) = v.split_once('@')
+                    && nip05_worth_probing(domain)
                 {
                     let url = format!(
                         "https://{domain}/.well-known/nostr.json?name={}",
                         urlencode(name)
                     );
                     // 404 (every ordinary mail domain) → not a Nostr identity, a
-                    // clean miss.
+                    // clean miss. Freemail domains are skipped entirely above (a
+                    // certain 404 — they serve no NIP-05 document).
                     if let Some(doc) = fetch_json_or_404::<Nip05>(&ctx.http, SRC, &url).await?
                         && let Some(hex) = lookup_pubkey(&doc, name).filter(|h| is_hex64(h))
                     {
@@ -141,6 +143,16 @@ impl Module for Nostr {
 
         Ok(result)
     }
+}
+
+/// Whether `domain` is worth a NIP-05 probe. A freemail provider (gmail/outlook/
+/// yahoo/…) serves no `/.well-known/nostr.json`, so the probe is a guaranteed 404
+/// — skip it rather than spend the request on a certain miss (freemail is the
+/// majority of email seeds). A custom domain MIGHT self-host NIP-05, so it is
+/// still probed. Pure. (The `fediverse` module applies the identical guard to its
+/// WebFinger probe.)
+fn nip05_worth_probing(domain: &str) -> bool {
+    !crate::util::domains::is_freemail(domain)
 }
 
 /// Emit the canonical, path-independent identity entities — the `njump.me`

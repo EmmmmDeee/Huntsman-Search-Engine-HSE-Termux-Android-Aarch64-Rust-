@@ -175,6 +175,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`nostr` no longer spends a guaranteed-404 NIP-05 request on freemail seeds.**
+  The twin of the `fediverse` fix: the NIP-05 path probes
+  `https://<domain>/.well-known/nostr.json` for an email seed, but a freemail
+  provider serves no such document (the code comment already admitted "404 every
+  ordinary mail domain"). It now skips the probe for freemail domains
+  (`util::domains::is_freemail`) while still probing custom domains that might
+  self-host NIP-05. Regression-tested.
 - **`fediverse` no longer spends a guaranteed-404 WebFinger request on freemail
   seeds.** The module probes `https://<domain>/.well-known/webfinger` for an email
   seed, but a freemail provider (gmail/outlook/yahoo/…) runs no WebFinger server,
