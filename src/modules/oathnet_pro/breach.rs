@@ -627,6 +627,12 @@ pub(super) fn extract_breach_entities_with(
         if appended_salt || val_str(item, "salt").is_some_and(|s| !s.trim().is_empty()) {
             extra.push("salted");
         }
+        // Offline reverse-lookup: if this unsalted digest is a known common
+        // password, recover the plaintext (pure, no network/GPU).
+        let cracked = crate::util::hashcat::crack_common(&ph);
+        if cracked.is_some() {
+            extra.push("cracked");
+        }
         push_oathnet_entity(
             result,
             Entity::new(EntityKind::Password, &ph, 0.50, scan_id),
@@ -634,6 +640,18 @@ pub(super) fn extract_breach_entities_with(
             &extra,
             is_target_row,
         );
+        // Synergy: surface the recovered weak plaintext as a first-class node.
+        if let Some(pt) = cracked
+            && seen.insert(format!("@pw:{}", pt.to_lowercase()))
+        {
+            push_oathnet_entity(
+                result,
+                Entity::new(EntityKind::Password, pt, 0.55, scan_id),
+                &ev,
+                &["cracked", "weak-password", "from-hash"],
+                is_target_row,
+            );
+        }
     }
 
     // Plaintext password → first-class Password entity: the canonical secret the

@@ -81,57 +81,10 @@ pub(super) fn iban_is_valid(raw: &str) -> bool {
 /// shape-anchored classification, the same discipline the key detector applies:
 /// prefixed `crypt(3)`/KDF formats by their `$id$` marker, bare digests by hex
 /// length. Returns `(algorithm, fast)`, or `None` for an unrecognised shape.
+///
+/// Delegates to the shared [`crate::util::hashcat::identify_hash`] so every breach
+/// provider (OathNet, SeekNow, DeHashed) classifies by one definition that can't
+/// drift; the offline crack/salt corollaries live alongside it there.
 pub(super) fn identify_password_hash(s: &str) -> Option<(&'static str, bool)> {
-    let h = s.trim();
-    // Adaptive / salted KDF + crypt(3) formats — slow to crack by design.
-    for (prefix, algo) in [
-        ("$2a$", "bcrypt"),
-        ("$2b$", "bcrypt"),
-        ("$2y$", "bcrypt"),
-        ("$2x$", "bcrypt"),
-        ("$argon2", "argon2"),
-        ("$6$", "sha512crypt"),
-        ("$5$", "sha256crypt"),
-        ("$1$", "md5crypt"),
-        ("$P$", "phpass"),
-        ("$H$", "phpass"),
-        ("$7$", "scrypt"),
-        ("$scrypt$", "scrypt"),
-        ("$pbkdf2", "pbkdf2"),
-        ("pbkdf2_", "pbkdf2"),
-    ] {
-        if h.starts_with(prefix) {
-            return Some((algo, false));
-        }
-    }
-    // MySQL 4.1+: `*` followed by 40 hex — a fast SHA1(SHA1(pw)).
-    if let Some(rest) = h.strip_prefix('*')
-        && rest.len() == 40
-        && rest.bytes().all(|b| b.is_ascii_hexdigit())
-    {
-        return Some(("mysql", true));
-    }
-    // Bare hex digest, optionally with an appended salt. 32 hex is MD5 (also
-    // NTLM / LM at this length); the rest are the SHA-2 family by width. OathNet
-    // packs the salt onto the digest — space-separated (`"2f43… _:=j…"`) or behind
-    // a `,:` / `:` marker (`"b3dd…,:xpay"`) — so classify by the LEADING hex run's
-    // length rather than demanding the whole string be hex. The remainder, if any,
-    // must begin at a separator, so a token that merely *starts* with hex but is
-    // really something else is not misread as a digest.
-    let hex_len = h.bytes().take_while(u8::is_ascii_hexdigit).count();
-    if hex_len > 0 {
-        let rest = &h[hex_len..];
-        if rest.is_empty() || rest.starts_with([' ', '\t', ':', ',', ';', '|']) {
-            return match hex_len {
-                32 => Some(("md5", true)),
-                40 => Some(("sha1", true)),
-                56 => Some(("sha224", true)),
-                64 => Some(("sha256", true)),
-                96 => Some(("sha384", true)),
-                128 => Some(("sha512", true)),
-                _ => None,
-            };
-        }
-    }
-    None
+    crate::util::hashcat::identify_hash(s)
 }

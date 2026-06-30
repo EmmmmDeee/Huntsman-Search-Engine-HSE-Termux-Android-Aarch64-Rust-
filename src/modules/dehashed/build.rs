@@ -315,12 +315,47 @@ pub(super) fn extract_records(
             for h in field_strings(item, hash_field) {
                 let h = h.trim();
                 if h.len() >= 8 && seen.insert(format!("@pwhash:{}", h.to_lowercase())) {
+                    // Offline hash intelligence ("hashcat-lite"): algorithm,
+                    // crackability, appended salt, and an offline reverse-lookup of
+                    // common-password digests — all pure, no network, no GPU.
+                    let mut tags: Vec<String> = vec!["password-hash".to_string()];
+                    if let Some((algo, fast)) = crate::util::hashcat::identify_hash(h) {
+                        tags.push(format!("hash:{algo}"));
+                        tags.push(
+                            if fast {
+                                "crackable:fast"
+                            } else {
+                                "crackable:slow"
+                            }
+                            .to_string(),
+                        );
+                    }
+                    if crate::util::hashcat::is_salted(h) {
+                        tags.push("salted".to_string());
+                    }
+                    let cracked = crate::util::hashcat::crack_common(h);
+                    if cracked.is_some() {
+                        tags.push("cracked".to_string());
+                    }
+                    let tag_refs: Vec<&str> = tags.iter().map(String::as_str).collect();
                     push_breach_entity(
                         result,
                         Entity::new(EntityKind::Password, h, 0.55, scan_id),
                         &ev,
-                        &["password-hash"],
+                        &tag_refs,
                     );
+                    // Synergy: a recovered plaintext is the subject's weak password
+                    // laid bare — surface it as a first-class node for the dossier.
+                    if let Some(pt) = cracked
+                        && seen.insert(format!("@pw:{}", pt.to_lowercase()))
+                    {
+                        push_breach_entity(
+                            result,
+                            Entity::new(EntityKind::Password, pt, 0.60, scan_id),
+                            &ev,
+                            &["cracked", "weak-password", "from-hash"],
+                        );
+                    }
                 }
             }
         }

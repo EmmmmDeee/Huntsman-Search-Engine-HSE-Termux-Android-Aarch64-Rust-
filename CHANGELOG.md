@@ -11,6 +11,28 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Offline hash intelligence (`util::hashcat`) — a "hashcat-lite" that empowers
+  raw breach hashes without a GPU, a network call, or root (Termux aarch64 safe).**
+  A new shared module turns a raw password digest into intelligence three ways:
+  (1) `identify_hash` classifies the algorithm and crackability (fast unsalted
+  MD5/SHA-family ≈ plaintext vs a slow adaptive KDF) and `is_salted` flags an
+  appended salt — the single definition every breach provider now shares (OathNet's
+  classifier delegates to it); (2) `crack_common` resolves a fast unsalted digest
+  to its plaintext when it is the MD5/SHA-1/SHA-256/SHA-512 of a common password,
+  by a reverse-lookup table built once offline at first use (only already-public
+  weak passwords resolve; salted/strong hashes return `None`); (3) `is_common_collision`
+  is the noise-reduction corollary. The recovered plaintext is surfaced as a
+  first-class node by **DeHashed and OathNet** (the hash entity tagged
+  `hash:<algo>` / `crackable:fast|slow` / `salted` / `cracked`), and — crucially —
+  **AU-105 (credential-reuse identity link) now skips a hash whose plaintext is a
+  common password**: the same `md5("password")` recurs for unrelated people, so
+  grouping on it would manufacture false reuse links. Hash intelligence here both
+  enriches (exposure) and DE-NOISES (precise linking). Conceptually MITRE ATT&CK
+  T1110.002 (Password Cracking) applied to reconnaissance T1589.001 (Credentials).
+  Proven by new unit tests (algorithm classification, salt detection, a full
+  round-trip of every listed password across all four digests, the famous
+  `md5("password")`, the DeHashed crack→plaintext path, and the AU-105
+  common-collision skip) and the full gate (clippy `-D warnings`, 4173 lib tests).
 - **DeHashed now surfaces the FULL breach record — including the password hash —
   for entity linking and reverse search.** Previously the module bound only
   `database_name` and dropped every credential under a "no-credentials-in-evidence

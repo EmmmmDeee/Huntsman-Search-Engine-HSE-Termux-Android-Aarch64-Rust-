@@ -3131,6 +3131,33 @@ fn au105_groups_a_hash_case_insensitively_across_sources() {
 }
 
 #[test]
+fn au105_does_not_link_on_a_common_password_hash_collision() {
+    // A hash whose plaintext is a COMMON password (here md5("password")) recurs
+    // for countless unrelated people, so sharing it across breaches is a
+    // collision, NOT a reuse link — AU-105 must not fire. A genuinely unique hash
+    // of the same length still does, proving the gate keys on the collision, not
+    // the shape.
+    let common = "5f4dcc3b5aa765d61d8327deb882cf99"; // md5("password")
+    let uniq = "00112233445566778899aabbccddeeff"; // not a common-password digest
+    let mk = |db: &str, hash: &str| {
+        let mut e = Entity::new(EntityKind::Email, "a@x.com", 0.9, "s");
+        e.add_evidence(
+            Evidence::new("breach", "rec")
+                .with_attr("dbname", db)
+                .with_attr("password_hash", hash),
+        );
+        e
+    };
+    assert!(
+        super::rules::rule_au_105_credential_reuse(&[mk("db1", common), mk("db2", common)], "s", 0)
+            .is_empty(),
+        "a common-password hash is a collision, not a reuse link"
+    );
+    let r = super::rules::rule_au_105_credential_reuse(&[mk("db1", uniq), mk("db2", uniq)], "s", 0);
+    assert_eq!(r.len(), 1, "a unique hash IS a real reuse link");
+}
+
+#[test]
 fn au105_silent_for_a_single_use_secret() {
     // A password seen in only ONE breach is not reuse → no finding.
     let mut e = Entity::new(EntityKind::Email, "s@x.com", 0.9, "s");

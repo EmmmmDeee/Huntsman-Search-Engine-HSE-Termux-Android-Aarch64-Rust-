@@ -1253,7 +1253,10 @@ const HASH_PW_KEYS: &[&str] = &["password_hash", "hashed_password", "hash"];
 /// count — so the report stays safe to share. Hashes are grouped case-insensitively
 /// (the same hash is dumped upper- and lower-case across sources) and kept in a
 /// namespace separate from case-sensitive plaintext, so the two never conflate. A
-/// value containing `@` (a mis-stored email) is skipped. Plaintext reuse is High
+/// value containing `@` (a mis-stored email) is skipped, as is a hash whose
+/// plaintext is a known COMMON password ([`crate::util::hashcat::is_common_collision`]) —
+/// the same `md5("password")` recurs for unrelated people, so it is a collision,
+/// not a reuse link. Plaintext reuse is High
 /// (immediately exploitable); hash reuse is Medium. Runs on the confirmed view, so
 /// a co-occurrence stranger's reused password never fires it. Deterministic.
 pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
@@ -1290,7 +1293,15 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
             for k in HASH_PW_KEYS {
                 if let Some(v) = ev.attributes.get(*k) {
                     let s = v.trim();
-                    if s.len() >= 8 && !s.contains('@') {
+                    // Skip a hash whose plaintext is a known common password
+                    // (offline `crack_common`): the same `md5("password")` recurs
+                    // for countless unrelated people, so sharing it is NOT an
+                    // identity link — grouping on it would manufacture false reuse
+                    // findings. Hash intelligence here reduces noise, not adds it.
+                    if s.len() >= 8
+                        && !s.contains('@')
+                        && !crate::util::hashcat::is_common_collision(s)
+                    {
                         let entry = by_secret
                             .entry(format!("h:{}", s.to_lowercase()))
                             .or_insert((false, BTreeSet::new(), BTreeSet::new()));

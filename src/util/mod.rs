@@ -22,6 +22,7 @@ pub mod freq;
 pub mod geo;
 pub mod geohash;
 pub mod geometry;
+pub mod hashcat;
 pub mod html;
 pub mod http;
 pub mod json;

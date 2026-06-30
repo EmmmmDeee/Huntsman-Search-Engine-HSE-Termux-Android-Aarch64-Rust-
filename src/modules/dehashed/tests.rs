@@ -223,6 +223,31 @@ fn non_target_stranger_record_is_quarantined_not_dropped() {
 }
 
 #[test]
+fn weak_hash_is_cracked_offline_to_its_plaintext() {
+    // hashed_password is md5("password") — the offline reverse-lookup recovers the
+    // plaintext, surfaces it as a first-class node, and tags the hash entity with
+    // its algorithm, crackability, and `cracked`. No network, no GPU.
+    let entries = vec![json!({
+        "email": ["a@b.com"],
+        "hashed_password": ["5f4dcc3b5aa765d61d8327deb882cf99"],
+        "database_name": ["X"]
+    })];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "a@b.com", "fp", "s", &mut seen, &mut result);
+    // The recovered plaintext is a first-class Password node.
+    assert!(has(&result, EntityKind::Password, "password"));
+    let hash_ent = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Password && e.value == "5f4dcc3b5aa765d61d8327deb882cf99")
+        .unwrap();
+    assert!(hash_ent.has_tag("cracked"));
+    assert!(hash_ent.has_tag("hash:md5"));
+    assert!(hash_ent.has_tag("crackable:fast"));
+}
+
+#[test]
 fn multi_value_fields_surface_every_value() {
     // v2 can return several emails/passwords in one record's arrays; each must
     // become its own entity, none collapsed to the first.
