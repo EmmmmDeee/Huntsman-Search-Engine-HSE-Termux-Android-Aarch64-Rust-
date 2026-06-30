@@ -10,11 +10,16 @@
 //! account-email variable (formerly required alongside the key) is gone — a
 //! single API key is all v2 needs.
 //!
-//! Per the project's no-credentials-in-evidence invariant, we deliberately do
-//! NOT bind the `password` / `hashed_password` fields a v2 entry carries —
-//! serde drops every field we don't name, so they can't even accidentally be
-//! surfaced. Only aggregate metadata escapes: total hits, rows returned, the
-//! top source databases, and the remaining API credit balance.
+//! Full-fidelity extraction: DeHashed exists to return breach records — incl.
+//! the password and `hashed_password` digest — so the per-record extractor
+//! surfaces EVERY field. The hash becomes a first-class `Password` entity (a
+//! reverse-searchable node) and rides on each record's evidence as the
+//! `hashed_password` attribute the hash-reuse identity linker (`AU-105`) groups
+//! on, so the same hash across two accounts (or two providers) links them.
+//! Nothing is redacted or truncated. A broad search (above all a `name` query)
+//! can return same-name strangers; their entities are demoted to quarantined
+//! `candidate` leads — retained for transparency, never masquerading as the
+//! subject — exactly as `oathnet_pro` / `see_know` do.
 
 use async_trait::async_trait;
 
@@ -30,7 +35,7 @@ mod types;
 use types::DehashedResp;
 
 mod build;
-use build::{balance_str, build_breach_entity, selector_for};
+use build::{balance_str, build_breach_entity, extract_records, selector_for};
 
 #[cfg(test)]
 mod tests;
@@ -88,8 +93,10 @@ impl Module for DeHashed {
 
     fn produces(&self) -> &'static [crate::core::entity::EntityKind] {
         use crate::core::entity::EntityKind;
-        // DeHashed enriches the seed entity only — breach metadata is attached
-        // as evidence attrs rather than new pivot entities.
+        // Per-record extraction surfaces the full breach record: identity, the
+        // credential secret (incl. the hash → `Password`), and the long tail via
+        // the shared `breach_rich` pass (plus `Other(<field>)` for every remaining
+        // raw field — an unbounded set, so not enumerable here).
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
             EntityKind::Username,
@@ -97,6 +104,12 @@ impl Module for DeHashed {
             EntityKind::Person,
             EntityKind::IpAddress,
             EntityKind::Domain,
+            EntityKind::Password,
+            EntityKind::Address,
+            EntityKind::Coordinates,
+            EntityKind::Organisation,
+            EntityKind::MacAddress,
+            EntityKind::DeviceId,
         ];
         KINDS
     }
@@ -161,6 +174,10 @@ impl Module for DeHashed {
             return Ok(ModuleResult::new());
         }
 
+        // Stable origin fingerprint of the exact key in use — stamped onto every
+        // record's evidence as `api_key_origin`, so each finding declares its
+        // provenance. The full secret is never written (the middle is elided).
+        let key_fp = crate::util::oathnet::key_fingerprint(key);
         let balance = balance_str(&body.balance);
         let mut result = ModuleResult::new();
         result.push(build_breach_entity(
@@ -172,6 +189,19 @@ impl Module for DeHashed {
             balance.as_deref(),
             &ctx.scan_id,
         ));
+        // Surface every record's identity, credential (incl. the hash digest),
+        // and full long tail — non-target strangers demoted to quarantined
+        // candidates. This is what makes DeHashed hashes reverse-searchable and
+        // AU-105-linkable rather than discarded.
+        let mut seen = std::collections::HashSet::new();
+        extract_records(
+            &entries,
+            value,
+            &key_fp,
+            &ctx.scan_id,
+            &mut seen,
+            &mut result,
+        );
         Ok(result)
     }
 }

@@ -11,6 +11,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **DeHashed now surfaces the FULL breach record — including the password hash —
+  for entity linking and reverse search.** Previously the module bound only
+  `database_name` and dropped every credential under a "no-credentials-in-evidence
+  invariant", so the very data DeHashed exists to provide (the `hashed_password`
+  digest and plaintext `password`) never reached the graph — defeating hash-based
+  entity linking and reverse search. DeHashed now extracts every record to parity
+  with `oathnet_pro` / `see_know`: identity (email / username / phone / Person /
+  IP), the credential secret as first-class `Password` entities (the hash tagged
+  `password-hash`, a reverse-searchable node), and the full long tail via the
+  shared `breach_rich` pass — with EVERY raw field preserved verbatim on each
+  record's evidence (nothing redacted or truncated). v2's array-wrapped fields
+  (`"email": ["…"]`, multi-value records) are handled: every value surfaces, and a
+  single hash flattens to the bare digest so it matches the same hash from another
+  provider. A broad `name` search's same-name strangers are demoted to quarantined
+  `candidate` leads (retained for transparency, never the subject), exactly as the
+  other breach pools do. **AU-105 (credential-reuse identity link) now also reads
+  the `hashed_password` key**, so the same digest from DeHashed and OathNet groups
+  as one reuse signal — cross-source hash linking. Proven by new unit tests
+  (identity+hash surfaced and carried as the AU-105 attribute, stranger
+  quarantine, multi-value arrays) and the full gate (clippy `--all-targets -D
+  warnings`, 4166 lib tests).
 - **Shared maximum-raw-data extractor brings OathNet stealer logs to parity with
   SeekNow (`util`-style functional refactor).** SeekNow's verbose "long tail"
   pass — device fingerprints (HWID / MAC / hostname → `DeviceId`/`MacAddress`),

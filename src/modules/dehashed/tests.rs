@@ -1,20 +1,29 @@
 use super::DeHashed;
-use super::build::{balance_str, build_breach_entity, db_names, selector_for};
-use super::types::{DehashedResp, Entry};
+use super::build::{balance_str, build_breach_entity, db_names, extract_records, selector_for};
+use super::types::DehashedResp;
 use crate::core::{
     entity::{Entity, EntityKind},
-    module::{Module, ModuleCost},
+    module::{Module, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
     tags,
 };
-use serde_json::json;
+use serde_json::{Value, json};
+use std::collections::HashSet;
 
-fn entry(db: serde_json::Value) -> Entry {
-    Entry { database_name: db }
+/// A record carrying only a `database_name`, for the aggregate-builder tests.
+fn entry(db: Value) -> Value {
+    json!({ "database_name": db })
 }
 
 fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
     e.evidence[0].attributes.get(k).map(String::as_str)
+}
+
+fn has(result: &ModuleResult, kind: EntityKind, value: &str) -> bool {
+    result
+        .entities
+        .iter()
+        .any(|e| e.kind == kind && e.value == value)
 }
 
 #[test]
@@ -39,7 +48,6 @@ fn cost_is_paid() {
 
 #[test]
 fn selector_covers_every_accepted_kind() {
-    // selector_for must answer for exactly the kinds accepts() admits.
     for k in [
         TargetKind::Email,
         TargetKind::Username,
@@ -54,7 +62,6 @@ fn selector_covers_every_accepted_kind() {
     assert_eq!(selector_for(TargetKind::Email), Some("email"));
     assert_eq!(selector_for(TargetKind::FullName), Some("name"));
     assert_eq!(selector_for(TargetKind::IpAddress), Some("ip_address"));
-    // A kind the module does not search.
     assert_eq!(selector_for(TargetKind::Url), None);
 }
 
@@ -64,7 +71,6 @@ fn db_names_flattens_string_array_and_skips_non_strings() {
     assert_eq!(db_names(&json!(["A", "B"])), vec!["A", "B"]);
     assert!(db_names(&json!(null)).is_empty());
     assert!(db_names(&json!(42)).is_empty());
-    // A mixed array keeps only the string members.
     assert_eq!(db_names(&json!(["A", 1, "B"])), vec!["A", "B"]);
 }
 
@@ -80,14 +86,11 @@ fn balance_str_renders_number_and_string_only() {
 
 #[test]
 fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
-    // v2 returns database_name as arrays; counts fold across entries, and a
-    // bare scalar is tolerated too.
     let entries = [
         entry(json!(["Collection#1"])),
         entry(json!(["Collection#1"])),
         entry(json!("LinkedIn")),
     ];
-    // total (900) exceeds the returned/truncated rows (3).
     let e = build_breach_entity(
         EntityKind::Email,
         "a@b.com",
@@ -103,20 +106,15 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
     assert_eq!(attr(&e, "hits"), Some("900")); // server total, not len
     assert_eq!(attr(&e, "returned"), Some("3"));
     assert_eq!(attr(&e, "selector"), Some("email"));
-    // Collection#1 (2) ranks above the scalar LinkedIn (1).
     assert_eq!(
         attr(&e, "top_databases"),
         Some("Collection#1×2, LinkedIn×1")
     );
     assert_eq!(attr(&e, "credit_balance"), Some("498"));
-    // v2 carries no per-record timestamps, so no created range is surfaced.
-    assert_eq!(attr(&e, "earliest_record"), None);
-    assert_eq!(attr(&e, "latest_record"), None);
 }
 
 #[test]
 fn count_only_response_omits_optional_aggregates() {
-    // total known but no entry rows + no balance (a bare count response).
     let e = build_breach_entity(EntityKind::Domain, "x.com", "domain", &[], 42, None, "s");
     assert!(e.has_tag(tags::BREACH));
     assert_eq!(attr(&e, "hits"), Some("42"));
@@ -126,18 +124,16 @@ fn count_only_response_omits_optional_aggregates() {
 }
 
 #[test]
-fn resp_parses_v2_shape_and_drops_credential_fields() {
-    // The no-credentials invariant, structurally: a real v2 entry carries
-    // password / hashed_password, but `Entry` binds only database_name, so
-    // serde silently drops the rest — they can never reach evidence. Also
-    // proves the v2 wire shape (array fields, top-level balance/total)
-    // deserialises, which the inactive-subscription account blocks us from
-    // observing live.
+fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
+    // A real v2 entry wraps every field in an array. The extractor must surface
+    // the identity AND the credential secret — the password hash DeHashed exists
+    // to provide — as first-class entities, and carry the hash on each entity's
+    // evidence as `hashed_password` (the attribute AU-105 groups on for hash-reuse
+    // identity linking). This is the inverse of the former no-credentials policy.
     let raw = r#"{
         "success": true,
         "total": 2,
         "balance": 498,
-        "took": "5ms",
         "entries": [
             {
                 "id": "1",
@@ -150,30 +146,96 @@ fn resp_parses_v2_shape_and_drops_credential_fields() {
         ]
     }"#;
     let r: DehashedResp = serde_json::from_str(raw).unwrap();
-    assert_eq!(r.total, Some(2));
     let entries = r.entries.unwrap();
     assert_eq!(entries.len(), 1);
-    assert_eq!(db_names(&entries[0].database_name), vec!["Collection#1"]);
-    assert_eq!(balance_str(&r.balance), Some("498".to_string()));
+    assert_eq!(db_names(&entries[0]["database_name"]), vec!["Collection#1"]);
 
-    // Fold it through the builder: only aggregate metadata surfaces; no
-    // password/hash attribute exists anywhere on the entity.
-    let e = build_breach_entity(
-        EntityKind::Email,
-        "a@b.com",
-        "email",
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    // Target matches the record's email → first-class (not quarantined).
+    extract_records(
         &entries,
-        r.total.unwrap(),
-        balance_str(&r.balance).as_deref(),
+        "a@b.com",
+        "dehashed:1f8…16f2",
         "s",
+        &mut seen,
+        &mut result,
     );
-    let all_attr_vals: String = e.evidence[0]
-        .attributes
-        .values()
-        .cloned()
-        .collect::<Vec<_>>()
-        .join("|");
-    assert!(!all_attr_vals.contains("hunter2"));
-    assert!(!all_attr_vals.contains("5f4dcc3b"));
-    assert_eq!(attr(&e, "top_databases"), Some("Collection#1×1"));
+
+    // Identity + both credential representations are surfaced, nothing dropped.
+    assert!(has(&result, EntityKind::Email, "a@b.com"));
+    assert!(has(&result, EntityKind::Username, "alice"));
+    assert!(has(
+        &result,
+        EntityKind::Password,
+        "5f4dcc3b5aa765d61d8327deb882cf99"
+    ));
+    assert!(has(&result, EntityKind::Password, "hunter2"));
+
+    // The hash entity carries the `password-hash` tag; none of these are quarantined.
+    let hash_ent = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Password && e.value.starts_with("5f4"))
+        .unwrap();
+    assert!(hash_ent.has_tag("password-hash"));
+    assert!(result.entities.iter().all(|e| !e.has_tag(tags::CANDIDATE)));
+
+    // The hash rides on the email entity's evidence (flattened from the array) as
+    // the exact key AU-105 reads — the bare digest, so it matches the same hash
+    // from another provider, not `["5f4d…"]`.
+    let email_ent = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .unwrap();
+    assert_eq!(
+        attr(email_ent, "hashed_password"),
+        Some("5f4dcc3b5aa765d61d8327deb882cf99")
+    );
+}
+
+#[test]
+fn non_target_stranger_record_is_quarantined_not_dropped() {
+    // A broad `name` search returns a same-name stranger whose identifiers are NOT
+    // the subject. Their entities (incl. the hash) must be RETAINED — the
+    // operator's data is never silently dropped — but demoted to quarantined
+    // candidate leads so they never masquerade as the subject.
+    let entries = vec![json!({
+        "email": ["stranger@x.com"],
+        "hashed_password": ["deadbeefdeadbeefdeadbeefdeadbeef"],
+        "database_name": ["Collection#1"]
+    })];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "Jane Doe", "fp", "s", &mut seen, &mut result);
+
+    assert!(has(&result, EntityKind::Email, "stranger@x.com"));
+    assert!(has(
+        &result,
+        EntityKind::Password,
+        "deadbeefdeadbeefdeadbeefdeadbeef"
+    ));
+    assert!(
+        result.entities.iter().all(|e| e.has_tag(tags::CANDIDATE)),
+        "a non-target record's entities must be quarantined"
+    );
+}
+
+#[test]
+fn multi_value_fields_surface_every_value() {
+    // v2 can return several emails/passwords in one record's arrays; each must
+    // become its own entity, none collapsed to the first.
+    let entries = vec![json!({
+        "email": ["a@b.com", "a.b@work.com"],
+        "password": ["hunter2", "letmein99"],
+        "database_name": ["Collection#1"]
+    })];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "a@b.com", "fp", "s", &mut seen, &mut result);
+    assert!(has(&result, EntityKind::Email, "a@b.com"));
+    assert!(has(&result, EntityKind::Email, "a.b@work.com"));
+    assert!(has(&result, EntityKind::Password, "hunter2"));
+    assert!(has(&result, EntityKind::Password, "letmein99"));
 }

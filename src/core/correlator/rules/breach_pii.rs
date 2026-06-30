@@ -1238,7 +1238,9 @@ pub(in crate::core::correlator) fn rule_au_104_bank_account_exposure(
 /// plaintext `password` is directly stuffable, a `password_hash`/`hash` only
 /// proves reuse (it must be cracked first).
 const PLAINTEXT_PW_KEYS: &[&str] = &["password"];
-const HASH_PW_KEYS: &[&str] = &["password_hash", "hash"];
+// `hashed_password` is DeHashed's v2 spelling; `password_hash` is OathNet/SeekNow's.
+// Reading both lets the SAME digest from two providers group as one reuse signal.
+const HASH_PW_KEYS: &[&str] = &["password_hash", "hashed_password", "hash"];
 
 /// AU-105 — Credential reuse across breaches.
 ///
