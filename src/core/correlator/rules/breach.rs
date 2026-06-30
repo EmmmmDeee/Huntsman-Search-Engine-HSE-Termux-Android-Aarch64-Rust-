@@ -1099,11 +1099,20 @@ pub(in crate::core::correlator) fn rule_au_082_api_key_dual_pathway(
         .iter()
         .filter(|e| e.kind == EntityKind::ApiKey)
         .filter_map(|e| {
-            let families: std::collections::BTreeSet<&'static str> = e
-                .evidence
-                .iter()
-                .map(|ev| source_family(ev.source.as_str()))
-                .collect();
+            // The shared `source_families` detector (also used by AU-062/AU-063)
+            // — NOT a raw map over every evidence source — so a same-key replay
+            // via `recall`/`cross_scan_history`, or a deterministic enrichment
+            // pass riding along on the entity, can't manufacture a second
+            // "independent" pathway. Mapping every evidence source directly (the
+            // prior behaviour here) let a key seen once by a real harvester plus
+            // once via `recall`'s same-scan-history replay trivially satisfy
+            // `families.len() >= 2` (the replay falls into the unclassified
+            // `"other"` bucket), firing a false Critical dual-pathway alert from
+            // a single real sighting. `"other"` is removed too, matching AU-062's
+            // orthogonality check — an unclassified source is not a genuine
+            // second channel.
+            let mut families = source_families(e);
+            families.remove("other");
             if families.len() < 2 {
                 return None;
             }

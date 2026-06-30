@@ -7078,6 +7078,50 @@ fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
 }
 
 #[test]
+fn au082_does_not_fire_on_a_recall_replay_of_the_same_sighting() {
+    // Regression: a single genuine sighting (github_code_search → "code") plus
+    // the SAME observation re-attached by the `recall` replay pass (a prior
+    // scan's evidence re-injected, not a new independent sighting) must NOT
+    // read as a second "source family". Before the fix, `recall` fell through
+    // to the unclassified "other" bucket, so `{code, other}.len() >= 2`
+    // trivially fired a false Critical "dual-pathway... key was already
+    // circulating outside the original leak" alert from one real sighting.
+    use super::rules::rule_au_082_api_key_dual_pathway;
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let mut e = Entity::new(EntityKind::ApiKey, "sk-realkey-abc123xyz", 0.85, "s");
+    e.add_evidence(Evidence::new(
+        "github_code_search",
+        "Found in public repository".to_string(),
+    ));
+    e.add_evidence(Evidence::new(
+        crate::core::entity::RECALL_SOURCE,
+        "Recalled from a prior scan".to_string(),
+    ));
+    let r = rule_au_082_api_key_dual_pathway(&[e], "s", 0);
+    assert!(
+        r.is_empty(),
+        "a recall replay of the same sighting must not manufacture a second \
+         source family: {r:?}"
+    );
+
+    // A deterministic enrichment pass riding along (geo_normalize/name_intel/
+    // payid) must be excluded too — it's a derivation of the input, not an
+    // independent observation.
+    let mut e2 = Entity::new(EntityKind::ApiKey, "sk-anotherkey-def456", 0.85, "s");
+    e2.add_evidence(Evidence::new(
+        "github_code_search",
+        "Found in public repository".to_string(),
+    ));
+    e2.add_evidence(Evidence::new("payid", "Derived enrichment".to_string()));
+    let r2 = rule_au_082_api_key_dual_pathway(&[e2], "s", 0);
+    assert!(
+        r2.is_empty(),
+        "an enrichment-pass evidence entry must not manufacture a second \
+         source family: {r2:?}"
+    );
+}
+
+#[test]
 fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
     use super::{evaluate_relation_rules_on, evaluate_rules_on};
     // A confirmed entity that WOULD produce correlations under several rules.
