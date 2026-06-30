@@ -239,6 +239,28 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_tails_the_live_session_event_stream() {
+        // The per-session live SSE endpoint (/live/{id}/events) streams a running
+        // session's lifecycle + every per-iteration scan's events. It had no SPA
+        // consumer — the Live Monitor only polled the session list every 8s. The
+        // "Live activity" panel now opens an EventSource against it; guard the
+        // wiring so the stream can't silently revert to dead-from-the-UI.
+        assert!(
+            SPA_HTML.contains("/live/'+encodeURIComponent(liveId)+'/events"),
+            "SPA must open an EventSource against /live/{{id}}/events"
+        );
+        assert!(
+            SPA_HTML.contains("openLiveSse(") && SPA_HTML.contains("openLiveStream("),
+            "SPA must define the live-session stream tail (openLiveSse/openLiveStream)"
+        );
+        // The tail must be invoked from a real per-session control.
+        assert!(
+            SPA_HTML.contains("data-livestream") && SPA_HTML.contains("wireLiveStreams("),
+            "each Active-sessions row must carry a Stream control wired to the tail"
+        );
+    }
+
+    #[test]
     fn external_resource_scanner_flags_a_cdn_but_not_a_local_or_anchor() {
         // Guard the guard: the scanner must catch a real external resource load,
         // ignore same-origin ones, and ignore navigational <a> links.
