@@ -383,6 +383,7 @@ impl Module for SearchEngines {
                 | TargetKind::Url
                 | TargetKind::Coordinates
                 | TargetKind::TrackingId
+                | TargetKind::CryptoAddress
         )
     }
 

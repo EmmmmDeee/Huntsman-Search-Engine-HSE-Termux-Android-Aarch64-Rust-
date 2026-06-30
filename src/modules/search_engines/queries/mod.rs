@@ -651,6 +651,38 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
                 format!("\"{base}\" -site:google.com -site:googletagmanager.com"),
             ]
         }
+        TargetKind::CryptoAddress => {
+            // A crypto address is a globally-unique, heavily-indexed string:
+            // block explorers index every address, abuse/scam DBs index every
+            // reported one, and the OFAC SDN list names sanctioned ones. The
+            // only modules that currently consume a CryptoAddress pivot are the
+            // PAID chain_intel / intelx — so without this the free engine never
+            // turns a discovered address into the fraud reports, sanctions hits,
+            // explorer confirmation and forum/exchange attribution that a bare
+            // exact-match SERP sweep surfaces for free.
+            vec![
+                // Exact-match: explorer pages, exchange tags, any mention.
+                format!("\"{v}\""),
+                // Abuse / scam / theft reports.
+                format!("\"{v}\" scam OR fraud OR abuse OR stolen OR ransom OR phishing"),
+                format!(
+                    "\"{v}\" site:chainabuse.com OR site:bitcoinabuse.com \
+                     OR site:cryptscam.com OR site:scam-alert.io"
+                ),
+                // Block explorers across the major chains (confirmation + labels).
+                format!(
+                    "\"{v}\" site:blockchain.com OR site:blockchair.com \
+                     OR site:etherscan.io OR site:tronscan.org OR site:oxt.me"
+                ),
+                // Sanctions / enforcement exposure.
+                format!("\"{v}\" OFAC OR SDN OR sanctions OR seizure OR indictment"),
+                // Attribution: forums, code, paste, social.
+                format!(
+                    "\"{v}\" site:bitcointalk.org OR site:reddit.com \
+                     OR site:github.com OR site:twitter.com"
+                ),
+            ]
+        }
         _ => Vec::new(),
     }
 }

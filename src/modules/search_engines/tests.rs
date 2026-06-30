@@ -73,6 +73,13 @@ fn accepts_all_supported_kinds() {
     assert!(m.accepts(&Target::new(TargetKind::AbnAcn, "x")));
     assert!(m.accepts(&Target::new(TargetKind::Url, "http://x.com")));
     assert!(m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));
+    assert!(m.accepts(&Target::new(TargetKind::TrackingId, "UA-1")));
+    // A discovered crypto address must be picked up by the free engine (it is
+    // otherwise consumed only by the paid chain_intel / intelx).
+    assert!(m.accepts(&Target::new(
+        TargetKind::CryptoAddress,
+        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"
+    )));
 }
 
 #[test]

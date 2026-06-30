@@ -205,3 +205,22 @@ use super::*;
         // Cidr falls through the `_` arm → no base dorks.
         assert!(build_queries_base(&Target::new(TargetKind::Cidr, "10.0.0.0/8")).is_empty());
     }
+
+    #[test]
+    fn build_queries_base_crypto_address_emits_exact_explorer_and_abuse_dorks() {
+        use crate::core::scan::Target;
+        let addr = "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa"; // genesis BTC address
+        let q = build_queries_base(&Target::new(TargetKind::CryptoAddress, addr));
+        assert!(!q.is_empty(), "a crypto address must yield free-SERP dorks");
+        // Exact-match quoted address is the strongest pivot — must be first.
+        assert_eq!(q[0], format!("\"{addr}\""));
+        // Abuse/scam DBs, block explorers and sanctions are all covered.
+        assert!(q.iter().any(|s| s.contains("site:chainabuse.com")));
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:etherscan.io") && s.contains("site:blockchair.com"))
+        );
+        assert!(q.iter().any(|s| s.contains("OFAC") && s.contains("sanctions")));
+        // Every dork pins the exact address (no over-broad, address-free query).
+        assert!(q.iter().all(|s| s.contains(addr)));
+    }
