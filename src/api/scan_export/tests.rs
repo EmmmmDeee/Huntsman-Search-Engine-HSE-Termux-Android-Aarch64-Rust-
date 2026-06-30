@@ -74,6 +74,41 @@ use super::*;
         );
     }
 
+    #[test]
+    fn default_report_always_keeps_the_seed_even_if_it_is_infrastructure() {
+        // A scan seeded with a datacenter/CDN IP: an IP module re-emits the seed
+        // as `hosting`, merging `platform-infra` onto the seed anchor. The
+        // subject must never vanish from its own report — `seed` is preserved
+        // even under default (infra-suppressed) export.
+        use crate::core::entity::{Entity, EntityKind};
+        use crate::core::scan::{Scan, Target, TargetKind};
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("seed_infra.db");
+        let store = crate::storage::Store::open(db.to_str().unwrap()).unwrap();
+        let sid = "seed-infra-scan";
+        store
+            .upsert_scan(&Scan::new(
+                sid,
+                Target::new(TargetKind::IpAddress, "104.16.0.1"),
+            ))
+            .unwrap();
+        // The seed anchor that also got classified as hosting infrastructure.
+        let mut seed = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.90, sid);
+        seed.tag("seed");
+        seed.tag("subject");
+        seed.tag("hosting");
+        seed.tag("platform-infra");
+        store.upsert_entity(&seed).unwrap();
+
+        let port = &store as &dyn crate::core::port::StoragePort;
+        let default = build_scan_report(port, sid, false, false).unwrap().unwrap();
+        assert_eq!(
+            default["entity_count"].as_u64(),
+            Some(1),
+            "the seed/subject must survive default infra suppression"
+        );
+    }
+
     // ── entities_to_csv ─────────────────────────────────────────────────────
 
     #[test]

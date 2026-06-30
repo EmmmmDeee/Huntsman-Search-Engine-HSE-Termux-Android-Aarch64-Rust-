@@ -168,7 +168,11 @@ pub(crate) fn build_scan_report(
     // `include_infra=true` (via `--include-infra` or `--output full`) restores
     // them.
     if !include_infra {
-        entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA));
+        // The operator-provided seed is the subject — it must ALWAYS appear in
+        // its own report, even when it is itself infrastructure (e.g. a scan
+        // seeded with a datacenter/CDN IP that an IP module re-emits as
+        // `hosting`, which then merges `platform-infra` onto the seed anchor).
+        entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"));
     }
     let correlations = store.correlations_for_scan(scan_id)?;
     let best_location = extract_au_location_fix(&correlations, &entities);
