@@ -100,6 +100,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Capped, http-only, deduped, deterministic. The extraction was refactored into a
   pure `build_entities` and unit-tested (org + per-article Url, dedup, url-less
   skip, no-hits empty).
+- **`hlr_cnam` now preserves the two phone fields the providers returned and it
+  dropped (the no-omission directive).** `HlrResp.msisdn` — the HLR provider's
+  AUTHORITATIVE canonical international number, which can differ from the queried
+  local-format number — and `CnamResp.number` — the exact PSTN number CNAM resolved
+  the subscriber name against — were both deserialized and silently discarded. The
+  msisdn is now carried as `msisdn` evidence on the verified phone (so the
+  provider-normalised form survives), and the resolved number as `cnam_number`
+  evidence on the subscriber `Person` (tying the name to the precise number). The
+  inline extraction was refactored into pure `build_hlr_entities`/`build_cnam_person`
+  helpers (matching `numverify`'s convention) and unit-tested.
 - **Domain seeds get a progressive subdomain-walk dork.** Subdomain discovery rode
   on a single `site:{v} -site:www.{v}` dork; a second dork now also excludes the
   common subdomains (`mail`/`blog`/`shop`/`m`), pushing the engine to reveal the
