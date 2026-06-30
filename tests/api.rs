@@ -675,6 +675,34 @@ async fn scan_identities_resolves_coreferences() {
     assert_eq!(body["min_score"], 0.6, "echoes the requested threshold");
 }
 
+#[tokio::test]
+async fn scan_location_returns_the_residency_fix_envelope() {
+    // Unknown scan → 404, like the other `/scans/{id}/...` sub-resources.
+    let app = test_app("location_nf");
+    let resp = app
+        .oneshot(get("/api/v1/scans/nope/location"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 404);
+
+    // A known scan → 200 with the `best_location` envelope. With no AU location
+    // signal the value is null, but the KEY is always present so the SPA's
+    // renderLocation can branch on it deterministically (the lightweight twin of
+    // the report.json field, so the headline location finding is reachable
+    // without downloading every entity).
+    let (app, sid) = create_scan("location_ok").await;
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/location")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let body = body_json(resp).await;
+    assert!(
+        body.get("best_location").is_some(),
+        "always carries a best_location key (null when no AU location signal)"
+    );
+}
+
 // ── 5d. Proactive leads ───────────────────────────────────────────────────
 
 #[tokio::test]

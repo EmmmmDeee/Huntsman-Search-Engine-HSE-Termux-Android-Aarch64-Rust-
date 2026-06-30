@@ -24,7 +24,7 @@ pub mod intel;
 
 pub use analysis::{
     scan_correlations, scan_diff, scan_entities, scan_entities_facets, scan_entities_filter,
-    scan_identities, scan_network, scan_relations,
+    scan_identities, scan_location, scan_network, scan_relations,
 };
 pub use core::{
     plan_preview, radar_live, radar_sweep, scan_auto, scan_auto_plan, scan_auto_sweep, scan_batch,

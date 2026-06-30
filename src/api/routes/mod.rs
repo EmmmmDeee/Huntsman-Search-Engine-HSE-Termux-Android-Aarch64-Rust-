@@ -249,6 +249,8 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scans/{id}/pivots", get(scan_handlers::scan_pivots))
         // Discovery-gap analysis — isolated seeds and the corrective scans to link them.
         .route("/scans/{id}/gaps", get(scan_handlers::scan_gaps))
+        // The AU-059 residency fix — the "where is the subject" location verdict.
+        .route("/scans/{id}/location", get(scan_handlers::scan_location))
         // Consolidated benchmark scorecard (HTTP twin of `hse benchmark`).
         .route("/scans/{id}/benchmark", get(scan_handlers::scan_benchmark))
         .route("/scans/{id}/audit", get(scan_handlers::scan_audit))

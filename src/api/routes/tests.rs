@@ -203,7 +203,7 @@ use super::*;
         // Per-scan endpoints that were implemented + routed but the SPA never
         // surfaced. Each is now a section in the scan report; guard the wiring so
         // they cannot silently become dead-from-the-UI again.
-        for path in ["/benchmark", "/identities"] {
+        for path in ["/benchmark", "/identities", "/location"] {
             assert!(
                 SPA_HTML.contains(path),
                 "SPA report must fetch the {path} per-scan endpoint"
@@ -212,6 +212,9 @@ use super::*;
         // The render sections must be composed into the report.
         assert!(SPA_HTML.contains("renderIdentities("));
         assert!(SPA_HTML.contains("renderBenchmark("));
+        // The AU-059 residency fix (the headline "where is the subject" finding)
+        // must be surfaced, not just embedded in the heavy report.json export.
+        assert!(SPA_HTML.contains("renderLocation("));
     }
 
     #[test]

@@ -136,6 +136,40 @@ pub async fn scan_correlations(
     }
 }
 
+/// `GET /api/v1/scans/{id}/location` — the structured AU-059 residency fix: the
+/// "where is the subject" verdict (locality / state / lat / lon / precision
+/// radius / confidence and the independent signal classes that corroborate it).
+///
+/// A lightweight twin of the `best_location` field embedded in the full
+/// `report.json`, so the SPA can surface the headline location finding without
+/// downloading every entity — the Termux-friendly path. Reuses the same
+/// structural extractor the export uses, so the two never diverge. `best_location`
+/// is `null` when the scan found no AU location signal at all.
+pub async fn scan_location(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    let loaded = tokio::task::spawn_blocking(move || {
+        Ok::<_, crate::core::error::Error>((
+            store.correlations_for_scan(&id2)?,
+            store.entities_for_scan(&id2)?,
+        ))
+    })
+    .await;
+    let (correlations, entities) = match loaded {
+        Ok(Ok(pair)) => pair,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("query task failed: {e}")),
+    };
+    let best = crate::api::scan_export::extract_au_location_fix(&correlations, &entities);
+    Json(json!({ "best_location": best })).into_response()
+}
+
 /// Typed entity-relation edges for a scan (the attribution graph). Powers the
 /// SPA force-graph's relation layer.
 pub async fn scan_relations(
