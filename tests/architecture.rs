@@ -1710,3 +1710,139 @@ fn every_dispatched_correlation_rule_has_a_firing_test() {
          least one correlation is produced: {missing:?}"
     );
 }
+
+#[test]
+fn every_literal_constructed_entity_kind_is_declared_in_produces() {
+    // FORWARD producer-graph accuracy — the dual of smoke.rs's
+    // `every_declared_produced_pivot_has_a_consumer`. A module that mints an
+    // entity via a literal `Entity::new(EntityKind::X, …)` must declare `X` in
+    // `produces()`, so the capability map and consumer-matching can never
+    // silently under-represent what the module actually emits. This locks in the
+    // produces()-accuracy audit (crtsh / oathnet_pro / see_know et al.).
+    //
+    // SOUND, not complete — by construction it raises only true positives:
+    //   * It inspects only LITERAL constructions. A module that builds entities
+    //     with a *variable* kind (wigle / search_engines classify at runtime, the
+    //     core `classifier` extracts dynamically) is not checked here — a miss,
+    //     never a false alarm.
+    //   * The terminal catch-all `EntityKind::Other(_)` is excluded: it is
+    //     non-pivotable (`TargetKind::from_entity_kind` → None) and by universal
+    //     convention declared by no module — exactly like the Credential/Password
+    //     terminals the reverse guard special-cases.
+    // Coverage floors keep it from rotting into a vacuous pass.
+    use huntsman_search_engine::core::entity::EntityKind;
+    use huntsman_search_engine::modules::registry;
+
+    // PascalCase variant identifier for a declared kind, e.g. `IpAddress`; for the
+    // tuple variant `Other(String)` the leading `Other` before `(`.
+    fn variant_name(k: &EntityKind) -> String {
+        let dbg = format!("{k:?}");
+        match dbg.split_once('(') {
+            Some((head, _)) => head.to_string(),
+            None => dbg,
+        }
+    }
+
+    // Every `Entity::new( EntityKind::<Ident>` variant token in one source file,
+    // tolerating whitespace/newlines between `new(` and the kind path.
+    fn constructed_kinds(src: &str) -> Vec<String> {
+        const NEEDLE: &str = "Entity::new(";
+        let mut out = Vec::new();
+        let mut rest = src;
+        while let Some(p) = rest.find(NEEDLE) {
+            rest = &rest[p + NEEDLE.len()..];
+            if let Some(tail) = rest.trim_start().strip_prefix("EntityKind::") {
+                let ident: String = tail
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                if !ident.is_empty() {
+                    out.push(ident);
+                }
+            }
+        }
+        out
+    }
+
+    fn rs_files(dir: &Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(rd) = fs::read_dir(dir) else { return };
+        for e in rd.flatten() {
+            let p = e.path();
+            if p.is_dir() {
+                rs_files(&p, out);
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && p.file_name().is_some_and(|n| n != "tests.rs")
+            {
+                out.push(p);
+            }
+        }
+    }
+
+    let root = concat!(env!("CARGO_MANIFEST_DIR"), "/src/modules");
+    let mut scanned_modules = 0usize;
+    let mut kinds_checked = 0usize;
+    let mut violations: Vec<String> = Vec::new();
+
+    for m in registry() {
+        let name = m.name();
+        let declared: std::collections::HashSet<String> =
+            m.produces().iter().map(variant_name).collect();
+
+        // name → src/modules/<name>/ (dir) or src/modules/<name>.rs (file).
+        // Core-hosted modules (e.g. the universal `classifier`) live outside this
+        // tree and build dynamically — no literal constructions to check, so they
+        // are skipped; the coverage floor below stops that from going vacuous.
+        let dir = Path::new(root).join(name);
+        let file = Path::new(root).join(format!("{name}.rs"));
+        let mut files = Vec::new();
+        if dir.is_dir() {
+            rs_files(&dir, &mut files);
+        } else if file.is_file() {
+            files.push(file);
+        } else {
+            continue;
+        }
+        scanned_modules += 1;
+
+        for path in files {
+            let Ok(src) = fs::read_to_string(&path) else {
+                continue;
+            };
+            for ident in constructed_kinds(&src) {
+                if ident == "Other" {
+                    continue; // terminal catch-all, never declared by convention
+                }
+                kinds_checked += 1;
+                if !declared.contains(&ident) {
+                    let v = format!(
+                        "{name} constructs EntityKind::{ident} (literal Entity::new) but \
+                         does not declare it in produces()  [{}]",
+                        path.display()
+                    );
+                    if !violations.contains(&v) {
+                        violations.push(v);
+                    }
+                }
+            }
+        }
+    }
+
+    assert!(
+        violations.is_empty(),
+        "module(s) mint (via literal Entity::new) an EntityKind absent from \
+         produces() — add it to the module's produces() so the capability graph \
+         reflects what it emits:\n  {}",
+        violations.join("\n  ")
+    );
+    // Floors: the source audit mapped 160 modules and ~450 distinct literal
+    // EntityKind constructions. Keep generous lower bounds so a refactor that
+    // breaks the name→file map or the scanner can't make this guard pass vacuously.
+    assert!(
+        scanned_modules >= 120,
+        "expected to map most modules to source, only mapped {scanned_modules}"
+    );
+    assert!(
+        kinds_checked >= 300,
+        "expected many literal EntityKind constructions, saw {kinds_checked}"
+    );
+}
