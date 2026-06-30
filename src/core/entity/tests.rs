@@ -1105,6 +1105,41 @@ fn normalise_username_strips_leading_handle_sigil_for_dedup() {
 }
 
 #[test]
+fn normalise_username_is_a_fixed_point_when_whitespace_shields_a_sigil() {
+    // Regression for the property test `normalise_is_idempotent`, whose minimal
+    // shrink was `kind=Username, v="`\t`\0"`. A whitespace char wedged *between*
+    // two strip sigils used to survive the leading-sigil pass: the first pass
+    // stripped the outer backtick, then a separate `.trim()` removed the tab and
+    // exposed the inner backtick at the front one normalise too late. Re-running
+    // normalise then stripped that backtick too, so `` `\t`\0 `` keyed to `` `\0 ``
+    // once but `` \0 `` twice — forking one account across two UIDs. Folding
+    // whitespace into the same strip run as the sigils makes a single pass a
+    // fixed point.
+    let v = "`\t`\u{0}";
+    let once = normalise(&EntityKind::Username, v);
+    let twice = normalise(&EntityKind::Username, &once);
+    assert_eq!(once, twice, "username normalise must be idempotent: {v:?}");
+    // Both leading backticks and the interleaved tab are consumed in one pass,
+    // leaving only the non-strippable NUL.
+    assert_eq!(once, "\u{0}");
+
+    // A handle reachable only by stripping *through* interior whitespace still
+    // collapses to the bare account in a single pass — and shares its UID.
+    assert_eq!(normalise(&EntityKind::Username, "\"\t@\t bob "), "bob");
+    assert_eq!(
+        derive_uid(
+            &EntityKind::Username,
+            &normalise(&EntityKind::Username, "  `@` bob ")
+        ),
+        derive_uid(
+            &EntityKind::Username,
+            &normalise(&EntityKind::Username, "bob")
+        ),
+        "a whitespace/sigil-wrapped handle must share the bare account's UID"
+    );
+}
+
+#[test]
 fn normalise_username_and_domain_strip_invisible_noise() {
     // Identity integrity across the identity kinds: a BOM/zero-width char must not
     // fork the UID for a username or a domain any more than for an email.
@@ -1163,7 +1198,7 @@ fn normalise_folds_non_ascii_uppercase_for_dedup() {
 /// All entity kinds, for the cross-kind normalisation invariants below.
 fn all_kinds() -> Vec<EntityKind> {
     use EntityKind::*;
-    vec![
+    let kinds = vec![
         Person,
         Email,
         Phone,
@@ -1175,15 +1210,32 @@ fn all_kinds() -> Vec<EntityKind> {
         Domain,
         Url,
         Asn,
+        Cidr,
         Address,
         Coordinates,
         Organisation,
         AbnAcn,
         MacAddress,
         DeviceId,
+        Ssid,
+        TrackingId,
         CryptoAddress,
         Other("x".into()),
-    ]
+    ];
+    // Exhaustiveness tripwire: this match names every `EntityKind` variant with no
+    // `_` arm, so adding a new kind fails to compile *here* until it is also added
+    // to the vec above. That keeps every test iterating `all_kinds()` — the
+    // idempotency / dedup / case-fold property checks and the per-kind normalise
+    // sweep — from silently skipping a newly-introduced kind. (Cidr/Ssid/TrackingId
+    // were previously absent, leaving their normalise arms unswept.)
+    for k in &kinds {
+        match k {
+            Person | Email | Phone | Username | Credential | ApiKey | Password | IpAddress
+            | Domain | Url | Asn | Cidr | Address | Coordinates | Organisation | AbnAcn
+            | MacAddress | DeviceId | Ssid | TrackingId | CryptoAddress | Other(_) => {}
+        }
+    }
+    kinds
 }
 
 /// A corpus of awkward values spanning every normalisation arm: non-ASCII
@@ -1596,26 +1648,14 @@ mod prop {
         e
     }
 
-    /// A representative spread of kinds covering every non-trivial `normalise`
-    /// arm (case-fold, `@`/`www.` stripping, phone digit-keep, coord canonical
-    /// form, URL host-lowercase) plus the trim-only default.
+    /// Every `EntityKind` — drawn from the exhaustive, tripwire-guarded
+    /// [`super::all_kinds`] so the property checks (idempotency, UID determinism,
+    /// merge laws) fuzz arbitrary values against *every* `normalise` arm, not a
+    /// hand-picked subset. A new kind is swept automatically once it is added to
+    /// `all_kinds()` (which a compile-time match forces). This is what surfaces a
+    /// shielding non-idempotency the moment a new arm introduces one.
     fn any_kind() -> impl Strategy<Value = EntityKind> {
-        prop::sample::select(vec![
-            EntityKind::Email,
-            EntityKind::Username,
-            EntityKind::Domain,
-            EntityKind::Phone,
-            EntityKind::Url,
-            EntityKind::Coordinates,
-            EntityKind::Address,
-            EntityKind::Organisation,
-            EntityKind::IpAddress,
-            EntityKind::AbnAcn,
-            EntityKind::CryptoAddress,
-            EntityKind::MacAddress,
-            EntityKind::Person,
-            EntityKind::Asn,
-        ])
+        prop::sample::select(super::all_kinds())
     }
 
     proptest! {

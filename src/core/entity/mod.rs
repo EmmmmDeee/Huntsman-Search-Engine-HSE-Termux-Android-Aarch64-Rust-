@@ -1090,16 +1090,24 @@ pub(crate) fn normalise(kind: &EntityKind, value: &str) -> String {
             // so a BOM/zero-width char can neither fork the UID nor hide the
             // leading `@` from the sigil strip.
             strip_format_noise(value.trim())
-                .trim()
-                // Strip a leading run of the `@` handle sigil and any surrounding
-                // quote contamination TOGETHER, so an interleaved `@"@handle` or a
-                // quoted `'@handle` collapses to `handle` in one pass — a fixed
-                // point. (A two-step "quotes then `@`" strip left a quote/sigil for
-                // the next normalise to find, breaking idempotency.) Trailing
-                // quotes are stripped too; a final trim catches any exposed space.
-                .trim_start_matches(['@', '"', '\'', '`'])
-                .trim_end_matches(['"', '\'', '`'])
-                .trim()
+                // Strip the leading run of the `@` handle sigil, surrounding quote
+                // contamination (`"`, `'`, `` ` ``) AND any interleaved whitespace
+                // in a SINGLE predicate — plus the symmetric trailing run of quotes
+                // and whitespace. Folding whitespace into the same pass is what
+                // keeps normalise a fixed point: a whitespace char sitting *between*
+                // two sigils (`` `\t` ``) would otherwise be removed only by a later
+                // standalone `.trim()`, exposing the inner sigil one normalise too
+                // late and forking one account across two UIDs on a re-normalise.
+                // (Proptest minimal case: the Username value `` `\t`\0 `` folded to
+                // `` `\0 `` on the first pass but `` \0 `` on the second.) The `@`
+                // is leading-only — a real handle never trails one — while quotes
+                // and the backtick strip from both ends. This is the same
+                // shield-the-sigil fixed-point discipline the Email (quote-after-cut)
+                // and Domain (dots-and-whitespace-together) arms already apply.
+                .trim_start_matches(|c: char| {
+                    matches!(c, '@' | '"' | '\'' | '`') || c.is_whitespace()
+                })
+                .trim_end_matches(|c: char| matches!(c, '"' | '\'' | '`') || c.is_whitespace())
                 .to_lowercase()
         }
         EntityKind::Domain => {
