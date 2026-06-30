@@ -231,6 +231,28 @@ fn pivot_engine_set(proven: &std::collections::BTreeSet<&'static str>) -> Vec<&'
     specs
 }
 
+/// Order the primary pass's live engines so the ones already PROVEN productive
+/// this run (`ever_hit`) or in the reliable core start FIRST under the bounded
+/// [`ENGINE_CONCURRENCY`] fan-out. The reliable engines are declared *late* in
+/// [`ENGINES`], so in raw declaration order they never make the first concurrency
+/// batch and are the first cut when the per-query deadline fires; floating them
+/// (and any engine proven to yield this run) to the front fills the early slots
+/// with the engines whose results are most likely to land in time. A **stable**
+/// partition — declaration order is preserved within each group — and the
+/// downstream batch is re-sorted by name (Determinism Requirement), so this
+/// changes only WHICH engines complete under a tight budget, never the persisted
+/// result order. **Pure** (the liveness/reliable sets are read by the caller), so
+/// the ordering is unit-tested without the shared liveness map.
+fn order_engines_for_primary(
+    mut live: Vec<&'static EngineSpec>,
+    proven: &std::collections::BTreeSet<&'static str>,
+    reliable: &std::collections::BTreeSet<&'static str>,
+) -> Vec<&'static EngineSpec> {
+    // Key `false` (0) sorts before `true` (1): front = proven-live ∪ reliable-core.
+    live.sort_by_key(|e| u8::from(!(proven.contains(e.name) || reliable.contains(e.name))));
+    live
+}
+
 const SOCIAL_HOSTS: &[&str] = &[
     "facebook.com",
     "linkedin.com",
@@ -485,13 +507,32 @@ impl Module for SearchEngines {
             // streamed — so no borrow of the loop-local `query` outlives the batch.
             // The liveness filter feeds the map directly: no intermediate Vec of
             // engine refs is materialised on this per-query hot path.
-            let futs: Vec<_> = ENGINES
+            // Snapshot the proven-live set once for this query (one lock), and the
+            // reliable core, then order the live engines so reliable/proven engines
+            // fill the bounded concurrency slots first — under a tight deadline
+            // their results survive, while unproven/blocked engines no longer
+            // occupy the early slots purely by declaration order.
+            let proven: std::collections::BTreeSet<&'static str> = {
+                let map = SESSION_EMPTY_COUNTS
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
+                map.iter()
+                    .filter(|(_, l)| l.ever_hit)
+                    .map(|(n, _)| *n)
+                    .collect()
+            };
+            let reliable: std::collections::BTreeSet<&'static str> =
+                reliable_engines().iter().map(|e| e.name).collect();
+            let live: Vec<&'static EngineSpec> = ENGINES
                 .iter()
                 .filter(|e| {
                     engine_enabled(e.name)
                         && !is_session_dead(e.name)
                         && !(qi > 0 && dead_engines.contains(e.name))
                 })
+                .collect();
+            let futs: Vec<_> = order_engines_for_primary(live, &proven, &reliable)
+                .into_iter()
                 .map(|engine| {
                     let url = (engine.build_url)(query);
                     let post_body = engine.build_post.map(|f| f(query));

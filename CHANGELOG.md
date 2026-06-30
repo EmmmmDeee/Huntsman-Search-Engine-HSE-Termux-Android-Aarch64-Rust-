@@ -11,6 +11,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Execution-order perfection: the primary search-engine pass now schedules
+  reliable/proven engines FIRST under the concurrency limit.** The primary pass
+  fans out to engines `ENGINE_CONCURRENCY` (6) at a time, but iterated `ENGINES`
+  in raw declaration order — and the reliable core (`metager`/`swisscows`/
+  `dogpile`) is declared *late*, so it never made the first concurrency batch and
+  was the first cut when the per-query deadline fired. A new pure
+  `order_engines_for_primary` floats the reliable core plus every engine PROVEN
+  productive this run (`ever_hit`, the same liveness signal the pivot pass already
+  trusts) to the front, so under a tight budget the engines whose results actually
+  land fill the early slots. A stable partition (declaration order preserved within
+  each group); the batch is still name-sorted downstream, so only *which* engines
+  complete under a deadline changes, never the persisted result order. This serves
+  both directives at once — perfected execution order AND maximised free scraping
+  under the same budget — with no added requests. Unit-tested (reliable/proven
+  float first, partition holds, declaration order preserved, empty sets are a
+  no-op).
 - **Adversarial-discovery sweep — eight code-grounded potentiations (every one a
   field the engine already fetched/produced but dropped, or a free signal in reach).**
   - **`breach_rich` no longer poisons the graph with absence/redaction markers.**

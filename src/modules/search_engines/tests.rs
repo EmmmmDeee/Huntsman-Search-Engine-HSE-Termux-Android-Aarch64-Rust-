@@ -7,6 +7,58 @@ use super::queries::{Region, build_queries_fullname, regional_dorks};
 use super::*;
 
 #[test]
+fn primary_engine_order_floats_reliable_and_proven_engines_first() {
+    use std::collections::BTreeSet;
+    // The reliable core (dogpile/swisscows/metager) is declared LATE in ENGINES,
+    // so in raw order it never makes the first ENGINE_CONCURRENCY batch and is the
+    // first cut under a deadline. order_engines_for_primary must float it — plus
+    // any engine proven productive this run — to the front.
+    let live: Vec<&'static EngineSpec> = ENGINES.iter().collect();
+    let reliable: BTreeSet<&'static str> = reliable_engines().iter().map(|e| e.name).collect();
+    let mut proven: BTreeSet<&'static str> = BTreeSet::new();
+    proven.insert("yahoo"); // pretend yahoo proved live this run
+
+    let ordered = order_engines_for_primary(live.clone(), &proven, &reliable);
+
+    // No engine is dropped or duplicated.
+    assert_eq!(ordered.len(), live.len());
+    // Strict partition: every front engine (proven ∪ reliable) precedes every
+    // back engine.
+    let is_front = |n: &str| proven.contains(n) || reliable.contains(n);
+    let mut seen_back = false;
+    for e in &ordered {
+        if is_front(e.name) {
+            assert!(
+                !seen_back,
+                "front engine {} appears after a back engine",
+                e.name
+            );
+        } else {
+            seen_back = true;
+        }
+    }
+    let pos = |name: &str| ordered.iter().position(|e| e.name == name).unwrap();
+    // The key win: a reliable engine declared late (metager) now precedes an
+    // unproven engine declared early (bing).
+    assert!(pos("metager") < pos("bing"));
+    // Declaration order is preserved WITHIN the front group (stable sort):
+    // yahoo(30) < dogpile(241) < swisscows(255) < metager(306).
+    assert!(pos("yahoo") < pos("dogpile"));
+    assert!(pos("dogpile") < pos("swisscows"));
+    assert!(pos("swisscows") < pos("metager"));
+
+    // With nothing proven and an empty reliable set, order is unchanged
+    // (declaration order) — qi==0 first-target behaviour degrades gracefully.
+    let untouched = order_engines_for_primary(live.clone(), &BTreeSet::new(), &BTreeSet::new());
+    assert!(
+        untouched
+            .iter()
+            .map(|e| e.name)
+            .eq(live.iter().map(|e| e.name))
+    );
+}
+
+#[test]
 fn accepts_all_supported_kinds() {
     let m = SearchEngines;
     assert!(m.accepts(&Target::new(TargetKind::Domain, "x")));
