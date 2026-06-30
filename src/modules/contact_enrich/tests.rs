@@ -261,3 +261,19 @@ fn non_au_location_yields_address_without_state_tags() {
     assert!(!addr.tags.iter().any(|t| t.starts_with("au-state:")));
     assert!(!addr.has_tag("country:AU"));
 }
+
+#[test]
+fn gravatar_hash_normalises_email_per_spec() {
+    // The official gravatar.com example: a trailing space + mixed case MUST be
+    // trimmed and lowercased before MD5, yielding the documented hash. Hashing
+    // the raw value (the bug) gives a different, never-resolving hash.
+    assert_eq!(
+        gravatar_hash("MyEmailAddress@example.com "),
+        "0bc83cb571cd1c50ba6f3e8a78ef1346"
+    );
+    // Case + whitespace variants of the same address converge to one hash.
+    assert_eq!(
+        gravatar_hash("  myemailaddress@EXAMPLE.com"),
+        "0bc83cb571cd1c50ba6f3e8a78ef1346"
+    );
+}

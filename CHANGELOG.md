@@ -244,6 +244,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`contact_enrich` computed the WRONG Gravatar hash — a guaranteed miss for any
+  email with capitals or whitespace.** The lookup hashed the RAW email value (the
+  `normalised` binding was named for normalisation it never did), but the
+  gravatar.com spec hashes the email TRIMMED + LOWERCASED. So `Jane.Doe@Example.com`
+  (or any address a user typed with capitals / a trailing space) produced a hash
+  that never resolved to its real Gravatar — a silent 404. Now hashed in canonical
+  form via a pure `gravatar_hash`, regression-tested against the official
+  gravatar.com example vector (`MyEmailAddress@example.com ` →
+  `0bc83cb571cd1c50ba6f3e8a78ef1346`) and the case/whitespace variants that must
+  converge to it.
 - **`nostr` no longer spends a guaranteed-404 NIP-05 request on freemail seeds.**
   The twin of the `fediverse` fix: the NIP-05 path probes
   `https://<domain>/.well-known/nostr.json` for an email seed, but a freemail

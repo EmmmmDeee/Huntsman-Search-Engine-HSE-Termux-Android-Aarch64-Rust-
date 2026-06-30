@@ -312,16 +312,27 @@ pub(super) fn build_phone_entities(
 // Email path: Gravatar (free, no key)
 // ---------------------------------------------------------------------------
 
+/// The Gravatar lookup hash for an email: MD5 of the email in CANONICAL form —
+/// trimmed and lowercased, per the gravatar.com spec. Hashing the raw value
+/// (`Jane.Doe@Example.com `) is a guaranteed 404 for any address carrying
+/// capitals or surrounding whitespace — the address never resolves to its real
+/// Gravatar. Pure.
+fn gravatar_hash(email: &str) -> String {
+    let mut hasher = Md5::new();
+    hasher.update(email.trim().to_lowercase().as_bytes());
+    hex::encode(hasher.finalize())
+}
+
 async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-    let normalised = target.value.clone();
-    if !normalised.contains('@') {
+    if !target.value.contains('@') {
         return Ok(ModuleResult::new());
     }
 
-    let mut hasher = Md5::new();
-    hasher.update(normalised.as_bytes());
-    let hash = hex::encode(hasher.finalize());
-
+    // Canonical Gravatar form — trimmed + lowercased (the spec) — used for BOTH
+    // the lookup hash and the evidence display so they agree. (Previously the
+    // `normalised` binding was never normalised and the hash missed.)
+    let normalised = target.value.trim().to_lowercase();
+    let hash = gravatar_hash(&normalised);
     let url = format!("https://www.gravatar.com/{hash}.json");
 
     // Intentionally manual rather than using `util::http::fetch_json_or_404`:
