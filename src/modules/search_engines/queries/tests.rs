@@ -128,6 +128,13 @@ use super::*;
             q.iter()
                 .any(|s| s.contains("site:example.com -site:www.example.com"))
         );
+        // Progressive subdomain-walk: a second dork excludes the common
+        // subdomains too, to surface the long tail the first one never reaches.
+        assert!(
+            q.iter().any(|s| s.contains("-site:mail.example.com")
+                && s.contains("-site:blog.example.com")),
+            "progressive subdomain-walk dork must be present"
+        );
     }
 
     #[test]

@@ -372,8 +372,14 @@ pub(super) fn build_queries_base(target: &Target) -> Vec<String> {
             format!("site:{v} ext:sql OR ext:bak OR ext:log OR ext:conf"),
             format!("site:{v} filetype:env OR inurl:wp-config.php OR inurl:configuration.php"),
             format!("site:{v} intext:\"password\" OR intext:\"api_key\" OR intext:\"secret\""),
-            // Subdomain discovery via negative site
+            // Subdomain discovery via negative site. The first dork surfaces the
+            // common subdomains (mail/blog/shop/…); the second EXCLUDES those too,
+            // pushing the engine to reveal the long-tail subdomains the first dork
+            // never reaches — a classic free SERP subdomain-walk.
             format!("site:{v} -site:www.{v}"),
+            format!(
+                "site:{v} -site:www.{v} -site:mail.{v} -site:blog.{v} -site:shop.{v} -site:m.{v}"
+            ),
             // Backlinks
             format!("link:{v}"),
         ],

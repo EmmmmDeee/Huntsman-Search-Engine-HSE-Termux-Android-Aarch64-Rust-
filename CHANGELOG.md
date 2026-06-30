@@ -11,6 +11,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Domain seeds get a progressive subdomain-walk dork.** Subdomain discovery rode
+  on a single `site:{v} -site:www.{v}` dork; a second dork now also excludes the
+  common subdomains (`mail`/`blog`/`shop`/`m`), pushing the engine to reveal the
+  long-tail subdomains the first never reaches — a classic free SERP subdomain
+  walk, static and deterministic. Query-shape tested.
 - **Search snippets are now mined for the subject's OTHER profile links, not just
   emails/phones/addresses.** `build_entities` already extracted Email/Phone/
   Address/Org/ABN from each result's title+snippet but harvested usernames only
