@@ -238,6 +238,29 @@ use super::*;
     }
 
     #[test]
+    fn us_zip_plus_four_addon_is_not_read_as_an_au_postcode() {
+        // Real captured US ZIP+4 addresses (debug bundle, scan 90b936dc…, entity
+        // [21]): the trailing 4-digit run is the +4 add-on of a 5-digit US ZIP, NOT
+        // an AU postcode. Previously "…, NV, 89436-9322" → final run "9322" → QLD
+        // region (Brisbane). It must now earn no Australian coordinate.
+        assert!(
+            city_coords("6509 Angels Orchard Dr, Sparks, NV, 89436-9322").is_none(),
+            "ZIP+4 add-on 9322 must not resolve to the QLD region"
+        );
+        assert!(city_coords("697 Echo Drive, Gates Mills, OH, 44040-9606").is_none());
+        assert!(city_coords("13382 Kootenay Drive, Santa Ana, CA, 92705-2038").is_none());
+        // Positive control: a genuine AU address (postcode after the state, no
+        // "#####-" prefix) still resolves to its trailing postcode.
+        use crate::util::geohash::haversine_km;
+        let (lat, lon) = city_coords("4000 Gold Coast Hwy, Mermaid Beach QLD 4217")
+            .expect("a trailing AU postcode still resolves");
+        assert!(
+            haversine_km(lat, lon, -28.01, 153.40) < haversine_km(lat, lon, -27.47, 153.03),
+            "resolved to the trailing AU postcode 4217 (Gold Coast)"
+        );
+    }
+
+    #[test]
     fn leading_street_number_is_not_read_as_postcode_without_a_country_tag() {
         // Prove the final-run anchoring fixes the root cause independently of the
         // non-AU country guard: with the country stripped, the leading 4-digit

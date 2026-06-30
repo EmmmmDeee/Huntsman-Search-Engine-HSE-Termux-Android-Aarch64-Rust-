@@ -204,13 +204,32 @@ pub fn au_postcode_region(postcode: &str) -> Option<(f64, f64)> {
 /// the address earns no AU fix. A genuine AU address still resolves: `"4000 Gold
 /// Coast Hwy, … QLD 4217"` → final run `4217` (the street number `4000` leads, so
 /// it is not the final run). Returns `None` when the trailing run is not an
-/// assigned 4-digit AU postcode. Pure; no I/O.
+/// assigned 4-digit AU postcode, or when that run is the `+4` add-on of a US
+/// ZIP+4 (`NNNNN-NNNN`) — there the trailing four digits are a US ZIP extension,
+/// never an AU postcode, so `"…, NV, 89436-9322"` must not borrow the QLD region
+/// for `9322`. Pure; no I/O.
 fn au_postcode_in(addr: &str) -> Option<&str> {
-    let last_run = addr
-        .split(|c: char| !c.is_ascii_digit())
-        .rfind(|t| !t.is_empty())?;
-    (last_run.len() == 4 && crate::util::address_au::state_for_postcode(last_run).is_some())
-        .then_some(last_run)
+    let bytes = addr.as_bytes();
+    // The FINAL run of ASCII digits — an AU postcode trails the suburb and state.
+    let end = bytes.iter().rposition(u8::is_ascii_digit)? + 1;
+    let mut start = end;
+    while start > 0 && bytes[start - 1].is_ascii_digit() {
+        start -= 1;
+    }
+    let last_run = &addr[start..end];
+    if last_run.len() != 4 || crate::util::address_au::state_for_postcode(last_run).is_none() {
+        return None;
+    }
+    // US ZIP+4 guard: a trailing 4-digit run immediately preceded by `<5 digits>-`
+    // is the `+4` extension of a US ZIP, not an AU postcode. A genuine AU postcode
+    // follows the state after a space/comma ("… QLD 4217"), never a `#####-`.
+    if start >= 6
+        && bytes[start - 1] == b'-'
+        && bytes[start - 6..start - 1].iter().all(u8::is_ascii_digit)
+    {
+        return None;
+    }
+    Some(last_run)
 }
 
 const CITIES: &[(&str, f64, f64)] = &[
