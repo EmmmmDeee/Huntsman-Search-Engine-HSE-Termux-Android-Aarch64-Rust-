@@ -3202,6 +3202,55 @@ fn au105_silent_for_a_single_use_secret() {
     assert!(super::rules::rule_au_105_credential_reuse(&[e], "s", 0).is_empty());
 }
 
+#[test]
+fn au106_links_accounts_sharing_a_unique_device_fingerprint() {
+    // A stealer/breach device fingerprint (hwid) carried against two DISTINCT
+    // accounts means both were used on the same physical machine — one controller.
+    let mut dev = Entity::new(EntityKind::DeviceId, "HWID-7f3a9c2e1b8d4056", 0.55, "scan");
+    dev.tag("stealer");
+    dev.add_evidence(Evidence::new("oathnet", "rec1").with_attr("username", "ghost_91"));
+    dev.add_evidence(Evidence::new("oathnet", "rec2").with_attr("username", "nightcrawler"));
+    let u1 = Entity::new(EntityKind::Username, "ghost_91", 0.6, "scan");
+    let u2 = Entity::new(EntityKind::Username, "nightcrawler", 0.6, "scan");
+    let hits = super::rules::rule_au_106_shared_device_identity(
+        &[dev.clone(), u1.clone(), u2.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        hits.len(),
+        1,
+        "a shared device fingerprint across 2 distinct accounts must link them"
+    );
+    assert_eq!(hits[0].rule_id, "AU-106");
+    assert_eq!(hits[0].severity, Severity::High);
+    assert!(hits[0].entity_uids.contains(&dev.uid));
+    assert!(hits[0].entity_uids.contains(&u1.uid) && hits[0].entity_uids.contains(&u2.uid));
+
+    // SAFETY: a short/generic hostname (`USER-PC`) is not a hardware fingerprint
+    // and must NOT link people, even across two distinct accounts.
+    let mut generic = Entity::new(EntityKind::DeviceId, "USER-PC", 0.55, "scan");
+    generic.add_evidence(Evidence::new("oathnet", "r").with_attr("username", "ghost_91"));
+    generic.add_evidence(Evidence::new("oathnet", "r").with_attr("username", "nightcrawler"));
+    assert!(
+        super::rules::rule_au_106_shared_device_identity(&[generic], "scan", 0).is_empty(),
+        "a short/generic hostname must not link people"
+    );
+
+    // SAFETY: an email and its MATCHING username from ONE record are one account
+    // (the canonical-handle fold), so a single device record cannot self-fire.
+    let mut one = Entity::new(EntityKind::DeviceId, "HWID-aaaa1111bbbb2222", 0.55, "scan");
+    one.add_evidence(
+        Evidence::new("oathnet", "r")
+            .with_attr("email", "alice@example.com")
+            .with_attr("username", "alice"),
+    );
+    assert!(
+        super::rules::rule_au_106_shared_device_identity(&[one], "scan", 0).is_empty(),
+        "one account described two ways from one record is not a link"
+    );
+}
+
 // ─── best_au_location_estimate (single-signal headline geolocation) ──────────
 
 #[test]

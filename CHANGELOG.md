@@ -11,6 +11,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New correlator rule AU-106 — a shared device fingerprint links accounts to one
+  controller.** The device-level analogue of AU-047 (reused secret) and AU-048
+  (shared key): a hardware/machine fingerprint (`hwid`/`machine_id`, surfaced as a
+  `DeviceId` by the breach/stealer rich-detail extractor) recorded against ≥2
+  DISTINCT identities means those accounts were used on the SAME physical machine —
+  almost certainly one person. A stealer log captures every credential saved on one
+  machine, so the fingerprint ties the owner's otherwise-separate accounts together;
+  the same fingerprint across two breaches ties the machine's user across them. This
+  `DeviceId` shape was produced all along but no rule consumed it for identity.
+  Precision gates mirror AU-047/048: the fingerprint must be substantial (≥12 chars
+  — a real hardware id, not a short/generic hostname like `USER-PC`), the accounts
+  must fold to ≥2 DISTINCT canonical handles (so an email and its matching username
+  from one record can't self-fire), and it runs on the confirmed (candidate-filtered)
+  view so a co-occurrence stranger's machine never links the subject. High (not
+  Critical) — a household/shared machine is a rare confound. Regression-tested
+  (fires on a shared hwid across two handles; rejects a short hostname; rejects an
+  email+matching-username from one record).
 - **`see_know` breach/stealer hashes now get the same offline hash intelligence as
   DeHashed/OathNet.** Its credential path minted a bare `Password` entity for a
   leaked hash and stopped there, while the sibling pools classify and crack it. It

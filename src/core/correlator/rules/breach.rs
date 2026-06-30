@@ -472,6 +472,131 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
     out
 }
 
+/// AU-106 — Shared device fingerprint links accounts.
+///
+/// A hardware / machine fingerprint (`hwid`, `machine_id`, …, surfaced as a
+/// `DeviceId` by the breach/stealer rich-detail extractor) recorded against two
+/// or more DISTINCT identities means those accounts were used on the SAME
+/// physical machine — almost certainly one controller. This is the device-level
+/// analogue of AU-047 (a reused secret) and AU-048 (a shared key): a stealer log
+/// captures every credential saved on one machine, so the fingerprint ties the
+/// owner's otherwise-separate accounts together, and the same fingerprint seen
+/// across two breaches ties the machine's user across them.
+///
+/// Precision gates mirror AU-047/AU-048. The fingerprint must be substantial
+/// (≥ `MIN_FP_LEN` chars — a real hardware id, not a short/generic hostname like
+/// `USER-PC`), and the accounts must reduce to ≥2 DISTINCT canonical handles
+/// (email local-part or username, separator-insensitive), so an email and its
+/// matching username from ONE record can't self-fire. The rule runs on the
+/// confirmed (candidate-filtered) view, so a co-occurrence stranger's machine
+/// never links the subject. Severity is High, not Critical: unlike a secret only
+/// its owner knows, a household / shared machine is a real — if rare — confound,
+/// so the link sits one tier below the reused-secret proof.
+pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    // A fingerprint shorter than this is a short/generic hostname, not a hardware
+    // id, and must never link people (hwid/machine_id GUIDs are far longer).
+    const MIN_FP_LEN: usize = 12;
+
+    let devices: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::DeviceId)
+        .collect();
+    if devices.is_empty() {
+        return Vec::new();
+    }
+
+    // Pre-index identity entities ONCE (lowercased), exactly as AU-047 does, so the
+    // per-device linking is plain set membership.
+    struct IdRef<'a> {
+        value_lc: String,
+        is_email: bool,
+        uid: &'a str,
+    }
+    let identities: Vec<IdRef> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
+        .map(|e| IdRef {
+            value_lc: e.value.trim().to_lowercase(),
+            is_email: e.kind == EntityKind::Email,
+            uid: &e.uid,
+        })
+        .collect();
+
+    let mut out = Vec::new();
+    for dev in devices {
+        if dev.value.trim().len() < MIN_FP_LEN {
+            continue;
+        }
+        // The distinct accounts seen against this exact device, from the per-record
+        // evidence the breach/stealer importer accumulates onto the DeviceId (one
+        // record per saved credential / per breach appearance).
+        let emails: BTreeSet<String> = dev
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("email"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| v.contains('@'))
+            .collect();
+        let usernames: BTreeSet<String> = dev
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("username"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect();
+        // Distinct controller HANDLES (email local-part or username, separator-
+        // insensitive) — the same fold AU-047/AU-048 use, so an email and the
+        // matching username from one record collapse to one and can't self-fire.
+        let handles: BTreeSet<String> = emails
+            .iter()
+            .map(|e| e.split('@').next().unwrap_or(e))
+            .chain(usernames.iter().map(String::as_str))
+            .map(canonical_handle)
+            .filter(|h| !h.is_empty())
+            .collect();
+        if handles.len() < 2 {
+            continue;
+        }
+        // The device plus every implicated identity entity present in scope.
+        let mut uids = vec![dev.uid.clone()];
+        for id in &identities {
+            let hit = if id.is_email {
+                emails.contains(&id.value_lc)
+            } else {
+                usernames.contains(&id.value_lc)
+            };
+            if hit {
+                uids.push(id.uid.to_owned());
+            }
+        }
+        let listed: Vec<&str> = emails
+            .iter()
+            .chain(usernames.iter())
+            .take(6)
+            .map(String::as_str)
+            .collect();
+        out.push(Correlation::new(
+            "AU-106",
+            "Shared device fingerprint links accounts",
+            Severity::High,
+            format!(
+                "A single device fingerprint ties {} otherwise-separate accounts to one \
+                 controller — the same physical machine: {}",
+                handles.len(),
+                listed.join(", ")
+            ),
+            uids,
+            scan_id,
+            ts,
+        ));
+    }
+    out
+}
+
 pub(in crate::core::correlator) fn rule_au_001_multi_breach(
     entities: &[Entity],
     scan_id: &str,

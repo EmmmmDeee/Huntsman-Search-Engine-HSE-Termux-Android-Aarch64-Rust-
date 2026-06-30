@@ -382,6 +382,10 @@ const RULES: &[RuleFn] = &[
     // AU-105: the same secret reused across >=2 distinct breaches — the subject's
     // credential-stuffing / account-takeover surface, never echoing the secret.
     rule_au_105_credential_reuse,
+    // AU-106: a shared device fingerprint (hwid/machine_id) ties >=2 distinct
+    // accounts to one controller — the same physical machine (device-level
+    // analogue of AU-047's reused-secret link).
+    rule_au_106_shared_device_identity,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
