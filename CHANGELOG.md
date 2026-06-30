@@ -11,6 +11,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Two new correlator rules + one potentiation mine breach data the engine already
+  held but never synthesised.**
+  - **AU-107 — subject's breach-stated employer/affiliation.** A breach/stealer
+    record's `company`/`employer` field becomes a `breach`-tagged `Organisation` at
+    0.50 — below AU-022's 0.60 co-location gate, so it was never named. AU-107 names
+    each distinct breach-stated employer with the source(s) asserting it (Medium for
+    one source, High for ≥2 independent) — the people-centric, stated-relationship
+    complement to the registry corporate links. Keys on the `breach` tag, requires
+    a real name, de-dupes by canonical name, runs on the confirmed view.
+  - **AU-108 — breach-listed cross-platform handle footprint.** `breach_rich` mints
+    `platform:handle` Usernames (`twitter:alice`, `telegram:…`) that were only
+    merged, never reported. AU-108 fires when breach data lists the subject's
+    accounts across ≥2 DISTINCT platforms (allow-listed to breach_rich's set, so an
+    epieos `google:<id>` is ignored) — a stated footprint to corroborate against
+    live discovery (Medium).
+  - **AU-101 now counts phone/email facets from breach evidence ATTRIBUTES**, not
+    only first-class entities — a record carrying the subject's phone/email in an
+    attribute that never became its own entity now contributes its facet (counted
+    once per class, no double-count), so an attribute-only footprint can reach the
+    resolution threshold.
+  All wired into RULES with firing + precision tests.
 - **`epieos` surfaces the Google account id as a pivot (`google:<id>` Username),
   not just an evidence attr.** The id was deserialized, tagged `google-account`,
   and confined to evidence — now it is a first-class `Username` (the

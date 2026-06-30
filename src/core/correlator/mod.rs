@@ -386,6 +386,12 @@ const RULES: &[RuleFn] = &[
     // accounts to one controller — the same physical machine (device-level
     // analogue of AU-047's reused-secret link).
     rule_au_106_shared_device_identity,
+    // AU-107: the subject's breach-stated employer/affiliation — the breach-tagged
+    // Organisation (0.50) that AU-022's 0.60 co-location gate never names.
+    rule_au_107_breach_employer_affiliation,
+    // AU-108: the subject's breach-listed accounts across >=2 platforms — a stated
+    // cross-platform footprint from the `platform:handle` breach Usernames.
+    rule_au_108_breach_social_footprint,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

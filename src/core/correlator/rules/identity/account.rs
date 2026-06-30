@@ -1476,3 +1476,84 @@ pub(in crate::core::correlator) fn rule_au_088_authoritative_register_confirmati
         ts,
     )]
 }
+
+/// Platforms whose `platform:handle` Username nodes `breach_rich` mints — kept in
+/// lockstep with `breach_rich`'s extra-social-handle list (`breach_rich.rs`). A
+/// breach-listed account on one of these counts toward the cross-platform
+/// footprint; any other value prefix (an epieos `google:<id>`, …) is ignored.
+const BREACH_SOCIAL_PLATFORMS: &[&str] = &[
+    "telegram",
+    "skype",
+    "facebook",
+    "instagram",
+    "twitter",
+    "linkedin",
+    "vk",
+    "snapchat",
+];
+
+/// AU-108 — Breach-listed cross-platform handle footprint.
+///
+/// `breach_rich` surfaces a subject's extra social accounts as `platform:handle`
+/// Usernames (`twitter:alice`, `telegram:alice`, …, tagged `breach`). Individually
+/// each is one account; together, ≥2 DISTINCT platforms named by breach data is a
+/// cross-platform footprint worth synthesising — which no rule reported (the
+/// platform-prefixed nodes were produced only to merge by value). Medium: a stated
+/// set of accounts, weaker than a live-verified cross-platform identity
+/// (AU-038/AU-046), and a lead to corroborate against live profile discovery.
+///
+/// Precision: the platform is the literal value prefix before `:` (breach_rich's
+/// own convention); only platforms on [`BREACH_SOCIAL_PLATFORMS`] count (so an
+/// epieos `google:<id>` or any other prefixed value is ignored); the node must be
+/// `breach`-tagged; and ≥2 DISTINCT platforms are required (a single account never
+/// fires; two handles on one platform don't inflate). Runs on the confirmed view.
+/// Deterministic (`BTreeSet` of platforms, sorted uids).
+pub(in crate::core::correlator) fn rule_au_108_breach_social_footprint(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::BTreeSet;
+    let mut platforms: BTreeSet<&'static str> = BTreeSet::new();
+    let mut uids: Vec<String> = Vec::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username && e.has_tag("breach"))
+    {
+        let Some((prefix, handle)) = e.value.split_once(':') else {
+            continue;
+        };
+        if handle.is_empty() {
+            continue;
+        }
+        let Some(plat) = BREACH_SOCIAL_PLATFORMS
+            .iter()
+            .copied()
+            .find(|&p| p == prefix)
+        else {
+            continue;
+        };
+        platforms.insert(plat);
+        uids.push(e.uid.clone());
+    }
+    if platforms.len() < 2 {
+        return Vec::new();
+    }
+    uids.sort_unstable();
+    uids.dedup();
+    let listed: Vec<&str> = platforms.iter().copied().collect();
+    vec![Correlation::new(
+        "AU-108",
+        "Breach-listed cross-platform handle footprint",
+        Severity::Medium,
+        format!(
+            "Breach data lists the subject's accounts across {} platforms: {} — a stated \
+             cross-platform footprint to corroborate against live profile discovery",
+            listed.len(),
+            listed.join(", ")
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}

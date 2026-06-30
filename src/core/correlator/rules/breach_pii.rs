@@ -1119,6 +1119,29 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
         }
     }
 
+    // Phone / email facets from breach evidence ATTRIBUTES, not only first-class
+    // entities: a breach record often carries the subject's phone or email in an
+    // attribute that never became its own `Phone`/`Email` entity (a secondary
+    // field, or one the importer kept only as evidence), yet it is a genuinely
+    // resolved facet of the subject. Each class is a `BTreeSet` keyed by the
+    // facet label, so a subject who has BOTH a Phone entity and a phone attribute
+    // still counts "phone" exactly once — no double-count, n stays honest.
+    const PHONE_ATTR_KEYS: &[&str] = &["phone", "phone_number", "mobile", "cell"];
+    for (raw, _src, uid) in scan_evidence(entities, PHONE_ATTR_KEYS) {
+        // The same validity gate the phone rules use: ≥8 digits and not a single
+        // repeated digit (a placeholder like 0000000000).
+        let digits: Vec<char> = raw.chars().filter(char::is_ascii_digit).collect();
+        if digits.len() >= 8 && !digits.iter().all(|c| *c == digits[0]) {
+            facets.entry("phone").or_default().insert(uid.to_string());
+        }
+    }
+    const EMAIL_ATTR_KEYS: &[&str] = &["email", "email_address", "mail"];
+    for (raw, _src, uid) in scan_evidence(entities, EMAIL_ATTR_KEYS) {
+        if raw.contains('@') && raw.split('@').nth(1).is_some_and(|d| d.contains('.')) {
+            facets.entry("email").or_default().insert(uid.to_string());
+        }
+    }
+
     let n = facets.len();
     if n < 4 {
         return Vec::new(); // a thin footprint is the single-facet rules' job

@@ -3007,6 +3007,39 @@ fn au101_four_facets_is_medium_resolution() {
 }
 
 #[test]
+fn au101_counts_phone_and_email_facets_from_breach_evidence_attributes() {
+    // A breach record carries the subject's phone + DOB as evidence ATTRIBUTES (no
+    // standalone Phone entity). With the legal name and a physical address that is
+    // four resolved facets — but the phone facet only counts via the new
+    // evidence-attribute path; without it the footprint stays at 3 and is silent.
+    let mut person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person.add_evidence(
+        Evidence::new("oathnet", "breach")
+            .with_attr("phone", "+61 7 3123 4567")
+            .with_attr("date_of_birth", "1990-01-01"),
+    );
+    let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
+    let r = super::rules::rule_au_101_identity_resolution(&[person, addr.clone()], "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "name + address + DOB-attr + phone-attr = 4 facets must fire"
+    );
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("phone"));
+
+    // Control: WITHOUT the phone attribute only 3 facets (name, address, DOB) →
+    // below the n>=4 floor → silent, proving the phone facet is what tips it over.
+    let mut person_no_phone = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
+    person_no_phone
+        .add_evidence(Evidence::new("oathnet", "breach").with_attr("date_of_birth", "1990-01-01"));
+    assert!(
+        super::rules::rule_au_101_identity_resolution(&[person_no_phone, addr], "s", 0).is_empty(),
+        "without the phone facet the footprint is only 3 facets"
+    );
+}
+
+#[test]
 fn au101_thin_footprint_and_low_confidence_do_not_fire() {
     // Three facets is below the threshold — the single-facet rules' job.
     let person = Entity::new(EntityKind::Person, "Haigen Bamford", 0.9, "s");
@@ -3248,6 +3281,81 @@ fn au106_links_accounts_sharing_a_unique_device_fingerprint() {
     assert!(
         super::rules::rule_au_106_shared_device_identity(&[one], "scan", 0).is_empty(),
         "one account described two ways from one record is not a link"
+    );
+}
+
+#[test]
+fn au107_names_the_breach_stated_employer() {
+    // A breach-tagged Organisation (0.50) — the employer field of a breach record —
+    // is named as the subject's affiliation; one source is Medium.
+    let mut org = Entity::new(EntityKind::Organisation, "Globex Pty Ltd", 0.50, "scan");
+    org.tag("breach");
+    org.add_evidence(Evidence::new("oathnet", "breach record"));
+    let r = super::rules::rule_au_107_breach_employer_affiliation(&[org], "scan", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-107");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("Globex Pty Ltd"));
+
+    // Two INDEPENDENT breach sources naming the same employer → High.
+    let mut org2 = Entity::new(EntityKind::Organisation, "Globex Pty Ltd", 0.50, "scan");
+    org2.tag("breach");
+    org2.add_evidence(Evidence::new("oathnet", "rec"));
+    org2.add_evidence(Evidence::new("dehashed", "rec"));
+    let r2 = super::rules::rule_au_107_breach_employer_affiliation(&[org2], "scan", 0);
+    assert_eq!(r2[0].severity, super::Severity::High);
+
+    // A registry Organisation (no `breach` tag) does NOT fire AU-107.
+    let mut reg = Entity::new(EntityKind::Organisation, "Acme Ltd", 0.65, "scan");
+    reg.tag("abr");
+    assert!(
+        super::rules::rule_au_107_breach_employer_affiliation(&[reg], "scan", 0).is_empty(),
+        "a registry org is not a breach-stated employer"
+    );
+}
+
+#[test]
+fn au108_reports_breach_cross_platform_footprint() {
+    let mk = |val: &str| {
+        let mut e = Entity::new(EntityKind::Username, val, 0.55, "scan");
+        e.tag("breach");
+        e
+    };
+    let r = super::rules::rule_au_108_breach_social_footprint(
+        &[mk("twitter:alice"), mk("telegram:alice_b")],
+        "scan",
+        0,
+    );
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-108");
+    assert!(r[0].description.contains("twitter") && r[0].description.contains("telegram"));
+
+    // A single platform never fires.
+    assert!(
+        super::rules::rule_au_108_breach_social_footprint(&[mk("twitter:alice")], "scan", 0)
+            .is_empty(),
+        "one platform is not a cross-platform footprint"
+    );
+    // Two handles on the SAME platform don't inflate to a footprint.
+    assert!(
+        super::rules::rule_au_108_breach_social_footprint(
+            &[mk("twitter:alice"), mk("twitter:bob")],
+            "scan",
+            0
+        )
+        .is_empty(),
+        "two handles on one platform are still one platform"
+    );
+    // A non-allow-list prefix (an epieos `google:<id>`) is ignored, so it can't
+    // combine with a single real platform to reach the ≥2 gate.
+    assert!(
+        super::rules::rule_au_108_breach_social_footprint(
+            &[mk("google:123456"), mk("twitter:alice")],
+            "scan",
+            0
+        )
+        .is_empty(),
+        "a non-social prefix must not count toward the footprint"
     );
 }
 

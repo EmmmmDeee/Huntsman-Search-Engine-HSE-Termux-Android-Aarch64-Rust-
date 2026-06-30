@@ -768,3 +768,74 @@ pub(in crate::core::correlator) fn rule_au_100_au_employer_affiliation(
         })
         .collect()
 }
+
+/// AU-107 — Subject's breach-stated employer / affiliation.
+///
+/// A breach/stealer record frequently names the subject's EMPLOYER or affiliated
+/// organisation (a `company` / `employer` field), which the rich-detail extractor
+/// (`breach_rich`) surfaces as a `breach`-tagged `Organisation` at modest
+/// confidence (0.50) — BELOW [`rule_au_022_organisation_with_breach`]'s 0.60
+/// co-location gate, so that rule (which only COUNTS co-located orgs anyway) never
+/// names it. This rule does: it reports each distinct breach-stated organisation
+/// as the subject's affiliation, with the breach source(s) that assert it — the
+/// people-centric, stated-relationship complement to the registry-based corporate
+/// links (AU-033/089/100). One source is a lead (Medium); two or more INDEPENDENT
+/// sources naming the same employer is corroborated affiliation (High).
+///
+/// Precision: keys on the `breach` tag (a breach-sourced org, not a registry one),
+/// requires a real name (≥2 alphabetic chars — rejects codes/IDs), de-dupes by
+/// lowercase canonical name, and runs on the confirmed (candidate-filtered) view
+/// so a co-occurrence stranger's employer never leaks in. Deterministic
+/// (`BTreeMap` by name, sorted sources/uids).
+pub(in crate::core::correlator) fn rule_au_107_breach_employer_affiliation(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use std::collections::{BTreeMap, BTreeSet};
+    // canonical lowercase name -> (display name, distinct breach sources, uids).
+    let mut by_name: BTreeMap<String, (String, BTreeSet<String>, BTreeSet<String>)> =
+        BTreeMap::new();
+    for e in entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("breach"))
+    {
+        let name = e.value.trim();
+        if name.chars().filter(|c| c.is_alphabetic()).count() < 2 {
+            continue; // a code / id, not a real organisation name
+        }
+        let entry = by_name
+            .entry(name.to_lowercase())
+            .or_insert_with(|| (name.to_string(), BTreeSet::new(), BTreeSet::new()));
+        for s in e.corroborating_sources() {
+            entry.1.insert(s.to_string());
+        }
+        entry.2.insert(e.uid.clone());
+    }
+
+    by_name
+        .into_values()
+        .map(|(name, sources, uids)| {
+            let n = sources.len();
+            let severity = if n >= 2 {
+                Severity::High
+            } else {
+                Severity::Medium
+            };
+            let src_list = sources.into_iter().collect::<Vec<_>>().join(", ");
+            Correlation::new(
+                "AU-107",
+                "Subject's breach-stated employer/affiliation",
+                severity,
+                format!(
+                    "Breach data names '{name}' as the subject's employer/affiliation \
+                     ({n} source(s): {src_list}) — a stated business relationship, the \
+                     people-centric complement to the registry-based corporate links",
+                ),
+                uids.into_iter().collect(),
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
+}
