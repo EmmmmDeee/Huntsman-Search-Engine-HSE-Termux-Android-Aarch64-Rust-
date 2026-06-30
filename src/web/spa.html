@@ -2957,6 +2957,11 @@ function mapEvent(ev){
   if (t==='entity_excluded') return {typ:'expand', lv:'skip', msg:`⊘ not expanded · ${kindPill(ev.kind)} ${esc(ev.value)} <span class="text-muted">${esc(ev.reason)}</span>`};
   if (t==='correlation_found') return {typ:'corr', lv:'corr', msg:`${esc(ev.correlation?.rule_name||ev.correlation?.rule_id||'?')}`};
   if (t==='correlations_done') return {typ:'corr', lv:'info', msg:`correlations done · ${ev.count}`};
+  // Live-session lifecycle (streamed into the Live-activity panel). Without
+  // these the panel rendered each as raw JSON via the fallback below.
+  if (t==='live_start')     return {typ:'live',   lv:'info',  msg:`▶ live session started · ${esc(ev.target_kind)}=${esc(ev.target_value)} <span class="text-muted">every ${esc(ev.interval_secs)}s</span>`};
+  if (t==='live_tick')      return {typ:'live',   lv:'info',  msg:`↻ iteration ${esc(ev.iteration)}`};
+  if (t==='live_stop')      return {typ:'live',   lv:'warn',  msg:`■ live session stopped <span class="text-muted">${esc(ev.reason)}</span>`};
   return {typ: esc(t||'?'), lv:'info', msg: esc(JSON.stringify(ev).slice(0,220))};
 }
 function openSse(scanId, onEv, onState){

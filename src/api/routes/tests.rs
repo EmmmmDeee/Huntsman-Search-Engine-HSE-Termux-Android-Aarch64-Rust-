@@ -239,6 +239,70 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_renders_every_event_kind() {
+        // Event contract: every `EventKind` variant the engine/live loop emits
+        // over the bus must have a friendly `mapEvent` case in the SPA, or it
+        // renders as a raw-JSON blob in the live log / Live-activity panel. The
+        // snake_case names below are the serde `type` tags of `core::event::
+        // EventKind` — keep in sync when a variant is added (the same pin-the-list
+        // discipline as the architecture guards). The `live_*` trio is the case
+        // that was actually rendering raw before this guard existed.
+        const EVENT_TYPES: &[&str] = &[
+            "module_start",
+            "module_done",
+            "module_error",
+            "module_skipped",
+            "entity_found",
+            "scan_start",
+            "scan_complete",
+            "expansion_tick",
+            "expansion_stop",
+            "entity_excluded",
+            "correlation_found",
+            "correlations_done",
+            "live_start",
+            "live_tick",
+            "live_stop",
+        ];
+        for ty in EVENT_TYPES {
+            assert!(
+                SPA_HTML.contains(&format!("t==='{ty}'")),
+                "SPA mapEvent has no case for EventKind `{ty}` — it would render \
+                 as raw JSON in the live log; add a friendly row"
+            );
+        }
+        // Drift guard: pin the list to the real enum so a NEW EventKind variant
+        // can't be added without giving it a mapEvent case. Every variant carries
+        // fields (`Variant {`), so count 4-space-indented PascalCase openings.
+        let src =
+            std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/src/core/event/mod.rs"))
+                .expect("event source readable");
+        let body = src
+            .split_once("pub enum EventKind {")
+            .and_then(|(_, b)| b.split_once("\n}"))
+            .map(|(b, _)| b)
+            .expect("EventKind enum present");
+        let variant_count = body
+            .lines()
+            .filter(|l| {
+                let t = l.trim_start();
+                l.starts_with("    ")
+                    && !l.starts_with("        ")
+                    && t.chars().next().is_some_and(|c| c.is_ascii_uppercase())
+                    && t.trim_end().ends_with('{')
+            })
+            .count();
+        assert_eq!(
+            variant_count,
+            EVENT_TYPES.len(),
+            "core::event::EventKind has {variant_count} variants but the SPA \
+             event-contract list pins {} — add the new variant's snake_case type \
+             here (and a mapEvent case in spa.html)",
+            EVENT_TYPES.len()
+        );
+    }
+
+    #[test]
     fn embedded_spa_tails_the_live_session_event_stream() {
         // The per-session live SSE endpoint (/live/{id}/events) streams a running
         // session's lifecycle + every per-iteration scan's events. It had no SPA
