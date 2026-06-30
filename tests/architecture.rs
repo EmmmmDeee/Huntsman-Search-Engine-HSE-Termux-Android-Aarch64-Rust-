@@ -1073,6 +1073,102 @@ fn every_declared_module_is_registered() {
     );
 }
 
+#[test]
+fn all_target_kinds_lists_every_enum_variant() {
+    // DRIFT GUARD. `ALL_TARGET_KINDS` is the SOLE source the dispatch-index
+    // builder and the `consumes()` default-probe iterate, so a `TargetKind`
+    // variant absent from it is DEAD at runtime — no seed of that kind ever
+    // dispatches to any module. This is exactly how WiGLE's `Ssid` SSID-search
+    // path was silently unreachable. The arm-less `match` below is a compile-time
+    // tripwire: adding a new `TargetKind` variant fails to compile here until the
+    // author handles it (and the comment tells them to add it to BOTH `EVERY` and
+    // `ALL_TARGET_KINDS`); the runtime assertions then prove the array actually
+    // contains every variant and carries no extra/duplicate.
+    use huntsman_search_engine::core::dependency::ALL_TARGET_KINDS;
+    use huntsman_search_engine::core::scan::TargetKind;
+
+    const EVERY: &[TargetKind] = &[
+        TargetKind::Email,
+        TargetKind::Username,
+        TargetKind::Phone,
+        TargetKind::FullName,
+        TargetKind::IpAddress,
+        TargetKind::Domain,
+        TargetKind::Url,
+        TargetKind::Asn,
+        TargetKind::Cidr,
+        TargetKind::Coordinates,
+        TargetKind::Address,
+        TargetKind::Organisation,
+        TargetKind::AbnAcn,
+        TargetKind::MacAddress,
+        TargetKind::ApiKey,
+        TargetKind::CryptoAddress,
+        TargetKind::DeviceId,
+        TargetKind::Ssid,
+        TargetKind::TrackingId,
+    ];
+
+    // Compile-time tripwire: NO `_` arm, so a new enum variant breaks this match
+    // until it is wired in.
+    for &k in EVERY {
+        match k {
+            TargetKind::Email
+            | TargetKind::Username
+            | TargetKind::Phone
+            | TargetKind::FullName
+            | TargetKind::IpAddress
+            | TargetKind::Domain
+            | TargetKind::Url
+            | TargetKind::Asn
+            | TargetKind::Cidr
+            | TargetKind::Coordinates
+            | TargetKind::Address
+            | TargetKind::Organisation
+            | TargetKind::AbnAcn
+            | TargetKind::MacAddress
+            | TargetKind::ApiKey
+            | TargetKind::CryptoAddress
+            | TargetKind::DeviceId
+            | TargetKind::Ssid
+            | TargetKind::TrackingId => {}
+        }
+    }
+
+    for &k in EVERY {
+        assert!(
+            ALL_TARGET_KINDS.contains(&k),
+            "{k:?} is absent from ALL_TARGET_KINDS — it would be DEAD at runtime \
+             (no seed of that kind dispatches to any module)"
+        );
+    }
+    assert_eq!(
+        EVERY.len(),
+        ALL_TARGET_KINDS.len(),
+        "ALL_TARGET_KINDS carries an extra or duplicate TargetKind"
+    );
+}
+
+#[test]
+fn wigle_is_reachable_from_an_ssid_seed() {
+    // End-to-end proof that the Ssid wiring is live: an `Ssid` target must
+    // dispatch to `wigle` (its sole consumer). Guards the runtime path the
+    // drift-guard above protects structurally.
+    use huntsman_search_engine::core::dependency::ModuleGraph;
+    use huntsman_search_engine::core::scan::TargetKind;
+    let modules = huntsman_search_engine::modules::registry();
+    let graph = ModuleGraph::build(&modules);
+    let ssid_consumers: Vec<&str> = graph
+        .modules_for(TargetKind::Ssid)
+        .iter()
+        .map(|&i| modules[i].name())
+        .collect();
+    assert!(
+        ssid_consumers.contains(&"wigle"),
+        "an Ssid seed must reach wigle; dispatchers for Ssid = {ssid_consumers:?}"
+    );
+}
+
 /// Concatenated source of the correlator unit-test files used by the
 /// meta-guard (`every_dispatched_correlation_rule_has_a_firing_test`).
 fn correlator_tests_source() -> String {

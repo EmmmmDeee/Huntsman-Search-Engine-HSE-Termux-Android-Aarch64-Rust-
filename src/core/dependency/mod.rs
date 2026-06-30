@@ -56,6 +56,12 @@ pub const ALL_TARGET_KINDS: &[TargetKind] = &[
     TargetKind::ApiKey,
     TargetKind::CryptoAddress,
     TargetKind::DeviceId,
+    // A WiFi SSID seed routes to WiGLE's SSID-search (geolocates where the
+    // network was observed). Omitting it here left `wigle`'s `Ssid` branch DEAD
+    // at runtime: the dispatch index and the `consumes()` default-probe iterate
+    // ONLY this array, so no `Ssid` seed ever reached any module. The
+    // `all_target_kinds_lists_every_enum_variant` guard now prevents this drift.
+    TargetKind::Ssid,
     TargetKind::TrackingId,
 ];
 

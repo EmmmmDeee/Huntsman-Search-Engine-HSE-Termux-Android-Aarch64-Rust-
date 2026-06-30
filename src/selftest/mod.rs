@@ -138,7 +138,7 @@ pub async fn run() -> Report {
         check_keys(),
         check_storage_and_correlator().await,
         check_log_capture(),
-        check_termux_env(),
+        check_termux_env().await,
     ];
     Report::build(checks, started)
 }
@@ -426,12 +426,17 @@ fn check_log_capture() -> Check {
 }
 
 /// Report the runtime environment (Termux + sensor-bridge availability).
-fn check_termux_env() -> Check {
+async fn check_termux_env() -> Check {
     if crate::is_termux() {
-        let api = std::process::Command::new("termux-info")
-            .arg("-h")
-            .output()
-            .is_ok();
+        // Probe via the timeout-bounded, kill-on-drop `termux_cmd` helper (the
+        // single chokepoint every other termux-* call already uses) instead of a
+        // raw blocking `Command::output()`. The old probe could hang `selftest`
+        // forever on a wedged CLI, and its `.is_ok()` reported "present" even on a
+        // non-zero exit; `termux_cmd` enforces a hard 1.5s timeout and treats a
+        // timeout / spawn-failure / non-zero exit as unavailable.
+        let api = crate::util::termux::termux_cmd("termux-info", &["-h"], 1500)
+            .await
+            .is_some();
         if api {
             check(
                 "env.termux",

@@ -221,6 +221,11 @@ async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Opt
     let secs = 10u64.to_string();
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args(["-s", "--max-time", &secs]);
+    // Single-sourced OOM/SSRF hardening — chiefly `--max-filesize` (32 MiB) so a
+    // hostile probe endpoint can't stream an unbounded body into a low-RAM Termux
+    // device's memory; the proto/redirect flags are inert here (no `-L`, https
+    // URLs) but keep the cap single-sourced with curl_exec/curl_client.
+    cmd.args(crate::util::curl::FETCH_HARDENING_ARGS);
 
     for (name, prefix) in headers {
         if *name == "_basic_auth" {

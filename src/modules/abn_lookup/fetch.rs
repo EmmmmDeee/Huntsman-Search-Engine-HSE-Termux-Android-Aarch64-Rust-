@@ -64,15 +64,23 @@ async fn curl_with_status(url: &str, timeout_ms: u64) -> Option<(String, u16)> {
         "-w",
         "\n%{http_code}",
         "-L",
-        "--",
-        url,
     ]);
+    // Single-sourced SSRF/OOM hardening (proto/proto-redir/max-redirs +
+    // `--max-filesize` 32 MiB), so a hostile/huge ABR response can't exhaust a
+    // low-RAM Termux device's memory — the same cap `curl_exec`/`curl_client`
+    // already apply. Must precede the `--` terminator below (after `--`, curl
+    // treats every token as a URL).
+    cmd.args(crate::util::curl::FETCH_HARDENING_ARGS);
 
     if let Ok(proxy) = std::env::var("HUNTSMAN_SEARCH_PROXY")
         && !proxy.is_empty()
     {
         cmd.args(["-x", &proxy]);
     }
+
+    // The `--` end-of-options terminator and the URL come LAST, after every
+    // option (hardening + optional proxy), so none is mis-parsed as a URL.
+    cmd.args(["--", url]);
 
     cmd.kill_on_drop(true);
 

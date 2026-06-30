@@ -86,6 +86,22 @@ pub(super) fn extract_stealer_entities(
     if let Some(uname) = val_str(item, "username") {
         ev = ev.with_attr("username", &uname);
     }
+    // Stamp the row's login email onto the SHARED evidence too, so the DeviceId /
+    // MacAddress nodes minted from this stealer row (via `breach_rich`) carry the
+    // email join-key AU-106 folds into its distinct-handle count — matching the
+    // breach / dehashed / see_know sibling paths. First email only: a stealer row
+    // is one captured session with one login, and a comma-joined multi-value
+    // would not equal the minted `Email` entity's value (breaking the per-account
+    // UID match).
+    if let Some(email) = item
+        .get("email")
+        .and_then(|v| v.as_array())
+        .and_then(|a| a.iter().find_map(serde_json::Value::as_str))
+        .map(str::trim)
+        .filter(|e| looks_like_email(&e.to_lowercase()))
+    {
+        ev = ev.with_attr("email", email);
+    }
 
     // The login URL is where the victim's credentials were captured — the most
     // actionable pivot in a stealer record (it confirms a service the subject

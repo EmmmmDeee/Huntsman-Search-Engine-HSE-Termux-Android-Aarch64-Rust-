@@ -222,6 +222,36 @@ use super::*;
     }
 
     #[test]
+    fn stealer_deviceid_evidence_carries_the_login_email_join_key() {
+        use serde_json::json;
+        // The DeviceId/MacAddress nodes a stealer row mints (via breach_rich) must
+        // carry BOTH the username and the login email on their evidence, so AU-106
+        // (shared-device identity) can fold the email handle into its distinct-
+        // handle count — matching the breach/dehashed/see_know sibling paths.
+        let item = json!({
+            "username": "ghost_91",
+            "email": ["victim@example.com"],
+            "hwid": "9F8E7D6C5B4A3210FEDC",
+            "url": "https://accounts.example.com/login",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+        let dev = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::DeviceId && e.value == "9F8E7D6C5B4A3210FEDC")
+            .expect("hwid → DeviceId");
+        let attrs = &dev.evidence[0].attributes;
+        assert_eq!(
+            attrs.get("email").map(String::as_str),
+            Some("victim@example.com"),
+            "stealer DeviceId evidence must carry the login email (AU-106 join key)"
+        );
+        assert_eq!(attrs.get("username").map(String::as_str), Some("ghost_91"));
+    }
+
+    #[test]
     fn stealer_android_app_package_is_not_minted_as_domain() {
         use serde_json::json;
         // Real shape from a live oathnet stealer-search row (Android credential):
