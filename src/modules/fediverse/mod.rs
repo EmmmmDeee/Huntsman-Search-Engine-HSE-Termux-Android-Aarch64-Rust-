@@ -88,6 +88,13 @@ impl Module for Fediverse {
         let Some((_, domain)) = email.split_once('@') else {
             return Ok(result);
         };
+        // A freemail provider (gmail/outlook/yahoo/…) runs no WebFinger server, so
+        // the probe is a CERTAIN 404 — skip it rather than spend an 8 s request on a
+        // guaranteed miss (freemail is the majority of email seeds, so this removes
+        // most of the module's wasted-request load on a metered Termux radio).
+        if !domain_worth_probing(domain) {
+            return Ok(result);
+        }
 
         let url = format!(
             "https://{domain}/.well-known/webfinger?resource={}",
@@ -105,6 +112,14 @@ impl Module for Fediverse {
         extract_webfinger(&wf, email, domain, &ctx.scan_id, &mut result);
         Ok(result)
     }
+}
+
+/// Whether `domain` is worth a WebFinger probe. A freemail provider never runs a
+/// WebFinger server, so the probe is a guaranteed 404 and is skipped; a custom
+/// domain MIGHT be a self-hosted Fediverse instance (people run Mastodon/Pleroma
+/// on their own domain), so it is still probed. Pure.
+fn domain_worth_probing(domain: &str) -> bool {
+    !crate::util::domains::is_freemail(domain)
 }
 
 /// Build entities from a resolved WebFinger document. Pure (no I/O) so it is

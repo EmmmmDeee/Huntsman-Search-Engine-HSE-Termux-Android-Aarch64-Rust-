@@ -144,6 +144,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`fediverse` no longer spends a guaranteed-404 WebFinger request on freemail
+  seeds.** The module probes `https://<domain>/.well-known/webfinger` for an email
+  seed, but a freemail provider (gmail/outlook/yahoo/…) runs no WebFinger server,
+  so the probe is a certain miss — and freemail is the majority of email seeds, so
+  the module was burning an 8 s request per scan on a metered Termux radio for
+  nothing. It now skips the probe for freemail domains (`util::domains::is_freemail`)
+  while still probing custom domains, which MIGHT be self-hosted instances.
+  Regression-tested (freemail skipped, custom/instance domains still probed).
 - **`psbdmp` now actually marks the SEED identity as paste-exposed, not just the
   orphan paste URLs.** The module's doc-comment promised to "mark the seed as
   paste-exposed so the correlator can corroborate it", but `extract` only ever

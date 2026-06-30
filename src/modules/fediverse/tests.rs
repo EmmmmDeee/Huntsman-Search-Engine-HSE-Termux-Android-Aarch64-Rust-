@@ -43,6 +43,18 @@ fn extract_pulls_profile_actor_and_username() {
 }
 
 #[test]
+fn freemail_domains_are_skipped_custom_domains_probed() {
+    // Freemail providers run no WebFinger server → a certain 404, so they are not
+    // probed (saves the guaranteed-miss request).
+    for d in ["gmail.com", "yahoo.com", "outlook.com", "hotmail.com", "icloud.com"] {
+        assert!(!domain_worth_probing(d), "{d} (freemail) must be skipped");
+    }
+    // A Fediverse instance or any custom domain might self-host WebFinger → probe.
+    assert!(domain_worth_probing("mastodon.social"));
+    assert!(domain_worth_probing("example.org"));
+}
+
+#[test]
 fn accepts_only_emails() {
     let m = Fediverse;
     assert!(m.accepts(&Target::new(TargetKind::Email, "a@example.com")));
