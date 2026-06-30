@@ -300,7 +300,7 @@ hse serve [--bind <HOST:PORT>]
 
 | Flag / env | Default | Notes |
 |------------|---------|-------|
-| `-b, --bind <HOST:PORT>` | `127.0.0.1:8080` | Localhost-only. Architecture invariant; change at your own risk. |
+| `-b, --bind <HOST:PORT>` | `127.0.0.1:8080` | Localhost-only by default — not an enforced invariant; any address is accepted. Binding non-loopback exposes scan/live/radar **triggering** (not just results) to anyone reachable on that address with no authentication (key-writing is the sole exception — always loopback-only). Change at your own risk. |
 | env `HSE_BIND`           | (overrides flag) | |
 | `--no-key-write`         | (writes **on**) | Disables the Settings page's key-write endpoint (`PUT /settings/keys`). Key editing is enabled by default; the endpoint *always* additionally requires a loopback peer, so a network-exposed bind still cannot write keys. Pass this to lock writes down for shared/hardened deployments. |
 

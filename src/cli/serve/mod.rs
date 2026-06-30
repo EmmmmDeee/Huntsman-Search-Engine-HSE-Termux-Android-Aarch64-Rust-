@@ -60,6 +60,10 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         update_info: Arc::clone(&update_info),
     });
 
+    // A separate clone for the shutdown path — `router` consumes `state` by
+    // value, and shutdown needs the SAME `cancellations`/`live` registries to
+    // signal in-flight work to stop before the process exits.
+    let state_for_shutdown = Arc::clone(&state);
     let app = router(state, &bind);
     let listener = tokio::net::TcpListener::bind(&bind)
         .await
@@ -180,17 +184,59 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         }
     });
 
-    axum::serve(
+    // `shutdown_fired` is only notified once `shutdown_signal` resolves (OS
+    // signal observed AND in-flight scans/live sessions drained) — so the
+    // deadline race below is dormant for the server's entire normal lifetime
+    // and only starts counting during an actual shutdown.
+    let shutdown_fired = Arc::new(tokio::sync::Notify::new());
+    let shutdown_fired_for_signal = Arc::clone(&shutdown_fired);
+    let serve_fut = axum::serve(
         listener,
         app.into_make_service_with_connect_info::<SocketAddr>(),
     )
-    .with_graceful_shutdown(shutdown_signal())
-    .await
-    .map_err(|e| Error::Other(format!("serve: {e}")))?;
+    .with_graceful_shutdown(async move {
+        shutdown_signal(state_for_shutdown).await;
+        shutdown_fired_for_signal.notify_one();
+    });
+
+    tokio::select! {
+        result = serve_fut => {
+            result.map_err(|e| Error::Other(format!("serve: {e}")))?;
+        }
+        () = async {
+            shutdown_fired.notified().await;
+            tokio::time::sleep(HTTP_DRAIN_DEADLINE).await;
+        } => {
+            // axum's own HTTP-connection drain (waiting for in-flight
+            // requests — e.g. a long-idle SSE stream — to close) has no
+            // built-in deadline of its own. Without this, a stream whose
+            // underlying scan/live session has already stopped (per
+            // `drain_in_flight_work`, above) could still hold the connection
+            // open for up to `SSE_IDLE_TIMEOUT` (120s) before its own idle
+            // timer closes it — keeping `hse serve` from actually exiting on
+            // Ctrl-C/SIGTERM for that whole window. Give the drain a
+            // generous but BOUNDED extra window, then exit anyway (dropping
+            // the serve future forcibly closes whatever is still open) —
+            // turning "could hang indefinitely" into "exits within a bounded
+            // total time", matching the "Ctrl-C to stop" the banner promises.
+            tracing::warn!(
+                "HTTP connection drain exceeded {HTTP_DRAIN_DEADLINE:?} after the \
+                 shutdown signal — exiting anyway (any still-open connection is dropped)"
+            );
+        }
+    }
 
     tracing::info!("server stopped");
     Ok(())
 }
+
+/// Bounded extra window for axum's own HTTP-connection drain (in-flight
+/// requests / open SSE streams) once `shutdown_signal` has already finished
+/// signalling and draining in-flight scans/live sessions. Generous over
+/// [`SHUTDOWN_DRAIN_GRACE`] since a now-idle SSE stream still needs its own
+/// `SSE_IDLE_TIMEOUT`-bounded close to complete, not just the underlying
+/// session to stop.
+const HTTP_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Pin a `localhost:<port>` bind to `127.0.0.1:<port>`. `TcpListener::bind` binds
 /// only ONE resolved address; `localhost` can resolve to `::1` first while Chrome
@@ -216,15 +262,22 @@ fn is_loopback_bind(bind: &str) -> bool {
 }
 
 /// Warn loudly when bound to a non-loopback address: the UI and API are then
-/// reachable from the local network. The loopback peer-check still blocks key
-/// writes, but scans and results become network-visible. `127.0.0.1` (the
-/// default) is the localhost-only architecture invariant.
+/// reachable from the local network with no authentication on most
+/// endpoints — not just read access to results, but the ability to TRIGGER
+/// new scans/live sessions/radar sweeps. The loopback peer-check still
+/// blocks key writes regardless of bind. `127.0.0.1` (the default) is the
+/// localhost-only convention, not an enforced restriction — nothing stops an
+/// operator from binding elsewhere, so this warning is the only safeguard.
 fn warn_if_exposed(bind: &str) {
     if !is_loopback_bind(bind) {
         tracing::warn!(
             "bound to a NON-loopback address ({bind}) — the UI and API are reachable from the \
-             local network. Key writing stays loopback-only, but scans and results are \
-             network-visible. Use 127.0.0.1 for the localhost-only default."
+             local network with NO AUTHENTICATION on most endpoints. This is not just read \
+             visibility: anyone reachable at this address can TRIGGER new scans, start live \
+             sessions (consuming your API key quota), and run radar (the device's own WiFi/ \
+             Bluetooth/cell/GPS sensor sweep) — not only view existing results. Key-writing \
+             (PUT /settings/keys) is the sole exception and always stays loopback-only \
+             regardless of this bind. Use 127.0.0.1 for the localhost-only default."
         );
     }
 }
@@ -249,7 +302,7 @@ fn bind_error(bind: &str, e: &std::io::Error) -> Error {
     Error::Other(format!("bind {bind}: {e}{hint}"))
 }
 
-async fn shutdown_signal() {
+async fn shutdown_signal(state: Arc<crate::api::AppState>) {
     // Degrade gracefully if a handler can't be installed (rather than panicking,
     // which would crash the server): fall back to a pending future so the OTHER
     // signal branch — and `kill` — can still stop the process.
@@ -279,6 +332,89 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {},
         () = terminate => {},
+    }
+
+    // Before letting axum start its own HTTP-connection drain: signal every
+    // in-flight scan and live session to stop cooperatively, then wait
+    // (bounded) for them to actually reach a terminal state. Without this, a
+    // background scan/live-session task — spawned via `tokio::spawn` and
+    // detached, never an axum request handler axum's own graceful-shutdown
+    // drain can see — was simply abandoned mid-request on Ctrl-C/SIGTERM: the
+    // scan row stayed stuck at `Running` forever, and a live session's
+    // `session_loop` kept running undisturbed, in turn keeping any SSE stream
+    // forwarding its events open and blocking axum's drain indefinitely.
+    drain_in_flight_work(&state.cancellations, &state.live, SHUTDOWN_DRAIN_GRACE).await;
+}
+
+/// Bounded grace period for in-flight scans/live sessions to actually reach a
+/// terminal state after being cancelled — matches the engine's own documented
+/// cooperative-cancellation latency ("~3-8s p99 at the next module-boundary
+/// gate", see `core::live::LiveScanner::stop`'s doc comment).
+const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Signal every in-flight scan (`cancellations`) and every running live
+/// session (`live`) to stop, then poll until none remain or `grace` elapses —
+/// whichever comes first. Reuses the existing cooperative-cancellation
+/// primitives (`CancelHandle` / `CancelRegistryGuard` / `LiveScanner::stop`)
+/// rather than inventing a new one: a scan's `CancelRegistryGuard` removes its
+/// entry from `cancellations` when the spawned task actually returns, and a
+/// live session transitions out of `LiveStatus::Running` the same way
+/// `DELETE /api/v1/live/{id}` already does — so polling both down to empty is
+/// a direct, accurate signal that the in-flight work has genuinely wound
+/// down, not just that cancellation was requested. Takes its dependencies
+/// directly (not `&AppState`) and `grace` as a parameter (not the
+/// [`SHUTDOWN_DRAIN_GRACE`] constant) so both are testable without
+/// constructing a full server state or waiting out a real 10-second grace
+/// period.
+async fn drain_in_flight_work(
+    cancellations: &crate::api::CancelRegistry,
+    live: &crate::core::live::LiveScanner,
+    grace: std::time::Duration,
+) {
+    let scan_count = cancellations.lock().len();
+    let live_running: Vec<String> = live
+        .list()
+        .into_iter()
+        .filter(|s| s.status == crate::core::live::LiveStatus::Running)
+        .map(|s| s.id)
+        .collect();
+    if scan_count == 0 && live_running.is_empty() {
+        return;
+    }
+    tracing::info!(
+        scans = scan_count,
+        live_sessions = live_running.len(),
+        "shutdown: signalling in-flight work to stop"
+    );
+
+    for handle in cancellations.lock().values() {
+        handle.cancel();
+    }
+    for id in &live_running {
+        live.stop(id);
+    }
+
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        let scans_left = cancellations.lock().len();
+        let live_left = live
+            .list()
+            .iter()
+            .filter(|s| s.status == crate::core::live::LiveStatus::Running)
+            .count();
+        if scans_left == 0 && live_left == 0 {
+            tracing::info!("shutdown: all in-flight work stopped cleanly");
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(
+                scans_left,
+                live_left,
+                "shutdown: grace period elapsed with work still in flight — exiting anyway"
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
     }
 }
 

@@ -223,7 +223,13 @@ jQuery, D3 v3, tablesorter, alertify):
 - **Settings** — API key management with validation
 - **Dark mode** toggle
 
-Binds to `127.0.0.1:8080` only — no LAN exposure (architecture invariant).
+Binds to `127.0.0.1:8080` by default — no LAN exposure. This is the
+operator-followed default, not an enforced restriction: `--bind`/`HSE_BIND`
+accept any address, and binding non-loopback exposes scan/live/radar
+**triggering** (not just viewing results) to anyone who can reach that
+address, with no authentication — only key-writing (`PUT /settings/keys`)
+stays loopback-only regardless of bind. Use 127.0.0.1 unless you specifically
+need LAN access and understand that trade-off.
 
 ---
 
