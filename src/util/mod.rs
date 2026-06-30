@@ -53,6 +53,7 @@ pub mod surnames;
 pub mod target_match;
 pub mod termux;
 pub mod threat;
+pub mod timefmt;
 pub mod uid;
 pub mod url_util;
 pub mod wigle;

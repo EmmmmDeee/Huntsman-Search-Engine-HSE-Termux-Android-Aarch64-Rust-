@@ -46,6 +46,12 @@ struct CrateUser {
     name: Option<String>,
     #[serde(default)]
     url: Option<String>,
+    /// GitHub-hosted avatar, e.g. `https://avatars.githubusercontent.com/u/1`.
+    /// Surfaced as the `avatar_url` evidence attr: it embeds the maintainer's
+    /// stable numeric GitHub user id (survives handle renames) — an attribution
+    /// pivot the response carried but the module previously discarded.
+    #[serde(default)]
+    avatar: Option<String>,
 }
 
 /// Map a decoded crates.io user record to its entities. **Pure** (no network),
@@ -79,6 +85,13 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
         );
     if let Some(n) = user.name.as_deref().filter(|n| !n.is_empty()) {
         ev = ev.with_attr("name", n);
+    }
+    if let Some(av) = user
+        .avatar
+        .as_deref()
+        .filter(|a| a.starts_with("http://") || a.starts_with("https://"))
+    {
+        ev = ev.with_attr("avatar_url", av);
     }
     u.add_evidence(ev);
     result.push(u);

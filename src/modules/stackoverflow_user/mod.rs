@@ -49,8 +49,11 @@ pub(super) struct SoUser {
     pub(super) link: Option<String>,
     #[serde(default)]
     pub(super) reputation: Option<i64>,
+    /// Unix epoch (UTC) the account was created — surfaced as `account_created`,
+    /// an account-age temporal signal (older accounts corroborate identity and
+    /// anchor breach/activity timelines).
     #[serde(default)]
-    pub(super) _creation_date: Option<i64>,
+    pub(super) creation_date: Option<i64>,
 }
 
 #[async_trait]
@@ -146,6 +149,9 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
     }
     if let Some(rep) = user.reputation {
         ev = ev.with_attr("reputation", rep.to_string());
+    }
+    if let Some(created) = user.creation_date.and_then(crate::util::timefmt::ymd_utc) {
+        ev = ev.with_attr("account_created", created);
     }
     u.add_evidence(ev);
     result.push(u);
@@ -272,7 +278,7 @@ mod tests {
             website_url: website_url.map(str::to_string),
             link: link.map(str::to_string),
             reputation,
-            _creation_date: Some(1_546_300_800),
+            creation_date: Some(1_546_300_800), // 2019-01-01T00:00:00Z
         }
     }
 
@@ -286,6 +292,26 @@ mod tests {
         assert!(u.is_some(), "must emit Username entity");
         assert!((u.unwrap().confidence - 0.82).abs() < 0.01);
         assert!(u.unwrap().has_tag("stackoverflow") && u.unwrap().has_tag("forum"));
+    }
+
+    #[test]
+    fn username_evidence_surfaces_account_creation_date() {
+        // creation_date was deserialized but dropped; it must now appear as the
+        // `account_created` evidence attr (UTC date) — an account-age signal.
+        let user = make_user("alice", None, None, None, Some(1234));
+        let ents = build_entities(user, "scan-so-created");
+        let u = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Username && e.value == "alice")
+            .expect("Username entity");
+        assert_eq!(
+            u.evidence[0]
+                .attributes
+                .get("account_created")
+                .map(String::as_str),
+            Some("2019-01-01"),
+            "the deserialized creation_date must surface as a UTC date"
+        );
     }
 
     #[test]

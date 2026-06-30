@@ -66,6 +66,8 @@ use super::*;
         let attr = |k: &str| u.evidence[0].attributes.get(k).map(String::as_str);
         assert_eq!(attr("profile_url"), Some("https://crates.io/users/alice"));
         assert_eq!(attr("name"), Some("Alice Smith"));
+        // The avatar URL (embeds the stable numeric GitHub id) is now surfaced.
+        assert_eq!(attr("avatar_url"), Some("https://x/a"));
 
         // GitHub username pivot extracted from the profile URL.
         let gh = ents.iter().find(|e| e.kind == EntityKind::Username && e.value == "alice"
