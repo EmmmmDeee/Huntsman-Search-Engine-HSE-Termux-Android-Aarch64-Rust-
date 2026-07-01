@@ -862,14 +862,31 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   origin-candidate. All the raw plumbing (MX-tagged Domain entities,
   brute-dictionary direct-connect labels, auto-derived `ResolvesTo` edges)
   already existed; this is the one correlation rule that was missing.
-  *Remaining:* the two larger legs — pre-onboarding passive-DNS history,
-  and SSL-cert-hash pivoting on Censys/Shodan — need new data sources, not
-  just a new rule over existing data, and stay open; the doc's "emit a
-  tagged `origin-candidate` IP" phrasing itself was imprecise — a
-  correlator rule reads an immutable entity slice and cannot mutate/tag
-  entities, so the origin-candidate signal lives in the `Correlation`
-  record's `entity_uids`/description, the same way AU-110 already names
-  its co-hosted IPs, not as an entity tag.
+  *Delivered (2026-07-01, cont'd):* the passive-DNS-history leg — smaller
+  than previously assumed. It was not a new-data-source integration:
+  `virustotal`'s already-registered, already-called domain/IP report
+  endpoint returns a `last_dns_records` field (historical A/AAAA/MX/NS/
+  CNAME snapshot) that the module fetched but silently dropped, decoding
+  straight into a narrow struct with no `last_dns_records` field. A prior
+  agent session (commit `c809c1ad`) had implemented almost exactly this
+  once before, on an abandoned branch that never merged — confirmed via
+  `git merge-base --is-ancestor` that it isn't an ancestor of this
+  branch, so this is a real, unaddressed gap here, not stale-doc noise.
+  `build_entity` → `build_entities` (pure, `Vec<Entity>`): A/AAAA records
+  become `IpAddress` pivots, MX/NS/CNAME hostnames become `Domain`
+  pivots, capped at `MAX_DNS_RECORDS = 30` to bound graph expansion. This
+  cycle deliberately scoped narrower than the abandoned commit, which
+  also surfaced `as_owner`/`asn`/`network`/`country`/`categories`/`tags`
+  — those are a separate C4 asset-depth concern, not this leg, and were
+  left out to avoid scope creep beyond the one verified gap.
+  *Remaining:* SSL-cert-hash pivoting on Censys/Shodan (the one leg that
+  genuinely needs new data-source work, not just surfacing an
+  already-fetched field); the doc's "emit a tagged `origin-candidate`
+  IP" phrasing itself was imprecise — a correlator rule reads an
+  immutable entity slice and cannot mutate/tag entities, so AU-111's
+  origin-candidate signal lives in the `Correlation` record's
+  `entity_uids`/description, the same way AU-110 already names its
+  co-hosted IPs, not as an entity tag.
 - **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -3710,3 +3727,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-F3
   + §5 — same commit.
+
+- **2026-07-01** — **C4: `virustotal` now surfaces its passive-DNS history
+  as pivot entities, closing the last verified candidate from this
+  session's second discovery pass.** The passive-DNS-history leg turned
+  out smaller than the doc assumed: `virustotal`'s already-called domain/
+  IP report endpoint (`GET /api/v3/domains/{d}` or
+  `/ip_addresses/{ip}`) returns `last_dns_records` (historical A/AAAA/MX/
+  NS/CNAME) that the module fetched but silently dropped — decoded
+  straight into a narrow `VtAttributes` struct with no field for it, the
+  same "dropped-field depth gap" class this session's earlier `austlii`/
+  `wigle` fixes closed. Verified real, not stale-doc noise, by confirming
+  a prior agent session's near-identical fix (commit `c809c1ad`) lives
+  only on an abandoned, never-merged branch (`git merge-base
+  --is-ancestor` → not an ancestor of this branch). `build_entity` →
+  `build_entities` (pure, returns `Vec<Entity>`): A/AAAA records become
+  `IpAddress` pivots, MX/NS/CNAME hostnames become `Domain` pivots, capped
+  at `MAX_DNS_RECORDS = 30`. Deliberately scoped narrower than the
+  abandoned commit, which also surfaced `as_owner`/`asn`/`network`/
+  `country`/`categories`/`tags` — a separate C4 asset-depth concern, left
+  out to avoid scope creep beyond this one verified gap. 2 new unit
+  tests (positive pivot extraction across all record types incl. a
+  non-parseable-IP and a TXT-is-not-a-pivot-kind rejection case; the
+  30-record cap). C4 stays `[~]`: SSL-cert-hash pivoting on Censys/Shodan
+  is the one remaining leg that genuinely needs new data-source work, not
+  just a dropped-field fix. This exhausts the second discovery pass's
+  candidate pool — all 5 `CONFIRMED`/`PARTIALLY_CONFIRMED` findings from
+  it are now implemented. Gate green: 4290 lib tests (+2), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
+  same commit.

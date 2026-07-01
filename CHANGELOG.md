@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`virustotal` now surfaces its passive-DNS history as pivot entities.**
+  VirusTotal's already-called domain/IP report endpoint returns
+  `last_dns_records` — a snapshot of historical A/AAAA/MX/NS/CNAME records —
+  that the module fetched but silently discarded. Historical `A`/`AAAA`
+  values now become `IpAddress` pivots and `MX`/`NS`/`CNAME` hostnames
+  become `Domain` pivots (capped at 30 records per scan), surfacing
+  infrastructure the subject no longer actively advertises but that can
+  still correlate against other findings.
 - **New correlation rule AU-111 — CDN origin-candidate unmasking.** When a
   domain is fronted entirely by a CDN/anycast edge (Cloudflare, etc.) but an
   MX record or a direct-connect service subdomain (`cpanel.`/`ftp.`/`mail.`/

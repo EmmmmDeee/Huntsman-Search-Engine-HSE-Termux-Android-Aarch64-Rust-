@@ -410,10 +410,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `RelationRuleFn` is `fn(&[Entity], &[Relation], &str, u64) ->
   Vec<Correlation>`, read-only over entities — so the signal lives in the
   `Correlation` record, matching AU-110's own shape, not an entity tag.
+  *Delivered (2026-07-01, cont'd):* the passive-DNS-history leg — smaller
+  than assumed. `virustotal`'s already-called domain/IP report endpoint
+  returns `last_dns_records` (historical A/AAAA/MX/NS/CNAME) the module
+  fetched but silently dropped — a dropped-field depth gap, not a new
+  integration. Confirmed real (not stale-doc noise) by finding a prior
+  agent session's near-identical fix (`c809c1ad`) on an abandoned,
+  never-merged branch. `build_entity` → `build_entities` (pure,
+  `Vec<Entity>`): A/AAAA → `IpAddress` pivots, MX/NS/CNAME → `Domain`
+  pivots, capped at `MAX_DNS_RECORDS = 30`. Deliberately scoped narrower
+  than the abandoned commit (which also surfaced `as_owner`/`asn`/
+  `network`/`country`/`categories`/`tags` — a separate asset-depth
+  concern) to avoid scope creep beyond the one verified gap. 2 new unit
+  tests.
   *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already
-  ship); passive-DNS-history and SSL-cert-hash pivoting on Censys/Shodan
-  (the two larger legs of CDN-origin unmasking — both need new data
-  sources, not just a new rule).
+  ship); SSL-cert-hash pivoting on Censys/Shodan (genuinely needs new
+  data-source work, not just surfacing an already-fetched field).
 - **`[x]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: `raw_archive`
   SQLite table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER
   NOT NULL, result_json TEXT NOT NULL`), keyed by `archive_key =
@@ -722,8 +734,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cadastre/property.
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
-  AU-111 (MX/direct-connect CDN-origin unmasking) delivered 2026-07-01.
-  *Remaining:* passive-DNS history; SSL-cert-hash origin pivot.
+  AU-111 (MX/direct-connect CDN-origin unmasking) delivered 2026-07-01;
+  `virustotal` passive-DNS pivots delivered 2026-07-01.
+  *Remaining:* SSL-cert-hash origin pivot (needs new data-source work).
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
@@ -2885,3 +2898,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` T2.7 + §8 —
   same commit.
+
+- **2026-07-01** — **SOL-NETINT: `virustotal` now surfaces its passive-DNS
+  history as pivot entities — the last verified candidate from this
+  session's second discovery pass, exhausting that pass's pool.** The
+  passive-DNS-history leg turned out smaller than the doc assumed:
+  `virustotal`'s already-called domain/IP report endpoint returns
+  `last_dns_records` (historical A/AAAA/MX/NS/CNAME) that the module
+  fetched but silently dropped — decoded straight into a narrow
+  `VtAttributes` struct with no field for it, the same "dropped-field
+  depth gap" class this session's `austlii`/`wigle` fixes closed earlier.
+  Verified real, not stale-doc noise: a prior agent session's
+  near-identical fix (commit `c809c1ad`) exists only on an abandoned,
+  never-merged branch (`git merge-base --is-ancestor` confirms it is not
+  an ancestor of this branch). `build_entity` → `build_entities` (pure,
+  `Vec<Entity>`): A/AAAA records become `IpAddress` pivots, MX/NS/CNAME
+  hostnames become `Domain` pivots, capped at `MAX_DNS_RECORDS = 30` to
+  bound graph expansion. Deliberately scoped narrower than the abandoned
+  commit, which also surfaced `as_owner`/`asn`/`network`/`country`/
+  `categories`/`tags` — a separate C4 asset-depth concern, left out to
+  avoid scope creep beyond this one verified gap. 2 new unit tests
+  (positive pivot extraction across all record types, incl. a
+  non-parseable-IP rejection and confirming TXT isn't a pivot kind; the
+  30-record cap). Gate green: 4290 lib tests (+2), full suite (lib +
+  smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean, including
+  `every_literal_constructed_entity_kind_is_declared_in_produces` (no
+  `produces()` change needed — the two pivot kinds were already
+  declared). Paired: `PROBLEM_TREE` C4 + §8 — same commit.
