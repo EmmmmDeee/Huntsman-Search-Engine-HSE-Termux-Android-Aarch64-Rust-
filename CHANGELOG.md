@@ -370,6 +370,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
   byte-identical crawl output.
 
 ### Fixed
+- **The identity link-analysis search (AU-060, AU-064's cross-scan pathway
+  templates, AU-067, AU-071's OTHER graph pass, the dossier CLI's
+  CONNECTIONS/RESOLVED IDENTITIES sections, and the autonomous `scan_auto`
+  HTTP endpoint) had TWO independent unbounded cost paths, not one
+  (`PROBLEM_TREE` T2.25).** `identity_paths`'s nested per-identity-pair loop
+  is quadratic-ish in the identity-entity count — measured ~1.7s at 200
+  identities, ~14.9s at 400 — now capped by the existing
+  `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` ceiling. A second, independent
+  cost axis (one full graph traversal per identity, scaling with total
+  graph size regardless of identity count) was caught by this fix's own
+  adversarial review before shipping: a scan with only a handful of real
+  identities but many breach-derived non-identity entities (URLs, IPs,
+  credentials — an ordinary shape, not adversarial) still took several
+  seconds. A new ceiling on identity-count × graph-node-count closes that
+  gap too. Both apply inside the one shared primitive, so all seven
+  downstream consumers inherit the fix automatically. This was the last
+  open thread of the T2.22–T2.25 series; every identity-graph primitive
+  the correlator, dossier CLI, and autonomous-scan API share is now
+  bounded on both axes.
 - **The connection-broker search (AU-070/AU-071, and the dossier CLI's
   CONNECTION BROKERS section) could take 14+ seconds and climbing on a
   dense hub-and-spoke identity graph — a common shape for one company's

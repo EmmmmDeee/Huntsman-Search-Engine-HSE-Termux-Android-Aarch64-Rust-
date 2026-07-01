@@ -123,6 +123,48 @@ mod tests {
         Relation::new(from.uid.clone(), to.uid.clone(), kind, conf, "s")
     }
 
+    /// Regression guard for `PROBLEM_TREE` T2.25: a dense hub-and-spoke identity
+    /// graph (many identities each linked to every one of a handful of shared
+    /// hubs) drove `identity_paths`' nested per-pair loop to multi-second cost
+    /// before `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` guarded it too; this
+    /// proves AU-060 (which calls `identity_paths` directly) now returns fast
+    /// above the ceiling rather than running the unbounded search.
+    #[test]
+    fn au060_returns_fast_on_a_graph_above_the_identity_ceiling() {
+        use crate::core::relation::MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH;
+
+        let n_hubs = 40;
+        let n_identities = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1;
+        let hubs: Vec<Entity> = (0..n_hubs)
+            .map(|h| mk(EntityKind::Domain, &format!("hub{h}.example")))
+            .collect();
+        let mut ents: Vec<Entity> = Vec::new();
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..n_identities {
+            let ident = mk(EntityKind::Username, &format!("user{i}"));
+            for h in &hubs {
+                rels.push(rel(&ident, h, RelationKind::DerivedFrom));
+            }
+            ents.push(ident);
+        }
+        ents.extend(hubs);
+        assert!(
+            ents.len() > MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH,
+            "test setup must exceed the ceiling"
+        );
+
+        let start = std::time::Instant::now();
+        assert!(
+            rule_au_060_transitive_identity_closure(&ents, &rels, "s", 0).is_empty(),
+            "above the ceiling, the search must skip rather than run unbounded"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the guard must return well before the unbounded search would (elapsed: {:?})",
+            start.elapsed()
+        );
+    }
+
     #[test]
     fn au060_suppresses_chain_through_a_damped_lead_edge() {
         // email → person (strong 0.8) → person2 via a DAMPED kinship edge (0.40,

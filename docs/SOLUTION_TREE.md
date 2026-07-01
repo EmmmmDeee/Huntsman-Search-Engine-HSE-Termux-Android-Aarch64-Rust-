@@ -780,6 +780,57 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   consumer set (missing `engine::rank_identity_aware_targets`'s live
   `scan_auto` HTTP path and one of the dossier CLI's two affected
   sections), corrected in T2.25's `PROBLEM_TREE` text before this commit.
+- **`[x]` SOL-IDENTITY-PATH-CEILING · Two independent ceilings bounding
+  `identity_paths`' two independent cost axes** → **T2.25**:
+  `identity_paths` (`src/core/relation/graph.rs`) runs one BFS per
+  identity entity, then a nested `start`/`dest` loop checking reachability
+  for every identity PAIR — TWO separate unguarded cost axes (identity
+  count, and total graph node count), both inherited by all SEVEN
+  downstream consumers: AU-060 (direct), AU-064/the engine's cross-scan
+  pathway-template learning (via `connection_templates`), AU-067/AU-071
+  (via `resolve_identity_clusters`), the dossier CLI's CONNECTIONS/
+  RESOLVED IDENTITIES sections, and — reachable from a live, repeatable
+  HTTP endpoint, not just an on-demand CLI render —
+  `engine::rank_identity_aware_targets` via `scan_auto`. Empirically
+  confirmed the FIRST axis via a dedicated dense hub-and-spoke measurement
+  (hub count scaled proportionally with identity count): ~1.7s at 200
+  identity entities, ~4.1s at 221, ~14.9s at 400. ✅ **First fix:** reused
+  the EXISTING `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` (200) rather than
+  invent a third constant — its worst case at the boundary (~1.5–1.7s)
+  lands in the same "low single-digit seconds" band SOL-BROKER-CEILING's
+  own ceiling did. A 3-area, 21-agent adversarial review (required before
+  shipping, since this touches a shared core primitive with multiple
+  consumers) then caught a REAL, MAJOR gap the proportional-hub-count
+  measurement had masked: the identity-count ceiling bounds only the
+  O(identity_count²) pair-reconstruction term, but `identity_paths` ALSO
+  runs one full BFS per identity — a SEPARATE cost in total graph node
+  count, independent of identity count. Three verifiers independently
+  reproduced it: 20 identities against 8,000 non-identity nodes (an
+  ordinary shape — real identities enriched with breach-derived
+  URLs/IPs/credentials) took ~5.6s, sailing straight through the
+  200-identity ceiling. ✅ **Second fix, same cycle, not deferred:** a new
+  `MAX_IDENTITY_PATHS_SEARCH_UNITS = 50_000`, bounding the PRODUCT
+  `identity_count × total_graph_nodes` — the actual quantity the dominant
+  BFS cost scales with — measured directly at the worst case within the
+  first ceiling (200 identities, node counts 250–500 → 2.1s–13.8s) to
+  size the value. Both ceilings apply together; each catches a case the
+  other misses. Applied INSIDE `identity_paths` itself; verified directly
+  (not just assumed) that `resolve_identity_clusters` AND
+  `connection_templates` both delegate their entire cost to
+  `identity_paths`, so all seven consumers inherit both fixes with no
+  per-call-site duplication — the review's coverage pass also caught that
+  `connection_templates`/AU-064 was itself missing from this node's
+  first-draft consumer list (already protected in practice, but
+  undocumented; corrected). 5 new regression tests (the primitive on each
+  axis, `resolve_identity_clusters` directly, `connection_templates`
+  directly, and AU-060's rule), `git stash`-confirmed non-vacuous against
+  both guards removed together. **Live-verified** on both axes:
+  identity-count — 201 entities (one past that ceiling) fell from an
+  extrapolated ~4s+ to ~120µs, 200 (at the ceiling) stays ~1.45s;
+  search-unit — the reviewers' exact 20-identity/8,000-node case fell
+  from ~5.6s to ~483µs, 20 identities against 2,000 nodes (under the
+  ceiling) still runs in ~1.1s. `hse selftest`'s correlator check
+  unchanged (3 rules fire).
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -871,6 +922,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-AU087-INDEX | T2.22 | `[x]` |
 | SOL-DISPATCH-HANG | T2.23 | `[x]` |
 | SOL-BROKER-CEILING | T2.24 | `[x]` |
+| SOL-IDENTITY-PATH-CEILING | T2.25 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -894,18 +946,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.25** (new, 2026-07-01) — `identity_paths`/`resolve_identity_clusters`
-  empirically confirmed to share an unguarded, real (3.48s at 221 identity
-  entities) cost on the same dense hub-and-spoke graph shape
-  SOL-BROKER-CEILING just fixed `connection_brokers` for. Found while
-  verifying that fix protects AU-071 — it doesn't fully, since AU-071's
-  `resolve_identity_clusters` call runs BEFORE its (now-bounded)
-  `connection_brokers` call. `identity_paths`' cost key is identity count
-  (matching `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`, unlike
-  `connection_brokers`' graph-node-count key), so reusing that existing
-  constant may be the right fix — needs its own dedicated measurement at
-  larger identity counts to confirm before a tailored guard is designed.
-  No solution node yet.
+- **T2.25** — **delivered** ✅ (SOL-IDENTITY-PATH-CEILING, 2026-07-01). Off
+  the open queue.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -1016,19 +1058,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21/T2.22/T2.23/T2.24
-  `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21/T2.22/T2.23/T2.24/
+  T2.25 `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
   SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION,
   SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM, SOL-ATTACK-TACTIC,
-  SOL-AU087-INDEX, SOL-DISPATCH-HANG, SOL-BROKER-CEILING — the
-  dead-hint/dead-ledger/dead-delegation/false-doc/silent-truncation/
-  unguarded-arithmetic/overclaimed-test-coverage/dead-constant/
-  reintroduced-O(n²)-or-worse-unguarded-graph-search bug family, all
-  closed); **T2.25 `[ ]`** (new, `identity_paths`/`resolve_identity_
-  clusters` empirically confirmed to share the same unguarded-cost bug
-  family on the same dense-hub shape T2.24 just fixed for
-  `connection_brokers` — needs its own dedicated measurement before a
-  tailored fix); T2.7 open (blocked for an unattended cycle); **T2.11 `[x]`**
+  SOL-AU087-INDEX, SOL-DISPATCH-HANG, SOL-BROKER-CEILING,
+  SOL-IDENTITY-PATH-CEILING — the dead-hint/dead-ledger/dead-delegation/
+  false-doc/silent-truncation/unguarded-arithmetic/overclaimed-test-coverage/
+  dead-constant/reintroduced-O(n²)-or-worse-unguarded-graph-search bug
+  family, all closed — with T2.25 closing the LAST open thread in this
+  family (and, in the process, its own OWN two-axis gap — found by
+  adversarial review before shipping, fixed the same cycle), seven
+  consumer surfaces across two primitives now covered by two shared,
+  reused ceilings — three ceilings total: pairwise-count, graph-node-
+  count, and node-times-identity-count); T2.7 open (blocked for an
+  unattended cycle); **T2.11 `[x]`**
   ✅ (2026-07-01, status-marker reconciliation — oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
   closed; the one residual, the `QuotaBudget` per-scan `reset_scan()`-zeroing
@@ -3377,3 +3421,64 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   commit. Gate green: fmt/clippy `--all-targets --locked -D warnings`/
   strict-rustdoc clean, 4295 lib tests (4293→4295, +2), full `cargo test`
   green.
+
+- **2026-07-01** — **New: SOL-IDENTITY-PATH-CEILING closes T2.25 —
+  `identity_paths` had TWO independent unguarded cost axes, not one; the
+  second was found and fixed by this cycle's own adversarial review
+  before shipping.** Finishing T2.25, the sole in-progress residual left
+  by T2.24's own adversarial review. T2.25's sketch left one open
+  question: reuse the existing identity-count ceiling, or design a
+  bespoke one — undecided without a dedicated measurement at larger
+  identity counts than the single 221-entity data point T2.24's
+  verification happened to produce. Built that dedicated diagnostic
+  (dense hub-and-spoke shape, hub count scaled proportionally with
+  identity count, 50–400 identity entities) and measured `identity_paths`
+  directly: ~1.7s at 200 (right at the existing ceiling), ~4.1s at 221,
+  ~14.9s at 400. Reused the EXISTING `MAX_IDENTITY_UIDS_FOR_PAIRWISE_
+  SEARCH` (200) rather than invent a third constant — worst case at the
+  boundary (~1.5–1.7s) lands in the same "low single-digit seconds" band
+  SOL-BROKER-CEILING's own ceiling did. A 3-area, 21-agent adversarial
+  review (required before shipping, since this touches a shared core
+  primitive with multiple consumers) then caught a REAL, MAJOR gap the
+  proportional-hub-count measurement had masked: the identity-count
+  ceiling bounds only the O(identity_count²) pair-reconstruction term,
+  but `identity_paths` ALSO runs one full BFS per identity — a SEPARATE
+  cost in total graph node count, independent of identity count. Three
+  verifiers independently reproduced it: 20 identities against 8,000
+  non-identity nodes (an ordinary shape — real identities enriched with
+  breach-derived URLs/IPs/credentials) took ~5.6s, sailing straight
+  through the 200-identity ceiling. Fixed in the SAME cycle rather than
+  deferred to yet another node (the same primitive already being fixed,
+  not a distinct one): a new `MAX_IDENTITY_PATHS_SEARCH_UNITS = 50_000`,
+  bounding the PRODUCT `identity_count × total_graph_nodes` — the actual
+  quantity the dominant BFS cost scales with — measured directly at the
+  worst case within the first ceiling (200 identities, node counts
+  250–500 → 2.1s–13.8s) to size the value. Verified directly (not just
+  assumed) that `resolve_identity_clusters` AND `connection_templates`
+  both delegate their entire cost to `identity_paths`, so both new guards
+  automatically cover all SEVEN downstream consumers: AU-060 (direct),
+  AU-064/the engine's cross-scan pathway-template learning (via
+  `connection_templates`), AU-067/AU-071 (via `resolve_identity_
+  clusters`), the dossier CLI's CONNECTIONS/RESOLVED IDENTITIES sections,
+  and `engine::rank_identity_aware_targets` (reachable from the live
+  `scan_auto` HTTP endpoint). The review's coverage pass also caught that
+  `connection_templates`/AU-064 was itself missing from this node's
+  first-draft consumer list — already protected in practice, but
+  undocumented; corrected here. 5 new regression tests (the primitive on
+  each axis, `resolve_identity_clusters` directly, `connection_templates`
+  directly, and AU-060's rule), `git stash`-confirmed non-vacuous against
+  both guards removed together. **Live-verified** on both axes:
+  identity-count — 201 entities (one past that ceiling) fell from an
+  extrapolated ~4s+ to ~120µs, 200 (at the ceiling) stays ~1.45s;
+  search-unit — the reviewers' exact 20-identity/8,000-node case fell
+  from ~5.6s to ~483µs, 20 identities against 2,000 nodes (under the
+  ceiling) still runs in ~1.1s. `hse selftest`'s correlator check
+  unchanged (3 rules fire). **Gap refresh:** leverage-map gains
+  SOL-IDENTITY-PATH-CEILING `[x]`; §4a's T2.25 gap entry closes; §4d's T2
+  row folds T2.25 into the closed bug family — the T2.22–T2.25 arc is now
+  fully closed, seven consumer surfaces across two primitives protected
+  by three shared, deterministic ceilings (pairwise-count, graph-node-
+  count, and node-times-identity-count). Paired: `PROBLEM_TREE`
+  T2.25 `[x]` + §8 — same commit. Gate green: fmt/clippy `--all-targets
+  --locked -D warnings`/strict-rustdoc clean, 4300 lib tests
+  (4295→4300, +5), full `cargo test` green.

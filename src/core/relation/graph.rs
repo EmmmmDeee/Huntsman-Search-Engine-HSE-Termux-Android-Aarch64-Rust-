@@ -96,6 +96,29 @@ pub fn identity_uids(entities: &[Entity]) -> Vec<&str> {
 /// single rule at 401 all-identity synthetic entities, worse than quadratic
 /// once compounded across rules (`PROBLEM_TREE` T2.2x).
 ///
+/// Also guards [`identity_paths`] itself (`PROBLEM_TREE` T2.25): its own
+/// nested `start`/`dest` loop over every identity pair is the same O(n²)
+/// shape, compounded by one BFS per start — empirically confirmed
+/// catastrophic on a dense hub-and-spoke identity graph (~1.7s at n=200,
+/// ~14.9s at n=400 identity entities), so `identity_paths` reuses this same
+/// ceiling rather than a bespoke one. Since [`resolve_identity_clusters`] and
+/// [`connection_templates`] both delegate entirely to `identity_paths`, this
+/// one guard also covers AU-067, AU-071, `engine::rank_identity_aware_targets`
+/// (reachable from the live `scan_auto` HTTP endpoint), the dossier CLI's
+/// CONNECTIONS/RESOLVED IDENTITIES sections, AU-064 (`connection_templates`'
+/// correlator rule), and the engine's cross-scan pathway-template learning
+/// pass (persisted via `storage::templates`) — no separate guard needed at
+/// any of those call sites.
+///
+/// This bounds only the identity-COUNT axis. `identity_paths` also runs one
+/// full BFS per identity, a SEPARATE cost axis in the total graph node count
+/// (V) that is independent of identity count — a scan with FEW identities but
+/// MANY non-identity nodes (breach-derived URLs, IPs, credentials, device
+/// IDs) sails straight through this ceiling while still paying O(identity_
+/// count × V). [`MAX_IDENTITY_PATHS_SEARCH_UNITS`] bounds that second axis
+/// (found during T2.25's own adversarial review, before shipping — see that
+/// constant's doc).
+///
 /// A wall-clock cutoff was deliberately rejected for this: unlike
 /// `CORRELATOR_BUDGET`/`DERIVE_BUDGET` (which bound whole PASSES between
 /// rules), stopping mid-loop on elapsed time would make which links a rule
@@ -107,6 +130,37 @@ pub fn identity_uids(entities: &[Entity]) -> Vec<&str> {
 /// identity entities is far outside a normal scan's shape, so this is a
 /// safety bound, not a coverage regression in practice.
 pub const MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH: usize = 200;
+
+/// Second ceiling for [`identity_paths`] (`PROBLEM_TREE` T2.25, found during
+/// this fix's own adversarial review before shipping): [`MAX_IDENTITY_UIDS_
+/// FOR_PAIRWISE_SEARCH`] alone bounds the O(identity_count²) pair-reconstruction
+/// term, but `identity_paths` ALSO runs one full BFS per identity — a cost in
+/// the TOTAL graph node count (V) that is independent of identity count. A
+/// scan with few identities but many non-identity nodes (breach-derived URLs,
+/// IPs, credentials, device IDs — an ordinary, non-adversarial shape) sails
+/// through the identity-count ceiling while still paying O(identity_count ×
+/// V): empirically confirmed at 20 identity entities against 8,000 non-identity
+/// nodes taking ~5.6s, growing roughly linearly with node count alone.
+///
+/// Neither axis alone can be bounded generously without the OTHER axis making
+/// the combination unsafe — measured at exactly
+/// `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` (200) identities, total node counts
+/// of 250/300/350/400/500 took 2.1s/4.1s/6.6s/9.0s/13.8s. This constant bounds
+/// the PRODUCT `identity_count × total_node_count` — the actual quantity the
+/// dominant BFS cost scales with — rather than either axis independently, so a
+/// scan with few identities keeps a generous node-count allowance (small
+/// identity_count × large V can still clear the product ceiling) while a scan
+/// with many identities is held to a tighter node-count allowance (matching
+/// the measured 200×250=50,000 boundary, ~2s worst case — the same "low
+/// single-digit seconds" band [`MAX_GRAPH_NODES_FOR_BROKER_SEARCH`] and
+/// [`MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`] both target).
+///
+/// Deterministic for the same reason every ceiling in this module is: a pure
+/// function of the input entity/relation counts, never wall-clock. Applied
+/// IN ADDITION TO (not instead of) the identity-count-only ceiling above —
+/// each catches a case the other does not (e.g. ~201 identities with almost
+/// no other nodes clears this product ceiling but not the identity-count one).
+pub const MAX_IDENTITY_PATHS_SEARCH_UNITS: usize = 50_000;
 
 /// Build the undirected adjacency of the relation graph — every edge added in
 /// both directions. Self-loops are skipped (they connect nothing). When
@@ -196,6 +250,16 @@ pub fn reachable_count<'a>(start: &'a str, adj: &Adjacency<'a>) -> usize {
 /// The result is sorted deterministically: fewest hops first, then strongest
 /// (highest [`IdentityPath::min_confidence`]), then by endpoint UID — so the
 /// tightest, most-trustworthy links lead.
+///
+/// Above [`MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`] identity entities, OR above
+/// [`MAX_IDENTITY_PATHS_SEARCH_UNITS`] identity-count-times-graph-node-count,
+/// returns empty rather than running the search — see those constants' docs
+/// for why two independent ceilings are needed. This also bounds every
+/// consumer built on this primitive: [`resolve_identity_clusters`] (and,
+/// through it, AU-067, AU-071, and `engine::rank_identity_aware_targets`),
+/// [`connection_templates`] (and, through it, AU-064 and the engine's
+/// cross-scan pathway-template learning), AU-060, and the dossier CLI's
+/// CONNECTIONS/RESOLVED IDENTITIES sections.
 pub fn identity_paths(
     entities: &[Entity],
     relations: &[Relation],
@@ -205,14 +269,40 @@ pub fn identity_paths(
         return Vec::new();
     }
 
+    // Identity endpoints in sorted UID order — each pair is computed once from
+    // the smaller UID, fixing both orientation and shortest-path tie-breaks.
+    let identity_uids = identity_uids(entities);
+    if identity_uids.len() > MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH {
+        tracing::warn!(
+            identity_entities = identity_uids.len(),
+            ceiling = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH,
+            "identity_paths: identity-entity count exceeds the pairwise-search \
+             ceiling — skipping (see MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH)"
+        );
+        return Vec::new();
+    }
+    let identity_set: HashSet<&str> = identity_uids.iter().copied().collect();
+
     // The canonical sorted adjacency, confined to confirmed nodes so a
     // dangling/quarantined edge is never walked (see [`sorted_confined_adjacency`]).
     let adj = sorted_confined_adjacency(entities, relations);
 
-    // Identity endpoints in sorted UID order — each pair is computed once from
-    // the smaller UID, fixing both orientation and shortest-path tie-breaks.
-    let identity_uids = identity_uids(entities);
-    let identity_set: HashSet<&str> = identity_uids.iter().copied().collect();
+    // Second axis (see MAX_IDENTITY_PATHS_SEARCH_UNITS's doc): the BFS-per-identity
+    // cost below scales with identity_count * total graph nodes, independent of the
+    // identity-count-only check above — a few identities against a huge non-identity
+    // node set would otherwise sail through it.
+    let search_units = identity_uids.len().saturating_mul(adj.len());
+    if search_units > MAX_IDENTITY_PATHS_SEARCH_UNITS {
+        tracing::warn!(
+            identity_entities = identity_uids.len(),
+            graph_nodes = adj.len(),
+            search_units,
+            ceiling = MAX_IDENTITY_PATHS_SEARCH_UNITS,
+            "identity_paths: identity-count x graph-node-count exceeds the search-cost \
+             ceiling — skipping (see MAX_IDENTITY_PATHS_SEARCH_UNITS)"
+        );
+        return Vec::new();
+    }
 
     let mut out: Vec<IdentityPath> = Vec::new();
 
@@ -1290,6 +1380,170 @@ mod tests {
         let paths = identity_paths(&[email, domain, person], &rels, 4);
         assert_eq!(paths.len(), 1);
         assert_eq!(paths[0].hops, 1, "the direct edge is the shortest path");
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.25's adversarial-review residual:
+    /// a FEW identities against MANY non-identity nodes (a plausible, ordinary
+    /// shape — breach-derived URLs/IPs/credentials enriching a handful of real
+    /// identities) sailed straight through `MAX_IDENTITY_UIDS_FOR_PAIRWISE_
+    /// SEARCH` (which only bounds identity COUNT) while `identity_paths`' one-
+    /// BFS-per-identity cost still scaled with total graph size — independently
+    /// reproduced by three adversarial verifiers at ~5.6s for 20 identities
+    /// against 8,000 non-identity nodes. `MAX_IDENTITY_PATHS_SEARCH_UNITS`
+    /// (the identity-count × node-count product) must catch what the
+    /// identity-count-only ceiling misses.
+    #[test]
+    fn identity_paths_returns_empty_above_the_search_unit_ceiling() {
+        let n_identities = 20usize;
+        // One more hub than needed to push identity_count * total_nodes just past
+        // the ceiling, so the guard is proven to trip by exactly one unit.
+        let n_hubs = MAX_IDENTITY_PATHS_SEARCH_UNITS / n_identities - n_identities + 1;
+        let hubs: Vec<Entity> = (0..n_hubs)
+            .map(|h| ent(EntityKind::Domain, &format!("hub{h}.example")))
+            .collect();
+        let mut ents: Vec<Entity> = Vec::new();
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..n_identities {
+            let ident = ent(EntityKind::Person, &format!("person{i}"));
+            for h in &hubs {
+                rels.push(rel(&ident, h, RelationKind::IdentifiedBy, 0.8));
+            }
+            ents.push(ident);
+        }
+        ents.extend(hubs);
+        assert!(
+            ents.len() * n_identities > MAX_IDENTITY_PATHS_SEARCH_UNITS,
+            "test setup must exceed the search-unit ceiling"
+        );
+        assert!(
+            n_identities <= MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH,
+            "test setup must stay under the identity-count ceiling — this test proves \
+             the SECOND, independent axis, not the first"
+        );
+
+        let start = std::time::Instant::now();
+        assert!(
+            identity_paths(&ents, &rels, 4).is_empty(),
+            "above the search-unit ceiling, the search must skip rather than run unbounded"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the guard must return well before the unbounded search would (elapsed: {:?})",
+            start.elapsed()
+        );
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.25: a dense hub-and-spoke identity
+    /// graph (many identities each linked to every one of a handful of shared
+    /// hubs — the same realistic OSINT shape SOL-BROKER-CEILING/T2.24 fixed
+    /// `connection_brokers` for) drove `identity_paths`' nested per-pair loop
+    /// (compounded by one BFS per start identity) to ~1.7s at 200 identity
+    /// entities and climbing toward ~14.9s at 400 before this ceiling existed.
+    /// Above the ceiling the search must skip entirely rather than run
+    /// unbounded.
+    #[test]
+    fn identity_paths_returns_empty_above_the_identity_ceiling() {
+        let n_hubs = 40;
+        // One more identity than the ceiling allows, so the guard is proven to
+        // trip by exactly one entity.
+        let n_identities = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1;
+        let hubs: Vec<Entity> = (0..n_hubs)
+            .map(|h| ent(EntityKind::Domain, &format!("hub{h}.example")))
+            .collect();
+        let mut ents: Vec<Entity> = Vec::new();
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..n_identities {
+            let ident = ent(EntityKind::Username, &format!("user{i}"));
+            for h in &hubs {
+                rels.push(rel(&ident, h, RelationKind::DerivedFrom, 0.8));
+            }
+            ents.push(ident);
+        }
+        ents.extend(hubs);
+        assert!(
+            ents.len() > MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH,
+            "test setup must exceed the ceiling"
+        );
+
+        let start = std::time::Instant::now();
+        assert!(
+            identity_paths(&ents, &rels, 4).is_empty(),
+            "above the ceiling, the pairwise search must skip rather than run unbounded"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the guard must return well before the unbounded search would (elapsed: {:?})",
+            start.elapsed()
+        );
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.25: `resolve_identity_clusters`
+    /// delegates entirely to `identity_paths`, so it must inherit the same
+    /// ceiling rather than needing its own — proven directly rather than just
+    /// assumed from the delegation.
+    #[test]
+    fn resolve_identity_clusters_returns_empty_above_the_identity_ceiling() {
+        let n_hubs = 40;
+        let n_identities = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1;
+        let hubs: Vec<Entity> = (0..n_hubs)
+            .map(|h| ent(EntityKind::Domain, &format!("hub{h}.example")))
+            .collect();
+        let mut ents: Vec<Entity> = Vec::new();
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..n_identities {
+            let ident = ent(EntityKind::Username, &format!("user{i}"));
+            for h in &hubs {
+                rels.push(rel(&ident, h, RelationKind::DerivedFrom, 0.8));
+            }
+            ents.push(ident);
+        }
+        ents.extend(hubs);
+
+        let start = std::time::Instant::now();
+        assert!(
+            resolve_identity_clusters(&ents, &rels, 4, 0.50).is_empty(),
+            "above the ceiling, resolve_identity_clusters must skip rather than run unbounded"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the guard must return well before the unbounded search would (elapsed: {:?})",
+            start.elapsed()
+        );
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.25: `connection_templates` (AU-064
+    /// and the engine's cross-scan pathway-template learning) also delegates
+    /// entirely to `identity_paths` — a real consumer this fix's own first draft
+    /// left out of its documentation (caught during adversarial review), proven
+    /// directly here rather than left as an assumed-but-unverified claim.
+    #[test]
+    fn connection_templates_returns_empty_above_the_identity_ceiling() {
+        let n_hubs = 40;
+        let n_identities = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1;
+        let hubs: Vec<Entity> = (0..n_hubs)
+            .map(|h| ent(EntityKind::Domain, &format!("hub{h}.example")))
+            .collect();
+        let mut ents: Vec<Entity> = Vec::new();
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..n_identities {
+            let ident = ent(EntityKind::Username, &format!("user{i}"));
+            for h in &hubs {
+                rels.push(rel(&ident, h, RelationKind::DerivedFrom, 0.8));
+            }
+            ents.push(ident);
+        }
+        ents.extend(hubs);
+
+        let start = std::time::Instant::now();
+        assert!(
+            connection_templates(&ents, &rels, 4).is_empty(),
+            "above the ceiling, connection_templates must skip rather than run unbounded"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the guard must return well before the unbounded search would (elapsed: {:?})",
+            start.elapsed()
+        );
     }
 
     #[test]
