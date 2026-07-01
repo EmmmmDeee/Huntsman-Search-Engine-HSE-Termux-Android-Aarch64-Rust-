@@ -359,6 +359,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`docs/PROBLEM_TREE.md` T2.11's status marker and closing text were
+  stale.** All three of its concrete concurrency sub-items (oathnet's racy
+  budget check, found_keys cross-scan contamination, bounded over-dispatch)
+  were already fixed in prior releases; the one remaining thread (per-scan
+  quota-reset zeroing across concurrent `hse serve` scans) was already
+  accepted as a contained, session-ceiling-bounded residual two cycles
+  earlier, but the tracker's own text never caught up. No runtime
+  behaviour changed — this corrects the project's internal tracking
+  documents only.
 - **The full dossier renderer never stated the MITRE ATT&CK tactic its
   per-entity technique lines belong to (`PROBLEM_TREE` T2.21).**
   `core::attack::TACTIC_ID`/`TACTIC_NAME` (`TA0043`/"Reconnaissance") were

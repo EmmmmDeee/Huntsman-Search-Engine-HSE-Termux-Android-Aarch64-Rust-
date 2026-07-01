@@ -465,7 +465,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   stamps to `SCHEMA_VERSION` when 0 (fresh or pre-versioned DB); `tracing::warn!`
   when `>SCHEMA_VERSION` (forward-compat signal — a newer binary wrote this DB).
   **Paired:** `SOLUTION_TREE` SOL-SCHEMA-VERSION `[x]` + §3/§4/§5 — same commit.
-- **`[~]` T2.11 · Concurrency — process-global state not isolated across the 8
+- **`[x]` T2.11 · Concurrency — process-global state not isolated across the 8
   concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
   scans at once, but several **process-global `static`s** are shared without
   per-scan isolation. The deep engine audit (2026-06-17) found three defects here;
@@ -531,8 +531,32 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
     modules dispatch — and passes against the fix.
   **Root cause:** per-scan/per-session budgets and the key sink live in `static`s
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
-  mutable state. The clean fix is per-`scan_id` keying (or threading the state
-  through `ModuleContext`), which also subsumes the budget-reset race. **P2**
+  mutable state. **P2**
+  ✅ **Closed (2026-07-01 — status-marker reconciliation; no code change this
+  cycle).** All three sub-items above are resolved: the oathnet overspend and
+  the LOW bounded-over-dispatch gap are fixed with regression tests; the
+  found_keys cross-scan contamination is fixed via the `scan_id`-keyed
+  `task_local` (SOL-ISOLATE). The one remaining thread — the `QuotaBudget`
+  per-scan `reset_scan()`-zeroing across concurrent scans (a scan starting
+  mid-flight zeroes a sibling scan's `scan_count`/`quota_exhausted`/
+  `cap_override`, not just its own) — was re-examined in cycle 18
+  (`SOLUTION_TREE` SOL-BUDGET) and accepted `[-]` rather than fixed: verified
+  in the real code (`run_with_ledger_inner` at `core/engine/mod.rs:306` calls
+  `crate::core::hooks::reset_per_scan(&scan.id)` unconditionally on every
+  scan start, including the `hse serve`/`engine.run` concurrent path
+  (`api/handlers/mod.rs:133`) — re-confirmed against the current source this
+  cycle, not just trusted from the prior note) that `session_count` (the
+  operator's per-*session* daily-quota ceiling, `util/budget/mod.rs:213-220`)
+  is never touched by `reset_scan()` and is checked atomically alongside the
+  scan-level counter in `try_increment()`'s CAS reservation — so cross-scan
+  zeroing can let one scan spend more than *its own* configured per-scan cap,
+  but can never push the process's total spend against a paid API past the
+  session ceiling. Genuinely LOW and self-mitigating, not silently dropped:
+  this closing note is the reconciliation this tree's own §0 same-commit rule
+  requires — `PROBLEM_TREE`'s status marker and closing text were stale
+  (still describing per-`scan_id` keying as outstanding work) relative to the
+  conclusion `SOLUTION_TREE` already reached and shipped. No further action
+  planned on the budget-statics path.
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -3915,3 +3939,32 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   closed, T2.7 remains the sole open T-series node (still correctly
   blocked). **Paired:** `SOLUTION_TREE` new SOL-ATTACK-TACTIC `[x]` +
   §3/§4/§5 — same commit.
+
+- **2026-07-01** — **Closed T2.11 (`[~]`→`[x]`) — a status-marker
+  reconciliation, no code change.** T2.11 was the only in-progress (`[~]`)
+  node left in either tree, so priority-1 of the cycle protocol ("finish an
+  in-progress node") picked it over starting fresh discovery. All three
+  concrete sub-items (oathnet's racy budget check-then-increment, found_keys
+  cross-scan contamination, the LOW bounded-over-dispatch gap) already carry
+  their own "✅ Fixed" closes above with tests. The node's closing "Root
+  cause" paragraph, though, still described per-`scan_id` keying as
+  outstanding — stale: `SOLUTION_TREE`'s SOL-BUDGET node already reached and
+  shipped a conclusion on the remaining thread (the `QuotaBudget` per-scan
+  `reset_scan()`-zeroing) back in cycle 18, accepting it `[-]` rather than
+  fixing it, and this tree's own marker/text were never updated to match.
+  Re-verified the cycle-18 claim against the CURRENT source before
+  reconciling (not just trusted): `run_with_ledger_inner`
+  (`core/engine/mod.rs:306`) still unconditionally calls
+  `reset_per_scan(&scan.id)` on every scan start, reachable from `hse
+  serve`'s concurrent path via `engine.run` (`api/handlers/mod.rs:133`);
+  `session_count` — the operator's per-session daily-quota ceiling — is
+  still never touched by `reset_scan()` (`util/budget/mod.rs:216-220`) and
+  is checked atomically alongside the per-scan counter in
+  `try_increment()`'s CAS reservation. The claim holds: cross-scan zeroing
+  can let one scan spend past *its own* configured per-scan cap, but can
+  never push the process's total paid-API spend past the session ceiling —
+  genuinely LOW and self-mitigating. Rewrote the closing paragraph to state
+  this plainly and flipped the marker. Doc-only; gate re-confirmed still
+  green (no code/test touched this cycle: 4286 lib tests, 63 doctests,
+  fmt/clippy/rustdoc clean). **Paired:** `SOLUTION_TREE` T2.11 rollup note
+  in §4d + new §5 log entry — same commit.

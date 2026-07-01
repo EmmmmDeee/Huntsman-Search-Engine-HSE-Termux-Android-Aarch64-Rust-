@@ -867,11 +867,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM, SOL-ATTACK-TACTIC — the
   dead-hint/dead-ledger/dead-delegation/false-doc/silent-truncation/
   unguarded-arithmetic/overclaimed-test-coverage/dead-constant bug family,
-  all closed); T2.7 open (blocked for an unattended cycle); T2.11 mostly
-  done (oathnet +
-  found_keys/SOL-ISOLATE + LOW over-dispatch/
-  SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
-  budget-reset-zeroing note remains, and no further action is planned on it).
+  all closed); T2.7 open (blocked for an unattended cycle); **T2.11 `[x]`**
+  ✅ (2026-07-01, status-marker reconciliation — oathnet +
+  found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
+  closed; the one residual, the `QuotaBudget` per-scan `reset_scan()`-zeroing
+  across concurrent scans, is SOL-BUDGET's already-accepted `[-]` note — the
+  per-*session* ceiling still bounds total spend, no further action
+  planned).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2987,3 +2989,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   new T2.21 `[x]` + §8 — same commit. Gate green: fmt/clippy
   `--all-targets --locked -D warnings`/strict-rustdoc clean, 4286 lib tests
   (4284→4286, +2) and 63 doctests, full `cargo test` green.
+
+- **2026-07-01** — **T2.11 `[~]`→`[x]` — status-marker reconciliation, no
+  code change.** **P→S step:** T2.11 was the sole remaining in-progress
+  (`[~]`) node in either tree, so priority-1 of the cycle protocol picked it
+  over starting new discovery. On inspection, all three of its sub-items
+  were already closed (SOL-BUDGET's oathnet CAS fix, SOL-ISOLATE's
+  `scan_id`-keyed found_keys sink, SOL-LIVE-DISPATCH-BUDGET's live
+  `max_entities` re-check) and the fourth — the `QuotaBudget` per-scan
+  `reset_scan()`-zeroing across concurrent scans — was already re-examined
+  and accepted `[-]` in cycle 18 (this same file's SOL-BUDGET node), with
+  the reasoning that the per-*session* ceiling (never touched by
+  `reset_scan()`, checked atomically in `try_increment()`'s CAS) bounds
+  total spend regardless of scan-level contamination. `PROBLEM_TREE`'s
+  T2.11 entry, though, still carried its original `[~]` marker and a
+  closing "Root cause" paragraph describing per-`scan_id` keying as
+  outstanding work — stale relative to the conclusion this file already
+  reached and shipped two cycles ago. **S→P step:** re-verified the cycle-18
+  claim against the CURRENT source rather than trusting the old note
+  verbatim — `run_with_ledger_inner` (`core/engine/mod.rs:306`) still calls
+  `reset_per_scan(&scan.id)` unconditionally on every scan start, reached
+  by the `hse serve` concurrent path via `engine.run`
+  (`api/handlers/mod.rs:133`); `session_count` is still never touched by
+  `reset_scan()` (`util/budget/mod.rs:216-220`). The claim holds. Rewrote
+  `PROBLEM_TREE` T2.11's closing paragraph to state the resolution plainly
+  and flipped its marker to `[x]`; no `SOLUTION_TREE` node needed changing
+  (SOL-BUDGET/-ISOLATE/-LIVE-DISPATCH-BUDGET were already correctly `[-]`/
+  `[x]`/`[x]`) beyond the §4d coverage-snapshot line. **Gap refresh:** §4d's
+  T2 row now states T2.11 `[x]` instead of "mostly done." No leverage-map
+  change (all three rows already correctly reflected their own status; only
+  the *parent* node's rollup was stale). Paired: `PROBLEM_TREE` T2.11
+  `[~]`→`[x]` + §8 — same commit. Doc-only; no code or test changed, so no
+  new gate run beyond confirming the already-green state (4286 lib tests,
+  63 doctests, fmt/clippy/rustdoc clean) still holds.
