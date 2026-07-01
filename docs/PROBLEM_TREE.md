@@ -594,6 +594,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
     (export/diff/audit on a non-complete scan was silent, misleading, or empty).
     Test `resolve_scan_id_rejects_incomplete_scans` guards it. T2.12 fully closed ✅.
     **P3.** *(All contained; none crash or corrupt persisted scan data.)*
+- **`[x]` T2.13 · Dead "ROI" hint — dossier's "keyed/paid module(s) yielded
+  nothing" line could never fire** *(found + fixed 2026-07-01)* —
+  `cli/scan/dossier.rs::print_diagnostics` computed its wasted-spend hint by
+  filtering `ScanDiagnostics::modules_by_yield` for `entities_emitted == 0`,
+  but `util::diagnostics::analyse` builds that list **exclusively** from
+  emitted entities' evidence sources (`by_source.entry(source)…` inside the
+  per-entity loop) — a module that ran and found nothing is never inserted at
+  all, so it never appears in the list *at zero*, it's simply **absent**. The
+  filter's premise was structurally unsatisfiable: no scan, ever, could have
+  populated it. Confirmed live: a real `hse scan --output dossier` against a
+  low-signal domain ran 42 modules and printed the "Modules ranked by yield"
+  table with exactly **one** row (the seed) — the other 41, including 11
+  `KeyGated`/`Paid` modules that spent a budgeted call for nothing, were
+  invisible to the hint, silently.
+  → **Solution:** a new pure `zero_yield_keyed_or_paid_modules(events,
+  cost_by_module)` reads the scan's own durable `ModuleDone { module, found }`
+  events (`store.events_for_scan`, already tracked and persisted per module
+  regardless of yield) instead of the yield-only-derived list. **P2**
+  ✅ **Fixed:** same live domain scan re-run after the fix now prints `ROI: 11
+  keyed/paid module(s) yielded nothing — consider --exclude
+  dehashed,exa_search,hunter_io,intelx,leakix,netlas,onyphe,securitytrails,
+  threatfox,whoisxml,zoomeye` — the exact 11 `KeyGated`/`Paid` modules from the
+  same run that timed out or found nothing. 4 new unit tests on the pure
+  helper (flags a zero-yield paid module; ignores one that found something;
+  ignores a zero-yield *free* module — no spend to warn about; output is
+  sorted/deduped). `print_dossier`'s now-8-argument signature was bundled into
+  a `DossierArgs` struct (`clippy::too_many_arguments`) rather than
+  `#[allow]`ed, mirroring the T2.5 `DispatchCx`/`DispatchState` precedent.
 
 ---
 
@@ -3112,3 +3140,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   behaviour change any existing test could have caught. Gate green: 4259 lib
   tests, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-GEOINT (§2) + §5 — same commit.
+
+- **2026-07-01** — **T2.13 (new): the dossier's "ROI" wasted-spend hint was
+  structurally dead code — found and closed same-cycle.** With T2.7's
+  golden-fixture work blocked (needs either a live third-party fetch or a
+  fabricated-looking fixture, wrong for an unattended cycle) and no other
+  small open increment ready, this cycle's discovery pass (step 1d) read
+  `cli/scan/dossier.rs`'s ROI hint against `util::diagnostics::analyse` and
+  found the filter's premise unsatisfiable: `modules_by_yield` is built only
+  from emitted entities, so a module that ran and found nothing is *absent*,
+  never present-at-zero — the hint's `entities_emitted == 0` filter could
+  never match anything, on any scan, ever. A live `hse scan --output dossier`
+  confirmed it empirically before AND after the fix: pre-fix, 41 of 42
+  dispatched modules (11 of them `KeyGated`/`Paid`, several timed out) were
+  invisible to the yield table and the ROI line never printed; post-fix, the
+  same scan re-run correctly prints all 11. New pure
+  `zero_yield_keyed_or_paid_modules` reads the durable per-scan `ModuleDone`
+  events instead — 4 new unit tests (flags a zero-yield paid module, ignores
+  one that found something, ignores a zero-yield *free* module, output
+  sorted/deduped). `print_dossier` picked up an 8th parameter to carry the
+  store handle needed to read those events; bundled into a `DossierArgs`
+  struct rather than `#[allow(too_many_arguments)]`, matching T2.5's
+  `DispatchCx`/`DispatchState` precedent. Gate green: 4263 lib tests (+4),
+  fmt/clippy `--all-targets`/doc clean; live CLI run verified both before and
+  after. **Paired:** `SOLUTION_TREE` new node (§2 S.QUALITY) + §3/§5 — same
+  commit.

@@ -343,6 +343,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The dossier's "ROI" wasted-spend hint could never fire, on any scan
+  (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
+  "N keyed/paid module(s) yielded nothing — consider --exclude …" when a
+  budgeted API call returned nothing, but the check filtered a diagnostics
+  list that only ever contains modules which emitted at least one entity — a
+  module that ran and found nothing was structurally absent from it, not
+  present with a zero count, so the warning never printed. It now reads the
+  scan's own `ModuleDone` events (already recorded per module regardless of
+  yield) instead, and correctly names every wasted `KeyGated`/`Paid` module —
+  verified against a real scan both before the fix (silent) and after
+  (correctly listed 11).
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

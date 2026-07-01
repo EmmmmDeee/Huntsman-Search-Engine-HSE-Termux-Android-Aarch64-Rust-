@@ -449,6 +449,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-CACHE-REFRESH · Allow in-place refresh when full** — `put` is now
   `len < cap || contains_key`, so a full cache still refreshes a key it holds.
   *Closes:* **T2.12** stale-cache. ✅ test `full_cache_still_refreshes_an_existing_key`.
+- **`[x]` SOL-ROI-HINT · Read module yield from events, not the entities-only
+  diagnostics list** — the dossier's "ROI: N keyed/paid module(s) yielded
+  nothing" hint filtered `ScanDiagnostics::modules_by_yield` for
+  `entities_emitted == 0`, but that list is built *exclusively* from emitted
+  entities' evidence sources, so a module that ran and found nothing is never
+  inserted — absent, not present-at-zero. The filter could never match, on
+  any scan. New pure `zero_yield_keyed_or_paid_modules(events,
+  cost_by_module)` reads the scan's own durable `ModuleDone { module, found }`
+  events instead (already tracked per module regardless of yield — no new
+  tracking added). *Closes:* **T2.13** (new). ✅ Verified live: a real `hse
+  scan --output dossier` printed the hint correctly post-fix (11 wasted
+  `KeyGated`/`Paid` modules named) after confirming pre-fix it never printed
+  at all. 4 new unit tests on the pure helper. `print_dossier` bundled its new
+  8th parameter into a `DossierArgs` struct rather than
+  `#[allow(too_many_arguments)]`, per the T2.5 `DispatchCx`/`DispatchState`
+  precedent.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -514,6 +530,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
+| SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -2337,3 +2354,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   estimators don't meaningfully diverge. Gate green: 4259 lib tests,
   fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8 — same
   commit.
+
+- **2026-07-01** — **New: SOL-ROI-HINT closes T2.13, a structurally-dead CLI
+  hint found by this cycle's discovery pass.** With T2.7 blocked (golden
+  fixtures need either a live third-party fetch or a fabricated-looking
+  fixture) and no other open node offering a small, safe increment, step 1d's
+  fallback applied: read `cli/scan/dossier.rs` against
+  `util::diagnostics::analyse` rather than trusting either at face value.
+  Found the dossier's "ROI: N keyed/paid module(s) yielded nothing" hint
+  filtered `modules_by_yield` for `entities_emitted == 0` — a state that list
+  can never contain, because `analyse` only ever inserts an entry when an
+  entity's evidence names a source; a module that ran and found nothing is
+  absent, not present-at-zero. Proven empirically, not just by inspection: a
+  real `hse scan --output dossier` against a live low-signal domain, run
+  BEFORE the fix, dispatched 42 modules (11 `KeyGated`/`Paid`) and printed a
+  yield table with exactly one row — the hint never fired. New pure
+  `zero_yield_keyed_or_paid_modules` reads the scan's own durable `ModuleDone`
+  events instead (already tracked per module, nothing new to instrument); the
+  SAME scan re-run after the fix correctly names all 11. 4 new unit tests on
+  the pure function. `print_dossier` needed the store handle to read events,
+  pushing it to 8 parameters — bundled into a `DossierArgs` struct rather than
+  `#[allow(too_many_arguments)]`, mirroring T2.5's `DispatchCx`/
+  `DispatchState`. Gate green: 4263 lib tests (+4), fmt/clippy
+  `--all-targets`/doc clean; live CLI verified both sides of the fix. Paired:
+  `PROBLEM_TREE` new T2.13 + §8 — same commit.

@@ -5,15 +5,31 @@
 
 use crate::core::{correlator::Correlation, entity::Entity, relation::Relation, scan::Scan};
 
-pub(super) fn print_dossier(
-    scan: &Scan,
-    entities: &[Entity],
-    correlations: &[Correlation],
-    relations: &[Relation],
-    kind: &str,
-    value: &str,
-    leverage: &[crate::core::engine::LeverageRanked],
-) {
+/// Bundled args for [`print_dossier`] — a plain struct rather than 8 loose
+/// parameters (`clippy::too_many_arguments`), mirroring the `DispatchCx`/
+/// `DispatchState` precedent (`PROBLEM_TREE` T2.5) rather than an `#[allow]`.
+pub(super) struct DossierArgs<'a> {
+    pub(super) scan: &'a Scan,
+    pub(super) entities: &'a [Entity],
+    pub(super) correlations: &'a [Correlation],
+    pub(super) relations: &'a [Relation],
+    pub(super) kind: &'a str,
+    pub(super) value: &'a str,
+    pub(super) leverage: &'a [crate::core::engine::LeverageRanked],
+    pub(super) store: &'a dyn crate::core::port::StoragePort,
+}
+
+pub(super) fn print_dossier(args: DossierArgs<'_>) {
+    let DossierArgs {
+        scan,
+        entities,
+        correlations,
+        relations,
+        kind,
+        value,
+        leverage,
+        store,
+    } = args;
     use std::collections::BTreeMap;
 
     println!("\n╔══════════════════════════════════════════════════════════════╗");
@@ -210,7 +226,7 @@ pub(super) fn print_dossier(
     print_resolved_identities(entities, relations);
     print_connection_brokers(entities, relations);
 
-    print_diagnostics(scan, entities, kind, value, &scan.id);
+    print_diagnostics(scan, entities, kind, value, &scan.id, store);
 }
 
 /// CONNECTIONS — graph-free link analysis (PROBLEM_TREE C1, the
@@ -409,7 +425,49 @@ fn print_connection_brokers(entities: &[Entity], relations: &[Relation]) {
     }
 }
 
-fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, sid: &str) {
+/// Names of `KeyGated`/`Paid` modules that ran and finished with **zero**
+/// entities this scan — the set the "ROI" hint warns about spending a
+/// budgeted API call for nothing. Sourced from the scan's own `ModuleDone`
+/// events (`found == 0`), NOT [`crate::util::diagnostics::analyse`]'s
+/// `modules_by_yield`: that list is built purely from emitted entities'
+/// evidence, so a module that ran and yielded nothing never appears in it at
+/// all — a hint that filtered `modules_by_yield` for `entities_emitted == 0`
+/// could therefore never fire. Pure and deterministic (sorted, deduped), so
+/// it's testable without a live module run.
+fn zero_yield_keyed_or_paid_modules(
+    events: &[crate::core::event::Event],
+    cost_by_module: &std::collections::HashMap<String, crate::core::module::ModuleCost>,
+) -> Vec<String> {
+    use crate::core::event::EventKind;
+    use crate::core::module::ModuleCost;
+
+    let mut names: Vec<String> = events
+        .iter()
+        .filter_map(|ev| match &ev.kind {
+            EventKind::ModuleDone { module, found: 0 }
+                if matches!(
+                    cost_by_module.get(module.as_str()),
+                    Some(ModuleCost::KeyGated | ModuleCost::Paid)
+                ) =>
+            {
+                Some(module.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn print_diagnostics(
+    scan: &Scan,
+    entities: &[Entity],
+    kind: &str,
+    value: &str,
+    sid: &str,
+    store: &dyn crate::core::port::StoragePort,
+) {
     let wall_ms = scan
         .finished_at
         .and_then(|f| f.checked_sub(scan.started_at))
@@ -446,18 +504,8 @@ fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, 
             kinds
         );
     }
-    let wasted: Vec<&str> = diag
-        .modules_by_yield
-        .iter()
-        .filter(|m| {
-            m.entities_emitted == 0
-                && matches!(
-                    cost_by_module.get(&m.name),
-                    Some(ModuleCost::KeyGated | ModuleCost::Paid)
-                )
-        })
-        .map(|m| m.name.as_str())
-        .collect();
+    let events = store.events_for_scan(sid).unwrap_or_default();
+    let wasted = zero_yield_keyed_or_paid_modules(&events, &cost_by_module);
     if !wasted.is_empty() {
         println!(
             "  ROI: {} keyed/paid module(s) yielded nothing — consider --exclude {}",
@@ -611,4 +659,87 @@ fn print_diagnostics(scan: &Scan, entities: &[Entity], kind: &str, value: &str, 
     println!();
 
     println!("━━━ END OF DOSSIER ━━━");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::zero_yield_keyed_or_paid_modules;
+    use crate::core::event::{Event, EventKind};
+    use crate::core::module::ModuleCost;
+    use std::collections::HashMap;
+
+    fn costs() -> HashMap<String, ModuleCost> {
+        [
+            ("shodan".to_string(), ModuleCost::Paid),
+            ("hunter_io".to_string(), ModuleCost::KeyGated),
+            ("search_engines".to_string(), ModuleCost::Free),
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    /// The whole point of this helper: a `KeyGated`/`Paid` module that ran and
+    /// found nothing must be reported, even though it is entirely absent from
+    /// `ScanDiagnostics::modules_by_yield` (built only from emitted entities).
+    #[test]
+    fn flags_a_zero_yield_keyed_or_paid_module() {
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "shodan".into(),
+                found: 0,
+            },
+        )];
+        assert_eq!(
+            zero_yield_keyed_or_paid_modules(&events, &costs()),
+            vec!["shodan".to_string()]
+        );
+    }
+
+    /// A module that DID find something must not be flagged, however costly.
+    #[test]
+    fn ignores_a_module_that_found_something() {
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "shodan".into(),
+                found: 3,
+            },
+        )];
+        assert!(zero_yield_keyed_or_paid_modules(&events, &costs()).is_empty());
+    }
+
+    /// A free module that yields nothing is not a wasted spend — nothing to
+    /// warn about, so it must not appear.
+    #[test]
+    fn ignores_a_free_module_with_zero_yield() {
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "search_engines".into(),
+                found: 0,
+            },
+        )];
+        assert!(zero_yield_keyed_or_paid_modules(&events, &costs()).is_empty());
+    }
+
+    /// Output is sorted and deduped — deterministic regardless of event order
+    /// or a module appearing more than once (e.g. re-dispatched on expansion).
+    #[test]
+    fn output_is_sorted_and_deduped() {
+        let mk = |m: &str| {
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: m.into(),
+                    found: 0,
+                },
+            )
+        };
+        let events = vec![mk("shodan"), mk("hunter_io"), mk("shodan")];
+        assert_eq!(
+            zero_yield_keyed_or_paid_modules(&events, &costs()),
+            vec!["hunter_io".to_string(), "shodan".to_string()]
+        );
+    }
 }
