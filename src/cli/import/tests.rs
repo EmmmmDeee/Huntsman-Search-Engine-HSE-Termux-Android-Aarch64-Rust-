@@ -5,7 +5,7 @@
 
 use super::{
     ImportFormat, deduplicate_by_uid, detect_import_format, entities_from_upload,
-    looks_like_dossier, parse_dossier, parse_oathnet_html,
+    looks_like_dossier, parse_dossier, parse_oathnet_html, parse_oathnet_json,
 };
 
 #[test]
@@ -1279,6 +1279,79 @@ async fn upload_dispatcher_routes_oathnet_report() {
     );
     // The shared OSINT helper ran on the report path too.
     assert!(ents.iter().any(|e| e.kind == EntityKind::Coordinates));
+}
+
+/// The bug: `parse_oathnet_json`'s per-victim field caps (`device_emails`
+/// `.take(20)`, `hwids` `.take(5)`, …) silently dropped everything past the
+/// cap — `stats.emails`/`stats.hwids` only ever counted what was actually
+/// emitted (post-cap), so a real stealer-victim record with more than the
+/// cap's worth of a field reported a complete-looking import with zero
+/// signal that anything was truncated. A stealer-infected machine routinely
+/// has dozens of `device_emails` (every browser-saved login), so this is a
+/// realistic volume, not an edge case.
+#[tokio::test]
+async fn parse_oathnet_json_flags_truncated_victim_fields() {
+    let emails: Vec<String> = (0..25)
+        .map(|i| format!("user{i}@test-fixture.example"))
+        .collect();
+    let hwids: Vec<String> = (0..8).map(|i| format!("HWID-FIXTURE-{i}")).collect();
+    let doc = serde_json::json!({
+        "stealerData": {
+            "victims": [{
+                "log_id": "fixture-log-1",
+                "total_docs": 42,
+                "device_emails": emails,
+                "hwids": hwids,
+            }]
+        }
+    });
+
+    let (entities, stats) = parse_oathnet_json(&doc, "s").await;
+
+    // The cap itself is untouched: exactly 20 emails and 5 HWIDs emitted,
+    // never more (bounded memory against a hostile/malformed export).
+    assert_eq!(stats.emails, 20);
+    assert_eq!(stats.hwids, 5);
+    assert_eq!(
+        entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .count(),
+        20
+    );
+    assert_eq!(
+        entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::DeviceId)
+            .count(),
+        5
+    );
+    // The fix: both truncated fields (25 emails > 20, 8 HWIDs > 5) are
+    // recorded, so the import can no longer silently look complete.
+    assert_eq!(stats.victim_fields_truncated, 2);
+}
+
+/// A victim record within every field's cap must NOT be flagged — the
+/// truncation counter is a genuine "something was cut" signal, not a
+/// blanket warning on every import.
+#[tokio::test]
+async fn parse_oathnet_json_does_not_flag_untruncated_victim_fields() {
+    let doc = serde_json::json!({
+        "stealerData": {
+            "victims": [{
+                "log_id": "fixture-log-2",
+                "total_docs": 3,
+                "device_emails": ["a@test-fixture.example", "b@test-fixture.example"],
+                "hwids": ["HWID-FIXTURE-1"],
+            }]
+        }
+    });
+
+    let (_entities, stats) = parse_oathnet_json(&doc, "s").await;
+
+    assert_eq!(stats.emails, 2);
+    assert_eq!(stats.hwids, 1);
+    assert_eq!(stats.victim_fields_truncated, 0);
 }
 
 // ── Property tests (proptest) — no-panic contract for untrusted import ────────

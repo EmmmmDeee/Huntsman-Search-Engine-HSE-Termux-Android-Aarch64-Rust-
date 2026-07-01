@@ -555,6 +555,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   future increment rather than left as an orphan node. Doc-only; no code
   behaviour change, no new test (consistent with this session's other pure
   doc-audit corrections).
+- **`[x]` SOL-VICTIM-TRUNCATION · Surface OathNet-JSON per-victim import
+  caps instead of silently dropping the excess** → **T2.18**: `parse_
+  oathnet_json`'s 5 per-victim field caps (device IPs/emails/HWIDs/Discord
+  IDs/device users) fed `ImportStats` counters that only ever counted
+  post-cap emitted entities, so a truncated import reported as a complete
+  one with zero signal anywhere. Verified real via an adversarial
+  3-lens-per-candidate workflow re-checking this alongside two sibling
+  candidates a prior cycle's discovery fan-out surfaced but never acted on
+  (`push_macs`/`push_ibans`/`push_ssids` dedup-before-cap in
+  `cli/import/mod.rs`, and `zoomeye`'s unexposed true-match-count) — both
+  siblings had their own impact lens rate them as NOT genuinely reachable
+  (deduplicated-unique-value caps are unrealistic to hit; ZoomEye's cap is
+  essentially unreachable AND the raw response is archived verbatim
+  regardless), while this candidate's accuracy AND impact lenses
+  independently agreed it was real, with no contradiction — the
+  differentiator that made it the pick. ✅ **Fixed.** New
+  `note_if_truncated(stats, len, cap)` helper in `json.rs`, called once per
+  site before its existing `.take(N)` loop; new `ImportStats::
+  victim_fields_truncated: usize` counter surfaced as a conditional
+  `"WARNING: N victim field(s) truncated…"` line in `print_import_stats`
+  and a `victim_fields_truncated` field in the `--output json` envelope.
+  The caps themselves are untouched (bounded-memory protection against a
+  hostile/malformed export is correct and intentional) — only the silent
+  drop is fixed. 2 new `#[tokio::test]`s on `parse_oathnet_json` directly
+  (a truncated fixture asserts the entity counts stay exactly capped AND
+  the counter fires; an under-cap fixture asserts the counter stays
+  silent). **Verified live**, not just by inspection: `hse import
+  <fixture.json> --output json` against a synthetic victim record with 25
+  device_emails + 8 hwids printed `WARNING: 2 victim field(s)
+  truncated…` to the human summary and `"victim_fields_truncated": 2` in
+  the JSON envelope, entities correctly capped at 20/5; a second fixture
+  under every cap produced no warning line at all.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -639,6 +671,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-LEDGER-ZERO-YIELD | T2.15 | `[x]` |
 | SOL-CONSUMES-DELEGATE | T2.16 | `[x]` |
 | SOL-CRAWL-CONCURRENCY | T2.17 | `[x]` |
+| SOL-VICTIM-TRUNCATION | T2.18 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -768,9 +801,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17 `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE,
-  SOL-LEDGER-ZERO-YIELD, SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY — the
-  dead-hint/dead-ledger/dead-delegation/false-doc bug family, all closed);
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18 `[x]`** ✅ (SOL-ROI-HINT,
+  SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD, SOL-CONSUMES-DELEGATE,
+  SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION — the dead-hint/dead-ledger/
+  dead-delegation/false-doc/silent-truncation bug family, all closed);
   T2.7 open (blocked for an unattended cycle); T2.11 mostly done (oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/
   SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
@@ -2755,3 +2789,37 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   solution text + §8 — same commit. Gate green (fmt/clippy
   `--all-targets`/doc clean, 4280 lib tests — unchanged, no code change —
   full `cargo test` green).
+
+- **2026-07-01** — **New: SOL-VICTIM-TRUNCATION closes T2.18 — OathNet-JSON
+  stealer-victim import caps silently dropped data with zero record
+  anywhere, via a workflow that adversarially re-verified 3 prior-cycle
+  discovery candidates instead of trusting the original single-agent
+  report.** **P→S step:** last cycle's fresh-discovery fan-out surfaced
+  three `.take(N)` truncation candidates but only one (T2.16) got fixed;
+  the other three (`push_macs`/`push_ibans`/`push_ssids`,
+  `import_json_caps`, `zoomeye`) sat unverified and un-acted-on. Rather
+  than re-running discovery from scratch (redundant with last cycle's
+  already-thorough sweep) or picking blind, ran a Workflow: 3 independent
+  lenses (accuracy, real-world impact, fix scope) per candidate, then a
+  synthesis agent picked the strongest. **S→P step:** the synthesis was
+  decisive — `import_json_caps` (`cli/import/json.rs`) was the only
+  candidate where BOTH the accuracy and impact lenses independently agreed
+  it was a genuine, reachable bug; the other two had internally
+  contradicting lenses (accuracy said real, impact said not-actually-
+  reachable-in-practice for each), which the synthesis correctly weighed as
+  lower confidence rather than picking by coin-flip. Implemented exactly
+  the fix the scope lens sketched: `note_if_truncated` helper, a new
+  `ImportStats::victim_fields_truncated` counter, surfaced in both the
+  human summary and the JSON envelope, cap values untouched. 2 new
+  `#[tokio::test]`s. **Verified live twice**, not just by inspection: a
+  real `hse import <fixture> --output json` run against a synthetic victim
+  record with 25 device_emails + 8 hwids printed the WARNING line and
+  `"victim_fields_truncated": 2` while entities stayed capped at 20/5; a
+  second, under-cap fixture produced no warning at all — proving both the
+  positive and negative case. Kept the two rejected candidates' verified
+  reasoning in `PROBLEM_TREE` T2.18's own text rather than silently
+  dropping them, so a future cycle doesn't re-litigate them without new
+  evidence. **Gap refresh:** leverage-map gains the new row; §4d's T2 row
+  folds T2.18 into the closed bug family. Paired: `PROBLEM_TREE` new T2.18
+  + §8 — same commit. Gate green (fmt/clippy `--all-targets`/doc clean,
+  4282 lib tests (4280→4282, +2), full `cargo test` green).

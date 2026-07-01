@@ -239,6 +239,13 @@ struct ImportStats {
     organisations: usize,
     credentials: usize,
     date_range: String,
+    /// Number of per-victim fields (device IPs/emails/HWIDs/Discord IDs/
+    /// device users) whose raw array was longer than the anti-flood cap
+    /// applied to it, so some entries were silently dropped rather than
+    /// emitted. The cap itself stays in place (bounded memory against a
+    /// hostile/malformed export); this counter exists so a truncated import
+    /// is never reported as a complete one.
+    victim_fields_truncated: usize,
 }
 
 pub(crate) fn deduplicate_by_uid(entities: &mut Vec<crate::core::entity::Entity>) {
@@ -803,6 +810,13 @@ fn print_import_stats(stats: &ImportStats, entity_count: usize, output: &str) {
             "  Pool:      {} API keys detected, {} validated active",
             stats.api_keys,
             stats.api_keys_valid
+        );
+    }
+    if stats.victim_fields_truncated > 0 {
+        row!(
+            "  WARNING:   {} victim field(s) truncated at the per-record import cap \
+             — the raw export had more entries than were imported",
+            stats.victim_fields_truncated
         );
     }
 }

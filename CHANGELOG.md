@@ -350,6 +350,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`hse import`'s OathNet-JSON stealer-victim caps silently dropped data
+  while the summary reported a complete import (`PROBLEM_TREE` T2.18).**
+  Per-victim fields (device IPs/emails/HWIDs/Discord IDs/device users) are
+  capped to bound memory against a hostile export, but the reported stats
+  only ever counted entities actually emitted post-cap — so a victim record
+  with more entries than a cap allows (routine for a real stealer-infected
+  machine, which typically has dozens of browser-saved logins) silently
+  lost the excess with no warning, log line, or evidence anywhere. `hse
+  import` now reports a `victim_fields_truncated` count — both in the
+  human summary (a WARNING line, shown only when it's nonzero) and the
+  `--output json` envelope — whenever a cap was actually hit. The caps
+  themselves are unchanged.
 - **`web_crawler`'s module doc claimed the BFS crawl runs "4 concurrent
   requests"; it actually fetches one page at a time (`PROBLEM_TREE`
   T2.17).** Corrected the doc to describe the real sequential behaviour,

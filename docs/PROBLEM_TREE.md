@@ -835,6 +835,67 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   code behaviour altered, so no new test — matching this session's other
   pure doc-audit corrections (SOL-UPDATE, C5 provenance-radius). T2.17
   `[ ]`→`[x]`.
+- **`[x]` T2.18 · OathNet JSON stealer-victim per-field import caps
+  silently drop data with zero record anywhere** *(found + fixed
+  2026-07-01, via an adversarial-verification workflow re-checking 3
+  candidates a prior cycle's discovery fan-out never acted on)* —
+  `src/cli/import/json.rs::parse_oathnet_json` caps 5 per-victim fields
+  (`device_ips.take(10)`, `device_emails.take(20)`, `hwids.take(5)`,
+  `discord_ids.take(5)`, `device_users.take(5)`), and `ImportStats`'
+  `emails`/`hwids`/`ips`/`discord_ids`/`device_users` counters were
+  incremented only inside each post-cap loop body — so the stats (and
+  therefore `print_import_stats`'s human summary and the `--output json`
+  envelope) always describe the *capped* count, never the true extracted
+  count, with no field, log line, or evidence attribute anywhere recording
+  that anything was dropped. Verified via three independent lenses (Verify
+  phase of an adversarial workflow, not a single pass): accuracy (confirmed
+  by direct read of all 5 sites + the `ImportStats` struct), real-world
+  impact (confirmed genuinely reachable — a stealer-infected machine
+  routinely has dozens of `device_emails`, every browser-saved login, and
+  the code's own `total_docs > 100` "high-exposure" tag shows the author
+  already anticipated 100+-credential victim records; no raw-response
+  archival exists for this path as a fallback, unlike two sibling
+  candidates the same workflow correctly rejected — see below), and fix
+  scope (`one_commit_sized: true`, 3 files). This is exactly the class of
+  bug this repo's own doctrine treats as most damaging for an evidentiary
+  tool: a truncated import silently reported as a complete one.
+  → **Solution:** add one `ImportStats::victim_fields_truncated: usize`
+  counter; at each of the 5 sites, compare the raw array's length against
+  its cap and increment the counter when exceeded (the cap itself stays —
+  bounded-memory protection against a hostile/malformed export is correct
+  and intentional); surface the counter in `print_import_stats`'s human
+  summary and the `--output json` envelope. **P2** (evidentiary-integrity
+  gap: an operator relying on `hse import`'s reported completeness for a
+  stealer-log dossier could unknowingly work from an incomplete picture).
+  ✅ **Fixed.** New `note_if_truncated(stats, len, cap)` helper in
+  `json.rs`, called once per site before its existing `.take(N)` loop
+  (no call-site signature changes, no change to the cap values). A
+  conditional `"WARNING: N victim field(s) truncated…"` line added to
+  `print_import_stats` (only prints when `victim_fields_truncated > 0`,
+  so an untruncated import's output is unchanged); `victim_fields_truncated`
+  added to the `--output json` stats envelope. 2 new
+  `#[tokio::test]` regression tests on `parse_oathnet_json` directly: one
+  feeding a synthetic victim record with 25 `device_emails` + 8 `hwids`
+  (both over their caps) asserts the emitted-entity counts stay exactly
+  capped (20, 5) **and** `victim_fields_truncated == 2`; a sibling test
+  with an under-cap record asserts the counter stays `0` — the truncation
+  signal is genuine, not a blanket warning on every import. *Candidates
+  rejected by the same verification workflow, with reasons kept for the
+  record rather than silently dropped:* a sibling claim about
+  `push_macs`/`push_ibans`/`push_ssids` (`cli/import/mod.rs`) turned out to
+  cap **deduplicated, uniquely-valued** matches (a `HashSet` dedup already
+  runs inside `util::extract`'s `macs`/`ibans`/`labeled_ssids` before the
+  cap applies), so hitting 50 *distinct* values in one import is an
+  unrealistic edge case, not the routine volume T2.18's fields see; a
+  `zoomeye` module claim about an unexposed true-vs-capped match count was
+  accurate but low-impact — ZoomEye's classic API is effectively
+  single-page (the cap is essentially unreachable in practice) **and** the
+  raw HTTP response is archived verbatim by default regardless
+  (`util::raw_archive`), so the "true total" is always recoverable even in
+  the rare case the cap were hit. Both are real, minor consistency gaps,
+  not the "silently reported as complete" failure class T2.18 fixes — noted
+  here rather than acted on, honouring the workflow's own confidence
+  ranking instead of fixing all three under one commit.
 
 ---
 
@@ -3589,3 +3650,48 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (unchanged — no code change), fmt/clippy `--all-targets`/doc clean, full
   `cargo test` green. **Paired:** `SOLUTION_TREE` SOL-CRAWL-CONCURRENCY
   `[ ]`→`[x]` + C2 solution text updated + §4a/§4d/§5 — same commit.
+
+- **2026-07-01** — **Closed T2.18 (OathNet-JSON stealer-victim import caps
+  silently drop data) by running a Workflow that adversarially
+  re-verified 3 prior-cycle discovery candidates from independent lenses,
+  rather than trusting a single agent's report or re-discovering from
+  scratch.** **P→S step:** the previous cycle's discovery fan-out
+  surfaced three `.take(N)` truncation candidates (`push_macs`/
+  `push_ibans`/`push_ssids` in `cli/import/mod.rs`; the OathNet-JSON
+  stealer-victim caps in `cli/import/json.rs`; `zoomeye`'s unexposed
+  match count) but only picked the smallest for that cycle, leaving the
+  other two unverified. Rather than re-running discovery (redundant with
+  an already-thorough sweep) this cycle ran 3 independent lenses per
+  candidate — accuracy (read the real code, confirm the claim exactly),
+  real-world impact (is this reachable with genuine data, or an
+  unrealistic edge case?), fix scope (how many files, how big a change?) —
+  then a synthesis agent picked the strongest. **S→P step:** the pick was
+  decisive, not a coin-flip: `import_json_caps` was the ONLY candidate
+  where accuracy AND impact independently agreed it was a genuine,
+  reachable bug. The other two's own lenses contradicted each other —
+  `push_macs`/`push_ibans`/`push_ssids` cap **deduplicated, unique-valued**
+  matches (a `HashSet` dedup already runs before the cap in `util::extract`),
+  so 50 distinct MACs/IBANs/labelled-SSIDs in one import is an unrealistic
+  edge case; `zoomeye`'s cap is accurate but essentially unreachable
+  (ZoomEye's classic API is effectively single-page) AND the raw HTTP
+  response is archived verbatim regardless, so the true total is always
+  recoverable. Both rejections are recorded in T2.18's own text (with
+  their verified reasoning) rather than silently dropped, so a future
+  cycle doesn't have to re-litigate them without new evidence. → Added
+  `note_if_truncated(stats, len, cap)` in `cli/import/json.rs`, called
+  once per site before each existing `.take(N)` loop; new
+  `ImportStats::victim_fields_truncated: usize` counter surfaced as a
+  conditional WARNING line in `print_import_stats` and a field in the
+  `--output json` envelope. Caps themselves untouched (bounded-memory
+  protection is correct and intentional) — only the silent drop is fixed.
+  2 new `#[tokio::test]`s on `parse_oathnet_json` directly (truncated
+  fixture: entity counts stay exactly capped AND the counter fires;
+  under-cap fixture: counter stays silent). **Verified live twice:** a
+  real `hse import <fixture.json> --output json` run against a synthetic
+  victim record (25 device_emails + 8 hwids) printed `WARNING: 2 victim
+  field(s) truncated…` and `"victim_fields_truncated": 2`, entities
+  correctly capped at 20/5; a second, under-cap fixture produced no
+  warning line at all — proving both the positive and negative case. New
+  T2.18 `[x]`. Gate green: 4282 lib tests (+2), fmt/clippy
+  `--all-targets`/doc clean, full `cargo test` green. **Paired:**
+  `SOLUTION_TREE` new SOL-VICTIM-TRUNCATION `[x]` + §3/§5 — same commit.

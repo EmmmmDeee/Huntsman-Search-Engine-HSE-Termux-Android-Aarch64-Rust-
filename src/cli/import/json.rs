@@ -4,6 +4,16 @@
 
 use super::*;
 
+/// Bump `stats.victim_fields_truncated` once if a per-victim field's raw
+/// array is longer than the anti-flood `cap` applied to it — the cap stays
+/// in place (bounded memory against a hostile/malformed export), but the
+/// operator must not be told the import was complete when it wasn't.
+fn note_if_truncated(stats: &mut ImportStats, len: usize, cap: usize) {
+    if len > cap {
+        stats.victim_fields_truncated += 1;
+    }
+}
+
 /// Parse an OathNet JSON API export (breach results, stealer victims, stealer
 /// docs, holehe checks, geo) into entities + stats. `async` because it
 /// opportunistically validates any API key found in stealer data. Reusable core
@@ -74,6 +84,7 @@ pub(super) async fn parse_oathnet_json(
             let log_id = victim.get("log_id").and_then(|v| v.as_str()).unwrap_or("");
 
             if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
+                note_if_truncated(&mut stats, ips.len(), 10);
                 for ip_val in ips.iter().take(10) {
                     if let Some(ip) = ip_val.as_str()
                         && ip.contains('.')
@@ -99,6 +110,7 @@ pub(super) async fn parse_oathnet_json(
                 }
             }
             if let Some(emails) = victim.get("device_emails").and_then(|v| v.as_array()) {
+                note_if_truncated(&mut stats, emails.len(), 20);
                 for email_val in emails.iter().take(20) {
                     if let Some(email) = email_val.as_str()
                         && email.contains('@')
@@ -114,6 +126,7 @@ pub(super) async fn parse_oathnet_json(
             }
             // HWIDs — hardware identifiers for machine tracking
             if let Some(hwids) = victim.get("hwids").and_then(|v| v.as_array()) {
+                note_if_truncated(&mut stats, hwids.len(), 5);
                 for h in hwids.iter().take(5) {
                     if let Some(hwid) = h.as_str()
                         && !hwid.is_empty()
@@ -136,6 +149,7 @@ pub(super) async fn parse_oathnet_json(
             }
             // Discord IDs — identity pivots
             if let Some(dids) = victim.get("discord_ids").and_then(|v| v.as_array()) {
+                note_if_truncated(&mut stats, dids.len(), 5);
                 for d in dids.iter().take(5) {
                     if let Some(did) = d.as_str()
                         && !did.is_empty()
@@ -311,6 +325,7 @@ pub(super) async fn parse_oathnet_json(
             std::collections::HashSet::new();
         for victim in victims {
             if let Some(users) = victim.get("device_users").and_then(|v| v.as_array()) {
+                note_if_truncated(&mut stats, users.len(), 5);
                 for u in users.iter().take(5) {
                     if let Some(name) = u.as_str()
                         && !name.is_empty()
@@ -407,6 +422,7 @@ pub(super) fn import_json_output(
                     "ips": stats.ips,
                     "domains": stats.domains,
                     "coordinates": stats.coordinates,
+                    "victim_fields_truncated": stats.victim_fields_truncated,
                 },
                 "entities": entities,
             });
