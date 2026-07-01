@@ -24,6 +24,14 @@ Notes:
 - The CI clippy toolchain is newer than the local one, so some lints
   (e.g. `collapsible_match`) only surface in CI; treat clippy failures there as real.
 
+## Autonomous improvement loop
+
+To keep advancing `docs/PROBLEM_TREE.md` / `docs/SOLUTION_TREE.md` toward
+"finished," run `/huntsman-cycle` (`.claude/commands/huntsman-cycle.md`).
+It is idempotent — safe to invoke repeatedly, including in a scripted loop —
+and cleanly reports a genuine stopping point instead of inventing busywork
+once the backlog is exhausted.
+
 ## Conventions
 
 - Edition 2024, MSRV 1.88, `#![forbid(unsafe_code)]`; pinned reqwest 0.12 / rusqlite 0.39 (Termux aarch64, no root).
