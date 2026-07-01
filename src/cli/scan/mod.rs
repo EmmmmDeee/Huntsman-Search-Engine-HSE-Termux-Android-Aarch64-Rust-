@@ -46,6 +46,11 @@ pub(super) struct ScanCmd {
     pub gate_speculative: bool,
     pub profile: Option<String>,
     pub output: String,
+    /// Include platform-infrastructure entities (cloud buckets, CDN IPs,
+    /// analytics tracking IDs) in the printed/JSON/dossier output. Mirrors
+    /// `build_scan_report`'s `include_infra` filter so the same scan reads
+    /// consistently whether viewed via `hse scan`, `hse export`, or the API.
+    pub include_infra: bool,
 }
 
 pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
@@ -273,7 +278,8 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     });
     let scan = engine.run(scan, target, ctx).await?;
     ctrl_c_listener.abort();
-    let entities = store.entities_for_scan(&sid)?;
+    let mut entities = store.entities_for_scan(&sid)?;
+    filter_infra_entities(&mut entities, cmd.include_infra);
     let correlations = store.correlations_for_scan(&sid)?;
     let relations = store.relations_for_scan(&sid)?;
 
@@ -397,6 +403,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
+/// analytics IDs) from `hse scan`'s printed/JSON/dossier output, mirroring
+/// [`crate::api::scan_export::build_scan_report`]'s `include_infra` filter so
+/// the same scan reads consistently across `hse scan`, `hse export`, and the
+/// API. The operator-provided seed always survives even if it is itself
+/// infrastructure. A no-op when `include_infra` is `true`.
+fn filter_infra_entities(entities: &mut Vec<crate::core::entity::Entity>, include_infra: bool) {
+    if !include_infra {
+        entities.retain(|e| !e.has_tag(crate::core::tags::PLATFORM_INFRA) || e.has_tag("seed"));
+    }
 }
 
 /// The `--modules` / `--exclude` names that are not registered modules
@@ -532,6 +550,51 @@ mod tests {
         assert_eq!(unknown_ex, vec!["no_such_excl".to_string()]);
         // An all-valid request flags nothing.
         assert!(unknown_module_names(&Some(vec!["ip_geo".to_string()]), &[]).is_empty());
+    }
+
+    #[test]
+    fn filter_infra_entities_hides_platform_infra_by_default() {
+        // The `--include-infra` flag used to be parsed by clap but discarded at
+        // the `Command::Scan` dispatch (`include_infra: _`) — `hse scan` always
+        // showed platform-infra entities regardless of the flag, unlike
+        // `hse export` / the API which quarantine them by default. Pin the
+        // actual filter behaviour the flag now drives.
+        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        infra.tag(crate::core::tags::PLATFORM_INFRA);
+        let subject = Entity::new(EntityKind::Domain, "example-subject.test", 0.9, "s");
+        let mut entities = vec![infra, subject];
+
+        filter_infra_entities(&mut entities, false);
+        assert_eq!(entities.len(), 1, "platform-infra entity must be dropped");
+        assert_eq!(entities[0].kind, EntityKind::Domain);
+    }
+
+    #[test]
+    fn filter_infra_entities_restores_infra_when_flag_set() {
+        let mut infra = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.6, "s");
+        infra.tag(crate::core::tags::PLATFORM_INFRA);
+        let mut entities = vec![infra];
+
+        filter_infra_entities(&mut entities, true);
+        assert_eq!(
+            entities.len(),
+            1,
+            "--include-infra must restore platform-infra entities"
+        );
+    }
+
+    #[test]
+    fn filter_infra_entities_never_drops_the_seed_even_if_infra_tagged() {
+        // A scan seeded with a datacenter/CDN IP that an IP module re-emits as
+        // `hosting`, which then merges `platform-infra` onto the seed anchor —
+        // the seed must still appear in its own report.
+        let mut seed = Entity::new(EntityKind::IpAddress, "104.16.0.1", 0.9, "s");
+        seed.tag(crate::core::tags::PLATFORM_INFRA);
+        seed.tag("seed");
+        let mut entities = vec![seed];
+
+        filter_infra_entities(&mut entities, false);
+        assert_eq!(entities.len(), 1, "the seed must always survive the filter");
     }
 
     #[test]

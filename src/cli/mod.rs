@@ -194,7 +194,7 @@ pub async fn run() -> Result<()> {
             gate_speculative,
             profile,
             output,
-            include_infra: _,
+            include_infra,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
             // `--full` is the no-compromise preset: force every module on (drop
@@ -232,6 +232,10 @@ pub async fn run() -> Result<()> {
                 gate_speculative,
                 profile,
                 output,
+                // `--full` is the no-compromise preset: it also restores
+                // platform-infra entities, matching the flag's documented
+                // "implied by --full" behaviour.
+                include_infra: include_infra || full,
             })
             .await
         }
