@@ -471,7 +471,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[x]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -487,9 +487,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `zero_yield_keyed_or_paid_modules`); `print_diagnostics` appends the
   original wording ("scan exceeded 60s with at least one zero-yield module —
   tighten module_timeout_ms") to `diag.optimization_hints` when it holds. 4
-  new unit tests, incl. the 60s boundary (`>`, not `>=`). *Gap:* the
-  per-module leg is not yet started — the noise decision above is still
-  open. **(§4a)**
+  new unit tests, incl. the 60s boundary (`>`, not `>=`).
+  ✅ **Per-module leg resolved, not rebuilt (2026-07-01).** The noise
+  decision surfaced a bigger defect in the exact mechanism this leg would
+  have duplicated: `AdaptiveRouting::recommended_skips` — see new
+  **SOL-LEDGER-ZERO-YIELD** below. With that fixed, the properly-throttled
+  (`≥5` scans, `≥80%` rate) cross-scan signal now actually fires, which is a
+  strictly better answer than a noisy, statistically-weak per-scan
+  per-module hint would have been. `SOL-HINT-NOISE` `[~]`→`[x]`, both legs
+  closed; T2.14 `[~]`→`[x]`.
+- **`[x]` SOL-LEDGER-ZERO-YIELD · Fix the cross-scan ledger's dead
+  zero-yield tracking** → **T2.15** (found while investigating
+  SOL-HINT-NOISE): `ledger::persist_ledger` only ever iterated
+  `modules_by_yield` — built exclusively from emitted entities, so a
+  zero-yield module was structurally invisible to it, meaning
+  `LedgerEntry::zero_yield_rate` could never be anything but its `Default`
+  0.0 for ANY module, silently disabling `recommended_skips` since the
+  ledger feature was introduced. Split `persist_ledger`'s pure mutation core
+  into `update_ledger(ledger, modules, zero_yield_modules, kinds)` (no I/O,
+  directly unit-testable) taking a **separate** `zero_yield_modules: &[String]`
+  list; new pure `analyse::zero_yield_module_names(events, modules_by_yield)`
+  computes it from the scan's own `ModuleDone` events (same premise as
+  SOL-ROI-HINT/SOL-HINT-NOISE). Moved the `persist_ledger` call **out of**
+  `analyse()` — it has no `StoragePort` access to compute the diff — to the
+  3 real call sites (`cli/scan/dossier.rs`, `cli/scan/mod.rs`'s `--output
+  json` branch, `api/handlers/mod.rs`'s post-scan hook), which pairs a
+  bonus fix: `analyse()`'s 13 unit tests no longer silently mutate the real
+  on-disk `$HOME/.huntsman/module_stats.json` (they never should have).
+  9 new unit tests. **Verified live**, not just by inspection: the
+  pre-existing real `module_stats.json` (20 historical scans) showed
+  `zero_yield_rate: 0.0` on every one of 11 real modules tracked (only a
+  hand-crafted `synthetic` test entry had a nonzero rate) — proving the bug
+  in production data. A real `hse scan -k domain -v wikipedia.org
+  --free-only --passive-only` run after the fix correctly recorded
+  `geo_domain_classifier` (dispatched, `found: 0`) as `zero_yield_scans: 1,
+  zero_yield_rate: 1.0` in the ledger — absent from `modules_by_yield` in
+  the same scan's JSON output, exactly as designed.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -565,7 +598,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[~]` |
+| SOL-HINT-NOISE | T2.14 | `[x]` |
+| SOL-LEDGER-ZERO-YIELD | T2.15 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -670,11 +704,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **SOL-BUDGET** — ✅ accepted `[-]` (cycle 18 S→P): `reset_per_scan` already
   called at `run_with_ledger_inner:289`; cited residual was a faulty premise.
   Off the finish queue.
-- **SOL-HINT-NOISE** — scan-level "60s + zero-yield module" leg delivered
-  (2026-07-01): `scan_ran_long_with_a_zero_yield_module` event-sourced
-  reinstatement in `cli/scan/dossier.rs`. *Remaining:* the per-module
-  "returned 0 entities" leg still needs the noise decision (cap-to-worst-N /
-  cost-gate / bounded-summary-count).
+- **SOL-HINT-NOISE** — ✅ fully closed (`[x]`, 2026-07-01). Scan-level leg:
+  `scan_ran_long_with_a_zero_yield_module` event-sourced reinstatement in
+  `cli/scan/dossier.rs`. Per-module leg: resolved as superseded by
+  SOL-LEDGER-ZERO-YIELD (the properly-throttled `recommended_skips` now
+  actually works) rather than rebuilt as a noisier, weaker per-scan hint.
+  Removed from finish queue.
+- **SOL-LEDGER-ZERO-YIELD** — ✅ fully closed (`[x]`, 2026-07-01). Removed
+  from finish queue.
 
 ### 4c · Solutions with no problem (over-build — prune candidates)
 - **None found.** Every solution node traces to ≥1 `PROBLEM_TREE` node or the shared
@@ -691,6 +728,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
+  **T2.13/T2.14/T2.15 `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE,
+  SOL-LEDGER-ZERO-YIELD — the dead-hint/dead-ledger bug family, all closed);
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
@@ -2533,3 +2572,48 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Paired: `PROBLEM_TREE` T2.14 + §8 updated in the same commit. Gate green
   (fmt/clippy `--all-targets`/doc clean, 4267 lib tests, full `cargo test`
   green).
+
+- **2026-07-01** — **SOL-HINT-NOISE's per-module leg resolved by fixing a
+  bigger bug it would have duplicated; new SOL-LEDGER-ZERO-YIELD closes
+  T2.15.** **P→S step:** picked T2.14's remaining node (an in-progress `[~]`
+  node from the prior cycle, priority-1 per §5's own instructions) to make
+  the per-module noise decision the addendum deferred. Investigating it —
+  "does a properly-throttled version of this signal already exist?" — found
+  `AdaptiveRouting::recommended_skips` (`zero_yield_rate ≥ 0.80` over `≥5`
+  scans), which is exactly the statistically-sound version of what the
+  per-module hint wanted. Reading its data path found it was **itself**
+  dead: `ledger::persist_ledger` only ever received `modules_by_yield`
+  (built exclusively from emitted entities, per T2.13/T2.14's own finding),
+  so `zero_yield_scans` could never increment for ANY module — a fourth
+  instance of the identical unreachable-premise bug family, this one
+  corrupting the persistent cross-scan ledger rather than a single hint.
+  **Verified live before fixing**, not just by static reading: the real
+  `$HOME/.huntsman/module_stats.json` (20 historical scans, 11 real modules)
+  showed `zero_yield_rate: 0.0` on every single real module — only a
+  hand-crafted `synthetic` test entry had ever recorded a nonzero rate.
+  **Fix:** split `persist_ledger`'s mutation into a pure, unit-testable
+  `update_ledger(ledger, modules, zero_yield_modules, kinds)`; new pure
+  `analyse::zero_yield_module_names(events, modules_by_yield)` computes the
+  zero-yield diff from the scan's own `ModuleDone` events (the T2.13/T2.14
+  event-sourced pattern, applied a third time). Moved the `persist_ledger`
+  call **out of** `analyse()` — a pure function with no `StoragePort`
+  access — to the 3 real call sites; this also fixes a latent hermeticity
+  bug for free, since the old unconditional call meant every one of
+  `analyse()`'s 13 unit tests silently mutated the real on-disk ledger on
+  every `cargo test` run. **S→P step:** 9 new unit tests (4 on
+  `update_ledger`, including a module that fails 5 scans straight reaching
+  `zero_yield_rate: 1.0`, the exact `recommended_skips` threshold input; 5
+  on `zero_yield_module_names`'s diff logic). **Verified live again after
+  fixing:** `hse scan -k domain -v wikipedia.org --free-only --passive-only`
+  correctly recorded the dispatched, zero-yield `geo_domain_classifier` in
+  the ledger (`zero_yield_scans: 1, zero_yield_rate: 1.0`) while it stayed
+  correctly absent from the same scan's `modules_by_yield` JSON output —
+  proving both halves of the fix at once. Ledger restored to its
+  pre-verification state afterward (a courtesy, not required). **Gap
+  refresh:** SOL-HINT-NOISE `[~]`→`[x]` (both legs now closed — the
+  per-module leg resolved as superseded, not rebuilt); new
+  SOL-LEDGER-ZERO-YIELD `[x]`; §4b loses both rows; leverage-map gains the
+  new row; §4d's T2 row lists T2.13/T2.14/T2.15 together. Paired:
+  `PROBLEM_TREE` T2.14 addendum + new T2.15 + §8 updated in the same
+  commit. Gate green (fmt/clippy `--all-targets`/doc clean, 4276 lib tests,
+  full `cargo test` green — 4267→4276, +9).

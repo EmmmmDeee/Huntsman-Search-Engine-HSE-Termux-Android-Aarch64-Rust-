@@ -141,12 +141,27 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
                         .and_then(|f| f.checked_sub(completed.started_at))
                         .unwrap_or(0)
                         .saturating_mul(1000);
-                    crate::util::diagnostics::analyse(
+                    let diag = crate::util::diagnostics::analyse(
                         &sid,
                         completed.target.kind.canonical_str(),
                         &completed.target.value,
                         wall_ms,
                         &entities,
+                    );
+                    // `analyse` no longer persists the ledger itself
+                    // (`PROBLEM_TREE` T2.15) — only a caller with store access
+                    // can compute which dispatched modules are absent from
+                    // `modules_by_yield` (zero-yield, invisible to it by
+                    // construction), so this is done explicitly here.
+                    let events = store_clone.events_for_scan(&sid).unwrap_or_default();
+                    let zero_yield_modules = crate::util::diagnostics::zero_yield_module_names(
+                        &events,
+                        &diag.modules_by_yield,
+                    );
+                    crate::util::diagnostics::persist_ledger(
+                        &diag.modules_by_yield,
+                        &zero_yield_modules,
+                        &diag.entity_kind_counts,
                     );
                 }
             }

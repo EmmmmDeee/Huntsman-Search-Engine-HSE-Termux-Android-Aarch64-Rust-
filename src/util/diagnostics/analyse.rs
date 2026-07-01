@@ -366,8 +366,15 @@ pub fn analyse(
             .push("no optimization signals detected — pipeline is well-tuned for this seed".into());
     }
 
-    // Persist a digest to the cross-scan ledger
-    super::ledger::persist_ledger(&modules_by_yield, &kind_counts);
+    // NOT persisted to the cross-scan ledger here (unlike before `PROBLEM_TREE`
+    // T2.15): `analyse` is a pure function with no `StoragePort` access, so it
+    // cannot see which DISPATCHED modules are absent from `modules_by_yield`
+    // (built only from emitted entities — a zero-yield module is silently
+    // missing, not present at zero). Callers that have store access persist
+    // via `ledger::persist_ledger` themselves, passing `zero_yield_module_names`
+    // computed from the scan's own `ModuleDone` events. This also stops every
+    // one of this module's unit tests from silently mutating the real on-disk
+    // ledger, which the old unconditional call did.
 
     // Adaptive hints from the closed feedback loop
     if !adaptive_routing.recommended_skips.is_empty() {
@@ -418,4 +425,35 @@ pub fn analyse(
         optimization_hints: hints,
         enrichment_lineage: lineage,
     }
+}
+
+/// Names of modules that finished this scan (a `ModuleDone` event, any
+/// yield) but are absent from `modules_by_yield` — i.e. they emitted zero
+/// entities. `modules_by_yield` is built (in [`analyse`], above) exclusively
+/// from emitted entities' evidence sources, so a zero-yield module is never
+/// present in it at zero — it is simply missing. Feeds
+/// [`super::ledger::persist_ledger`]'s zero-yield tracking (`PROBLEM_TREE`
+/// T2.15) — the same event-sourced approach the T2.13 ROI hint and T2.14
+/// scan-level hint already use for the identical reason. Pure and
+/// deterministic (sorted, deduped).
+pub fn zero_yield_module_names(
+    events: &[crate::core::event::Event],
+    modules_by_yield: &[ModulePerformance],
+) -> Vec<String> {
+    use crate::core::event::EventKind;
+    use std::collections::HashSet;
+
+    let yielded: HashSet<&str> = modules_by_yield.iter().map(|m| m.name.as_str()).collect();
+    let mut names: Vec<String> = events
+        .iter()
+        .filter_map(|ev| match &ev.kind {
+            EventKind::ModuleDone { module, .. } if !yielded.contains(module.as_str()) => {
+                Some(module.clone())
+            }
+            _ => None,
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
 }

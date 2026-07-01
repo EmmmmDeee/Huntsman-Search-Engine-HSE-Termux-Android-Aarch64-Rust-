@@ -9,13 +9,14 @@
 
 mod analyse;
 pub mod cluster;
-pub(super) mod ledger;
+mod ledger;
 #[cfg(test)]
 mod tests;
 pub mod types;
 
-pub use analyse::{analyse, read_adaptive_routing};
+pub use analyse::{analyse, read_adaptive_routing, zero_yield_module_names};
 pub use cluster::{country_coherence_weight, filter_country_coherent};
+pub use ledger::persist_ledger;
 pub use types::{
     AdaptiveRouting, ConfidenceStats, CoordinateCluster, EntityCluster, EntityOverlap,
     GeoPrecisionReport, LedgerEntry, LineageNode, ModuleHistoricalScore, ModuleLedger,

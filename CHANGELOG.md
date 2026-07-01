@@ -363,10 +363,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
   the original "tighten `module_timeout_ms`" wording to the dossier's
   optimization hints whenever the scan ran past 60s and at least one module's
   `ModuleDone` event recorded zero entities. The sibling per-module "module X
-  returned 0 entities" hint is deliberately left removed — reinstating it
-  needs a noise-control decision first (a realistic multi-module scan leaves
-  dozens of modules at zero yield for any given target kind, which is normal,
-  not noteworthy).
+  returned 0 entities" hint is resolved differently, see below, rather than
+  rebuilt in its original per-scan form.
+- **The cross-scan self-optimization ledger's `zero_yield_rate` could never
+  be anything but 0.0, for every module, since the feature was introduced
+  (`PROBLEM_TREE` T2.15).** `hse scan --adaptive` reads
+  `$HOME/.huntsman/module_stats.json` to skip modules with a historical
+  zero-yield rate of ≥80% over ≥5 scans — but the code that updates that
+  ledger only ever received the list of modules that emitted at least one
+  entity, so a module that ran and found nothing was never counted, and
+  could never accumulate a nonzero zero-yield rate no matter how many scans
+  it failed. Confirmed against the real, pre-existing ledger: 11 real
+  modules across 20 historical scans, every one showing a `0.0` rate. The
+  ledger update is now driven by the scan's own `ModuleDone` events, so a
+  dispatched module that finds nothing is correctly counted even though it
+  never appears in the yield-ranked list — verified with a real scan both
+  before the fix (the ledger stayed silent) and after (correctly recorded
+  the zero-yield module). This is also why the dossier's per-module
+  "returned 0 entities" hint above was not rebuilt as a raw per-scan line:
+  the properly-throttled, statistically-sound version of that exact signal
+  is `--adaptive`'s skip recommendation, and it was the thing silently
+  broken.
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

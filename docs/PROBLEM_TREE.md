@@ -650,7 +650,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[x]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -682,6 +682,76 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `>=`; does not fire on a short scan; does not fire when every module found
   something). *Remaining:* the per-module "returned 0 entities" hint still
   needs the noise decision above — deliberately not forced this cycle.
+  ✅ **Per-module leg resolved (2026-07-01): superseded, not rebuilt.**
+  Investigating the noise decision surfaced a bigger, previously-undiscovered
+  defect in the exact mechanism this leg would have duplicated —
+  `AdaptiveRouting::recommended_skips` (`zero_yield_rate ≥ 0.80` over `≥ 5`
+  scans), the *properly* statistically-throttled version of "this module
+  keeps finding nothing." That mechanism was **itself** structurally dead
+  (new **T2.15**, fixed same cycle): its `zero_yield_rate` could never be
+  anything but its `Default` 0.0, for the identical `modules_by_yield`-
+  excludes-zero-yield-modules premise this whole hint family shares. A naive
+  per-scan, per-module "returned 0 entities" hint would have been both
+  noisier (30+ lines on a realistic multi-module scan, the exact problem that
+  blocked this leg) **and** statistically weaker (one scan's zero is not
+  evidence a module is bad for this target kind — the ledger's `≥5`-scan
+  threshold exists precisely to avoid that false inference) than the
+  mechanism T2.15 restores. With T2.15 shipped, `recommended_skips` now
+  actually fires and already appears in `optimization_hints` (`analyse.rs`
+  lines ~373-379) — the correct replacement for what this leg wanted, not a
+  gap left open. T2.14 `[~]`→`[x]`, fully closed.
+- **`[x]` T2.15 · The cross-scan module-stats ledger's `zero_yield_rate` could
+  never be anything but 0.0, for every module, ever** *(found + fixed
+  2026-07-01, while investigating T2.14's noise decision)* —
+  `util::diagnostics::ledger::persist_ledger(modules, kinds)` iterated only
+  `modules: &[ModulePerformance]`, i.e. `analyse`'s `modules_by_yield` — built
+  (per T2.13/T2.14) **exclusively** from emitted entities' evidence, so a
+  module that ran and found nothing is never present in it at zero, it is
+  simply **absent**. `persist_ledger`'s own `if m.entities_emitted == 0 {
+  zero_yield_scans += 1 }` branch was therefore dead code for the identical
+  reason as the T2.13 ROI hint and the two T2.13-addendum hints — a **fourth**
+  instance of the same root-cause bug family, this one silently corrupting
+  the persistent `$HOME/.huntsman/module_stats.json` ledger rather than
+  disabling a single hint line. Consequence: `LedgerEntry::zero_yield_rate`
+  could structurally never be observed as anything but its `Default` (0.0)
+  for ANY module — a module that failed every single historical scan showed
+  a perfect, misleadingly-good `0.0` zero-yield rate (no data, not "never
+  fails") instead of `1.0` — and `scans_present` only counted the scans a
+  module SUCCEEDED in, silently biasing `mean_entities_per_scan` upward.
+  `AdaptiveRouting::recommended_skips` (candidates for `--adaptive skip`,
+  threshold `zero_yield_rate ≥ 0.80` over `≥ 5` scans) could therefore
+  **never produce a single entry, on any installation, since the ledger
+  feature was introduced** — a second, previously-undocumented instance of
+  "code that claims a capability it structurally cannot have" (the same
+  doctrine T2.13's addendum names). Zero prior test coverage of
+  `persist_ledger`/the ledger's zero-yield path made this invisible.
+  → **Solution:** a caller with `StoragePort` access (the same T2.13/T2.14
+  precedent) computes which `ModuleDone` module names are absent from
+  `modules_by_yield` and passes them to `persist_ledger` as a **separate**
+  `zero_yield_modules: &[String]` parameter, so the ledger update bumps
+  `zero_yield_scans` for names *never present* in the yield-bearing list — a
+  structurally-different signal than "present at zero," fixed at the source
+  rather than patched around. **P2** *(the ledger backs a "surpass
+  SpiderFoot/Maltego" self-optimization capability C1/C2 depend on; not
+  P1 because nothing correctness-critical about a single scan's output
+  depended on it — only cross-scan learning was silently inert).*
+  ✅ **Fixed.** `persist_ledger`'s pure mutation core split out as
+  `update_ledger(ledger, modules, zero_yield_modules, kinds)` (no I/O — the
+  refactor doubles as a hermeticity fix: `persist_ledger` was previously
+  called unconditionally *inside* `analyse`, so every one of `analyse`'s 13
+  unit tests silently mutated the real on-disk ledger; it is now called only
+  by the 3 real (non-test) call sites, and `update_ledger` is independently
+  unit-tested against an in-memory `ModuleLedger` — zero file I/O in tests).
+  New pure `analyse::zero_yield_module_names(events, modules_by_yield)`
+  computes the diff; wired into all 3 real call sites
+  (`cli/scan/dossier.rs::print_diagnostics`, `cli/scan/mod.rs`'s `--output
+  json` branch, `api/handlers/mod.rs`'s post-scan ledger update). 9 new unit
+  tests (4 on `update_ledger` covering a consistently zero-yield module
+  reaching `zero_yield_rate: 1.0` over repeated scans — the exact signal
+  `recommended_skips` reads — plus mixed yield/zero-yield independence and
+  kind-distribution accumulation; 5 more on `zero_yield_module_names`'s diff
+  logic). Gate green. **Paired:** `SOLUTION_TREE` new SOL-LEDGER-ZERO-YIELD
+  node + §3/§5 — same commit.
 
 ---
 
@@ -3298,3 +3368,50 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `--all-targets`/doc clean, full `cargo test` (incl. integration/doctests)
   green. **Paired:** `SOLUTION_TREE` SOL-HINT-NOISE `[ ]`→`[~]` + §4a/§4b/§5
   — same commit.
+
+- **2026-07-01** — **T2.14's per-module leg resolved by fixing a bigger,
+  previously-undiscovered bug it would have duplicated: new T2.15, the
+  cross-scan ledger's `zero_yield_rate` was structurally dead too.** Picked
+  T2.14 (an in-progress `[~]` node left by the prior cycle — priority 1 per
+  this loop's own selection order) to make the deferred per-module noise
+  decision. Before inventing a bespoke per-scan hint, checked whether a
+  properly-throttled version of the same signal already existed:
+  `AdaptiveRouting::recommended_skips` (`zero_yield_rate ≥ 0.80` over `≥5`
+  scans) is exactly that — but reading its data path found `ledger::
+  persist_ledger` only ever iterated `modules_by_yield` (built exclusively
+  from emitted entities, T2.13's own finding), so a zero-yield module was
+  never present in it — `zero_yield_scans` could structurally never
+  increment, for any module, since the ledger feature was introduced. A
+  fourth instance of the identical unreachable-premise bug family, this one
+  corrupting a persistent file rather than disabling one hint line.
+  **Verified live before fixing:** the real `$HOME/.huntsman/
+  module_stats.json` (20 historical scans, 11 real modules) showed
+  `zero_yield_rate: 0.0` on every real module — only a hand-crafted
+  `synthetic` test entry had a nonzero rate.
+  → Split `persist_ledger`'s mutation into a pure, unit-testable
+  `update_ledger(ledger, modules, zero_yield_modules, kinds)`; new pure
+  `analyse::zero_yield_module_names(events, modules_by_yield)` computes the
+  zero-yield diff from the scan's own `ModuleDone` events — the same
+  event-sourced pattern T2.13/T2.14 already established. Moved the
+  `persist_ledger` call OUT of `analyse()` (a pure function with no
+  `StoragePort` access to compute that diff) to the 3 real call sites
+  (`cli/scan/dossier.rs`, `cli/scan/mod.rs`'s `--output json` branch,
+  `api/handlers/mod.rs`'s post-scan hook) — which also fixes a latent
+  hermeticity bug for free: the old unconditional call meant every one of
+  `analyse()`'s 13 unit tests silently mutated the real on-disk ledger.
+  9 new unit tests (4 on `update_ledger`, incl. a module failing 5 scans
+  straight reaching `zero_yield_rate: 1.0`; 5 on the diff logic).
+  **Verified live again after fixing:** `hse scan -k domain -v
+  wikipedia.org --free-only --passive-only` correctly recorded the
+  dispatched, zero-yield `geo_domain_classifier` as `zero_yield_scans: 1,
+  zero_yield_rate: 1.0` in the ledger, while it stayed correctly absent
+  from the same scan's `modules_by_yield` JSON — both halves of the fix
+  proven at once. Ledger restored to its pre-verification state after
+  (courtesy, not required). With `recommended_skips` now actually able to
+  fire, T2.14's per-module leg is resolved as superseded rather than
+  rebuilt — a naive per-scan hint would have been both noisier and
+  statistically weaker than the mechanism this fix restores. T2.14
+  `[~]`→`[x]`; new T2.15 `[x]`. Gate green: 4276 lib tests (+9), fmt/clippy
+  `--all-targets`/doc clean, full `cargo test` green. **Paired:**
+  `SOLUTION_TREE` SOL-HINT-NOISE `[~]`→`[x]` + new SOL-LEDGER-ZERO-YIELD
+  `[x]` + §3/§4/§5 — same commit.

@@ -304,6 +304,20 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .saturating_mul(1000);
         let diag =
             crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
+        // Persist this scan's module stats to the cross-scan ledger here, not
+        // inside `analyse` (`PROBLEM_TREE` T2.15) — only a caller with store
+        // access can compute which dispatched modules are absent from
+        // `modules_by_yield` (zero-yield, invisible to it by construction).
+        let ledger_events = store.events_for_scan(&sid).unwrap_or_default();
+        let zero_yield_modules = crate::util::diagnostics::zero_yield_module_names(
+            &ledger_events,
+            &diag.modules_by_yield,
+        );
+        crate::util::diagnostics::persist_ledger(
+            &diag.modules_by_yield,
+            &zero_yield_modules,
+            &diag.entity_kind_counts,
+        );
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({

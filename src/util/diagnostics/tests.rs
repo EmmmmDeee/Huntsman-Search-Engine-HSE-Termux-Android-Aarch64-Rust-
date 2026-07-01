@@ -293,3 +293,85 @@ fn fuzzy_cluster_keeps_triplet_from_single_source() {
         .any(|c| c.canonical_value.to_lowercase().contains("haigen"));
     assert!(found);
 }
+
+// `zero_yield_module_names` — PROBLEM_TREE T2.15: a module that ran and
+// found nothing is absent from `modules_by_yield` (built only from emitted
+// entities' evidence), so it must be recovered from the scan's own
+// `ModuleDone` events instead, the same premise the T2.13 ROI hint and
+// T2.14 scan-level hint already use.
+
+fn module_done(module: &str, found: usize) -> crate::core::event::Event {
+    crate::core::event::Event::new(
+        "s",
+        crate::core::event::EventKind::ModuleDone {
+            module: module.into(),
+            found,
+        },
+    )
+}
+
+/// A module with a `ModuleDone` event and NO entry in `modules_by_yield` is
+/// exactly the zero-yield case — it must be reported.
+#[test]
+fn zero_yield_module_names_flags_a_module_absent_from_modules_by_yield() {
+    let events = vec![module_done("shodan", 0)];
+    assert_eq!(
+        zero_yield_module_names(&events, &[]),
+        vec!["shodan".to_string()]
+    );
+}
+
+/// A module already present in `modules_by_yield` (it emitted something)
+/// must NOT be reported again, even if its `ModuleDone` event happens to
+/// also exist (the normal case: every module gets exactly one).
+#[test]
+fn zero_yield_module_names_ignores_a_module_present_in_modules_by_yield() {
+    let events = vec![module_done("bing", 12)];
+    let modules_by_yield = vec![ModulePerformance {
+        name: "bing".to_string(),
+        entities_emitted: 12,
+        ..Default::default()
+    }];
+    assert!(zero_yield_module_names(&events, &modules_by_yield).is_empty());
+}
+
+/// A scan with a mix of yield-bearing and zero-yield modules separates them
+/// correctly.
+#[test]
+fn zero_yield_module_names_separates_yield_bearing_from_zero_yield() {
+    let events = vec![
+        module_done("bing", 12),
+        module_done("shodan", 0),
+        module_done("hunter_io", 0),
+    ];
+    let modules_by_yield = vec![ModulePerformance {
+        name: "bing".to_string(),
+        entities_emitted: 12,
+        ..Default::default()
+    }];
+    assert_eq!(
+        zero_yield_module_names(&events, &modules_by_yield),
+        vec!["hunter_io".to_string(), "shodan".to_string()]
+    );
+}
+
+/// Output is sorted and deduped — deterministic regardless of event order
+/// or a module appearing more than once (e.g. re-dispatched on expansion).
+#[test]
+fn zero_yield_module_names_output_is_sorted_and_deduped() {
+    let events = vec![
+        module_done("shodan", 0),
+        module_done("hunter_io", 0),
+        module_done("shodan", 0),
+    ];
+    assert_eq!(
+        zero_yield_module_names(&events, &[]),
+        vec!["hunter_io".to_string(), "shodan".to_string()]
+    );
+}
+
+/// No `ModuleDone` events (empty scan) yields no zero-yield names.
+#[test]
+fn zero_yield_module_names_empty_events_yields_empty_result() {
+    assert!(zero_yield_module_names(&[], &[]).is_empty());
+}
