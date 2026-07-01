@@ -362,6 +362,15 @@ pub(super) struct DispatchState<'a> {
     pub(super) entity_map: &'a mut HashMap<String, Entity>,
     pub(super) stats: &'a mut ModuleStats,
     pub(super) dispatched: &'a mut DispatchLog,
+    /// UIDs genuinely NEW to `entity_map` this dispatch (a fresh insert, not a
+    /// merge into an existing entity) — appended in emission order. Lets a
+    /// caller that needs "what did this dispatch just add" (lineage
+    /// attribution) read this directly instead of diffing a before/after
+    /// snapshot of the whole (potentially large and growing) `entity_map`,
+    /// which made lineage attribution O(entity_map.len()) per dispatch — see
+    /// `PROBLEM_TREE` T2.2x. Callers that don't need lineage (e.g. the seed
+    /// dispatch) pass a scratch `Vec` and ignore it.
+    pub(super) new_uids: &'a mut Vec<String>,
 }
 
 impl super::ScanEngine {
@@ -577,6 +586,7 @@ impl super::ScanEngine {
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
+                        state.new_uids.push(entity.uid.clone());
                         state.entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;

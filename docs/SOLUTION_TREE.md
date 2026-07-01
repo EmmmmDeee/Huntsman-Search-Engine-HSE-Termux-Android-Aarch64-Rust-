@@ -696,6 +696,52 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   3 repeat runs) against the fix; absolute cost at n=2000 also fell ~220ms
   → ~38ms. Live-verified via `hse selftest`'s real DB-round-trip correlator
   check (still fires 3 rules, unchanged).
+- **`[x]` SOL-DISPATCH-HANG · Bound three independent O(n²)/unbounded hot
+  paths in the engine's expansion/gap-fill/correlation tail** → **T2.23**:
+  a synthetic worst-case scan (8-wide fan-out module, depth 12) hung for
+  9+ minutes (killed, never completed) at `max_entities: 1000`, traced to
+  three independent causes: (1) lineage attribution diffed a full
+  `entity_map` snapshot per dispatch (O(entity_map.len()) per dispatch)
+  instead of tracking newly-inserted UIDs at their single insertion point;
+  (2) `run_gap_fill` called the fully unbounded `core::relation::
+  derive_all` instead of the budget-bounded `derive_all_within` the
+  finalise pass three call sites later in the same file already uses; (3)
+  three correlator relation-rules (`single_route_identity_links`/AU-063,
+  `multipath_corroborated_links`/AU-062,
+  `rule_au_069_high_integrity_connection`) each independently ran an
+  unguarded O(pairs) nested loop over every identity-entity pair — a
+  THIRD instance of the T2.22/AU-034 "per-rule nested scan dominates the
+  pass" bug family, confirming it as systemic across the graph-analysis
+  rule family, not one-off. Measured at 401 synthetic identity entities:
+  AU-062 alone 24.8s, AU-069 alone 18.9s, dominating a 45s
+  `Correlator::run` finalise pass. ✅ **Fixed**, three coordinated changes:
+  (1) `DispatchState` (`core/engine/dispatch.rs`) gained a `new_uids: &mut
+  Vec<String>` field, populated by `finalise_module_result` at the one
+  real insertion point — O(1) amortised per new entity; all three
+  `entity_map`-diffing call sites in `core/engine/mod.rs` now read it
+  directly, which also IMPROVES determinism (a `Vec` in emission order,
+  not a `HashMap`'s iteration order filtered post hoc). (2) `run_gap_fill`
+  now reuses the existing `DERIVE_BUDGET` constant, matching the
+  already-established finalise-pass pattern rather than inventing a new
+  one. (3) A new, deterministic (not wall-clock — correlation rules must
+  stay reproducible, the same reasoning `correlate_incremental`'s own doc
+  comment already gives) `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH = 200`
+  ceiling in `core::relation::graph` (next to `identity_uids`, whose own
+  doc comment already named it "the canonical endpoint set every
+  pair-wise link-analysis pass iterates"), applied to all three offending
+  functions: above the ceiling, the affected search returns no findings
+  from that pass rather than blocking. 3 new regression tests (one per
+  fixed rule file, 201 synthetic identity entities, asserts empty), `git
+  stash`-confirmed non-vacuous. **Live-verified empirically**: the same
+  `bench_end_to_end_scan_scaling` baseline that hung now completes — 1000
+  entities in 10.3s, 2000 in 34.3s, 4000 in 129.4s (bounded, predictable —
+  versus 9+ minutes and still climbing, killed, before the fix). Adversarial
+  9-agent verify workflow confirmed the fix correct with no blocking
+  issues; found honest residuals logged as new T2.24 rather than silently
+  dropped (see below) plus two non-blocking architectural notes (the two
+  `DERIVE_BUDGET` windows are independent/additive not shared, and
+  `run_gap_fill`'s bounded derivation lacks a dedicated unit test though
+  its effect is proven end-to-end).
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -785,6 +831,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-TEST-NAME-OVERCLAIM | T2.20 | `[x]` |
 | SOL-ATTACK-TACTIC | T2.21 | `[x]` |
 | SOL-AU087-INDEX | T2.22 | `[x]` |
+| SOL-DISPATCH-HANG | T2.23 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -808,6 +855,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.24** (new, 2026-07-01) — two correlator relation-rules (AU-070
+  `connection_broker`, AU-071 `robust_identity_cluster`) share an unguarded
+  O(V·(V+E)) cost via `connection_brokers` (graph-node count, not identity
+  pairs — not a drop-in fit for `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`),
+  and AU-060 (`identity_paths`) is unguarded O(identity_count × (V+E)),
+  additive not combinatorial. Found during T2.23's adversarial review;
+  neither confirmed catastrophic in this cycle's measurements. No solution
+  node yet — needs its own dedicated dense-graph measurement before a
+  tailored guard is designed.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -918,13 +974,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21/T2.22 `[x]`** ✅
-  (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21/T2.22/T2.23
+  `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
   SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION,
   SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM, SOL-ATTACK-TACTIC,
-  SOL-AU087-INDEX — the dead-hint/dead-ledger/dead-delegation/false-doc/
-  silent-truncation/unguarded-arithmetic/overclaimed-test-coverage/
-  dead-constant/reintroduced-O(n²) bug family, all closed); T2.7 open
+  SOL-AU087-INDEX, SOL-DISPATCH-HANG — the dead-hint/dead-ledger/
+  dead-delegation/false-doc/silent-truncation/unguarded-arithmetic/
+  overclaimed-test-coverage/dead-constant/reintroduced-O(n²) bug family,
+  all closed); **T2.24 `[ ]`** (new, two relation-rules + one graph
+  primitive with a related-but-distinct, unconfirmed-severity unguarded
+  cost — needs its own measurement before a fix is designed); T2.7 open
   (blocked for an unattended cycle); **T2.11 `[x]`**
   ✅ (2026-07-01, status-marker reconciliation — oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
@@ -3177,3 +3236,56 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.22 `[x]` + F.3 correction + §8 — same commit. Gate green: fmt/clippy
   `--all-targets --locked -D warnings`/strict-rustdoc clean, 4290 lib tests
   (4289→4290, +1), full `cargo test` green.
+
+- **2026-07-01** — **New: SOL-DISPATCH-HANG closes T2.23 (a 9+-minute
+  unbounded scan hang across three independent O(n²)/unbounded hot paths);
+  new T2.24 logged (not fixed) for two related-but-unconfirmed residuals
+  found during adversarial review.** **P→S step:** with T2.7 the sole
+  remaining open T-series node and F.1–F.3/C1–C5 all `[~]` with only
+  explicitly-deferred remainders, a fresh discovery pass ran the codebase's
+  own existing `#[ignore]`d perf baselines — the exact angle that found
+  T2.22, applied again. `core::engine::tests::bench_end_to_end_scan_
+  scaling` (never previously run to completion) hung 9+ minutes at its
+  first data point (1000 entities) and was killed. **S→P step:** temporary
+  binary-search instrumentation across the whole post-expansion scan tail
+  found three independent causes — a full-`entity_map` lineage diff per
+  dispatch, an unbounded `derive_all` call in `run_gap_fill` (the ACTUAL
+  finalise pass three call sites later already uses the bounded
+  `derive_all_within`), and three correlator relation-rules
+  (AU-062/AU-063/AU-069) each independently running an unguarded O(pairs)
+  nested loop over identity-entity pairs — a THIRD instance of the
+  T2.22/AU-034 bug family, confirming it systemic across the graph-analysis
+  rule family. Fixed all three with the SMALLEST correct primitive for
+  each: direct UID tracking at the insertion point (not a diff), reuse of
+  the existing `DERIVE_BUDGET` constant (not a new one), and one new shared
+  `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` ceiling applied to all three
+  offending functions (deliberately entity-count-keyed, not wall-clock, to
+  preserve correlation-rule reproducibility). 3 new regression tests,
+  `git stash`-confirmed non-vacuous. **Live-verified empirically** — the
+  SAME hung baseline now completes: 1000 entities 10.3s, 2000 34.3s, 4000
+  129.4s (bounded, versus 9+ minutes and climbing, killed, before). Then
+  **spent a full adversarial-verification workflow** (3 independent area
+  reviewers + their own refutation passes, 9 agents total) BEFORE closing
+  the cycle, given the change touches core dispatch/correlator logic —
+  found the implementation itself correct with zero blocking issues, and
+  surfaced honest residuals rather than a clean bill of health: two
+  independent (not shared) `DERIVE_BUDGET` windows (additive worst-case,
+  not compounding — pre-existing, not a regression), `run_gap_fill`'s
+  bounded derivation lacking its own dedicated unit test (mitigated by the
+  primitive's separate test plus this fix's end-to-end proof), and —
+  substantively — **two more relation-rules (AU-070/AU-071) sharing a
+  DIFFERENT unguarded graph-size-dependent cost** (`connection_brokers`,
+  keyed on total graph-node count, not identity pairs) plus AU-060
+  (`identity_paths`, additive not combinatorial). Neither showed
+  catastrophic cost in this cycle's own measurements and neither is a
+  drop-in fit for the new guard (different cost keys) — logged as new
+  T2.24 for a future cycle's own dedicated measurement rather than
+  mechanically copying this cycle's fix onto an unverified different shape.
+  **Gap refresh:** leverage-map gains SOL-DISPATCH-HANG `[x]`; §4a gains
+  new T2.24 (no solution started); §4d's T2 row folds T2.23 into the
+  closed bug family and adds T2.24 as open. Paired: `PROBLEM_TREE` new
+  T2.23 `[x]` + new T2.24 `[ ]` + §8 — same commit (also backfilled T2.22's
+  missing §8 entry, found while writing this one — see that entry's own
+  note). Gate green: fmt/clippy `--all-targets --locked -D warnings`/
+  strict-rustdoc clean, 4293 lib tests (4290→4293, +3), full `cargo test`
+  green.

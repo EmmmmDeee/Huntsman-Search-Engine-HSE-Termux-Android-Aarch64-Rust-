@@ -1129,6 +1129,175 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `--all-targets --locked -D warnings`/strict-rustdoc clean, full `cargo
   test` green. **Paired:** `SOLUTION_TREE` new SOL-AU087-INDEX `[x]` +
   §3/§4/§5 — same commit.
+- **`[x]` T2.23 · A high-fan-out scan could hang for 9+ minutes (unbounded,
+  worse than quadratic) across three independent O(n²) hot paths in the
+  engine's expansion/gap-fill/correlation tail** *(found + fixed 2026-07-01,
+  fresh discovery pass — running the codebase's own `#[ignore]`d
+  `bench_end_to_end_scan_scaling` engine throughput baseline, never
+  previously run to completion)* — building a synthetic worst-case scan
+  (a single module fanning out 8 fresh `Username` entities per dispatch,
+  `depth: 12`, `max_entities: Some(1000)`) and running the existing
+  `core::engine::tests::bench_end_to_end_scan_scaling` baseline (`#[ignore]`
+  d, not part of the default `cargo test` gate) hung — killed after 9+
+  minutes of 100% CPU with the FIRST data point (1000 entities) still not
+  complete. Isolated via targeted binary-search instrumentation (temporary,
+  not committed) across the whole post-expansion scan tail to THREE
+  independent causes, all real, all reachable by an ordinary `--full` or
+  deep recursive scan (a large breach/stealer import or a well-connected
+  identity graph, not an adversarial input):
+  1. **Lineage attribution scanned the WHOLE `entity_map` per dispatch.**
+     Three call sites (seed dispatch, gap-fill's per-probe loop, the main
+     expansion round loop, all in `src/core/engine/mod.rs`) snapshotted
+     `entity_map.keys()` before each dispatch and diffed it against the
+     post-dispatch state to find which entities that dispatch surfaced (for
+     a `DerivedFrom` lineage edge) — an O(entity_map.len()) scan on EVERY
+     single module dispatch, for a cost that scales with total scan size,
+     not with what that one dispatch actually produced.
+  2. **`run_gap_fill` (`src/core/engine/mod.rs`) called the fully unbounded
+     `core::relation::derive_all`**, not the budget-bounded
+     `derive_all_within` the ACTUAL finalise pass three call sites later in
+     the same file already uses. `derive_all`'s own doc comment already
+     documents its ~16-pass chain as "super-linear… can run for minutes";
+     `run_gap_fill`'s existing cancel-check comment already acknowledged
+     this risk but only guarded the case where the scan was ALREADY
+     cancelled — it did nothing to bound the first, un-cancelled call.
+  3. **Three correlator relation-rules independently did the same O(n²)
+     nested loop over every PAIR of identity entities**, each calling a
+     bounded-per-pair graph search (`disjoint_pathways_in`/
+     `strongest_path_in`, capped at 5 hops / 4 paths) but with NO ceiling on
+     the outer pair count: `single_route_identity_links`
+     (`src/core/correlator/rules/gap.rs`, feeds AU-063 AND the engine's
+     gap-fill probe selection), `multipath_corroborated_links`
+     (`src/core/correlator/rules/multipath.rs`, feeds AU-062 AND the
+     engine's per-round `promote_multipath_corroborated` reconsideration
+     pass), and `rule_au_069_high_integrity_connection`'s own inline loop
+     (`src/core/correlator/rules/integrity.rs`). Measured at 401 synthetic
+     identity entities: AU-062 alone took 24.8s, AU-069 alone took 18.9s,
+     together dominating a 45s `Correlator::run` finalise pass. This is the
+     exact same "per-rule nested scan dominates the whole pass" bug class as
+     T2.22/AU-034 — a THIRD independent instance, confirming it as a
+     systemic pattern across the graph-analysis rule family, not one-off.
+     → **Solution:** (1) track newly-inserted UIDs directly at the single
+     insertion point instead of diffing a snapshot; (2) bound `run_gap_fill`
+     '`s derivation with the same `DERIVE_BUDGET` the finalise pass already
+     uses; (3) add a shared, deterministic entity-count ceiling before each
+     O(n²) pairwise search. **P2** (a genuine multi-minute-to-unbounded scan
+     hang under ordinary — not adversarial — conditions; no data corruption,
+     but a severe availability/usability regression for exactly the deep
+     `--full` scans this tool's own doctrine treats as a headline use case).
+  ✅ **Fixed**, three coordinated changes:
+  1. **`DispatchState`** (`src/core/engine/dispatch.rs`) gained a
+     `new_uids: &mut Vec<String>` field, populated by
+     `finalise_module_result` at the ONE place an entity is genuinely
+     inserted (not merged) — O(1) amortised per new entity, not
+     O(entity_map.len()) per dispatch. All three call sites in
+     `src/core/engine/mod.rs` now read `new_uids` directly for lineage
+     attribution instead of diffing a before/after snapshot; behaviour is
+     unchanged (same edges, same confidence), only HOW they're found. As a
+     side benefit, edges are now attributed in deterministic emission order
+     (a `Vec`) rather than `entity_map`'s `HashMap` iteration order filtered
+     post hoc — strictly better for `docs/CONVENTIONS.md`'s determinism
+     rule, not just faster.
+  2. **`run_gap_fill`** now calls `derive_all_within(&ents, scan_id,
+     Some(Instant::now() + DERIVE_BUDGET))`, the identical pattern the
+     finalise pass already uses — reusing the existing 90s constant rather
+     than inventing a new one.
+  3. **`MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`** (200), a new `pub const` in
+     `src/core/relation/graph.rs` next to `identity_uids` (which its doc
+     comment already named as "the canonical endpoint set every pair-wise
+     link-analysis pass iterates… shared by `identity_paths` and the
+     AU-062/AU-063 detectors" — confirming this was always meant to be a
+     single-sourced concern). A deterministic entity-COUNT ceiling was
+     chosen over a wall-clock cutoff deliberately: this codebase's
+     correlation rules must be reproducible (same input → same output every
+     run), and a mid-loop time-based cutoff would make which links a rule
+     reports depend on machine speed/load — the same reasoning
+     `correlate_incremental`'s own doc comment already gives for avoiding a
+     wall-clock cut mid-pass. Above the ceiling, the affected search returns
+     no findings from that specific pairwise pass (a conservative
+     false-negative, never a false-positive or a crash) rather than
+     blocking. Applied to all three offending functions.
+  3 new regression tests (one per fixed rule file), each building 201
+  synthetic identity entities (`MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1`)
+  and asserting the search returns empty — confirmed via `git stash` that
+  none of the three exist/compile against the unfixed code. **Live-verified
+  empirically, not just unit-tested:** re-ran the same
+  `bench_end_to_end_scan_scaling` baseline that originally hung — it now
+  completes cleanly: 1000 entities in 10.3s, 2000 in 34.3s, 4000 in 129.4s
+  (bounded and predictable, versus 9+ minutes and still climbing, killed,
+  before the fix — at minimum a ~50× improvement, likely far more since the
+  original run never finished). `hse selftest`'s real DB-round-trip
+  correlator check still fires 3 rules, unchanged. **Independently
+  adversarially reviewed** (a 9-agent verify workflow: 3 area reviews × their
+  own refutation passes) — found the actual implementation correct with no
+  blocking issues; confirmed several honest, real-but-minor residuals
+  logged rather than silently dropped: (a) `run_gap_fill`'s and the
+  finalise pass's two `DERIVE_BUDGET` windows are independent, not a single
+  shared scan-wide ceiling (worst case additive, not compounding — a
+  pre-existing property, not a regression this fix introduced); (b)
+  `run_gap_fill`'s bounded derivation isn't itself covered by a dedicated
+  unit test (the underlying `derive_all_within`/`DERIVE_BUDGET` mechanism IS
+  separately tested in `core::relation::tests`, and this fix's real-world
+  effect is proven via the full end-to-end benchmark above); (c) **two
+  further correlator rules — AU-070 `connection_broker` and AU-071
+  `robust_identity_cluster`** — call a DIFFERENT shared primitive
+  (`connection_brokers`, O(V·(V+E)) over ALL graph nodes with ≥2 edges, not
+  identity pairs) with no equivalent ceiling, and **AU-060**
+  `transitive_identity_closure` (via `identity_paths`, O(identity_count ×
+  (V+E)), additive not combinatorial) is also unguarded — neither showed
+  catastrophic cost in this cycle's measurements (AU-060: 225ms at n=401;
+  AU-070/AU-071 didn't register in the per-rule profile at all, since the
+  synthetic benchmark's tree-shaped lineage graph has few nodes with ≥2
+  binding edges) and neither is a drop-in fit for the same
+  entity-count-keyed guard (their cost keys are graph-node-count and
+  identity-count respectively, not identity-PAIR-count) — logged as new
+  T2.24 rather than force-fixed or silently dropped. Gate green: 4293 lib
+  tests (+3), fmt/clippy `--all-targets --locked -D warnings`/strict-rustdoc
+  clean, full `cargo test` green. **Paired:** `SOLUTION_TREE` new
+  SOL-DISPATCH-HANG `[x]` + new T2.24 `[ ]` + §3/§4/§5 — same commit.
+- **`[ ]` T2.24 · Two more correlator relation-rules (AU-070/AU-071) and one
+  (AU-060) share unguarded, graph-size-dependent cost with the T2.23 bug
+  family, but neither is a confirmed catastrophic hang nor a drop-in fit for
+  T2.23's `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` guard** *(found
+  2026-07-01, adversarial verification of T2.23)* — `rule_au_070_
+  connection_broker` (`src/core/correlator/rules/broker.rs`) and
+  `rule_au_071_robust_identity_cluster`
+  (`src/core/correlator/rules/robust.rs`) both call `connection_brokers`
+  (`src/core/relation/graph.rs`), whose own doc comment states it is
+  O(V·(V+E)): it loops over every graph node with ≥2 binding edges (a
+  superset of `identity_uids()` — includes domains, IPs, orgs, anything
+  with enough edges) and runs a full BFS (`component_labels`, itself
+  O(V+E)) once per candidate node. `rule_au_060_transitive_identity_
+  closure` (`src/core/correlator/rules/transitive.rs`) delegates to
+  `identity_paths` (`src/core/relation/graph.rs`), which runs one full BFS
+  PER identity uid — O(identity_count × (V+E)), additive rather than
+  combinatorial, and also the basis of `resolve_identity_clusters` (used by
+  AU-067, AU-071, and `engine::rank_identity_aware_targets`) and the
+  dossier CLI's CONNECTIONS section (`src/cli/scan/dossier.rs`). Neither
+  pattern is the exact O(pairs)-nested-loop shape T2.23 fixed, and neither
+  showed catastrophic cost in T2.23's own measurements (AU-060: 225ms at
+  n=401 all-identity entities; AU-070/AU-071 registered as fast enough to
+  not even appear in the >50ms per-rule profile, likely because the
+  synthetic benchmark's tree-shaped lineage graph has few nodes crossing
+  the "≥2 binding edges" `connection_brokers` candidate threshold — a
+  DIFFERENT, denser-graph shape than the pure-fan-out tree T2.23 stress-
+  tested would be needed to confirm real-world severity here). → **Solution
+  (sketch, not yet designed):** connection_brokers' cost key is total
+  qualifying graph-node count, not identity-pair count, so
+  `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` doesn't directly apply — would
+  need its own dedicated measurement (a densely-connected synthetic graph,
+  not a tree) and a tailored ceiling on the `connection_brokers` candidate
+  count (also needed at its third caller, `src/cli/scan/dossier.rs`'s
+  CONNECTIONS section, which renders on-demand from a completed scan's
+  stored graph with no timeout of its own). AU-060/`identity_paths` scales
+  additively (not combinatorially) so is lower urgency, but its 3
+  downstream consumers (AU-067, AU-071's OTHER call path via
+  `resolve_identity_clusters`, and the dossier CLI) would all need the same
+  once-fixed treatment if a guard is added there. **P3** (no confirmed
+  catastrophic case yet — architecturally identified during T2.23's
+  adversarial review, not empirically measured as severe; needs its own
+  discovery-pass-grade measurement before a fix is designed, not a
+  mechanical copy of T2.23's guard).
 
 ---
 
@@ -4091,3 +4260,102 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   "N selectors, T seconds, M MB RAM" reproducible benchmark is the larger
   remaining deliverable, still gated on the §3.F enablers. **Paired:**
   `SOLUTION_TREE` SOL-PERF-PUBLISH `[ ]`→`[~]` + §3/§4/§5 — same commit.
+
+- **2026-07-01** — **Closed T2.22 — AU-087's Person ride-along
+  reintroduced an AU-034-class O(n²) correlator regression, caught by
+  running the pass's own committed (but previously unrun) guard.**
+  *(§8 note: this entry was missed in the commit that shipped the fix —
+  `SOLUTION_TREE` §5 carried the paired log entry but this tree's §8 did
+  not; added here, out of strict date order, rather than left permanently
+  missing — see the same cycle's T2.23 entry below for the fix that found
+  the gap while writing T2.23's own paired-tree update.)* **P→S step:**
+  with T2.11 closed and T2.7 still blocked, F.3 (proof & measurement
+  infrastructure) was the sole remaining in-progress node — priority 1
+  picked it. Investigating its "widen criterion to the correlation pass"
+  remaining item found that note stale (`core::correlator::perf` already
+  covers this, deliberately without `criterion`, to avoid a heavy
+  transitive dep on the minimal-dependency Termux build) — but running the
+  existing guard to confirm it still held surfaced a real finding:
+  `pass_is_subquadratic --ignored` FAILED, 11.1–11.5× scaling for a 4×
+  entity increase against a 9× ceiling. **S→P step:** a per-rule scratch
+  profile isolated the cause to `rule_au_087_shared_org_email_domain`
+  alone (17.06× scaling, ~90% of the whole pass's cost at n=2000) — its
+  Person "ride-along" step did a full nested scan (every Person × every
+  address in every qualifying org-domain cluster) via `identity_overlaps`,
+  the same "per-rule nested scan dominates the pass" bug class `AU-034`
+  was already fixed for once. Fixed via a one-time 4-gram index
+  (`identity_overlaps`' substring-≥4-chars check is mathematically
+  equivalent to "shares a common 4-gram") replacing the O(persons)-per-
+  address scan with an O(1)-average lookup — byte-identical firing
+  behaviour, not an approximation. `IDENTITY_OVERLAP_MIN` re-exported from
+  `core::scan` (was private) so the fix references the canonical constant.
+  `git stash` confirmed the guard fails (11.24×) against the unfixed code
+  and passes (~4.0×) against the fix. 1 new correctness test for the
+  gram-index rewrite's short-name edge case; all 4 pre-existing AU-087
+  tests pass unchanged. Absolute pass cost at n=2000 fell ~220ms → ~38ms.
+  Live-verified via `hse selftest`'s real DB-round-trip correlator check.
+  Also corrected SOL-F3's stale note (the import-parser proptest it listed
+  as "outstanding" was actually delivered 2026-06-17). Gate green: 4290
+  lib tests (+1), fmt/clippy `--all-targets --locked -D warnings`/strict-
+  rustdoc clean, full `cargo test` green. **Paired:** `SOLUTION_TREE`
+  SOL-AU087-INDEX `[x]` + §3/§4/§5 — same commit (c5a3496a).
+
+- **2026-07-01** — **New: T2.23 closed — a synthetic worst-case scan could
+  hang for 9+ minutes (unbounded, worse than quadratic) across three
+  independent O(n²) hot paths in the engine's expansion/gap-fill/
+  correlation tail; T2.24 logged for two related-but-unconfirmed residuals
+  found during adversarial review.** **P→S step:** with T2.7 the sole
+  remaining open T-series node (blocked) and F.1–F.3/C1–C5 all `[~]` with
+  only explicitly-deferred remainders (bstr: no consumer yet; fst:
+  won't-build; cargo-fuzz: needs a CI-lane change this loop doesn't make
+  unprompted), a fresh discovery pass ran the codebase's OWN existing
+  `#[ignore]`d perf baselines — the same "run what's already there but
+  never executed" angle that found T2.22. `core::engine::tests::
+  bench_end_to_end_scan_scaling` (an engine throughput baseline, never
+  previously run to completion per its own history) hung for 9+ minutes at
+  its first data point (1000 entities, synthetic 8-wide fan-out module,
+  depth 12) and was killed. **S→P step:** binary-search instrumentation
+  (temporary, not committed) traced the cost through the whole post-
+  expansion scan tail to three independent causes: (1) lineage attribution
+  diffed a full `entity_map` snapshot per dispatch instead of tracking
+  new UIDs at their single insertion point; (2) `run_gap_fill` called the
+  fully unbounded `derive_all` instead of the budget-bounded
+  `derive_all_within` the finalise pass three call sites later in the same
+  file already uses; (3) three correlator relation-rules
+  (`single_route_identity_links`/AU-063, `multipath_corroborated_links`/
+  AU-062, `rule_au_069_high_integrity_connection`) each independently ran
+  an unguarded O(pairs) nested loop over every identity-entity pair — a
+  THIRD instance of the T2.22/AU-034 bug family, confirming it as
+  systemic across the graph-analysis rule family. Fixed all three: (1) a
+  new `DispatchState::new_uids` field populated at the one real insertion
+  point; (2) reused the existing `DERIVE_BUDGET` constant for
+  `run_gap_fill`; (3) a new shared, deterministic (not wall-clock, to
+  preserve correlation-rule reproducibility) `MAX_IDENTITY_UIDS_FOR_
+  PAIRWISE_SEARCH = 200` ceiling in `core::relation::graph`, applied to
+  all three offending functions. 3 new regression tests (one per fixed
+  rule file, 201 synthetic identity entities, asserts empty result),
+  `git stash`-confirmed non-vacuous. **Live-verified empirically**: the
+  SAME `bench_end_to_end_scan_scaling` baseline that hung now completes —
+  1000 entities in 10.3s, 2000 in 34.3s, 4000 in 129.4s (bounded,
+  predictable — versus 9+ minutes and still climbing, killed, before the
+  fix). `hse selftest`'s real correlator check unchanged (3 rules fire).
+  **Independently adversarially reviewed** via a 9-agent verify workflow
+  (3 area reviews × their own refutation passes): the actual fix was
+  confirmed correct with no blocking issues; found and logged (not
+  silently dropped) several honest residuals — two independent, additive
+  (not shared) `DERIVE_BUDGET` windows; `run_gap_fill`'s bounded
+  derivation lacking a dedicated unit test (covered indirectly by the
+  primitive's own test plus this fix's end-to-end benchmark proof); and,
+  most substantively, two more relation-rules (AU-070/AU-071) sharing a
+  DIFFERENT unguarded graph-size-dependent cost pattern
+  (`connection_brokers`, O(V·(V+E)) over all qualifying graph nodes, not
+  identity pairs) plus AU-060 (`identity_paths`, O(identity_count ×
+  (V+E)), additive not combinatorial) — neither confirmed catastrophic in
+  this cycle's own measurements, neither a drop-in fit for the same
+  entity-count-keyed guard (different cost keys), so logged as new T2.24
+  for a future cycle's own dedicated measurement rather than mechanically
+  copying this cycle's guard onto a different complexity shape without
+  evidence it's actually needed. Gate green: fmt/clippy `--all-targets
+  --locked -D warnings`/strict-rustdoc clean, 4293 lib tests (4290→4293,
+  +3), full `cargo test` green. **Paired:** `SOLUTION_TREE` new
+  SOL-DISPATCH-HANG `[x]` + new T2.24 `[ ]` + §3/§4/§5 — same commit.

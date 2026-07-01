@@ -13,7 +13,10 @@
 use std::collections::HashMap;
 
 use super::*;
-use crate::core::relation::{identity_uids, sorted_confined_adjacency, strongest_path_in};
+use crate::core::relation::{
+    MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH, identity_uids, sorted_confined_adjacency,
+    strongest_path_in,
+};
 
 /// AU-069 — High-integrity connection.
 pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
@@ -30,6 +33,18 @@ pub(in crate::core::correlator) fn rule_au_069_high_integrity_connection(
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let ids = identity_uids(entities);
+    // See `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`: the outer pair loop below is
+    // O(n²) in identity-entity count and unbounded without this
+    // (`PROBLEM_TREE` T2.2x).
+    if ids.len() > MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH {
+        tracing::warn!(
+            identity_entities = ids.len(),
+            ceiling = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH,
+            "rule_au_069_high_integrity_connection: identity-entity count exceeds the \
+             pairwise-search ceiling — skipping (see MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH)"
+        );
+        return Vec::new();
+    }
     // Build the traversal graph ONCE and reuse it for every pair's widest-path
     // search (vs rebuilding + re-sorting it per `strongest_path` call).
     let adj = sorted_confined_adjacency(entities, relations);
@@ -137,5 +152,26 @@ mod tests {
         let b = mk(EntityKind::Username, "alice");
         let rels = [edge(&a, &b, 0.95)];
         assert!(rule_au_069_high_integrity_connection(&[a, b], &rels, "s", 0).is_empty());
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.23: above
+    /// `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`, this rule must skip its
+    /// O(n²) pairwise search entirely (empty result) rather than run it —
+    /// the ceiling that replaced an unbounded search which hung for minutes
+    /// on a large identity-entity working set.
+    #[test]
+    fn au069_skips_above_the_pairwise_ceiling() {
+        let ents: Vec<Entity> = (0..=MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH)
+            .map(|i| mk(EntityKind::Username, &format!("user{i}")))
+            .collect();
+        assert_eq!(
+            ents.len(),
+            MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1,
+            "test setup must exceed the ceiling by exactly one"
+        );
+        assert!(
+            rule_au_069_high_integrity_connection(&ents, &[], "s", 0).is_empty(),
+            "above the ceiling, the search must skip rather than run unbounded"
+        );
     }
 }

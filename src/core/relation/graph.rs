@@ -84,6 +84,30 @@ pub fn identity_uids(entities: &[Entity]) -> Vec<&str> {
     uids
 }
 
+/// Shared ceiling for every O(pairs) link-analysis pass built on
+/// [`identity_uids`] (AU-062 multipath corroboration, AU-063 corroboration
+/// gap, AU-069 high-integrity connection, and the engine's active gap-fill
+/// probe selection): each individual pair's graph search is itself bounded
+/// (a small fixed hop/path cap), but the OUTER loop over every identity-uid
+/// PAIR is O(n²) in the identity-entity count, which is unbounded. On a
+/// large working set (a `--full` scan or a high-fanout target after several
+/// expansion rounds) this made three independently-implemented rules each
+/// block for many seconds to tens of seconds — measured up to ~25s for a
+/// single rule at 401 all-identity synthetic entities, worse than quadratic
+/// once compounded across rules (`PROBLEM_TREE` T2.2x).
+///
+/// A wall-clock cutoff was deliberately rejected for this: unlike
+/// `CORRELATOR_BUDGET`/`DERIVE_BUDGET` (which bound whole PASSES between
+/// rules), stopping mid-loop on elapsed time would make which links a rule
+/// reports depend on machine speed/load — breaking the reproducibility this
+/// evidentiary tool's own rules must hold. An entity-count gate is fully
+/// deterministic: the SAME input always yields the SAME "search" or "skip"
+/// decision. Above the ceiling, every consumer gets no findings from its
+/// pairwise pass rather than an unbounded block; a graph with 200+ distinct
+/// identity entities is far outside a normal scan's shape, so this is a
+/// safety bound, not a coverage regression in practice.
+pub const MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH: usize = 200;
+
 /// Build the undirected adjacency of the relation graph — every edge added in
 /// both directions. Self-loops are skipped (they connect nothing). When
 /// `confine` is `Some(set)`, only edges whose *both* endpoints are in the set

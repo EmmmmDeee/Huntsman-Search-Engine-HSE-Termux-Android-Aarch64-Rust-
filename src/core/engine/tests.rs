@@ -1801,10 +1801,12 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
         let mut entity_map: HashMap<String, Entity> = HashMap::new();
         let mut stats = ModuleStats::default();
         let mut dispatched: DispatchLog = DispatchLog::new();
+        let mut new_uids: Vec<String> = Vec::new();
         let mut state = DispatchState {
             entity_map: &mut entity_map,
             stats: &mut stats,
             dispatched: &mut dispatched,
+            new_uids: &mut new_uids,
         };
 
         engine
@@ -1936,10 +1938,12 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
     let mut entity_map: HashMap<String, Entity> = HashMap::new();
     let mut stats = ModuleStats::default();
     let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut new_uids: Vec<String> = Vec::new();
     let mut state = DispatchState {
         entity_map: &mut entity_map,
         stats: &mut stats,
         dispatched: &mut dispatched,
+        new_uids: &mut new_uids,
     };
 
     engine

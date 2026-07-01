@@ -435,10 +435,14 @@ impl ScanEngine {
                 is_expansion: false,
                 seed_kind: target.kind,
             };
+            // The seed has no parent to attribute a lineage edge to, so
+            // `new_uids` is scratch — collected and discarded.
+            let mut new_uids: Vec<String> = Vec::new();
             let mut dstate = DispatchState {
                 entity_map: &mut entity_map,
                 stats: &mut stats,
                 dispatched: &mut *dispatched,
+                new_uids: &mut new_uids,
             };
             if let Err(e) = self.dispatch_target(&cx, &mut ctx, &mut dstate).await {
                 warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
@@ -1252,9 +1256,25 @@ impl ScanEngine {
         // The gap analysis needs the full relation graph the finaliser will build:
         // the in-flight lineage edges plus the structural edges derivable from the
         // current entity set. Derive once, off a snapshot.
+        //
+        // Bounded exactly like the finalise pass below (`derive_all_within` +
+        // `DERIVE_BUDGET`), NOT the unbounded `derive_all` this used to call:
+        // the doc comment above already flags this derivation as super-linear
+        // on a large graph, but that only guarded against running it AFTER a
+        // cancellation — it did nothing to bound the FIRST, un-cancelled call,
+        // which could still run for minutes on a `max_entities`-sized working
+        // set (measured: ~29s at 200 entities on a purely synthetic fan-out
+        // graph, scaling worse than quadratic — `PROBLEM_TREE` T2.2x). Reusing
+        // `DERIVE_BUDGET` (not a new constant) matches the finalise pass this
+        // mirrors and guarantees gap-fill's own setup step always converges.
+        let derive_deadline = Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
         let ents: Vec<Entity> = entity_map.values().cloned().collect();
         let mut rels = relations.clone();
-        rels.extend(crate::core::relation::derive_all(&ents, scan_id));
+        rels.extend(crate::core::relation::derive_all_within(
+            &ents,
+            scan_id,
+            derive_deadline,
+        ));
 
         let probes = crate::core::correlator::gap_fill_probes(&ents, &rels);
         if probes.is_empty() {
@@ -1262,7 +1282,7 @@ impl ScanEngine {
         }
 
         let by_uid: HashMap<&str, &Entity> = ents.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let mut before: HashSet<String> = HashSet::new();
+        let mut new_uids: Vec<String> = Vec::new();
         let mut probed = 0usize;
 
         for probe in probes {
@@ -1308,8 +1328,7 @@ impl ScanEngine {
                 ..opts.clone()
             };
 
-            before.clear();
-            before.extend(entity_map.keys().cloned());
+            new_uids.clear();
             {
                 let cx = DispatchCx {
                     scan_id,
@@ -1322,14 +1341,19 @@ impl ScanEngine {
                     entity_map: &mut *entity_map,
                     stats: &mut *stats,
                     dispatched: &mut *dispatched,
+                    new_uids: &mut new_uids,
                 };
                 if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
                     warn!(scan_id, error = %e, "gap-fill dispatch failed (continuing)");
                 }
             }
             // New entities this probe surfaced are derived from the gap endpoint.
-            for (uid, child) in entity_map.iter() {
-                if !before.contains(uid) {
+            // Read directly off `new_uids` (populated at insertion time by
+            // `finalise_module_result`) instead of diffing a before/after
+            // snapshot of the whole `entity_map` — the diff was
+            // O(entity_map.len()) per probe (`PROBLEM_TREE` T2.2x).
+            for uid in &new_uids {
+                if let Some(child) = entity_map.get(uid) {
                     relations.push(Relation::new(
                         uid.as_str(),
                         probe.endpoint_uid.as_str(),
@@ -1377,11 +1401,14 @@ impl ScanEngine {
             relations,
             emitted_corr,
         } = state;
-        // Reused across candidates to capture lineage: the set of entity UIDs
-        // present *before* a candidate's dispatch, so new UIDs afterward are
-        // children that candidate surfaced. Reusing the buffer avoids a
-        // per-candidate allocation; the key clones are bounded by max_entities.
-        let mut before: HashSet<String> = HashSet::new();
+        // Reused across candidates to capture lineage: the UIDs
+        // `finalise_module_result` inserted as genuinely new during a
+        // candidate's dispatch, so lineage attribution below is O(new
+        // entities) per candidate instead of O(entity_map.len()) — an earlier
+        // version diffed a before/after snapshot of the whole `entity_map`
+        // per candidate, which dominated wall-time on any round with
+        // meaningful fan-out (`PROBLEM_TREE` T2.2x).
+        let mut new_uids: Vec<String> = Vec::new();
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round. Keys
             // discovered during the previous round (oathnet_pro breach data,
@@ -1733,10 +1760,7 @@ impl ScanEngine {
                     );
                     return stop;
                 }
-                // Snapshot UIDs before dispatch so we can attribute the
-                // entities this candidate surfaces back to its parent.
-                before.clear();
-                before.extend(entity_map.keys().cloned());
+                new_uids.clear();
                 {
                     // Re-borrow the mutable accumulator trio into a
                     // `DispatchState` for this candidate; the block scopes the
@@ -1753,6 +1777,7 @@ impl ScanEngine {
                         entity_map: &mut *entity_map,
                         stats: &mut *stats,
                         dispatched: &mut *dispatched,
+                        new_uids: &mut new_uids,
                     };
                     if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
                         // Per-target dispatch errors are already surfaced as
@@ -1765,9 +1790,13 @@ impl ScanEngine {
                 // not "new" and are skipped, avoiding cross-round edge spam).
                 // Direction is child -> parent: the new entity (`uid`) was
                 // *derived from* the parent it was expanded out of (`parent_uid`),
-                // matching the `DerivedFrom` edge name.
-                for (uid, child) in entity_map.iter() {
-                    if !before.contains(uid) {
+                // matching the `DerivedFrom` edge name. Read directly off
+                // `new_uids` (populated at insertion time) instead of diffing a
+                // before/after snapshot of the whole `entity_map` — the diff
+                // was O(entity_map.len()) per candidate, dominating wall-time
+                // on any round with meaningful fan-out (`PROBLEM_TREE` T2.2x).
+                for uid in &new_uids {
+                    if let Some(child) = entity_map.get(uid) {
                         relations.push(Relation::new(
                             uid.as_str(),
                             parent_uid.as_str(),

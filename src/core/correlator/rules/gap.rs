@@ -17,7 +17,8 @@ use std::collections::{BTreeMap, BTreeSet, HashMap};
 
 use super::*;
 use crate::core::relation::{
-    PathStep, disjoint_pathways_in, identity_uids, sorted_confined_adjacency,
+    MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH, PathStep, disjoint_pathways_in, identity_uids,
+    sorted_confined_adjacency,
 };
 
 /// Orthogonal source families worth seeking to lift a single-route link to
@@ -81,6 +82,15 @@ pub(in crate::core) fn single_route_identity_links(
     const MAX_PATHS: usize = 4;
 
     let identity_uids = identity_uids(entities);
+    if identity_uids.len() > MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH {
+        tracing::warn!(
+            identity_entities = identity_uids.len(),
+            ceiling = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH,
+            "single_route_identity_links: identity-entity count exceeds the pairwise-search \
+             ceiling — skipping (see MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH)"
+        );
+        return Vec::new();
+    }
     // Build the traversal graph ONCE and reuse it across every pair.
     let adj = sorted_confined_adjacency(entities, relations);
 
@@ -506,5 +516,26 @@ mod tests {
         // The weak tail is consolidated, not emitted one-by-one.
         assert!(out.iter().any(|c| c.rule_name.contains("consolidated")));
         assert!(out.len() <= AU063_DETAIL_CAP + 1);
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.23: above
+    /// `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`, `single_route_identity_links`
+    /// must skip its O(n²) pairwise search entirely (empty result) rather
+    /// than run it — the ceiling that replaced an unbounded search which
+    /// hung for minutes on a large identity-entity working set.
+    #[test]
+    fn single_route_identity_links_skips_above_the_pairwise_ceiling() {
+        let ents: Vec<Entity> = (0..=MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH)
+            .map(|i| id(EntityKind::Username, &format!("user{i}")))
+            .collect();
+        assert_eq!(
+            ents.len(),
+            MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1,
+            "test setup must exceed the ceiling by exactly one"
+        );
+        assert!(
+            single_route_identity_links(&ents, &[]).is_empty(),
+            "above the ceiling, the search must skip rather than run unbounded"
+        );
     }
 }

@@ -16,7 +16,10 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
-use crate::core::relation::{disjoint_pathways_in, identity_uids, sorted_confined_adjacency};
+use crate::core::relation::{
+    MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH, disjoint_pathways_in, identity_uids,
+    sorted_confined_adjacency,
+};
 
 /// One identity pair whose connection is corroborated by **≥2 edge-disjoint,
 /// source-orthogonal pathways** — the shared core of the AU-062 rule and the
@@ -60,6 +63,20 @@ pub(in crate::core) fn multipath_corroborated_links(
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
     let identity_uids = identity_uids(entities);
+    // See `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`: the outer pair loop below is
+    // O(n²) in identity-entity count and unbounded without this — this
+    // function is ALSO the engine's per-round `promote_multipath_corroborated`
+    // reconsideration pass, so an unbounded cost here repeats every round, not
+    // just once at finalise (`PROBLEM_TREE` T2.2x).
+    if identity_uids.len() > MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH {
+        tracing::warn!(
+            identity_entities = identity_uids.len(),
+            ceiling = MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH,
+            "multipath_corroborated_links: identity-entity count exceeds the pairwise-search \
+             ceiling — skipping (see MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH)"
+        );
+        return Vec::new();
+    }
     // Build the traversal graph ONCE and reuse it for every pair (vs rebuilding +
     // re-sorting it per `disjoint_pathways` call).
     let adj = sorted_confined_adjacency(entities, relations);
@@ -275,6 +292,30 @@ mod tests {
         assert!(
             rule_au_062_multipath_corroboration(&[a, b, org, replay], &rels, "s", 0).is_empty(),
             "a geo_normalize-replay family is not independent orthogonal corroboration"
+        );
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.23: above
+    /// `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`, `multipath_corroborated_links`
+    /// must skip its O(n²) pairwise search entirely (empty result) rather
+    /// than run it — the ceiling that replaced an unbounded search which
+    /// hung for minutes on a large identity-entity working set (this
+    /// function is ALSO the engine's per-round `promote_multipath_
+    /// corroborated` reconsideration pass, so the unbounded cost repeated
+    /// every round, not just once).
+    #[test]
+    fn multipath_corroborated_links_skips_above_the_pairwise_ceiling() {
+        let ents: Vec<Entity> = (0..=MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH)
+            .map(|i| id(EntityKind::Username, &format!("user{i}")))
+            .collect();
+        assert_eq!(
+            ents.len(),
+            MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH + 1,
+            "test setup must exceed the ceiling by exactly one"
+        );
+        assert!(
+            multipath_corroborated_links(&ents, &[]).is_empty(),
+            "above the ceiling, the search must skip rather than run unbounded"
         );
     }
 }

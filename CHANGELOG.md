@@ -370,6 +370,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   byte-identical crawl output.
 
 ### Fixed
+- **A deep or high-fan-out scan could hang for many minutes, unbounded
+  (`PROBLEM_TREE` T2.23).** Three independent causes in the engine's
+  post-expansion tail: lineage attribution diffed the entire working
+  entity set on every module dispatch instead of tracking new entities
+  directly; the active gap-fill pass called an unbounded relation-derivation
+  routine instead of the same budget-bounded one the finalise pass already
+  uses; and three correlator rules (AU-062, AU-063, AU-069) each ran an
+  unguarded, quadratic-in-identity-count pairwise graph search. All three
+  are now bounded — direct UID tracking, a shared derivation budget, and a
+  new deterministic ceiling on the pairwise searches. A synthetic
+  worst-case scan that previously hung 9+ minutes (never completing) now
+  finishes: 1000 entities in ~10s, 4000 in ~2 minutes.
 - **The correlation pass's AU-087 rule reintroduced an O(n²) scaling
   regression (`PROBLEM_TREE` T2.22).** `rule_au_087_shared_org_email_domain`'s
   Person "ride-along" step scanned every `Person` entity against every
