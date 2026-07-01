@@ -380,9 +380,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   CSV import with GZ decompression via `flate2`); `cell_local` module (free, Geo,
   priority 66, `spawn_blocking` DB query, silent no-op when DB absent). 126→127
   modules, 93→94 free, Geo 20→21.
-  *Remaining:* Weiszfeld/Welzl centroid fusion; AU bounding precision;
-  movement/timeline layer; provenance radius output; auto-scheduled re-sync of
-  the local cell DB (currently requires manual `hse cells import` trigger).
+  *Audit correction (2026-07-01, S→P):* **"provenance radius output" was already
+  delivered and this note was stale — two separate drifts, now both closed.**
+  (1) Cycle 29 (2026-06-20, `ac9114e4`) added `SynergyFix::radius_km` to
+  `au059_synergy_fix` and its own §5 log entry says outright "C5's 'best-estimate
+  with provenance + confidence radius' delivered end-to-end" — but the §2 node
+  text above (this bullet) was never edited to drop the item from its own
+  `Remaining:` line, so the tree contradicted its own log. (2) `d1507539`
+  (2026-06-26) then closed the remaining half of the claim — AU-059 only fires
+  on ≥2 coordinates across ≥2 source classes, so the common single-signal scan
+  still got no headline fix — by adding `best_au_location_estimate`, a 6-rung
+  precedence fallback (documented in `CHANGELOG.md`'s `[Unreleased]` "Added")
+  that was never cross-referenced back into either tree at all. Together they
+  give EVERY AU-located scan one headline "Best location estimate:
+  `LAT,LON ± X km`" with its basis and confidence, printed in the CLI dossier
+  (`cli/scan/dossier.rs::print_diagnostics`) and structurally exposed via
+  `api::scan_export::extract_au_location_fix` in the JSON export/API — exactly
+  the "single best-estimate with provenance + a confidence radius" this node
+  asks for. No code change this cycle — audit + doc correction only, closing
+  the drift between the shipped code, the CHANGELOG, and this tree.
+  *Remaining:* the confidence-weighted **geometric median** (Weiszfeld) is used
+  by AU-057 and the `diagnostics::cluster_coordinates` spatial-clustering pass,
+  but `au059_synergy_fix` — the dossier's actual headline fix — still uses the
+  plain `weighted_centroid`, not the more outlier-robust geometric median (a
+  genuine, separate upgrade candidate for a future cycle); AU bounding
+  precision; movement/timeline layer; auto-scheduled re-sync of the local cell
+  DB (currently requires manual `hse cells import` trigger).
 - **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
@@ -2258,3 +2281,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   change there — SOL-BUDGET's cycle-18 finding stands). Paired: `PROBLEM_TREE`
   T2.11 + §8 updated in the same commit. Gate green (fmt/clippy `--all-targets`/
   doc/test clean).
+
+- **2026-07-01** — **S→P audit: SOL-GEOINT's "provenance radius output" was
+  already delivered, on two separate occasions, and the §2 node text never
+  caught up.** No open node in either tree had a small, safe, code-grounded
+  next increment this cycle (§3.F blocked on a natural trigger for `bstr`;
+  T2.7's golden-fixture work needs either a live third-party fetch or a
+  fabricated-looking fixture, both out of bounds for an unattended cycle) — so
+  per step 1's discovery fallback this cycle re-read C5 against the actual
+  shipped code and git history rather than trusting the tree's own "remaining"
+  claim. Found: cycle 29 (2026-06-20) added the confidence radius to
+  `au059_synergy_fix` and its OWN log entry declared "delivered end-to-end,"
+  but the SOL-GEOINT node's `Remaining:` bullet was never edited to match; and
+  `d1507539` (2026-06-26) closed the rest — a single-signal fallback fix for
+  every scan, not just the multi-source case — shipping with a `CHANGELOG.md`
+  entry that was never cross-referenced into either tree. Corrected the node
+  text in place (§2) with full commit provenance; the genuinely-still-open
+  legs (AU-059's use of `weighted_centroid` over the more robust
+  `weighted_geometric_median`, AU bounding precision, movement/timeline geo,
+  cell-DB auto-sync) are kept, unchanged. No code change, no test change — the
+  gate was re-run anyway (fmt/clippy `--all-targets`/doc/test all still clean,
+  as expected for a docs-only diff). Paired: `PROBLEM_TREE` C5 + §8 — same
+  commit. This is the same class of correction as the cycle-20 stale-note audit
+  (`securitytrails`/`bgpview`/`ripestat`) — keeping the trees honest is itself
+  the unit of work when the trees, not the code, are what's behind.

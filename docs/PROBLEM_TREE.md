@@ -703,8 +703,19 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   so it never blocks scans on an unpopulated device. `hse cells` CLI: `status`,
   `import --file/--country/--key`, `clear`. 126→127 modules, 93→94 free, Geo 20→21.
   New S→P gap:* full AU dataset download requires OpenCelliD BYO key + manual
-  trigger (no auto-scheduled re-sync yet). Weiszfeld/Welzl centroid fusion;
-  tighter AU bounding; movement/timeline geo; provenance radius output remain open.
+  trigger (no auto-scheduled re-sync yet).
+  *Audit correction (2026-07-01):* **"provenance radius output" was already
+  delivered** — cycle 29 (2026-06-20, `ac9114e4`) added `SynergyFix::radius_km`
+  to the AU-059 synergy fix, and `d1507539` (2026-06-26) added
+  `best_au_location_estimate`, a 6-rung precedence fallback so every AU-located
+  scan (not just the multi-source synergy case) gets one headline "Best
+  location estimate: `LAT,LON ± X km`" with its basis + confidence, in both the
+  CLI dossier and the JSON export. Neither delivery was folded back into this
+  line when it shipped — this bullet was simply never re-read against the code.
+  *Remaining:* Weiszfeld/Welzl geometric-median fusion (AU-057 and
+  `diagnostics::cluster_coordinates` already use it; the AU-059 dossier
+  headline still uses the plain `weighted_centroid` — a real, separate upgrade
+  candidate); tighter AU bounding; movement/timeline geo.
 - **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -3042,3 +3053,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   dispatched) and pass against the fix. T2.11 stays `[~]` — the budget-static
   `reset_scan`-zeroing sub-item is untouched by this change. **Paired:**
   `SOLUTION_TREE` SOL-LIVE-DISPATCH-BUDGET (new) `[x]` + §3/§4/§5 — same commit.
+
+- **2026-07-01** — **S→P audit: C5's "provenance radius output" was already
+  delivered; the node text just never caught up.** No node in §3/§4 had a small,
+  safe, code-grounded next increment ready this cycle — §3.F's `bstr` remainder
+  is explicitly blocked on a natural consumer that doesn't exist yet, and T2.7's
+  golden-fixture work needs either a live fetch against a third-party site or a
+  fixture that would only *look* real, both wrong for an unattended cycle — so
+  this cycle re-read C5 against the actual shipped code instead of trusting its
+  own "remaining" line. Two deliveries were already in `main`: cycle 29
+  (2026-06-20) added `SynergyFix::radius_km` to AU-059's synergy fix (its own
+  `SOLUTION_TREE` log entry already said "delivered end-to-end," but this node's
+  text was never edited to match), and `d1507539` (2026-06-26) shipped
+  `best_au_location_estimate` — a 6-rung fallback giving every AU-located scan a
+  headline fix, not just the multi-source case — with a `CHANGELOG.md` entry
+  that was never cross-referenced back into this tree. Corrected in place, with
+  commit provenance; the real remaining legs (AU-059 using `weighted_centroid`
+  instead of the more robust `weighted_geometric_median` already proven
+  elsewhere in the codebase, AU bounding precision, movement/timeline geo) are
+  kept exactly as they were. No code or test change; the CLAUDE.md gate was
+  re-run anyway and is clean, as expected for a docs-only diff. **Paired:**
+  `SOLUTION_TREE` SOL-GEOINT (§2) + §5 — same commit.
