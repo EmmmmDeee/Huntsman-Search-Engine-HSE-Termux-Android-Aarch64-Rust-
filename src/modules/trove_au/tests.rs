@@ -18,6 +18,9 @@ fn metadata() {
     assert!(!m.attack_techniques().is_empty());
     // produces() must now declare the per-article Url source.
     assert!(m.produces().contains(&crate::core::entity::EntityKind::Url));
+    // Historical archive results are stable within a day — one of C9's own
+    // named motivating examples for the inter-scan cache.
+    assert_eq!(m.cache_ttl_secs(), 86_400);
 }
 
 #[test]

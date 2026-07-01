@@ -374,6 +374,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`censys` and `trove_au` never used the inter-scan cache, despite being
+  the two named examples in the feature's own design.** The inter-scan
+  cache lets a paid/key-gated module serve a recent result instead of
+  re-querying the provider, but is opt-in per module. `censys` and
+  `trove_au` had never actually opted in and silently queried live on
+  every scan — exactly the repeated-query cost the cache exists to
+  avoid. Both now cache for 24 hours, matching the other opted-in
+  modules.
 - **`au_geo`'s exact AU state resolution was discarded in favour of a
   coarser bounding-box guess for jurisdiction correlation.** `au_geo`
   resolves a coordinate's state via an authoritative point-in-polygon

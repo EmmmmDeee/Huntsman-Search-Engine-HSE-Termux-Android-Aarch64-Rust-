@@ -25,6 +25,9 @@ fn module_metadata() {
     assert_eq!(m.name(), "censys");
     assert_eq!(m.priority(), 78);
     assert_eq!(m.max_timeout_ms(), 10_000);
+    // Host-scan data is stable within a day — one of C9's own named
+    // motivating examples for the inter-scan cache.
+    assert_eq!(m.cache_ttl_secs(), 86_400);
     let desc = m.description();
     assert!(desc.contains("Censys"));
     assert!(desc.contains("port"));

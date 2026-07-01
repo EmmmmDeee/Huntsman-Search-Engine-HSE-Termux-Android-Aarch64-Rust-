@@ -443,6 +443,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   isolation preserved (cache is a read-only pre-dispatch gate, not a write-path
   bypass). Schema snapshot test updated. ✅ delivered cycle 18.
   *Closes:* **C9** (`[ ]`→`[x]`). Enables operator cost control + revenue model.
+  *Rollout correction (2026-07-01):* the mechanism itself is genuinely
+  complete and correctly wired into all three dispatch paths (verified —
+  no change needed there), but per-module opt-in was overstated as
+  finished. Only `hlr_cnam`/`netlas`/`opencellid` had overridden
+  `cache_ttl_secs()`; `censys` and `trove_au` — both named by C9's own
+  problem statement as motivating "finite paid/keyed query allowance"
+  examples — silently defaulted to 0 (always live, no caching) despite
+  the feature existing specifically to stop this. Both now override to
+  86400s (24h, the same "IP intel"/stable-data bracket
+  `hlr_cnam`/`netlas`/`opencellid` already use). Remaining: ~28 other
+  Paid/KeyGated modules still default to uncached — a real, larger
+  rollout-completeness gap this node's `[x]` shouldn't be read as
+  closing; each module's data-volatility profile needs individual
+  judgement (a scan-fresh threat feed should NOT cache, unlike a stable
+  registry lookup), so this stays a deliberate per-module audit rather
+  than a blanket flip.
 - **`[~]` SOL-GEOINT · Confidence-weighted geo convergence** → **C5**: the Weiszfeld/
   Welzl fusion stack (verified correct, §6) widened with more sources + provenance +
   a confidence radius.
@@ -2962,3 +2978,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C7 + §8 —
   same commit.
+
+- **2026-07-01** — **SOL-CACHE-INTERSCAN rollout correction: `censys`/
+  `trove_au` — this node's own named motivating examples — now actually
+  opt into the inter-scan cache.** Selected from a third discovery pass's
+  C8/C9 residual audit, which checked `[x]`-marked nodes for overstated
+  completeness rather than trusting the status alone. The caching
+  mechanism is genuinely complete and correctly wired into all three
+  dispatch paths — verified, no bug found. The rollout was overstated:
+  of 33 `Paid`/`KeyGated` modules, only `hlr_cnam`/`netlas`/`opencellid`
+  had ever overridden `cache_ttl_secs()`; `censys` and `trove_au` — named
+  by this very node's problem statement as the motivating waste examples
+  — silently defaulted to 0 (always live). Both now override to 86400s
+  (24h). No `dispatch.rs` changes needed (the gate is already generic
+  over `module.cache_ttl_secs()`). ~28 other modules remain uncached,
+  left as a deliberate per-module audit rather than a blanket flip.
+  Same pass confirmed C8 (`streaming_probe`) is genuinely fully done
+  modulo a trivial 42-vs-43-site doc-count drift (not fixed this cycle —
+  cosmetic, deferred to avoid scope creep). Gate green: 4291 lib tests
+  (unchanged — assertion-only additions to existing tests), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C9 + §8 — same
+  commit.

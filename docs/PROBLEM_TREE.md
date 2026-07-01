@@ -1077,6 +1077,19 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   when `ttl > 0 && result non-empty`; `Scan::modules_cached` counter persisted.
   Schema snapshot test updated. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN
   `[ ]`→`[x]` + §3/§4/§5 — same commit.
+  *Rollout correction (2026-07-01):* the mechanism is genuinely complete
+  and correctly wired (verified against all three dispatch paths — no
+  bug found), but `[x]` overstated per-module rollout completeness. Two
+  of this node's own named motivating examples, `censys` and `trove_au`,
+  had never actually opted in — still silently defaulting to
+  `cache_ttl_secs() = 0` (always live), the exact waste this node exists
+  to stop. Both now override to 86400s (24h), matching the bracket
+  `hlr_cnam`/`netlas`/`opencellid` already use. ~28 other Paid/KeyGated
+  modules remain uncached — a genuine, larger rollout gap this `[x]`
+  should not be read as closing; each needs an individual data-volatility
+  judgement (some genuinely must stay live, e.g. real-time CNAM), so it's
+  a deliberate per-module audit, not a blanket flip, and stays a
+  separately-tracked open item rather than reopening this node.
 
 ---
 
@@ -3808,3 +3821,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-FORENSIC +
   §5 — same commit.
+
+- **2026-07-01** — **C9 rollout correction: `censys`/`trove_au` — both
+  named by C9's own problem statement as the motivating waste examples —
+  now actually opt into the inter-scan cache.** Selected from a third
+  discovery + adversarial-verification pass, which audited C8/C9 for
+  residuals rather than trusting their `[x]`/delivered status. C9's
+  caching *mechanism* is genuinely complete and correctly wired into all
+  three dispatch paths (sequential, Phase 1 paid-sync, Phase 2
+  concurrent) — no bug found there. But the *rollout* was overstated:
+  grepping all 33 `Paid`/`KeyGated` modules found only `hlr_cnam`/
+  `netlas`/`opencellid` had ever overridden `cache_ttl_secs()`; the other
+  30 — including `censys` and `trove_au`, which this node's own text
+  names as motivating "finite paid/keyed query allowance" examples —
+  silently defaulted to 0 (always live), the exact waste C9 exists to
+  stop. Both now override to 86400s (24h), matching the existing
+  bracket. 2 new test assertions extending each module's existing
+  metadata test. No `dispatch.rs` changes needed — the cache gate is
+  already generic over `module.cache_ttl_secs()`. ~28 other modules
+  remain uncached; left as a deliberate per-module audit (data-volatility
+  judgement varies per module) rather than a blanket flip, and tracked
+  separately rather than reopening this node. Same pass also confirmed
+  C8 (`streaming_probe`) is genuinely fully done, modulo a trivial
+  42-vs-43-site doc-count drift (43 sites live, docs still say 42 in
+  several places) — noted but not fixed this cycle (cosmetic, no
+  functional impact, deferred to avoid scope creep beyond the one
+  candidate implemented). Gate green: 4291 lib tests (unchanged — only
+  assertion lines added to existing tests, no new test functions), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-CACHE-INTERSCAN + §5 — same commit.
