@@ -1087,25 +1087,38 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   each chain's weakest-edge confidence. *Remaining:* (c) first-class timeline
   output (footprint timeline shipped; widen), (d) further AU-0xx rule-gap fill,
   and the "controller behind reused secrets" link facet.
-- **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
+- **`[~]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
   F.2 flat-RAM datasets, publish a reproducible "N selectors, on-device, in T
   seconds, M MB RAM" benchmark; enforce streaming/bounded memory everywhere
   (cap+chunk, never slurp). SpiderFoot (CPython) structurally cannot match
   on-device aarch64 throughput. **CAP-high**
-  *Concrete scoped increment identified (2026-07-01, T2.17):* `web_crawler`'s
-  BFS crawl loop (`src/modules/web_crawler/mod.rs::process`) fetches one page
-  at a time despite the module having a proven concurrent-fetch pattern
-  already in the same file (`probe_config_leaks`'s `Semaphore::new(16)` +
-  `JoinSet`, used for its separate config-leak probe). Genuinely
-  parallelising the BFS crawl (same pattern, smaller `Semaphore` bound)
-  needs deliberate care to keep page-visit order — and therefore which
-  pages fall inside the 60-page cap — deterministic under concurrent
-  completion timing (§1.7), e.g. fetch one same-depth batch concurrently
-  then sort/enqueue its discovered children deterministically before the
-  next batch. Not started; a real, boundable next C2 increment when picked
-  up.
+  ✅ **First concrete increment delivered (2026-07-01):** `web_crawler`'s BFS
+  crawl loop (`src/modules/web_crawler/mod.rs::process`), identified as a
+  scoped C2 increment while resolving T2.17, now fetches same-round batches
+  of up to `CRAWL_CONCURRENCY` (8) queued pages concurrently via a new
+  `crawl_util::fetch_batch` (mirroring `probe_config_leaks`'s
+  `Semaphore`/`JoinSet` shape at a smaller bound), instead of one request at
+  a time. Determinism preserved exactly as sketched: `fetch_batch` hands
+  results back indexed by ORIGINAL round position regardless of completion
+  order, so the crawl loop still processes pages, extracts links, and
+  enqueues children in a fixed order under concurrent completion timing
+  (§1.7) — page-visit order, and which pages land inside the 60-page cap,
+  is unaffected by network jitter. 5 new tests: 3 directly on `fetch_batch`
+  (`src/modules/web_crawler/crawl_util/tests.rs` — genuine concurrency
+  proven via wall-clock against a local multi-connection mock server with
+  4×250ms-delay pages; order-preservation proven by making the SLOWEST page
+  arrive first in the input and the FASTEST last, then asserting outcomes
+  still come back index-matched; an unreachable-URL failure case). **Live
+  A/B verified** against a real 47-page site (`quotes.toscrape.com`,
+  `--free-only -m web_crawler`): the pre-fix sequential build took 17.1s;
+  this fix takes 5.3s (reproducible across repeat runs) for BYTE-IDENTICAL
+  output (47 pages crawled, 53 internal links, same frameworks/security
+  headers) — a ~3.2× wall-clock improvement with zero behavioural drift.
+  *Remaining for C2:* the reproducible "N selectors, T seconds, M MB RAM"
+  benchmark publication itself is still open — this increment is one real,
+  measured data point toward it, not the full deliverable.
 - **`[~]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
   `abn_lookup`, `acnc`, `au_electoral`, `au_property`, `qld_unclaimed`,
   `au_people`, `gleif_lei`, AU phone/carrier/postcode geo. → **Solution
@@ -3968,3 +3981,37 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   green (no code/test touched this cycle: 4286 lib tests, 63 doctests,
   fmt/clippy/rustdoc clean). **Paired:** `SOLUTION_TREE` T2.11 rollup note
   in §4d + new §5 log entry — same commit.
+
+- **2026-07-01** — **C2 `[ ]`→`[~]` — delivered the concrete BFS-crawl
+  concurrency increment `SOLUTION_TREE` scoped two cycles ago while
+  resolving T2.17.** With T2.11 closed and T2.7 still blocked, this cycle's
+  priority-3 pick (a concrete gap from `SOLUTION_TREE` §4) was the one item
+  already sized right for a single focused commit: `web_crawler`'s BFS
+  crawl loop fetched one page at a time despite the module already having a
+  proven concurrent-fetch pattern (`probe_config_leaks`'s
+  `Semaphore`/`JoinSet`, 16-way, for its config-leak probe). Added
+  `crawl_util::fetch_batch`: spawns a `JoinSet` over a same-round batch
+  (capped at `CRAWL_CONCURRENCY = 8`, sized so `max_pages` can never be
+  exceeded), then hands results back indexed by ORIGINAL round position
+  regardless of completion order — the crawl loop still processes,
+  extracts, and enqueues in that fixed order, so page-visit order and which
+  pages land inside the 60-page cap stay deterministic under concurrent
+  completion timing (§1.7), exactly as the original scoping note required.
+  The 200ms "Termux-friendly" delay moved from per-page to per-round. 5 new
+  tests (3 on `fetch_batch` directly, against a local multi-connection mock
+  server — genuine concurrency proven by wall-clock, order-preservation
+  proven by making the input's slowest-responding page arrive first and
+  fastest last then asserting outcomes stay index-matched, plus an
+  unreachable-URL case); confirmed non-vacuous via `git stash`. Could not
+  drive the full `process()` loop against a local mock server — the SSRF
+  egress guard correctly blocks loopback/private seed URLs, and weakening
+  it for testability was never an option — so live-verified the whole
+  module instead: a real A/B against `quotes.toscrape.com` (47 pages, 53
+  internal links) measured 17.1s pre-fix (sequential) vs 5.3s with this fix
+  (reproducible), for byte-identical crawl output — ~3.2× faster, zero
+  behavioural drift. Gate green: fmt/clippy `--all-targets --locked -D
+  warnings`/strict-rustdoc clean, 4289 lib tests (4286→4289, +3), full
+  `cargo test` green. C2 itself stays `[~]`, not `[x]` — the published
+  "N selectors, T seconds, M MB RAM" reproducible benchmark is the larger
+  remaining deliverable, still gated on the §3.F enablers. **Paired:**
+  `SOLUTION_TREE` SOL-PERF-PUBLISH `[ ]`→`[~]` + §3/§4/§5 — same commit.

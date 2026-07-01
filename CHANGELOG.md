@@ -358,6 +358,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   export (`best_location`), so the web/JSON surface carries the same headline fix
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
+### Changed
+- **`web_crawler`'s BFS crawl now fetches same-round page batches
+  concurrently instead of one page at a time (`PROBLEM_TREE` C2,
+  `SOLUTION_TREE` SOL-PERF-PUBLISH).** Up to 8 queued pages fetch at once
+  per round (mirroring the module's own `probe_config_leaks` concurrent
+  pattern at a smaller bound), with results reassembled by original queue
+  position — not completion order — so page-visit order and which pages
+  land inside the 60-page cap stay exactly as deterministic as before.
+  Live-measured on a real 47-page site: 17.1s → 5.3s (~3.2× faster) for
+  byte-identical crawl output.
+
 ### Fixed
 - **`docs/PROBLEM_TREE.md` T2.11's status marker and closing text were
   stale.** All three of its concrete concurrency sub-items (oathnet's racy

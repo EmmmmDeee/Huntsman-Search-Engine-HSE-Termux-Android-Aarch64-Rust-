@@ -403,3 +403,110 @@ use super::*;
             }
         }
     }
+
+    /// A tiny multi-connection mock HTTP server: accepts `delays_ms.len()`
+    /// connections, each parsed for a `GET /page/<idx>` request line, sleeps
+    /// `delays_ms[idx]` before responding `PAGE-<idx>` as `text/html`. Lets
+    /// tests control exactly which "page" is slow and which is fast, to
+    /// prove `fetch_batch` reassembles results by original index rather than
+    /// completion order.
+    async fn spawn_delay_server(
+        delays_ms: Vec<u64>,
+    ) -> (std::net::SocketAddr, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            for _ in 0..delays_ms.len() {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let delays = delays_ms.clone();
+                tokio::spawn(async move {
+                    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+                    let mut buf = vec![0u8; 4096];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let idx: usize = req
+                        .lines()
+                        .next()
+                        .and_then(|l| l.split_whitespace().nth(1))
+                        .and_then(|p| p.trim_start_matches("/page/").parse().ok())
+                        .unwrap_or(0);
+                    let delay = delays.get(idx).copied().unwrap_or(0);
+                    tokio::time::sleep(std::time::Duration::from_millis(delay)).await;
+                    let body = format!("PAGE-{idx}");
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: {}\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                });
+            }
+        });
+        (addr, handle)
+    }
+
+    #[tokio::test]
+    async fn fetch_batch_runs_concurrently_not_sequentially() {
+        let delays = vec![250u64, 250, 250, 250];
+        let (addr, _server) = spawn_delay_server(delays.clone()).await;
+        let urls: Vec<String> = (0..delays.len())
+            .map(|i| format!("http://{addr}/page/{i}"))
+            .collect();
+        let http = reqwest::Client::new();
+
+        let start = std::time::Instant::now();
+        let outcomes = fetch_batch(&http, &urls).await;
+        let elapsed = start.elapsed();
+
+        assert!(
+            elapsed < std::time::Duration::from_millis(250 * 2),
+            "4 pages at 250ms each took {elapsed:?} — expected well under {}ms if genuinely \
+             concurrent, not ~1000ms if still sequential",
+            250 * 2
+        );
+        for (i, outcome) in outcomes.iter().enumerate() {
+            let (body, headers) =
+                outcome.as_ref().unwrap_or_else(|| panic!("page {i} should have fetched"));
+            assert_eq!(body, &format!("PAGE-{i}"));
+            assert!(headers.get("content-type").is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_batch_preserves_original_order_regardless_of_completion_order() {
+        // Page 0 is the SLOWEST to respond, page 2 responds instantly —
+        // outcomes must still come back indexed by original request
+        // position, not completion order, or the crawl loop's page-visit
+        // determinism guarantee (`docs/CONVENTIONS.md` §5) breaks.
+        let delays = vec![200u64, 100, 0];
+        let (addr, _server) = spawn_delay_server(delays.clone()).await;
+        let urls: Vec<String> = (0..delays.len())
+            .map(|i| format!("http://{addr}/page/{i}"))
+            .collect();
+        let http = reqwest::Client::new();
+
+        let outcomes = fetch_batch(&http, &urls).await;
+
+        assert_eq!(outcomes.len(), 3);
+        for (i, outcome) in outcomes.iter().enumerate() {
+            let (body, _) =
+                outcome.as_ref().unwrap_or_else(|| panic!("page {i} should have fetched"));
+            assert_eq!(
+                body,
+                &format!("PAGE-{i}"),
+                "outcome[{i}] must be page {i}'s body regardless of which fetch completed first"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn fetch_batch_returns_none_for_an_unreachable_url() {
+        // Nothing listens on this loopback port — connection is refused
+        // immediately, giving a deterministic failure outcome.
+        let http = reqwest::Client::new();
+        let outcomes = fetch_batch(&http, &["http://127.0.0.1:1/".to_string()]).await;
+        assert_eq!(outcomes.len(), 1);
+        assert!(outcomes[0].is_none());
+    }

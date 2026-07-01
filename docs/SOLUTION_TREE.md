@@ -320,9 +320,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
   that renders the shortest typed thread between identities as text. *Remaining:*
   first-class timeline output + further AU-0xx rule-gap fill.
-- **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
+- **`[~]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
+  *First real data point delivered (2026-07-01):* `web_crawler`'s BFS crawl loop
+  now fetches same-round batches of up to 8 queued pages concurrently
+  (`crawl_util::fetch_batch`, mirroring `probe_config_leaks`'s
+  `Semaphore`/`JoinSet` shape) instead of one page at a time, with results
+  reassembled by original round position so page-visit order and the 60-page
+  cap stay deterministic under concurrent completion timing (§1.7/§5). Live
+  A/B against a real 47-page site: 17.1s (pre-fix, sequential) → 5.3s
+  (this fix), ~3.2× faster, byte-identical output (47 pages, 53 internal
+  links). 5 new tests. *Remaining:* the actual reproducible "N selectors, T
+  seconds, M MB RAM" published benchmark suite — this is one measured
+  increment toward it, not the deliverable itself.
 - **`[~]` SOL-AU-MOAT · Australian collection breadth** → **C3** (AHPRA/ACMA/GNAF/
   fuller ASIC, BYO-key HLR/CNAM). All free or BYO-key, AU-first.
   *Delivered (2026-06-18, cycle 17):* `hlr_cnam` (HLR + CNAM, BYO keys, priority
@@ -738,7 +749,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-NETINT | C4 | `[~]` |
 | SOL-CACHE-INTERSCAN | C9 | `[x]` |
 | SOL-CORR | C1 | `[~]` |
-| SOL-PERF-PUBLISH | C2 | `[ ]` |
+| SOL-PERF-PUBLISH | C2 | `[~]` |
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
 | SOL-FORENSIC | C7 | `[ ]` |
@@ -774,12 +785,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
-- **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
-  the §3.F enablers landing first, by design). **C2 update (2026-07-01):**
-  gained one concrete, scoped increment (not yet started) — genuinely
-  parallelising `web_crawler`'s BFS crawl loop, mirroring the same module's
-  already-proven `probe_config_leaks` `Semaphore`/`JoinSet` pattern, found
-  while resolving T2.17.
+- **C1/C6/C7** — capability nodes; solutions sketched, none started (gated on
+  the §3.F enablers landing first, by design).
+- **C2** — `[~]` (SOL-PERF-PUBLISH). **Delivered (2026-07-01):** the concrete
+  scoped increment identified while resolving T2.17 — genuinely
+  parallelising `web_crawler`'s BFS crawl loop (`crawl_util::fetch_batch`,
+  mirroring `probe_config_leaks`'s `Semaphore`/`JoinSet` pattern) — is done,
+  with a live-measured ~3.2× wall-clock speedup and identical output.
+  *Remaining:* the published "N selectors, T seconds, M MB RAM" reproducible
+  benchmark itself, still gated on the §3.F enablers (SOL-F3 benches,
+  SOL-F2 flat-RAM) landing first.
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
   real when logged (cycle 20) but was built and shipped 2026-06-30
@@ -880,7 +895,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C2 `[~]`** (SOL-PERF-PUBLISH: `web_crawler` BFS crawl loop now fetches same-round batches concurrently, ~3.2× measured speedup, 2026-07-01; the published benchmark itself remains gated on §3.F); C1/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -3022,3 +3037,50 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `[~]`→`[x]` + §8 — same commit. Doc-only; no code or test changed, so no
   new gate run beyond confirming the already-green state (4286 lib tests,
   63 doctests, fmt/clippy/rustdoc clean) still holds.
+
+- **2026-07-01** — **SOL-PERF-PUBLISH `[ ]`→`[~]` — the concrete C2
+  increment flagged during T2.17 is delivered: `web_crawler`'s BFS crawl
+  loop is now genuinely concurrent.** **P→S step:** with T2.11 closed and
+  T2.7 still blocked, priority-3 ("a concrete gap from `SOLUTION_TREE` §4")
+  found exactly one item sized right for one focused commit: the C2
+  increment this file already scoped in detail two cycles ago — same-round
+  concurrent fetching for the BFS crawl, mirroring `probe_config_leaks`'s
+  proven `Semaphore`/`JoinSet` pattern, with the determinism design already
+  sketched (fetch one batch concurrently, reassemble by original position,
+  not completion order). Every other open item (F.1/F.2's remaining legs,
+  C1/C3/C4/C5/C6/C7's larger builds) was either explicitly deferred, gated
+  on unmet prerequisites, or too large for one commit. **S→P step:** added
+  `crawl_util::fetch_batch` — spawns a `JoinSet` over a same-round batch
+  (capped at 8, `remaining_budget.min(CRAWL_CONCURRENCY)` so `max_pages` can
+  never be exceeded), then reassembles outcomes indexed by ORIGINAL position
+  regardless of which fetch completes first. `process()`'s crawl loop now
+  selects a batch (visited/SSRF/robots checks unchanged, still per-URL
+  synchronous pre-filters), fetches it via `fetch_batch`, then processes
+  results in that fixed order — extraction, link discovery, and
+  `notable_pages` all stay exactly as deterministic as the old sequential
+  loop, just applied per-round instead of per-page. The 200ms
+  "Termux-friendly" delay moved from per-page to per-round (pacing rounds,
+  not individual requests, now that a round's requests are concurrent).
+  5 new tests: 3 directly exercise `fetch_batch` against a local
+  multi-connection mock TCP server (`spawn_delay_server`) — genuine
+  concurrency proven via wall-clock (4×250ms pages finish in well under
+  500ms), order-preservation proven by making page 0 the SLOWEST responder
+  and page 2 the fastest and asserting `outcomes[i]` still matches page `i`
+  regardless, plus an unreachable-URL failure case; confirmed via
+  `git stash` that all 3 don't exist against the unfixed code. Could NOT
+  test the full `process()` loop end-to-end against a local mock server —
+  the SSRF egress guard (`url_host_is_private`) correctly blocks any
+  loopback/private seed URL, and weakening it for testability was never on
+  the table — so verified the whole module for real instead: a live A/B
+  against `quotes.toscrape.com` (47 pages, 53 internal links) ran 17.1s on
+  the pre-fix sequential build and 5.3s on this fix (reproducible across
+  repeat runs), for BYTE-IDENTICAL crawl output (same page/link/framework/
+  security-header counts) — a ~3.2× wall-clock improvement with zero
+  behavioural drift, the strongest form of live verification available
+  given the guard that must stay intact. **Gap refresh:** §4a's C2 entry
+  updated from "not yet started" to delivered-with-remainder (the published
+  benchmark suite itself, still gated on §3.F); §4d's capability row
+  updated; leverage-map row `[ ]`→`[~]`. Paired: `PROBLEM_TREE` C2
+  `[ ]`→`[~]` + §8 — same commit. Gate green: fmt/clippy
+  `--all-targets --locked -D warnings`/strict-rustdoc clean, 4289 lib tests
+  (4286→4289, +3), full `cargo test` green.

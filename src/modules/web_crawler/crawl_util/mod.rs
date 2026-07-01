@@ -1,4 +1,4 @@
-use super::{BINARY_EXTENSIONS, CrawlState, MAX_DEPTH, MAX_PAGES};
+use super::{BINARY_EXTENSIONS, BODY_CAP, CrawlState, MAX_DEPTH, MAX_PAGES};
 use crate::core::error::{Error, Result};
 use std::collections::HashSet;
 use std::time::Duration;
@@ -224,6 +224,75 @@ pub(super) async fn probe_config_leaks(
         }
     }
     results
+}
+
+/// Concurrency bound for the BFS crawl loop's same-round batch fetch —
+/// smaller than [`probe_config_leaks`]'s 16 (a one-shot host-root probe)
+/// since a whole-site crawl runs many rounds and needs to stay gentle on
+/// both the target and the phone's radio/connection pool.
+pub(super) const CRAWL_CONCURRENCY: usize = 8;
+
+/// Fetch one already-selected page: GET, gate on rate-limit/status/
+/// content-type, and read the (untrusted) body under [`BODY_CAP`]. Returns
+/// `None` for any failure or filtered response — the caller treats that
+/// exactly like the old sequential loop's `continue`.
+pub(super) async fn fetch_one(
+    http: reqwest::Client,
+    url: String,
+) -> Option<(String, reqwest::header::HeaderMap)> {
+    let resp = match http.get(&url).send().await {
+        Ok(r) => r,
+        Err(e) => {
+            tracing::debug!(url = %url, error = %e, "web_crawler: fetch failed");
+            return None;
+        }
+    };
+    let status = resp.status();
+    if status.as_u16() == 429 || status.as_u16() == 503 {
+        tokio::time::sleep(Duration::from_millis(2000)).await;
+        return None;
+    }
+    if !status.is_success() {
+        return None;
+    }
+    let headers = resp.headers().clone();
+    let ct = headers
+        .get("content-type")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if !ct.contains("text/html") && !ct.contains("text/plain") && !ct.contains("application/xhtml")
+    {
+        return None;
+    }
+    let body = crate::util::http::read_body_capped(resp, BODY_CAP).await?;
+    Some((body, headers))
+}
+
+/// Fetch a batch of already-selected URLs concurrently. Each URL's outcome
+/// is returned at its ORIGINAL index in `urls`, regardless of which fetch
+/// completes first — the crawl loop processes results in that fixed order
+/// (not completion order) so page-visit order, and therefore which pages
+/// land inside `max_pages`, stays deterministic under concurrent completion
+/// timing (`docs/CONVENTIONS.md` §5). `PROBLEM_TREE` C2 / `SOLUTION_TREE`
+/// SOL-PERF-PUBLISH.
+pub(super) async fn fetch_batch(
+    http: &reqwest::Client,
+    urls: &[String],
+) -> Vec<Option<(String, reqwest::header::HeaderMap)>> {
+    let mut set: tokio::task::JoinSet<(usize, Option<(String, reqwest::header::HeaderMap)>)> =
+        tokio::task::JoinSet::new();
+    for (idx, url) in urls.iter().cloned().enumerate() {
+        let http = http.clone();
+        set.spawn(async move { (idx, fetch_one(http, url).await) });
+    }
+    let mut outcomes: Vec<Option<(String, reqwest::header::HeaderMap)>> =
+        (0..urls.len()).map(|_| None).collect();
+    while let Some(joined) = set.join_next().await {
+        if let Ok((idx, outcome)) = joined {
+            outcomes[idx] = outcome;
+        }
+    }
+    outcomes
 }
 
 pub(super) async fn resolve_seed(http: &reqwest::Client, domain: &str) -> Result<String> {
