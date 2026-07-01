@@ -383,8 +383,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress → Domain, subdomain enum + reverse-IP
   hostnames — was listed as remaining in error); ASN/BGP org/prefix pivots (`bgpview`
   + `ripestat` both present — also listed in error).
-  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
-  Cloudflare/CDN cert-hash origin-unmasking.
+  *Delivered (2026-07-01):* the MX/direct-connect-subdomain leg of
+  CDN-origin unmasking. New relation-aware rule **AU-111**: groups
+  `ResolvesTo` edges by registrable domain; when the apex resolves
+  entirely to CDN/anycast edges and a sibling under the same registered
+  domain (an `mx`-tagged Domain, or a `subdomain`+`dns-brute` hit on a
+  `cpanel`/`ftp`/`mail`/`webmail`/`dev` label) resolves to a real,
+  routable IP, fires a Medium correlation naming that IP. All the
+  supporting plumbing (MX Domain entities, brute-dictionary
+  direct-connect labels, auto-derived `ResolvesTo` edges) already
+  existed — this closed the one missing rule. Correction en route: the
+  node's "tag origin-candidate" phrasing wasn't literally achievable — a
+  `RelationRuleFn` is `fn(&[Entity], &[Relation], &str, u64) ->
+  Vec<Correlation>`, read-only over entities — so the signal lives in the
+  `Correlation` record, matching AU-110's own shape, not an entity tag.
+  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already
+  ship); passive-DNS-history and SSL-cert-hash pivoting on Censys/Shodan
+  (the two larger legs of CDN-origin unmasking — both need new data
+  sources, not just a new rule).
 - **`[x]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: `raw_archive`
   SQLite table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER
   NOT NULL, result_json TEXT NOT NULL`), keyed by `archive_key =
@@ -680,7 +696,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cadastre/property.
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
-  *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
+  AU-111 (MX/direct-connect CDN-origin unmasking) delivered 2026-07-01.
+  *Remaining:* passive-DNS history; SSL-cert-hash origin pivot.
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
@@ -2741,3 +2758,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   targets. Gate green: 4277 lib tests (unchanged — no observable-behavior
   change, only dispatch cost), fmt/clippy `--all-targets`/doc clean.
   Paired: `PROBLEM_TREE` C2 + §8 — same commit.
+
+- **2026-07-01** — **SOL-NETINT: new correlator rule AU-111 delivers the
+  MX/direct-connect-subdomain leg of CDN-origin unmasking — the last
+  verified candidate from this session's discovery pass.** Came back
+  `PARTIALLY_CONFIRMED`: the gap and all supporting plumbing (MX-tagged
+  Domain entities, subdomain-brute direct-connect labels, auto-derived
+  `ResolvesTo` edges, `is_cdn_edge_ip`) were confirmed real, but the plan's
+  proposed test location was wrong, and — caught only during
+  implementation, not by the discovery/verify pass — its "tag the
+  IpAddress entity with origin-candidate" step isn't achievable: a
+  `RelationRuleFn` is `fn(&[Entity], &[Relation], &str, u64) ->
+  Vec<Correlation>`, a read-only pass with no entity-mutation capability.
+  Implemented following AU-110's exact established shape instead: groups
+  `ResolvesTo` edges by registrable domain; when the apex resolves
+  entirely to CDN/anycast edges and a sibling under the same registered
+  domain (`mx`-tagged, or `subdomain`+`dns-brute` on a
+  `cpanel`/`ftp`/`mail`/`webmail`/`dev` label) resolves to a real,
+  routable IP, fires a Medium correlation naming that IP in
+  `entity_uids`/description — the same place AU-110 already names its
+  co-hosted IPs. 5 new unit tests (2 positive-fire, 3 no-fire guards)
+  mirroring AU-110's fixture style; registered in `RELATION_RULES`; both
+  correlator architecture guards
+  (`every_dispatched_correlation_rule_has_a_firing_test`,
+  `no_two_correlation_rule_functions_share_a_number`) pass.
+  SOL-NETINT/C4 stay `[~]`: this closes one leg, not the passive-DNS-
+  history or SSL-cert-hash-pivot legs, which need new data sources. Gate
+  green: 4282 lib tests (+5), full suite (lib + smoke + architecture +
+  doctests, all binaries) green, fmt/clippy `--all-targets`/doc clean.
+  Paired: `PROBLEM_TREE` C4 + §8 — same commit.

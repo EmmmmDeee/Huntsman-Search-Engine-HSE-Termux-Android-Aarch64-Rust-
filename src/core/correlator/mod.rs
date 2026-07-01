@@ -497,6 +497,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_071_robust_identity_cluster,
     rule_au_109_shared_registrant,
     rule_au_110_shared_hosting_ip,
+    rule_au_111_cdn_origin_candidate,
 ];
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed

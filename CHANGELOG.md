@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New correlation rule AU-111 — CDN origin-candidate unmasking.** When a
+  domain is fronted entirely by a CDN/anycast edge (Cloudflare, etc.) but an
+  MX record or a direct-connect service subdomain (`cpanel.`/`ftp.`/`mail.`/
+  `webmail.`/`dev.`) under the same registered domain resolves directly to a
+  real, routable IP, the scan now surfaces that IP as an origin-candidate
+  correlation — a lead toward the site's actual hosting infrastructure
+  behind the CDN.
 - **Search-engine dorking now covers breach/leak exposure for phone numbers and
   full names, not just email/username/domain.** `build_queries_exposure`
   dispatched supplementary exposure dorks (pastebin/dehashed/leakcheck/snusbase,

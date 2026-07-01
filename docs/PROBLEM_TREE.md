@@ -821,8 +821,24 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   *Delivered (confirmed cycle 20 S→P audit):* `securitytrails`
   (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress→Domain, subdomain enum + reverse-IP
   hostnames); ASN/BGP org/prefix pivots (`bgpview` + `ripestat` both present).
-  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
-  Cloudflare/CDN cert-hash origin-unmasking.
+  *Delivered (2026-07-01):* the MX/direct-connect-subdomain leg of Cloudflare
+  origin-unmasking. New relation-aware correlator rule AU-111 groups
+  `ResolvesTo` edges by registrable domain; when the apex is fronted
+  entirely by a CDN/anycast edge (`is_cdn_edge_ip`) and a sibling under the
+  same registered domain — an MX host, or a `cpanel.`/`ftp.`/`mail.`/
+  `webmail.`/`dev.` subdomain-brute hit — resolves directly to a real,
+  routable IP, fires a Medium correlation naming that IP as an
+  origin-candidate. All the raw plumbing (MX-tagged Domain entities,
+  brute-dictionary direct-connect labels, auto-derived `ResolvesTo` edges)
+  already existed; this is the one correlation rule that was missing.
+  *Remaining:* the two larger legs — pre-onboarding passive-DNS history,
+  and SSL-cert-hash pivoting on Censys/Shodan — need new data sources, not
+  just a new rule over existing data, and stay open; the doc's "emit a
+  tagged `origin-candidate` IP" phrasing itself was imprecise — a
+  correlator rule reads an immutable entity slice and cannot mutate/tag
+  entities, so the origin-candidate signal lives in the `Correlation`
+  record's `entity_uids`/description, the same way AU-110 already names
+  its co-hosted IPs, not as an entity tag.
 - **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -3534,3 +3550,37 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   ultimately targets. Gate green: 4277 lib tests (unchanged — this refactor
   touches no observable behavior, only cost), fmt/clippy `--all-targets`/doc
   clean. **Paired:** `SOLUTION_TREE` §4a/§5 — same commit.
+
+- **2026-07-01** — **New correlator rule AU-111: CDN origin-candidate
+  unmasking via a non-proxied MX/direct-connect sibling — the last verified
+  candidate from this session's discovery pass, closing the MX/
+  direct-connect-subdomain leg of C4's Cloudflare-origin-unmasking goal.**
+  The candidate came back `PARTIALLY_CONFIRMED`: the verifier confirmed the
+  gap and all the supporting plumbing (MX-tagged Domain entities,
+  subdomain-brute direct-connect labels, auto-derived `ResolvesTo` edges,
+  `is_cdn_edge_ip`) were real and ready, but the plan's proposed test
+  location was wrong and, on closer reading during implementation, its
+  "tag the IpAddress entity with origin-candidate" step was not actually
+  achievable — a `RelationRuleFn` takes `&[Entity]` (immutable) and
+  produces `Vec<Correlation>`; it cannot mutate/tag entities. Implemented
+  correctly instead, following AU-110's established shape exactly: the
+  origin-candidate IP is named in the `Correlation` record's
+  `entity_uids` and description, not stamped onto the entity. Groups
+  `ResolvesTo` edges by registrable domain; when the apex resolves
+  entirely to CDN/anycast edges and a sibling under the same registered
+  domain (an `mx`-tagged Domain, or a `subdomain`+`dns-brute` hit whose
+  leftmost label is `cpanel`/`ftp`/`mail`/`webmail`/`dev`) resolves to a
+  real, routable IP, fires a Medium correlation. 5 new unit tests
+  (positive MX-sibling fire, positive dns-brute-sibling fire, no-fire on a
+  non-CDN apex, no-fire when the sibling is equally CDN-fronted, no-fire
+  on a generic subdomain label / cross-registrable-domain leakage),
+  mirroring AU-110's fixture style exactly. Registered in
+  `RELATION_RULES`; both correlator architecture guards
+  (`every_dispatched_correlation_rule_has_a_firing_test`,
+  `no_two_correlation_rule_functions_share_a_number`) pass. C4 stays
+  `[~]`: this closes one leg (MX/direct-connect) of the origin-unmasking
+  goal; passive-DNS history and SSL-cert-hash pivoting need new data
+  sources and remain open. Gate green: 4282 lib tests (+5), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
+  same commit.
