@@ -214,6 +214,15 @@ fn build_evidence(chain: &str, e: &Enrichment) -> Evidence {
     ev
 }
 
+/// Confirmed + mempool tx count, saturating rather than trusting two
+/// untrusted upstream `u64`s not to overflow when summed — an Esplora
+/// explorer response is third-party data, the same "never trust an input
+/// number" rule `funded_txo_sum`/`spent_txo_sum` already apply a few lines
+/// below in [`enrich_esplora`] (`.max(0) as u128` + `saturating_sub`).
+fn combined_tx_count(chain: u64, mempool: u64) -> u64 {
+    chain.saturating_add(mempool)
+}
+
 /// Esplora-compatible enrichment (BTC, LTC) — both report 8-decimal coins.
 async fn enrich_esplora(
     ctx: &ModuleContext,
@@ -230,7 +239,10 @@ async fn enrich_esplora(
         decimals: 8,
         balance: received.saturating_sub(spent),
         received: Some(received),
-        tx_count: Some(a.chain_stats.tx_count + a.mempool_stats.tx_count),
+        tx_count: Some(combined_tx_count(
+            a.chain_stats.tx_count,
+            a.mempool_stats.tx_count,
+        )),
         ens: None,
     })
 }

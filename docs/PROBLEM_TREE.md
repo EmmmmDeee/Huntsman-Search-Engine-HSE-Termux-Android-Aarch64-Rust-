@@ -896,6 +896,74 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   not the "silently reported as complete" failure class T2.18 fixes — noted
   here rather than acted on, honouring the workflow's own confidence
   ranking instead of fixing all three under one commit.
+- **`[x]` T2.19 · `chain_intel::enrich_esplora` summed two untrusted
+  explorer-supplied `tx_count`s with plain `+`** *(found + fixed
+  2026-07-01, fresh discovery pass)* —
+  `src/modules/chain_intel/mod.rs:233` did
+  `Some(a.chain_stats.tx_count + a.mempool_stats.tx_count)`, where both
+  operands are plain `u64` fields deserialized straight from a third-party
+  Esplora explorer (`blockstream.info`/`litecoinspace.org`) JSON response
+  with no range validation (`EsploraStats`, line 51). The exact same
+  struct's `funded_txo_sum`/`spent_txo_sum` fields, two lines above, already
+  apply this project's own "never trust an input number" rule (`.max(0) as
+  u128` then `saturating_sub`) — `tx_count` was the one field in this
+  function that didn't get it, the same T0.3-style bug class already fixed
+  elsewhere in the codebase. Real-world consequence: this project's
+  `[profile.dev]`/`cargo test` default has Rust's standard
+  `overflow-checks = true`, so a crafted or corrupted response with either
+  count near `u64::MAX` panics (caught at the module-dispatch boundary, so
+  the process survives, but the module silently returns nothing for that
+  scan); `[profile.release]` (line 126, what `hse` on a real device
+  actually ships) leaves `overflow-checks` at its default `false`, so the
+  same input **silently wraps to a bogus small `tx_count`** — a wrong
+  on-chain-activity finding presented as fact, exactly the failure class
+  this evidentiary tool's doctrine treats as worse than missing coverage.
+  Reachable by any BTC/LTC `CryptoAddress` scan (breach/stealer data
+  routinely contains clipboard-hijacked wallet addresses, so this path is
+  exercised by ordinary scans, not just adversarial ones) against a
+  misbehaving, buggy, or compromised upstream explorer — no authentication
+  or opt-in required to reach it.
+  → **Solution:** `chain.saturating_add(mempool)`, matching the sibling
+  fields' established convention. **P3** (contained — a caught panic in
+  dev/test, a silently-wrong-but-bounded value in release; no crash, no
+  memory-safety issue, but a real evidentiary-correctness gap).
+  ✅ **Fixed.** Extracted a pure `combined_tx_count(chain: u64, mempool:
+  u64) -> u64` helper (mirroring this file's own established pattern of
+  pure, directly-testable helpers — `format_units`, `build_evidence`) so
+  the fix is unit-testable without mocking the HTTP call `enrich_esplora`
+  itself makes. 2 new unit tests: `combined_tx_count_saturates_instead_of_
+  overflowing` (`u64::MAX - 1, 5` → `u64::MAX`; `u64::MAX, u64::MAX` →
+  `u64::MAX`) and a normal-range sanity check. Verified the regression test
+  actually exercises the fix: `git stash`-ed the change and re-ran
+  `cargo test --lib chain_intel::` — the new test doesn't exist against the
+  unfixed code (compile-level absence), confirming it isn't a vacuous
+  assertion.
+- **`[ ]` T2.20 · Two tests overclaim "stable"/"complete" coverage they
+  don't verify** *(found 2026-07-01, fresh discovery pass; logged, not
+  fixed — smaller than this cycle's picked unit, deliberately deferred
+  rather than force two fixes into one commit)* — (1)
+  `tests/architecture.rs:296-303`'s `module_registry_count_is_stable`
+  asserts only `modules.len() >= 75` — a one-sided floor, not a stability
+  check; a bad merge that silently duplicated 40 modules into the registry
+  (or removed several while adding unrelated ones) would sail through
+  unchanged, exactly the drift the name promises to catch. The same file's
+  own `every_declared_module_is_registered` test (a real diff against a
+  second source of truth) shows the established, correct convention for
+  this class of guard — this test doesn't follow it. (2)
+  `src/audit/tests.rs:217-235`'s `to_json_is_stable_and_complete` calls
+  `AuditReport::to_json()` exactly once (no repeated-call comparison, so
+  "stable" is unverified) and asserts only 4 of the ~9-10 top-level JSON
+  keys `to_json()` emits (`src/audit/types.rs:169-210`) — `entity_total`,
+  `tiers`, `noise_ratio`, `quarantined`, `by_kind`, and `expansion` are
+  never checked, so a regression that dropped any of them from the
+  serialized output entirely would still pass. → **Solution:** for (1),
+  either pin an exact expected count (updated deliberately alongside
+  registry changes, mirroring `docs/MODULES.md`'s own count-drift guard) or
+  rename the test to state what it actually checks (a floor, not
+  stability); for (2), assert every top-level key `to_json()` emits, and
+  call `to_json()` twice on the same report to actually verify byte/value
+  stability across calls. **P3** (test-quality gap — both underlying
+  functions are correct; only the tests' own coverage claims overclaim).
 
 ---
 
@@ -3695,3 +3763,32 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   T2.18 `[x]`. Gate green: 4282 lib tests (+2), fmt/clippy
   `--all-targets`/doc clean, full `cargo test` green. **Paired:**
   `SOLUTION_TREE` new SOL-VICTIM-TRUNCATION `[x]` + §3/§5 — same commit.
+
+- **2026-07-01** — **Fixed T2.19 (untrusted Esplora tx-count sum could
+  panic or silently wrap, a T0.3-class bug); logged T2.20 (2 misleadingly-
+  named tests, found but not fixed).** **P→S step:** ultracode was off
+  this cycle, so ran a single Agent (not a multi-agent Workflow) for a
+  fresh discovery pass, explicitly steered away from every angle already
+  swept this session — instead: TODO/FIXME markers, `#[allow]` masking,
+  unguarded `unwrap`/`expect` in `cli`/`api`, sort-comparator NaN panics,
+  unchecked arithmetic on untrusted input, and test-name overclaims. The
+  agent's own sub-fan-out surfaced two real candidates, independently and
+  consistently: `chain_intel::enrich_esplora`'s `tx_count` sum, and two
+  tests (`module_registry_count_is_stable`,
+  `to_json_is_stable_and_complete`) whose names promise coverage their
+  bodies don't verify. **S→P step:** picked the tx-count bug — a genuine
+  evidentiary-correctness gap (a wrong on-chain finding presented as fact
+  in the release build operators actually run), matching the
+  already-established T0.3 "trust no input number" pattern exactly (the
+  sibling `funded_txo_sum`/`spent_txo_sum` fields two lines above the bug
+  already apply it). Fixed via a pure `combined_tx_count` helper
+  (`chain.saturating_add(mempool)`), mirroring `chain_intel`'s own
+  existing pure-helper convention (`format_units`, `build_evidence`), so
+  the regression test needs no HTTP mocking. 2 new unit tests; confirmed
+  non-vacuous via `git stash` (the test doesn't exist against the unfixed
+  code). Logged the test-name finding as new T2.20 rather than force-
+  fixing two unrelated things in one commit or silently dropping a
+  well-corroborated finding. Gate green: 4284 lib tests (+2), fmt/clippy
+  `--all-targets`/doc clean, full `cargo test` green. **Paired:**
+  `SOLUTION_TREE` new SOL-CHAIN-TXCOUNT `[x]` + new
+  SOL-TEST-NAME-OVERCLAIM `[ ]` + §3/§4/§5 — same commit.

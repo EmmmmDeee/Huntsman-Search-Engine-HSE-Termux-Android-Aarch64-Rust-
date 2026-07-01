@@ -587,6 +587,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   truncated…` to the human summary and `"victim_fields_truncated": 2` in
   the JSON envelope, entities correctly capped at 20/5; a second fixture
   under every cap produced no warning line at all.
+- **`[x]` SOL-CHAIN-TXCOUNT · Saturate the Esplora combined tx-count sum**
+  → **T2.19**: `enrich_esplora` summed two untrusted, explorer-supplied
+  `u64` tx counts with plain `+`, while the exact same struct's
+  `funded_txo_sum`/`spent_txo_sum` two lines above already applied this
+  project's own "never trust an input number" rule. `overflow-checks =
+  true` (this project's dev/test default) panics on a crafted/corrupted
+  response; `[profile.release]` (what `hse` actually ships) silently wraps
+  to a bogus small `tx_count` — a wrong finding presented as fact, reachable
+  by any ordinary BTC/LTC `CryptoAddress` scan (stealer/breach data
+  routinely contains clipboard-hijacked wallet addresses) against a
+  misbehaving upstream, no adversarial intent required. ✅ **Fixed.**
+  Extracted a pure `combined_tx_count(chain, mempool) -> u64` helper
+  (`chain.saturating_add(mempool)`), mirroring this file's own
+  `format_units`/`build_evidence` pure-helper pattern so the fix is
+  directly unit-testable without mocking `enrich_esplora`'s HTTP call. 2
+  new tests (saturation at `u64::MAX`; normal-range sanity). Verified the
+  regression test is non-vacuous: `git stash`-ed the fix and re-ran the
+  test — it doesn't exist against the unfixed code.
+- **`[ ]` SOL-TEST-NAME-OVERCLAIM · Fix 2 tests whose names promise
+  "stable"/"complete" coverage their bodies don't verify** → **T2.20**
+  (found by the same discovery pass, logged not fixed — smaller than
+  T2.19, deliberately deferred rather than forcing two fixes into one
+  commit): `module_registry_count_is_stable`
+  (`tests/architecture.rs:296-303`) asserts only a one-sided floor
+  (`>= 75`), not stability; `to_json_is_stable_and_complete`
+  (`src/audit/tests.rs:217-235`) calls `to_json()` once (no
+  stability check) and asserts only 4 of ~9-10 top-level JSON keys (no
+  completeness check). *Gap:* not yet started — a real, small,
+  well-scoped fix (rename or strengthen each test to match what it
+  actually promises) for a future cycle.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -672,6 +702,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CONSUMES-DELEGATE | T2.16 | `[x]` |
 | SOL-CRAWL-CONCURRENCY | T2.17 | `[x]` |
 | SOL-VICTIM-TRUNCATION | T2.18 | `[x]` |
+| SOL-CHAIN-TXCOUNT | T2.19 | `[x]` |
+| SOL-TEST-NAME-OVERCLAIM | T2.20 | `[ ]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -695,6 +727,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.20** (new, 2026-07-01) — 2 tests overclaim "stable"/"complete"
+  coverage they don't verify (`module_registry_count_is_stable`,
+  `to_json_is_stable_and_complete`). SOL-TEST-NAME-OVERCLAIM sketched
+  (rename or strengthen each to match its real assertions); not yet
+  started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -801,11 +838,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18 `[x]`** ✅ (SOL-ROI-HINT,
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19 `[x]`** ✅ (SOL-ROI-HINT,
   SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD, SOL-CONSUMES-DELEGATE,
-  SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION — the dead-hint/dead-ledger/
-  dead-delegation/false-doc/silent-truncation bug family, all closed);
-  T2.7 open (blocked for an unattended cycle); T2.11 mostly done (oathnet +
+  SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION, SOL-CHAIN-TXCOUNT — the
+  dead-hint/dead-ledger/dead-delegation/false-doc/silent-truncation/
+  unguarded-arithmetic bug family, all closed); T2.7/T2.20 open (T2.7
+  blocked for an unattended cycle; T2.20 a real but smaller test-quality
+  gap deliberately deferred); T2.11 mostly done (oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/
   SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
@@ -2823,3 +2862,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   folds T2.18 into the closed bug family. Paired: `PROBLEM_TREE` new T2.18
   + §8 — same commit. Gate green (fmt/clippy `--all-targets`/doc clean,
   4282 lib tests (4280→4282, +2), full `cargo test` green).
+
+- **2026-07-01** — **New: SOL-CHAIN-TXCOUNT closes T2.19 (untrusted
+  Esplora tx-count sum could panic or silently wrap); new
+  SOL-TEST-NAME-OVERCLAIM logs T2.20 (2 misleadingly-named tests, found not
+  fixed).** **P→S step:** with ultracode off, ran a single-Agent (not
+  multi-agent Workflow) fresh discovery pass explicitly steered away from
+  every angle already swept this session (doc-comment-vs-code,
+  `.take(N)` truncation, `to_lowercase()`-offset, dead-code/duplicate-
+  delegation) — instead: TODO/FIXME markers, `#[allow]` masking, unguarded
+  `unwrap`/`expect` in `cli`/`api`, sort-comparator NaN panics, unchecked
+  arithmetic on untrusted input (the T0.3 class), and test-name overclaims.
+  The agent's own sub-fan-out (unprompted, its own tool choice) surfaced
+  two candidates independently and consistently: `chain_intel`'s
+  `tx_count` sum, and two test names promising "stable"/"complete"
+  coverage their bodies don't deliver. **S→P step:** picked the tx-count
+  bug as this cycle's unit — a genuine correctness/evidentiary-integrity
+  gap (a wrong on-chain finding presented as fact in release builds),
+  higher-severity than a test-coverage-quality gap, and matching the
+  established, previously-fixed T0.3 "trust no input number" pattern
+  exactly (the sibling `funded_txo_sum`/`spent_txo_sum` fields two lines
+  above already apply it). Fixed via a pure, directly-testable
+  `combined_tx_count` helper (mirroring `chain_intel`'s own established
+  pure-helper convention) rather than patching the arithmetic inline, so
+  the regression test needs no HTTP mocking. Confirmed non-vacuous by
+  `git stash`-ing the fix and re-running the test suite: the new test
+  doesn't exist against the unfixed code. The test-name finding was
+  smaller and lower-severity (test-quality, not a runtime bug) — logged as
+  new T2.20 with a concrete fix sketch for each test rather than
+  force-fixing two unrelated things in one commit, or silently dropping a
+  real, well-corroborated finding (independently reached by the agent's
+  own separate sub-searches). **Gap refresh:** §4a gains T2.20;
+  leverage-map gains both new rows; §4d's T2 row lists T2.19 among the
+  closed bug family and T2.20 alongside T2.7 as open. Paired:
+  `PROBLEM_TREE` new T2.19/T2.20 + §8 — same commit. Gate green (fmt/clippy
+  `--all-targets`/doc clean, 4284 lib tests (4282→4284, +2), full `cargo
+  test` green).

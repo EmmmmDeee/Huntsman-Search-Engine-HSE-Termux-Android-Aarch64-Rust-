@@ -350,6 +350,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`chain_intel`'s on-chain BTC/LTC transaction count could silently
+  become wrong on a real device (`PROBLEM_TREE` T2.19).**
+  `enrich_esplora` summed two `u64` transaction counts taken directly from
+  a third-party explorer's JSON response with plain `+`; a
+  crafted/corrupted response with either count near `u64::MAX` would wrap
+  around in a release build (what `hse` actually ships), silently
+  producing a wrong `tx_count` presented as a real finding. The sibling
+  `funded_txo_sum`/`spent_txo_sum` fields on the same struct already
+  guarded against exactly this class of untrusted-input arithmetic; the
+  combined tx-count sum now does too (`saturating_add`, via a new pure
+  `combined_tx_count` helper).
 - **`hse import`'s OathNet-JSON stealer-victim caps silently dropped data
   while the summary reported a complete import (`PROBLEM_TREE` T2.18).**
   Per-victim fields (device IPs/emails/HWIDs/Discord IDs/device users) are

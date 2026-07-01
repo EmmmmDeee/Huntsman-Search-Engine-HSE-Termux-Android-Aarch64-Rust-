@@ -115,6 +115,24 @@ fn module_metadata_full() {
     assert!(m.produces().contains(&EntityKind::CryptoAddress));
 }
 
+/// The bug: `enrich_esplora` summed two untrusted, explorer-supplied `u64`
+/// tx counts with plain `+` — a sibling explorer response with either count
+/// near `u64::MAX` overflows, panicking under `overflow-checks` (the
+/// project's dev/test default) or silently wrapping to a bogus small count
+/// in a release build (the "trust no input number" class already fixed
+/// elsewhere for this exact struct's `funded_txo_sum`/`spent_txo_sum`).
+#[test]
+fn combined_tx_count_saturates_instead_of_overflowing() {
+    assert_eq!(combined_tx_count(u64::MAX - 1, 5), u64::MAX);
+    assert_eq!(combined_tx_count(u64::MAX, u64::MAX), u64::MAX);
+}
+
+#[test]
+fn combined_tx_count_adds_normally_in_the_realistic_range() {
+    assert_eq!(combined_tx_count(120, 3), 123);
+    assert_eq!(combined_tx_count(0, 0), 0);
+}
+
 #[test]
 fn format_units_zero_and_minimal() {
     // Zero balance → "0" with any decimal scale.
