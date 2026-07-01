@@ -127,10 +127,14 @@ fn analyse_detects_cross_source_overlap() {
     assert_eq!(d.cross_source_overlap[0].sources.len(), 2);
 }
 
+/// Renamed from `analyse_emits_optimization_hints_for_zero_yield`: the name
+/// claimed to test zero-yield-module hint emission, but `analyse` has never
+/// been able to see a zero-yield module at all (T2.13) — this asserts the
+/// unconditional fallback hint that fires when the (real) hint conditions
+/// above find nothing to say, which is what an empty entity set exercises.
 #[test]
-fn analyse_emits_optimization_hints_for_zero_yield() {
+fn analyse_falls_back_to_a_hint_when_nothing_else_fires() {
     let d = analyse("sid", "email", "x@y.com", 100, &[]);
-    // empty entities → always at least one hint
     assert!(!d.optimization_hints.is_empty());
 }
 

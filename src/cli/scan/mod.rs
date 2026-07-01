@@ -328,15 +328,16 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             &entities,
             entities.len(),
         );
-        dossier::print_dossier(
-            &scan,
-            &entities,
-            &correlations,
-            &relations,
-            kind_str,
-            &cmd.value,
-            &leverage,
-        );
+        dossier::print_dossier(dossier::DossierArgs {
+            scan: &scan,
+            entities: &entities,
+            correlations: &correlations,
+            relations: &relations,
+            kind: kind_str,
+            value: &cmd.value,
+            leverage: &leverage,
+            store: store.as_ref(),
+        });
     } else {
         let color = use_color();
         println!(

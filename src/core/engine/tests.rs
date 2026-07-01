@@ -1840,6 +1840,123 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
     }
 }
 
+/// Emits exactly one unique entity per instance and does no internal
+/// `.await`, so a task runs to completion the instant the executor polls it
+/// — the property `concurrent_dispatch_stops_near_max_entities_not_after_the
+/// _full_module_set` relies on to force a deterministic interleave.
+struct SingleFindingModule {
+    name: &'static str,
+    value: &'static str,
+}
+
+#[async_trait::async_trait]
+impl Module for SingleFindingModule {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::Username, self.value, 0.9, &ctx.scan_id);
+        e.add_evidence(Evidence::new(self.name, "synthetic"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Regression for `PROBLEM_TREE` T2.11 LOW: the concurrent dispatcher's
+/// `max_entities` gate must see completed sibling results as they land, not
+/// only the snapshot from before this target's spawn loop started —
+/// otherwise a target with many accepting modules dispatches its FULL
+/// module set even after the cap is already reached, instead of stopping
+/// close to it. `max_concurrent: 1` forces the spawn loop to await a permit
+/// before every module past the first, which — because each
+/// [`SingleFindingModule`] task completes with no internal `.await` — gives
+/// the previous module's result a chance to be drained by the interleaved
+/// `try_join_next` (added in [`dispatch_target_concurrent`]) before the next
+/// `max_entities` check. With `max_entities: Some(1)` against ten accepting
+/// modules, at most two should ever be spawned; before that interleave was
+/// added, this test failed with `entity_map.len() == 10` (every module ran).
+#[tokio::test]
+async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_set() {
+    use crate::core::test_support::InMemoryStore;
+
+    const NAMES: [&str; 10] = [
+        "overdispatch_probe_0",
+        "overdispatch_probe_1",
+        "overdispatch_probe_2",
+        "overdispatch_probe_3",
+        "overdispatch_probe_4",
+        "overdispatch_probe_5",
+        "overdispatch_probe_6",
+        "overdispatch_probe_7",
+        "overdispatch_probe_8",
+        "overdispatch_probe_9",
+    ];
+    let modules: Vec<Arc<dyn Module>> = NAMES
+        .iter()
+        .map(|&name| Arc::new(SingleFindingModule { name, value: name }) as Arc<dyn Module>)
+        .collect();
+
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(modules, store, bus.clone());
+
+    let target = Target::new(TargetKind::Username, "overdispatch-seed");
+    let opts = ScanOptions {
+        max_concurrent: 1,
+        max_entities: Some(1),
+        ..Default::default()
+    };
+    let mut ctx = ModuleContext {
+        scan_id: "overdispatch-scan".to_string(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+    };
+    let cx = DispatchCx {
+        scan_id: "overdispatch-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Username,
+    };
+    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+    };
+
+    engine
+        .dispatch_target(&cx, &mut ctx, &mut state)
+        .await
+        .expect("dispatch runs");
+
+    assert!(
+        entity_map.len() < NAMES.len(),
+        "max_entities=1 must cut concurrent dispatch short of the full \
+         {}-module set; got {} entities — the concurrent path is \
+         over-dispatching by the whole module set again",
+        NAMES.len(),
+        entity_map.len()
+    );
+}
+
 #[test]
 fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     use crate::core::entity::{Entity, EntityKind};

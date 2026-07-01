@@ -232,6 +232,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `key_chaining_{sequential,concurrent}_dispatch` integration tests green; no
   single-scan regression. *Residual:* the per-scan **budget** statics'
   `reset_scan`-zeroing folds into the same ambient later (LOW).
+- **`[x]` SOL-LIVE-DISPATCH-BUDGET · Live `max_entities` check inside the
+  concurrent spawn loop** — `dispatch_target_concurrent`'s Phase-2 loop now calls
+  `JoinSet::try_join_next` (non-blocking) at the top of every iteration, absorbing
+  any sibling module that already finished before re-checking the `max_entities`
+  cap; a new `absorb_dispatch_outcome` helper does the archive+finalise work
+  shared with the trailing blocking `join_next` drain, so a result is finalised
+  exactly once regardless of which loop collects it. *Closes:* **T2.11 LOW
+  bounded over-dispatch** (the sequential path already re-checked fresh per
+  module — this brings the concurrent path to parity). Regression test
+  `concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_set`
+  (`max_concurrent: 1` forces the interleave deterministically) fails against
+  the pre-fix code (all 10 accepting modules dispatch) and passes against the
+  fix. *Residual:* the budget-static `reset_scan`-zeroing (SOL-BUDGET's
+  accepted-`[-]` note) is untouched by this change.
 
 ### S.SECURITY — Security controls (paired with `PROBLEM_TREE` §7)
 
@@ -366,9 +380,43 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   CSV import with GZ decompression via `flate2`); `cell_local` module (free, Geo,
   priority 66, `spawn_blocking` DB query, silent no-op when DB absent). 126→127
   modules, 93→94 free, Geo 20→21.
-  *Remaining:* Weiszfeld/Welzl centroid fusion; AU bounding precision;
-  movement/timeline layer; provenance radius output; auto-scheduled re-sync of
-  the local cell DB (currently requires manual `hse cells import` trigger).
+  *Audit correction (2026-07-01, S→P):* **"provenance radius output" was already
+  delivered and this note was stale — two separate drifts, now both closed.**
+  (1) Cycle 29 (2026-06-20, `ac9114e4`) added `SynergyFix::radius_km` to
+  `au059_synergy_fix` and its own §5 log entry says outright "C5's 'best-estimate
+  with provenance + confidence radius' delivered end-to-end" — but the §2 node
+  text above (this bullet) was never edited to drop the item from its own
+  `Remaining:` line, so the tree contradicted its own log. (2) `d1507539`
+  (2026-06-26) then closed the remaining half of the claim — AU-059 only fires
+  on ≥2 coordinates across ≥2 source classes, so the common single-signal scan
+  still got no headline fix — by adding `best_au_location_estimate`, a 6-rung
+  precedence fallback (documented in `CHANGELOG.md`'s `[Unreleased]` "Added")
+  that was never cross-referenced back into either tree at all. Together they
+  give EVERY AU-located scan one headline "Best location estimate:
+  `LAT,LON ± X km`" with its basis and confidence, printed in the CLI dossier
+  (`cli/scan/dossier.rs::print_diagnostics`) and structurally exposed via
+  `api::scan_export::extract_au_location_fix` in the JSON export/API — exactly
+  the "single best-estimate with provenance + a confidence radius" this node
+  asks for. No code change this cycle — audit + doc correction only, closing
+  the drift between the shipped code, the CHANGELOG, and this tree.
+  *Delivered (2026-07-01):* **the geometric-median gap flagged above is closed.**
+  `au059_synergy_fix` now calls `weighted_geometric_median` (Weiszfeld),
+  falling back to `weighted_centroid` only on the rare non-convergent/
+  degenerate case — the exact fallback idiom `LocationFix`/
+  `cluster_coordinates` already established, so all three convergence call
+  sites are now consistent. New regression test
+  `au059_synergy_fix_resists_a_single_high_confidence_outlier` proves the
+  behavioural difference directly: it computes the plain centroid inline for
+  comparison, asserts the fixture actually pulls it toward the outlier
+  (lon<145, sanity check), then asserts the real fix does NOT (lon>145) —
+  fails against the pre-fix code (identical to the plain centroid, lon≈138.6)
+  and passes against the fix. Every pre-existing geo test (AU-052, AU-059,
+  `scan_export`) is unchanged because they use tolerant range assertions
+  against tightly-clustered fixtures where the two estimators barely diverge —
+  this closes a real precision gap, not a behaviour regression risk.
+  *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
+  re-sync of the local cell DB (currently requires manual `hse cells import`
+  trigger).
 - **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
@@ -401,6 +449,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-CACHE-REFRESH · Allow in-place refresh when full** — `put` is now
   `len < cap || contains_key`, so a full cache still refreshes a key it holds.
   *Closes:* **T2.12** stale-cache. ✅ test `full_cache_still_refreshes_an_existing_key`.
+- **`[x]` SOL-ROI-HINT · Read module yield from events, not the entities-only
+  diagnostics list** — the dossier's "ROI: N keyed/paid module(s) yielded
+  nothing" hint filtered `ScanDiagnostics::modules_by_yield` for
+  `entities_emitted == 0`, but that list is built *exclusively* from emitted
+  entities' evidence sources, so a module that ran and found nothing is never
+  inserted — absent, not present-at-zero. The filter could never match, on
+  any scan. New pure `zero_yield_keyed_or_paid_modules(events,
+  cost_by_module)` reads the scan's own durable `ModuleDone { module, found }`
+  events instead (already tracked per module regardless of yield — no new
+  tracking added). *Closes:* **T2.13** (new). ✅ Verified live: a real `hse
+  scan --output dossier` printed the hint correctly post-fix (11 wasted
+  `KeyGated`/`Paid` modules named) after confirming pre-fix it never printed
+  at all. 4 new unit tests on the pure helper. `print_dossier` bundled its new
+  8th parameter into a `DossierArgs` struct rather than
+  `#[allow(too_many_arguments)]`, per the T2.5 `DispatchCx`/`DispatchState`
+  precedent.
+  *Addendum (2026-07-01):* the same unreachable premise (`entities_emitted ==
+  0` on `modules_by_yield`) was found twice more, INSIDE `analyse()` itself —
+  a per-module "returned 0 entities" hint and a scan-level "60s + zero-yield"
+  hint. Removed both as confirmed-dead rather than left misleading; not
+  mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
+  ROI hint specifically, T2.14 tracks reinstating these two).
+- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+  with a real per-module noise decision** → **T2.14**: the scan-level "60s +
+  zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
+  (event-sourced, caller-side); the per-module "module X returned 0 entities"
+  hint needs a design decision first — fired correctly on real event data, a
+  realistic multi-module scan leaves dozens of modules at zero yield for any
+  given target kind (normal, not noteworthy), so a naive per-module
+  reinstatement would flood the hints list with the opposite of signal.
+  Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
+  yet started. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -423,7 +504,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   6 commands hidden from `--help` (`doctor`, `selftest`, `provision`, `set-key`,
   `engines`, `oathnet-batch`) — still callable for scripting compat; visible surface
   19→13. *Closes / powers:* UX self-sufficiency; no separate upgrade ceremony needed.
-  *Remaining:* `--check` shows commit count only — no diff summary yet.
+  *Correction (2026-07-01):* the "commit count only, no diff summary" remaining
+  note is stale — `changelog_lines` (`cli/update.rs`) runs `git log --oneline
+  HEAD..@{u}` and `--check` already prints up to 20 of its lines beneath the
+  count. Predates this repo's single root commit (`770df4c9`), so — unlike
+  most corrections this session — no specific delivery cycle can be
+  attributed; it simply was never reconciled into this note.
+  *Remaining (real):* `changelog_lines`/`commits_behind` have no test
+  exercising the actual `git` subprocess calls (a real local git-repo-pair
+  fixture, `tempfile` already a dev-dep, would close it) — left as a
+  separate, smaller follow-on.
   **(cycle 22)**
 
 ### S.PROCESS — The methodology itself ⚑
@@ -460,11 +550,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
+| SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
 | SOL-REDACT | §7 S4 | ◑ |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
+| SOL-ROI-HINT | T2.13 | `[x]` |
+| SOL-HINT-NOISE | T2.14 | `[ ]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -488,6 +581,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
+  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
+  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
+  Not yet started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -509,18 +606,43 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   radius + auto-sync still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
-- **AU-060 (new, cycle 20 S→P gap):** `opencellid` emits `DeviceId` (tower MCC/MNC/
-  LAC/CID) and `cell_intel` also emits `DeviceId` for the same tower type — no
-  correlation rule cross-validates them. Candidate rule AU-060: medium-confidence
-  corroboration signal when both modules fire for the same tower. No solution node yet.
+- ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
+  cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
+  real when logged (cycle 20) but was built and shipped 2026-06-30
+  (`770df4c9`) as **AU-084** — "Dual-source cell tower corroboration"
+  (`rules::geo::cluster::rule_au_084_cell_tower_dual_source`), Low severity at
+  1–2 dual-confirmed towers, Medium at ≥3, exactly the "medium-confidence
+  corroboration when both modules fire for the same tower" signal this note
+  asked for. `AU-060` itself was independently reassigned in the interim to
+  "Transitive identity closure" (`rules::transitive`), so the number this
+  note names no longer even refers to cell towers — a second reason the note
+  was stale, not just "not yet started." Registered in the correlator's
+  dispatch table, 4 dedicated tests
+  (`au084_fires_when_both_sources_present`,
+  `au084_does_not_fire_on_single_source`,
+  `au084_medium_severity_for_three_or_more_towers`,
+  `au084_ignores_non_cell_tower_device_ids`). Off the open queue.
 - **cell_local auto-sync (new, cycle 21 S→P gap):** `hse cells import` requires a
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
   DB fresh without user intervention. No solution node yet.
-- **hse update --check changelog (new, cycle 22 S→P gap):** `--check` reports only
-  the number of commits available — no commit subject lines or diff summary. A future
-  pass could run `git log --oneline HEAD..@{u}` and surface the messages so the user
-  can decide whether to update without manually `git log`-ing. No solution node yet.
+- ~~**hse update --check changelog (cycle 22 S→P gap): `--check` reports only a
+  commit count, no subject lines.**~~ **Delivered, stale note (found
+  2026-07-01).** `cli/update.rs::changelog_lines` runs exactly the suggested
+  `git log --oneline HEAD..@{u}` and `cmd_update`'s `--check` branch already
+  prints up to 20 of its lines beneath the commit count
+  (`for line in changelog_lines(dir).iter().take(20)`). Present in the source
+  as read this cycle; this repository's own history begins at its single
+  root commit (`770df4c9`, 857 files / 244,800 lines in one commit — an
+  import, not an incremental change), so — unlike the AU-084 correction
+  above — no earlier delivery date or authoring cycle can be attributed from
+  `git log` here; it simply predates this repo's history and was never
+  reconciled into this note. **Residual, real gap:** `changelog_lines` and
+  `commits_behind` are both untested — no fixture exercises the actual `git`
+  subprocess calls (unlike most of this codebase's I/O-adjacent logic). A
+  real local git-repo-pair fixture (`tempfile`, already a dev-dep) would
+  close it; left as a separate, smaller follow-on rather than bolted onto
+  this doc correction.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -560,8 +682,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE; LOW over-dispatch +
-  budget-reset-zeroing remain).
+  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
+  LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
+  budget-reset-zeroing note remains, and no further action is planned on it).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2224,3 +2347,152 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   violation — no need to chase a toolchain install. A multiline scan for sibling
   `.map(…).unwrap_or(…)` shapes confirmed the rest are `.and_then`/`.or_else`/`.find_map`
   chains the lint does not target. Paired: `PROBLEM_TREE` — same commit.
+
+- **2026-07-01** — **SOL-LIVE-DISPATCH-BUDGET delivered `[ ]`→`[x]`, closing
+  T2.11's last open bullet.** **P→S step:** T2.11's LOW bounded-over-dispatch
+  bullet had a fix already sketched ("re-check the live count in the consumer
+  loop, or interleave `join_next` with spawning") but no solution node — picked
+  as this cycle's unit of work per §5's execution order (T2 robustness, after
+  T0/F/T1). Implemented the interleave option: `dispatch_target_concurrent`'s
+  spawn loop now non-blockingly drains finished siblings
+  (`JoinSet::try_join_next`) before each `max_entities` check, via a shared
+  `absorb_dispatch_outcome` helper also used by the final blocking drain.
+  **S→P step:** proven against the class it fixes, not just the fix — the new
+  regression test fails on the pre-fix code (all 10 modules of a 10-module
+  target dispatch despite `max_entities: Some(1)`) and passes after. **Gap
+  refresh:** §3 leverage map gains the new row; §4d's T2 row now lists T2.11 as
+  fully closed bar the already-accepted `[-]` budget-reset-zeroing note (no
+  change there — SOL-BUDGET's cycle-18 finding stands). Paired: `PROBLEM_TREE`
+  T2.11 + §8 updated in the same commit. Gate green (fmt/clippy `--all-targets`/
+  doc/test clean).
+
+- **2026-07-01** — **S→P audit: SOL-GEOINT's "provenance radius output" was
+  already delivered, on two separate occasions, and the §2 node text never
+  caught up.** No open node in either tree had a small, safe, code-grounded
+  next increment this cycle (§3.F blocked on a natural trigger for `bstr`;
+  T2.7's golden-fixture work needs either a live third-party fetch or a
+  fabricated-looking fixture, both out of bounds for an unattended cycle) — so
+  per step 1's discovery fallback this cycle re-read C5 against the actual
+  shipped code and git history rather than trusting the tree's own "remaining"
+  claim. Found: cycle 29 (2026-06-20) added the confidence radius to
+  `au059_synergy_fix` and its OWN log entry declared "delivered end-to-end,"
+  but the SOL-GEOINT node's `Remaining:` bullet was never edited to match; and
+  `d1507539` (2026-06-26) closed the rest — a single-signal fallback fix for
+  every scan, not just the multi-source case — shipping with a `CHANGELOG.md`
+  entry that was never cross-referenced into either tree. Corrected the node
+  text in place (§2) with full commit provenance; the genuinely-still-open
+  legs (AU-059's use of `weighted_centroid` over the more robust
+  `weighted_geometric_median`, AU bounding precision, movement/timeline geo,
+  cell-DB auto-sync) are kept, unchanged. No code change, no test change — the
+  gate was re-run anyway (fmt/clippy `--all-targets`/doc/test all still clean,
+  as expected for a docs-only diff). Paired: `PROBLEM_TREE` C5 + §8 — same
+  commit. This is the same class of correction as the cycle-20 stale-note audit
+  (`securitytrails`/`bgpview`/`ripestat`) — keeping the trees honest is itself
+  the unit of work when the trees, not the code, are what's behind.
+
+- **2026-07-01** — **SOL-GEOINT: AU-059 upgraded from `weighted_centroid` to
+  `weighted_geometric_median`, closing the one real leg the previous cycle's
+  audit surfaced.** P→S pick: with AU-057 and `diagnostics::cluster_coordinates`
+  already on the Weiszfeld geometric median, AU-059 — the function behind the
+  dossier's headline "Best location estimate" — was the last of the three
+  convergence call sites still using a plain weighted average. Swapped it in
+  with the same `.or_else(weighted_centroid)` fallback the other two use for
+  the rare non-convergent case. **S→P proof:** new test
+  `au059_synergy_fix_resists_a_single_high_confidence_outlier` builds a fixture
+  where a higher-confidence outlier holds 36% of the weight (below the
+  median's 50% breakdown point) against a 64%-weight agreeing majority; it
+  computes the plain centroid inline to prove the fixture is genuinely
+  discriminating (centroid lands at lon≈138.6, a third of the way toward the
+  outlier) before asserting the real fix does not follow it (lon>145). Fails
+  on the pre-fix code, passes on the fix. Confirmed non-breaking: every
+  existing AU-052/AU-059/`scan_export` geo test still passes, because they all
+  assert tolerant ranges against tightly-clustered fixtures where the two
+  estimators don't meaningfully diverge. Gate green: 4259 lib tests,
+  fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8 — same
+  commit.
+
+- **2026-07-01** — **New: SOL-ROI-HINT closes T2.13, a structurally-dead CLI
+  hint found by this cycle's discovery pass.** With T2.7 blocked (golden
+  fixtures need either a live third-party fetch or a fabricated-looking
+  fixture) and no other open node offering a small, safe increment, step 1d's
+  fallback applied: read `cli/scan/dossier.rs` against
+  `util::diagnostics::analyse` rather than trusting either at face value.
+  Found the dossier's "ROI: N keyed/paid module(s) yielded nothing" hint
+  filtered `modules_by_yield` for `entities_emitted == 0` — a state that list
+  can never contain, because `analyse` only ever inserts an entry when an
+  entity's evidence names a source; a module that ran and found nothing is
+  absent, not present-at-zero. Proven empirically, not just by inspection: a
+  real `hse scan --output dossier` against a live low-signal domain, run
+  BEFORE the fix, dispatched 42 modules (11 `KeyGated`/`Paid`) and printed a
+  yield table with exactly one row — the hint never fired. New pure
+  `zero_yield_keyed_or_paid_modules` reads the scan's own durable `ModuleDone`
+  events instead (already tracked per module, nothing new to instrument); the
+  SAME scan re-run after the fix correctly names all 11. 4 new unit tests on
+  the pure function. `print_dossier` needed the store handle to read events,
+  pushing it to 8 parameters — bundled into a `DossierArgs` struct rather than
+  `#[allow(too_many_arguments)]`, mirroring T2.5's `DispatchCx`/
+  `DispatchState`. Gate green: 4263 lib tests (+4), fmt/clippy
+  `--all-targets`/doc clean; live CLI verified both sides of the fix. Paired:
+  `PROBLEM_TREE` new T2.13 + §8 — same commit.
+
+- **2026-07-01** — **S→P: re-reading the whole block that produced T2.13
+  found the same dead premise twice more; removed both, opened T2.14 rather
+  than force a fix with an unresolved noise question.** Having just root-caused
+  one dead hint, this cycle deliberately re-read the REST of
+  `analyse()`'s `optimization_hints` construction instead of stopping at the
+  one instance already fixed — the same `entities_emitted == 0` premise
+  appeared in a per-module hint and a scan-level 60s hint, both equally
+  unreachable. Removed both (misleading dead code, not a capability). Did not
+  mechanically restore them: `analyse()`'s pure signature can't reach the
+  `StoragePort`-sourced events without a 16-call/test-site change, AND the
+  per-module variant has a real, separate noise problem — a live 42-module
+  scan run this cycle shows most modules land at zero yield for any given
+  target kind, so firing one hint line per module would flood the list, not
+  inform it. Opened **T2.14** / new **SOL-HINT-NOISE** with the concrete
+  reinstatement options (event-source the 60s hint the same way SOL-ROI-HINT
+  was fixed; cap/cost-gate/summarise the per-module one) rather than picking
+  one under time pressure. Renamed the one test whose name overclaimed its
+  coverage (`analyse_emits_optimization_hints_for_zero_yield` → `analyse_
+  falls_back_to_a_hint_when_nothing_else_fires`). Gate green: 4263 lib tests
+  (net unchanged — a removal + a rename), fmt/clippy `--all-targets`/doc
+  clean; live dossier output re-verified unaffected. Paired: `PROBLEM_TREE`
+  T2.13 addendum + new T2.14 + §8 — same commit.
+
+- **2026-07-01** — **S→P audit: the §4a "AU-060-candidate" cell-tower
+  cross-validation gap was stale — delivered a day earlier as AU-084, under
+  a different number, and never checked off.** With T2.14's per-module noise
+  question deliberately left for a future cycle (a real design decision, not
+  a quick fix) and no other small increment ready, this cycle re-verified
+  §4a's remaining open bullets against the code instead of trusting them.
+  `opencellid` × `cell_intel` DeviceId cross-validation — logged as a gap at
+  cycle 20 — was built 2026-06-30 (`770df4c9`) as
+  `rule_au_084_cell_tower_dual_source`, registered in the dispatch table with
+  4 tests, and its ORIGINAL proposed number (`AU-060`) had separately been
+  reassigned to an unrelated rule (transitive identity closure) in the
+  interim — so the note was doubly wrong, not just "not yet started." No code
+  change; verified by reading `rules::geo::cluster.rs`, the correlator
+  dispatch table, and `git log -S` for the delivery commit, not by inference.
+  This is the third stale-note class found this session (after the cycle-20
+  `securitytrails`/`bgpview`/`ripestat` audit and the C5 "provenance radius"
+  audit two cycles ago) — confirms these gap-analysis sections need periodic
+  re-verification against the code, not just against each other. Paired:
+  `PROBLEM_TREE` §8 — same commit (no PROBLEM_TREE node existed for this gap;
+  it was logged only in this tree's §4a).
+
+- **2026-07-01** — **S→P audit: a fourth stale note, same session — SOL-UPDATE's
+  "no diff summary" remaining note and the twin §4a "hse update --check
+  changelog" gap were both already delivered.** Continuing the same
+  re-verification-against-code sweep that found AU-084: `cli/update.rs`
+  already has `changelog_lines` (runs the exact `git log --oneline
+  HEAD..@{u}` the note proposed) wired into `--check`'s output (up to 20
+  lines beneath the commit count). Corrected both the SOL-UPDATE node's
+  `Remaining` bullet and the standalone §4a entry. **Important caveat, unlike
+  the AU-084 correction:** this repository's entire history begins at one
+  root commit (`770df4c9`, 857 files / 244,800 lines, no parent — an import,
+  not incremental work), so nothing before it is attributable to a specific
+  delivery cycle via `git log`; corrected the wording to say so honestly
+  rather than imply a recent, dated delivery the evidence doesn't support.
+  Left a genuine, smaller residual open: `changelog_lines`/`commits_behind`
+  have no test against real `git` subprocess behaviour (`tempfile` is already
+  a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
+  bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.

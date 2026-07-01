@@ -6165,6 +6165,70 @@ mod all_eleven_classes {
     }
 }
 
+/// AU-059's fix must be OUTLIER-ROBUST — that's the entire point of using the
+/// confidence-weighted geometric median (Weiszfeld) instead of a plain
+/// weighted centroid (PROBLEM_TREE C5). Two orthogonal classes agree near
+/// Sydney (combined weight 64% of the total); a third, *higher-confidence*
+/// class disagrees from Perth, ~3,300 km away (weight 36%). Because the
+/// majority holds more than the median's 50% breakdown point, the fix must
+/// stay anchored near Sydney — a plain weighted centroid, which has no notion
+/// of "majority" and is dragged proportionally to weight share regardless of
+/// spatial agreement, would not.
+#[test]
+fn au059_synergy_fix_resists_a_single_high_confidence_outlier() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    let sighting = |lat: f64, lon: f64, conf: f64, source: &str, state: &str| {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            conf,
+            "s",
+        );
+        e.tag(format!("au-state:{state}"));
+        e.tag("country:AU");
+        e.add_evidence(Evidence::new(source, "fixture"));
+        e
+    };
+
+    let entities = vec![
+        sighting(-33.8688, 151.2093, 0.85, "exif_geo", "NSW"), // PhotoGps
+        sighting(-33.8700, 151.2100, 0.78, "wigle", "NSW"),    // WifiSensor
+        sighting(-31.9505, 115.8605, 0.90, "geocode", "WA"),   // Geocode — the outlier
+    ];
+
+    let fix = au059_synergy_fix(&entities).expect("3 orthogonal AU classes must converge");
+
+    // The plain weighted centroid the pre-fix code used, computed directly for
+    // comparison. It has no notion of "majority", so Perth's 36% weight share
+    // still drags the average roughly a third of the way there — the sanity
+    // check below proves this fixture is actually discriminating.
+    let weighted: Vec<((f64, f64), f64)> = entities
+        .iter()
+        .map(|e| {
+            let ll = crate::util::geohash::parse_coords(&e.value).unwrap();
+            (ll, e.confidence)
+        })
+        .collect();
+    let centroid = crate::util::geometry::weighted_centroid(&weighted).unwrap();
+    assert!(
+        centroid.1 < 145.0,
+        "sanity: the plain centroid must itself be pulled toward Perth for this \
+         fixture to be a meaningful test of outlier-robustness, got lon={:.2}",
+        centroid.1
+    );
+
+    assert!(
+        fix.lon > 145.0,
+        "the geometric-median fix must stay anchored near the Sydney majority \
+         (lon > 145) despite the higher-confidence Perth outlier, not drift \
+         toward it the way the plain weighted centroid (lon={:.2}) does: \
+         fix.lon={:.2}",
+        centroid.1,
+        fix.lon
+    );
+}
+
 // ── T1.3: firing assertions for the 12 previously-unasserted rules ────────────
 // (PROBLEM_TREE §3.1 T1.3 — these rules were dispatched but no test proved they
 // actually produce a correlation; a silently-dead rule would pass CI.)

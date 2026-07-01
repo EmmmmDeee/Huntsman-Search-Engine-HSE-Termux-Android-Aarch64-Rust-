@@ -894,6 +894,15 @@ impl super::ScanEngine {
 
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         for &idx in self.graph.modules_for(cx.target.kind) {
+            // Opportunistically absorb any modules that already finished so
+            // `entity_map.len()` below is live, not the round-start snapshot —
+            // otherwise every module accepted for this target gets spawned
+            // even after a sibling result (already joinable right here) has
+            // pushed the scan past `max_entities` (PROBLEM_TREE T2.11 LOW:
+            // over-dispatch by up to one target's module set).
+            while let Some(joined) = set.try_join_next() {
+                self.absorb_dispatch_outcome(cx, joined, state);
+            }
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -1029,43 +1038,60 @@ impl super::ScanEngine {
             if ctx.cancel.is_cancelled() {
                 set.abort_all();
             }
-            let outcome = match joined {
-                Ok(o) => o,
-                Err(e) if e.is_cancelled() => {
-                    tracing::debug!("concurrent module task cancelled");
-                    continue;
-                }
-                Err(e) => {
-                    warn!(error = %e, "concurrent module task panicked");
-                    self.emit(
-                        cx.scan_id,
-                        EventKind::ModuleError {
-                            module: "unknown (panicked)".into(),
-                            error: e.to_string(),
-                        },
-                    );
-                    continue;
-                }
-            };
-            // Inter-scan entity cache (C9): archive before finalise consumes the result.
-            if outcome.ttl_secs > 0
-                && let Ok(Ok(ref mr)) = outcome.result
-                && !mr.entities.is_empty()
-            {
-                let _ = self.store.archive_module_result(
-                    &outcome.cache_key,
-                    outcome.ttl_secs,
-                    &mr.entities,
-                );
-            }
-            self.finalise_module_result(
-                cx,
-                outcome.name,
-                outcome.result,
-                state,
-                outcome.attack_techniques,
-            );
+            self.absorb_dispatch_outcome(cx, joined, state);
         }
         Ok(())
+    }
+
+    /// Absorb one joined concurrent-dispatch result: archive it to the
+    /// inter-scan cache if eligible, then finalise it into `state` (which
+    /// grows `entity_map`, the count the `max_entities` gate in both the
+    /// spawn loop and its non-blocking interleave read). Shared by the
+    /// blocking join-drain after the spawn loop and the non-blocking drain
+    /// inside it, so a completed module is finalised exactly once, from one
+    /// place, however it was collected. A cancelled or panicked join has
+    /// nothing to finalise.
+    fn absorb_dispatch_outcome(
+        &self,
+        cx: &DispatchCx<'_>,
+        joined: std::result::Result<DispatchOutcome, tokio::task::JoinError>,
+        state: &mut DispatchState<'_>,
+    ) {
+        let outcome = match joined {
+            Ok(o) => o,
+            Err(e) if e.is_cancelled() => {
+                tracing::debug!("concurrent module task cancelled");
+                return;
+            }
+            Err(e) => {
+                warn!(error = %e, "concurrent module task panicked");
+                self.emit(
+                    cx.scan_id,
+                    EventKind::ModuleError {
+                        module: "unknown (panicked)".into(),
+                        error: e.to_string(),
+                    },
+                );
+                return;
+            }
+        };
+        // Inter-scan entity cache (C9): archive before finalise consumes the result.
+        if outcome.ttl_secs > 0
+            && let Ok(Ok(ref mr)) = outcome.result
+            && !mr.entities.is_empty()
+        {
+            let _ = self.store.archive_module_result(
+                &outcome.cache_key,
+                outcome.ttl_secs,
+                &mr.entities,
+            );
+        }
+        self.finalise_module_result(
+            cx,
+            outcome.name,
+            outcome.result,
+            state,
+            outcome.attack_techniques,
+        );
     }
 }

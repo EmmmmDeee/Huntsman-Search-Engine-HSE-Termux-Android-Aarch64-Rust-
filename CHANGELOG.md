@@ -343,6 +343,46 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The dossier's "ROI" wasted-spend hint could never fire, on any scan
+  (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
+  "N keyed/paid module(s) yielded nothing — consider --exclude …" when a
+  budgeted API call returned nothing, but the check filtered a diagnostics
+  list that only ever contains modules which emitted at least one entity — a
+  module that ran and found nothing was structurally absent from it, not
+  present with a zero count, so the warning never printed. It now reads the
+  scan's own `ModuleDone` events (already recorded per module regardless of
+  yield) instead, and correctly names every wasted `KeyGated`/`Paid` module —
+  verified against a real scan both before the fix (silent) and after
+  (correctly listed 11).
+- **AU-059's headline location fix gave a single disagreeing sighting undue
+  leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
+  function behind the dossier's "Best location estimate" line — averaged all
+  contributing coordinates with a plain confidence-weighted centroid, so a
+  single high-confidence but wrong-location sighting could drag the headline
+  fix proportionally to its own weight, regardless of how many other
+  independent sources agreed with each other. Now uses the confidence-weighted
+  geometric median (Weiszfeld) instead, matching the outlier-robust estimator
+  AU-057 and the spatial-clustering diagnostics already used: a minority
+  sighting can no longer move the fix past what the majority's spatial
+  agreement allows. Regression-tested with a fixture where a 36%-weight
+  outlier is proven (by computing the old plain-centroid result inline for
+  comparison) to have pulled the old fix a third of the way toward it, while
+  the new fix stays anchored to the 64%-weight majority.
+- **Concurrent scans could dispatch a whole extra target's worth of modules past
+  `max_entities` (`PROBLEM_TREE` T2.11 LOW).** `dispatch_target_concurrent`'s
+  spawn loop judged the entity-budget cap against the count from before this
+  target's spawn loop began — completed sibling results were only merged in
+  the trailing blocking drain, which ran AFTER every accepting module had
+  already been spawned, so the check never saw them mid-round. The sequential
+  path already re-checked the live count before every module; the concurrent
+  path did not, so a `max_concurrent > 0` scan could overshoot the operator's
+  stated cap by an entire target's module set (real network calls, real
+  budget). Fixed with a non-blocking `JoinSet::try_join_next` drain at the top
+  of every spawn-loop iteration, sharing a new `absorb_dispatch_outcome`
+  helper with the trailing drain so a result is finalised exactly once.
+  Regression-tested: `max_concurrent: 1` forces the interleave
+  deterministically, proven to fail against the unfixed code (all 10 of 10
+  modules dispatch despite `max_entities: Some(1)`) and pass against the fix.
 - **`contact_enrich` computed the WRONG Gravatar hash — a guaranteed miss for any
   email with capitals or whitespace.** The lookup hashed the RAW email value (the
   `normalised` binding was named for normalisation it never did), but the
