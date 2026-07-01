@@ -123,9 +123,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes / powers:* **F.3** (self) and the *entire* "untested/unmeasured" class — it
   is the guard that keeps **T0.x/T1.1/T1.3/T2.3/T2.8/T2.9** from regressing.
   *Delivered:* `proptest` (boundary-safety, `normalise` idempotency, `Entity::merge`
-  GREATEST-laws, geo round-trips, no-panic crash-resistance for every network parser)
-  + `criterion` (`benches/scan_throughput.rs`). *Gap:* `cargo-fuzz` (nightly CI lane)
-  and the dossier/txt/html **import** proptest are outstanding. **(§4b)**
+  GREATEST-laws, geo round-trips, no-panic crash-resistance for every network parser,
+  **+ the dossier/txt/html import proptest** — `cli/import/tests.rs::prop`, 3
+  properties over `parse_dossier`/`parse_oathnet_txt`/`parse_oathnet_html`, delivered
+  2026-06-17, this note's own "outstanding" claim was stale until corrected
+  2026-07-01) + `criterion` (`benches/scan_throughput.rs`) + the correlation pass's
+  own deliberately-non-criterion perf harness (`core::correlator::perf` —
+  `#[cfg(test)]`, `std::time::Instant`-based, explicitly chosen over `criterion` to
+  avoid a heavy transitive dep on the minimal-dependency Termux build; catches an
+  O(n²) rule reintroduction the same way `criterion` would have, at zero extra
+  dependency cost — a *better*-justified close of the "widen criterion to the
+  correlation pass" item this note used to list as a gap, not a shortfall). Running
+  that guard while reconciling this note found it genuinely FAILING — fixed as new
+  `PROBLEM_TREE` T2.22 / `SOLUTION_TREE` SOL-AU087-INDEX, same commit. *Gap:*
+  `cargo-fuzz` (nightly CI lane) is the sole remaining item — genuinely open,
+  deferred: wiring a new CI lane is a higher-blast-radius, shared-system change this
+  autonomous loop doesn't take without explicit operator sign-off. **(§4b)**
 
 ### S.CORE — Correctness & determinism
 
@@ -655,6 +668,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   header absent when nothing is tagged. Verified non-vacuous via
   `git stash`/`pop` (the new test functions don't exist against the
   unfixed code).
+- **`[x]` SOL-AU087-INDEX · Index AU-087's Person ride-along instead of a
+  per-domain nested scan** → **T2.22**: `rule_au_087_shared_org_email_domain`
+  reintroduced the AU-034-class O(n²) correlator-pass regression — its
+  "ride-along" step scanned every `Person` entity against every address in
+  every qualifying org-domain cluster via `identity_overlaps` (an
+  O(len×len) substring-DP call per pair), an O(domains × persons ×
+  addresses) blowup that dominated ~90% of the whole pass's wall-time at
+  n=2000 (17.06× scaling vs a healthy ~4× for every other rule). Caught by
+  the correlation pass's own committed regression guard
+  (`core::correlator::perf::pass_is_subquadratic`), which had simply never
+  been run recently since `#[ignore]`d tests aren't part of the default
+  `cargo test` gate. ✅ **Fixed.** `identity_overlaps(a, b)` returns true
+  iff the two normalised strings share a substring of ≥
+  `IDENTITY_OVERLAP_MIN` (4) chars — exactly "share a common 4-gram" once
+  both sides reach that length. Built a `Person` index ONCE (a `HashMap<[u8;
+  4], Vec<uid>>` of 4-grams, plus a short-name exact-match side table
+  mirroring `identity_overlaps`' own short-input fallback) instead of
+  re-scanning every Person per domain; each address now probes the index in
+  ~O(local-part length) instead of O(persons). `IDENTITY_OVERLAP_MIN`
+  re-exported from `core::scan` (was private to `classify`) so the rule
+  references the same constant rather than a duplicated magic `4`.
+  Byte-identical firing behaviour proven, not assumed: all 4 pre-existing
+  AU-087 tests pass unchanged + 1 new test pinning the short-name
+  exact-vs-substring edge case. `git stash` confirmed `pass_is_subquadratic`
+  fails (ratio 11.24×) against the unfixed code and passes (ratio ~4.0×,
+  3 repeat runs) against the fix; absolute cost at n=2000 also fell ~220ms
+  → ~38ms. Live-verified via `hse selftest`'s real DB-round-trip correlator
+  check (still fires 3 rules, unchanged).
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -743,6 +784,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CHAIN-TXCOUNT | T2.19 | `[x]` |
 | SOL-TEST-NAME-OVERCLAIM | T2.20 | `[x]` |
 | SOL-ATTACK-TACTIC | T2.21 | `[x]` |
+| SOL-AU087-INDEX | T2.22 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -876,13 +918,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21 `[x]`** ✅
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21/T2.22 `[x]`** ✅
   (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
   SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION,
-  SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM, SOL-ATTACK-TACTIC — the
-  dead-hint/dead-ledger/dead-delegation/false-doc/silent-truncation/
-  unguarded-arithmetic/overclaimed-test-coverage/dead-constant bug family,
-  all closed); T2.7 open (blocked for an unattended cycle); **T2.11 `[x]`**
+  SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM, SOL-ATTACK-TACTIC,
+  SOL-AU087-INDEX — the dead-hint/dead-ledger/dead-delegation/false-doc/
+  silent-truncation/unguarded-arithmetic/overclaimed-test-coverage/
+  dead-constant/reintroduced-O(n²) bug family, all closed); T2.7 open
+  (blocked for an unattended cycle); **T2.11 `[x]`**
   ✅ (2026-07-01, status-marker reconciliation — oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
   closed; the one residual, the `QuotaBudget` per-scan `reset_scan()`-zeroing
@@ -3084,3 +3127,53 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `[ ]`→`[~]` + §8 — same commit. Gate green: fmt/clippy
   `--all-targets --locked -D warnings`/strict-rustdoc clean, 4289 lib tests
   (4286→4289, +3), full `cargo test` green.
+
+- **2026-07-01** — **New: SOL-AU087-INDEX closes T2.22 (an AU-034-class
+  O(n²) regression in AU-087, found while finishing F.3's in-progress
+  node); SOL-F3's stale "criterion for the correlation pass" gap
+  corrected to its already-delivered, better-justified close.** **P→S
+  step:** with T2.11 and C2 both closed last cycle, F.3 was the sole
+  remaining in-progress (`[~]`) node — priority 1 ("finish an in-progress
+  node") picked it. F.3's own "remaining" text named two items:
+  `cargo-fuzz` (needs a new CI lane — deferred, a higher-blast-radius
+  shared-system change this loop doesn't take unprompted) and "widen
+  criterion to the correlation pass once a bench-visible entry point
+  exists." Investigating the second found `core::correlator::perf` already
+  covers exactly this, deliberately WITHOUT `criterion` — its own doc
+  comment explains why (avoiding a heavy transitive dep on the
+  minimal-dependency Termux build) — a stale note, not an open gap.
+  **Running the existing guard to confirm it still holds is what surfaced
+  the real finding:** `pass_is_subquadratic --ignored` FAILED, consistently,
+  11.1–11.5× scaling for a 4× entity increase against a 9× ceiling. A
+  temporary per-rule scratch profile (not committed) isolated the cause to
+  `rule_au_087_shared_org_email_domain` alone (17.06× scaling, ~90% of the
+  whole pass's cost at n=2000) — every other rule scaled a healthy ~4×.
+  **S→P step:** root cause was AU-087's Person "ride-along" step doing a
+  full nested scan (every Person × every address in every qualifying
+  domain cluster) via `identity_overlaps`, the exact "per-rule nested scan
+  dominates the pass" bug class `AU-034` was already fixed for once.
+  Fixed via a one-time index rather than a bounded/capped workaround:
+  `identity_overlaps`'s "substring ≥ IDENTITY_OVERLAP_MIN(4) chars" check
+  is mathematically equivalent to "shares a common 4-gram" once both sides
+  reach that length, so a `HashMap<[u8;4], Vec<uid>>` gram index (+ a
+  short-name exact-match side table for the `identity_overlaps` short-input
+  fallback) replaces the O(persons) per-address scan with an O(1)-average
+  lookup — byte-identical firing behaviour, not an approximation.
+  `IDENTITY_OVERLAP_MIN` re-exported from `core::scan` (was private) so the
+  fix references the canonical constant instead of a duplicated `4`.
+  Verified via `git stash`: the guard fails (11.24×) against the unfixed
+  code, passes (~4.0×, 3 repeat runs) against the fix — the standard
+  "fails-then-passes" regression proof, using a pre-existing test rather
+  than a new one, matching AU-034's own precedent (no dedicated per-rule
+  scaling test exists for AU-034 either — the whole-pass guard IS the
+  regression test for this bug class). 1 new correctness test for the
+  gram-index rewrite's short-name edge case; all 4 pre-existing AU-087
+  tests pass unchanged. Live-verified via `hse selftest`'s real
+  DB-round-trip correlator check. **Gap refresh:** SOL-F3's node text
+  corrected (import proptest was ALSO stale-marked "outstanding" there
+  despite being delivered 2026-06-17 — fixed in the same pass since it's
+  the same node); leverage-map gains the new SOL-AU087-INDEX row; §4d's T2
+  row folds T2.22 into the closed bug family. Paired: `PROBLEM_TREE` new
+  T2.22 `[x]` + F.3 correction + §8 — same commit. Gate green: fmt/clippy
+  `--all-targets --locked -D warnings`/strict-rustdoc clean, 4290 lib tests
+  (4289→4290, +1), full `cargo test` green.

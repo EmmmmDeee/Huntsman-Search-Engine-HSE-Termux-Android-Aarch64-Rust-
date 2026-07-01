@@ -472,7 +472,7 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::{BTreeMap, BTreeSet};
+    use std::collections::{BTreeMap, BTreeSet, HashMap};
     // Cheap precondition: a cluster needs ≥2 emails, so fewer than two Email
     // entities anywhere means no shared domain can form.
     if entities
@@ -502,25 +502,72 @@ pub(in crate::core::correlator) fn rule_au_087_shared_org_email_domain(
         entry.0.insert(val.clone());
         entry.1.insert(e.uid.clone());
     }
+    by_domain.retain(|_, (addresses, _)| addresses.len() >= 2);
+    if by_domain.is_empty() {
+        return Vec::new();
+    }
+
+    // Ride-along: link any Person whose name derives one of a domain's
+    // local-parts — the actual people affiliated at this organisation (same
+    // dictionary-free identity overlap the engine's wrong-identity gate uses).
+    //
+    // Indexed ONCE over every Person, rather than the naive "for each
+    // qualifying domain, scan every Person against every address in it" —
+    // that was an O(domains × persons × addresses) blowup, the same
+    // AU-034-class bug (a per-rule nested scan dominating the whole
+    // correlation pass on a large recalled graph) reintroduced here.
+    // `identity_overlaps` returns true iff the two normalised strings share a
+    // substring of >= IDENTITY_OVERLAP_MIN chars, which is exactly "share a
+    // common IDENTITY_OVERLAP_MIN-gram" once both sides reach that length —
+    // any substring of length >= MIN contains one of length exactly MIN, and
+    // vice versa — so gram-indexing every Person once and probing it per
+    // address makes each lookup ~O(local-part length) instead of O(persons),
+    // with byte-identical firing behaviour to the old pairwise scan.
+    const GRAM: usize = crate::core::scan::IDENTITY_OVERLAP_MIN;
+    let mut by_gram: HashMap<[u8; GRAM], Vec<&str>> = HashMap::new();
+    // Person names shorter than a full gram fall back to `identity_overlaps`'
+    // own short-input rule: exact equality only (see its `a.len() < MIN ||
+    // b.len() < MIN` branch) — indexed separately by the whole normalised name.
+    let mut short_persons: HashMap<String, Vec<&str>> = HashMap::new();
+    for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
+        let norm = crate::core::scan::identity_norm(&p.value);
+        if norm.is_empty() {
+            continue;
+        }
+        if norm.len() < GRAM {
+            short_persons.entry(norm).or_default().push(p.uid.as_str());
+            continue;
+        }
+        for w in norm.as_bytes().windows(GRAM) {
+            let mut key = [0u8; GRAM];
+            key.copy_from_slice(w);
+            by_gram.entry(key).or_default().push(p.uid.as_str());
+        }
+    }
 
     let mut out = Vec::new();
     for (domain, (addresses, mut uids)) in by_domain {
-        if addresses.len() < 2 {
-            continue;
-        }
-        // Ride-along: link any Person whose name derives one of the local-parts —
-        // the actual people affiliated at this organisation (same dictionary-free
-        // identity overlap the engine's wrong-identity gate uses), so the firing
-        // names people, not just addresses.
-        for p in entities.iter().filter(|e| e.kind == EntityKind::Person) {
-            let matches = addresses.iter().any(|addr| {
-                let local = addr.split('@').next().unwrap_or(addr);
-                crate::core::scan::identity_overlaps(&p.value, local)
-            });
-            if matches {
-                uids.insert(p.uid.clone());
+        let mut matched_people: BTreeSet<&str> = BTreeSet::new();
+        for addr in &addresses {
+            let norm = crate::core::scan::identity_norm(addr);
+            if norm.is_empty() {
+                continue;
+            }
+            if norm.len() < GRAM {
+                if let Some(uids) = short_persons.get(&norm) {
+                    matched_people.extend(uids.iter().copied());
+                }
+                continue;
+            }
+            for w in norm.as_bytes().windows(GRAM) {
+                let mut key = [0u8; GRAM];
+                key.copy_from_slice(w);
+                if let Some(uids) = by_gram.get(&key) {
+                    matched_people.extend(uids.iter().copied());
+                }
             }
         }
+        uids.extend(matched_people.into_iter().map(str::to_string));
         // Show a bounded, sorted sample so a company-wide breach dump doesn't emit
         // a multi-kilobyte description; the link set still carries every uid.
         let shown: Vec<&str> = addresses.iter().map(String::as_str).take(6).collect();

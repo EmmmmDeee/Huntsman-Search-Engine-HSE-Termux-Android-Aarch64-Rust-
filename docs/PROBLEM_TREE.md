@@ -296,9 +296,25 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   property (`mod prop` in `cli/import/tests.rs`) over arbitrary Unicode strings
   (≤512 chars); also asserts every emitted entity value is non-empty. 3 new
   properties, 3,032 lib tests, gate green.
-  *Remaining:* `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device
-  aarch64); widen criterion to the correlation pass once a bench-visible entry
-  point exists.
+  *Correction (2026-07-01):* the "widen criterion to the correlation pass"
+  half of this note was stale — `core::correlator::perf` (a `#[cfg(test)]`
+  module, `min_pass_us`/`scaling_baseline`/`pass_is_subquadratic`) already
+  covers this, deliberately WITHOUT `criterion` (its own doc comment
+  explains why: `criterion` would pull a heavy transitive tree into a
+  project that stays rigorously minimal-dependency for the Termux aarch64
+  build; `std::time::Instant` + a min-of-iterations estimator is enough to
+  characterise O(n) vs O(n²), which is all a regression guard needs). This
+  is a *better*-justified solution than the originally-sketched one, not a
+  gap — closed, not reopened. Running it while investigating this note
+  found it FAILING (found + fixed as new T2.22 — an AU-034-class O(n²)
+  regression in AU-087, same commit as this correction), which is exactly
+  what a regression guard is for; it had simply never been run since
+  `#[ignore]`d perf tests aren't part of the default `cargo test` gate.
+  *Remaining:* only `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not
+  on-device aarch64) — genuinely open, deferred: adding a CI lane is a
+  higher-blast-radius change (a shared, repo-wide gating file affecting
+  every future push/PR) than this autonomous loop takes without explicit
+  operator sign-off.
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
@@ -1053,6 +1069,66 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   path: `src/cli/export/tests.rs`'s two new tests exercise the actual
   `render_full` function against a real `rusqlite`-backed `Store` (not
   mocked) — the same production call path `hse export --format full` uses.
+- **`[x]` T2.22 · AU-087's Person "ride-along" reintroduced the AU-034-class
+  O(n²) correlator regression, caught by the pass's own committed guard**
+  *(found + fixed 2026-07-01, F.3 finish-the-in-progress-node pass)* —
+  `core::correlator::perf::pass_is_subquadratic` (`#[ignore]`d perf guard,
+  not part of the default `cargo test` gate) asserts the whole correlation
+  pass scales < 9× for a 4× entity increase; running it manually while
+  investigating F.3's "widen criterion to the correlation pass" remaining
+  item found it FAILING — consistently 11.1–11.5× across 3 runs, not noise.
+  A per-rule scratch profile (temporary, not committed) isolated the cause
+  to exactly one rule: `rule_au_087_shared_org_email_domain`
+  (`src/core/correlator/rules/org.rs:470`), scaling 17.06× (near-quadratic)
+  and consuming ~90% of the whole pass's wall-time at n=2000 while every
+  other rule scaled a healthy ~4×. Root cause: its "ride-along" step — link
+  any `Person` whose name derives one of a domain's email local-parts —
+  did, for EVERY qualifying org-domain cluster, a full linear scan of EVERY
+  `Person` entity against EVERY address in that cluster via
+  `identity_overlaps` (an O(len×len) substring-DP call per pair): total
+  cost O(domains × persons × addresses), the exact "per-rule nested scan
+  dominates the whole pass" bug class `AU-034` was already fixed for once
+  (`docs/CONVENTIONS.md` §1.2 / the correlation-pass doctrine this guard
+  exists to enforce). Reachable by any scan whose graph accumulates enough
+  Person + shared-org-domain-Email entities — a large breach/stealer import
+  or a deep recursive `--full` sweep, not an adversarial input — and, per
+  the correlator's own `CORRELATOR_BUDGET` doc comment, this exact class of
+  regression has previously hung a finalise pass for 20+ minutes on a
+  ~500-entity recalled graph before the budget cutoff silently dropped the
+  rest of that pass's correlations. → **Solution:** replace the nested
+  per-domain persons×addresses scan with a one-time index. **P2** (severe
+  perf regression on a hot per-round pass, self-mitigated only by the
+  budget cutoff's silent partial-correlation fallback — not a crash, but a
+  real evidentiary-completeness risk under exactly the "large recalled
+  graph" scenario the budget comment already flags).
+  ✅ **Fixed.** `identity_overlaps(a, b)` returns true iff the two
+  normalised strings share a substring of ≥ `IDENTITY_OVERLAP_MIN` (4)
+  chars — which is exactly "share a common 4-gram" once both sides reach
+  that length (any substring of length ≥4 contains one of length exactly
+  4, and vice versa). Built a `Person` index ONCE — a `HashMap<[u8; 4],
+  Vec<uid>>` of every long-enough normalised name's 4-grams, plus a
+  `HashMap<String, Vec<uid>>` for short (<4-char) names mirroring
+  `identity_overlaps`' own short-input exact-equality fallback — then each
+  address probes it in ~O(local-part length) instead of O(persons).
+  Byte-identical firing behaviour to the old pairwise scan (proven, not
+  assumed): all 4 pre-existing AU-087 tests pass unchanged, plus 1 new test
+  pinning the short-name exact-vs-substring edge case the rewrite's two
+  code paths could otherwise silently diverge on (`au087_rides_along_
+  short_person_name_only_on_exact_match` — a short name must NOT ride along
+  on a longer local-part it merely starts with). `IDENTITY_OVERLAP_MIN`
+  re-exported from `core::scan` (was private to `core::scan::classify`) so
+  the correlator rule can reference the same constant rather than a
+  duplicated magic `4`. Regression proof: `git stash`-ed the fix and
+  re-ran `pass_is_subquadratic --ignored` — FAILED (ratio 11.24×, matching
+  the original finding) against the unfixed code; passes (ratio ~4.0×,
+  three repeat runs) against the fix. Absolute cost also dropped sharply:
+  the whole pass at n=2000 fell from ~220ms to ~38ms (5.8×), not just the
+  complexity class. Live-verified: `hse selftest`'s `storage.correlator`
+  check (a real DB round-trip through the actual correlation pass) still
+  fires 3 rules, unchanged. Gate green: 4290 lib tests (+1), fmt/clippy
+  `--all-targets --locked -D warnings`/strict-rustdoc clean, full `cargo
+  test` green. **Paired:** `SOLUTION_TREE` new SOL-AU087-INDEX `[x]` +
+  §3/§4/§5 — same commit.
 
 ---
 

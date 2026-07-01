@@ -370,6 +370,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   byte-identical crawl output.
 
 ### Fixed
+- **The correlation pass's AU-087 rule reintroduced an O(n²) scaling
+  regression (`PROBLEM_TREE` T2.22).** `rule_au_087_shared_org_email_domain`'s
+  Person "ride-along" step scanned every `Person` entity against every
+  address in every qualifying organisational-email-domain cluster, an
+  O(domains × persons × addresses) blowup — the same bug class AU-034 was
+  already fixed for once, caught by the correlation pass's own committed
+  (but previously unrun) regression guard. Replaced the nested scan with a
+  one-time 4-gram index over Person names, mathematically equivalent to the
+  original substring-overlap check — same firing behaviour, ~5.8× faster at
+  n=2000, and no longer superlinear (11.2× → ~4.0× scaling for a 4×
+  entity increase).
 - **`docs/PROBLEM_TREE.md` T2.11's status marker and closing text were
   stale.** All three of its concrete concurrency sub-items (oathnet's racy
   budget check, found_keys cross-scan contamination, bounded over-dispatch)

@@ -4623,6 +4623,36 @@ fn au087_rides_along_named_person_and_covers_edu_domains() {
     );
 }
 
+#[test]
+fn au087_rides_along_short_person_name_only_on_exact_match() {
+    // The ride-along's short-name path (a normalised name/local-part under
+    // IDENTITY_OVERLAP_MIN chars) mirrors `identity_overlaps`' own short-input
+    // rule: exact equality only, never a substring/prefix match — regression
+    // guard for the gram-index rewrite that replaced the old per-domain O(persons
+    // × addresses) scan (PROBLEM_TREE T2.2x / the AU-034-class regression).
+    let e1 = org_email_ent("al@acme.com.au");
+    let e2 = org_email_ent("jo@acme.com.au");
+    let mut exact = Entity::new(EntityKind::Person, "Al", 0.62, "s");
+    exact.tag("au");
+    let exact_uid = exact.uid.clone();
+    let mut longer = Entity::new(EntityKind::Person, "Albert", 0.62, "s");
+    longer.tag("au");
+    let longer_uid = longer.uid.clone();
+
+    let hits = super::rules::rule_au_087_shared_org_email_domain(&[e1, e2, exact, longer], "s", 0);
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].entity_uids.contains(&exact_uid),
+        "a short person name ('al') exactly matching a short local-part ('al') must ride along"
+    );
+    assert!(
+        !hits[0].entity_uids.contains(&longer_uid),
+        "a LONGER name ('albert') must NOT ride along on a short local-part it merely starts \
+         with — identity_overlaps falls back to exact equality (not substring) once either \
+         side is under IDENTITY_OVERLAP_MIN chars"
+    );
+}
+
 // ─── Authoritative AU register confirmation (AU-088) ─────────────────────────
 
 #[cfg(test)]
