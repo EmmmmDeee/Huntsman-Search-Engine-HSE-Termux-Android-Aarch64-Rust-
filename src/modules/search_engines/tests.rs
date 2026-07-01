@@ -122,11 +122,30 @@ fn build_queries_fullname_handles_multibyte_initial() {
 
 #[test]
 fn build_queries_fullname_pure_fn_matches_dispatch() {
-    // The extracted pure helper must produce exactly what the FullName
-    // dispatch arm produces (verbatim extraction, no behaviour change).
+    // The extracted pure helper must produce exactly what the FullName arm of
+    // `build_queries_base` produces (verbatim extraction, no behaviour
+    // change). `build_queries` itself is a **superset**: it additionally
+    // appends the exposure-dork pass (`queries::exposure`), which now covers
+    // FullName too — asserted separately below, not folded into this
+    // verbatim-extraction check.
     let direct = build_queries_fullname("Jordan Lee Meyer");
+    let base =
+        super::queries::build_queries_base(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
+    assert_eq!(direct, base);
+
+    // `build_queries` = base + the exposure dorks (FullName is now covered by
+    // `fullname_exposure`, no longer silently empty).
     let viadispatch = build_queries(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
-    assert_eq!(direct, viadispatch);
+    assert!(
+        viadispatch.len() > base.len(),
+        "the full dispatch must add the FullName exposure dorks on top of the base set"
+    );
+    assert!(
+        viadispatch
+            .iter()
+            .any(|s| s.contains("truepeoplesearch.com")),
+        "exposure dorks must be present in the full dispatch: {viadispatch:?}"
+    );
 
     // Single-token name → only the two base dorks, no first/last expansion.
     let single = build_queries_fullname("Jordan");

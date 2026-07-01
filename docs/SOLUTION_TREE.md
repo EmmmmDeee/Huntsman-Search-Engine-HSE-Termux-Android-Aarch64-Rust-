@@ -434,8 +434,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
   re-sync of the local cell DB (currently requires manual `hse cells import`
   trigger).
-- **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
+- **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
+  *Audit + delivered (2026-07-01):* the entropy gate, `aho-corasick`
+  key-harvest scanner, and credential-reuse graph (AU-047/AU-105/AU-048,
+  `oathnet_pro`/`see_know` sharing one extraction pipeline) were all already
+  mature — confirmed by direct code reading, not assumed. Genuine gap found
+  and closed: `queries::exposure::build_queries_exposure` silently excluded
+  `Phone`/`FullName` (its doc comment named only 3 of the real 12 excluded
+  kinds). Added `phone_exposure`/`fullname_exposure`, mirroring the file's
+  existing five per-kind dork sets exactly; corrected the doc comment. Fixed
+  a pre-existing test (`build_queries_fullname_pure_fn_matches_dispatch`)
+  that had baked in the now-false "FullName's exposure dorks are always
+  empty" assumption. *Remaining:* narrow — this is one function's coverage,
+  not C6 as a whole; C7 has no comparably small gap (its own audit found
+  only a possible dedicated permutation/shuffle-order proptest for the
+  dossier/export renderers, distinct from the existing re-render-twice
+  determinism tests, not yet sized as "small").
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
   exports + evidence chains as the auditable, machine-diffable deliverable.
 
@@ -592,7 +607,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CORR | C1 | `[~]` |
 | SOL-PERF-PUBLISH | C2 | `[ ]` |
 | SOL-GEOINT | C5 | `[~]` |
-| SOL-OFFENSIVE | C6 | `[ ]` |
+| SOL-OFFENSIVE | C6 | `[~]` |
 | SOL-FORENSIC | C7 | `[ ]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
@@ -2587,3 +2602,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`node --check`); live CLI run confirmed the empty-timeline path is
   unchanged. Gate green: 4268 lib tests (+1), fmt/clippy `--all-targets`/doc
   clean. Paired: `PROBLEM_TREE` C1 + §8 — same commit.
+
+- **2026-07-01** — **SOL-OFFENSIVE `[ ]`→`[~]`: exposure-dork Phone/FullName
+  coverage; most of C6's other pieces confirmed already mature.** Fourth
+  candidate from the same pass. Verified by direct reading, not assumed:
+  key_harvest's entropy gate + `aho-corasick` scanner, and the
+  credential-reuse graph (AU-047/AU-105/AU-048, `oathnet_pro`/`see_know`
+  sharing one key pipeline) are all already delivered. Found the real gap:
+  `queries::exposure::build_queries_exposure` silently dropped `Phone`/
+  `FullName` (and 10 other `TargetKind`s) while its own doc comment claimed
+  only 3 were excluded. Added `phone_exposure`/`fullname_exposure`
+  (breach-dump/pastebin/code-repo/people-search dorks — same shape as the
+  file's existing five per-kind helpers), corrected the doc comment.
+  Uncovered and fixed a real pre-existing test bug this change exposed:
+  `build_queries_fullname_pure_fn_matches_dispatch` compared the FullName
+  pure-extraction helper against the FULL `build_queries` pipeline
+  (base + exposure), which had only worked because exposure happened to be
+  empty for FullName before — now compares against `build_queries_base`
+  specifically (the actually-intended verbatim-extraction check) and
+  separately asserts the exposure dorks appear in the full pipeline. C6
+  stays narrow — this closes one function's coverage, not the whole node.
+  Gate green: 4272 lib tests (+4 net), fmt/clippy `--all-targets`/doc clean.
+  Paired: `PROBLEM_TREE` C6 + §8 — same commit.

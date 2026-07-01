@@ -846,7 +846,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   closely-clustered fixtures where the two estimators don't meaningfully
   diverge).
   *Remaining:* tighter AU bounding; movement/timeline geo.
-- **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
+- **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
   **credential-reuse graph** (link accounts by shared salted hash / session token
@@ -854,6 +854,27 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   scanner + entropy gate; richer stealer-log cross-referencing
   (`oathnet_pro`/`see_know` presence → pivot). Active, authorised collection.
   **CAP-med**
+  *Audit + delivered (2026-07-01):* most of this node's named sub-pieces were
+  already mature, just never checked off — `key_harvest`'s entropy gate
+  (`shannon_entropy` threshold + `is_likely_real_key`) and `aho-corasick`
+  scanner (`util::scan::PrefixMatcher`/`MatchSet`) are fully wired; the
+  credential-reuse graph is real (AU-047 reused-secret identity, AU-105
+  cross-breach credential reuse, AU-048 shared public key); `oathnet_pro`/
+  `see_know` already share one key-extraction pipeline feeding it. The one
+  genuine, grounded gap: `search_engines::queries::exposure::
+  build_queries_exposure` silently returned an empty `Vec` for `Phone` and
+  `FullName` targets (and 10 other kinds), while its own doc comment falsely
+  claimed only `Coordinates`/`ASN`/`ABN-ACN` were excluded. Added
+  `phone_exposure`/`fullname_exposure` (breach-dump, code-repo, and
+  people-search dorks, mirroring the five existing per-kind helpers exactly)
+  and corrected the doc comment to name the true remaining exclusion list.
+  Broke and fixed one test that had baked in the old "FullName dispatch ==
+  FullName base dorks, exposure is always empty" assumption
+  (`build_queries_fullname_pure_fn_matches_dispatch` now compares against
+  `build_queries_base` for the verbatim-extraction check, and separately
+  asserts the exposure dorks ARE present in the full `build_queries`
+  pipeline). *Remaining:* this is a narrow slice (one function's
+  target-kind coverage) — C6 as a whole node is not closed.
 - **`[ ]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
@@ -3367,3 +3388,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   same "No dated events" message as before). Gate green: 4268 lib tests
   (+1), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-CORR + §5 — same commit.
+
+- **2026-07-01** — **C6 `[ ]`→`[~]`: exposure-dork coverage extended to
+  Phone/FullName targets; most of C6's other named pieces confirmed already
+  delivered.** Fourth candidate from the same parallel discovery +
+  adversarial-verification pass. Verified (not assumed): key_harvest's
+  entropy gate and `aho-corasick` scanner are already fully wired; the
+  credential-reuse graph is real (AU-047/AU-105/AU-048); `oathnet_pro`/
+  `see_know` already share one key pipeline. The one genuine gap:
+  `search_engines::queries::exposure::build_queries_exposure` silently
+  dropped `Phone`/`FullName` (and 10 other kinds) to an empty `Vec`, while
+  its doc comment falsely claimed only 3 kinds were excluded. Added
+  `phone_exposure`/`fullname_exposure` (breach-dump/pastebin/code-repo/
+  people-search dorks, mirroring the file's existing five per-kind
+  helpers), corrected the doc comment to the true exclusion list, added
+  dispatch + shape tests. Caught and fixed a real regression the change
+  exposed: `build_queries_fullname_pure_fn_matches_dispatch` had baked in
+  the old "FullName's full dispatch equals its base dorks, exposure is
+  always empty" assumption — now compares the verbatim-extraction claim
+  against `build_queries_base` specifically, and separately asserts the
+  exposure dorks are present in the full `build_queries` pipeline. C6 stays
+  narrow-scoped `[~]`: this closes one function's coverage gap, not the
+  whole node. Gate green: 4272 lib tests (+4 net), fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE +
+  §5 — same commit.

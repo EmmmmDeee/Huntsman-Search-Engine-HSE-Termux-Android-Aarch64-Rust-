@@ -9,7 +9,9 @@ use crate::core::scan::{Target, TargetKind};
 ///
 /// These target secrets leaking via code repos, cloud storage, paste sites,
 /// and misconfigured servers. Returns an empty Vec for target kinds where
-/// exposure dorking is not applicable (Coordinates, ASN, ABN/ACN).
+/// exposure dorking doesn't add signal beyond `build_queries_base` (`Url`,
+/// `Asn`, `Cidr`, `Coordinates`, `Address`, `AbnAcn`, `MacAddress`,
+/// `ApiKey`, `CryptoAddress`, `DeviceId`, `Ssid`, `TrackingId`).
 pub(super) fn build_queries_exposure(target: &Target) -> Vec<String> {
     let v = target.value.trim();
     if v.is_empty() {
@@ -21,6 +23,8 @@ pub(super) fn build_queries_exposure(target: &Target) -> Vec<String> {
         TargetKind::Username => username_exposure(v),
         TargetKind::Organisation => org_exposure(v),
         TargetKind::IpAddress => ip_exposure(v),
+        TargetKind::Phone => phone_exposure(v),
+        TargetKind::FullName => fullname_exposure(v),
         _ => Vec::new(),
     }
 }
@@ -112,6 +116,34 @@ fn org_exposure(v: &str) -> Vec<String> {
     ]
 }
 
+fn phone_exposure(v: &str) -> Vec<String> {
+    vec![
+        // Credential/breach dumps naming this number
+        format!("\"{v}\" site:pastebin.com password OR leaked OR breach"),
+        format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
+        // Code repos accidentally committing an SMS/2FA config with the number
+        format!("site:github.com \"{v}\" filename:.env OR filename:config.json"),
+        // Cloud storage exposure
+        format!("site:s3.amazonaws.com \"{v}\""),
+        // People-search aggregators
+        format!("\"{v}\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"),
+    ]
+}
+
+fn fullname_exposure(v: &str) -> Vec<String> {
+    vec![
+        // Credential/breach dumps naming the subject
+        format!("\"{v}\" site:pastebin.com password OR email OR leaked"),
+        format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
+        // Code repos exposing personal documents (resumes, internal docs)
+        format!("site:github.com \"{v}\" resume OR cv OR filename:.env"),
+        // Leaked/confidential documents naming the subject
+        format!("\"{v}\" filetype:pdf confidential OR internal OR resume"),
+        // People-search aggregators
+        format!("\"{v}\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"),
+    ]
+}
+
 fn ip_exposure(v: &str) -> Vec<String> {
     vec![
         // Shodan/Censys data (search their public interfaces)
@@ -169,6 +201,26 @@ mod tests {
         let q = build_queries_exposure(&Target::new(TargetKind::IpAddress, "8.8.8.8"));
         assert!(!q.is_empty());
         assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:shodan.io"));
+    }
+
+    #[test]
+    fn build_queries_exposure_phone_targets_breach_dumps() {
+        let q = build_queries_exposure(&Target::new(TargetKind::Phone, "+61412345678"));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:dehashed.com") && s.contains("+61412345678"))
+        );
+    }
+
+    #[test]
+    fn build_queries_exposure_fullname_targets_breach_dumps() {
+        let q = build_queries_exposure(&Target::new(TargetKind::FullName, "Jordan Avery"));
+        assert!(!q.is_empty());
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:dehashed.com") && s.contains("Jordan Avery"))
+        );
     }
 
     #[test]
@@ -230,6 +282,32 @@ mod tests {
         assert_eq!(q.len(), 6);
         assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:shodan.io"));
         assert!(q.iter().any(|s| s == "\"8.8.8.8\" site:censys.io"));
+    }
+
+    #[test]
+    fn phone_exposure_shape() {
+        let q = phone_exposure("+61412345678");
+        assert_eq!(q.len(), 5);
+        assert!(q.iter().any(
+            |s| s == "\"+61412345678\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"
+        ));
+        assert!(
+            q.iter()
+                .any(|s| s.contains("site:s3.amazonaws.com") && s.contains("+61412345678"))
+        );
+    }
+
+    #[test]
+    fn fullname_exposure_shape() {
+        let q = fullname_exposure("Jordan Avery");
+        assert_eq!(q.len(), 5);
+        assert!(q.iter().any(
+            |s| s == "\"Jordan Avery\" site:truepeoplesearch.com OR site:fastpeoplesearch.com"
+        ));
+        assert!(
+            q.iter()
+                .any(|s| s == "\"Jordan Avery\" filetype:pdf confidential OR internal OR resume")
+        );
     }
 
     // ── email_exposure: local.len() >= 3 branch ──────────────────────────────

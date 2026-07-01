@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Search-engine dorking now covers breach/leak exposure for phone numbers and
+  full names, not just email/username/domain.** `build_queries_exposure`
+  dispatched supplementary exposure dorks (pastebin/dehashed/leakcheck/snusbase,
+  exposed `.env`/config files on GitHub, S3 buckets, people-search sites) for
+  four of six `TargetKind` variants but silently fell through to `Vec::new()`
+  for `Phone` and `FullName` — scans on those target types got only the base
+  dork set, with no breach-exposure coverage at all. New `phone_exposure` and
+  `fullname_exposure` query builders close the gap.
 - **The CLI dossier and web SPA now show the footprint's tenure/recency
   headline, not just the raw event list.** `GET /scans/{id}/timeline` has
   always computed and returned an "online since 2008, 17-year span, 9
