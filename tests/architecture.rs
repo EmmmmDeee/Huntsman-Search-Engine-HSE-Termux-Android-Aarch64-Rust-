@@ -292,6 +292,14 @@ fn all_modules_have_descriptions() {
     );
 }
 
+/// "Stable" means the registry can't silently drift via a duplicate
+/// registration — not just a floor on the raw count. A bad merge that
+/// pushed the same module twice (or 40 unrelated ones) would still clear
+/// `>= 75` and sail through unnoticed; checking every name is registered
+/// exactly once catches the drift the name promises, without pinning a
+/// fragile exact count that would need updating on every module addition
+/// (`docs/MODULES.md`'s own completeness guard, `modules_md_lists_every_
+/// registered_module` below, deliberately avoids the same fragility).
 #[test]
 fn module_registry_count_is_stable() {
     let modules = huntsman_search_engine::modules::registry();
@@ -299,6 +307,16 @@ fn module_registry_count_is_stable() {
         modules.len() >= 75,
         "expected >=75 modules, got {}",
         modules.len()
+    );
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let duplicates: Vec<&str> = modules
+        .iter()
+        .map(|m| m.name())
+        .filter(|name| !seen.insert(name))
+        .collect();
+    assert!(
+        duplicates.is_empty(),
+        "module(s) registered more than once — the registry silently drifted: {duplicates:?}"
     );
 }
 

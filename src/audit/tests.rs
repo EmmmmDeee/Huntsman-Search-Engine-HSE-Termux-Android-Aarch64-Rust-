@@ -216,7 +216,32 @@ fn missed_pii_when_email_but_no_person() {
 #[test]
 fn to_json_is_stable_and_complete() {
     let ents = vec![ent("email", "dns@cloudflare.com", 1.0, 1, &[])];
-    let j = audit(&ents, LogSignals::default()).to_json();
+    let report = audit(&ents, LogSignals::default());
+
+    // "Complete": every top-level key `to_json()` (src/audit/types.rs)
+    // documents emitting must actually be present, so a refactor that
+    // silently dropped one is caught rather than passing on the 4 fields
+    // this test used to sample.
+    let j = report.to_json();
+    let obj = j.as_object().expect("to_json() must emit a JSON object");
+    for key in [
+        "score",
+        "grade",
+        "entity_total",
+        "tiers",
+        "noise_ratio",
+        "quarantined",
+        "by_kind",
+        "findings",
+        "source_health",
+        "expansion",
+        "geo",
+    ] {
+        assert!(
+            obj.contains_key(key),
+            "to_json() output is missing top-level key {key:?}"
+        );
+    }
     assert!(j["score"].as_u64().is_some());
     assert!(
         j["grade"]
@@ -232,6 +257,15 @@ fn to_json_is_stable_and_complete() {
             .any(|f| { f["category"] == "role-mailbox-as-pii" })
     );
     assert!(j["source_health"]["engines_down"].is_array());
+
+    // "Stable": calling to_json() twice on the SAME report must produce
+    // byte-identical output — no HashMap-iteration-order leak, no
+    // wall-clock-derived field.
+    let j2 = report.to_json();
+    assert_eq!(
+        j, j2,
+        "to_json() must be stable across repeated calls on the same report"
+    );
 }
 
 #[test]

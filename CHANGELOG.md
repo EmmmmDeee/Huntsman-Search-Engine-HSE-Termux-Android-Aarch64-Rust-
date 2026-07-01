@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Two tests now actually verify what their names promise
+  (`PROBLEM_TREE` T2.20).** `module_registry_count_is_stable` checked only
+  a `>= 75` floor; it now also asserts every module is registered exactly
+  once, catching a silently-duplicated-module regression. `to_json_is_
+  stable_and_complete` checked 4 of 11 top-level keys `AuditReport::
+  to_json()` emits and never compared repeated calls; it now checks all
+  11 keys and asserts two calls on the same report produce identical
+  output. No behaviour change — the underlying registry and audit-JSON
+  code were already correct; only the tests were under-specified.
 - **`hse update --check`'s git plumbing (`commits_behind`/`changelog_lines`) now
   has real test coverage.** New fixture-driven tests build a genuine local
   upstream repo and a real `git clone` (via `tempfile`) and drive the actual

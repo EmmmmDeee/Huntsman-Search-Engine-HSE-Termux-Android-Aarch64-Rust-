@@ -605,18 +605,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   new tests (saturation at `u64::MAX`; normal-range sanity). Verified the
   regression test is non-vacuous: `git stash`-ed the fix and re-ran the
   test — it doesn't exist against the unfixed code.
-- **`[ ]` SOL-TEST-NAME-OVERCLAIM · Fix 2 tests whose names promise
-  "stable"/"complete" coverage their bodies don't verify** → **T2.20**
-  (found by the same discovery pass, logged not fixed — smaller than
-  T2.19, deliberately deferred rather than forcing two fixes into one
-  commit): `module_registry_count_is_stable`
-  (`tests/architecture.rs:296-303`) asserts only a one-sided floor
-  (`>= 75`), not stability; `to_json_is_stable_and_complete`
-  (`src/audit/tests.rs:217-235`) calls `to_json()` once (no
-  stability check) and asserts only 4 of ~9-10 top-level JSON keys (no
-  completeness check). *Gap:* not yet started — a real, small,
-  well-scoped fix (rename or strengthen each test to match what it
-  actually promises) for a future cycle.
+- **`[x]` SOL-TEST-NAME-OVERCLAIM · Fix 2 tests whose names promise
+  "stable"/"complete" coverage their bodies don't verify** → **T2.20**:
+  `module_registry_count_is_stable` (`tests/architecture.rs:296-303`)
+  asserted only a one-sided floor (`>= 75`), not stability;
+  `to_json_is_stable_and_complete` (`src/audit/tests.rs:217-235`) called
+  `to_json()` once (no stability check) and asserted only 4 of the 11
+  top-level JSON keys (no completeness check). ✅ **Fixed, via a stronger
+  third option than either originally sketched.** (1) Added a
+  `HashSet`-based duplicate-name check alongside the existing floor —
+  catches the exact "bad merge silently duplicates modules" scenario
+  without a fragile hand-maintained exact count (matching this codebase's
+  own established avoidance of that fragility, e.g.
+  `modules_md_lists_every_registered_module`'s content-membership check
+  rather than a count pin). (2) Verified `to_json()`'s real implementation
+  (`src/audit/types.rs`) emits exactly 11 top-level keys and asserted all
+  11 are present; added a second `to_json()` call on the same report with
+  `assert_eq!` against the first — the actual stability check the name
+  always promised. Both changes strengthen existing test bodies (no new
+  test count); verified logically sound and passing cleanly against the
+  real, known-correct registry/report (30/30 architecture tests green,
+  live registry has zero duplicate module names).
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -703,7 +712,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CRAWL-CONCURRENCY | T2.17 | `[x]` |
 | SOL-VICTIM-TRUNCATION | T2.18 | `[x]` |
 | SOL-CHAIN-TXCOUNT | T2.19 | `[x]` |
-| SOL-TEST-NAME-OVERCLAIM | T2.20 | `[ ]` |
+| SOL-TEST-NAME-OVERCLAIM | T2.20 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -727,11 +736,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.20** (new, 2026-07-01) — 2 tests overclaim "stable"/"complete"
-  coverage they don't verify (`module_registry_count_is_stable`,
-  `to_json_is_stable_and_complete`). SOL-TEST-NAME-OVERCLAIM sketched
-  (rename or strengthen each to match its real assertions); not yet
-  started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -838,13 +842,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19 `[x]`** ✅ (SOL-ROI-HINT,
-  SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD, SOL-CONSUMES-DELEGATE,
-  SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION, SOL-CHAIN-TXCOUNT — the
-  dead-hint/dead-ledger/dead-delegation/false-doc/silent-truncation/
-  unguarded-arithmetic bug family, all closed); T2.7/T2.20 open (T2.7
-  blocked for an unattended cycle; T2.20 a real but smaller test-quality
-  gap deliberately deferred); T2.11 mostly done (oathnet +
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20 `[x]`** ✅
+  (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
+  SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION,
+  SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM — the dead-hint/dead-ledger/
+  dead-delegation/false-doc/silent-truncation/unguarded-arithmetic/
+  overclaimed-test-coverage bug family, all closed); T2.7 open (blocked
+  for an unattended cycle); T2.11 mostly done (oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/
   SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
@@ -2898,3 +2902,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `PROBLEM_TREE` new T2.19/T2.20 + §8 — same commit. Gate green (fmt/clippy
   `--all-targets`/doc clean, 4284 lib tests (4282→4284, +2), full `cargo
   test` green).
+
+- **2026-07-01** — **SOL-TEST-NAME-OVERCLAIM delivered `[ ]`→`[x]`,
+  closing T2.20 — the smaller, deliberately-deferred finding from last
+  cycle's discovery pass.** **P→S step:** T2.20 was the only genuinely
+  open node (T2.7 still blocked; T2.11 down to its accepted `[-]`
+  residual; F.1-3's remaining legs each lacking a natural trigger; the CAP
+  nodes' remaining items are each a real new-capability build, too large
+  for one unattended cycle) — picked exactly as flagged. **S→P step:**
+  rather than mechanically applying either originally-sketched option,
+  chose a third, stronger one for the module-registry test: added a
+  duplicate-name check (`HashSet`) alongside the existing floor, which
+  directly catches the "bad merge silently duplicates modules" scenario
+  the name promises to guard against, without introducing the FIRST
+  hand-maintained exact-count pin in this codebase (a fragility this
+  codebase's own `modules_md_lists_every_registered_module` deliberately
+  avoids via a content-membership check instead) — judged more consistent
+  with established convention than either sketch. For the audit-JSON test,
+  read `to_json()`'s real implementation directly rather than trusting the
+  prior cycle's "~9-10 keys" estimate — confirmed exactly 11 top-level
+  keys — and added both a completeness check (all 11 present) and a
+  genuine stability check (two calls on the same report, `assert_eq!`).
+  Both fixes strengthen existing test bodies (no new test count added);
+  the standard "fails against unfixed code" proof doesn't map cleanly here
+  since the underlying `registry()`/`to_json()` were never broken, only
+  under-tested — verified instead that the strengthened assertions are
+  logically sound and pass cleanly against the real, known-correct
+  registry/report (30/30 architecture tests green; the live registry has
+  zero duplicate module names). **Gap refresh:** §4a loses its T2.20
+  entry (now empty of open P→S gaps in the T-series); leverage-map row
+  `[ ]`→`[x]`; §4d's T2 row folds T2.20 into the closed bug family — T2.7
+  is now the ONLY open T-series node, and it remains genuinely blocked for
+  an unattended cycle. Paired: `PROBLEM_TREE` T2.20 `[ ]`→`[x]` + §4a/§4d/§5
+  — same commit. Gate green (fmt/clippy `--all-targets`/doc clean, 4284
+  lib tests — unchanged, no new tests, existing bodies strengthened — full
+  `cargo test` green, 30/30 architecture tests).

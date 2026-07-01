@@ -938,10 +938,9 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `cargo test --lib chain_intel::` — the new test doesn't exist against the
   unfixed code (compile-level absence), confirming it isn't a vacuous
   assertion.
-- **`[ ]` T2.20 · Two tests overclaim "stable"/"complete" coverage they
-  don't verify** *(found 2026-07-01, fresh discovery pass; logged, not
-  fixed — smaller than this cycle's picked unit, deliberately deferred
-  rather than force two fixes into one commit)* — (1)
+- **`[x]` T2.20 · Two tests overclaim "stable"/"complete" coverage they
+  don't verify** *(found 2026-07-01, fresh discovery pass; fixed the
+  following cycle)* — (1)
   `tests/architecture.rs:296-303`'s `module_registry_count_is_stable`
   asserts only `modules.len() >= 75` — a one-sided floor, not a stability
   check; a bad merge that silently duplicated 40 modules into the registry
@@ -964,6 +963,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   call `to_json()` twice on the same report to actually verify byte/value
   stability across calls. **P3** (test-quality gap — both underlying
   functions are correct; only the tests' own coverage claims overclaim).
+  ✅ **Fixed — a third option, stronger than either originally sketched.**
+  (1) Rather than pinning a fragile exact module count (which nothing else
+  in this codebase does — even `modules_md_lists_every_registered_module`
+  deliberately avoids an exact-count pin in favour of a content-membership
+  check) or merely renaming the test to admit it only checks a floor,
+  `module_registry_count_is_stable` now ALSO asserts every module name is
+  registered exactly once (`HashSet`-based duplicate detection), which
+  directly catches the "bad merge silently duplicates 40 modules" scenario
+  the name promises to guard against — without a hand-maintained number
+  that would need updating on every module addition. The floor check stays
+  (still a real, useful sanity bound). (2) `to_json_is_stable_and_complete`
+  now asserts all 11 top-level keys `to_json()` emits are present
+  (`score`, `grade`, `entity_total`, `tiers`, `noise_ratio`, `quarantined`,
+  `by_kind`, `findings`, `source_health`, `expansion`, `geo` — verified
+  against `src/audit/types.rs`'s actual implementation, not assumed) and
+  calls `to_json()` twice on the same report, asserting byte-identical
+  output — the real stability check the name always promised. Both fixes
+  strengthen existing test bodies rather than adding new tests, so the
+  "fails against the unfixed code" convention doesn't map cleanly (the
+  underlying `registry()`/`to_json()` were never broken, only the tests
+  were under-specified) — verified instead that the strengthened
+  assertions are logically sound and pass cleanly against the real,
+  known-correct registry/report (30/30 architecture tests green, no
+  duplicate module name found in the live registry).
 
 ---
 
@@ -3792,3 +3815,36 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `--all-targets`/doc clean, full `cargo test` green. **Paired:**
   `SOLUTION_TREE` new SOL-CHAIN-TXCOUNT `[x]` + new
   SOL-TEST-NAME-OVERCLAIM `[ ]` + §3/§4/§5 — same commit.
+
+- **2026-07-01** — **Closed T2.20 — the smaller finding deliberately
+  deferred last cycle — leaving T2.7 as the only open T-series node.**
+  **P→S step:** picked T2.20 as the only genuinely open node this cycle
+  (T2.7 stays blocked; T2.11 is down to its accepted `[-]` residual;
+  F.1-3's remaining legs each lack a natural trigger; the CAP nodes'
+  remaining items are each a real new-capability build too large for one
+  unattended cycle). **S→P step:** rather than mechanically applying
+  either originally-sketched option, chose a third, stronger fix for
+  `module_registry_count_is_stable`: added a duplicate-name check
+  (`HashSet`) alongside the existing `>= 75` floor, catching the exact
+  "bad merge silently duplicates modules" scenario the name promises to
+  guard against, without introducing this codebase's first hand-maintained
+  exact-count pin (a fragility `modules_md_lists_every_registered_module`
+  already deliberately avoids via content-membership instead of a count).
+  For `to_json_is_stable_and_complete`, read `to_json()`'s real
+  implementation directly (rather than trusting the prior cycle's "~9-10
+  keys" estimate) — confirmed exactly 11 top-level keys — and added both
+  a completeness check (all 11 present) and a genuine stability check (two
+  calls on the same report, `assert_eq!`). Both fixes strengthen existing
+  test bodies; no new test count. The standard "fails against unfixed
+  code" proof doesn't map cleanly onto a test-quality fix (the underlying
+  `registry()`/`to_json()` were never broken) — verified instead that the
+  strengthened assertions are logically sound and currently pass against
+  the real, known-correct registry/report (30/30 architecture tests
+  green; the live registry has zero duplicate module names). T2.20
+  `[ ]`→`[x]`. With this closed, **T2.7 is now the sole remaining open
+  T-series node**, and it remains genuinely blocked for an unattended
+  cycle (needs a live third-party fetch or a fixture that would only look
+  real). Gate green: 4284 lib tests (unchanged — existing bodies
+  strengthened, no new tests), fmt/clippy `--all-targets`/doc clean, full
+  `cargo test` green (30/30 architecture tests). **Paired:** `SOLUTION_TREE`
+  SOL-TEST-NAME-OVERCLAIM `[ ]`→`[x]` + §4a/§4d/§5 — same commit.
