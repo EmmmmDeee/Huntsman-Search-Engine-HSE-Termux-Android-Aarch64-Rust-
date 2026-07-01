@@ -799,8 +799,26 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   *Delivered (cycle 20, 2026-06-18): `austlii` — free AustLII court/legislation
   scraper; `FullName`/`Organisation` → `Url` + `Organisation`; Corporate-9; 125→126
   modules, 92→93 free.*
-  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
-  cadastre/property.
+  *Audit correction (2026-07-01):* the "fuller ASIC/ABR graph" and "state
+  cadastre/property" remaining-items are stale — both already shipped and
+  simply never folded back into this node. `asic_persons` (banned/
+  disqualified persons, financial advisers, credit/finance-broker
+  representatives — three registers in one module, keyless, priority 112,
+  Corporate), `asic_business_names` (business/trading name → ABN, keyless,
+  priority 111, Corporate), and `asic_banned_orgs` (banned/disqualified
+  organisations → ACN, keyless, priority 112, Corporate) are all live,
+  registered in the dispatch table (`src/modules/mod.rs`) alongside the
+  older `asic_director`, giving a genuinely "fuller" ASIC/ABR graph.
+  `qld_cadastre` (QLD Government DCDB cadastre — lot/plan/locality/tenure
+  by coordinate, free, priority 18, Geo) is a live coordinate-keyed
+  complement to `au_property`. This session's shallow clone can't
+  attribute a reliable delivery date for these four (git blame/log
+  resolves to the single root import commit, not a real history), so no
+  date is claimed here — only that they exist and are dispatched today.
+  State cadastre remains QLD-only (other states' cadastre/titles
+  registries are still a real, open gap).
+  *Remaining:* GNAF/AusPost address validation; state cadastre/property
+  for states beyond QLD.
 - **`[~]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
   `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
   `waf_detect`, `portscan`, `bgpview`, `ripestat`. CDN/Cloudflare noise is already
@@ -1115,7 +1133,7 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `SEEKNOW_SUPERSEDED_KEY*` slot (single source of truth in `constants.rs`), so the
   embedded set self-heals to whatever is currently live. Any free-tier-vs-paid split
   is likewise the operator's prerogative, not a tracked action.
-- **S2 · `[ ]` P1 (HIGH) — whois-referral SSRF (raw TCP/43 bypasses SsrfResolver).**
+- **S2 · `[x]` P1 (HIGH) — whois-referral SSRF (raw TCP/43 bypasses SsrfResolver).**
   `modules/whois/{mod.rs:97-104, client.rs:38-53}` follows the referral server taken
   **verbatim** from the (attacker-influenceable) WHOIS response —
   `TcpStream::connect(format!("{server}:43"))` or an embedded `host:port` — with
@@ -3631,3 +3649,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-GEOINT + §5 — same commit.
+
+- **2026-07-01** — **Two independent stale-doc-claim corrections, both from
+  the same second discovery pass's stale-doc-sweep candidate: C3's
+  "fuller ASIC/ABR graph; state cadastre/property" already delivered, and
+  §7 S2's status marker contradicted its own "Fixed" body.** (1) C3
+  narrowed: `asic_persons`/`asic_business_names`/`asic_banned_orgs`
+  (three more live ASIC registers, keyless, Corporate) and `qld_cadastre`
+  (free QLD DCDB coordinate lookup, Geo) are all registered in the live
+  dispatch table today — verified directly via `grep -c "Arc::new(" src/
+  modules/mod.rs` = 162 against the doc's last recorded snapshot of 126,
+  confirming substantial undocumented module growth. `Remaining` narrowed
+  to GNAF/AusPost address validation and non-QLD state cadastre. No
+  delivery date claimed for the four modules — this session's shallow
+  clone resolves `git log`/`git blame` for them to the single root import
+  commit, not a real history, the same attribution trap prior cycles
+  already found and worked around for AU-084/AU-060. (2) §7 S2's header
+  read `[ ]` P1 (HIGH) while its own body said "✅ Fixed", the paired
+  `SOLUTION_TREE` SOL-SSRF-WHOIS entry already showed `[x]`, and the live
+  fix (`client::resolve_public_whois`, hermetic test
+  `blocks_ssrf_and_non_whois_referrals`) is fully present — S2 was the
+  lone outlier among its S3/S4/S5 siblings, whose markers all correctly
+  match their bodies. Flipped to `[x]`. Doc-only; no code touched. Gate:
+  n/a (docs). **Paired:** `SOLUTION_TREE` §5 — same commit.

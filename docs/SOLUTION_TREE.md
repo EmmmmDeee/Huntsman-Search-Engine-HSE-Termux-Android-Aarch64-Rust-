@@ -371,7 +371,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Delivered (cycle 20, 2026-06-18):* `austlii` — free AustLII court/legislation
   scraper; `FullName`/`Organisation` → `Url` (court-judgment) + `Organisation`
   (legal-footprint signal); Corporate-9; 125→126 modules, 93 free.
-  *Remaining:* GNAF/AusPost; fuller ASIC/ABR graph; state cadastre/property.
+  *Audit correction (2026-07-01):* "fuller ASIC/ABR graph" and "state
+  cadastre/property" were stale — both already shipped and never folded
+  back in. `asic_persons`/`asic_business_names`/`asic_banned_orgs` (three
+  more live ASIC registers alongside `asic_director`) and `qld_cadastre`
+  (free QLD coordinate cadastre lookup) are registered in the live
+  dispatch table today (`grep -c "Arc::new(" src/modules/mod.rs` = 162 vs.
+  this node's last recorded 126). No delivery date claimed — this
+  session's shallow clone can't attribute one reliably for these four.
+  *Remaining:* GNAF/AusPost; non-QLD state cadastre/property.
 - **`[~]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
   discovery, ASN/BGP pivots, passive-DNS/cert-hash origin candidates; v4+**v6**
   `is_cdn_edge_ip` already demotes the noise.
@@ -701,7 +709,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
 - **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
-  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
+  ASIC persons/business-names/banned-orgs + `qld_cadastre` audit-corrected
+  as already delivered 2026-07-01.
+  *Remaining:* GNAF/AusPost address validation; non-QLD state
   cadastre/property.
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
@@ -2826,3 +2836,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   findings. Gate green: 4283 lib tests (+1), full suite (lib + smoke +
   architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8 — same commit.
+
+- **2026-07-01** — **Two stale-doc-claim corrections from the same
+  discovery pass's audit candidate: SOL-AU-MOAT's "fuller ASIC/ABR graph;
+  state cadastre/property" already delivered, and §7 S2's status marker
+  contradicted its own "Fixed" body.** (1) `asic_persons`/
+  `asic_business_names`/`asic_banned_orgs` (three more live ASIC
+  registers, keyless, Corporate) and `qld_cadastre` (free QLD DCDB
+  coordinate cadastre, Geo) are all registered in the live dispatch table
+  today — confirmed via `grep -c "Arc::new(" src/modules/mod.rs` = 162
+  against this node's last recorded snapshot of 126. `Remaining` narrowed
+  to GNAF/AusPost and non-QLD state cadastre. No delivery date claimed for
+  the four modules: this session's shallow clone resolves their
+  `git log`/`git blame` to the single root import commit, the same
+  attribution trap already worked around for AU-084/AU-060. (2) §7 S2's
+  header read `[ ]` P1 (HIGH) while its own body said "✅ Fixed" and this
+  tree's own SOL-SSRF-WHOIS entry already showed `[x]` — S2 was the lone
+  marker/body mismatch among its S3/S4/S5 siblings. Flipped to `[x]` in
+  `PROBLEM_TREE`. Doc-only; no code touched. Paired: `PROBLEM_TREE` C3 +
+  §7 S2 + §8 — same commit.
