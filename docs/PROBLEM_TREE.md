@@ -3266,3 +3266,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `tempfile` (already a dev-dep) would support a local-repo-pair fixture,
   left as its own smaller follow-on. **Paired:** `SOLUTION_TREE` SOL-UPDATE +
   §4a + §5 — same commit.
+
+- **2026-07-01** — **That residual closed: real git-subprocess test for
+  `commits_behind`/`changelog_lines`.** Selected from a parallel discovery +
+  adversarial-verification pass (8 backlog candidates investigated
+  concurrently via the Workflow tool, given how much open backlog remains);
+  the reviewing agent for this candidate applied the proposed test verbatim
+  and ran the full verification gate against it before this cycle
+  re-applied and re-verified it directly. `cli/update.rs`'s `mod tests`
+  gains a real local git-repo-pair fixture (`tempfile::tempdir()`, a
+  "remote" plus a tracked "clone" — no network, local filesystem paths
+  only) proving `commits_behind`/`changelog_lines` against genuine `git`
+  subprocess output: up-to-date after a clone, correct count + newest-first
+  subjects after the remote advances, and the documented `None`/empty
+  fallback for a non-git directory. A `git_fixture` helper pins
+  `commit.gpgsign=false` and explicit author/committer env vars so the test
+  doesn't depend on this sandbox's own ambient signing config. Purely
+  additive — no non-test code touched. Gate green: 4264 lib tests (+1),
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-UPDATE + §5 — same commit.

@@ -510,10 +510,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   count. Predates this repo's single root commit (`770df4c9`), so — unlike
   most corrections this session — no specific delivery cycle can be
   attributed; it simply was never reconciled into this note.
-  *Remaining (real):* `changelog_lines`/`commits_behind` have no test
-  exercising the actual `git` subprocess calls (a real local git-repo-pair
-  fixture, `tempfile` already a dev-dep, would close it) — left as a
-  separate, smaller follow-on.
+  *Delivered (2026-07-01):* the residual noted above is closed.
+  `cli::update::tests::commits_behind_and_changelog_lines_reflect_real_git_state`
+  exercises both functions against a genuine local git-repo pair (a "remote"
+  plus a tracked clone, both under `tempfile::tempdir()`) — no network, since
+  the "remote" is a local filesystem path. Covers: freshly-cloned
+  up-to-date (`Some(0)`, no lines), the remote advancing by two commits
+  (`Some(2)`, both subjects present, newest-first per `git log --oneline`'s
+  own ordering), and a non-git directory (`None`, empty — the documented
+  git-absent/unreachable fallback). A `git_fixture` helper pins
+  `commit.gpgsign=false` and explicit `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env
+  vars on every fixture-building `git` call, so the test is independent of
+  ambient global git config (this sandbox has `commit.gpgsign=true` + a
+  signing key set globally — a config a CI runner won't share).
   **(cycle 22)**
 
 ### S.PROCESS — The methodology itself ⚑
@@ -2496,3 +2505,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   have no test against real `git` subprocess behaviour (`tempfile` is already
   a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
   bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-01** — **SOL-UPDATE's own follow-on closed: real git-subprocess
+  test coverage for `commits_behind`/`changelog_lines`.** Picked from a
+  parallel discovery+adversarial-verification pass (this cycle used the
+  Workflow tool to investigate 8 backlog candidates concurrently rather than
+  sequentially, given the scale of remaining open items) — this candidate
+  was independently confirmed by the reviewing agent applying the exact
+  proposed code, then actually running the full `CLAUDE.md` gate
+  (`cargo test`, `cargo clippy --all-targets -D warnings`, `cargo doc`,
+  `cargo test --test architecture`) against it before this cycle re-applied
+  and re-verified it directly. New test builds a real local "remote" +
+  tracked "clone" git-repo pair under `tempfile::tempdir()` (no network — the
+  remote is a local filesystem path) and asserts `commits_behind`/
+  `changelog_lines` against genuine `git` subprocess output across three
+  states: freshly cloned (up to date), remote advanced by two commits
+  (correct count + newest-first subjects), and a non-git directory (the
+  documented fallback). A `git_fixture` helper neutralises this sandbox's own
+  ambient `commit.gpgsign=true` + signing key so the test is portable to a
+  clean CI environment. Purely additive to `cli::update`'s existing
+  `mod tests` — no non-test code changed. Gate green: 4264 lib tests (+1),
+  fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` §8 — same
+  commit.

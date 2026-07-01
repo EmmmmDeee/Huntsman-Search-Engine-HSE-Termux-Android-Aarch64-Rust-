@@ -468,4 +468,76 @@ mod tests {
             "cache files live under ~/.cache when HOME is set"
         );
     }
+
+    /// Run `git` with a fixed, isolated author/committer identity and gpg
+    /// signing off, so the fixture is deterministic regardless of the host's
+    /// ambient git config (this sandbox, for one, has `commit.gpgsign=true`
+    /// and a signing key set globally — a real config a CI runner won't
+    /// share, so relying on it either way would be non-portable).
+    fn git_fixture(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test User")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test User")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git must be installed to run this test");
+        assert!(status.success(), "git {args:?} failed in {dir:?}");
+    }
+
+    /// `commits_behind`/`changelog_lines` shell out to real `git` — this
+    /// exercises them against a genuine local git-repo pair (a "remote" plus
+    /// a clone with upstream tracking) rather than trusting the subprocess
+    /// wiring untested. No network: the "remote" is a local filesystem path,
+    /// so `git fetch`/`git clone` never leave the temp directory.
+    #[test]
+    fn commits_behind_and_changelog_lines_reflect_real_git_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote");
+        let local = tmp.path().join("local");
+        std::fs::create_dir(&remote).unwrap();
+
+        git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "init", "--allow-empty"]);
+        git_fixture(
+            tmp.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                local.to_str().unwrap(),
+            ],
+        );
+
+        // Freshly cloned: local is fully up to date with no new upstream commits.
+        assert_eq!(commits_behind(&local), Some(0));
+        assert!(changelog_lines(&local).is_empty());
+
+        // Advance the "remote" by two commits without touching the clone.
+        std::fs::write(remote.join("a.txt"), "a").unwrap();
+        git_fixture(&remote, &["add", "a.txt"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "add a"]);
+        std::fs::write(remote.join("b.txt"), "b").unwrap();
+        git_fixture(&remote, &["add", "b.txt"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "add b"]);
+
+        assert_eq!(commits_behind(&local), Some(2));
+        let lines = changelog_lines(&local);
+        assert_eq!(lines.len(), 2, "got: {lines:?}");
+        // `git log --oneline` is newest-first; hashes are non-deterministic,
+        // so assert on the subject text only.
+        assert!(lines[0].ends_with("add b"), "got: {lines:?}");
+        assert!(lines[1].ends_with("add a"), "got: {lines:?}");
+
+        // No git repo at all → the documented "git absent/unreachable" fallback.
+        let not_git = tmp.path().join("not_a_repo");
+        std::fs::create_dir(&not_git).unwrap();
+        assert_eq!(commits_behind(&not_git), None);
+        assert!(changelog_lines(&not_git).is_empty());
+    }
 }
