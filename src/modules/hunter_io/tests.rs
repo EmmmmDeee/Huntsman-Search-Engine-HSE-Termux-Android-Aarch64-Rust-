@@ -152,6 +152,53 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_linkedin_url_becomes_url_pivot() {
+        let d = data(
+            r#"{
+                "emails": [{
+                    "value": "j@acme.com",
+                    "linkedin": "https://linkedin.com/in/jdoe"
+                }]
+            }"#,
+        );
+        let es = build_entities(&d, "acme.com", "t");
+        let url = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Url && e.value == "https://linkedin.com/in/jdoe")
+            .expect("linkedin URL pivot");
+        assert!(url.tags.iter().any(|t| t == "social-profile"));
+    }
+
+    #[test]
+    fn build_entities_twitter_bare_handle_becomes_username_pivot() {
+        let d = data(
+            r#"{
+                "emails": [{
+                    "value": "j@acme.com",
+                    "twitter": "jdoe"
+                }]
+            }"#,
+        );
+        let es = build_entities(&d, "acme.com", "t");
+        let user = es
+            .iter()
+            .find(|e| e.kind == EntityKind::Username)
+            .expect("twitter handle pivot");
+        assert_eq!(user.value, "twitter:jdoe");
+        assert!(user.tags.iter().any(|t| t == "social-profile"));
+    }
+
+    #[test]
+    fn build_entities_absent_social_fields_emit_no_pivots() {
+        let d = data(r#"{ "emails": [{"value": "j@acme.com"}] }"#);
+        let es = build_entities(&d, "acme.com", "t");
+        assert!(
+            !es.iter()
+                .any(|e| e.tags.iter().any(|t| t == "social-profile"))
+        );
+    }
+
+    #[test]
     fn build_entities_synthesises_email_when_value_missing() {
         let d = data(
             r#"{

@@ -11,6 +11,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hunter_io` now surfaces each discovered email's LinkedIn/Twitter
+  profile fields.** Hunter's domain-search response already returns these
+  per-email but the module discarded them on deserialize. A LinkedIn URL
+  becomes a `Url` pivot; a Twitter handle becomes a platform-prefixed
+  `Username` pivot — both a real identity-correlation lead the module was
+  already paying for and simply not surfacing.
 - **Search-engine dorking now covers breach/leak exposure for physical
   addresses, not just email/username/domain/phone/full name.**
   `build_queries_exposure` silently returned no exposure dorks at all for

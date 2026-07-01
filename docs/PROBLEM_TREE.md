@@ -3944,3 +3944,32 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE +
   §5 — same commit.
+
+- **2026-07-01** — **`hunter_io` now surfaces the `linkedin`/`twitter`
+  social-profile fields its own domain-search response already returns,
+  the fourth "dropped-field depth gap" this session found and closed
+  (after `austlii`, `wigle`, `virustotal`).** Selected from a third
+  discovery pass's round-2 dropped-field sweep. `struct HunterEmail`
+  deserialized only `value/confidence/first_name/last_name/position/
+  department/sources`, silently discarding the per-email `linkedin`/
+  `twitter` fields Hunter's API returns — no `deny_unknown_fields`, so
+  serde dropped them without a trace. The discovery pass's own plan
+  assumed both fields are always full profile URLs and proposed pushing
+  both as `EntityKind::Url`; adversarial verification caught this was
+  wrong — Hunter's documented examples show `twitter` as a bare handle,
+  not a URL, and the codebase's own established convention
+  (`fullcontact::build_entities`) already handles exactly this
+  distinction by inspecting the value's shape (`starts_with("http")`),
+  not assuming a fixed type per field name. Implemented that way instead:
+  a shared loop over `(network, value)` pairs emits `EntityKind::Url`
+  when the value looks like a URL, else a platform-prefixed
+  `EntityKind::Username` (`"twitter:handle"`), tagged `social-profile` in
+  both cases. `produces()` updated to declare the now-possible `Username`
+  kind. 3 new unit tests (LinkedIn-URL case, Twitter-handle case,
+  absent-field no-op case). Gate green: 4299 lib tests (+3), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean, including
+  `every_literal_constructed_entity_kind_is_declared_in_produces`. Not
+  tied to a specific capability node — a general per-module data-depth
+  completeness fix, same class as the AU register/WiGLE fixes.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

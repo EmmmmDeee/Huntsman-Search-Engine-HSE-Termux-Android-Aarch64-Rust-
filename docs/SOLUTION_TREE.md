@@ -3067,3 +3067,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green: 4296 lib tests (+2), full suite (lib + smoke + architecture +
   doctests, all binaries) green, fmt/clippy `--all-targets`/doc clean.
   Paired: `PROBLEM_TREE` C6 + §8 — same commit.
+
+- **2026-07-01** — **`hunter_io` surfaces `linkedin`/`twitter` fields —
+  the fourth dropped-field depth gap this session found and closed,
+  after `austlii`/`wigle`/`virustotal`.** `HunterEmail` silently dropped
+  Hunter's per-email `linkedin`/`twitter` fields on deserialize. The
+  discovery pass's own plan assumed both are full URLs and proposed
+  `EntityKind::Url` for both; verification caught this was wrong for
+  `twitter` (Hunter documents it as a bare handle) and pointed to the
+  codebase's own existing convention instead —
+  `fullcontact::build_entities` already handles exactly this
+  URL-vs-handle distinction by inspecting the value's shape
+  (`starts_with("http")`), not the field name. Implemented that way: a
+  shared loop emits `EntityKind::Url` for URL-shaped values, else a
+  platform-prefixed `EntityKind::Username` (`"twitter:handle"`), both
+  tagged `social-profile`. `produces()` updated to declare `Username`.
+  3 new unit tests. Not tied to a specific capability node — a general
+  per-module data-depth fix. Gate green: 4299 lib tests (+3), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean, including
+  `every_literal_constructed_entity_kind_is_declared_in_produces`.
+  Paired: `PROBLEM_TREE` §8 — same commit.
