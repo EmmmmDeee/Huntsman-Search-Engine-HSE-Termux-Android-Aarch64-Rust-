@@ -1255,13 +1255,13 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   tests (+3), fmt/clippy `--all-targets --locked -D warnings`/strict-rustdoc
   clean, full `cargo test` green. **Paired:** `SOLUTION_TREE` new
   SOL-DISPATCH-HANG `[x]` + new T2.24 `[ ]` + §3/§4/§5 — same commit.
-- **`[ ]` T2.24 · Two more correlator relation-rules (AU-070/AU-071) and one
+- **`[x]` T2.24 · Two more correlator relation-rules (AU-070/AU-071) and one
   (AU-060) share unguarded, graph-size-dependent cost with the T2.23 bug
   family, but neither is a confirmed catastrophic hang nor a drop-in fit for
   T2.23's `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` guard** *(found
-  2026-07-01, adversarial verification of T2.23)* — `rule_au_070_
-  connection_broker` (`src/core/correlator/rules/broker.rs`) and
-  `rule_au_071_robust_identity_cluster`
+  2026-07-01, adversarial verification of T2.23; fixed same date)* —
+  `rule_au_070_connection_broker` (`src/core/correlator/rules/broker.rs`)
+  and `rule_au_071_robust_identity_cluster`
   (`src/core/correlator/rules/robust.rs`) both call `connection_brokers`
   (`src/core/relation/graph.rs`), whose own doc comment states it is
   O(V·(V+E)): it loops over every graph node with ≥2 binding edges (a
@@ -1281,23 +1281,131 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   synthetic benchmark's tree-shaped lineage graph has few nodes crossing
   the "≥2 binding edges" `connection_brokers` candidate threshold — a
   DIFFERENT, denser-graph shape than the pure-fan-out tree T2.23 stress-
-  tested would be needed to confirm real-world severity here). → **Solution
-  (sketch, not yet designed):** connection_brokers' cost key is total
-  qualifying graph-node count, not identity-pair count, so
-  `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` doesn't directly apply — would
-  need its own dedicated measurement (a densely-connected synthetic graph,
-  not a tree) and a tailored ceiling on the `connection_brokers` candidate
-  count (also needed at its third caller, `src/cli/scan/dossier.rs`'s
-  CONNECTIONS section, which renders on-demand from a completed scan's
-  stored graph with no timeout of its own). AU-060/`identity_paths` scales
-  additively (not combinatorially) so is lower urgency, but its 3
-  downstream consumers (AU-067, AU-071's OTHER call path via
-  `resolve_identity_clusters`, and the dossier CLI) would all need the same
-  once-fixed treatment if a guard is added there. **P3** (no confirmed
-  catastrophic case yet — architecturally identified during T2.23's
-  adversarial review, not empirically measured as severe; needs its own
-  discovery-pass-grade measurement before a fix is designed, not a
-  mechanical copy of T2.23's guard).
+  tested would be needed to confirm real-world severity here).
+  ✅ **Fixed** (the `connection_brokers` half of this node; the AU-060/
+  `identity_paths` half turned out to need its own separate fix — split
+  out honestly as new T2.25, see below, rather than force-fixed here or
+  silently dropped). First **empirically confirmed the concern was real**,
+  per this project's own "measure before fixing" discipline — T2.23's
+  tree-shaped fan-out benchmark never triggered this path (too few nodes
+  cross the "≥2 binding edges" candidate threshold); a DENSE hub-and-spoke
+  graph does (many `Username` identities each linked to every one of a
+  handful of shared `Domain` hubs — a realistic OSINT shape: one company's
+  staff surfaced via a single breach-exposed shared domain). Measured via a
+  temporary diagnostic test (removed before commit): 1.6s at 240 graph
+  nodes, 14.4s at 480 — worse than cubic and still climbing. **Fix:** a new
+  deterministic (not wall-clock — the same T2.23-established
+  reproducibility reasoning: a rule's findings must not depend on machine
+  speed/load) `pub const MAX_GRAPH_NODES_FOR_BROKER_SEARCH = 300` in
+  `src/core/relation/graph.rs`, keyed on total qualifying graph-node count
+  (`adj.len()`) rather than identity-pair count, since `connection_brokers`'
+  candidate set is a SUPERSET of the identity endpoints
+  `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH` bounds. Applied ONCE inside
+  `connection_brokers` itself — the one shared primitive — rather than
+  duplicated at each of its three call sites, so AU-070, AU-071's
+  `connection_brokers` call, AND the dossier CLI's CONNECTION BROKERS
+  section (`src/cli/scan/dossier.rs`) all inherit the fix automatically.
+  Above the ceiling: no brokers reported from that pass (a conservative
+  false-negative, never a false-positive or a crash), plus a
+  `tracing::warn!` log line naming the constant. 2 new regression tests
+  (one on the primitive in `graph.rs`, one on AU-070's rule in
+  `broker.rs`, both building a 301-node dense hub-and-spoke graph — one
+  node past the ceiling), `git stash`-confirmed non-vacuous: both fail
+  (their elapsed-time assertion trips, at ~3.5–5s) against the unfixed
+  code and pass (well under 100ms) against the fix. **Live-verified
+  empirically**: re-ran the same diagnostic at the sizes that were
+  catastrophic before — 480 nodes fell from 14.4s to 90ms, 960 nodes to
+  376ms; 300 nodes (exactly at the ceiling, still runs the full search)
+  stays a bounded 3.55s, confirming the ceiling keeps the worst case in the
+  low single digits of seconds, well inside the shared 120s
+  `CORRELATOR_BUDGET`. **A new, empirically-confirmed finding surfaced
+  while verifying this fix, not fabricated or force-fixed this cycle:**
+  AU-071 calls `resolve_identity_clusters` (→ `identity_paths`) BEFORE it
+  ever reaches its now-bounded `connection_brokers` call — and on the SAME
+  301-node dense hub-and-spoke graph, THAT call alone took 3.48s at 221
+  identity entities, independently reproducing this very node's original
+  "AU-060/`identity_paths` is additive, therefore lower urgency,
+  unconfirmed" framing as WRONG on that specific point: it is now
+  confirmed, on this realistic shape, right now. AU-071 is therefore only
+  PARTIALLY protected by this fix (its `connection_brokers` half is
+  bounded; its `resolve_identity_clusters` half is not) — split out
+  honestly as new T2.25 rather than scope-crept into this same commit (a
+  differently-keyed primitive with different consumers, needing its own
+  dedicated measurement per this project's discipline, not a mechanical
+  copy of this fix). AU-070 and the dossier CLI's CONNECTION BROKERS
+  section are FULLY protected — neither has any other unguarded call in
+  its path. **Independently adversarially reviewed** (a 15-agent workflow:
+  3 area reviews × their own refutation passes) before shipping, given the
+  change touches a shared core relation-graph primitive with three
+  consumers — the correctness and determinism/style reviews found nothing;
+  the coverage review correctly caught that this node's first draft of
+  T2.25 under-listed `identity_paths`' consumer set (it named three, not
+  the real four — missing `engine::rank_identity_aware_targets` and its
+  live `scan_auto` HTTP path, and only naming one of the dossier CLI's two
+  affected sections), which is now corrected in T2.25's text below rather
+  than shipped inaccurate; every other raised point was already the T2.25
+  split itself, so nothing further needed changing in the code. Gate
+  green: 4295 lib tests (4293→4295, +2), fmt/clippy
+  `--all-targets --locked -D warnings`/strict-rustdoc clean, full
+  `cargo test` green. **Paired:** `SOLUTION_TREE` new SOL-BROKER-CEILING
+  `[x]` + new T2.25 `[ ]` + §3/§4/§5 — same commit.
+- **`[ ]` T2.25 · `identity_paths` (and its `resolve_identity_clusters`
+  wrapper) has real, empirically-confirmed unguarded cost on the same
+  dense-hub graph shape T2.24 just fixed `connection_brokers` for — T2.24's
+  original "additive, therefore lower urgency, unconfirmed" framing for
+  this half was wrong on this point** *(found 2026-07-01, verifying
+  T2.24's fix)* — while proving AU-071
+  (`rule_au_071_robust_identity_cluster`, `src/core/correlator/rules/
+  robust.rs`) was safe after T2.24's `connection_brokers` ceiling landed,
+  the SAME 301-node dense hub-and-spoke synthetic graph (221 `Username`
+  identities × 80 shared `Domain` hubs) that fix already bounds
+  `connection_brokers` for still took **3.48s** in AU-071's OTHER call,
+  `resolve_identity_clusters` (`src/core/relation/graph.rs`) →
+  `identity_paths` — which runs BEFORE `connection_brokers` is ever reached
+  in the rule body, so T2.24's guard cannot protect this path. A real,
+  reproducible multi-second cost on a realistic shape (a company's staff
+  surfaced via one breach-exposed shared domain), not the "additive,
+  therefore lower urgency" case T2.24 assumed. The assumption's flaw:
+  `identity_paths` bounds each BFS to `max_hops` (4; here effectively 2 —
+  identity→hub→identity), but a hub graph puts MANY identity pairs within
+  that hop budget simultaneously, so while any one BFS is cheap, the
+  PATH-RECONSTRUCTION work across all reachable pairs approaches
+  O(identity_count²) on this shape — quadratic, not the additive
+  O(identity_count × (V+E)) T2.24 characterised it as. `identity_paths`
+  has (per T2.24's own original text, reconfirmed by this cycle's own
+  adversarial review — the reviewers correctly caught that this node's
+  first draft had narrowed the list) at least FOUR further consumers
+  sharing this exposure, none measured yet at this cycle's discipline bar
+  (empirical, not architectural): AU-060 itself
+  (`rule_au_060_transitive_identity_closure`,
+  `src/core/correlator/rules/transitive.rs`), AU-067 (via
+  `resolve_identity_clusters`), the dossier CLI's CONNECTIONS AND RESOLVED
+  IDENTITIES sections (`src/cli/scan/dossier.rs`, `print_connections` /
+  `print_resolved_identities` — both called unconditionally, unguarded,
+  before the now-protected `print_connection_brokers`), and — the most
+  operationally urgent, since it sits behind a live, repeatable HTTP
+  endpoint rather than an on-demand CLI render —
+  `engine::rank_identity_aware_targets` (`src/core/engine/mod.rs`), called
+  by `scan_auto` (`src/api/scan_handlers/core.rs`): it assembles an
+  UNBOUNDED cross-scan union pool (every entity/relation from up to 50
+  recent scans, deduped only, no cap) and feeds it straight into
+  `resolve_identity_clusters` with no ceiling anywhere in the path — a
+  platform that has run more than a handful of scans against a
+  well-connected subject could hit this on ordinary use, not just a
+  synthetic worst case. → **Solution (sketch, not yet designed):**
+  needs its OWN dedicated measurement (this cycle's 301-node graph is a
+  starting data point, not a characterised worst case — larger identity
+  counts on the same hub shape need measuring to find where/whether it
+  turns catastrophic, not just multi-second) before a tailored ceiling is
+  designed; `identity_paths`' cost key is identity COUNT (matching
+  `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`'s key, unlike
+  `connection_brokers`' graph-node-count key T2.24 just used), so reusing
+  that EXISTING constant may be the right fix rather than inventing a
+  third one — but that needs verifying against real measurements, not
+  assumed. **P2** (empirically confirmed multi-second cost on a realistic
+  graph shape, reachable by ordinary — not adversarial — use; upgraded
+  from this node's own original P3, now that "unconfirmed" is no longer
+  true for this half).
 
 ---
 
@@ -4359,3 +4467,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   --locked -D warnings`/strict-rustdoc clean, 4293 lib tests (4290→4293,
   +3), full `cargo test` green. **Paired:** `SOLUTION_TREE` new
   SOL-DISPATCH-HANG `[x]` + new T2.24 `[ ]` + §3/§4/§5 — same commit.
+
+- **2026-07-01** — **New: T2.24 closed (its `connection_brokers` half) —
+  the O(V·(V+E)) articulation search behind AU-070/AU-071/the dossier
+  CLI's CONNECTION BROKERS section could take 14.4s+ and climbing on a
+  dense hub-and-spoke identity graph; a new T2.25 split out honestly for
+  the OTHER half of T2.24's original scope (`identity_paths`), newly
+  confirmed real while verifying this fix.** Finishing T2.24, the sole
+  in-progress residual left by T2.23's adversarial review: first built a
+  temporary diagnostic test reproducing the DENSE hub-and-spoke shape
+  T2.23's tree-shaped benchmark never exercised (many `Username`
+  identities each linked to every one of a handful of shared `Domain`
+  hubs) and measured `connection_brokers` directly — confirmed
+  catastrophic (1.6s at 240 graph nodes, 14.4s at 480, worse than cubic),
+  settling T2.24's own "unconfirmed" framing for this half. Fixed with a
+  new deterministic `MAX_GRAPH_NODES_FOR_BROKER_SEARCH = 300` ceiling
+  (graph-node-count-keyed, not wall-clock) applied once inside
+  `connection_brokers` itself, so all three consumers inherit it without
+  per-call-site duplication. 2 new regression tests, `git stash`-confirmed
+  non-vacuous. Live-verified: the same diagnostic that measured 14.4s at
+  480 nodes now completes in 90ms. While proving AU-071 fully safe
+  post-fix, found it ISN'T — its `resolve_identity_clusters` call (→
+  `identity_paths`) runs before `connection_brokers` and independently
+  took 3.48s on the same graph shape, meaning T2.24's own "AU-060/
+  `identity_paths` is additive, lower urgency, unconfirmed" framing was
+  wrong on that point. Rather than silently declare AU-071 safe or
+  scope-creep a second, differently-keyed primitive's fix into this
+  commit, split the residual out as new T2.25 with the concrete
+  measurement already in hand and an honest "needs its own dedicated
+  pass" solution sketch. **Independently adversarially reviewed** (15
+  agents: 3 area reviews × their own refutation passes) before shipping —
+  correctness and determinism/style clean; the coverage review correctly
+  caught that T2.25's first draft under-listed `identity_paths`'
+  consumers (three named, not the real four — missing
+  `engine::rank_identity_aware_targets`'s live `scan_auto` HTTP path and
+  one of the dossier CLI's two affected sections), corrected before this
+  commit rather than shipped inaccurate. Gate green: 4295 lib tests
+  (4293→4295, +2), fmt/clippy `--all-targets --locked -D warnings`/
+  strict-rustdoc clean, full `cargo test` green. **Paired:**
+  `SOLUTION_TREE` new SOL-BROKER-CEILING `[x]` + new T2.25 `[ ]` +
+  §3/§4/§5 — same commit.

@@ -115,6 +115,51 @@ mod tests {
         )
     }
 
+    /// Regression guard for `PROBLEM_TREE` T2.24: a dense hub-and-spoke identity
+    /// graph (many identities, each linked to every one of a handful of shared
+    /// domain hubs — a common OSINT shape, e.g. a breach dump of one company's
+    /// staff) drove `connection_brokers`' O(V·(V+E)) articulation search past
+    /// `MAX_GRAPH_NODES_FOR_BROKER_SEARCH` graph nodes without this ceiling; this
+    /// proves the rule now returns fast rather than running the unbounded search.
+    #[test]
+    fn au070_returns_fast_on_a_graph_above_the_broker_ceiling() {
+        use crate::core::relation::MAX_GRAPH_NODES_FOR_BROKER_SEARCH;
+
+        let n_hubs = 80;
+        // One more identity than needed to push the total node count past the
+        // ceiling, so the guard is proven to trip by exactly one node.
+        let n_identities = MAX_GRAPH_NODES_FOR_BROKER_SEARCH - n_hubs + 1;
+        let mut ents: Vec<Entity> = Vec::new();
+        let hubs: Vec<Entity> = (0..n_hubs)
+            .map(|h| mk(EntityKind::Domain, &format!("hub{h}.example")))
+            .collect();
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..n_identities {
+            let ident = mk(EntityKind::Username, &format!("user{i}"));
+            for h in &hubs {
+                rels.push(edge(&ident, h));
+            }
+            ents.push(ident);
+        }
+        ents.extend(hubs);
+        assert!(
+            ents.len() > MAX_GRAPH_NODES_FOR_BROKER_SEARCH,
+            "test setup must exceed the ceiling"
+        );
+
+        let start = std::time::Instant::now();
+        let out = rule_au_070_connection_broker(&ents, &rels, "s", 0);
+        assert!(
+            out.is_empty(),
+            "above the ceiling, the articulation search must skip rather than run unbounded"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "the guard must return well before the unbounded search would (elapsed: {:?})",
+            start.elapsed()
+        );
+    }
+
     #[test]
     fn au070_fires_on_a_hub_brokering_three_identities() {
         // A domain hub is the sole connection between three identities.

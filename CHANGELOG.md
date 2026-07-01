@@ -370,6 +370,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   byte-identical crawl output.
 
 ### Fixed
+- **The connection-broker search (AU-070/AU-071, and the dossier CLI's
+  CONNECTION BROKERS section) could take 14+ seconds and climbing on a
+  dense hub-and-spoke identity graph — a common shape for one company's
+  staff surfaced via a single breach-exposed shared domain
+  (`PROBLEM_TREE` T2.24).** `connection_brokers`'s articulation search runs
+  one full graph traversal per candidate node, unbounded in the total
+  qualifying node count — measured 1.6s at 240 graph nodes, 14.4s at 480,
+  worse than cubic. Now capped by a new deterministic
+  `MAX_GRAPH_NODES_FOR_BROKER_SEARCH` ceiling applied once inside the
+  shared primitive, so all three consumers are protected together; above
+  the ceiling the search returns no brokers rather than running unbounded.
+  480 nodes now completes in 90ms. A related, separately-tracked cost in
+  AU-071's OTHER graph pass (`resolve_identity_clusters`) was found not yet
+  covered by this fix and is logged as new `PROBLEM_TREE` T2.25 rather than
+  silently left unaddressed.
 - **A deep or high-fan-out scan could hang for many minutes, unbounded
   (`PROBLEM_TREE` T2.23).** Three independent causes in the engine's
   post-expansion tail: lineage attribution diffed the entire working

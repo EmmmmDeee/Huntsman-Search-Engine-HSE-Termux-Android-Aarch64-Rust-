@@ -783,6 +783,32 @@ fn component_labels<'a>(
     label
 }
 
+/// Shared ceiling for [`connection_brokers`]' articulation search. Unlike the
+/// pairwise link-analysis rules bounded by [`MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`]
+/// (whose cost is keyed on the identity-*pair* count), this pass's cost is keyed on
+/// the total qualifying graph *node* count (`adj.len()`, i.e. `V`): one baseline
+/// [`component_labels`] BFS, then one MORE full BFS per candidate node — any node
+/// with ≥2 binding edges, a superset of the identity endpoints that also includes
+/// domains, IPs, orgs, or anything else with enough edges — an `O(V·(V+E))` cost
+/// the function's own doc comment already names.
+///
+/// Empirically confirmed catastrophic on a dense hub-and-spoke graph (a common
+/// OSINT shape: many identities sharing a handful of breach-exposed domains/IPs,
+/// e.g. a company's employees found via one leaked customer database) — measured
+/// ~1.6s at `V=240`, ~14.4s at `V=480`, worse than cubic scaling
+/// (`PROBLEM_TREE` T2.24).
+///
+/// A wall-clock cutoff is rejected for the same reproducibility reason
+/// [`MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`] documents: this node-count gate is
+/// fully deterministic, so the SAME graph always yields the SAME "search" or
+/// "skip" decision regardless of machine speed or load. Above the ceiling, every
+/// consumer (AU-070, AU-071, and the dossier CLI's CONNECTIONS section) gets no
+/// brokers from this pass rather than an unbounded block; extrapolating from the
+/// measured points, this ceiling keeps the worst case in the low single digits of
+/// seconds — well inside `CORRELATOR_BUDGET`, which this one rule shares with many
+/// others.
+pub const MAX_GRAPH_NODES_FOR_BROKER_SEARCH: usize = 300;
+
 /// Find the **connection brokers** of the graph: the nodes whose removal would
 /// disconnect identities that are otherwise linked only through them, counting only
 /// edges whose confidence is `>= min_confidence` as binding. For each candidate
@@ -805,6 +831,9 @@ fn component_labels<'a>(
 /// `ids` set is the identity-endpoint universe (typically [`identity_uids`]);
 /// only nodes/identities present in `adj` participate. Deterministic. A node with
 /// fewer than two binding edges can never be a broker and is skipped.
+///
+/// Above [`MAX_GRAPH_NODES_FOR_BROKER_SEARCH`] total graph nodes, returns empty
+/// rather than running the search — see that constant's doc for why.
 pub fn connection_brokers<'a>(
     adj: &Adjacency<'a>,
     ids: &[&'a str],
@@ -817,6 +846,15 @@ pub fn connection_brokers<'a>(
         .filter(|u| adj.contains_key(u))
         .collect();
     if id_set.len() < 2 {
+        return Vec::new();
+    }
+    if adj.len() > MAX_GRAPH_NODES_FOR_BROKER_SEARCH {
+        tracing::warn!(
+            graph_nodes = adj.len(),
+            ceiling = MAX_GRAPH_NODES_FOR_BROKER_SEARCH,
+            "connection_brokers: graph node count exceeds the articulation-search ceiling — \
+             skipping (see MAX_GRAPH_NODES_FOR_BROKER_SEARCH)"
+        );
         return Vec::new();
     }
 
@@ -1082,6 +1120,62 @@ mod tests {
         assert!(
             connection_brokers(&adj, &ids, 0.0).is_empty(),
             "redundancy means no single broker"
+        );
+    }
+
+    /// Regression guard for `PROBLEM_TREE` T2.24: a dense hub-and-spoke graph (many
+    /// identities each linked to every one of a handful of shared hubs — a common
+    /// OSINT shape, e.g. a company's staff found via one breach-exposed domain)
+    /// drove this function's `O(V·(V+E))` cost past several seconds and climbing
+    /// worse than cubic before `MAX_GRAPH_NODES_FOR_BROKER_SEARCH` existed
+    /// (measured ~14.4s at 480 nodes at fix time). Above the ceiling the search
+    /// must skip entirely rather than run unbounded.
+    #[test]
+    fn connection_brokers_returns_empty_above_the_node_ceiling() {
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.8, "s");
+        let edge = |from: &Entity, to: &Entity| {
+            Relation::new(
+                from.uid.clone(),
+                to.uid.clone(),
+                RelationKind::DerivedFrom,
+                0.8,
+                "s",
+            )
+        };
+        let n_hubs = 80;
+        // One more node than the ceiling allows, so the guard is proven to trip
+        // by exactly one node.
+        let n_identities = MAX_GRAPH_NODES_FOR_BROKER_SEARCH - n_hubs + 1;
+        let hubs: Vec<Entity> = (0..n_hubs)
+            .map(|h| mk(EntityKind::Domain, &format!("hub{h}.example")))
+            .collect();
+        let mut ents: Vec<Entity> = Vec::new();
+        let mut rels: Vec<Relation> = Vec::new();
+        for i in 0..n_identities {
+            let ident = mk(EntityKind::Username, &format!("user{i}"));
+            for h in &hubs {
+                rels.push(edge(&ident, h));
+            }
+            ents.push(ident);
+        }
+        ents.extend(hubs);
+        assert!(
+            ents.len() > MAX_GRAPH_NODES_FOR_BROKER_SEARCH,
+            "test setup must exceed the ceiling"
+        );
+        let adj = sorted_confined_adjacency(&ents, &rels);
+        let ids = identity_uids(&ents);
+        assert!(adj.len() > MAX_GRAPH_NODES_FOR_BROKER_SEARCH);
+
+        let start = std::time::Instant::now();
+        assert!(
+            connection_brokers(&adj, &ids, 0.50).is_empty(),
+            "above the ceiling, the articulation search must skip rather than run unbounded"
+        );
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "the guard must return well before the unbounded search would (elapsed: {:?})",
+            start.elapsed()
         );
     }
 

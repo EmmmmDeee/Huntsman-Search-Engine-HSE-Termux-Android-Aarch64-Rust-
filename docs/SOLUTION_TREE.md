@@ -742,6 +742,44 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `DERIVE_BUDGET` windows are independent/additive not shared, and
   `run_gap_fill`'s bounded derivation lacks a dedicated unit test though
   its effect is proven end-to-end).
+- **`[x]` SOL-BROKER-CEILING · Deterministic node-count ceiling on
+  `connection_brokers`' O(V·(V+E)) articulation search** → **T2.24**:
+  `connection_brokers` (`src/core/relation/graph.rs`, shared by AU-070,
+  AU-071, and the dossier CLI's CONNECTION BROKERS section) had no bound
+  on the total graph-node count it searches — one baseline BFS
+  (`component_labels`) plus one MORE full BFS per candidate node (any node
+  with ≥2 binding edges). Empirically confirmed catastrophic on a dense
+  hub-and-spoke identity graph (many identities sharing a handful of hubs
+  — a realistic OSINT shape T2.23's tree-shaped benchmark never
+  exercised): 1.6s at 240 graph nodes, 14.4s at 480, worse than cubic. ✅
+  **Fixed:** new `pub const MAX_GRAPH_NODES_FOR_BROKER_SEARCH = 300`
+  (deterministic, not wall-clock — the same T2.23-established
+  reproducibility reasoning), applied ONCE inside `connection_brokers`
+  itself rather than duplicated at each call site, so all three consumers
+  inherit the fix automatically. Above the ceiling: empty result (a
+  conservative false-negative), plus a `tracing::warn!` log line. 2 new
+  regression tests (`graph.rs` primitive-level, `broker.rs` AU-070
+  rule-level, both above the ceiling by one node), `git stash`-confirmed
+  non-vacuous. **Live-verified**: the same diagnostic that measured 14.4s
+  at 480 nodes now completes in 90ms; 960 nodes in 376ms; 300 nodes (at
+  the ceiling, still runs the full search) stays bounded at 3.55s. **Found
+  a real, honest residual while verifying, not silently dropped:** AU-071
+  calls `resolve_identity_clusters` (→ `identity_paths`) BEFORE its
+  `connection_brokers` call, and that OTHER call independently took 3.48s
+  on the same graph shape — T2.24's own original "AU-060/`identity_paths`
+  is additive, lower urgency, unconfirmed" framing is now confirmed wrong
+  on this point. Logged as new T2.25 rather than scope-crept into this
+  commit (a differently-keyed primitive needing its own dedicated
+  measurement, per this project's "measure before fixing" discipline) —
+  AU-070 and the dossier CLI's CONNECTION BROKERS section are FULLY
+  protected by this fix; AU-071 is PARTIALLY protected (its
+  `connection_brokers` half only). **Independently adversarially reviewed**
+  (15 agents: 3 area reviews × their own refutation passes) before
+  shipping — correctness and determinism/style clean; the coverage review
+  caught T2.25's first draft under-listing `identity_paths`'s real
+  consumer set (missing `engine::rank_identity_aware_targets`'s live
+  `scan_auto` HTTP path and one of the dossier CLI's two affected
+  sections), corrected in T2.25's `PROBLEM_TREE` text before this commit.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -832,6 +870,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ATTACK-TACTIC | T2.21 | `[x]` |
 | SOL-AU087-INDEX | T2.22 | `[x]` |
 | SOL-DISPATCH-HANG | T2.23 | `[x]` |
+| SOL-BROKER-CEILING | T2.24 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -855,15 +894,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.24** (new, 2026-07-01) — two correlator relation-rules (AU-070
-  `connection_broker`, AU-071 `robust_identity_cluster`) share an unguarded
-  O(V·(V+E)) cost via `connection_brokers` (graph-node count, not identity
-  pairs — not a drop-in fit for `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`),
-  and AU-060 (`identity_paths`) is unguarded O(identity_count × (V+E)),
-  additive not combinatorial. Found during T2.23's adversarial review;
-  neither confirmed catastrophic in this cycle's measurements. No solution
-  node yet — needs its own dedicated dense-graph measurement before a
-  tailored guard is designed.
+- **T2.25** (new, 2026-07-01) — `identity_paths`/`resolve_identity_clusters`
+  empirically confirmed to share an unguarded, real (3.48s at 221 identity
+  entities) cost on the same dense hub-and-spoke graph shape
+  SOL-BROKER-CEILING just fixed `connection_brokers` for. Found while
+  verifying that fix protects AU-071 — it doesn't fully, since AU-071's
+  `resolve_identity_clusters` call runs BEFORE its (now-bounded)
+  `connection_brokers` call. `identity_paths`' cost key is identity count
+  (matching `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`, unlike
+  `connection_brokers`' graph-node-count key), so reusing that existing
+  constant may be the right fix — needs its own dedicated measurement at
+  larger identity counts to confirm before a tailored guard is designed.
+  No solution node yet.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -974,17 +1016,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21/T2.22/T2.23
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21/T2.22/T2.23/T2.24
   `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
   SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION,
   SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM, SOL-ATTACK-TACTIC,
-  SOL-AU087-INDEX, SOL-DISPATCH-HANG — the dead-hint/dead-ledger/
-  dead-delegation/false-doc/silent-truncation/unguarded-arithmetic/
-  overclaimed-test-coverage/dead-constant/reintroduced-O(n²) bug family,
-  all closed); **T2.24 `[ ]`** (new, two relation-rules + one graph
-  primitive with a related-but-distinct, unconfirmed-severity unguarded
-  cost — needs its own measurement before a fix is designed); T2.7 open
-  (blocked for an unattended cycle); **T2.11 `[x]`**
+  SOL-AU087-INDEX, SOL-DISPATCH-HANG, SOL-BROKER-CEILING — the
+  dead-hint/dead-ledger/dead-delegation/false-doc/silent-truncation/
+  unguarded-arithmetic/overclaimed-test-coverage/dead-constant/
+  reintroduced-O(n²)-or-worse-unguarded-graph-search bug family, all
+  closed); **T2.25 `[ ]`** (new, `identity_paths`/`resolve_identity_
+  clusters` empirically confirmed to share the same unguarded-cost bug
+  family on the same dense-hub shape T2.24 just fixed for
+  `connection_brokers` — needs its own dedicated measurement before a
+  tailored fix); T2.7 open (blocked for an unattended cycle); **T2.11 `[x]`**
   ✅ (2026-07-01, status-marker reconciliation — oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
   closed; the one residual, the `QuotaBudget` per-scan `reset_scan()`-zeroing
@@ -3288,4 +3332,48 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   missing §8 entry, found while writing this one — see that entry's own
   note). Gate green: fmt/clippy `--all-targets --locked -D warnings`/
   strict-rustdoc clean, 4293 lib tests (4290→4293, +3), full `cargo test`
+  green.
+
+- **2026-07-01** — **New: SOL-BROKER-CEILING closes T2.24's
+  `connection_brokers` half (14.4s+ and climbing on a dense hub-and-spoke
+  identity graph); new T2.25 split out honestly for the OTHER half of
+  T2.24's original scope, found real while verifying this fix.** Finishing
+  T2.24, the sole in-progress residual left by T2.23's own adversarial
+  review. First built a temporary diagnostic test reproducing the DENSE
+  hub-and-spoke shape T2.23's tree-shaped benchmark never exercised, and
+  measured `connection_brokers` directly: confirmed catastrophic (1.6s at
+  240 graph nodes, 14.4s at 480, worse than cubic) — settling T2.24's own
+  "unconfirmed" framing for this half. Fixed with a new deterministic
+  `MAX_GRAPH_NODES_FOR_BROKER_SEARCH = 300` ceiling (graph-node-count-keyed,
+  not wall-clock, mirroring `MAX_IDENTITY_UIDS_FOR_PAIRWISE_SEARCH`'s
+  established reproducibility reasoning), applied once inside
+  `connection_brokers` itself rather than duplicated across its three call
+  sites (AU-070, AU-071, the dossier CLI), so all three inherit the fix
+  automatically. 2 new regression tests, `git stash`-confirmed non-vacuous
+  (fail at ~3.5–5s elapsed against the unfixed code, pass under 100ms
+  against the fix). **Live-verified**: the same diagnostic that measured
+  14.4s at 480 nodes now completes in 90ms; 960 nodes in 376ms; 300 nodes
+  (at the ceiling) stays bounded at 3.55s. While proving AU-071 fully safe
+  post-fix, found it ISN'T — its `resolve_identity_clusters` call (→
+  `identity_paths`) runs BEFORE `connection_brokers` and independently
+  took 3.48s on the same 301-node graph shape, meaning T2.24's own
+  "AU-060/`identity_paths` is additive, lower urgency, unconfirmed"
+  framing was wrong on that point. Rather than silently declare AU-071
+  safe or scope-creep a second, differently-keyed primitive's fix into
+  this commit, split the residual out as new T2.25 with the concrete
+  measurement already in hand. **Independently adversarially reviewed**
+  (15 agents: 3 area reviews × their own refutation passes) before
+  shipping, given the change touches a shared core relation-graph
+  primitive with three consumers — correctness and determinism/style
+  clean; the coverage review correctly caught that T2.25's first draft
+  under-listed `identity_paths`'s consumer set (three named, not the real
+  four — missing `engine::rank_identity_aware_targets`'s live `scan_auto`
+  HTTP path, and one of the dossier CLI's two affected sections), fixed in
+  `PROBLEM_TREE`'s T2.25 text before this commit rather than shipped
+  inaccurate. **Gap refresh:** leverage-map gains
+  SOL-BROKER-CEILING `[x]`; §4a's T2.24 gap entry is replaced by T2.25;
+  §4d's T2 row folds T2.24 into the closed bug family and adds T2.25 as
+  open. Paired: `PROBLEM_TREE` T2.24 `[x]` + new T2.25 `[ ]` + §8 — same
+  commit. Gate green: fmt/clippy `--all-targets --locked -D warnings`/
+  strict-rustdoc clean, 4295 lib tests (4293→4295, +2), full `cargo test`
   green.
