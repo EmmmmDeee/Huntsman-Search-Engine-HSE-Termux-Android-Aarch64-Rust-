@@ -73,14 +73,21 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
-· 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
-16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
-Sensor 4, Threat 3, Search/Other 2 each); 64 native correlation rules
-(AU-001…AU-064); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
-axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
-zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
-`util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
+Current baseline (grounded in the codebase; aggregate counts re-verified
+2026-07-01, per-category split as of 2026-06-18): **161 modules** (live registry
+size, guarded by `readme_module_overview_count_matches_registry`); the
+per-category split below is the 2026-06-18 snapshot and has NOT been
+re-derived — 14 categories (Infrastructure 21, Geo 20, People 16, DnsRecon 13,
+Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5, Sensor 4, Threat 3,
+Search/Other 2 each) — treat the sub-counts as approximate until re-tallied;
+**109 native correlation rules** (dispatched `rule_au_*` functions: 96 entity
+rules + 13 relation-graph rules; ID ceiling AU-111; a few IDs like AU-065/066
+are engine-emitted rather than dispatched, so they occupy numbers outside the
+dispatch tables); 0 `unsafe`; deterministic entity merge; SQLite store; SSE
+live; axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct
+(dev-only, zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps
+(F.1, `util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT
+direct.**
 
 ---
 
@@ -4031,3 +4038,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+
+- **2026-07-01** — **Baseline-header stale-count correction: the
+  top-of-file "Current baseline" said "64 native correlation rules
+  (AU-001…AU-064)" and "126 modules", both badly stale.** Selected from a
+  fourth discovery pass's stale-doc sweep, which ALSO independently
+  checked three other suspected-stale claims (C2's "no published
+  numbers", F.3's `cargo-fuzz` remaining, C4's SSL-cert-hash "needs new
+  data source") and confirmed all three still accurate — the sweep
+  reports precisely, not just when it finds something. Live verification:
+  `src/core/correlator/mod.rs`'s dispatch tables hold 96 entity rules
+  (`const RULES`) + 13 relation-graph rules (`const RELATION_RULES`) =
+  109 unique dispatched `rule_au_*` functions, ID ceiling AU-111 (added
+  same day in `ae49da6d`), not 64/AU-064. The changelog's own running
+  "Rule count N→N+1" self-tracker had stopped advancing at "68→69" ~40
+  cycles ago while the AU-070s through AU-111 families kept landing. The
+  module count was separately verified stale too: the guarded README
+  (`readme_module_overview_count_matches_registry` keeps it live) shows
+  161 modules, not 126. Corrected both aggregate figures; deliberately
+  did NOT re-derive the 14 per-category sub-counts (Infrastructure 21,
+  Geo 20, …) — those need running code to re-tally accurately, so rather
+  than guess, flagged them explicitly as the unverified 2026-06-18
+  snapshot. Doc-only; no code touched. Gate: n/a (docs). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

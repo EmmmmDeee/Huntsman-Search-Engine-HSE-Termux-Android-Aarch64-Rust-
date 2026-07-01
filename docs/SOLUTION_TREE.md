@@ -3129,3 +3129,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   full suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` §8 — same
   commit.
+
+- **2026-07-01** — **`PROBLEM_TREE` baseline-header stale-count
+  correction.** The top-of-file "Current baseline" said "64 native
+  correlation rules (AU-001…AU-064)" and "126 modules"; live code has 109
+  dispatched `rule_au_*` functions (96 entity + 13 relation, ceiling
+  AU-111) and 161 registered modules (guarded README count). Corrected
+  both aggregates; left the 14 per-category sub-counts flagged as an
+  unverified 2026-06-18 snapshot rather than guessing new numbers. The
+  same sweep confirmed C2's "no published numbers", F.3's `cargo-fuzz`
+  remaining, and C4's SSL-cert-hash "needs new data source" all still
+  accurate. Doc-only, in `PROBLEM_TREE` (no SOLUTION_TREE mirror of the
+  stale line exists). Paired: `PROBLEM_TREE` baseline + §8 — same commit.
