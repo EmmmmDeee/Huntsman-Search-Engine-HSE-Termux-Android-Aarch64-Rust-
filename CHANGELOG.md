@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse cells status` now warns when the local cell-tower database is
+  stale.** Cell towers are added, moved, and decommissioned over time, but
+  the local OpenCelliD snapshot `hse cells import` builds had no staleness
+  signal — an operator could unknowingly rely on a long-forgotten import.
+  A new warning fires when the last import is more than 90 days old,
+  naming the fix (`hse cells import`). Genuine unattended re-sync (a
+  cron/daemon path) remains open — it would need either new daemon
+  infrastructure this CLI doesn't have, or an OS-level cron example — but
+  this closes the honest, in-repo half: detecting staleness rather than
+  silently trusting an old snapshot.
 - **Two tests now actually verify what their names promise
   (`PROBLEM_TREE` T2.20).** `module_registry_count_is_stable` checked only
   a `>= 75` floor; it now also asserts every module is registered exactly

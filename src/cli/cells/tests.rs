@@ -1,6 +1,6 @@
 //! Unit tests for `hse cells` CSV parsing and country-code helpers.
 
-use super::{mcc_for_country, parse_csv_line};
+use super::{STALE_THRESHOLD_SECS, mcc_for_country, parse_csv_line, staleness_warning};
 
 // ── parse_csv_line ──────────────────────────────────────────────────────────
 
@@ -88,4 +88,41 @@ fn mcc_for_country_maps_gb_and_uk_to_234() {
 #[test]
 fn mcc_for_country_maps_nz_to_530() {
     assert_eq!(mcc_for_country("NZ"), Some(530));
+}
+
+// ── staleness_warning ───────────────────────────────────────────────────────
+
+/// Regression guard for the C5 "cell_local auto-sync" gap (`SOLUTION_TREE`
+/// §4a): `hse cells status` previously reported an import's age with no
+/// judgement at all, so an operator relying on a long-forgotten snapshot got
+/// no signal their cell-tower coverage may be missing recently added/moved
+/// towers.
+#[test]
+fn staleness_warning_none_for_a_fresh_import() {
+    assert_eq!(staleness_warning(0), None);
+    assert_eq!(staleness_warning(3600), None, "an hour old is fresh");
+    assert_eq!(staleness_warning(30 * 86400), None, "30 days old is fresh");
+}
+
+#[test]
+fn staleness_warning_none_exactly_at_the_threshold() {
+    assert_eq!(
+        staleness_warning(STALE_THRESHOLD_SECS),
+        None,
+        "exactly at the threshold is not yet stale"
+    );
+}
+
+#[test]
+fn staleness_warning_fires_just_past_the_threshold() {
+    let warning =
+        staleness_warning(STALE_THRESHOLD_SECS + 1).expect("must warn just past the threshold");
+    assert!(warning.contains("WARNING"));
+    assert!(warning.contains("hse cells import"), "must name the fix");
+}
+
+#[test]
+fn staleness_warning_fires_for_a_long_forgotten_import() {
+    let warning = staleness_warning(365 * 86400).expect("a year-old import must warn");
+    assert!(warning.contains("365d"));
 }

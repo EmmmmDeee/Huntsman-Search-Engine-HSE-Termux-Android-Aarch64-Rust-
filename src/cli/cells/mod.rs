@@ -1,7 +1,8 @@
 //! `hse cells` — local OpenCelliD cell-tower database management.
 //!
 //! Subcommands:
-//!   - `status`             — show tower count, MCC breakdown, last import time
+//!   - `status`             — show tower count, MCC breakdown, last import time,
+//!     and a [`staleness_warning`] when the snapshot is old (`PROBLEM_TREE` C5)
 //!   - `import --file PATH` — import a local CSV or CSV.GZ file
 //!   - `import --country CODE` — attempt download from OpenCelliD, then import
 //!   - `clear [--yes]`      — truncate the cells table
@@ -109,6 +110,9 @@ fn cmd_status() -> Result<()> {
         }
         println!("  Duration: {}ms", rec.duration_ms);
         println!("  Age:      {age_str}");
+        if let Some(warning) = staleness_warning(age_secs as u64) {
+            println!("{warning}");
+        }
     } else {
         println!("\nNo import history.");
     }
@@ -126,6 +130,29 @@ fn format_age(secs: u64) -> String {
     } else {
         format!("{}d ago", secs / 86400)
     }
+}
+
+/// Reminder threshold for `hse cells status`'s staleness warning. OpenCelliD
+/// publishes no fixed update cadence for its full-dataset dumps, so this is a
+/// conservative, advisory reminder — not a hard cutoff — that the local
+/// snapshot may be missing towers added, moved, or decommissioned since the
+/// last import; 90 days keeps the warning quiet across ordinary re-scan
+/// cadences while still catching a genuinely forgotten import.
+const STALE_THRESHOLD_SECS: u64 = 90 * 24 * 60 * 60;
+
+/// The staleness warning line for `hse cells status`, or `None` when the last
+/// import is still within [`STALE_THRESHOLD_SECS`]. Pure so it is directly
+/// testable without capturing stdout — `cmd_status` just prints the result.
+fn staleness_warning(age_secs: u64) -> Option<String> {
+    if age_secs <= STALE_THRESHOLD_SECS {
+        return None;
+    }
+    let days = age_secs / 86400;
+    let threshold_days = STALE_THRESHOLD_SECS / 86400;
+    Some(format!(
+        "  WARNING:  last import was {days}d ago (> {threshold_days}d) — cell tower data \
+         may be stale; consider re-running `hse cells import`"
+    ))
 }
 
 // ── import ───────────────────────────────────────────────────────────────────

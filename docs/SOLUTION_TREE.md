@@ -438,9 +438,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `scan_export`) is unchanged because they use tolerant range assertions
   against tightly-clustered fixtures where the two estimators barely diverge —
   this closes a real precision gap, not a behaviour regression risk.
-  *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
-  re-sync of the local cell DB (currently requires manual `hse cells import`
-  trigger).
+  *Delivered (2026-07-01, the honest scoped increment of the "cell DB
+  auto-sync" remainder below):* **`hse cells status` now warns on a stale
+  local snapshot.** Investigated whether genuine unattended re-sync (a
+  cron/daemon path) was buildable this cycle before assuming so: `hse`
+  has no daemon/background-process infrastructure anywhere — every
+  subcommand including `cells import` is one-shot, and the only long-lived
+  process (`hse serve`) is foreground/opt-in — so literal "auto-sync"
+  needs either new daemon infrastructure (a large architectural addition,
+  not appropriate unprompted in one cycle) or an OS-level cron example (a
+  docs/shell deliverable, not a code fix). Found the real, small increment
+  available without either: `hse cells status` already read the last
+  import's age but applied no judgement to it. New pure
+  `staleness_warning(age_secs) -> Option<String>`
+  (`src/cli/cells/mod.rs`) prints a warning + remediation hint above a
+  90-day threshold (OpenCelliD publishes no fixed dump cadence, so this is
+  advisory, not a hard cutoff). 4 new regression tests, `git
+  stash`-confirmed non-vacuous (the tests don't compile against the
+  unfixed code, since the new items don't exist yet). Live-verified
+  against a real imported DB: fresh import → no warning; the same DB with
+  `imported_at` backdated 91 days → the exact warning text. `hse
+  selftest` 9/9 unaffected.
+  *Remaining:* AU bounding precision; movement/timeline layer; genuine
+  unattended cell-DB re-sync (a cron/daemon path) still needs either new
+  daemon infrastructure `hse` doesn't have or an OS-cron documentation
+  deliverable — neither attempted; staleness DETECTION is now solved,
+  staleness PREVENTION (auto re-import) is not.
 - **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
@@ -993,10 +1016,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `au084_does_not_fire_on_single_source`,
   `au084_medium_severity_for_three_or_more_towers`,
   `au084_ignores_non_cell_tower_device_ids`). Off the open queue.
-- **cell_local auto-sync (new, cycle 21 S→P gap):** `hse cells import` requires a
-  manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
-  recurring `hse cells import --country world` cron/daemon path would keep the local
-  DB fresh without user intervention. No solution node yet.
+- **cell_local auto-sync (cycle 21 S→P gap) — partially covered (2026-07-01):**
+  `hse cells import` requires a manual trigger and a BYO OpenCelliD key; no
+  auto-scheduled re-sync exists. Investigated feasibility before building:
+  genuine unattended re-sync (a cron/daemon path) needs either new daemon
+  infrastructure `hse` doesn't have (every subcommand is one-shot; `hse
+  serve` is the only long-lived process and is foreground/opt-in) or an
+  OS-level cron example (a docs deliverable, not a code fix) — architecturally
+  analogous to T2.7's blocked status, not attempted this cycle. Delivered the
+  honest increment available without either: `hse cells status` now warns
+  when the local snapshot exceeds 90 days old (SOL-GEOINT, folded into the
+  existing node above). *Remaining:* the cron/daemon path itself.
 - ~~**hse update --check changelog (cycle 22 S→P gap): `--check` reports only a
   commit count, no subject lines.**~~ **Delivered, stale note (found
   2026-07-01).** `cli/update.rs::changelog_lines` runs exactly the suggested
@@ -1085,7 +1115,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C2 `[~]`** (SOL-PERF-PUBLISH: `web_crawler` BFS crawl loop now fetches same-round batches concurrently, ~3.2× measured speedup, 2026-07-01; the published benchmark itself remains gated on §3.F); C1/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 + cell-DB staleness warning 2026-07-01 delivered, Weiszfeld/centroid fusion + genuine unattended cron/daemon re-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C2 `[~]`** (SOL-PERF-PUBLISH: `web_crawler` BFS crawl loop now fetches same-round batches concurrently, ~3.2× measured speedup, 2026-07-01; the published benchmark itself remains gated on §3.F); C1/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -3482,3 +3512,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.25 `[x]` + §8 — same commit. Gate green: fmt/clippy `--all-targets
   --locked -D warnings`/strict-rustdoc clean, 4300 lib tests
   (4295→4300, +5), full `cargo test` green.
+
+- **2026-07-01** — **SOL-GEOINT extended (stays `[~]`): `hse cells status`
+  now warns on a stale local cell-tower snapshot — the honest, scoped
+  half of the "cell_local auto-sync" S→P gap that's actually buildable
+  this cycle.** With T2.25 closed and T2.7 still blocked, a discovery
+  pass over §4a's ungated gaps found this one concrete, no-code-yet item.
+  Investigated feasibility FIRST rather than assuming: `hse` has no
+  daemon/background-process infrastructure anywhere (every subcommand,
+  including `cells import`, is one-shot; the only long-lived process,
+  `hse serve`, is foreground/opt-in), so literal "auto-sync" (a
+  cron/daemon path) needs either inventing new daemon infrastructure (a
+  large architectural addition, not appropriate unprompted in one cycle)
+  or an OS-level cron example (a docs/shell deliverable, not a code fix)
+  — architecturally analogous to T2.7's blocked status. Rather than force
+  either or silently skip the gap, delivered the real increment inside
+  it: `hse cells status` already read the last import's age but applied
+  no judgement — an operator relying on a long-forgotten snapshot got no
+  signal their coverage might be stale. New pure
+  `staleness_warning(age_secs) -> Option<String>`
+  (`src/cli/cells/mod.rs`), warning above a 90-day threshold. 4 new
+  regression tests, `git stash`-confirmed non-vacuous. Live-verified
+  against a real imported DB: fresh import → no warning; the same DB
+  backdated 91 days → the exact warning text. `hse selftest` 9/9
+  unaffected. **Gap refresh:** §4a's "cell_local auto-sync" entry marked
+  partially covered, remainder narrowed to the cron/daemon path itself;
+  §4d's C5 row notes the staleness-warning delivery. Paired: `PROBLEM_TREE`
+  C5 node updated (SOL-GEOINT extended) + §8 — same commit. Gate green:
+  fmt/clippy `--all-targets --locked -D warnings`/strict-rustdoc clean,
+  4304 lib tests (4300→4304, +4), full `cargo test` green.

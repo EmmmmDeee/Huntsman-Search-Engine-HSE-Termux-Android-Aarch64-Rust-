@@ -1637,7 +1637,34 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   tests are unaffected (they all use tolerant range assertions on real,
   closely-clustered fixtures where the two estimators don't meaningfully
   diverge).
-  *Remaining:* tighter AU bounding; movement/timeline geo.
+  *Delivered (2026-07-01, the honest scoped increment of the "cell_local
+  auto-sync" S→P gap above — investigated before starting, not assumed
+  buildable):* **`hse cells status` now warns when the local snapshot is
+  stale.** True unattended re-scheduling (a "recurring `hse cells import
+  --country world` cron/daemon path") turns out to need either NEW daemon
+  infrastructure `hse` doesn't have anywhere (every subcommand including
+  `cells import` is one-shot; the only long-lived process, `hse serve`, is
+  foreground/opt-in) or an OS-level cron example — a docs/shell
+  deliverable, not a code fix, and not attempted unprompted. The real,
+  small, honest increment available without inventing that infrastructure
+  or any live network call: `hse cells status` already read
+  `last_import`'s age but applied no judgement to it, so an operator
+  relying on a long-forgotten local snapshot got no signal their
+  cell-tower coverage might be missing towers added/moved/decommissioned
+  since. A new pure `staleness_warning(age_secs) -> Option<String>`
+  (`src/cli/cells/mod.rs`) prints a WARNING line + remediation hint above
+  a 90-day threshold (OpenCelliD publishes no fixed dump cadence, so this
+  is a conservative advisory reminder, not a hard cutoff). 4 new
+  regression tests (fresh/threshold-boundary/just-past/long-forgotten),
+  `git stash`-confirmed non-vacuous (the new tests don't even compile
+  against the unfixed code). Live-verified against a real imported DB: a
+  fresh import shows no warning; the same DB with its `imported_at`
+  backdated 91 days shows the exact warning text. This closes the
+  in-repo-actionable half of the gap honestly; genuine unattended
+  cron/daemon re-sync remains open (see *Remaining*).
+  *Remaining:* tighter AU bounding; movement/timeline geo; genuine
+  unattended cell-DB re-sync still needs either new daemon infrastructure
+  or an OS-cron documentation deliverable — neither attempted this cycle.
 - **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -4639,3 +4666,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy `--all-targets --locked -D warnings`/strict-rustdoc clean,
   full `cargo test` green. **Paired:** `SOLUTION_TREE` new
   SOL-IDENTITY-PATH-CEILING `[x]` + §3/§4/§5 — same commit.
+
+- **2026-07-01** — **C5's "cell_local auto-sync" S→P gap partially
+  delivered: `hse cells status` now warns on a stale local snapshot; true
+  unattended cron/daemon re-sync investigated and found genuinely blocked
+  (not silently skipped).** With T2.25 closed and T2.7 still blocked
+  (needs live third-party fixture fetch), a discovery pass over
+  `SOLUTION_TREE` §4a's ungated gaps found one concrete, no-solution-node
+  item: `cell_local` auto-sync. Investigated FIRST whether it was
+  actually buildable this cycle, per this project's own "don't assume, go
+  read the code" discipline — confirmed `hse` has no daemon/background
+  process infrastructure anywhere (every subcommand is one-shot; `hse
+  serve`, the only long-lived process, is foreground/opt-in), so literal
+  "auto-sync" (a cron/daemon path) would mean either inventing new daemon
+  infrastructure (a large, risky architectural addition, not appropriate
+  to add unprompted in one cycle) or writing an OS-level cron example (a
+  docs/shell deliverable that doesn't fix anything in-repo). Rather than
+  force either of those or silently skip the gap, found the honest,
+  small, real increment INSIDE it: `hse cells status` already read the
+  last import's age but applied no judgement — an operator relying on a
+  long-forgotten local snapshot got no signal their cell-tower coverage
+  might be stale. Added a pure `staleness_warning` helper
+  (`src/cli/cells/mod.rs`) warning above a 90-day threshold. 4 new
+  regression tests, `git stash`-confirmed non-vacuous. Live-verified
+  against a real imported DB (fresh import → no warning; the same DB
+  backdated 91 days → the exact warning text). Gate green: 4304 lib tests
+  (4300→4304, +4), fmt/clippy `--all-targets --locked -D warnings`/
+  strict-rustdoc clean, full `cargo test` green, `hse selftest` 9/9.
+  **Paired:** `SOLUTION_TREE` SOL-GEOINT (extended, stays `[~]`) + C5's
+  §4a gap entry updated (partially delivered, genuine remainder documented) —
+  same commit.
