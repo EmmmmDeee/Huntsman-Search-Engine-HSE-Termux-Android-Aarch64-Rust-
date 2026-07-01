@@ -471,7 +471,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -480,8 +480,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   given target kind (normal, not noteworthy), so a naive per-module
   reinstatement would flood the hints list with the opposite of signal.
   Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count.
+  ✅ **Scan-level leg delivered (2026-07-01).** `cli/scan/dossier.rs` gained
+  `scan_ran_long_with_a_zero_yield_module(wall_time_ms, events)` — reads the
+  scan's own `ModuleDone { found: 0, .. }` events (same source as
+  `zero_yield_keyed_or_paid_modules`); `print_diagnostics` appends the
+  original wording ("scan exceeded 60s with at least one zero-yield module —
+  tighten module_timeout_ms") to `diag.optimization_hints` when it holds. 4
+  new unit tests, incl. the 60s boundary (`>`, not `>=`). *Gap:* the
+  per-module leg is not yet started — the noise decision above is still
+  open. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -557,7 +565,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -581,10 +589,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
-  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
-  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
-  Not yet started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -666,6 +670,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **SOL-BUDGET** — ✅ accepted `[-]` (cycle 18 S→P): `reset_per_scan` already
   called at `run_with_ledger_inner:289`; cited residual was a faulty premise.
   Off the finish queue.
+- **SOL-HINT-NOISE** — scan-level "60s + zero-yield module" leg delivered
+  (2026-07-01): `scan_ran_long_with_a_zero_yield_module` event-sourced
+  reinstatement in `cli/scan/dossier.rs`. *Remaining:* the per-module
+  "returned 0 entities" leg still needs the noise decision (cap-to-worst-N /
+  cost-gate / bounded-summary-count).
 
 ### 4c · Solutions with no problem (over-build — prune candidates)
 - **None found.** Every solution node traces to ≥1 `PROBLEM_TREE` node or the shared
@@ -2496,3 +2505,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   have no test against real `git` subprocess behaviour (`tempfile` is already
   a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
   bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-01** — **SOL-HINT-NOISE's scan-level leg delivered `[ ]`→`[~]`,
+  closing T2.14's "straightforward" half.** **P→S step:** T2.14 had a fix
+  already sketched (event-source the 60s hint the same way SOL-ROI-HINT
+  read `ModuleDone` events instead of `modules_by_yield`) — picked as this
+  cycle's unit of work per §5's execution order (T2 robustness, no
+  higher-priority open/in-progress node had a small, safe increment
+  ready: T2.7 stays blocked on real fixture sourcing, T2.11's sole
+  remainder is the already-accepted `[-]` SOL-BUDGET note, §3.F's `bstr`
+  leg has no natural consumer yet). Implemented
+  `scan_ran_long_with_a_zero_yield_module(wall_time_ms, events)` in
+  `cli/scan/dossier.rs`, called from `print_diagnostics` right after the
+  ROI-hint's own event fetch, appending the restored wording to
+  `diag.optimization_hints` post-`analyse()`-call (exactly the caller-side
+  append option (b) T2.14 specified). **S→P step:** 4 new unit tests prove
+  the boundary is a strict `>` (60_000ms does not fire, 61_000ms does) and
+  that a module which found something never triggers it, mirroring
+  `zero_yield_keyed_or_paid_modules`'s existing test shape. **Gap refresh:**
+  §4a loses its T2.14 entry (no longer "not yet started"); §4b gains the
+  SOL-HINT-NOISE row with its remaining per-module leg; leverage-map row
+  `[ ]`→`[~]`. The per-module "returned 0 entities" hint stays open — its
+  noise-control decision (cap-to-worst-N / cost-gate like SOL-ROI-HINT /
+  bounded-summary-count) is a real design choice, not a mechanical
+  reinstatement, and forcing one under this increment would repeat the
+  exact "force-fit under time pressure" mistake T2.14 was opened to avoid.
+  Paired: `PROBLEM_TREE` T2.14 + §8 updated in the same commit. Gate green
+  (fmt/clippy `--all-targets`/doc clean, 4267 lib tests, full `cargo test`
+  green).

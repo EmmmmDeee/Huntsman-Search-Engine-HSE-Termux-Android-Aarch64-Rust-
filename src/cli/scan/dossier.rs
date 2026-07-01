@@ -460,6 +460,25 @@ fn zero_yield_keyed_or_paid_modules(
     names
 }
 
+/// True if the scan ran long (`wall_time_ms` > 60s) **and** at least one
+/// module finished with zero entities — a signal worth tightening
+/// `module_timeout_ms` over. Reads the scan's own `ModuleDone` events, the
+/// same durable source [`zero_yield_keyed_or_paid_modules`] uses, rather
+/// than `ScanDiagnostics::modules_by_yield` — built only from emitted
+/// entities' evidence, so a zero-yield module is absent from it, never
+/// present-at-zero (the premise that made the original hint unreachable;
+/// `PROBLEM_TREE` T2.14 / `SOLUTION_TREE` SOL-HINT-NOISE).
+fn scan_ran_long_with_a_zero_yield_module(
+    wall_time_ms: u64,
+    events: &[crate::core::event::Event],
+) -> bool {
+    use crate::core::event::EventKind;
+    wall_time_ms > 60_000
+        && events
+            .iter()
+            .any(|ev| matches!(&ev.kind, EventKind::ModuleDone { found: 0, .. }))
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -473,7 +492,7 @@ fn print_diagnostics(
         .and_then(|f| f.checked_sub(scan.started_at))
         .unwrap_or(0)
         .saturating_mul(1000);
-    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+    let mut diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
 
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
@@ -511,6 +530,12 @@ fn print_diagnostics(
             "  ROI: {} keyed/paid module(s) yielded nothing — consider --exclude {}",
             wasted.len(),
             wasted.join(",")
+        );
+    }
+    if scan_ran_long_with_a_zero_yield_module(diag.wall_time_ms, &events) {
+        diag.optimization_hints.push(
+            "scan exceeded 60s with at least one zero-yield module — tighten module_timeout_ms"
+                .to_string(),
         );
     }
     println!();
@@ -663,7 +688,7 @@ fn print_diagnostics(
 
 #[cfg(test)]
 mod tests {
-    use super::zero_yield_keyed_or_paid_modules;
+    use super::{scan_ran_long_with_a_zero_yield_module, zero_yield_keyed_or_paid_modules};
     use crate::core::event::{Event, EventKind};
     use crate::core::module::ModuleCost;
     use std::collections::HashMap;
@@ -741,5 +766,59 @@ mod tests {
             zero_yield_keyed_or_paid_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
+    }
+
+    fn zero_yield_event() -> Event {
+        Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "search_engines".into(),
+                found: 0,
+            },
+        )
+    }
+
+    /// The reinstated T2.14 hint: a long scan with a module that found
+    /// nothing is exactly the "tighten module_timeout_ms" signal, sourced
+    /// from the same durable `ModuleDone` events as the ROI hint (not
+    /// `modules_by_yield`, which can never see a zero-yield module at all).
+    #[test]
+    fn fires_when_scan_is_long_and_a_module_yielded_nothing() {
+        assert!(scan_ran_long_with_a_zero_yield_module(
+            61_000,
+            &[zero_yield_event()]
+        ));
+    }
+
+    /// Exactly at the 60s boundary must NOT fire — "exceeded 60s" is a
+    /// strict `>`, not `>=`.
+    #[test]
+    fn does_not_fire_exactly_at_the_sixty_second_boundary() {
+        assert!(!scan_ran_long_with_a_zero_yield_module(
+            60_000,
+            &[zero_yield_event()]
+        ));
+    }
+
+    /// A short scan is never flagged, however many modules yielded nothing.
+    #[test]
+    fn does_not_fire_when_the_scan_is_short() {
+        assert!(!scan_ran_long_with_a_zero_yield_module(
+            5_000,
+            &[zero_yield_event()]
+        ));
+    }
+
+    /// A long scan where every module found something is not flagged either.
+    #[test]
+    fn does_not_fire_when_every_module_yielded_something() {
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "search_engines".into(),
+                found: 12,
+            },
+        )];
+        assert!(!scan_ran_long_with_a_zero_yield_module(61_000, &events));
     }
 }
