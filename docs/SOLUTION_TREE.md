@@ -449,12 +449,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   a pre-existing test (`build_queries_fullname_pure_fn_matches_dispatch`)
   that had baked in the now-false "FullName's exposure dorks are always
   empty" assumption. *Remaining:* narrow — this is one function's coverage,
-  not C6 as a whole; C7 has no comparably small gap (its own audit found
-  only a possible dedicated permutation/shuffle-order proptest for the
-  dossier/export renderers, distinct from the existing re-render-twice
-  determinism tests, not yet sized as "small").
-- **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
+  not C6 as a whole.
+  *Correction (2026-07-01):* the "C7 has no comparably small gap" note above
+  was itself wrong — a follow-up discovery pass found one directly (see
+  SOL-FORENSIC below).
+- **`[~]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
   exports + evidence chains as the auditable, machine-diffable deliverable.
+  *Delivered (2026-07-01):* `Store::entities_from_events` (the event-log
+  recovery path for a scan that never finalised — "routine on
+  Termux/Android" per its own comment) folded entities via `Entity::merge`
+  in raw event-arrival order without ever calling
+  `Entity::canonicalize_order()`, unlike the finalised path
+  (`core::engine::run`), which calls it specifically to stop concurrent
+  dispatch's completion order leaking into the exported result. Every export
+  renderer (JSON/CSV/full dossier/debug bundle) reads `e.evidence` in raw vec
+  order, so a recovered interrupted scan's export was not byte-stable across
+  two runs whose modules merely completed in a different order. Fixed with
+  the same `canonicalize_order()` call, in the same place in the recovery
+  path's fold, plus a regression test asserting arrival-order independence.
+  *Remaining:* everything else in "byte-stable exports" as a *proven*
+  property (proptest coverage across export paths) rather than a
+  case-by-case one; the node stays `[~]`, not `[x]`.
 
 ### S.QUALITY — Periphery correctness (paired with `PROBLEM_TREE` T2.12)
 
@@ -610,7 +625,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-PERF-PUBLISH | C2 | `[ ]` |
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[~]` |
-| SOL-FORENSIC | C7 | `[ ]` |
+| SOL-FORENSIC | C7 | `[~]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 
@@ -651,8 +666,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
-- **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
+- **C1/C2** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
+- **C6** — `[~]` (SOL-OFFENSIVE). Exposure-dork Phone/FullName coverage
+  delivered 2026-07-01; entropy gate, `aho-corasick` scanner, credential-reuse
+  graph, and shared key pipeline all confirmed already mature. *Remaining:*
+  the rest of the node beyond this one function's coverage.
+- **C7** — `[~]` (SOL-FORENSIC). Event-log scan-recovery evidence-order
+  determinism delivered 2026-07-01. *Remaining:* proving byte-stable
+  determinism across every export path as a general property, not
+  case-by-case.
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
   real when logged (cycle 20) but was built and shipped 2026-06-30
@@ -2641,3 +2664,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   and the golden-fixture/health-signal legs (T2.14, SOL-HEALTH-SIGNAL)
   remain fully open. Gate green: 4276 lib tests (+4), fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` T2.7 + §8 — same commit.
+
+- **2026-07-01** — **SOL-FORENSIC `[ ]`→`[~]`: scan-recovery evidence order
+  is now canonicalised, closing a real forensic-determinism gap; corrects
+  the prior cycle's "C7 has no comparably small gap" note.** Selected from a
+  parallel discovery + adversarial-verification pass (Workflow tool, 8
+  backlog areas investigated concurrently). `Store::entities_from_events`
+  — the recovery path for a scan that never finalised, "routine on
+  Termux/Android" per its own comment — folded entities via `Entity::merge`
+  in raw event-arrival order and never called
+  `Entity::canonicalize_order()`, unlike the finalised path
+  (`core::engine::run`), which calls it specifically so concurrent
+  dispatch's completion order can't leak into the exported result. Every
+  export renderer (JSON/CSV/full dossier/debug bundle) reads raw evidence
+  vec order, so a recovered interrupted scan's export was not byte-stable
+  across two runs whose modules merely completed in a different order — the
+  reviewing agent reproduced this empirically (`EQUAL=false` before the fix,
+  `EQUAL=true` after) before this cycle applied it for real. One-line fix
+  mirroring the finalised path's exact pattern, plus a new regression test
+  proving arrival-order independence. C7/SOL-FORENSIC stay `[~]`: this
+  closes one concrete determinism bug, not the "prove every export path is
+  deterministic" target as a general property. Two other candidates from the
+  same pass — a C2 perf finding on `run_expansion`'s per-candidate `HashSet`
+  rebuild, and a C4 new-correlator-rule sketch for Cloudflare-origin
+  unmasking — verified real but larger/`PARTIALLY_CONFIRMED` with plan gaps;
+  left for a future cycle. Gate green: 4277 lib tests (+1), fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C7 + §8 — same commit.

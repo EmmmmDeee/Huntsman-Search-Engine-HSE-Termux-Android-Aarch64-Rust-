@@ -4,7 +4,7 @@
 //! source reads as implementation; tests reach private items via `use super::*`.
 
 use super::*;
-use crate::core::entity::{Entity, EntityKind};
+use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::event::EventKind;
 use crate::core::scan::{Scan, Target, TargetKind};
 
@@ -675,6 +675,66 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
         "finalised read uses the table, not events"
     );
     assert_eq!(finalised[0].value, "final@example.com");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn entities_from_events_canonicalizes_evidence_order_regardless_of_arrival_order() {
+    // C7 (forensic determinism): entities_from_events is the recovery path used
+    // whenever a scan didn't finalise (routine on Termux/Android). The finalised
+    // path already normalises each entity's evidence/tag order before persist
+    // (core/engine/mod.rs, via Entity::canonicalize_order) so concurrent dispatch's
+    // completion-order merging can't leak into the exported result — this proves
+    // the recovery path gives the same guarantee, by folding the SAME two evidence
+    // sources in opposite arrival order across two scans and asserting the
+    // recovered entity's evidence vec is byte-identical either way.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-order-a");
+    insert_scan(&store, "scan-order-b");
+
+    let mut zzz = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    zzz.add_evidence(Evidence::new("zzz_module", "seen"));
+    let mut aaa = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    aaa.add_evidence(Evidence::new("aaa_module", "seen"));
+
+    // Scan A: zzz_module's EntityFound event arrives before aaa_module's.
+    for (i, entity) in [zzz.clone(), aaa.clone()].into_iter().enumerate() {
+        let mut ev = Event::new("scan-order-a", EventKind::EntityFound { entity });
+        ev.ts = 3000 + i as u64;
+        store.insert_event(&ev).unwrap();
+    }
+    // Scan B: the same two sources, reversed — aaa_module arrives first.
+    for (i, entity) in [aaa, zzz].into_iter().enumerate() {
+        let mut ev = Event::new("scan-order-b", EventKind::EntityFound { entity });
+        ev.ts = 3000 + i as u64;
+        store.insert_event(&ev).unwrap();
+    }
+
+    let recovered_a = store.entities_from_events("scan-order-a").unwrap();
+    let recovered_b = store.entities_from_events("scan-order-b").unwrap();
+    assert_eq!(recovered_a.len(), 1);
+    assert_eq!(recovered_b.len(), 1);
+    let sources_a: Vec<&str> = recovered_a[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    let sources_b: Vec<&str> = recovered_b[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    assert_eq!(
+        sources_a, sources_b,
+        "evidence order must be canonicalised, not leak arrival order: {sources_a:?} vs {sources_b:?}"
+    );
+    assert_eq!(
+        sources_a,
+        ["aaa_module", "zzz_module"],
+        "canonical order is lexicographic by source, per Entity::canonicalize_order"
+    );
 
     let _ = std::fs::remove_file(&path);
 }

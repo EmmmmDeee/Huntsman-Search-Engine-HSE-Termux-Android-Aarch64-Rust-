@@ -880,12 +880,29 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   asserts the exposure dorks ARE present in the full `build_queries`
   pipeline). *Remaining:* this is a narrow slice (one function's
   target-kind coverage) — C6 as a whole node is not closed.
-- **`[ ]` C7 · Output & forensics superiority** — *Current:* deterministic
+- **`[~]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
   the auditable intelligence product, keep GEXF as the optional graph. This is a
   capability **neither** SpiderFoot nor Maltego offers (reproducible,
   machine-diffable intelligence). **CAP-med**
+  *Partial (2026-07-01):* closed a genuine determinism gap in the "byte-stable"
+  half of the target. `Store::entities_from_events` — the event-log recovery
+  path used whenever a scan never finalised (explicitly "routine on
+  Termux/Android, where the OS reclaims backgrounded processes," per its own
+  doc comment) — folded entities via `Entity::merge` in event-arrival order but
+  never called `Entity::canonicalize_order()` afterward, unlike the finalised
+  path (`core::engine::run` does, specifically to stop concurrent dispatch's
+  completion-order merging leaking into the stored/exported result). So a
+  JSON/CSV/full-dossier/debug-bundle export of an *interrupted* scan had
+  evidence ordered by non-deterministic arrival order — reproduced empirically
+  (two arrival orders of the same evidence, `EQUAL=false`) before the fix, and
+  confirmed `EQUAL=true` after. One-line fix (canonicalize after the fold,
+  mirroring the finalised path exactly) plus a new regression test proving
+  arrival-order independence for the recovered path. The rest of C7's target
+  (proptest coverage across every export path, a machine-diffable-audit
+  guarantee stated as policy) remains open — this closes one concrete
+  determinism bug, not the whole node.
 - **`[x]` C8 · Webcam, fan-subscription & adult-video platform identity (DELIVERED)**
   — *Problem:* `username_search` covers mainstream social/dev/gaming/music platforms
   only; webcam performers, fan-content creators, and adult-video contributors are an
@@ -3434,3 +3451,37 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   health-signal legs (T2.14, SOL-HEALTH-SIGNAL) remain fully open. Gate
   green: 4276 lib tests (+4), fmt/clippy `--all-targets`/doc clean.
   **Paired:** `SOLUTION_TREE` §2/§5 — same commit.
+
+- **2026-07-01** — **C7 `[ ]`→`[~]`: the event-log scan-recovery path now
+  canonicalises evidence order, closing a real forensic-determinism gap.**
+  Selected from a parallel discovery + adversarial-verification pass
+  (Workflow tool, 8 backlog areas investigated concurrently: T2.14, C2, C7,
+  F.1/bstr, C3, C4, a fresh stale-doc sweep, and `username_search`'s T2.7
+  scope) — of the 3 areas that produced a candidate, this one came back
+  cleanly `CONFIRMED` (the verifying agent independently reproduced the bug,
+  applied the fix, re-ran the proof, and reverted before this cycle applied
+  it for real). `Store::entities_from_events` — used whenever a scan didn't
+  finalise, which its own doc comment calls "routine on Termux/Android" —
+  folded entities via `Entity::merge` in raw event-arrival order and never
+  canonicalised the result, unlike the finalised-scan path
+  (`core::engine::run`), which explicitly calls
+  `Entity::canonicalize_order()` per entity specifically so concurrent
+  dispatch's completion order can't leak into the stored/exported result.
+  Every export surface (JSON, CSV, full dossier, debug bundle) reads
+  `e.evidence` in raw vec order, so a recovered *interrupted* scan's export
+  was not byte-stable across two otherwise-identical runs whose modules
+  merely completed in a different order — the opposite of what a forensic
+  export is supposed to guarantee. Fixed with the same one-line pattern
+  already used at the finalisation call site; added a regression test
+  building the same entity from two reversed event-arrival orders and
+  asserting the recovered evidence order is identical either way (and
+  matches `canonicalize_order`'s documented lexicographic-by-source order).
+  C7 stays `[~]`: this closes one concrete determinism bug in one recovery
+  path, not the full "prove every export path is deterministic" target.
+  Two other candidates from the same pass (a `C2` perf finding on
+  `run_expansion`'s O(n) per-candidate `HashSet` rebuild; a `C4` new
+  correlator-rule sketch for Cloudflare-origin unmasking) verified as real
+  but larger/`PARTIALLY_CONFIRMED` with plan gaps — left for a future cycle
+  rather than force-fit here. Gate green: 4277 lib tests (+1), fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §4a/§5 — same
+  commit.

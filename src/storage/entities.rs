@@ -282,7 +282,10 @@ impl super::Store {
     /// exactly once, so corroboration sums correctly and is never double-counted.
     /// The result is a faithful (if not yet finalise-enriched: no address-locality
     /// consolidation, geo-family promotion, or cross-scan history) view of what
-    /// the scan found, ranked identically to a finalised read.
+    /// the scan found, ranked identically to a finalised read — including each
+    /// entity's internal evidence/tag order, which is canonicalised exactly as
+    /// the finalisation path does (see `Entity::canonicalize_order`), so a
+    /// recovered in-flight scan's export is as deterministic as a finalised one.
     pub fn entities_from_events(&self, scan_id: &str) -> Result<Vec<Entity>> {
         let mut map: HashMap<String, Entity> = HashMap::new();
         for ev in self.events_for_scan(scan_id)? {
@@ -296,6 +299,9 @@ impl super::Store {
             }
         }
         let mut entities: Vec<Entity> = map.into_values().collect();
+        for e in &mut entities {
+            e.canonicalize_order();
+        }
         Self::sort_entities_for_display(&mut entities);
         Ok(entities)
     }

@@ -359,6 +359,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A recovered (never-finalised) scan's export was not byte-stable across
+  runs.** A scan that didn't finalise — routine on Termux/Android, where the
+  OS reclaims backgrounded processes — is rebuilt from the durable event log
+  instead of the `entities` table. That recovery path folded each entity's
+  evidence in raw event-arrival order and skipped the same
+  order-canonicalisation step the normal finalised-scan path already applies,
+  so a JSON/CSV/full-dossier/debug-bundle export of an interrupted scan could
+  list the same evidence in a different order from one run to the next,
+  purely because modules happened to complete in a different order — not a
+  real difference in what was found. Recovery now canonicalises evidence
+  order identically to a finalised scan.
 - **The dossier's "ROI" wasted-spend hint could never fire, on any scan
   (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
   "N keyed/paid module(s) yielded nothing — consider --exclude …" when a
