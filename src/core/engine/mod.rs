@@ -465,8 +465,8 @@ impl ScanEngine {
         // entities are made durable before expansion begins (crash-safety) and
         // single-round (depth=0) scans stream correlations live rather than
         // waiting for finalise.
-        let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-        self.checkpoint_entities(&scan.id, &seed_snapshot);
+        let mut seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+        self.checkpoint_entities(&scan.id, &mut seed_snapshot);
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
         if opts.depth > 0 {
@@ -1026,9 +1026,20 @@ impl ScanEngine {
     /// idempotent GREATEST-merge — replaying the same entities only ever raises
     /// confidence/corroboration, so a resumed or re-run scan never regresses.
     /// Best-effort: a checkpoint failure is logged and retried at finalise.
-    fn checkpoint_entities(&self, scan_id: &str, entities: &[Entity]) {
+    ///
+    /// Determinism: normalises each entity's evidence/tags ordering before
+    /// persist, same as the finalise path (see `Entity::canonicalize_order`).
+    /// Without this, a scan interrupted after reaching a checkpoint — routine
+    /// on Termux/Android — reads back through `entities_for_scan`'s normal
+    /// table path, which (unlike the empty-table event-log recovery path)
+    /// never canonicalises, so concurrent dispatch's completion-order merging
+    /// would otherwise leak into the checkpointed/exported result.
+    fn checkpoint_entities(&self, scan_id: &str, entities: &mut [Entity]) {
         if entities.is_empty() {
             return;
+        }
+        for e in entities.iter_mut() {
+            e.canonicalize_order();
         }
         if let Err(e) = self.store.upsert_entities_batch(entities) {
             warn!(scan_id, error = %e, "entity checkpoint failed (will retry at finalise)");
@@ -1806,8 +1817,8 @@ impl ScanEngine {
                         entity_map.insert(d.uid.clone(), d);
                     }
                 }
-                let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-                self.checkpoint_entities(scan_id, &snapshot);
+                let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                self.checkpoint_entities(scan_id, &mut snapshot);
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);
             }
 

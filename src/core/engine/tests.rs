@@ -2008,6 +2008,68 @@ fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     assert_eq!(top1[0].value, "jane@example.com");
 }
 
+/// C7 (forensic determinism): `checkpoint_entities` is the mid-scan durability
+/// path — hit at every productive round boundary, far more often than the
+/// bare-events-log recovery path a prior fix in this same session already
+/// canonicalised. Without canonicalising here too, a scan interrupted after
+/// reaching even one checkpoint (routine on Termux/Android) would read back
+/// through `entities_for_scan`'s ordinary table path — which never
+/// canonicalises — so concurrent dispatch's completion-order merging could
+/// leak into the checkpointed/exported result.
+///
+/// The two evidence sources are already merged into ONE in-memory entity
+/// before `checkpoint_entities` is ever called (mirroring
+/// `entity_map.values().cloned().collect()`'s real shape) — that in-memory
+/// merge order is exactly what varies run-to-run under concurrent dispatch,
+/// so the fixture carries the two sources in opposite orders and proves the
+/// checkpointed, stored order is canonical either way.
+#[tokio::test]
+async fn checkpoint_entities_canonicalizes_evidence_order_regardless_of_arrival_order() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let mut zzz_then_aaa = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-a");
+    zzz_then_aaa.add_evidence(Evidence::new("zzz_module", "seen"));
+    zzz_then_aaa.add_evidence(Evidence::new("aaa_module", "seen"));
+    let mut aaa_then_zzz = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-a");
+    aaa_then_zzz.add_evidence(Evidence::new("aaa_module", "seen"));
+    aaa_then_zzz.add_evidence(Evidence::new("zzz_module", "seen"));
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let store_a: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let engine_a = ScanEngine::new(vec![], store_a.clone(), bus.clone());
+    engine_a.checkpoint_entities("scan-a", &mut [zzz_then_aaa]);
+
+    let store_b: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let engine_b = ScanEngine::new(vec![], store_b.clone(), bus);
+    engine_b.checkpoint_entities("scan-a", &mut [aaa_then_zzz]);
+
+    let recovered_a = store_a.entities_for_scan("scan-a").unwrap();
+    let recovered_b = store_b.entities_for_scan("scan-a").unwrap();
+    assert_eq!(recovered_a.len(), 1);
+    assert_eq!(recovered_b.len(), 1);
+    let sources_a: Vec<&str> = recovered_a[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    let sources_b: Vec<&str> = recovered_b[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    assert_eq!(
+        sources_a, sources_b,
+        "checkpointed evidence order must be canonicalised, not leak arrival order: \
+         {sources_a:?} vs {sources_b:?}"
+    );
+    assert_eq!(
+        sources_a,
+        ["aaa_module", "zzz_module"],
+        "canonical order is lexicographic by source, per Entity::canonicalize_order"
+    );
+}
+
 #[test]
 fn enrich_offline_geo_parses_addresses_and_derives_city_coordinates() {
     use crate::core::engine::enrich_offline_geo;

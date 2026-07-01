@@ -1000,10 +1000,30 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   (two arrival orders of the same evidence, `EQUAL=false`) before the fix, and
   confirmed `EQUAL=true` after. One-line fix (canonicalize after the fold,
   mirroring the finalised path exactly) plus a new regression test proving
-  arrival-order independence for the recovered path. The rest of C7's target
-  (proptest coverage across every export path, a machine-diffable-audit
-  guarantee stated as policy) remains open — this closes one concrete
-  determinism bug, not the whole node.
+  arrival-order independence for the recovered path.
+  *Partial (2026-07-01, cont'd):* closed the SECOND, higher-impact half of
+  the same determinism class. `Engine::checkpoint_entities` — the mid-scan
+  durability write hit at every productive round boundary, far more often
+  than the "zero checkpoints ever landed" case the first fix covered —
+  persisted its entity snapshot straight to the `entities` table without
+  canonicalizing. Critically, `entities_for_scan` only falls back to the
+  canonicalizing event-log recovery path when the `entities` table is
+  *empty*; any scan that reached even one checkpoint before being
+  interrupted (the common case) read back through the ordinary table path,
+  which never canonicalises evidence/tag order — so its export was still
+  non-deterministic across runs whose modules merely completed in a
+  different order. Reproduced empirically (two arrival orders of the same
+  evidence, `EQUAL=false`) before the fix. `checkpoint_entities` now takes
+  `entities: &mut [Entity]` and canonicalises before persist, mirroring
+  the finalise path; both call sites (seed round, expansion rounds)
+  updated. New regression test proving arrival-order independence for the
+  checkpoint path specifically — confirmed to fail against the pre-fix
+  code (temporarily reverted the fix, re-ran, watched it fail with
+  `EQUAL=false`, restored). The rest of C7's target (proptest coverage
+  across every export path, a machine-diffable-audit guarantee stated as
+  policy) remains open — this closes the two concrete determinism bugs
+  this session found in the recovery/checkpoint paths, not the whole
+  node.
 - **`[x]` C8 · Webcam, fan-subscription & adult-video platform identity (DELIVERED)**
   — *Problem:* `username_search` covers mainstream social/dev/gaming/music platforms
   only; webcam performers, fan-content creators, and adult-video contributors are an
@@ -3757,3 +3777,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
   same commit.
+
+- **2026-07-01** — **C7: `Engine::checkpoint_entities` — the mid-scan
+  durability path hit at every productive round boundary — now
+  canonicalises evidence order too, closing the higher-impact half of the
+  determinism gap this session's earlier C7 fix only partly addressed.**
+  Selected from a third parallel discovery + adversarial-verification
+  pass (Workflow tool, 8 backlog areas). The earlier fix canonicalised
+  `entities_from_events` (the event-log recovery path used only when the
+  `entities` table is completely empty); this pass found that
+  `entities_for_scan` falls back to that canonicalizing path *only* when
+  the table is empty, so any scan that reached even one mid-scan
+  checkpoint before being interrupted — the common case, since
+  checkpointing happens at every productive round, not just at the very
+  end — never reaches the fix and reads back through the ordinary table
+  path, which never canonicalises. Reproduced empirically before the fix
+  (`EQUAL=false` across two arrival orders of the same evidence).
+  `checkpoint_entities` now takes `entities: &mut [Entity]` and
+  canonicalises before persist, exactly mirroring the finalise path's
+  existing pattern; both call sites (seed round at `mod.rs:469`,
+  expansion rounds at `mod.rs:1810`) updated to pass mutable snapshots.
+  New regression test (`checkpoint_entities_canonicalizes_evidence_order_
+  regardless_of_arrival_order`) proves arrival-order independence for the
+  checkpoint path specifically — verified as a genuine regression test by
+  temporarily reverting the fix and confirming it fails (`EQUAL=false`)
+  before restoring. C7 stays `[~]`: the export-path proptest coverage and
+  machine-diffable-audit guarantee remain open, but the two concrete
+  determinism bugs this session identified in the recovery/checkpoint
+  paths are both now closed. Gate green: 4291 lib tests (+1), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-FORENSIC +
+  §5 — same commit.

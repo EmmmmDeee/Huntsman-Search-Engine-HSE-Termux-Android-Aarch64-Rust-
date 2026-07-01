@@ -395,6 +395,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   purely because modules happened to complete in a different order — not a
   real difference in what was found. Recovery now canonicalises evidence
   order identically to a finalised scan.
+- **The same evidence-order non-determinism above also affected a scan
+  that reached at least one mid-scan checkpoint before being
+  interrupted — the more common case, since a checkpoint happens at
+  every productive round, not just when a scan never wrote one at all.**
+  The checkpoint write path skipped the same order-canonicalisation step
+  the previous fix applied to the empty-table recovery path; a scan
+  interrupted after checkpointing now produces the same byte-stable
+  evidence order as a finalised scan too.
 - **The dossier's "ROI" wasted-spend hint could never fire, on any scan
   (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
   "N keyed/paid module(s) yielded nothing — consider --exclude …" when a

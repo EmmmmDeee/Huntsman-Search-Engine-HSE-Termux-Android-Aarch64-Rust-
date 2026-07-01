@@ -535,6 +535,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   two runs whose modules merely completed in a different order. Fixed with
   the same `canonicalize_order()` call, in the same place in the recovery
   path's fold, plus a regression test asserting arrival-order independence.
+  *Delivered (2026-07-01, cont'd):* the higher-impact half of the same
+  gap. `entities_for_scan` only falls back to the canonicalizing
+  `entities_from_events` recovery path when the `entities` table is
+  completely empty — so any scan that reached even one mid-scan
+  checkpoint before being interrupted (the common case, since
+  `Engine::checkpoint_entities` runs at every productive round boundary,
+  not just once) never reached the first fix and read back through the
+  ordinary, non-canonicalizing table path. `checkpoint_entities` now
+  takes `entities: &mut [Entity]` and canonicalises before persist,
+  mirroring the finalise path; both call sites updated. New regression
+  test, verified as genuine by confirming it fails against the reverted
+  pre-fix code before restoring.
   *Remaining:* everything else in "byte-stable exports" as a *proven*
   property (proptest coverage across export paths) rather than a
   case-by-case one; the node stays `[~]`, not `[x]`.
@@ -750,9 +762,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   graph, and shared key pipeline all confirmed already mature. *Remaining:*
   the rest of the node beyond this one function's coverage.
 - **C7** — `[~]` (SOL-FORENSIC). Event-log scan-recovery evidence-order
-  determinism delivered 2026-07-01. *Remaining:* proving byte-stable
-  determinism across every export path as a general property, not
-  case-by-case.
+  determinism delivered 2026-07-01; the higher-impact mid-scan checkpoint
+  path's evidence-order determinism delivered 2026-07-01 (cont'd).
+  *Remaining:* proving byte-stable determinism across every export path
+  as a general property, not case-by-case.
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
   real when logged (cycle 20) but was built and shipped 2026-06-30
@@ -2926,3 +2939,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `every_literal_constructed_entity_kind_is_declared_in_produces` (no
   `produces()` change needed — the two pivot kinds were already
   declared). Paired: `PROBLEM_TREE` C4 + §8 — same commit.
+
+- **2026-07-01** — **SOL-FORENSIC continued: `Engine::checkpoint_entities`
+  now canonicalises evidence order too, closing the higher-impact half of
+  the determinism gap the earlier C7 fix only partly addressed.**
+  Selected from a third discovery + adversarial-verification pass. The
+  earlier fix canonicalised `entities_from_events` (used only when the
+  `entities` table is completely empty); this pass found that
+  `entities_for_scan` falls back to that path *only* under that
+  condition, so any scan that reached even one mid-scan checkpoint before
+  being interrupted — the common case, since checkpointing runs at every
+  productive round boundary, not just once — never reached the fix and
+  read back through the ordinary table path, which never canonicalises.
+  Reproduced empirically before the fix (`EQUAL=false` across two
+  arrival orders of the same evidence). `checkpoint_entities` now takes
+  `entities: &mut [Entity]` and canonicalises before persist, mirroring
+  the finalise path exactly; both call sites (seed round, expansion
+  rounds) updated. New regression test verified as genuine by
+  temporarily reverting the fix and confirming it fails (`EQUAL=false`)
+  before restoring — the same discipline the discovery pass itself used
+  to verify the original claim. Gate green: 4291 lib tests (+1), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C7 + §8 —
+  same commit.
