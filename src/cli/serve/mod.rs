@@ -98,6 +98,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
     // min). Detached background task — never blocks serving.
     {
         let update_info = Arc::clone(&update_info);
+        let state_for_restart = Arc::clone(&state_for_shutdown);
         let interval_secs = std::env::var("HUNTSMAN_AUTO_UPDATE_INTERVAL_SECS")
             .ok()
             .and_then(|v| v.parse::<u64>().ok())
@@ -141,6 +142,18 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
                                 info.phase = UpdatePhase::Restarting;
                             }
                             tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                            // `self_restart()`'s `exec()` atomically replaces the
+                            // process image with zero cooperative cancellation —
+                            // without this, an in-flight scan or live session at
+                            // the moment of a scheduled auto-update was simply
+                            // abandoned mid-request, exactly like an undrained
+                            // Ctrl-C once was.
+                            crate::api::drain_in_flight_work(
+                                &state_for_restart.cancellations,
+                                &state_for_restart.live,
+                                crate::api::SHUTDOWN_DRAIN_GRACE,
+                            )
+                            .await;
                             self_restart();
                         }
                         Err(e) => {
@@ -233,9 +246,9 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
 /// Bounded extra window for axum's own HTTP-connection drain (in-flight
 /// requests / open SSE streams) once `shutdown_signal` has already finished
 /// signalling and draining in-flight scans/live sessions. Generous over
-/// [`SHUTDOWN_DRAIN_GRACE`] since a now-idle SSE stream still needs its own
-/// `SSE_IDLE_TIMEOUT`-bounded close to complete, not just the underlying
-/// session to stop.
+/// [`crate::api::SHUTDOWN_DRAIN_GRACE`] since a now-idle SSE stream still
+/// needs its own `SSE_IDLE_TIMEOUT`-bounded close to complete, not just the
+/// underlying session to stop.
 const HTTP_DRAIN_DEADLINE: std::time::Duration = std::time::Duration::from_secs(30);
 
 /// Pin a `localhost:<port>` bind to `127.0.0.1:<port>`. `TcpListener::bind` binds
@@ -343,79 +356,15 @@ async fn shutdown_signal(state: Arc<crate::api::AppState>) {
     // scan row stayed stuck at `Running` forever, and a live session's
     // `session_loop` kept running undisturbed, in turn keeping any SSE stream
     // forwarding its events open and blocking axum's drain indefinitely.
-    drain_in_flight_work(&state.cancellations, &state.live, SHUTDOWN_DRAIN_GRACE).await;
-}
-
-/// Bounded grace period for in-flight scans/live sessions to actually reach a
-/// terminal state after being cancelled — matches the engine's own documented
-/// cooperative-cancellation latency ("~3-8s p99 at the next module-boundary
-/// gate", see `core::live::LiveScanner::stop`'s doc comment).
-const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
-
-/// Signal every in-flight scan (`cancellations`) and every running live
-/// session (`live`) to stop, then poll until none remain or `grace` elapses —
-/// whichever comes first. Reuses the existing cooperative-cancellation
-/// primitives (`CancelHandle` / `CancelRegistryGuard` / `LiveScanner::stop`)
-/// rather than inventing a new one: a scan's `CancelRegistryGuard` removes its
-/// entry from `cancellations` when the spawned task actually returns, and a
-/// live session transitions out of `LiveStatus::Running` the same way
-/// `DELETE /api/v1/live/{id}` already does — so polling both down to empty is
-/// a direct, accurate signal that the in-flight work has genuinely wound
-/// down, not just that cancellation was requested. Takes its dependencies
-/// directly (not `&AppState`) and `grace` as a parameter (not the
-/// [`SHUTDOWN_DRAIN_GRACE`] constant) so both are testable without
-/// constructing a full server state or waiting out a real 10-second grace
-/// period.
-async fn drain_in_flight_work(
-    cancellations: &crate::api::CancelRegistry,
-    live: &crate::core::live::LiveScanner,
-    grace: std::time::Duration,
-) {
-    let scan_count = cancellations.lock().len();
-    let live_running: Vec<String> = live
-        .list()
-        .into_iter()
-        .filter(|s| s.status == crate::core::live::LiveStatus::Running)
-        .map(|s| s.id)
-        .collect();
-    if scan_count == 0 && live_running.is_empty() {
-        return;
-    }
-    tracing::info!(
-        scans = scan_count,
-        live_sessions = live_running.len(),
-        "shutdown: signalling in-flight work to stop"
-    );
-
-    for handle in cancellations.lock().values() {
-        handle.cancel();
-    }
-    for id in &live_running {
-        live.stop(id);
-    }
-
-    let deadline = tokio::time::Instant::now() + grace;
-    loop {
-        let scans_left = cancellations.lock().len();
-        let live_left = live
-            .list()
-            .iter()
-            .filter(|s| s.status == crate::core::live::LiveStatus::Running)
-            .count();
-        if scans_left == 0 && live_left == 0 {
-            tracing::info!("shutdown: all in-flight work stopped cleanly");
-            return;
-        }
-        if tokio::time::Instant::now() >= deadline {
-            tracing::warn!(
-                scans_left,
-                live_left,
-                "shutdown: grace period elapsed with work still in flight — exiting anyway"
-            );
-            return;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-    }
+    //
+    // Shared with every `self_restart()` call site (`crate::api`), not just
+    // this Ctrl-C/SIGTERM path — see [`crate::api::drain_in_flight_work`].
+    crate::api::drain_in_flight_work(
+        &state.cancellations,
+        &state.live,
+        crate::api::SHUTDOWN_DRAIN_GRACE,
+    )
+    .await;
 }
 
 #[cfg(test)]

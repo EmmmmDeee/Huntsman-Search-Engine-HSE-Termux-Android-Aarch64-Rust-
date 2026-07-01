@@ -96,6 +96,89 @@ impl Default for UpdateInfo {
 /// Maximum number of scans that can run concurrently via the HTTP API.
 pub const MAX_CONCURRENT_SCANS: usize = 8;
 
+/// Bounded grace period for in-flight scans/live sessions to actually reach a
+/// terminal state after being cancelled — matches the engine's own documented
+/// cooperative-cancellation latency ("~3-8s p99 at the next module-boundary
+/// gate", see `core::live::LiveScanner::stop`'s doc comment). Shared by
+/// `cli::serve`'s Ctrl-C/SIGTERM shutdown path and every self-restart call
+/// site (the autonomous update loop and the manual `/update/trigger`
+/// handler), so a binary replacement drains in-flight work exactly like a
+/// graceful shutdown does.
+pub const SHUTDOWN_DRAIN_GRACE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Signal every in-flight scan (`cancellations`) and every running live
+/// session (`live`) to stop, then poll until none remain or `grace` elapses —
+/// whichever comes first. Reuses the existing cooperative-cancellation
+/// primitives (`CancelHandle` / `CancelRegistryGuard` / `LiveScanner::stop`)
+/// rather than inventing a new one: a scan's `CancelRegistryGuard` removes its
+/// entry from `cancellations` when the spawned task actually returns, and a
+/// live session transitions out of `LiveStatus::Running` the same way
+/// `DELETE /api/v1/live/{id}` already does — so polling both down to empty is
+/// a direct, accurate signal that the in-flight work has genuinely wound
+/// down, not just that cancellation was requested. Takes its dependencies
+/// directly (not `&AppState`) and `grace` as a parameter (not the
+/// [`SHUTDOWN_DRAIN_GRACE`] constant) so both are testable without
+/// constructing a full server state or waiting out a real 10-second grace
+/// period.
+///
+/// Called before every process-image replacement — `cli::serve`'s graceful
+/// shutdown AND every `self_restart()` call site — because `exec()` swaps the
+/// running process out from under any detached `tokio::spawn` task (a scan or
+/// live session) with zero cooperative-cancellation opportunity; without
+/// draining first, a self-update mid-scan silently abandoned it exactly like
+/// an undrained Ctrl-C once did.
+pub(crate) async fn drain_in_flight_work(
+    cancellations: &CancelRegistry,
+    live: &LiveScanner,
+    grace: std::time::Duration,
+) {
+    let scan_count = cancellations.lock().len();
+    let live_running: Vec<String> = live
+        .list()
+        .into_iter()
+        .filter(|s| s.status == crate::core::live::LiveStatus::Running)
+        .map(|s| s.id)
+        .collect();
+    if scan_count == 0 && live_running.is_empty() {
+        return;
+    }
+    tracing::info!(
+        scans = scan_count,
+        live_sessions = live_running.len(),
+        "shutdown: signalling in-flight work to stop"
+    );
+
+    for handle in cancellations.lock().values() {
+        handle.cancel();
+    }
+    for id in &live_running {
+        live.stop(id);
+    }
+
+    let deadline = tokio::time::Instant::now() + grace;
+    loop {
+        let scans_left = cancellations.lock().len();
+        let live_left = live
+            .list()
+            .iter()
+            .filter(|s| s.status == crate::core::live::LiveStatus::Running)
+            .count();
+        if scans_left == 0 && live_left == 0 {
+            tracing::info!("shutdown: all in-flight work stopped cleanly");
+            return;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            tracing::warn!(
+                scans_left,
+                live_left,
+                "shutdown: grace period elapsed with work still in flight — exiting anyway"
+            );
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
 /// Application state shared across all HTTP handlers.
 #[derive(Clone)]
 pub struct AppState {

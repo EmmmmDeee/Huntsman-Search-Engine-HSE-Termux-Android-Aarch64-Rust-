@@ -99,6 +99,7 @@ pub(crate) async fn post_trigger(
 
     // Spawn the update in a detached task — handler returns 202 immediately.
     let update_info = Arc::clone(&state.update_info);
+    let state_for_restart = Arc::clone(&state);
     tokio::spawn(async move {
         if let Ok(mut info) = update_info.lock() {
             info.phase = UpdatePhase::Applying;
@@ -111,6 +112,17 @@ pub(crate) async fn post_trigger(
                 // Brief pause so the SPA can fetch the Restarting status before
                 // the process image is replaced.
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                // `self_restart()`'s `exec()` atomically replaces the process
+                // image with zero cooperative cancellation — drain in-flight
+                // scans/live sessions first, exactly like the Ctrl-C/SIGTERM
+                // shutdown path does, so a manually-triggered update doesn't
+                // silently abandon whatever is running.
+                crate::api::drain_in_flight_work(
+                    &state_for_restart.cancellations,
+                    &state_for_restart.live,
+                    crate::api::SHUTDOWN_DRAIN_GRACE,
+                )
+                .await;
                 crate::cli::update::self_restart();
             }
             Err(e) => {
