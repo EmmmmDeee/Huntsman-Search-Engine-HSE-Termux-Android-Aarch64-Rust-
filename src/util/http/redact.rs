@@ -96,8 +96,12 @@ fn env_secret_values() -> impl Iterator<Item = String> {
 /// (path, query, header echo, body). Length-gated (>= 8) so short non-secret
 /// values aren't touched. Split out from [`redact_credentials`] so it is
 /// unit-testable without mutating the process environment (which is `unsafe`
-/// under `#![forbid(unsafe_code)]`).
-pub(super) fn redact_literal_secrets(text: &str, secrets: impl Iterator<Item = String>) -> String {
+/// under `#![forbid(unsafe_code)]`) — also reused directly by the full dossier
+/// renderer's embedded RAW SOURCE RECORDS section (`PROBLEM_TREE` §7 S4) to
+/// mask the operator's OWN echoed API keys, distinct from
+/// `crate::util::raw_archive`'s on-disk archive file, whose own documented
+/// policy is to keep the paid-provider corpus verbatim and never redact it.
+pub(crate) fn redact_literal_secrets(text: &str, secrets: impl Iterator<Item = String>) -> String {
     let mut out = text.to_string();
     for v in secrets {
         if v.len() >= 8 && out.contains(v.as_str()) {

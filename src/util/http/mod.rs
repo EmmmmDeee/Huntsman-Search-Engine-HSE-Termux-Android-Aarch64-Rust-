@@ -33,7 +33,7 @@ pub use fetch::{
     note_keyed_error, read_body_capped, read_text, retry_after_secs,
 };
 pub use keys::{scan_for_api_keys, scan_for_api_keys_with_source};
-pub(crate) use redact::redact_credentials;
+pub(crate) use redact::{redact_credentials, redact_literal_secrets};
 pub(crate) use url::RequestBuilderExt;
 pub use url::{json_decode, json_scanned, urldecode, urlencode};
 

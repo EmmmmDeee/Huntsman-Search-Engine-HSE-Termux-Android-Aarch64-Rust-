@@ -285,8 +285,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   destination).
 - **`[x]` SOL-REDACT · Credential redaction** — `redact_credentials` (param + literal
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
-  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
-  **success body** isn't run through `redact_literal_secrets` — **§7 S4** residual. ◑
+  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated).
+  *Gap closed (2026-07-01):* investigated the sketched fix ("run the archived
+  success body through `redact_literal_secrets`") before implementing it
+  verbatim — found `crate::util::raw_archive`'s own module doc carries an
+  explicit, quoted operator directive ("must always be retained in their raw
+  form... never encrypted, hashed, or redacted") that sketch would have
+  violated; the sketch's "0600, but pulled into the non-0600 DB/dossiers via
+  S3" premise is also now stale, since S3 (below) already made the dossier
+  0600. The GENUINE residual is different: `hse export -o <path>` deliberately
+  leaves permissions to the user's umask (S3's own documented boundary, since
+  the operator is explicitly choosing to share that file), and the full
+  dossier's RAW SOURCE RECORDS section embeds the archived body verbatim into
+  that exportable copy — a provider echoing the request URL/params back could
+  leak the OPERATOR's OWN key into a shared export. Fixed the correctly-scoped
+  half: `raw_archive`'s on-disk file is untouched (policy honoured); a new
+  `redact_own_keys` (`cli/export/renderers.rs`) masks only the operator's OWN
+  keys (`own_api_keys()`) in the dossier's derived, exportable copy, reusing
+  `redact_literal_secrets` (widened `pub(super)`→`pub(crate)`). 2 new
+  regression tests (masks the operator's own echoed key; leaves genuine
+  target/foreign data untouched), `git stash`-confirmed non-vacuous.
+  *Closes:* **§7 S4** (`[ ]`→`[x]`). ✅
 - **`[x]` SOL-INSTALL-INTEGRITY · sha256 sidecar required for auto-discovered prebuilt** —
   `_validate_prebuilt` in `install.sh` accepts a second arg `require_sha` (default 1 for
   auto-discovered binaries, 0 for explicitly-set `HSE_PREBUILT`). When `require_sha=1`:
@@ -930,7 +949,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
-| SOL-REDACT | §7 S4 | ◑ |
+| SOL-REDACT | §7 S4 | `[x]` |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
@@ -975,8 +994,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
-- **§7 S4** — SOL-REDACT residual: archived success body not run through
-  `redact_literal_secrets` (LOW). Contained.
+- **§7 S4** — **delivered** ✅ (SOL-REDACT extended, 2026-07-01 — the
+  correctly-scoped fix, not the originally-sketched one; see SOL-REDACT
+  above). Off the open queue.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
@@ -1114,7 +1134,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
-  (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
+  (SOL-INSTALL-INTEGRITY, cycle 16); **S4 `[x]`** ✅ (SOL-REDACT extended,
+  2026-07-01 — `redact_own_keys` masks the operator's own echoed key in the
+  dossier's exportable RAW SOURCE RECORDS copy; `raw_archive`'s own
+  never-redact policy stays untouched). §7 fully closed.
 - **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 + cell-DB staleness warning 2026-07-01 delivered, Weiszfeld/centroid fusion + genuine unattended cron/daemon re-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C2 `[~]`** (SOL-PERF-PUBLISH: `web_crawler` BFS crawl loop now fetches same-round batches concurrently, ~3.2× measured speedup, 2026-07-01; the published benchmark itself remains gated on §3.F); C1/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
@@ -3541,3 +3564,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   C5 node updated (SOL-GEOINT extended) + §8 — same commit. Gate green:
   fmt/clippy `--all-targets --locked -D warnings`/strict-rustdoc clean,
   4304 lib tests (4300→4304, +4), full `cargo test` green.
+
+- **2026-07-01** — **SOL-REDACT extended, closing §7 S4 — but by
+  investigating the node's own sketch before implementing it, not
+  mechanically. Found the sketch would have violated an explicit,
+  quoted operator policy; delivered the correctly-scoped fix instead.**
+  With T2.25 and the C5 auto-sync increment both shipped, S4 was the next
+  concrete, unblocked, no-live-network `[ ]` item. Read
+  `crate::util::raw_archive`'s own module doc before touching it — found
+  it carries a verbatim-quoted operator directive ("Data that is paid for
+  must be kept in absolute completeness... never encrypted, hashed, or
+  redacted") that S4's own sketch (redact the archived body) would have
+  directly violated. Also found S4's stated risk premise ("0600, but
+  pulled into the non-0600 DB/dossiers via S3") is now stale — S3 already
+  made the dossier 0600. Traced the GENUINE remaining exposure instead:
+  `hse export -o <path>` deliberately leaves permissions to the user's
+  umask (S3's own documented boundary, since the operator is explicitly
+  choosing to share that file), and the full dossier's RAW SOURCE RECORDS
+  section embeds the archived body verbatim into that exportable copy —
+  so a provider echoing the request URL/params back could leak the
+  OPERATOR's OWN key into a shared export, distinct from the third-party
+  evidentiary data the "never redact" policy protects. Fixed the
+  correctly-scoped half: `raw_archive`'s on-disk file stays untouched
+  (policy honoured); new `redact_own_keys` (`cli/export/renderers.rs`)
+  masks only the operator's OWN keys (`own_api_keys()`) in the dossier's
+  derived, exportable copy, reusing `redact_literal_secrets` (widened
+  `pub(super)`→`pub(crate)` in `util::http::redact`, alongside its sibling
+  `redact_credentials`). 2 new regression tests (masks the operator's own
+  echoed key; leaves genuine target/foreign data — a leaked password, a
+  victim email — untouched), `git stash`-confirmed non-vacuous. **Gap
+  refresh:** leverage-map SOL-REDACT ◑→`[x]`; §4a's S4 entry closes; §4d's
+  §7 row shows S4 `[x]` — §7 fully closed. Paired: `PROBLEM_TREE` §7 S4
+  `[ ]`→`[x]` + §8 — same commit. Gate green: fmt/clippy `--all-targets
+  --locked -D warnings`/strict-rustdoc clean, 4306 lib tests
+  (4304→4306, +2), all 30 `tests/architecture.rs` guards pass, full
+  `cargo test` green, `hse selftest` 9/9.

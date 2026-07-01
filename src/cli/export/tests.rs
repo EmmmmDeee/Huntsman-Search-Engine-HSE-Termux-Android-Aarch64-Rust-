@@ -1,9 +1,48 @@
 use super::dossier::join_or_dash;
 use super::renderers::{
-    render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_report,
+    redact_own_keys, render_csv, render_debug_bundle, render_full, render_gexf, render_json,
+    render_report,
 };
 use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 use crate::storage::Store;
+
+/// Regression guard for `PROBLEM_TREE` §7 S4: some providers echo the request
+/// URL/params back in their JSON response, which would otherwise persist the
+/// OPERATOR's OWN configured API key into the full dossier's embedded RAW
+/// SOURCE RECORDS copy — a real leak once the operator runs an explicit
+/// `hse export -o <path>` to share that dossier. `crate::util::raw_archive`'s
+/// own on-disk file is deliberately never touched (its documented policy is
+/// total retention of the paid corpus); only this derived, shareable copy is
+/// masked.
+#[test]
+fn redact_own_keys_masks_the_operators_own_echoed_key() {
+    let mut own_keys = std::collections::HashSet::new();
+    own_keys.insert("sk_live_abcdef1234567890".to_string());
+    let raw = serde_json::json!({
+        "request_url": "https://api.example.com/lookup?api_key=sk_live_abcdef1234567890",
+        "result": "ok",
+    });
+    let out = redact_own_keys(&raw, &own_keys);
+    assert!(
+        !out.contains("sk_live_abcdef1234567890"),
+        "the operator's own key must not survive into the rendered dossier: {out}"
+    );
+    assert!(out.contains("***"));
+}
+
+#[test]
+fn redact_own_keys_leaves_target_data_untouched() {
+    // No configured keys match this response — a target's OWN leaked password/
+    // email (found intelligence, not our credential) must render verbatim.
+    let own_keys = std::collections::HashSet::new();
+    let raw = serde_json::json!({
+        "leaked_password": "hunter2hunter2",
+        "email": "victim@example.com",
+    });
+    let out = redact_own_keys(&raw, &own_keys);
+    assert!(out.contains("hunter2hunter2"));
+    assert!(out.contains("victim@example.com"));
+}
 
 #[test]
 fn render_full_dumps_every_field_and_provenance() {

@@ -261,6 +261,16 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             "  (raw archive empty for this window — disabled, or run predates archiving)"
         );
     }
+    // The operator's OWN configured API keys, computed once and reused per
+    // response. Some providers echo the request URL/params back in their JSON
+    // body (a debug/echo field), which would otherwise persist the operator's
+    // OWN credential into this dossier copy — a real risk once an operator runs
+    // an explicit `hse export -o <path>` to share the dossier (`PROBLEM_TREE`
+    // §7 S4). The on-disk raw archive itself (`crate::util::raw_archive`) is
+    // deliberately NEVER redacted per its own documented operator policy — the
+    // paid-provider corpus stays verbatim there; only this derived, shareable
+    // copy is masked.
+    let own_keys = crate::util::keys::own_api_keys();
     for resp in &raws {
         let _ = writeln!(
             s,
@@ -268,15 +278,27 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             resp.provider, resp.endpoint, resp.query, resp.filename
         );
         // Pretty-print the verbatim body, indented, so the whole response —
-        // every record, every field — is in the dossier with nothing elided.
-        let pretty =
-            serde_json::to_string_pretty(&resp.raw).unwrap_or_else(|_| resp.raw.to_string());
+        // every record, every field — is in the dossier with nothing elided
+        // (beyond the operator's own key, masked above).
+        let pretty = redact_own_keys(&resp.raw, &own_keys);
         for line in pretty.lines() {
             let _ = writeln!(s, "    {line}");
         }
     }
 
     Ok(s)
+}
+
+/// Pretty-print an archived raw response body and mask any of `own_keys` that
+/// appear verbatim in it — the operator's OWN credential, not third-party data
+/// (see the RAW SOURCE RECORDS call site for why). Pure so it is directly
+/// testable without the store/archive machinery.
+pub(super) fn redact_own_keys(
+    raw: &serde_json::Value,
+    own_keys: &std::collections::HashSet<String>,
+) -> String {
+    let pretty = serde_json::to_string_pretty(raw).unwrap_or_else(|_| raw.to_string());
+    crate::util::http::redact_literal_secrets(&pretty, own_keys.iter().cloned())
 }
 
 /// The **one-file debug bundle** — everything needed to understand and improve a

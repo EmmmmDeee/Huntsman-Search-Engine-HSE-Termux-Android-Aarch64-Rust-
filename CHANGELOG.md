@@ -380,6 +380,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   byte-identical crawl output.
 
 ### Fixed
+- **The full dossier's embedded RAW SOURCE RECORDS could carry the
+  operator's own configured API key into a shared export
+  (`PROBLEM_TREE` §7 S4).** Some providers echo the request URL/params
+  back in their JSON response; the full dossier renders that response
+  verbatim so an `hse export -o <path>` a user shares (a colleague, a
+  case file) could leak that key. The on-disk raw archive
+  (`crate::util::raw_archive`) is deliberately left untouched — its own
+  documented policy is total, unredacted retention of the paid-provider
+  corpus — only the dossier's derived, exportable copy now masks the
+  operator's own keys before rendering.
 - **The identity link-analysis search (AU-060, AU-064's cross-scan pathway
   templates, AU-067, AU-071's OTHER graph pass, the dossier CLI's
   CONNECTIONS/RESOLVED IDENTITIES sections, and the autonomous `scan_auto`

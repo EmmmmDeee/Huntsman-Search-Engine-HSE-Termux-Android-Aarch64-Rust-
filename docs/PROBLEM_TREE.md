@@ -1873,15 +1873,45 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `hse export -o <path>` is left to the user's umask — they chose the destination
   (often to share), so forcing 0600 there would surprise; the internal auto-written
   files are the ones locked down.
-- **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** ~7 modules
-  put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
-  `opencellid`/`opencorporates`/`mls`). Well-contained: no module logs the keyed URL,
-  `redact_credentials` masks `key=`/`token=` + literal `HUNTSMAN_*` on error paths,
-  `raw_archive` stores only `provider/endpoint/query` (not the URL). *Residual:* the
-  archived success **body** is verbatim, so a key echoed by an upstream persists in
-  `raw/*.json` (0600, but pulled into the non-0600 DB/dossiers via S3). → prefer
-  header auth where supported; optionally `redact_literal_secrets(body,
-  own_api_keys())` the archived body.
+- **S4 · `[x]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).**
+  *(closed 2026-07-01)* ~7 modules put the key in the query string
+  (`shodan`/`hunter_io`/`whoisxml`/`numverify`/`opencellid`/`opencorporates`/`mls`).
+  Well-contained: no module logs the keyed URL, `redact_credentials` masks
+  `key=`/`token=` + literal `HUNTSMAN_*` on error paths, `raw_archive` stores
+  only `provider/endpoint/query` (not the URL). *Residual:* the archived
+  success **body** is verbatim, so a key echoed by an upstream persists in
+  `raw/*.json`. → prefer header auth where supported; optionally
+  `redact_literal_secrets(body, own_api_keys())` the archived body.
+  **Investigated before implementing the sketch verbatim, and found it would
+  have been WRONG as written:** `raw/*.json` (`crate::util::raw_archive`)
+  carries its own explicit, deliberately-quoted operator policy — *"Data
+  that is paid for must be kept in absolute completeness... must always be
+  retained in their raw form until manually deleted"*, "never encrypted,
+  hashed, or redacted" — a directive this fix must not override without
+  explicit authorisation. The sketch's "0600, but pulled into the non-0600
+  DB/dossiers via S3" premise is also now stale: S3 (above) already made
+  the auto-written dossier 0600, same protection as `raw/`. The GENUINE
+  remaining exposure is different from either: `hse export -o <path>` is a
+  deliberate boundary (S3's own note) left to the user's umask because the
+  operator is explicitly choosing to SHARE that file — and the full
+  dossier's RAW SOURCE RECORDS section embeds the archived body verbatim
+  for a self-contained export. If a provider echoes the request URL/params
+  back in its response (a debug/echo field some APIs include), the
+  operator's OWN configured key could leak to whoever an export is shared
+  with — not the third-party evidentiary data the "never redact" policy
+  protects. ✅ **Fixed the correctly-scoped half:** the on-disk
+  `raw_archive` file is untouched (policy preserved); a new
+  `redact_own_keys` (`cli/export/renderers.rs`) masks the operator's OWN
+  keys (`own_api_keys()`, the same exclusion set `found_keys` already uses
+  to distinguish "ours" from "foreign") in the DERIVED dossier copy only,
+  reusing `redact_literal_secrets` (widened `pub(super)`→`pub(crate)` in
+  `util::http::redact`, alongside its sibling `redact_credentials`). 2 new
+  regression tests (masks the operator's own echoed key; leaves genuine
+  target/foreign data — a leaked password, a victim email — untouched),
+  `git stash`-confirmed non-vacuous. Gate green: 4306 lib tests
+  (4304→4306, +2), all 30 `tests/architecture.rs` guards pass, fmt/clippy
+  `--all-targets --locked -D warnings`/strict-rustdoc clean, full
+  `cargo test` green, `hse selftest` 9/9.
 - **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
@@ -4696,3 +4726,36 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   **Paired:** `SOLUTION_TREE` SOL-GEOINT (extended, stays `[~]`) + C5's
   §4a gap entry updated (partially delivered, genuine remainder documented) —
   same commit.
+
+- **2026-07-01** — **§7 S4 closed — but NOT by mechanically implementing
+  its own sketch, which turned out to conflict with an explicit,
+  deliberately-quoted operator policy.** With T2.25 and the C5 auto-sync
+  increment both shipped, and T2.7/C1/C6/C7 all genuinely blocked or
+  gated, S4 was the next concrete, unblocked, no-live-network-needed `[ ]`
+  item. Read `crate::util::raw_archive`'s own module doc comment before
+  touching it — found it carries a verbatim-quoted operator directive
+  ("Data that is paid for must be kept in absolute completeness...", "never
+  encrypted, hashed, or redacted") that S4's own sketch
+  (`redact_literal_secrets(body, own_api_keys())` "the archived body")
+  would have directly violated. Also found S4's stated risk premise
+  ("0600, but pulled into the non-0600 DB/dossiers via S3") is now stale —
+  S3 already made the dossier 0600, same as `raw/`. Traced the GENUINE
+  remaining exposure instead: `hse export -o <path>` deliberately leaves
+  permissions to the user's umask (S3's own documented boundary, because
+  the operator is explicitly choosing to share that file), and the full
+  dossier's RAW SOURCE RECORDS section embeds the archived body verbatim
+  into that exportable copy — so a provider that echoes the request
+  URL/params back (a debug/echo field some APIs include) could leak the
+  OPERATOR's OWN configured key to whoever an export is shared with, which
+  is a different concern from the third-party evidentiary data the
+  "never redact" policy protects. **Fixed the correctly-scoped half:**
+  `raw_archive`'s on-disk file stays untouched (policy honoured); a new
+  `redact_own_keys` (`cli/export/renderers.rs`) masks only the operator's
+  OWN keys in the dossier's derived, exportable copy, reusing
+  `redact_literal_secrets` (widened `pub(super)`→`pub(crate)` in
+  `util::http::redact`). 2 new regression tests, `git stash`-confirmed
+  non-vacuous. Gate green: 4306 lib tests (4304→4306, +2), all 30
+  `tests/architecture.rs` guards pass, fmt/clippy `--all-targets --locked
+  -D warnings`/strict-rustdoc clean, full `cargo test` green, `hse
+  selftest` 9/9. **Paired:** `SOLUTION_TREE` SOL-REDACT `[~]`→`[x]` +
+  §3/§4/§5 — same commit.
