@@ -428,6 +428,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `network`/`country`/`categories`/`tags` — a separate asset-depth
   concern) to avoid scope creep beyond the one verified gap. 2 new unit
   tests.
+  *Delivered (2026-07-01, cont'd):* the ASN/BGP → org/prefix correlation
+  leg. New rule **AU-112**: `EntityKind::Cidr` (announced prefixes /
+  netblocks from `bgpview`/`ripestat`/`netblock`/`intelx`) was produced
+  by four modules but read by zero correlator rules — a subject's IP and
+  the block containing it were never connected. AU-112 tests each
+  discovered IP for containment in each discovered block and attributes
+  the address to the block's owner. Reuses the pure `util::spf::
+  {Ipv4Cidr,Ipv6Cidr}` containment primitives (adversarial verification
+  caught that the discovery plan's proposed hand-rolled masking code
+  duplicated an already-tested primitive); a narrow
+  `core_does_not_import_util_directly` allowlist entry for those two
+  pure structs mirrors the existing `util::geometry` carve-out. 5 unit
+  tests.
   *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already
   ship); SSL-cert-hash pivoting on Censys/Shodan (genuinely needs new
   data-source work, not just surfacing an already-fetched field).
@@ -3141,3 +3154,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   remaining, and C4's SSL-cert-hash "needs new data source" all still
   accurate. Doc-only, in `PROBLEM_TREE` (no SOLUTION_TREE mirror of the
   stale line exists). Paired: `PROBLEM_TREE` baseline + §8 — same commit.
+
+- **2026-07-01** — **SOL-NETINT: new rule AU-112 closes the ASN/BGP →
+  org/prefix correlation leg — the one rule that reads
+  `EntityKind::Cidr`.** From the same fourth discovery pass's
+  correlator-coverage sweep (which found the rules' doc comments all
+  honest, but surfaced this cross-reference gap): `Cidr` was produced by
+  four modules yet read by zero correlator rules or relation builders, so
+  a discovered IP and the block provably containing it were never linked.
+  AU-112 (entity-only, `infra.rs`) tests containment per (IP, block) pair
+  and attributes the address to the block's ASN/org owner. Reuses the
+  pure `util::spf::{Ipv4Cidr,Ipv6Cidr}` primitives — adversarial
+  verification caught that the discovery plan's proposed hand-rolled
+  masking would have duplicated an already-tested primitive. Narrow
+  `core_does_not_import_util_directly` allowlist entry for the two pure
+  structs, mirroring the `util::geometry` carve-out (guard's designed
+  mechanism, not a weakening). 5 unit tests; all four correlator
+  architecture guards pass. Bumps baseline to 110 rules / ceiling
+  AU-112. Gate green: 4306 lib tests (+5), full suite green, fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C4 + §8 — same
+  commit.

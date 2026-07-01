@@ -94,6 +94,12 @@ fn core_does_not_import_util_directly() {
                 // median, …) — the geo correlation rules' location estimators.
                 // Same justification as `util::geohash`: no I/O, no deps.
                 && !line.contains("util::geometry")
+                // Pure, offline CIDR containment (overflow-safe bitmask maths on
+                // std `Ipv4Addr`/`Ipv6Addr`; no I/O, no deps) — same leaf
+                // category as `util::geometry`. AU-112 uses it to test whether a
+                // discovered IP falls inside a discovered announced network block.
+                && !line.contains("util::spf::Ipv4Cidr")
+                && !line.contains("util::spf::Ipv6Cidr")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")

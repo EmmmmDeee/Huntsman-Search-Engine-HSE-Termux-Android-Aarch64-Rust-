@@ -576,3 +576,109 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
         })
         .collect()
 }
+
+/// True when `ip` falls inside the `cidr` block, or `None` when either value is
+/// unparseable or the two are of different address families. Reuses the pure,
+/// offline `util::spf` CIDR primitives (overflow-safe masking, no I/O, no deps)
+/// rather than re-deriving the bitmask maths. A mixed-family pair (`ip` v4,
+/// `cidr` v6 or vice versa) is never a member, which falls out naturally: the
+/// address won't parse as the block's family, so the `?` short-circuits to
+/// `None` — a non-hit, never a false fire.
+fn ip_in_cidr(cidr: &str, ip: &str) -> Option<bool> {
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    if cidr.contains(':') {
+        let block = crate::util::spf::Ipv6Cidr::parse(cidr)?;
+        Some(block.contains(ip.parse::<Ipv6Addr>().ok()?))
+    } else {
+        let block = crate::util::spf::Ipv4Cidr::parse(cidr)?;
+        Some(block.contains(ip.parse::<Ipv4Addr>().ok()?))
+    }
+}
+
+/// The owning network of a `Cidr` entity, read from the evidence the BGP/whois
+/// sources (`bgpview`/`ripestat`) already stamp: the org `name` if present, else
+/// the `asn` number rendered `AS<n>`. `None` when neither is recorded.
+fn cidr_owner(cidr_entity: &Entity) -> Option<String> {
+    for ev in &cidr_entity.evidence {
+        if let Some(name) = ev.attributes.get("name").map(|s| s.trim())
+            && !name.is_empty()
+        {
+            return Some(name.to_string());
+        }
+    }
+    for ev in &cidr_entity.evidence {
+        if let Some(asn) = ev.attributes.get("asn").map(|s| s.trim())
+            && !asn.is_empty()
+        {
+            // `bgpview`/`ripestat` stamp the bare number; render it AS-prefixed
+            // unless the source already did.
+            return Some(
+                if asn.eq_ignore_ascii_case("as") || asn.to_ascii_uppercase().starts_with("AS") {
+                    asn.to_string()
+                } else {
+                    format!("AS{asn}")
+                },
+            );
+        }
+    }
+    None
+}
+
+/// AU-112 — a discovered IP falls inside a discovered announced network block.
+///
+/// `Cidr` entities (announced BGP prefixes / whois netblocks from `bgpview`,
+/// `ripestat`, `netblock`, `intelx`) and `IpAddress` entities routinely both
+/// land in the graph on an infra-heavy scan, yet no rule ever connected them:
+/// a subject's IP and the very network block that provably contains it stayed
+/// unlinked. This rule closes that — for each discovered IP inside a discovered
+/// block, it emits a Medium correlation attributing the address to that block's
+/// owner (read from the ASN/org evidence the source already stamped). A
+/// co-tenancy / network-ownership lead, not proof of control — same tier as
+/// AU-110's co-hosting. Deterministic: blocks and IPs iterated in sorted order.
+pub(in crate::core::correlator) fn rule_au_112_ip_in_announced_prefix(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let mut cidrs: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Cidr)
+        .collect();
+    if cidrs.is_empty() {
+        return Vec::new();
+    }
+    cidrs.sort_by(|a, b| a.value.cmp(&b.value).then(a.uid.cmp(&b.uid)));
+
+    let mut ips: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+    ips.sort_by(|a, b| a.value.cmp(&b.value).then(a.uid.cmp(&b.uid)));
+
+    let mut out = Vec::new();
+    for ip in &ips {
+        for cidr in &cidrs {
+            if ip_in_cidr(&cidr.value, &ip.value) == Some(true) {
+                let owner = match cidr_owner(cidr) {
+                    Some(o) => format!(" (announced by {o})"),
+                    None => String::new(),
+                };
+                out.push(Correlation::new(
+                    "AU-112",
+                    "IP within a discovered announced network block",
+                    Severity::Medium,
+                    format!(
+                        "IP {} falls inside the discovered network block {}{} — the address \
+                         belongs to that owner's announced infrastructure (co-tenancy lead, \
+                         not proof of control)",
+                        ip.value, cidr.value, owner
+                    ),
+                    vec![ip.uid.clone(), cidr.uid.clone()],
+                    scan_id,
+                    ts,
+                ));
+            }
+        }
+    }
+    out
+}

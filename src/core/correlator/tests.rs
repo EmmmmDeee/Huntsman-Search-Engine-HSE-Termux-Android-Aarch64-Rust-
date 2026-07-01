@@ -7409,3 +7409,83 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
         "an elapsed budget must stop the relation-rule pass immediately"
     );
 }
+
+// ── AU-112 — IP within a discovered announced network block ────────────────
+
+#[test]
+fn au112_fires_when_ip_falls_inside_a_discovered_block() {
+    // A bgpview-shaped Cidr entity (block + asn/name evidence) plus an IP that
+    // provably falls inside it → attribution to the block's owner.
+    let mut block = Entity::new(EntityKind::Cidr, "45.33.32.0/24", 0.7, "s");
+    block.tag("bgp-prefix");
+    block.add_evidence(
+        Evidence::new("bgpview", "prefix")
+            .with_attr("asn", "63949")
+            .with_attr("name", "Akamai Linode"),
+    );
+    let ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+
+    let r = super::rules::rule_au_112_ip_in_announced_prefix(&[block.clone(), ip.clone()], "s", 0);
+    assert_eq!(r.len(), 1, "an in-block IP must fire: {r:?}");
+    assert_eq!(r[0].rule_id, "AU-112");
+    assert_eq!(r[0].severity, Severity::Medium);
+    assert!(r[0].entity_uids.contains(&ip.uid));
+    assert!(r[0].entity_uids.contains(&block.uid));
+    assert!(r[0].description.contains("45.33.32.156"));
+    assert!(r[0].description.contains("45.33.32.0/24"));
+    assert!(
+        r[0].description.contains("Akamai Linode"),
+        "owner name from evidence must be surfaced: {}",
+        r[0].description
+    );
+}
+
+#[test]
+fn au112_falls_back_to_asn_when_no_org_name() {
+    // A block carrying only an `asn` attr renders it AS-prefixed.
+    let mut block = Entity::new(EntityKind::Cidr, "8.8.8.0/24", 0.7, "s");
+    block.add_evidence(Evidence::new("ripestat", "prefix").with_attr("asn", "15169"));
+    let ip = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.8, "s");
+    let r = super::rules::rule_au_112_ip_in_announced_prefix(&[block, ip], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(
+        r[0].description.contains("AS15169"),
+        "bare ASN must render AS-prefixed: {}",
+        r[0].description
+    );
+}
+
+#[test]
+fn au112_does_not_fire_for_an_ip_outside_the_block() {
+    let block = Entity::new(EntityKind::Cidr, "45.33.32.0/24", 0.7, "s");
+    let ip = Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.8, "s");
+    assert!(
+        super::rules::rule_au_112_ip_in_announced_prefix(&[block, ip], "s", 0).is_empty(),
+        "an out-of-block IP must not fire"
+    );
+}
+
+#[test]
+fn au112_handles_ipv6_containment() {
+    let block = Entity::new(EntityKind::Cidr, "2001:db8::/32", 0.7, "s");
+    let inside = Entity::new(EntityKind::IpAddress, "2001:db8::1", 0.8, "s");
+    let outside = Entity::new(EntityKind::IpAddress, "2001:dead::1", 0.8, "s");
+    let r =
+        super::rules::rule_au_112_ip_in_announced_prefix(&[block, inside.clone(), outside], "s", 0);
+    assert_eq!(r.len(), 1, "only the in-block v6 address fires: {r:?}");
+    assert!(r[0].entity_uids.contains(&inside.uid));
+}
+
+#[test]
+fn au112_malformed_or_mixed_family_never_panics_or_false_fires() {
+    // A truncation-marker/garbage Cidr value, and an IPv4 IP against an IPv6
+    // block (different families) — neither must panic or false-fire.
+    let bad_block = Entity::new(EntityKind::Cidr, "not-a-cidr", 0.7, "s");
+    let v6_block = Entity::new(EntityKind::Cidr, "2001:db8::/32", 0.7, "s");
+    let v4_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    assert!(
+        super::rules::rule_au_112_ip_in_announced_prefix(&[bad_block, v6_block, v4_ip], "s", 0)
+            .is_empty(),
+        "malformed / cross-family inputs must produce no firing"
+    );
+}

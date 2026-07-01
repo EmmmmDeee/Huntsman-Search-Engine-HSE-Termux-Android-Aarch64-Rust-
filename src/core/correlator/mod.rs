@@ -250,6 +250,10 @@ const RULES: &[RuleFn] = &[
     // AU-097: subject's IP/ASN belongs to an Australian ISP (Telstra/Optus/TPG/…)
     // or AARNet — a network-layer AU residency/affiliation signal.
     rule_au_097_au_isp_network,
+    // AU-112: a discovered IP falls inside a discovered announced network block
+    // (Cidr from bgpview/ripestat/netblock) — attributes the address to that
+    // block's owner. The one rule that reads EntityKind::Cidr.
+    rule_au_112_ip_in_announced_prefix,
     // AU-095: ranked exposure-intelligence portfolio over all harvested ApiKey
     // entities (provider × criticality × detection) — a revoke-first priority
     // order, complementing AU-021's flat per-key findings. Catalogue-only.

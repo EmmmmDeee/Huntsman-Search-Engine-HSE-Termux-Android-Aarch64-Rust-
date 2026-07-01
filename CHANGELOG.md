@@ -11,6 +11,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New correlation rule AU-112 — IP within a discovered network block.**
+  When a scan discovers both an IP address and an announced BGP prefix /
+  netblock (from `bgpview`, `ripestat`, `netblock`, or `intelx`) that
+  provably contains it, the scan now surfaces a correlation attributing
+  the address to that block's owner (ASN/organisation). These two entity
+  kinds were both collected but never connected before.
 - **`proxycurl` now surfaces LinkedIn professional certifications.** The
   module's description already promised to extract "employment,
   education, and certifications", but the certifications array Proxycurl

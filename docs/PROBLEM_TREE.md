@@ -80,8 +80,8 @@ per-category split below is the 2026-06-18 snapshot and has NOT been
 re-derived — 14 categories (Infrastructure 21, Geo 20, People 16, DnsRecon 13,
 Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5, Sensor 4, Threat 3,
 Search/Other 2 each) — treat the sub-counts as approximate until re-tallied;
-**109 native correlation rules** (dispatched `rule_au_*` functions: 96 entity
-rules + 13 relation-graph rules; ID ceiling AU-111; a few IDs like AU-065/066
+**110 native correlation rules** (dispatched `rule_au_*` functions: 97 entity
+rules + 13 relation-graph rules; ID ceiling AU-112; a few IDs like AU-065/066
 are engine-emitted rather than dispatched, so they occupy numbers outside the
 dispatch tables); 0 `unsafe`; deterministic entity merge; SQLite store; SSE
 live; axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct
@@ -926,6 +926,30 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   origin-candidate signal lives in the `Correlation` record's
   `entity_uids`/description, the same way AU-110 already names its
   co-hosted IPs, not as an entity tag.
+  *Delivered (2026-07-01, cont'd):* new correlator rule **AU-112** — the
+  ASN/BGP → org/prefix correlation leg. `EntityKind::Cidr` (announced BGP
+  prefixes / whois netblocks from `bgpview`/`ripestat`/`netblock`/
+  `intelx`) was a first-class entity FOUR modules produced but ZERO
+  correlator rules or relation builders ever read — so a subject's IP and
+  the very network block that provably contains it stayed unconnected on
+  every infra-heavy scan. AU-112 (entity-only rule) tests each discovered
+  IP for containment in each discovered block and, on a hit, emits a
+  Medium correlation attributing the address to the block's owner (ASN/
+  org, read from the evidence the source already stamped). Reuses the
+  pure, offline `util::spf::{Ipv4Cidr,Ipv6Cidr}` containment primitives
+  (overflow-safe bitmask maths, no I/O, no deps) rather than hand-rolling
+  new masking code — the discovery pass's own plan proposed duplicating
+  `netblock`'s expansion logic, but adversarial verification caught that
+  a tested containment primitive already existed. Added a narrow entry to
+  the `core_does_not_import_util_directly` architecture-guard allowlist
+  for those two pure structs, exactly mirroring the existing
+  `util::geometry` carve-out for the geo rules' estimators (same
+  no-I/O/no-deps justification — extends the guard's designed mechanism,
+  doesn't weaken it). 5 unit tests (in-block v4 fire with owner text, ASN
+  fallback, out-of-block no-fire, IPv6 containment, malformed/
+  cross-family no-panic-no-false-fire).
+  *Remaining:* SSL-cert-hash pivoting on Censys/Shodan (the one leg that
+  genuinely needs new data-source work).
 - **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -4061,3 +4085,35 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   than guess, flagged them explicitly as the unverified 2026-06-18
   snapshot. Doc-only; no code touched. Gate: n/a (docs). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-01** — **New correlator rule AU-112: a discovered IP inside a
+  discovered announced network block — the one rule that reads
+  `EntityKind::Cidr` (C4's ASN/BGP → org/prefix correlation leg).**
+  Selected from the same fourth discovery pass, `correlator-rule-coverage`
+  candidate: a systematic sweep of ~45 rule doc comments found NO
+  doc-vs-code mismatch (the rules are honest), but surfaced a real
+  cross-reference gap — `EntityKind::Cidr` was produced by four modules
+  (`bgpview`/`ripestat`/`netblock`/`intelx`, each carrying the owning
+  ASN/org in evidence) yet read by zero correlator rules and joined by
+  zero relation builders (`grep -rln "Cidr" src/core/correlator/` and
+  `src/core/relation/` both returned empty), so a subject's IP and the
+  block that provably contains it were never connected. AU-112 (entity-
+  only rule in `infra.rs`) closes it: containment test per (IP, block)
+  pair, Medium correlation on a hit naming the block's owner. Adversarial
+  verification caught and corrected the discovery plan's one material
+  error — it proposed hand-rolling new CIDR-masking code "adapted from
+  netblock", but a pure, tested containment primitive
+  (`util::spf::{Ipv4Cidr,Ipv6Cidr}`) already existed, so the rule reuses
+  it. That required a narrow addition to the
+  `core_does_not_import_util_directly` guard's allowlist for those two
+  pure/no-I/O structs — mirroring the existing `util::geometry` carve-out
+  exactly (the guard's designed mechanism for pure computational leaf
+  helpers, not a weakening). Registered in `RULES`; all four correlator
+  architecture guards pass (`every_dispatched_correlation_rule_has_a_
+  firing_test`, `correlation_rule_ids_match_their_function_number`,
+  `no_two_correlation_rule_functions_share_a_number`, plus the amended
+  import guard). 5 unit tests. Bumps the baseline count to 110 rules /
+  ceiling AU-112. Gate green: 4306 lib tests (+5), full suite (lib +
+  smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
+  same commit.
