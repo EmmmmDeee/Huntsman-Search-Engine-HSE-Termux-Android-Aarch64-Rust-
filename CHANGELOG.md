@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Search-engine dorking now covers breach/leak exposure for physical
+  addresses, not just email/username/domain/phone/full name.**
+  `build_queries_exposure` silently returned no exposure dorks at all for
+  `Address` targets, despite address data being a common secondary field
+  in breach records. New `address_exposure` dorks check pastebin/
+  dehashed/leakcheck/snusbase, exposed code-repo/cloud-storage configs,
+  and people-search aggregators for the address.
 - **The dossier now warns when a scan ran modules but found nothing at
   all.** `hse scan --output dossier` previously printed the same
   reassuring "pipeline is well-tuned for this seed" message whether a

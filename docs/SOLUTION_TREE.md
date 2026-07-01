@@ -534,6 +534,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   that had baked in the now-false "FullName's exposure dorks are always
   empty" assumption. *Remaining:* narrow — this is one function's coverage,
   not C6 as a whole.
+  *Delivered (2026-07-01, cont'd):* `Address` gains the same coverage.
+  Blanket-excluded alongside `CryptoAddress` on the same "no added
+  signal" premise — true for `CryptoAddress` (its base arm already has
+  scam/fraud/attribution dorks), false for `Address` (real-estate/
+  land-registry/ABN dorks only, zero breach coverage). Added
+  `address_exposure` (5 dorks, same shape). `AbnAcn` deliberately left
+  excluded — weaker breach-relevance than a street address, not
+  force-fit into scope. 2 new tests; full 291-test `search_engines`
+  suite re-run to confirm no regression.
   *Correction (2026-07-01):* the "C7 has no comparably small gap" note above
   was itself wrong — a follow-up discovery pass found one directly (see
   SOL-FORENSIC below).
@@ -788,8 +797,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining:* the actual published throughput/RAM benchmark deliverable.
 - **C6** — `[~]` (SOL-OFFENSIVE). Exposure-dork Phone/FullName coverage
   delivered 2026-07-01; entropy gate, `aho-corasick` scanner, credential-reuse
-  graph, and shared key pipeline all confirmed already mature. *Remaining:*
-  the rest of the node beyond this one function's coverage.
+  graph, and shared key pipeline all confirmed already mature. Exposure-dork
+  Address coverage delivered 2026-07-01 (cont'd). *Remaining:* the rest of
+  the node beyond exposure-dork target-kind coverage.
 - **C7** — `[~]` (SOL-FORENSIC). Event-log scan-recovery evidence-order
   determinism delivered 2026-07-01; the higher-impact mid-scan checkpoint
   path's evidence-order determinism delivered 2026-07-01 (cont'd).
@@ -3035,3 +3045,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green: 4294 lib tests (+3), full suite (lib + smoke + architecture +
   doctests, all binaries) green, fmt/clippy `--all-targets`/doc clean.
   Paired: `PROBLEM_TREE` T2.14 + §8 — same commit.
+
+- **2026-07-01** — **SOL-OFFENSIVE continued: `Address` gains the same
+  exposure-dork coverage Phone/FullName already got, closing a second
+  real slice of the identical gap.** Selected from the same third
+  discovery pass. `build_queries_exposure`'s doc comment blanket-excluded
+  `Address` alongside `CryptoAddress` on the same "no added signal beyond
+  `build_queries_base`" premise — true for `CryptoAddress` (its base arm
+  already bakes in scam/fraud/attribution dorks), false for `Address`
+  (real-estate/land-registry/ABN dorks only, zero breach coverage — the
+  exact shape of gap already fixed for Phone/FullName). Added
+  `address_exposure` (5 dorks: paste/dehashed/leakcheck/snusbase breach
+  dumps, github/s3 config-leak dorks, people-search aggregators — same
+  shape as the existing per-kind helpers), corrected the doc comment.
+  `AbnAcn` deliberately left excluded — a registry number's
+  breach-relevance is weaker than a street address's, so it wasn't
+  force-fit into scope alongside Address. 2 new tests (dispatch-level,
+  shape-level) mirroring the Phone/FullName precedent exactly; the full
+  291-test `search_engines` suite re-run to confirm no regression in the
+  existing `build_queries_address_produces_dorks` integration test. Gate
+  green: 4296 lib tests (+2), full suite (lib + smoke + architecture +
+  doctests, all binaries) green, fmt/clippy `--all-targets`/doc clean.
+  Paired: `PROBLEM_TREE` C6 + §8 — same commit.

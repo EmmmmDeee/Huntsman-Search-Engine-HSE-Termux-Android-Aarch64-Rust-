@@ -1004,8 +1004,23 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   (`build_queries_fullname_pure_fn_matches_dispatch` now compares against
   `build_queries_base` for the verbatim-extraction check, and separately
   asserts the exposure dorks ARE present in the full `build_queries`
-  pipeline). *Remaining:* this is a narrow slice (one function's
-  target-kind coverage) — C6 as a whole node is not closed.
+  pipeline).
+  *Audit + delivered (2026-07-01, cont'd):* a second, real slice of the
+  same gap. `build_queries_exposure`'s doc comment blanket-excluded
+  `Address` alongside genuinely-inapplicable kinds (`CryptoAddress`'s own
+  base arm already bakes in scam/fraud/attribution dorks, so it's
+  correctly excluded) — but `Address`'s actual base arm (real-estate/
+  land-registry/strata/ABN dorks only) has zero breach/pastebin/
+  credential-dump/people-search coverage, exactly the Phone/FullName gap
+  already fixed. Added `address_exposure` (5 dorks, same shape as the
+  existing per-kind helpers) and corrected the doc comment. `AbnAcn`
+  deliberately left excluded — its breach-relevance is weaker than an
+  address's (a registry number rarely appears in a credential dump the
+  way a street address or phone number does), so it wasn't force-fit
+  into this fix. 2 new tests (dispatch-level, shape-level), mirroring the
+  Phone/FullName test pattern exactly. *Remaining:* this is again a
+  narrow slice (one more function's target-kind coverage) — C6 as a
+  whole node is not closed.
 - **`[~]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
@@ -3907,3 +3922,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-HINT-NOISE + §5 — same commit.
+
+- **2026-07-01** — **C6: `Address` gains the same exposure-dork coverage
+  Phone/FullName already got, closing a second, real slice of the
+  identical gap.** Selected from the same third discovery +
+  adversarial-verification pass. `build_queries_exposure`'s doc comment
+  blanket-excluded `Address` alongside `CryptoAddress` on the same
+  "doesn't add signal beyond `build_queries_base`" premise — true for
+  `CryptoAddress` (its base arm already has scam/fraud/attribution
+  dorks) but false for `Address` (real-estate/land-registry/ABN dorks
+  only, zero breach coverage). Added `address_exposure` (5 dorks: paste/
+  dehashed/leakcheck/snusbase breach dumps, github/s3 config-leak dorks,
+  people-search aggregators — same shape as the existing per-kind
+  helpers), corrected the doc comment. `AbnAcn` deliberately left
+  excluded — a registry number's breach-relevance is weaker than a
+  street address's, so it wasn't force-fit into scope alongside Address.
+  2 new tests (dispatch-level, shape-level) mirroring the Phone/FullName
+  precedent exactly; full `search_engines` suite (291 tests) re-run to
+  confirm no regression in the existing `build_queries_address_produces_
+  dorks` integration test. Gate green: 4296 lib tests (+2), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE +
+  §5 — same commit.
