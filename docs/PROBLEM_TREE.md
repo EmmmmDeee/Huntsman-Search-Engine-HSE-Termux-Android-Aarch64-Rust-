@@ -265,10 +265,17 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   needed for these (≈30–250 entries; memory-mapping buys nothing at that size).
   *Remaining (premise corrected, cycle 18):* the "large table" assumption was wrong —
   Huntsman uses curated subsets: OUI ≈111 entries (not the full IEEE registry ≈30k),
-  AU postcode ≈72 entries, phone area codes ≈65 entries. At these sizes `fst` adds a
+  AU postcode ≈100 entries, phone area codes ≈65 entries. At these sizes `fst` adds a
   heavy compile dep for zero on-device benefit; `fst` adoption is `[-]` (accepted-
   won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains a future
   capability goal but can be pursued via a lighter mechanism.
+  *Count correction (2026-07-01):* the AU postcode gazetteer (`src/util/
+  postcode_au/mod.rs`) grew to 96 entries when commit `a6f09f83` added 24
+  regional-city postcodes — the "≈72" figure recorded here predates that
+  addition and was never updated across 20 subsequent doc-touching
+  commits. Corrected to "≈100" to match the gazetteer function's own doc
+  comment ("the same ~100 postcodes"), so future additions within that
+  range don't re-stale this line.
 - **`[~]` F.3 · Proof & measurement infrastructure** — was: no property testing,
   no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
@@ -3973,3 +3980,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tied to a specific capability node — a general per-module data-depth
   completeness fix, same class as the AU register/WiGLE fixes.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-01** — **F.2 stale-count correction: the AU postcode gazetteer
+  grew from ~72 to 96 entries five days after this note was recorded, and
+  the doc was never updated across 20 subsequent doc-touching commits.**
+  Selected from the third discovery pass's third stale-doc sweep, which
+  also checked T2.9 (SQL tie-breaks) and T2.12 (CLI/periphery contract)
+  and found both fully accurate — not every audit finds a stale claim.
+  `src/util/postcode_au/mod.rs::offline_fallback` has 96 match arms
+  today (verified directly), consistent with the function's own doc
+  comment ("the same ~100 postcodes"). `git log -S` traced the "≈72"
+  figure to commit `868a83a2` (cycle 18, 2026-06-18) and the actual
+  growth to `a6f09f83` (2026-06-26, "add 24 major AU regional cities" —
+  72+24=96, exact match), 8 days later; the figure was correct when
+  written and simply never revisited. Corrected the 3 genuinely
+  prescriptive occurrences (this node's §2 text, plus two SOLUTION_TREE
+  spots) to "≈100" — matching the code's own doc-comment wording so
+  future gazetteer growth within that range doesn't re-stale the line —
+  while leaving the two §8/§5 historical log entries dated 2026-06-18
+  untouched (accurate point-in-time records of what the count was then,
+  per this session's append-only convention). The adjacent "phone area
+  codes ≈65 entries" figure was checked too and found genuinely
+  ambiguous (AU-only area codes = 5 entries; all-country area-code
+  tables combined = 83; neither cleanly matches 65) — left uncorrected
+  rather than guessing which scope was intended. Doc-only; no code
+  touched. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.

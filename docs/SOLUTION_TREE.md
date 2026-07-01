@@ -112,11 +112,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fuzzy matching for typosquat / username-variants / suburb-matching.
   *Delivered:* the **de-dup goal** (T2.6) — drift-prone shared lists single-sourced by
   delegation. *Gap (premise corrected, cycle 18):* the "large table" assumption was
-  wrong — Huntsman uses curated subsets (OUI ≈111 entries, AU postcode ≈72 entries,
+  wrong — Huntsman uses curated subsets (OUI ≈111 entries, AU postcode ≈100 entries,
   phone area codes ≈65 entries), not registry-scale tables; `fst` is overkill at these
   sizes and adds a heavy compile dep for no on-device benefit. `fst` adoption `[-]`
   (accepted-won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains
   a future capability goal but can be pursued via a lighter mechanism.
+  *Count correction (2026-07-01):* the AU postcode gazetteer grew from 72
+  to 96 entries (commit `a6f09f83`, 24 regional-city postcodes added)
+  after the "≈72" figure was recorded; corrected to "≈100" to match the
+  gazetteer's own doc comment and avoid re-staling on every future
+  addition.
 - **`[~]` SOL-F3 · Proof & measurement infrastructure** ⚑ — `proptest` properties for
   every pure fn, `cargo-fuzz` for every untrusted parser, `criterion` for the hot
   paths; CI compiles benches + runs corpora.
@@ -855,9 +860,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   via `read_body_capped`→`String::from_utf8_lossy`; `bstr` promotes only when a
   module takes raw `&[u8]` response bytes directly). Unblocks T2.7 + sharpens C6.
 - **SOL-F2** — de-dup done; large-table premise corrected (cycle 18): OUI ≈111
-  entries, AU postcode ≈72 entries, phone area codes ≈65 entries — `fst` is overkill
-  at these sizes. `fst` adoption `[-]` (accepted-won't-build); Levenshtein fuzzy
-  matching deferred to a lighter mechanism when needed.
+  entries, AU postcode ≈100 entries (corrected 2026-07-01 from a stale ≈72 —
+  the gazetteer grew to 96 after cycle 18), phone area codes ≈65 entries —
+  `fst` is overkill at these sizes. `fst` adoption `[-]` (accepted-won't-build);
+  Levenshtein fuzzy matching deferred to a lighter mechanism when needed.
 - **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
   landed; only `cargo-fuzz` (nightly CI lane) left.
 - **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
@@ -3088,3 +3094,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `--all-targets`/doc clean, including
   `every_literal_constructed_entity_kind_is_declared_in_produces`.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-01** — **SOL-F2 stale-count correction: AU postcode gazetteer
+  grew from ~72 to 96 entries 8 days after the figure was recorded.**
+  Selected from the third discovery pass's third stale-doc sweep
+  (T2.9/T2.12 both checked out accurate — the sweep is not just a
+  find-something pass). `postcode_au::offline_fallback` has 96 entries
+  today; `git log -S` traced "≈72" to `868a83a2` (2026-06-18, correct
+  when written) and the growth to `a6f09f83` (2026-06-26, +24 regional
+  cities, exact arithmetic match), with 20 subsequent doc-touching
+  commits never revisiting the line. Corrected the 3 prescriptive
+  occurrences (§2 SOL-F2, §4b) to "≈100", matching the gazetteer's own
+  doc-comment wording so future growth within range doesn't re-stale it;
+  left the paired §5 historical log entry from 2026-06-18 untouched
+  (accurate at the time it was written). The adjacent "phone area codes
+  ≈65" figure was checked and found genuinely ambiguous in scope (AU-only
+  = 5 entries; all countries combined = 83; neither cleanly matches) —
+  left uncorrected rather than guessing. Doc-only. Paired: `PROBLEM_TREE`
+  F.2 + §8 — same commit.
