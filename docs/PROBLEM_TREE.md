@@ -4006,3 +4006,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   rather than guessing which scope was intended. Doc-only; no code
   touched. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+
+- **2026-07-01** — **`proxycurl` now surfaces the `certifications` its own
+  description promised but never parsed — the fifth "dropped-field depth
+  gap" this session found and closed (after `austlii`, `wigle`,
+  `virustotal`, `hunter_io`).** Unusually self-contradicting: the
+  module's `description()` string literally advertised "employment,
+  education, and certifications via Proxycurl", and the module doc's
+  field→output mapping table covered every field EXCEPT certifications —
+  but `struct LinkedInProfile` had no `certifications` field at all, so
+  serde silently dropped the entire array Proxycurl's Person Profile API
+  returns. Added a `Certification` struct (`name`/`authority`) with a
+  `describe()` method (`"Name (Authority)"`) mirroring the existing
+  `Education::describe()` precedent exactly, a `#[serde(default)]
+  certifications: Vec<Certification>` field, and a fold into a
+  `certifications` evidence attribute on the `Person` entity (capped at
+  `MAX_LISTED`, joined `"; "`, following the `education` attr pattern to
+  the letter — no new `EntityKind`). Also added the missing table row to
+  the module doc so the code's own promise now matches its behaviour. 3
+  new unit tests (the `describe()` name+authority/name-only/no-name
+  cases, a full-profile assertion, and an absent-field no-op regression).
+  Not tied to a specific capability node — a general per-module
+  data-depth completeness fix. Gate green: 4301 lib tests (+3), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

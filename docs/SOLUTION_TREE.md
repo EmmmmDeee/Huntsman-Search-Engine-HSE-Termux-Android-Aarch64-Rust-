@@ -3112,3 +3112,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   = 5 entries; all countries combined = 83; neither cleanly matches) —
   left uncorrected rather than guessing. Doc-only. Paired: `PROBLEM_TREE`
   F.2 + §8 — same commit.
+
+- **2026-07-01** — **`proxycurl` surfaces `certifications` — the fifth
+  dropped-field depth gap this session found and closed, after
+  `austlii`/`wigle`/`virustotal`/`hunter_io`.** The module's own
+  `description()` promised "employment, education, and certifications",
+  and every field but certifications had a doc→output mapping row, yet
+  `LinkedInProfile` had no `certifications` field, so serde dropped the
+  array Proxycurl's Person Profile API returns. Added a `Certification`
+  struct + `describe()` (`"Name (Authority)"`) mirroring
+  `Education::describe()` exactly, a `#[serde(default)]` `Vec` field, and
+  a fold into a `certifications` evidence attr on the `Person` (capped at
+  `MAX_LISTED`, `education`-attr pattern to the letter — no new
+  `EntityKind`), plus the missing doc-table row. 3 new unit tests. Not
+  tied to a specific capability node. Gate green: 4301 lib tests (+3),
+  full suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` §8 — same
+  commit.

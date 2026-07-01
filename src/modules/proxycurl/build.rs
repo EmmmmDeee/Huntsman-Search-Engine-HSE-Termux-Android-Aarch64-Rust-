@@ -11,7 +11,7 @@ use crate::core::{
 };
 use crate::util::domains::is_freemail;
 
-use super::types::{DateField, Education, LinkedInProfile};
+use super::types::{Certification, DateField, Education, LinkedInProfile};
 use super::{MAX_EMAILS, MAX_EXPERIENCES, MAX_LISTED, MAX_PHONES, SRC};
 
 use crate::util::str_util::nonempty;
@@ -80,6 +80,15 @@ pub(super) fn build_entities(
             .collect();
         if !schools.is_empty() {
             ev = ev.with_attr("education", schools.join("; "));
+        }
+        let certs: Vec<String> = profile
+            .certifications
+            .iter()
+            .filter_map(Certification::describe)
+            .take(MAX_LISTED)
+            .collect();
+        if !certs.is_empty() {
+            ev = ev.with_attr("certifications", certs.join("; "));
         }
         pe.add_evidence(ev);
         result.push(pe);

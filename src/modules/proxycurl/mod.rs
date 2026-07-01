@@ -16,6 +16,7 @@
 //! | `city`/`state`/`country_full_name`     | `Address` (+`country:` tag)         |
 //! | `experiences[].company`/`title`/dates/`location` | `Organisation` (+attrs)   |
 //! | `education[].school`/`degree`/`field`  | `education` attr on the `Person`    |
+//! | `certifications[].name`/`authority`    | `certifications` attr on the `Person` |
 //! | `personal_emails[]`                    | `Email` + derived non-freemail `Domain` |
 //! | `personal_numbers[]`                   | `Phone`                             |
 //!

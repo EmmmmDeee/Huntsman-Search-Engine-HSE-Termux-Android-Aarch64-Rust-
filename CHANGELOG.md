@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`proxycurl` now surfaces LinkedIn professional certifications.** The
+  module's description already promised to extract "employment,
+  education, and certifications", but the certifications array Proxycurl
+  returns was never parsed and silently dropped. Each discovered
+  profile's certifications (name + issuing authority) now appear as a
+  `certifications` attribute on the `Person` entity, alongside the
+  employment and education it already surfaced.
 - **`hunter_io` now surfaces each discovered email's LinkedIn/Twitter
   profile fields.** Hunter's domain-search response already returns these
   per-email but the module discarded them on deserialize. A LinkedIn URL
