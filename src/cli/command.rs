@@ -383,6 +383,53 @@ pub enum Command {
         /// Comma-separated module allowlist.
         #[arg(short, long)]
         modules: Option<String>,
+        /// Same as `scan --exclude`.
+        #[arg(long)]
+        exclude: Option<String>,
+        /// Same as `scan --throttle` — applies to each iteration's module dispatch.
+        #[arg(long, default_value_t = 0)]
+        throttle: u64,
+        /// Same as `scan --min-confidence`.
+        #[arg(long)]
+        min_confidence: Option<f64>,
+        /// Same as `scan --min-expand-confidence`.
+        #[arg(long, default_value_t = crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE)]
+        min_expand_confidence: f64,
+        /// Same as `scan --max-entities` — applies per iteration. Omitted ⇒ the
+        /// product default (2500), matching `hse scan` and the API's live/scan
+        /// defaults.
+        #[arg(long)]
+        max_entities: Option<usize>,
+        /// Same as `scan --max-wall-time` — applies per iteration.
+        #[arg(long)]
+        max_wall_time: Option<u64>,
+        /// Same as `scan --max-concurrent`.
+        #[arg(long, default_value_t = 2)]
+        max_concurrent: usize,
+        /// Same as `scan --max-roi`.
+        #[arg(long)]
+        max_roi: bool,
+        /// Same as `scan --convex-budget`.
+        #[arg(long)]
+        convex_budget: bool,
+        /// Same as `scan --no-regional`.
+        #[arg(long = "no-regional", action = clap::ArgAction::SetTrue)]
+        no_regional: bool,
+        /// Same as `scan --min-marginal-yield`.
+        #[arg(long)]
+        min_marginal_yield: Option<f64>,
+        /// Same as `scan --expansion-strategy`.
+        #[arg(long, default_value = "geo_converge")]
+        expansion_strategy: String,
+        /// Same as `scan --seeknow-scan-cap`.
+        #[arg(long)]
+        seeknow_scan_cap: Option<u32>,
+        /// Same as `scan --expand-all-identities`.
+        #[arg(long)]
+        expand_all_identities: bool,
+        /// Same as `scan --gate-speculative`.
+        #[arg(long)]
+        gate_speculative: bool,
         /// Radar mode: persist the keyed-module dispatch ledger across
         /// iterations so paid APIs are never re-queried on a seed an earlier
         /// sweep already covered — each sweep spends quota only on NEW seeds.

@@ -21,6 +21,21 @@ pub(super) struct LiveCmd {
     pub free_only: bool,
     pub passive_only: bool,
     pub modules: Option<String>,
+    pub exclude: Option<String>,
+    pub throttle_ms: u64,
+    pub min_confidence: Option<f64>,
+    pub min_expand_confidence: f64,
+    pub max_entities: Option<usize>,
+    pub max_wall_time_secs: Option<u64>,
+    pub max_concurrent: usize,
+    pub max_roi: bool,
+    pub convex_budget: bool,
+    pub regional_search: bool,
+    pub min_marginal_yield: Option<f64>,
+    pub expansion_strategy: String,
+    pub seeknow_scan_cap: Option<u32>,
+    pub expand_all_identities: bool,
+    pub gate_speculative: bool,
     /// Radar mode: persist the keyed-module dispatch ledger across iterations
     /// so paid APIs are never re-hit on already-covered seeds.
     pub radar: bool,
@@ -55,13 +70,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
         )));
     }
 
-    let scan_options = ScanOptions {
-        modules: split_csv(cmd.modules),
-        free_only: cmd.free_only,
-        passive_only: cmd.passive_only,
-        depth: cmd.depth,
-        ..Default::default()
-    };
+    let scan_options = build_live_scan_options(&cmd)?;
     let live_options = LiveOptions {
         interval_secs: cmd.interval,
         iterations: cmd.iterations,
@@ -131,6 +140,51 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Build the per-iteration `ScanOptions` from a `LiveCmd`. Pulled out of
+/// `cmd_live` so the full ScanOptions-surface mapping (the parity gap fixed
+/// here — `hse live` used to build `ScanOptions { modules, free_only,
+/// passive_only, depth, ..Default::default() }`, silently dropping every
+/// other tuning flag `hse scan` and `POST /api/v1/live` both expose) is
+/// directly testable without booting a runtime.
+fn build_live_scan_options(cmd: &LiveCmd) -> Result<ScanOptions> {
+    // Parse the strategy via `FromStr` on `ExpansionStrategy` so the variant
+    // list lives in one place (core/scan.rs), same as `cmd_scan`.
+    let expansion_strategy: crate::core::scan::ExpansionStrategy =
+        cmd.expansion_strategy.parse().map_err(|e: String| {
+            crate::core::error::Error::Other(format!("--expansion-strategy: {e}"))
+        })?;
+    Ok(ScanOptions {
+        modules: split_csv(cmd.modules.clone()),
+        exclude_modules: split_csv(cmd.exclude.clone()).unwrap_or_default(),
+        throttle_ms: cmd.throttle_ms,
+        max_concurrent: cmd.max_concurrent,
+        min_confidence: cmd.min_confidence,
+        free_only: cmd.free_only,
+        passive_only: cmd.passive_only,
+        depth: cmd.depth,
+        min_expand_confidence: cmd.min_expand_confidence,
+        // Comprehensive-but-bounded, matching `cmd_scan`: apply the product
+        // entity ceiling when the operator gave none, so a long-running watch
+        // can't fan a frontier out unbounded across iterations on a low-RAM
+        // Termux device. `--max-entities` overrides.
+        max_entities: cmd
+            .max_entities
+            .or(Some(crate::core::scan::DEFAULT_MAX_ENTITIES)),
+        max_wall_time_secs: cmd.max_wall_time_secs,
+        webhook_url: crate::core::webhook::webhook_url_from_env(),
+        max_roi: cmd.max_roi,
+        convex_budget: cmd.convex_budget,
+        regional_search: cmd.regional_search,
+        min_marginal_yield: cmd.min_marginal_yield,
+        expansion_strategy,
+        seeknow_scan_cap: cmd.seeknow_scan_cap,
+        expand_all_identities: cmd.expand_all_identities,
+        gate_speculative: cmd.gate_speculative,
+        ..Default::default()
+    }
+    .clamp_depth())
 }
 
 /// Render one live event as a human-readable, **fully unredacted** structured
