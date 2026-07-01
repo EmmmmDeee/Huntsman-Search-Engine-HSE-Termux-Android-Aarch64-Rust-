@@ -597,10 +597,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   radius + auto-sync still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
-- **AU-060 (new, cycle 20 S→P gap):** `opencellid` emits `DeviceId` (tower MCC/MNC/
-  LAC/CID) and `cell_intel` also emits `DeviceId` for the same tower type — no
-  correlation rule cross-validates them. Candidate rule AU-060: medium-confidence
-  corroboration signal when both modules fire for the same tower. No solution node yet.
+- ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
+  cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
+  real when logged (cycle 20) but was built and shipped 2026-06-30
+  (`770df4c9`) as **AU-084** — "Dual-source cell tower corroboration"
+  (`rules::geo::cluster::rule_au_084_cell_tower_dual_source`), Low severity at
+  1–2 dual-confirmed towers, Medium at ≥3, exactly the "medium-confidence
+  corroboration when both modules fire for the same tower" signal this note
+  asked for. `AU-060` itself was independently reassigned in the interim to
+  "Transitive identity closure" (`rules::transitive`), so the number this
+  note names no longer even refers to cell towers — a second reason the note
+  was stale, not just "not yet started." Registered in the correlator's
+  dispatch table, 4 dedicated tests
+  (`au084_fires_when_both_sources_present`,
+  `au084_does_not_fire_on_single_source`,
+  `au084_medium_severity_for_three_or_more_towers`,
+  `au084_ignores_non_cell_tower_device_ids`). Off the open queue.
 - **cell_local auto-sync (new, cycle 21 S→P gap):** `hse cells import` requires a
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
@@ -2423,3 +2435,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (net unchanged — a removal + a rename), fmt/clippy `--all-targets`/doc
   clean; live dossier output re-verified unaffected. Paired: `PROBLEM_TREE`
   T2.13 addendum + new T2.14 + §8 — same commit.
+
+- **2026-07-01** — **S→P audit: the §4a "AU-060-candidate" cell-tower
+  cross-validation gap was stale — delivered a day earlier as AU-084, under
+  a different number, and never checked off.** With T2.14's per-module noise
+  question deliberately left for a future cycle (a real design decision, not
+  a quick fix) and no other small increment ready, this cycle re-verified
+  §4a's remaining open bullets against the code instead of trusting them.
+  `opencellid` × `cell_intel` DeviceId cross-validation — logged as a gap at
+  cycle 20 — was built 2026-06-30 (`770df4c9`) as
+  `rule_au_084_cell_tower_dual_source`, registered in the dispatch table with
+  4 tests, and its ORIGINAL proposed number (`AU-060`) had separately been
+  reassigned to an unrelated rule (transitive identity closure) in the
+  interim — so the note was doubly wrong, not just "not yet started." No code
+  change; verified by reading `rules::geo::cluster.rs`, the correlator
+  dispatch table, and `git log -S` for the delivery commit, not by inference.
+  This is the third stale-note class found this session (after the cycle-20
+  `securitytrails`/`bgpview`/`ripestat` audit and the C5 "provenance radius"
+  audit two cycles ago) — confirms these gap-analysis sections need periodic
+  re-verification against the code, not just against each other. Paired:
+  `PROBLEM_TREE` §8 — same commit (no PROBLEM_TREE node existed for this gap;
+  it was logged only in this tree's §4a).

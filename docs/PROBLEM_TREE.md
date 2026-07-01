@@ -3235,3 +3235,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   a removal + a rename), fmt/clippy `--all-targets`/doc clean; live CLI dossier
   output re-verified unaffected. **Paired:** `SOLUTION_TREE` SOL-ROI-HINT
   addendum + new SOL-HINT-NOISE (§2) + §3/§5 — same commit.
+
+- **2026-07-01** — **S→P audit: `SOLUTION_TREE` §4a's "AU-060-candidate"
+  cell-tower cross-validation gap (logged here at cycle 20, line ~1835) was
+  stale.** `opencellid` × `cell_intel` `DeviceId` cross-validation shipped
+  2026-06-30 (`770df4c9`) as **AU-084** — "Dual-source cell tower
+  corroboration" (`rules::geo::cluster::rule_au_084_cell_tower_dual_source`),
+  registered + 4-tested — one day before this note would otherwise still have
+  called it unstarted. The originally-proposed number, `AU-060`, was also
+  separately reassigned to "Transitive identity closure" in the interim, so
+  the note doubly no longer matched reality. No PROBLEM_TREE node existed for
+  this gap (it lived only in `SOLUTION_TREE` §4a); corrected there. Verified
+  by reading the shipped rule + its dispatch registration + its tests, and
+  `git log -S` for the delivery commit — not by inference. **Paired:**
+  `SOLUTION_TREE` §4a + §5 — same commit.
