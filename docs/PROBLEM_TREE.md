@@ -869,6 +869,22 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   location estimate: `LAT,LON ± X km`" with its basis + confidence, in both the
   CLI dossier and the JSON export. Neither delivery was folded back into this
   line when it shipped — this bullet was simply never re-read against the code.
+  *Delivered (2026-07-01):* tightened the "AU bounding-box/state precision"
+  leg. `au_geo`'s ABS point-in-polygon resolution already computed the
+  EXACT state (`state_name_2021`, e.g. "New South Wales") for every
+  coordinate it resolved, but stored it only in evidence text, never on the
+  Coordinates entity as an `au-state:XX` tag — so
+  `core::correlator::rules::geo::coord_state()` (which AU-056/AU-085
+  jurisdiction cross-checks depend on) silently fell back to
+  `au_state_for_coords`, a coarse rectangular-bbox approximation whose own
+  doc comment admits "points near a shared border can be misattributed."
+  `assemble()` now resolves the full state name to its abbreviation via
+  `util::address_au::state_code` (already used identically by `au_people`)
+  and tags the coordinate `au-state:XX` + `country:AU`, letting the
+  correlator's exact-tag-preferred path fire instead of the fallback
+  whenever `au_geo` has already resolved the point. 2 new unit tests
+  (positive tag assertion on the existing fixture; a no-state-in-response
+  case proving no bogus tag is invented).
   *Delivered (2026-07-01):* **AU-059's dossier-headline fix now uses the
   confidence-weighted geometric median (Weiszfeld), not the plain
   `weighted_centroid`** — bringing it to parity with AU-057 and
@@ -3584,3 +3600,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
   same commit.
+
+- **2026-07-01** — **C5: `au_geo`'s exact ABS state answer now reaches the
+  correlator via an `au-state:XX` tag, sharpening AU-056/AU-085 —
+  selected from a second parallel discovery + adversarial-verification
+  pass (Workflow tool, 8 fresh backlog areas).** `au_geo::assemble()`
+  resolved the precise point-in-polygon state (`state_name_2021`) for
+  every coordinate but stored it only in evidence text; the entity itself
+  carried no `au-state:` tag, unlike every other geo module (`wigle`,
+  etc.). `core::correlator::rules::geo::coord_state()` — the helper
+  AU-056/AU-085 jurisdiction cross-checks depend on — prefers that tag and
+  only falls back to `au_state_for_coords` (a rectangular-bbox
+  approximation whose own doc comment admits border misattribution) when
+  it's absent, so `au_geo`'s more precise answer was silently discarded in
+  favour of a coarser one every time. Fixed by resolving the full state
+  name to its abbreviation via the already-tested `util::address_au::
+  state_code` (the same helper `au_people` already uses for this exact
+  purpose) and tagging the coordinate. 2 new unit tests. Genuinely fresh
+  finding — confirmed via grep that `au_geo` had never been mentioned in
+  either tree before this cycle, not a duplicate of the AU-052/057/059
+  centroid/median fusion work. Four other candidates from the same pass
+  were also `CONFIRMED`/`PARTIALLY_CONFIRMED` and left for future cycles:
+  `search_engines` proptest coverage (T2.7, matches the established
+  au_people/au_electoral/au_property pattern exactly), a VirusTotal
+  dropped-`last_dns_records`-field gap (C4's passive-DNS leg, smaller than
+  previously assumed — a depth fix on an already-called endpoint, not a
+  new integration), and two more stale-doc-claim findings (C3's
+  ASIC/cadastre "remaining" list undercounting what's actually shipped;
+  a §7 S2 status-marker drift). Gate green: 4283 lib tests (+1), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-GEOINT + §5 — same commit.

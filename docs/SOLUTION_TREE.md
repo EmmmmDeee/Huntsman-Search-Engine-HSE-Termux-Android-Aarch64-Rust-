@@ -467,9 +467,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `scan_export`) is unchanged because they use tolerant range assertions
   against tightly-clustered fixtures where the two estimators barely diverge —
   this closes a real precision gap, not a behaviour regression risk.
-  *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
-  re-sync of the local cell DB (currently requires manual `hse cells import`
-  trigger).
+  *Delivered (2026-07-01):* the "AU bounding precision" leg — one part of
+  it. `au_geo`'s ABS point-in-polygon resolution already computed the
+  EXACT state for every coordinate it resolved but never tagged the
+  entity with it, so `core::correlator::rules::geo::coord_state()` (which
+  AU-056/AU-085 depend on) fell back to the coarse rectangular-bbox
+  approximation (`au_state_for_coords`) even when the precise polygon
+  answer was already sitting in evidence, unused. `assemble()` now tags
+  the coordinate `au-state:XX` (resolved via `util::address_au::
+  state_code`, the same helper `au_people` already uses) + `country:AU`,
+  letting the correlator's tag-preferred path fire. 2 new unit tests.
+  *Remaining:* movement/timeline layer; auto-scheduled re-sync of the
+  local cell DB (currently requires manual `hse cells import` trigger).
 - **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
   *Audit + delivered (2026-07-01):* the entropy gate, `aho-corasick`
@@ -2787,3 +2796,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green: 4282 lib tests (+5), full suite (lib + smoke + architecture +
   doctests, all binaries) green, fmt/clippy `--all-targets`/doc clean.
   Paired: `PROBLEM_TREE` C4 + §8 — same commit.
+
+- **2026-07-01** — **SOL-GEOINT: `au_geo` now tags its exact ABS state
+  answer onto the coordinate, sharpening AU-056/AU-085 — selected from a
+  second parallel discovery + adversarial-verification pass (8 fresh
+  backlog areas).** `au_geo::assemble()` resolved the precise
+  point-in-polygon state for every coordinate (`state_name_2021`, e.g.
+  "New South Wales") but stored it only in evidence text — the coordinate
+  entity itself carried no `au-state:` tag, unlike `wigle` and other geo
+  modules. `core::correlator::rules::geo::coord_state()`, which AU-056
+  and AU-085 both call, prefers that tag and only falls back to
+  `au_state_for_coords` (a rectangular-bbox approximation whose own doc
+  comment admits border misattribution) when the tag is absent — so
+  `au_geo`'s more precise answer was silently discarded every time. Fixed
+  by resolving the full state name to its abbreviation via
+  `util::address_au::state_code` (already used identically by
+  `au_people`) and tagging `au-state:XX` + `country:AU`. 2 new unit tests
+  (positive assertion on the existing full-resolution fixture; a
+  no-state-in-response case proving no bogus tag is invented). Verified
+  genuinely fresh via grep — `au_geo` had never been mentioned in either
+  tree before this cycle, distinct from the AU-052/057/059
+  centroid/median fusion work already delivered. Four other candidates
+  from the same pass were also `CONFIRMED`/`PARTIALLY_CONFIRMED` and
+  queued for future cycles: `search_engines` proptest coverage (T2.7, the
+  same pattern already applied to au_people/au_electoral/au_property), a
+  VirusTotal dropped-`last_dns_records`-field gap (C4's passive-DNS leg —
+  smaller than the doc assumed, a depth fix on an already-called
+  endpoint, not a new integration), and two further stale-doc-claim
+  findings. Gate green: 4283 lib tests (+1), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8 — same commit.

@@ -80,6 +80,35 @@ fn assemble_emits_regions_and_enriches_coordinate() {
     assert_eq!(ev.attributes.get("au_state").map(String::as_str), Some("New South Wales"));
     assert_eq!(ev.attributes.get("au_federal_electorate").map(String::as_str), Some("Sydney"));
     assert_eq!(ev.attributes.get("au_postcode").map(String::as_str), Some("2000"));
+    // The exact ABS point-in-polygon state must reach the coordinate as an
+    // au-state:XX tag — this is what core::correlator::rules::geo::coord_state
+    // prefers over its own coarse rectangular-bbox fallback.
+    assert!(
+        coord.has_tag("au-state:NSW"),
+        "coordinate must carry the resolved state as an au-state tag: {:?}",
+        coord.tags
+    );
+    assert!(coord.has_tag("country:AU"));
+}
+
+#[test]
+fn assemble_no_state_tag_when_no_layer_resolves_a_state() {
+    // The Postal Area layer alone (POA_BODY's shape: no state field) resolves,
+    // but nothing in the response names a state — no bogus au-state tag.
+    let mut partial: Vec<Option<(String, String, Option<String>)>> = vec![None; 9];
+    partial[0] = Some(("2000".to_string(), "2000".to_string(), None));
+    let mut r = ModuleResult::new();
+    assemble("-33.8568,151.2153", &partial, "scan", &mut r);
+    let coord = r
+        .entities
+        .iter()
+        .find(|x| x.kind == EntityKind::Coordinates)
+        .expect("enriched coordinate entity");
+    assert!(
+        !coord.tags.iter().any(|t| t.starts_with("au-state:")),
+        "no state in the resolution must not invent an au-state tag: {:?}",
+        coord.tags
+    );
 }
 
 #[test]

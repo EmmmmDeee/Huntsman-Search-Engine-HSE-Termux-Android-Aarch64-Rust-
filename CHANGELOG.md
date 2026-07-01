@@ -366,6 +366,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`au_geo`'s exact AU state resolution was discarded in favour of a
+  coarser bounding-box guess for jurisdiction correlation.** `au_geo`
+  resolves a coordinate's state via an authoritative point-in-polygon
+  lookup against the ABS's own administrative boundaries, but never
+  tagged the coordinate entity with the result — so the AU-056/AU-085
+  jurisdiction cross-checks silently fell back to a rectangular
+  bounding-box approximation instead, which can misattribute points near
+  a state border. The coordinate is now tagged with the exact resolved
+  state, so those correlations use the precise answer whenever `au_geo`
+  has already resolved the point.
 - **A recovered (never-finalised) scan's export was not byte-stable across
   runs.** A scan that didn't finalise — routine on Termux/Android, where the
   OS reclaims backgrounded processes — is rebuilt from the durable event log
