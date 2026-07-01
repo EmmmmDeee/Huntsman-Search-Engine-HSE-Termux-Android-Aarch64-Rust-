@@ -622,6 +622,54 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   sorted/deduped). `print_dossier`'s now-8-argument signature was bundled into
   a `DossierArgs` struct (`clippy::too_many_arguments`) rather than
   `#[allow]`ed, mirroring the T2.5 `DispatchCx`/`DispatchState` precedent.
+  **Addendum (2026-07-01, same root cause found twice more):**
+  `util::diagnostics::analyse` itself carried two more `optimization_hints`
+  conditions keyed on the identical unreachable `entities_emitted == 0`
+  premise — a per-module `"module '{name}' returned 0 entities — consider
+  excluding for this target kind"` and a scan-level `"scan exceeded 60s with
+  at least one zero-yield module — tighten module_timeout_ms"`. Both were
+  provably as dead as the ROI hint (same `modules_by_yield` construction), so
+  both were **removed** rather than left as misleading code that claims a
+  capability it cannot have — but neither was mechanically re-wired the way
+  the ROI hint was. The 60s-hint COULD be, the same way (a single bounded,
+  genuinely useful condition), but wasn't this cycle: pure `analyse()` can't
+  reach the `StoragePort`-sourced events it would need (`util` may not depend
+  on `core::port`), so a correct fix means either widening `analyse()`'s
+  signature (16 existing call/test sites) or duplicating the event-fetch at
+  every caller that surfaces hints — both bigger than this addendum, and
+  deferred honestly rather than hacked. The per-module hint is a **further**
+  design question, not just a wiring gap: fired correctly with real event
+  data, a realistic multi-module scan (see the 42-module live run above)
+  would flood the hints list with ~30 "returned 0 entities" lines for
+  ordinary, expected zero-yield free modules — the exact noise-over-signal
+  failure this codebase's precision doctrine exists to prevent (cf. the ROI
+  hint's own deliberate `KeyGated`/`Paid`-only filter). Rewriting it
+  correctly needs a real decision (cap it, cost-gate it like ROI, or drop the
+  per-module form for a summary count), not a blind unwire. Renamed the one
+  test whose name overclaimed what it verified:
+  `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
+  zero-yield handling — `analyse` could never see it) →
+  `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
+- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+  real design for the noise question** — `util::diagnostics::analyse` no
+  longer emits a "scan exceeded 60s with a zero-yield module" hint or a
+  per-module "returned 0 entities" hint (T2.13 addendum); both were
+  unreachable dead code, honestly removed rather than left misleading, but
+  neither was replaced. → **Solution:** either (a) widen `analyse`'s pure
+  signature to accept the caller's already-fetched event data (touches 16
+  existing call/test sites — a real but mechanical ripple), or (b) compute
+  both at the caller layer (which already has `StoragePort` access) and
+  append to `ScanDiagnostics.optimization_hints` post-call, mirroring T2.13's
+  `zero_yield_keyed_or_paid_modules` pattern exactly. Either way, the
+  scan-level 60s hint is a straightforward reinstatement; the per-module hint
+  needs an explicit noise decision first — a 42-module scan can leave 30+
+  modules at zero yield for a given target kind, which is normal, not
+  noteworthy, so firing one line per module would flood the hints list.
+  Candidates: cap to the worst N, cost-gate it like the ROI hint
+  (`KeyGated`/`Paid` only), or replace the per-module enumeration with a
+  bounded count ("N of M dispatched modules found nothing for this target
+  kind"). **P3** *(advisory-only; nothing correctness-critical depends on
+  either hint).*
 
 ---
 
@@ -3165,3 +3213,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy `--all-targets`/doc clean; live CLI run verified both before and
   after. **Paired:** `SOLUTION_TREE` new node (§2 S.QUALITY) + §3/§5 — same
   commit.
+
+- **2026-07-01** — **T2.13 addendum + new T2.14: the same dead-hint root
+  cause existed twice more inside `analyse()` itself.** Re-reading the whole
+  `optimization_hints` block that produced the ROI-hint bug (not just the one
+  bug already fixed) found two more conditions keyed on the identical
+  unreachable `entities_emitted == 0` premise, structurally impossible for
+  the same reason. Removed both as confirmed-dead, misleading code rather
+  than leave them implying a capability that cannot fire; did NOT mechanically
+  restore them, because (a) `analyse()`'s pure signature can't reach the
+  `StoragePort`-sourced events a correct fix needs without either a
+  16-call/test-site signature change or duplicating the caller-side fetch,
+  and (b) the per-module variant has a genuine, unresolved noise problem a
+  live 42-module scan makes concrete — firing one line per ordinary zero-yield
+  module would flood the hints list, the opposite of the signal the hint
+  exists to give. Logged as new open **T2.14** (P3, advisory-only) with the
+  concrete design options rather than force-fit either half this cycle.
+  Renamed `analyse_emits_optimization_hints_for_zero_yield` →
+  `analyse_falls_back_to_a_hint_when_nothing_else_fires` (the old name
+  overclaimed what it verified). Gate green: 4263 lib tests (unchanged count —
+  a removal + a rename), fmt/clippy `--all-targets`/doc clean; live CLI dossier
+  output re-verified unaffected. **Paired:** `SOLUTION_TREE` SOL-ROI-HINT
+  addendum + new SOL-HINT-NOISE (§2) + §3/§5 — same commit.

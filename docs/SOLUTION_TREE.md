@@ -465,6 +465,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   8th parameter into a `DossierArgs` struct rather than
   `#[allow(too_many_arguments)]`, per the T2.5 `DispatchCx`/`DispatchState`
   precedent.
+  *Addendum (2026-07-01):* the same unreachable premise (`entities_emitted ==
+  0` on `modules_by_yield`) was found twice more, INSIDE `analyse()` itself —
+  a per-module "returned 0 entities" hint and a scan-level "60s + zero-yield"
+  hint. Removed both as confirmed-dead rather than left misleading; not
+  mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
+  ROI hint specifically, T2.14 tracks reinstating these two).
+- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+  with a real per-module noise decision** → **T2.14**: the scan-level "60s +
+  zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
+  (event-sourced, caller-side); the per-module "module X returned 0 entities"
+  hint needs a design decision first — fired correctly on real event data, a
+  realistic multi-module scan leaves dozens of modules at zero yield for any
+  given target kind (normal, not noteworthy), so a naive per-module
+  reinstatement would flood the hints list with the opposite of signal.
+  Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
+  yet started. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -531,6 +548,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
+| SOL-HINT-NOISE | T2.14 | `[ ]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -554,6 +572,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
+  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
+  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
+  Not yet started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -2378,3 +2400,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `DispatchState`. Gate green: 4263 lib tests (+4), fmt/clippy
   `--all-targets`/doc clean; live CLI verified both sides of the fix. Paired:
   `PROBLEM_TREE` new T2.13 + §8 — same commit.
+
+- **2026-07-01** — **S→P: re-reading the whole block that produced T2.13
+  found the same dead premise twice more; removed both, opened T2.14 rather
+  than force a fix with an unresolved noise question.** Having just root-caused
+  one dead hint, this cycle deliberately re-read the REST of
+  `analyse()`'s `optimization_hints` construction instead of stopping at the
+  one instance already fixed — the same `entities_emitted == 0` premise
+  appeared in a per-module hint and a scan-level 60s hint, both equally
+  unreachable. Removed both (misleading dead code, not a capability). Did not
+  mechanically restore them: `analyse()`'s pure signature can't reach the
+  `StoragePort`-sourced events without a 16-call/test-site change, AND the
+  per-module variant has a real, separate noise problem — a live 42-module
+  scan run this cycle shows most modules land at zero yield for any given
+  target kind, so firing one hint line per module would flood the list, not
+  inform it. Opened **T2.14** / new **SOL-HINT-NOISE** with the concrete
+  reinstatement options (event-source the 60s hint the same way SOL-ROI-HINT
+  was fixed; cap/cost-gate/summarise the per-module one) rather than picking
+  one under time pressure. Renamed the one test whose name overclaimed its
+  coverage (`analyse_emits_optimization_hints_for_zero_yield` → `analyse_
+  falls_back_to_a_hint_when_nothing_else_fires`). Gate green: 4263 lib tests
+  (net unchanged — a removal + a rename), fmt/clippy `--all-targets`/doc
+  clean; live dossier output re-verified unaffected. Paired: `PROBLEM_TREE`
+  T2.13 addendum + new T2.14 + §8 — same commit.
