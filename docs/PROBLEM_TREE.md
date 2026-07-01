@@ -3249,3 +3249,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   by reading the shipped rule + its dispatch registration + its tests, and
   `git log -S` for the delivery commit — not by inference. **Paired:**
   `SOLUTION_TREE` §4a + §5 — same commit.
+
+- **2026-07-01** — **S→P audit: a fourth stale note — `hse update --check`
+  already prints commit subject lines, not just a count.** Continuing the
+  same sweep that found AU-084, `SOLUTION_TREE`'s SOL-UPDATE node and its
+  twin §4a entry both still claimed `--check` shows a bare commit count; in
+  the actual source, `cli/update.rs::changelog_lines` already runs `git log
+  --oneline HEAD..@{u}` and `cmd_update` already prints up to 20 of its lines
+  under the count. **Caveat this note gets right that the AU-084 one
+  couldn't:** this repository's history starts at a single root commit
+  (`770df4c9`, 857 files / 244,800 lines, no parent — an import), so no
+  specific delivery cycle can honestly be attributed here via `git log`;
+  worded the correction accordingly instead of implying a dated delivery.
+  Genuine residual noted, not silently dropped: `changelog_lines`/
+  `commits_behind` are untested against real `git` subprocess behaviour —
+  `tempfile` (already a dev-dep) would support a local-repo-pair fixture,
+  left as its own smaller follow-on. **Paired:** `SOLUTION_TREE` SOL-UPDATE +
+  §4a + §5 — same commit.

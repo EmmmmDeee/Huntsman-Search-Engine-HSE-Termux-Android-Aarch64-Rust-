@@ -504,7 +504,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   6 commands hidden from `--help` (`doctor`, `selftest`, `provision`, `set-key`,
   `engines`, `oathnet-batch`) — still callable for scripting compat; visible surface
   19→13. *Closes / powers:* UX self-sufficiency; no separate upgrade ceremony needed.
-  *Remaining:* `--check` shows commit count only — no diff summary yet.
+  *Correction (2026-07-01):* the "commit count only, no diff summary" remaining
+  note is stale — `changelog_lines` (`cli/update.rs`) runs `git log --oneline
+  HEAD..@{u}` and `--check` already prints up to 20 of its lines beneath the
+  count. Predates this repo's single root commit (`770df4c9`), so — unlike
+  most corrections this session — no specific delivery cycle can be
+  attributed; it simply was never reconciled into this note.
+  *Remaining (real):* `changelog_lines`/`commits_behind` have no test
+  exercising the actual `git` subprocess calls (a real local git-repo-pair
+  fixture, `tempfile` already a dev-dep, would close it) — left as a
+  separate, smaller follow-on.
   **(cycle 22)**
 
 ### S.PROCESS — The methodology itself ⚑
@@ -617,10 +626,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
   DB fresh without user intervention. No solution node yet.
-- **hse update --check changelog (new, cycle 22 S→P gap):** `--check` reports only
-  the number of commits available — no commit subject lines or diff summary. A future
-  pass could run `git log --oneline HEAD..@{u}` and surface the messages so the user
-  can decide whether to update without manually `git log`-ing. No solution node yet.
+- ~~**hse update --check changelog (cycle 22 S→P gap): `--check` reports only a
+  commit count, no subject lines.**~~ **Delivered, stale note (found
+  2026-07-01).** `cli/update.rs::changelog_lines` runs exactly the suggested
+  `git log --oneline HEAD..@{u}` and `cmd_update`'s `--check` branch already
+  prints up to 20 of its lines beneath the commit count
+  (`for line in changelog_lines(dir).iter().take(20)`). Present in the source
+  as read this cycle; this repository's own history begins at its single
+  root commit (`770df4c9`, 857 files / 244,800 lines in one commit — an
+  import, not an incremental change), so — unlike the AU-084 correction
+  above — no earlier delivery date or authoring cycle can be attributed from
+  `git log` here; it simply predates this repo's history and was never
+  reconciled into this note. **Residual, real gap:** `changelog_lines` and
+  `commits_behind` are both untested — no fixture exercises the actual `git`
+  subprocess calls (unlike most of this codebase's I/O-adjacent logic). A
+  real local git-repo-pair fixture (`tempfile`, already a dev-dep) would
+  close it; left as a separate, smaller follow-on rather than bolted onto
+  this doc correction.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -2456,3 +2478,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   re-verification against the code, not just against each other. Paired:
   `PROBLEM_TREE` §8 — same commit (no PROBLEM_TREE node existed for this gap;
   it was logged only in this tree's §4a).
+
+- **2026-07-01** — **S→P audit: a fourth stale note, same session — SOL-UPDATE's
+  "no diff summary" remaining note and the twin §4a "hse update --check
+  changelog" gap were both already delivered.** Continuing the same
+  re-verification-against-code sweep that found AU-084: `cli/update.rs`
+  already has `changelog_lines` (runs the exact `git log --oneline
+  HEAD..@{u}` the note proposed) wired into `--check`'s output (up to 20
+  lines beneath the commit count). Corrected both the SOL-UPDATE node's
+  `Remaining` bullet and the standalone §4a entry. **Important caveat, unlike
+  the AU-084 correction:** this repository's entire history begins at one
+  root commit (`770df4c9`, 857 files / 244,800 lines, no parent — an import,
+  not incremental work), so nothing before it is attributable to a specific
+  delivery cycle via `git log`; corrected the wording to say so honestly
+  rather than imply a recent, dated delivery the evidence doesn't support.
+  Left a genuine, smaller residual open: `changelog_lines`/`commits_behind`
+  have no test against real `git` subprocess behaviour (`tempfile` is already
+  a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
+  bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.
