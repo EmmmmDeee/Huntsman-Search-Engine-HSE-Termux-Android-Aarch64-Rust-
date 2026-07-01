@@ -131,9 +131,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Continued (2026-07-01):* `au_electoral`/`au_property` (the two modules
   named as the remaining gap) now carry the identical proptest coverage —
   4 more never-panics cases (see T2.7 below).
+  *Continued (2026-07-01, cont'd):* `search_engines` too — its one
+  generic `parse_results` plus constituent iterators now carry 5 more
+  never-panics cases, on top of its pre-existing hand-written adversarial
+  regression test (see T2.7 below).
   *Gap:* `cargo-fuzz` (nightly CI lane), the dossier/txt/html **import**
-  proptest, and `search_engines`/`username_search`'s parser no-panic
-  coverage are outstanding. **(§4b)**
+  proptest, and `username_search`'s parser no-panic coverage (unconfirmed
+  whether this pattern applies — its detection logic is table-driven, not
+  a bespoke parser) are outstanding. **(§4b)**
 
 ### S.CORE — Correctness & determinism
 
@@ -700,8 +705,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
   **Adversarial-input leg (2026-07-01):** `au_people` proptested (SOL-F3
   correction above); `au_electoral`/`au_property` now proptested too (SOL-F3
-  continuation above) — 3 of 5 named modules covered. `search_engines`/
-  `username_search` remain. Golden-fixture/health-signal legs unchanged.
+  continuation above); `search_engines` too (SOL-F3 cont'd) — 4 of 5 named
+  modules covered. `username_search` remains, and whether this exact
+  pattern applies to it is unconfirmed (table-driven detection logic, not
+  a bespoke per-site parser). Golden-fixture/health-signal legs unchanged.
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
@@ -2855,3 +2862,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   marker/body mismatch among its S3/S4/S5 siblings. Flipped to `[x]` in
   `PROBLEM_TREE`. Doc-only; no code touched. Paired: `PROBLEM_TREE` C3 +
   §7 S2 + §8 — same commit.
+
+- **2026-07-01** — **SOL-F3 continued: `search_engines` gains the same
+  proptest never-panics coverage the other T2.7 modules already carry —
+  4 of 5 named modules now covered.** Picked directly from the second
+  discovery pass's `search-engines-proptest` candidate (`CONFIRMED` — the
+  verifying agent applied and ran the exact proposed code before this
+  cycle re-applied it). `search_engines` is structurally different from
+  `au_people`/`au_electoral`/`au_property`: one generic `parse_results`
+  (plus `HrefIter`/`CiteIter`/`GoogleUrlIter`/`external_link_count`)
+  handles all 17 SERPs instead of 17 bespoke per-engine parsers. It
+  already had a hand-written adversarial regression test
+  (`result_parsers_never_panic_on_adversarial_html`, ~20 hand-picked
+  hostile-byte cases) but not the randomized `proptest` guarantee, which
+  fuzzes the full `.{0,256}` space instead of a fixed case list. 5 new
+  `proptest!` cases added, mirroring the established `mod prop` shape.
+  All passed first run — a proof gap, not a live panic bug.
+  `username_search` is now the sole named module without this coverage;
+  whether the pattern even applies is unconfirmed (its detection logic is
+  table-driven pattern matching, not a bespoke HTML parser) — left for a
+  future cycle to scope honestly. Gate green: 4288 lib tests (+5), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` T2.7 + §8 —
+  same commit.

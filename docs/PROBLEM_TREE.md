@@ -383,9 +383,22 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `au_electoral` (`extract_division`) and `au_property`
   (`parse_nsw_response`/`parse_vic_response`/`parse_qld_response`) —
   3 of the 5 named modules now carry never-panics proptest coverage.
-  `search_engines` and `username_search` still lack it, and the
-  golden-fixture/health-signal legs (T2.14's sibling, SOL-HEALTH-SIGNAL)
-  remain fully open.
+  *Partial (2026-07-01, cont'd 2):* `search_engines` closed too — 4 of 5.
+  Unlike the other four modules, `search_engines` has no per-source
+  bespoke parser; one generic `parse_results` (plus its constituent pure
+  iterators `HrefIter`/`CiteIter`/`GoogleUrlIter` and
+  `external_link_count`) handles all 17 SERPs, and it already carried a
+  hand-written adversarial-input regression test
+  (`result_parsers_never_panic_on_adversarial_html`, ~20 hand-picked
+  hostile-byte cases) — but not the randomized `proptest` never-panics
+  guarantee the other four modules now have, which exercises the full
+  `.{0,256}` arbitrary-input space rather than a fixed case list. Added a
+  `mod prop` block mirroring the established pattern exactly (5 new
+  cases). `username_search` remains the sole uncovered module — its
+  detection logic is table-driven pattern matching, not a bespoke parser,
+  so this proptest pattern may not directly apply; unconfirmed, left for a
+  future cycle to scope. The golden-fixture/health-signal legs (T2.14's
+  sibling, SOL-HEALTH-SIGNAL) remain fully open.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -3672,3 +3685,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   lone outlier among its S3/S4/S5 siblings, whose markers all correctly
   match their bodies. Flipped to `[x]`. Doc-only; no code touched. Gate:
   n/a (docs). **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-01** — **T2.7: `search_engines` gains the same proptest
+  never-panics coverage the other T2.7 modules already have — 4 of 5
+  modules now covered.** Picked directly from the second discovery pass's
+  `search-engines-proptest` candidate (`CONFIRMED` — the verifying agent
+  actually applied the exact proposed `mod prop` block and ran the full
+  gate before this cycle re-applied it for real). `search_engines` is
+  structurally different from `au_people`/`au_electoral`/`au_property`:
+  one generic `parse_results` (plus `HrefIter`/`CiteIter`/`GoogleUrlIter`/
+  `external_link_count`) handles all 17 SERPs rather than 17 bespoke
+  per-engine parsers. It already had a hand-written adversarial-input
+  test (`result_parsers_never_panic_on_adversarial_html`, ~20 hand-picked
+  hostile-byte cases) proving the maintainers already recognised this as
+  the untrusted-input surface — but not the randomized `proptest`
+  never-panics guarantee, which fuzzes the full `.{0,256}` space rather
+  than a fixed case list. 5 new `proptest!` cases added, mirroring the
+  established `mod prop` shape exactly; all passed on first run — a proof
+  gap, not a live panic bug. `username_search` is now the sole named T2.7
+  module without this coverage; its detection logic is table-driven
+  pattern matching rather than a bespoke HTML parser, so whether this
+  exact pattern applies is unconfirmed, left for a future cycle to scope
+  honestly rather than force-fit. Gate green: 4288 lib tests (+5), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-F3
+  + §5 — same commit.
