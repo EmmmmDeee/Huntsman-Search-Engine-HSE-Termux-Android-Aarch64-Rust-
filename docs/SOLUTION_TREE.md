@@ -326,6 +326,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
   that renders the shortest typed thread between identities as text. *Remaining:*
   first-class timeline output + further AU-0xx rule-gap fill.
+  *Audit + delivered (2026-07-01):* "further AU-0xx rule-gap fill" was fully
+  stale — every AU-0xx number in the docs is dispatched in
+  `core::correlator::mod.rs` except AU-065/066 (deliberately engine-emitted,
+  not a gap). AU-047 ("controller behind reused secrets") already exists as
+  a rule, but its join keys aren't in `AFFILIATION_SELECTOR_ATTRS`, so it
+  produces zero `Relation` edges and is invisible to CONNECTIONS — real,
+  scoped, but needs a new `RelationKind` variant (CONVENTIONS.md §3 pinned
+  vocabulary), left open. "First-class timeline output" delivered: the CLI
+  dossier and SPA now render the `online_tenure`/`footprint_recency`
+  headline the JSON API already computed and returned but neither UI
+  surfaced. *Remaining:* only the AU-047 Relation-graph wiring.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -2555,3 +2566,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   overclaiming and name the residual (`au_electoral`/`au_property` still
   lack this). T2.7 stays `[~]`. Gate green: 4267 lib tests (+3), fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` T2.7 + §8 — same commit.
+
+- **2026-07-01** — **SOL-CORR: C1 (d)'s AU-0xx rule-gap note closed as fully
+  stale; C1 (c)'s timeline widening delivered.** Third candidate from the
+  same discovery+adversarial-verification pass. (d): cross-checked every
+  AU-0xx number in the docs against the live correlator dispatch table —
+  all present except AU-065/066 (deliberately engine-emitted). AU-047
+  ("controller behind reused secrets") already implements the described
+  logic as a Correlation rule but was never wired into the `Relation` graph
+  (its join keys aren't in `AFFILIATION_SELECTOR_ATTRS`), so CONNECTIONS
+  can't render it — a real, scoped residual left open rather than force-fit
+  into this cycle (needs a new, `CONVENTIONS.md`-pinned `RelationKind`
+  variant). (c): `core::timeline::online_tenure`/`footprint_recency` were
+  computed and JSON-returned by the timeline API but never consumed by
+  either the CLI dossier or the SPA — the "online since 2008, 17y span, 9
+  breaches" headline existed only in unread response fields. Both now render
+  it via one shared pure `tenure_headline` helper (CLI) / direct JSON read
+  (SPA `renderTimeline`), same computation, three surfaces. Unit-tested for
+  exact wording (breach-count pluralisation); SPA JS syntax verified
+  (`node --check`); live CLI run confirmed the empty-timeline path is
+  unchanged. Gate green: 4268 lib tests (+1), fmt/clippy `--all-targets`/doc
+  clean. Paired: `PROBLEM_TREE` C1 + §8 — same commit.

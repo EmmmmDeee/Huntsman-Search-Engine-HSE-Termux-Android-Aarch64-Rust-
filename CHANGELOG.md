@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The CLI dossier and web SPA now show the footprint's tenure/recency
+  headline, not just the raw event list.** `GET /scans/{id}/timeline` has
+  always computed and returned an "online since 2008, 17-year span, 9
+  breaches" summary (`tenure`/`recency`), but neither `hse scan --output
+  dossier` nor the SPA's timeline panel ever read those fields — only the
+  bare per-event list. Both now open with the headline: "Online since
+  `<date>` — `<N>`y span, `<M>` breach exposure(s), footprint
+  active/recent/aging/dormant."
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

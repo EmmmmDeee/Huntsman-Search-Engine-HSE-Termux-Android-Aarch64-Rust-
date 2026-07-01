@@ -720,6 +720,29 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   each chain's weakest-edge confidence. *Remaining:* (c) first-class timeline
   output (footprint timeline shipped; widen), (d) further AU-0xx rule-gap fill,
   and the "controller behind reused secrets" link facet.
+  *Audit + delivered (2026-07-01):* **(d) is fully stale.** Checked every
+  AU-0xx number named anywhere in the docs against the live dispatch table in
+  `core::correlator::mod.rs`: all are dispatched except AU-065/066, which are
+  deliberately engine-emitted rather than correlator rules (not a gap). AU-047
+  ("controller behind reused secrets") already exists as a Correlation rule —
+  but produces zero `Relation`-graph edges, so it's structurally invisible to
+  the CONNECTIONS/RESOLVED IDENTITIES views (b) built; closing that needs a
+  new `RelationKind` variant (a pinned, serde-tracked vocabulary per
+  `docs/CONVENTIONS.md` §3) plus a new `derive_*` pass — real, but a notch
+  past "smallest unit," left open. **(c) partially delivered:**
+  `core::timeline::online_tenure`/`footprint_recency` were computed and
+  returned by the JSON timeline API (`GET /scans/{id}/timeline`) but never
+  rendered by either the CLI dossier's TIMELINE section or the SPA's
+  `renderTimeline()` — a "online since 2008, 17y span, 9 breaches, footprint
+  active" headline that only existed in unread JSON fields. Both now render
+  it (one shared computation, three surfaces: API, CLI, SPA). New pure
+  `cli::scan::dossier::tenure_headline` is unit-tested for the exact wording
+  (incl. breach-count pluralisation); JS syntax verified (`node --check`);
+  live CLI run confirmed the empty-timeline path still renders correctly
+  (no headline, unchanged "No dated events" message) — the underlying
+  `online_tenure`/`footprint_recency` functions were already independently
+  tested in `core::timeline::tests`. *Remaining:* the AU-047 Relation-graph
+  wiring only.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -3322,3 +3345,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fixtures / SOL-HEALTH-SIGNAL) remains open. Gate green: 4267 lib tests
   (+3), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   §2/§5 — same commit.
+
+- **2026-07-01** — **C1 (d) AU-0xx rule-gap audit closed as fully stale; C1
+  (c) timeline widened — tenure/recency now rendered in the CLI dossier and
+  SPA, not just the JSON API.** Third candidate from the same parallel
+  discovery + adversarial-verification pass. (d): every AU-0xx number in the
+  docs checked against `core::correlator::mod.rs`'s live dispatch table —
+  all dispatched except AU-065/066, deliberately engine-emitted, not a gap;
+  AU-047 ("controller behind reused secrets") already exists as a rule but
+  has no `Relation`-graph edge, so it's invisible to CONNECTIONS — a real,
+  smaller residual, left open rather than force-fit (needs a new,
+  serde-pinned `RelationKind` variant). (c): `online_tenure`/
+  `footprint_recency` were computed and returned by the JSON timeline API
+  but never read by the CLI dossier's TIMELINE section or the SPA's
+  `renderTimeline()` — dead JSON fields from a UX standpoint. Both now
+  render the same headline ("Online since X — Ny span, N breach
+  exposure(s), footprint STATUS"). New pure `tenure_headline` helper in
+  `cli/scan/dossier.rs`, unit-tested for exact wording including breach-count
+  pluralisation; SPA JS syntax verified with `node --check`; live CLI run on
+  a real scan confirmed the empty-timeline path is unchanged (no headline,
+  same "No dated events" message as before). Gate green: 4268 lib tests
+  (+1), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-CORR + §5 — same commit.
