@@ -155,7 +155,7 @@ pub(in crate::core::correlator) fn rule_au_008_exposed_service(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    const EXPOSURE_TAGS: &[&str] = &["vulnerable", "ssh-exposed", "leak"];
+    const EXPOSURE_TAGS: &[&str] = &[crate::core::tags::VULNERABLE, "ssh-exposed", "leak"];
     entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Domain | EntityKind::IpAddress))
@@ -240,7 +240,7 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
         .iter()
         // A GreyNoise RIOT/benign IP that a reputation feed also flagged is a
         // shared-edge false positive — exonerate it.
-        .filter(|e| e.has_tag("threat-intel") && !is_benign_infra(e))
+        .filter(|e| e.has_tag(crate::core::tags::THREAT_INTEL) && !is_benign_infra(e))
         .map(|e| {
             let sources: std::collections::BTreeSet<&str> = e
                 .evidence
@@ -318,7 +318,7 @@ pub(in crate::core::correlator) fn rule_au_029_cloud_storage_exposure(
 ) -> Vec<Correlation> {
     let exposed: Vec<&Entity> = entities
         .iter()
-        .filter(|e| e.has_tag("cloud-storage") && e.has_tag("vulnerable"))
+        .filter(|e| e.has_tag("cloud-storage") && e.has_tag(crate::core::tags::VULNERABLE))
         .collect();
     if exposed.is_empty() {
         return Vec::new();

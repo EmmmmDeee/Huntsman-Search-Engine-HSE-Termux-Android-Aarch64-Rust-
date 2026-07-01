@@ -139,7 +139,7 @@ fn cell_parse_valid_towers() {
     assert_eq!(t1.kind, EntityKind::DeviceId);
     assert_eq!(t1.value, "505-01-678-12345");
     assert!((t1.confidence - 0.75).abs() < 0.01);
-    assert!(t1.has_tag("cell-tower"));
+    assert!(t1.has_tag(crate::core::tags::CELL_TOWER));
     assert!(t1.has_tag("lte"));
     assert!(t1.has_tag("registered"));
 

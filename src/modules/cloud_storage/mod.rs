@@ -232,7 +232,7 @@ impl Finding {
                 )
             }
             Access::PublicRead => {
-                e.tag("vulnerable");
+                e.tag(crate::core::tags::VULNERABLE);
                 e.tag("public-read");
                 Evidence::new(
                     SRC,
@@ -244,7 +244,7 @@ impl Finding {
                 total_size,
                 sample,
             } => {
-                e.tag("vulnerable");
+                e.tag(crate::core::tags::VULNERABLE);
                 e.tag("public-listable");
                 Evidence::new(
                     SRC,

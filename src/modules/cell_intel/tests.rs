@@ -82,7 +82,7 @@ fn entity_tags_include_cell_tower_and_radio_type() {
     assert_eq!(e.kind, EntityKind::DeviceId);
     assert_eq!(e.value, "310-260-1234-5678");
     assert!((e.confidence - 0.80).abs() < 1e-6);
-    assert!(e.has_tag("cell-tower"));
+    assert!(e.has_tag(crate::core::tags::CELL_TOWER));
     assert!(e.has_tag("radio:lte"));
     assert_eq!(e.scan_id, "scan-x");
 }
@@ -276,7 +276,7 @@ fn build_tower_device_carries_radio_tags_and_evidence_attrs() {
     let e = build_tower_device(&cell, &key, "scan-1");
     assert_eq!(e.kind, EntityKind::DeviceId);
     assert_eq!(e.value, "505-01-54321-12345");
-    assert!(e.has_tag("cell-tower"));
+    assert!(e.has_tag(crate::core::tags::CELL_TOWER));
     assert!(e.has_tag("radio:lte"));
     let attrs = &e.evidence[0].attributes;
     assert_eq!(attrs.get("type").map(String::as_str), Some("lte"));

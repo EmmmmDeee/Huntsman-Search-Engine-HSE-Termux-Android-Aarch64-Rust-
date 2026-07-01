@@ -197,7 +197,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
     }
 
     let mut entity = target.to_entity(0.72, &ctx.scan_id);
-    entity.tag("threat-intel");
+    entity.tag(crate::core::tags::THREAT_INTEL);
 
     // Surface a few pulse names + the most SIGNIFICANT tags. OTX pulses dump
     // hashes, filenames, single characters and freeform notes into `tags`; the
@@ -281,7 +281,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         let capped: String = name.chars().take(64).collect();
         if capped.len() >= 2 {
             let mut o = Entity::new(EntityKind::Organisation, &capped, 0.58, &ctx.scan_id);
-            o.tag("threat-intel");
+            o.tag(crate::core::tags::THREAT_INTEL);
             o.tag("adversary");
             o.add_evidence(
                 Evidence::new(

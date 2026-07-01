@@ -106,7 +106,7 @@ fn build_entities(data: &AbuseData, ip: &str, scan_id: &str) -> Vec<Entity> {
     let confidence = 0.60 + (abuse_score as f64 / 100.0) * 0.35;
 
     let mut ip_entity = Entity::new(EntityKind::IpAddress, ip, confidence, scan_id);
-    ip_entity.tag("threat-intel");
+    ip_entity.tag(crate::core::tags::THREAT_INTEL);
     if abuse_score >= 80 {
         ip_entity.tag("malicious");
         ip_entity.tag("high-risk");

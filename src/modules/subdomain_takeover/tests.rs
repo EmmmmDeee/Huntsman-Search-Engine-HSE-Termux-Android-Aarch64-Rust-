@@ -63,7 +63,7 @@ use super::*;
         assert_eq!(e.kind, EntityKind::Domain);
         assert_eq!(e.value, "app.example.com");
         assert!((e.confidence - 0.90).abs() < 1e-9);
-        assert!(e.has_tag("vulnerable") && e.has_tag("subdomain-takeover"));
+        assert!(e.has_tag(crate::core::tags::VULNERABLE) && e.has_tag("subdomain-takeover"));
         assert!(e.has_tag("takeover:Heroku"));
 
         let ev = &e.evidence[0];
@@ -84,7 +84,7 @@ use super::*;
         );
         assert!(!e.evidence[0].attributes.contains_key("service"));
         // The vulnerable / subdomain-takeover tags and the CNAME attr remain.
-        assert!(e.has_tag("vulnerable") && e.has_tag("subdomain-takeover"));
+        assert!(e.has_tag(crate::core::tags::VULNERABLE) && e.has_tag("subdomain-takeover"));
         assert_eq!(
             e.evidence[0].attributes.get("cname_target").map(String::as_str),
             Some("x.cloudapp.net")

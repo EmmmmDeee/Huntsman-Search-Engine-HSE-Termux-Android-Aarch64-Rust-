@@ -139,7 +139,7 @@ pub(super) async fn recycle_entities(
                     .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
                 let base_conf = if has_postcode { 0.55 } else { 0.45 };
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, &scan_id);
-                e.tag("search-discovered");
+                e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 if has_postcode {
                     e.tag("au-postcode");
@@ -158,7 +158,7 @@ pub(super) async fn recycle_entities(
                     );
                     c.tag("addr-derived");
                     c.tag("geoint");
-                    c.tag("search-discovered");
+                    c.tag(crate::core::tags::SEARCH_DISCOVERED);
                     c.tag("recycled");
                     c.add_evidence(recycled_evidence(r, "Coordinates", &coord_val, &combined));
                     result.push(c);
@@ -173,7 +173,7 @@ pub(super) async fn recycle_entities(
             }
             if seen_emails.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.55, &scan_id);
-                e.tag("search-discovered");
+                e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Email", &email, &combined));
                 result.push(e);
@@ -183,7 +183,7 @@ pub(super) async fn recycle_entities(
         for phone in extract_phones_from_text(&combined) {
             if seen_phones.insert(phone.clone()) {
                 let mut e = Entity::new(EntityKind::Phone, &phone, 0.50, &scan_id);
-                e.tag("search-discovered");
+                e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag("recycled");
                 e.add_evidence(recycled_evidence(r, "Phone", &phone, &combined));
                 result.push(e);
@@ -509,7 +509,7 @@ pub(super) fn extract_display_names_from_titles(
             let mut e = Entity::new(EntityKind::Person, &raw_name, 0.65, scan_id);
             e.tag("derived");
             e.tag("social-name");
-            e.tag("search-discovered");
+            e.tag(crate::core::tags::SEARCH_DISCOVERED);
             let ev = Evidence::new(
                 SRC,
                 format!("[search] display name `{raw_name}` from social SERP title"),
@@ -572,7 +572,7 @@ pub(super) fn extract_bio_aggregator_urls(
                 };
                 let mut e = Entity::new(EntityKind::Url, &url_str, conf, scan_id);
                 e.tag("social-profile");
-                e.tag("search-discovered");
+                e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag(tag);
                 let ev = Evidence::new(
                     SRC,
@@ -610,7 +610,7 @@ pub(super) fn extract_bio_aggregator_urls(
                 };
                 let mut e = Entity::new(EntityKind::Url, &reconstructed, conf, scan_id);
                 e.tag("social-profile");
-                e.tag("search-discovered");
+                e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 e.tag(tag);
                 let ev = Evidence::new(
                     SRC,

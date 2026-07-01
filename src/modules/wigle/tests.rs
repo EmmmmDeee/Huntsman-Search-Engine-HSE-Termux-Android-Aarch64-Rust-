@@ -326,7 +326,10 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
         .collect();
     assert_eq!(coords.len(), 3);
     for c in &coords {
-        assert!(c.has_tag("cell-tower"), "should carry cell-tower tag");
+        assert!(
+            c.has_tag(crate::core::tags::CELL_TOWER),
+            "should carry cell-tower tag"
+        );
         assert!(c.has_tag("cell-observed"), "should carry cell-observed tag");
         assert!(c.has_tag("wigle"), "should carry wigle tag");
     }

@@ -133,7 +133,7 @@ impl Module for CellIntel {
                 let confidence = accuracy_to_confidence(range);
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, confidence, &ctx.scan_id);
                 e.tag("geoint");
-                e.tag("cell-tower");
+                e.tag(crate::core::tags::CELL_TOWER);
                 e.tag(format!("radio:{}", key.ctype.to_lowercase()));
                 crate::util::geo::tag_au_state(&mut e, lat, lon);
                 e.add_evidence(
@@ -159,7 +159,7 @@ impl Module for CellIntel {
                 let coords = format!("{lat:.4},{lon:.4}");
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
                 e.tag("geoint");
-                e.tag("cell-tower");
+                e.tag(crate::core::tags::CELL_TOWER);
                 e.tag("coarse");
                 e.tag(format!("country:{country}"));
                 if country == "AU"

@@ -211,7 +211,7 @@ fn uncorroborated_recycled_is_gated_until_a_second_source_confirms() {
     // plus the deterministic `geo_normalize` self-enrichment, which does NOT
     // count as corroboration.
     let mut addr = Entity::new(EntityKind::Address, "Austin, Texas", 0.45, "s");
-    addr.tag("search-discovered");
+    addr.tag(crate::core::tags::SEARCH_DISCOVERED);
     addr.tag("recycled");
     addr.add_evidence(Evidence::new("search_engines", "from recycled search"));
     addr.add_evidence(Evidence::new(

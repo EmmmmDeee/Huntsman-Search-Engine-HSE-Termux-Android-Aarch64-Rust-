@@ -82,7 +82,7 @@ pub(super) fn emit_key_with(
         // classic JWT authentication-bypass). Surface it as a vulnerability.
         if alg.eq_ignore_ascii_case("none") {
             entity.tag("jwt:alg-none");
-            entity.tag("vulnerable");
+            entity.tag(crate::core::tags::VULNERABLE);
         }
     }
     // Tag with ROI tier so operators can prioritise multiplier keys.

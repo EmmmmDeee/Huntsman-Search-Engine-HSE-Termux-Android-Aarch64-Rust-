@@ -168,7 +168,7 @@ use super::*;
         assert_eq!(e.value, "Ryne Manka");
         assert!((e.confidence - 0.65).abs() < 1e-9);
         assert!(e.has_tag("social-name"));
-        assert!(e.has_tag("search-discovered"));
+        assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
         assert!(e.has_tag("derived"));
     }
 
@@ -256,7 +256,7 @@ use super::*;
         assert!((e.confidence - 0.70).abs() < 1e-9, "bio aggregator conf should be 0.70");
         assert!(e.has_tag("bio-aggregator"));
         assert!(e.has_tag("social-profile"));
-        assert!(e.has_tag("search-discovered"));
+        assert!(e.has_tag(crate::core::tags::SEARCH_DISCOVERED));
     }
 
     #[test]

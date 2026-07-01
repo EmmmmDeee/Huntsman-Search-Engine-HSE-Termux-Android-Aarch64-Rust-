@@ -81,7 +81,7 @@ pub(super) fn build_ioc_entity(
 
     let mut entity = Entity::new(kind, term, 0.92, scan_id);
     entity.tag("threatfox");
-    entity.tag("threat-intel");
+    entity.tag(crate::core::tags::THREAT_INTEL);
     entity.tag("malicious");
 
     let mut families: BTreeSet<String> = BTreeSet::new();

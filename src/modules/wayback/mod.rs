@@ -213,7 +213,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
             if seen_emails.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
                 e.tag("wayback-historical");
-                e.tag("search-discovered");
+                e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(
                     SRC,
                     format!("[wayback] email `{email}` from archived page — {original_url}"),
@@ -230,7 +230,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
             if seen_phones.insert(phone.clone()) {
                 let mut e = Entity::new(EntityKind::Phone, &phone, 0.65, scan_id);
                 e.tag("wayback-historical");
-                e.tag("search-discovered");
+                e.tag(crate::core::tags::SEARCH_DISCOVERED);
                 let ev = Evidence::new(
                     SRC,
                     format!("[wayback] phone `{phone}` from archived page — {original_url}"),

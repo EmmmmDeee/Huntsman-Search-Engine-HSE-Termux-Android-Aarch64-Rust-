@@ -550,7 +550,7 @@ fn wifi_ap_entities(
 
         let mut e = Entity::new(EntityKind::MacAddress, mac, 0.60, scan_id);
         e.tag("wigle");
-        e.tag("wifi-ap");
+        e.tag(crate::core::tags::WIFI_AP);
         let mut ev = Evidence::new(SRC, format!("WiFi AP near {query_label}"))
             .with_attr("coordinates", &coord_val);
         if let Some(oui) = crate::util::oui::classify_mac(mac) {

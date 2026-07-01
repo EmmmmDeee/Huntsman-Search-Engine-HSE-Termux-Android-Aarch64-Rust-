@@ -59,7 +59,7 @@ pub(super) fn parse_scan(stdout: &[u8], scan_id: &str) -> ModuleResult {
         let confidence = rssi_confidence(ap.rssi);
 
         let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, confidence, scan_id);
-        e.tag("wifi-ap");
+        e.tag(crate::core::tags::WIFI_AP);
         e.tag("geolocatable");
         if let Some(band) = wifi_band(ap.frequency) {
             e.tag(band);

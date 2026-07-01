@@ -46,7 +46,7 @@ fn matching_fingerprints(cname_target: &str) -> impl Iterator<Item = &'static Fi
 /// `service` attr; a blank `cname_target` adds no `cname_target` attr.
 fn build_entities(domain: &str, cname_target: &str, service: &str, scan_id: &str) -> Vec<Entity> {
     let mut e = Entity::new(EntityKind::Domain, domain, 0.90, scan_id);
-    e.tag("vulnerable");
+    e.tag(crate::core::tags::VULNERABLE);
     e.tag("subdomain-takeover");
     if !service.is_empty() {
         e.tag(format!("takeover:{service}"));

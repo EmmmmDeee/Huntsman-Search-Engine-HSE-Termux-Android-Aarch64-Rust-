@@ -863,7 +863,11 @@ fn au007_fires_on_high_risk() {
 
 #[test]
 fn au008_fires_on_vulnerable_tag() {
-    let e = tagged(EntityKind::Domain, "vuln.example", &["vulnerable"]);
+    let e = tagged(
+        EntityKind::Domain,
+        "vuln.example",
+        &[crate::core::tags::VULNERABLE],
+    );
     let r = rule_au_008_exposed_service(&[e], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-008");
@@ -877,7 +881,7 @@ fn au008_benign_infra_verdict_vetoes_exposed_service() {
     let e = tagged(
         EntityKind::IpAddress,
         "104.20.37.187",
-        &["vulnerable", "greynoise-benign"],
+        &[crate::core::tags::VULNERABLE, "greynoise-benign"],
     );
     assert!(rule_au_008_exposed_service(&[e], "s", 0).is_empty());
 }
@@ -1129,8 +1133,16 @@ fn au012_no_fire_without_username() {
 #[test]
 fn au013_fires_on_two_lan_entities() {
     let entities = vec![
-        tagged(EntityKind::IpAddress, "192.168.1.1", &["local-arp"]),
-        tagged(EntityKind::MacAddress, "aa:bb:cc:dd:ee:ff", &["local-arp"]),
+        tagged(
+            EntityKind::IpAddress,
+            "192.168.1.1",
+            &[crate::core::tags::LOCAL_ARP],
+        ),
+        tagged(
+            EntityKind::MacAddress,
+            "aa:bb:cc:dd:ee:ff",
+            &[crate::core::tags::LOCAL_ARP],
+        ),
     ];
     let r = rule_au_013_local_network_discovery(&entities, "s", 0);
     assert_eq!(r.len(), 1);
@@ -1138,7 +1150,11 @@ fn au013_fires_on_two_lan_entities() {
 
 #[test]
 fn au013_no_fire_on_one_lan_entity() {
-    let entities = vec![tagged(EntityKind::IpAddress, "192.168.1.1", &["local-arp"])];
+    let entities = vec![tagged(
+        EntityKind::IpAddress,
+        "192.168.1.1",
+        &[crate::core::tags::LOCAL_ARP],
+    )];
     assert!(rule_au_013_local_network_discovery(&entities, "s", 0).is_empty());
 }
 
@@ -1197,7 +1213,7 @@ fn au015_fires_on_threat_intel_tag() {
     let e = tagged(
         EntityKind::Domain,
         "bad.example",
-        &["threat-intel", "ti:malware"],
+        &[crate::core::tags::THREAT_INTEL, "ti:malware"],
     );
     let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
     assert_eq!(r.len(), 1);
@@ -1207,7 +1223,7 @@ fn au015_fires_on_threat_intel_tag() {
 #[test]
 fn au015_attribution_names_evidence_source_not_otx() {
     let mut e = Entity::new(EntityKind::Domain, "bad.example", 0.9, "s");
-    e.tag("threat-intel");
+    e.tag(crate::core::tags::THREAT_INTEL);
     e.add_evidence(Evidence::new("threatfox", "t"));
     let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
     assert_eq!(r.len(), 1);
@@ -1218,7 +1234,7 @@ fn au015_attribution_names_evidence_source_not_otx() {
 #[test]
 fn au015_attribution_excludes_non_ti_evidence() {
     let mut e = Entity::new(EntityKind::Domain, "bad.example", 0.9, "s");
-    e.tag("threat-intel");
+    e.tag(crate::core::tags::THREAT_INTEL);
     e.add_evidence(Evidence::new("ip_reputation", "ti-hit"));
     e.add_evidence(Evidence::new("whois", "registry-data"));
     e.add_evidence(Evidence::new("dns_resolver", "a-record"));
@@ -1231,7 +1247,11 @@ fn au015_attribution_excludes_non_ti_evidence() {
 
 #[test]
 fn au015_attribution_falls_back_when_source_unknown() {
-    let e = tagged(EntityKind::Domain, "bad.example", &["threat-intel"]);
+    let e = tagged(
+        EntityKind::Domain,
+        "bad.example",
+        &[crate::core::tags::THREAT_INTEL],
+    );
     let r = rule_au_015_threat_intel_hit(&[e], "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("curated threat-intel feed"));
@@ -1255,7 +1275,11 @@ fn evaluate_rules_fires_expected_subset() {
     let mut domain = tagged(
         EntityKind::Domain,
         "evil.example",
-        &["malicious", "vulnerable", "threat-intel"],
+        &[
+            "malicious",
+            crate::core::tags::VULNERABLE,
+            crate::core::tags::THREAT_INTEL,
+        ],
     );
     domain.add_evidence(Evidence::new(
         "ip_reputation",
@@ -1472,7 +1496,7 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
             m,
             0.95,
             &["wifi_intel"],
-            &["wifi-ap"],
+            &[crate::core::tags::WIFI_AP],
         ));
     }
     ents.push(mk(
@@ -1798,7 +1822,11 @@ fn au031_no_fire_when_neither_endpoint_flagged() {
 fn au031_no_fire_when_both_endpoints_flagged() {
     use crate::core::relation::{Relation, RelationKind};
     let a = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
-    let b = tagged(EntityKind::Domain, "bad.example", &["threat-intel"]);
+    let b = tagged(
+        EntityKind::Domain,
+        "bad.example",
+        &[crate::core::tags::THREAT_INTEL],
+    );
     let rel = Relation::new(
         a.uid.clone(),
         b.uid.clone(),
@@ -1830,7 +1858,11 @@ fn au031_aggregates_high_fanout_shared_infra() {
     // One flagged shared IP (CDN) with 30 distinct co-hosted domains: the
     // real-world noise case. Must collapse to ONE Medium aggregate, not 30
     // High rows — while a dedicated node (≤ cap) still fires per-neighbour.
-    let bad = tagged(EntityKind::IpAddress, "104.20.37.187", &["vulnerable"]);
+    let bad = tagged(
+        EntityKind::IpAddress,
+        "104.20.37.187",
+        &[crate::core::tags::VULNERABLE],
+    );
     let mut entities = vec![bad.clone()];
     let mut rels = Vec::new();
     for i in 0..30 {
@@ -1875,7 +1907,7 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
     let bad = tagged(
         EntityKind::IpAddress,
         "104.20.37.187",
-        &["vulnerable", "greynoise-riot"],
+        &[crate::core::tags::VULNERABLE, "greynoise-riot"],
     );
     let mut entities = vec![bad.clone()];
     let mut rels = Vec::new();
@@ -3370,7 +3402,7 @@ fn au106_links_accounts_sharing_a_breach_router_bssid_or_imei() {
     // SAFETY: a LAN/Wi-Fi MAC surfaced by local_net/wifi_intel is NOT tagged
     // `device`, so the same address with the same accounts must not link people.
     let mut lan = Entity::new(EntityKind::MacAddress, "aa:bb:cc:dd:ee:ff", 0.60, "scan");
-    lan.tag("wifi-ap");
+    lan.tag(crate::core::tags::WIFI_AP);
     lan.add_evidence(Evidence::new("wifi_intel", "r1").with_attr("username", "ghost_91"));
     lan.add_evidence(Evidence::new("wifi_intel", "r2").with_attr("username", "nightcrawler"));
     assert!(
@@ -4704,7 +4736,7 @@ fn au095_ranks_portfolio_critical_first() {
 #[test]
 fn au095_flags_exploitable_and_handles_unrated() {
     let mut jwt = api_key_ent("eyJ.none.token", "jwt_token", "low", "potential");
-    jwt.tag("vulnerable"); // e.g. alg:none
+    jwt.tag(crate::core::tags::VULNERABLE); // e.g. alg:none
     // A found_keys-path key with no criticality tag → counts, ranks unrated.
     let mut bare = Entity::new(EntityKind::ApiKey, "foreignkey123", 0.7, "s");
     bare.tag("api-key");
@@ -5372,19 +5404,19 @@ fn au_103_gps_fix_with_corroboration_is_high_self_location() {
         EntityKind::MacAddress,
         "AA:BB:CC:DD:EE:01",
         "signal_radar",
-        &["wifi-ap"],
+        &[crate::core::tags::WIFI_AP],
     );
     let wifi2 = mk_tagged(
         EntityKind::MacAddress,
         "AA:BB:CC:DD:EE:02",
         "signal_radar",
-        &["wifi-ap"],
+        &[crate::core::tags::WIFI_AP],
     );
     let cell = mk_tagged(
         EntityKind::DeviceId,
         "505-1-100-200",
         "signal_radar",
-        &["cell-tower"],
+        &[crate::core::tags::CELL_TOWER],
     );
     let out = rule_au_103_device_self_location(&[fix, wifi1, wifi2, cell], "scan", 0);
     assert_eq!(out.len(), 1);
@@ -5426,13 +5458,13 @@ fn au_103_presence_only_without_a_fix_is_low() {
         EntityKind::MacAddress,
         "AA:BB:CC:DD:EE:01",
         "signal_radar",
-        &["wifi-ap"],
+        &[crate::core::tags::WIFI_AP],
     );
     let cell = mk_tagged(
         EntityKind::DeviceId,
         "505-2-1-2",
         "signal_radar",
-        &["cell-tower"],
+        &[crate::core::tags::CELL_TOWER],
     );
     let bt = mk_tagged(
         EntityKind::MacAddress,
@@ -5464,7 +5496,7 @@ fn au_103_flags_foreign_cell_under_an_au_fix() {
         EntityKind::DeviceId,
         "310-260-1-2",
         "signal_radar",
-        &["cell-tower"],
+        &[crate::core::tags::CELL_TOWER],
     );
     let out = rule_au_103_device_self_location(&[fix, cell], "scan", 0);
     assert_eq!(out.len(), 1);
@@ -6204,7 +6236,7 @@ fn au028_fires_for_subdomain_takeover_tag() {
 fn au029_fires_for_cloud_storage_vulnerable_tags() {
     let mut e = Entity::new(EntityKind::Url, "https://bucket.s3.amazonaws.com", 0.6, "s");
     e.tag("cloud-storage");
-    e.tag("vulnerable");
+    e.tag(crate::core::tags::VULNERABLE);
     let r = rule_au_029_cloud_storage_exposure(&[e], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-029");
@@ -6729,7 +6761,7 @@ fn au110_no_fire_on_shared_hosting_fanout() {
 
 fn cell_tower(tower_id: &str, sources: &[&str]) -> Entity {
     let mut e = Entity::new(EntityKind::DeviceId, tower_id, 0.78, "s");
-    e.tag("cell-tower");
+    e.tag(crate::core::tags::CELL_TOWER);
     for src in sources {
         e.add_evidence(Evidence::new(*src, format!("tower {tower_id}")));
     }

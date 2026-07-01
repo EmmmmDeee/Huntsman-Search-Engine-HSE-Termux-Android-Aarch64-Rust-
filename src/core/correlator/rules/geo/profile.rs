@@ -379,11 +379,11 @@ pub(in crate::core::correlator) fn rule_au_103_device_self_location(
     let mut cells: Vec<&Entity> = Vec::new();
     let mut corro_uids: Vec<String> = Vec::new();
     for e in entities {
-        if e.has_tag("wifi-ap") {
+        if e.has_tag(crate::core::tags::WIFI_AP) {
             wifi += 1;
         } else if e.has_tag("bluetooth") {
             bt += 1;
-        } else if e.has_tag("cell-tower") {
+        } else if e.has_tag(crate::core::tags::CELL_TOWER) {
             cells.push(e);
         } else if e.has_tag("arp-neighbor") {
             lan += 1;

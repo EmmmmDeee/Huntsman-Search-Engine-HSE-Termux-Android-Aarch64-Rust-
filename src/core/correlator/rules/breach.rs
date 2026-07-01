@@ -843,7 +843,7 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
         if k.has_tag("high-value") || crit_rank(k) >= 3 {
             high_value += 1;
         }
-        if k.has_tag("vulnerable") {
+        if k.has_tag(crate::core::tags::VULNERABLE) {
             exploitable += 1;
         }
     }

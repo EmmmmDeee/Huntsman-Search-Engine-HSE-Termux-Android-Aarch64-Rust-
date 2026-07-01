@@ -35,7 +35,11 @@ fn single_ioc_marks_malicious_with_threat_band_confidence() {
         "s",
     );
     assert_eq!(e.kind, EntityKind::Domain);
-    assert!(e.has_tag("threatfox") && e.has_tag("threat-intel") && e.has_tag("malicious"));
+    assert!(
+        e.has_tag("threatfox")
+            && e.has_tag(crate::core::tags::THREAT_INTEL)
+            && e.has_tag("malicious")
+    );
     assert!((e.confidence - 0.92).abs() < 1e-9);
     assert_eq!(attr(&e, "hits"), Some("1"));
     assert_eq!(attr(&e, "malware_families"), Some("CobaltStrike"));

@@ -19,7 +19,7 @@ use super::types::{Cell, OpenCellidResp, TowerKey};
 /// evidence-attribute set (they were previously byte-identical copies).
 pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> Entity {
     let mut e = Entity::new(EntityKind::DeviceId, &key.tower_id, 0.80, scan_id);
-    e.tag("cell-tower");
+    e.tag(crate::core::tags::CELL_TOWER);
     e.tag(format!("radio:{}", key.ctype));
     e.add_evidence(
         Evidence::new(SRC, format!("Cell tower {} {}", key.ctype, key.tower_id))

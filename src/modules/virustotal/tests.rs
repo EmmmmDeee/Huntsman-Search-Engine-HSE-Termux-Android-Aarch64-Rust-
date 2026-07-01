@@ -28,7 +28,11 @@ use super::*;
                 {"malicious":9,"suspicious":1,"undetected":80,"harmless":10},"reputation":5}}}"#,
         );
         assert_eq!(e.kind, EntityKind::Domain);
-        assert!(e.has_tag("malicious") && e.has_tag("threat-intel") && e.has_tag("virustotal"));
+        assert!(
+            e.has_tag("malicious")
+                && e.has_tag(crate::core::tags::THREAT_INTEL)
+                && e.has_tag("virustotal")
+        );
         assert!(e.has_tag("suspicious")); // surfaced even alongside malicious
         // confidence = 0.50 + (9/100)*0.45 = 0.5405
         assert!((e.confidence - 0.5405).abs() < 1e-6);
@@ -68,7 +72,7 @@ use super::*;
                 {"malicious":0,"suspicious":4,"undetected":90,"harmless":6}}}}"#,
         );
         assert!(e.has_tag("suspicious"));
-        assert!(!e.has_tag("malicious") && !e.has_tag("threat-intel"));
+        assert!(!e.has_tag("malicious") && !e.has_tag(crate::core::tags::THREAT_INTEL));
         assert!((e.confidence - 0.50).abs() < 1e-6); // no malicious → baseline
     }
 
@@ -87,7 +91,12 @@ use super::*;
                 {"malicious":0,"suspicious":0,"undetected":95,"harmless":5},"reputation":10}}}"#,
         );
         assert!(e.has_tag("virustotal"));
-        for t in ["malicious", "threat-intel", "suspicious", "low-reputation"] {
+        for t in [
+            "malicious",
+            crate::core::tags::THREAT_INTEL,
+            "suspicious",
+            "low-reputation",
+        ] {
             assert!(!e.has_tag(t), "clean entity must not be tagged {t}");
         }
     }

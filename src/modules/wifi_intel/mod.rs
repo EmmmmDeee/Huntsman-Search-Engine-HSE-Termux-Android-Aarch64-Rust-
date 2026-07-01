@@ -129,7 +129,7 @@ impl Module for WifiIntel {
         result.extend(aps.iter().map(|ap| {
             let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
             let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, &ctx.scan_id);
-            e.tag("wifi-ap");
+            e.tag(crate::core::tags::WIFI_AP);
             e.add_evidence(
                 Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
                     .with_attr("ssid", ssid)
@@ -169,7 +169,7 @@ impl Module for WifiIntel {
 
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.80, &ctx.scan_id);
                 e.tag("geoint");
-                e.tag("wifi-ap");
+                e.tag(crate::core::tags::WIFI_AP);
                 e.tag("bssid-located");
 
                 let mut ev = Evidence::new(
@@ -254,7 +254,7 @@ fn parse_aps(stdout: &[u8], scan_id: &str) -> ModuleResult {
     for ap in aps {
         let ssid = ap.ssid.as_deref().unwrap_or("<hidden>");
         let mut e = Entity::new(EntityKind::MacAddress, &ap.bssid, 0.95, scan_id);
-        e.tag("wifi-ap");
+        e.tag(crate::core::tags::WIFI_AP);
         e.add_evidence(
             Evidence::new(SOURCE, format!("Wi-Fi AP: {ssid}"))
                 .with_attr("ssid", ssid)

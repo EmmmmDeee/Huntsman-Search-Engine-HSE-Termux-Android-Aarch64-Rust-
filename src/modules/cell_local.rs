@@ -92,7 +92,7 @@ impl Module for CellLocal {
 
             // ── DeviceId entity ──────────────────────────────────────────────
             let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, &ctx.scan_id);
-            device.tag("cell-tower");
+            device.tag(crate::core::tags::CELL_TOWER);
             device.tag("cell-local");
             device.tag(format!("radio:{}", cell.radio.to_lowercase()));
             device.add_evidence(
@@ -115,7 +115,7 @@ impl Module for CellLocal {
                 let conf = accuracy_to_confidence(cell.range_m as u64);
                 let mut geo = Entity::new(EntityKind::Coordinates, &coords, conf, &ctx.scan_id);
                 geo.tag("geoint");
-                geo.tag("cell-tower");
+                geo.tag(crate::core::tags::CELL_TOWER);
                 geo.tag("cell-local");
                 geo.add_evidence(
                     Evidence::new(SRC, format!("Local DB tower {tower_id} at {coords}"))

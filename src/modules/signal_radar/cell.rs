@@ -65,7 +65,7 @@ pub(super) fn parse_cells(cellinfo: &[u8], scan_id: &str) -> ModuleResult {
         let registered = cell.registered.unwrap_or(false);
 
         let mut e = Entity::new(EntityKind::DeviceId, &tower_id, 0.75, scan_id);
-        e.tag("cell-tower");
+        e.tag(crate::core::tags::CELL_TOWER);
         e.tag(tech);
         if registered {
             e.tag("registered");

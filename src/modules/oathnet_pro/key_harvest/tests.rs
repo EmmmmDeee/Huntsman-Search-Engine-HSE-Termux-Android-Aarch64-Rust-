@@ -2219,7 +2219,7 @@ fn jwt_validation_refines_tier_and_flags_alg_none() {
         .find(|e| e.has_tag("service:jwt_token"))
         .expect("jwt entity");
     assert!(e.has_tag("jwt:alg-none"), "tags: {:?}", e.tags);
-    assert!(e.has_tag("vulnerable"));
+    assert!(e.has_tag(crate::core::tags::VULNERABLE));
 
     // An eyJ-shaped blob that is NOT a valid JWT: still catalogued, but the
     // unconfirmed structure drops it to Potential with no jwt: enrichment.

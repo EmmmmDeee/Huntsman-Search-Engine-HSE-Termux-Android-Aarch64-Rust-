@@ -248,7 +248,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
 
     // DeviceId entity
     let mut device = Entity::new(EntityKind::DeviceId, &tower_id, 0.78, scan_id);
-    device.tag("cell-tower");
+    device.tag(crate::core::tags::CELL_TOWER);
     device.tag(format!("radio:{}", radio.to_lowercase()));
     let mut ev = Evidence::new(SRC, format!("OpenCelliD tower {tower_id} ({radio})"))
         .with_attr("tower_id", &tower_id)
@@ -279,7 +279,7 @@ fn emit_cell_entities(result: &mut ModuleResult, cell: &CellEntry, scan_id: &str
     let confidence = accuracy_to_confidence(cell.range.unwrap_or(5000));
     let mut geo = Entity::new(EntityKind::Coordinates, &coords, confidence, scan_id);
     geo.tag("geoint");
-    geo.tag("cell-tower");
+    geo.tag(crate::core::tags::CELL_TOWER);
     geo.tag(format!("radio:{}", radio.to_lowercase()));
     crate::util::geo::tag_au_state(&mut geo, t_lat, t_lon);
     geo.add_evidence(

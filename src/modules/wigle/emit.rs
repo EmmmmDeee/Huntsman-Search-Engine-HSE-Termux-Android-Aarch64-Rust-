@@ -82,7 +82,7 @@ pub(super) fn extract_cell_intel(
         let coords = format!("{lat:.6},{lon:.6}");
         let mut geo = Entity::new(EntityKind::Coordinates, &coords, 0.65, scan_id);
         geo.tag("wigle");
-        geo.tag("cell-tower");
+        geo.tag(crate::core::tags::CELL_TOWER);
         geo.tag("cell-observed");
         crate::util::geo::tag_au_state(&mut geo, lat, lon);
         geo.add_evidence(

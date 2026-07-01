@@ -88,7 +88,7 @@ pub(super) fn build_entities(
             let mut e = Entity::new(EntityKind::Domain, &host, 0.70, scan_id);
             e.corroboration = n_engines;
             e.tag(tags::SUBDOMAIN);
-            e.tag("search-discovered");
+            e.tag(tags::SEARCH_DISCOVERED);
             e.add_evidence(build_search_evidence(r));
             result.push(e);
         } else if matches!(target.kind, TargetKind::Domain)
@@ -122,7 +122,7 @@ pub(super) fn build_entities(
             let mut e = Entity::new(EntityKind::Domain, &domain, 0.45, scan_id);
             e.corroboration = n_engines;
             e.tag(tags::EXTERNAL);
-            e.tag("search-discovered");
+            e.tag(tags::SEARCH_DISCOVERED);
             e.add_evidence(build_search_evidence(r));
             result.push(e);
         }
@@ -136,7 +136,7 @@ pub(super) fn build_entities(
             if seen_emails.insert(email.clone()) {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
                 e.tag(tags::WEB_SCRAPED);
-                e.tag("search-discovered");
+                e.tag(tags::SEARCH_DISCOVERED);
                 e.add_evidence(
                     Evidence::new(
                         "search_engines",
@@ -166,7 +166,7 @@ pub(super) fn build_entities(
             if seen_phones.insert(phone.clone()) {
                 let mut e = Entity::new(EntityKind::Phone, &phone, 0.55, scan_id);
                 e.tag(tags::WEB_SCRAPED);
-                e.tag("search-discovered");
+                e.tag(tags::SEARCH_DISCOVERED);
                 e.add_evidence(
                     Evidence::new(
                         "search_engines",
@@ -195,7 +195,7 @@ pub(super) fn build_entities(
         for (num, kind_label) in extract_abn_acn_from_text(&combined_text) {
             if seen_domains.insert(format!("@abn:{num}")) {
                 let mut e = Entity::new(EntityKind::AbnAcn, &num, 0.65, scan_id);
-                e.tag("search-discovered");
+                e.tag(tags::SEARCH_DISCOVERED);
                 e.tag(kind_label);
                 e.add_evidence(
                     Evidence::new(
@@ -222,7 +222,7 @@ pub(super) fn build_entities(
             let org_key = org.to_lowercase();
             if seen_domains.insert(format!("@org:{org_key}")) {
                 let mut e = Entity::new(EntityKind::Organisation, &org, 0.45, scan_id);
-                e.tag("search-discovered");
+                e.tag(tags::SEARCH_DISCOVERED);
                 e.add_evidence(build_search_evidence(r));
                 result.push(e);
             }
@@ -271,7 +271,7 @@ pub(super) fn build_entities(
             let corr_cap = if has_postcode { 0.75 } else { 0.65 };
             if seen_domains.insert(addr_key.clone()) {
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, scan_id);
-                e.tag("search-discovered");
+                e.tag(tags::SEARCH_DISCOVERED);
                 e.tag(tags::WEB_SCRAPED);
                 if has_postcode {
                     e.tag("au-postcode");
@@ -364,7 +364,7 @@ pub(super) fn build_entities(
             // unanimous engine agreement; now N engines lift `c_effective` (a
             // confirmed profile + ≥2 engines crosses into the Verified tier).
             e.corroboration = n_engines;
-            e.tag("search-discovered");
+            e.tag(tags::SEARCH_DISCOVERED);
             if confirmed {
                 e.tag("confirmed-profile");
             } else if location_seed {
@@ -390,7 +390,7 @@ pub(super) fn build_entities(
                 let (score, confidence) = score_username(&lower_user, &host, &terms, r);
                 if score >= 1 {
                     let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
-                    e.tag("search-discovered");
+                    e.tag(tags::SEARCH_DISCOVERED);
                     e.tag("social-profile");
                     if score < 3 {
                         e.tag("candidate");
@@ -430,7 +430,7 @@ pub(super) fn build_entities(
                     .any(|t| t.len() >= 3 && name_key.split_whitespace().any(|w| w == t));
                 if on_target && seen_domains.insert(format!("@person:{name_key}")) {
                     let mut e = Entity::new(EntityKind::Person, &name, 0.50, scan_id);
-                    e.tag("search-discovered");
+                    e.tag(tags::SEARCH_DISCOVERED);
                     e.tag("people-search");
                     e.add_evidence(build_search_evidence(r));
                     result.push(e);
@@ -470,7 +470,7 @@ pub(super) fn build_entities(
                     if confirmed { 0.80 } else { 0.40 },
                     scan_id,
                 );
-                e.tag("search-discovered");
+                e.tag(tags::SEARCH_DISCOVERED);
                 e.tag("snippet-link");
                 if confirmed {
                     e.tag("confirmed-profile");
@@ -501,7 +501,7 @@ pub(super) fn build_entities(
             let (score, confidence) = score_username(&lower_user, &s_host, &terms, r);
             if score >= 1 {
                 let mut e = Entity::new(EntityKind::Username, &lower_user, confidence, scan_id);
-                e.tag("search-discovered");
+                e.tag(tags::SEARCH_DISCOVERED);
                 e.tag("social-profile");
                 e.tag("snippet-link");
                 if score < 3 {
@@ -529,7 +529,7 @@ pub(super) fn build_entities(
         let key = format!("@person:{}", name.to_lowercase());
         if seen_domains.insert(key) {
             let mut e = Entity::new(EntityKind::Person, name, 0.45, scan_id);
-            e.tag("search-discovered");
+            e.tag(tags::SEARCH_DISCOVERED);
             e.tag("family-member");
             e.add_evidence(
                 Evidence::new(

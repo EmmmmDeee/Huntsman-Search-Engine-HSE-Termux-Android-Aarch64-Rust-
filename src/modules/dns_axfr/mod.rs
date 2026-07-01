@@ -133,7 +133,7 @@ impl Module for DnsAxfr {
 
                     let mut zone_e = Entity::new(EntityKind::Domain, &domain, 0.95, &ctx.scan_id);
                     zone_e.tag("axfr-permitted");
-                    zone_e.tag("vulnerable");
+                    zone_e.tag(crate::core::tags::VULNERABLE);
                     zone_e.add_evidence(
                         Evidence::new(
                             SRC,

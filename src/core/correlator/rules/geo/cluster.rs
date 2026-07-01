@@ -5,7 +5,11 @@ pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    const LAN_TAGS: &[&str] = &["local-arp", "local-interface", "wifi-ap"];
+    const LAN_TAGS: &[&str] = &[
+        crate::core::tags::LOCAL_ARP,
+        crate::core::tags::LOCAL_INTERFACE,
+        crate::core::tags::WIFI_AP,
+    ];
     // Single filter pass: kind gate and tag probe folded together so each entity
     // is visited once (the kind check short-circuits the tag scan).
     let hits: Vec<&Entity> = entities
@@ -164,7 +168,7 @@ pub(in crate::core::correlator) fn rule_au_084_cell_tower_dual_source(
     let corroborated: Vec<&Entity> = entities_of_kind(entities, EntityKind::DeviceId)
         .into_iter()
         .filter(|e| {
-            if !e.has_tag("cell-tower") {
+            if !e.has_tag(crate::core::tags::CELL_TOWER) {
                 return false;
             }
             let sources = e.evidence_sources();
