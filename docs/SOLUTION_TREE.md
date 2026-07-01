@@ -399,13 +399,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the "single best-estimate with provenance + a confidence radius" this node
   asks for. No code change this cycle — audit + doc correction only, closing
   the drift between the shipped code, the CHANGELOG, and this tree.
-  *Remaining:* the confidence-weighted **geometric median** (Weiszfeld) is used
-  by AU-057 and the `diagnostics::cluster_coordinates` spatial-clustering pass,
-  but `au059_synergy_fix` — the dossier's actual headline fix — still uses the
-  plain `weighted_centroid`, not the more outlier-robust geometric median (a
-  genuine, separate upgrade candidate for a future cycle); AU bounding
-  precision; movement/timeline layer; auto-scheduled re-sync of the local cell
-  DB (currently requires manual `hse cells import` trigger).
+  *Delivered (2026-07-01):* **the geometric-median gap flagged above is closed.**
+  `au059_synergy_fix` now calls `weighted_geometric_median` (Weiszfeld),
+  falling back to `weighted_centroid` only on the rare non-convergent/
+  degenerate case — the exact fallback idiom `LocationFix`/
+  `cluster_coordinates` already established, so all three convergence call
+  sites are now consistent. New regression test
+  `au059_synergy_fix_resists_a_single_high_confidence_outlier` proves the
+  behavioural difference directly: it computes the plain centroid inline for
+  comparison, asserts the fixture actually pulls it toward the outlier
+  (lon<145, sanity check), then asserts the real fix does NOT (lon>145) —
+  fails against the pre-fix code (identical to the plain centroid, lon≈138.6)
+  and passes against the fix. Every pre-existing geo test (AU-052, AU-059,
+  `scan_export`) is unchanged because they use tolerant range assertions
+  against tightly-clustered fixtures where the two estimators barely diverge —
+  this closes a real precision gap, not a behaviour regression risk.
+  *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
+  re-sync of the local cell DB (currently requires manual `hse cells import`
+  trigger).
 - **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
@@ -2305,3 +2316,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   commit. This is the same class of correction as the cycle-20 stale-note audit
   (`securitytrails`/`bgpview`/`ripestat`) — keeping the trees honest is itself
   the unit of work when the trees, not the code, are what's behind.
+
+- **2026-07-01** — **SOL-GEOINT: AU-059 upgraded from `weighted_centroid` to
+  `weighted_geometric_median`, closing the one real leg the previous cycle's
+  audit surfaced.** P→S pick: with AU-057 and `diagnostics::cluster_coordinates`
+  already on the Weiszfeld geometric median, AU-059 — the function behind the
+  dossier's headline "Best location estimate" — was the last of the three
+  convergence call sites still using a plain weighted average. Swapped it in
+  with the same `.or_else(weighted_centroid)` fallback the other two use for
+  the rare non-convergent case. **S→P proof:** new test
+  `au059_synergy_fix_resists_a_single_high_confidence_outlier` builds a fixture
+  where a higher-confidence outlier holds 36% of the weight (below the
+  median's 50% breakdown point) against a 64%-weight agreeing majority; it
+  computes the plain centroid inline to prove the fixture is genuinely
+  discriminating (centroid lands at lon≈138.6, a third of the way toward the
+  outlier) before asserting the real fix does not follow it (lon>145). Fails
+  on the pre-fix code, passes on the fix. Confirmed non-breaking: every
+  existing AU-052/AU-059/`scan_export` geo test still passes, because they all
+  assert tolerant ranges against tightly-clustered fixtures where the two
+  estimators don't meaningfully diverge. Gate green: 4259 lib tests,
+  fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8 — same
+  commit.

@@ -577,14 +577,21 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
         return None;
     }
 
-    // Confidence-weighted centroid, each weight boosted by class diversity so a
-    // point corroborated across more orthogonal classes pulls proportionally more.
+    // Confidence-weighted geometric median (Weiszfeld) — outlier-robust, unlike
+    // a plain centroid: a single disagreeing sighting pulls a centroid toward it
+    // proportionally to its weight, but pulls the median only as far as the
+    // majority of *other* sightings allow. Each weight is boosted by class
+    // diversity so a point corroborated across more orthogonal classes pulls
+    // proportionally more. Falls back to the weighted centroid on the rare
+    // non-convergent/degenerate input (same fallback `LocationFix` and
+    // `cluster_coordinates` use — PROBLEM_TREE C5).
     let class_bonus = 1.0 + (classes.len() as f64 - 1.0) * 0.10;
     let weighted: Vec<((f64, f64), f64)> = parsed
         .iter()
         .map(|(e, ll)| (*ll, e.c_effective() * class_bonus))
         .collect();
-    let (lat, lon) = crate::util::geometry::weighted_centroid(&weighted)?;
+    let (lat, lon) = crate::util::geometry::weighted_geometric_median(&weighted)
+        .or_else(|| crate::util::geometry::weighted_centroid(&weighted))?;
 
     // Dominant AU state across the contributing coordinates (for AU-056 context).
     let state = au_state_majority(&parsed).unwrap_or("AU");

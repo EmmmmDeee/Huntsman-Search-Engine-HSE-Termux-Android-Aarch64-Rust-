@@ -712,10 +712,25 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   location estimate: `LAT,LON ± X km`" with its basis + confidence, in both the
   CLI dossier and the JSON export. Neither delivery was folded back into this
   line when it shipped — this bullet was simply never re-read against the code.
-  *Remaining:* Weiszfeld/Welzl geometric-median fusion (AU-057 and
-  `diagnostics::cluster_coordinates` already use it; the AU-059 dossier
-  headline still uses the plain `weighted_centroid` — a real, separate upgrade
-  candidate); tighter AU bounding; movement/timeline geo.
+  *Delivered (2026-07-01):* **AU-059's dossier-headline fix now uses the
+  confidence-weighted geometric median (Weiszfeld), not the plain
+  `weighted_centroid`** — bringing it to parity with AU-057 and
+  `diagnostics::cluster_coordinates`, which already used the more
+  outlier-robust estimator. `au059_synergy_fix` now calls
+  `weighted_geometric_median` (falling back to `weighted_centroid` only on the
+  rare non-convergent/degenerate input, the same fallback the other two call
+  sites use). Regression test
+  `au059_synergy_fix_resists_a_single_high_confidence_outlier` proves it: two
+  agreeing near-Sydney classes (64% of the weight) plus one higher-confidence
+  Perth outlier (36%) — below the median's 50% breakdown point — must keep the
+  fix anchored near Sydney; the plain centroid the old code computed lands at
+  lon≈138.6 (a third of the way to Perth), the geometric median stays >145.
+  Fails against the pre-fix code (produces the same lon≈138.6 as the plain
+  centroid) and passes against the fix. Existing AU-059/AU-052/scan_export geo
+  tests are unaffected (they all use tolerant range assertions on real,
+  closely-clustered fixtures where the two estimators don't meaningfully
+  diverge).
+  *Remaining:* tighter AU bounding; movement/timeline geo.
 - **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -3074,3 +3089,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   kept exactly as they were. No code or test change; the CLAUDE.md gate was
   re-run anyway and is clean, as expected for a docs-only diff. **Paired:**
   `SOLUTION_TREE` SOL-GEOINT (§2) + §5 — same commit.
+
+- **2026-07-01** — **C5's last flagged gap closed: AU-059 now uses the
+  Weiszfeld geometric median, not a plain centroid.** The previous cycle's
+  audit had explicitly named this the one real remaining leg of "Weiszfeld/
+  Welzl centroid fusion" — AU-057 and `diagnostics::cluster_coordinates`
+  already used `weighted_geometric_median`, but AU-059 (the function that
+  actually drives the dossier's headline "Best location estimate" line) still
+  used the plain `weighted_centroid`. Swapped it in, with the established
+  centroid fallback for the rare non-convergent case. New regression test
+  `au059_synergy_fix_resists_a_single_high_confidence_outlier`: 2 agreeing
+  Sydney-area classes (64% of confidence-weighted mass) vs. 1 higher-confidence
+  Perth outlier (36%, below the median's 50% breakdown point) — the median
+  stays anchored near Sydney (lon>145) where the old centroid landed a third
+  of the way to Perth (lon≈138.6, verified by computing the plain centroid
+  directly in the same test for comparison). Proven against both directions:
+  fails on the pre-fix code (identical lon≈138.6 to the plain centroid) and
+  passes on the fix. Every pre-existing AU-052/AU-059/scan_export geo test
+  still passes unchanged — they all use tolerant range assertions against
+  tightly-clustered real-shaped fixtures where the two estimators don't
+  meaningfully diverge, so this is a real precision improvement, not a
+  behaviour change any existing test could have caught. Gate green: 4259 lib
+  tests, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-GEOINT (§2) + §5 — same commit.

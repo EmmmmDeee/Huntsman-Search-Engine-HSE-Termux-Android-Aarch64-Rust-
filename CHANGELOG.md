@@ -343,6 +343,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **AU-059's headline location fix gave a single disagreeing sighting undue
+  leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
+  function behind the dossier's "Best location estimate" line — averaged all
+  contributing coordinates with a plain confidence-weighted centroid, so a
+  single high-confidence but wrong-location sighting could drag the headline
+  fix proportionally to its own weight, regardless of how many other
+  independent sources agreed with each other. Now uses the confidence-weighted
+  geometric median (Weiszfeld) instead, matching the outlier-robust estimator
+  AU-057 and the spatial-clustering diagnostics already used: a minority
+  sighting can no longer move the fix past what the majority's spatial
+  agreement allows. Regression-tested with a fixture where a 36%-weight
+  outlier is proven (by computing the old plain-centroid result inline for
+  comparison) to have pulled the old fix a third of the way toward it, while
+  the new fix stays anchored to the 64%-weight majority.
 - **Concurrent scans could dispatch a whole extra target's worth of modules past
   `max_entities` (`PROBLEM_TREE` T2.11 LOW).** `dispatch_target_concurrent`'s
   spawn loop judged the entity-budget cap against the count from before this
