@@ -357,7 +357,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   and renamed `SYNTH_EMAIL_PROVIDERS`. `KEY_ENV` left as-is: each literal is
   module-local and cannot drift against another module, so it's a cosmetic style
   nit, not a duplication/drift risk.
-- **`[ ]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
+- **`[~]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
   `search_engines` (17 SERPs), `username_search` (300+ sites) parse churning HTML;
   some endpoints speculative → high silent-breakage.
   → **Solution:** rewrite parsers on `bstr`/`aho-corasick` (F.1), back each with a
@@ -365,6 +365,22 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
+  *Partial (2026-07-01):* a literal golden fixture (a saved real response) for
+  any of these five modules is still genuinely infeasible without either a
+  live fetch against a real site or a fabricated-looking snippet — confirmed
+  again this cycle, not just assumed. But `au_people`'s three HTML parsers
+  (`parse_whitepages_html`, `parse_tps_html`, `parse_relatives`) had zero
+  adversarial-input coverage at the module level, unlike the shared
+  primitives they delegate to (`util::html::strip_html`,
+  `util::str_util::find_ascii_ci`), which already carry a proptest `mod prop`
+  never-panics guarantee. Added the same pattern to `au_people/tests.rs`: 3
+  new `proptest!` cases proving each parser never panics on arbitrary
+  `.{0,256}` input. This closes the panic-safety gap for one of the five
+  modules, not the "layout drift fails a test" goal T2.7's solution actually
+  asks for (proptest catches crashes on adversarial bytes, not silent
+  semantic drift from a real site's markup changing shape) — `au_electoral`/
+  `au_property`'s equivalent gap and the golden-fixture/health-signal legs
+  (T2.14's sibling, SOL-HEALTH-SIGNAL) remain open.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -3285,3 +3301,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   additive — no non-test code touched. Gate green: 4264 lib tests (+1),
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-UPDATE + §5 — same commit.
+
+- **2026-07-01** — **T2.7 partial: `au_people`'s three HTML parsers gain
+  proptest never-panics coverage.** Second candidate picked from the same
+  parallel discovery + adversarial-verification pass (the reviewing agent
+  applied this exact `mod prop` block, ran `cargo test`, confirmed all three
+  pass, then reverted, before this cycle re-applied and re-verified it
+  directly). Re-confirmed the golden-fixture ask itself is still blocked for
+  the same reason every prior cycle found (live fetch or fabricated-looking
+  fixture) — this does not close that. Instead: `parse_whitepages_html`,
+  `parse_tps_html`, `parse_relatives` had no adversarial-input regression
+  test at all, despite the shared primitives they delegate to
+  (`util::html::strip_html`, `util::str_util::find_ascii_ci`) already
+  carrying exactly this proptest pattern. 3 new property tests
+  (`.{0,256}` arbitrary strings) added to `au_people/tests.rs`'s new
+  `mod prop`, mirroring `util::html::tests.rs`'s established shape. All 3
+  passed on first run — no latent panic found, only missing proof. T2.7
+  stays `[~]`: `au_electoral`/`au_property` have the identical gap
+  unaddressed, and the actual "layout drift fails a test" solution (golden
+  fixtures / SOL-HEALTH-SIGNAL) remains open. Gate green: 4267 lib tests
+  (+3), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  §2/§5 — same commit.

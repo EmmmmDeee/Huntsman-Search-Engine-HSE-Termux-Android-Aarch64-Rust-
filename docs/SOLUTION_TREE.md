@@ -123,9 +123,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes / powers:* **F.3** (self) and the *entire* "untested/unmeasured" class — it
   is the guard that keeps **T0.x/T1.1/T1.3/T2.3/T2.8/T2.9** from regressing.
   *Delivered:* `proptest` (boundary-safety, `normalise` idempotency, `Entity::merge`
-  GREATEST-laws, geo round-trips, no-panic crash-resistance for every network parser)
-  + `criterion` (`benches/scan_throughput.rs`). *Gap:* `cargo-fuzz` (nightly CI lane)
-  and the dossier/txt/html **import** proptest are outstanding. **(§4b)**
+  GREATEST-laws, geo round-trips) + `criterion` (`benches/scan_throughput.rs`).
+  *Correction (2026-07-01):* "no-panic crash-resistance for every network
+  parser" above was an overclaim — `au_people`'s three HTML parsers had zero
+  proptest coverage (found via T2.7 investigation); closed for that one
+  module (see T2.7 below); `au_electoral`/`au_property` have the identical
+  gap, still open.
+  *Gap:* `cargo-fuzz` (nightly CI lane), the dossier/txt/html **import**
+  proptest, and `au_electoral`/`au_property`'s parser no-panic coverage are
+  outstanding. **(§4b)**
 
 ### S.CORE — Correctness & determinism
 
@@ -598,6 +604,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
+  **Adversarial-input leg (2026-07-01):** `au_people` proptested (SOL-F3
+  correction above); `au_electoral`/`au_property` have the same gap, not yet
+  started. Golden-fixture/health-signal legs unchanged.
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
@@ -2527,3 +2536,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `mod tests` — no non-test code changed. Gate green: 4264 lib tests (+1),
   fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` §8 — same
   commit.
+
+- **2026-07-01** — **T2.7 partial + SOL-F3 correction: `au_people`'s parsers
+  gain proptest never-panics coverage; the "every network parser" delivered
+  claim was an overclaim.** Second candidate from the same parallel
+  discovery+adversarial-verification pass — the reviewing agent applied the
+  exact `mod prop` block, ran `cargo test`, confirmed all 3 pass, then
+  reverted before this cycle re-applied and re-verified directly. Re-confirmed
+  (not just trusted) that a literal golden fixture for any T2.7 module still
+  requires either a live fetch or a fabricated-looking snippet — genuinely
+  still blocked. Found instead: `parse_whitepages_html`/`parse_tps_html`/
+  `parse_relatives` had zero adversarial-input regression coverage, unlike
+  the shared primitives they delegate to, which already carry this exact
+  pattern — meaning SOL-F3's own "no-panic crash-resistance for every network
+  parser" delivered claim was inaccurate. Added 3 `proptest!` cases to
+  `au_people/tests.rs`'s new `mod prop`; all passed first try (no latent
+  panic — a proof gap, not a live bug). Corrected SOL-F3's text to stop
+  overclaiming and name the residual (`au_electoral`/`au_property` still
+  lack this). T2.7 stays `[~]`. Gate green: 4267 lib tests (+3), fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` T2.7 + §8 — same commit.

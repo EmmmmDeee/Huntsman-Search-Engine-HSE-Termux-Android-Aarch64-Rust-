@@ -242,3 +242,34 @@ fn whitepages_mines_contact_emails() {
     assert_eq!(email.value, "haigen@example.com.au");
     assert!(email.has_tag("whitepages"));
 }
+
+/// Adversarial-input coverage (PROBLEM_TREE T2.7-adjacent): none of this
+/// module's three HTML parsers previously had a property test proving they
+/// never panic on arbitrary bytes, unlike the shared primitives they
+/// delegate to (`util::html::strip_html`, `util::str_util::find_ascii_ci`),
+/// which already carry this exact `mod prop` pattern. `html` is the
+/// untrusted, scraped input; `full_name`/`scan_id` are held to the
+/// project's synthetic placeholder (see CLAUDE.md) since they originate
+/// from the operator's own typed scan target, not third-party bytes.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::{parse_relatives, parse_tps_html, parse_whitepages_html};
+
+    proptest! {
+        #[test]
+        fn parse_whitepages_html_never_panics(s in ".{0,256}") {
+            let _ = parse_whitepages_html(&s, "Jordan Avery", "s");
+        }
+
+        #[test]
+        fn parse_tps_html_never_panics(s in ".{0,256}") {
+            let _ = parse_tps_html(&s, "Jordan Avery", "s");
+        }
+
+        #[test]
+        fn parse_relatives_never_panics(s in ".{0,256}") {
+            let _ = parse_relatives(&s, "Jordan Avery", "s");
+        }
+    }
+}
