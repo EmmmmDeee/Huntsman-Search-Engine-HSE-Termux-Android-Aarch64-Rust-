@@ -523,6 +523,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `geo_domain_classifier` (dispatched, `found: 0`) as `zero_yield_scans: 1,
   zero_yield_rate: 1.0` in the ledger — absent from `modules_by_yield` in
   the same scan's JSON output, exactly as designed.
+- **`[x]` SOL-CONSUMES-DELEGATE · Single-source `Module::consumes()`'s
+  default onto `consumes_via_probe`** → **T2.16** (found by a fresh
+  discovery pass): the trait default duplicated the identical probe-filter
+  logic inline instead of calling the already-existing, already-tested
+  `consumes_via_probe` free function — making that function dead outside
+  its own tests, despite its own doc comment claiming it was "the default
+  body." Widened `consumes_via_probe<M: Module + ?Sized>(m: &M)` (from
+  `&dyn Module`) so it's callable both by concrete stub types and from
+  inside `consumes()`'s own default body, where `self: &Self` must stay
+  possibly-unsized (adding `Self: Sized` to `consumes()` to allow the
+  unsized coercion would remove it from `dyn Module`'s vtable, breaking
+  every `&dyn Module`/`Arc<dyn Module>` call site). New regression test
+  `module_consumes_default_delegates_to_consumes_via_probe` pins the
+  invariant directly. 1 new test; behaviour-preserving (both copies
+  computed identically before the fix — this closes a drift *risk*, not an
+  observed dispatch bug).
+- **`[ ]` SOL-CRAWL-CONCURRENCY · Reconcile `web_crawler`'s doc-claimed
+  concurrency with its actual sequential BFS loop** → **T2.17** (found by
+  the same discovery pass, logged not fixed): the module doc claims "4
+  concurrent requests" but `process()`'s crawl loop fetches one URL at a
+  time. Two live options, neither forced this cycle: correct the doc to
+  match reality (trivial), or make the crawl genuinely concurrent mirroring
+  the same module's `probe_config_leaks` `Semaphore`/`JoinSet` pattern —
+  real perf value but needs deliberate care to keep page-visit order (and
+  which pages fall inside the page cap) deterministic under concurrent
+  completion timing. *Gap:* not yet started; a real design decision (doc
+  fix vs. build the concurrency), not a mechanical reinstatement.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -605,6 +632,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-LEDGER-ZERO-YIELD | T2.15 | `[x]` |
+| SOL-CONSUMES-DELEGATE | T2.16 | `[x]` |
+| SOL-CRAWL-CONCURRENCY | T2.17 | `[ ]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -628,6 +657,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.17** (new, 2026-07-01) — `web_crawler`'s doc claims 4-way concurrency
+  its BFS crawl loop doesn't have. SOL-CRAWL-CONCURRENCY sketched (doc-only
+  correction vs. building real concurrency with deterministic ordering);
+  neither started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -730,10 +763,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15 `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE,
-  SOL-LEDGER-ZERO-YIELD — the dead-hint/dead-ledger bug family, all closed);
-  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
-  LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
+  **T2.13/T2.14/T2.15/T2.16 `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE,
+  SOL-LEDGER-ZERO-YIELD, SOL-CONSUMES-DELEGATE — the dead-hint/dead-ledger/
+  dead-delegation bug family, all closed); T2.7/T2.17 open; T2.11 mostly
+  done (oathnet + found_keys/SOL-ISOLATE + LOW over-dispatch/
+  SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
@@ -2644,3 +2678,46 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-UPDATE; it lives only in the maintained log, per cycle-22 precedent).
   Gate green (fmt/clippy `--all-targets`/doc clean, 4279 lib tests
   (4276→4279, +3), full `cargo test` green).
+
+- **2026-07-01** — **New: SOL-CONSUMES-DELEGATE closes T2.16 (a dead
+  function behind a false doc comment); new SOL-CRAWL-CONCURRENCY logs
+  T2.17 (found, not fixed).** **P→S step:** with every in-progress node
+  either closed or genuinely blocked (T2.7's golden-fixture work; T2.11's
+  accepted residual; F.1-3's remaining legs each lack a natural trigger),
+  ran a fresh code-grounded discovery pass per step 1's fallback — a
+  multi-angle fan-out (dead-code hunting, doc-comment-vs-implementation
+  audits across core/util/modules, `.take(N)` truncation review,
+  `to_lowercase()`+offset re-audit for more instances of the T0.1/T0.2 bug
+  class) rather than a single linear read, since the codebase is large
+  enough that one search angle misses real findings the others catch.
+  **Found two real issues**, picked the smaller for this cycle:
+  `core/dependency/mod.rs::consumes_via_probe`'s doc comment claimed it was
+  "the default body for `Module::consumes()`," but `core/module/mod.rs`'s
+  actual trait default independently re-implemented the identical filter
+  inline, never calling it — confirmed by grep: the function's only callers
+  outside its own definition were its two unit tests. Two live copies of
+  dispatch-critical logic (feeds the per-scan dispatch index and the
+  richness factor every recursive expansion round reads) is exactly the
+  single-sourced-vocabularies violation `docs/CONVENTIONS.md` §3 exists to
+  prevent. **S→P step:** widened `consumes_via_probe` to
+  `<M: Module + ?Sized>(m: &M)` (from `&dyn Module`) so `consumes()`'s
+  default body can call it as `self` without needing a `Self: Sized` bound
+  that would remove the method from `dyn Module`'s vtable and break every
+  `&dyn Module`/`Arc<dyn Module>` call site (verified this the hard way —
+  the naive `&dyn Module` version failed to compile with exactly that
+  error). New regression test
+  `module_consumes_default_delegates_to_consumes_via_probe` pins the
+  invariant so a future edit can't quietly reintroduce the duplicate.
+  The second finding — `web_crawler`'s doc claims "4 concurrent requests"
+  but the BFS crawl loop is plain sequential — was deliberately NOT fixed
+  this cycle: correcting the doc is trivial, but building the real
+  concurrency needs deliberate care to keep page-visit order deterministic
+  under concurrent completion timing (§1.7), a bigger, riskier change than
+  this cycle's one-focused-commit scope allows. Logged as new open T2.17 /
+  SOL-CRAWL-CONCURRENCY with both solution options spelled out, rather than
+  either force-fixing it under time pressure or silently dropping it.
+  **Gap refresh:** §4a gains T2.17; leverage-map gains both new rows; §4d's
+  T2 row lists T2.16 among the closed dead-code/false-doc-comment family and
+  T2.17 alongside T2.7 as open. Paired: `PROBLEM_TREE` new T2.16/T2.17 + §8
+  — same commit. Gate green (fmt/clippy `--all-targets`/doc clean, 4280 lib
+  tests (4279→4280, +1), full `cargo test` green).

@@ -252,11 +252,7 @@ pub trait Module: Send + Sync {
     /// Returned vec is small (≤ 14) so allocation cost is negligible
     /// — this is invoked once per module at engine construction.
     fn consumes(&self) -> Vec<TargetKind> {
-        crate::core::dependency::ALL_TARGET_KINDS
-            .iter()
-            .copied()
-            .filter(|k| self.accepts(&Target::new(*k, crate::core::dependency::PROBE_VALUE)))
-            .collect()
+        crate::core::dependency::consumes_via_probe(self)
     }
 
     /// The `EntityKind`s this module is documented to emit.

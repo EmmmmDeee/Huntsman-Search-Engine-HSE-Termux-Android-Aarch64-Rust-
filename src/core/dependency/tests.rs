@@ -221,3 +221,19 @@ use super::*;
         assert!(kinds.contains(&TargetKind::Domain));
         assert!(kinds.contains(&TargetKind::Url));
     }
+
+    /// `Module::consumes()`'s default body must actually DELEGATE to this
+    /// function, not re-implement the identical filter inline — the two
+    /// copies had silently drifted apart (the trait default duplicated the
+    /// logic instead of calling this function, making `consumes_via_probe`
+    /// itself dead code outside its own tests, despite its doc comment
+    /// claiming otherwise). Fails if a future edit reintroduces a second,
+    /// independent copy of the probe filter that could diverge from this one.
+    #[test]
+    fn module_consumes_default_delegates_to_consumes_via_probe() {
+        let m = EmailToDomain;
+        assert_eq!(m.consumes(), consumes_via_probe(&m));
+
+        let m2 = DomainToIp;
+        assert_eq!(m2.consumes(), consumes_via_probe(&m2));
+    }

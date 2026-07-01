@@ -752,6 +752,76 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   kind-distribution accumulation; 5 more on `zero_yield_module_names`'s diff
   logic). Gate green. **Paired:** `SOLUTION_TREE` new SOL-LEDGER-ZERO-YIELD
   node + §3/§5 — same commit.
+- **`[x]` T2.16 · `consumes_via_probe` was dead code behind a false doc
+  comment — `Module::consumes()`'s default duplicated its logic inline
+  instead of delegating** *(found + fixed 2026-07-01, fresh discovery
+  pass)* — `core/dependency/mod.rs::consumes_via_probe`'s doc comment
+  claimed it was "used as the default body for `Module::consumes()`," but
+  `core/module/mod.rs`'s actual trait default (lines 254-260) independently
+  re-implemented the identical `ALL_TARGET_KINDS.iter().filter(|k|
+  self.accepts(...)).collect()` filter inline, never calling the function.
+  Confirmed via grep: `consumes_via_probe`'s only call sites outside its own
+  definition were its two unit tests — a real production code path was dead
+  everywhere except tests, with a doc comment actively lying about it. Two
+  live copies of dispatch-critical logic (feeds the per-scan dispatch index
+  and the module-count-per-kind "richness" factor used by every recursive
+  expansion) is exactly the single-sourced-vocabularies violation
+  `docs/CONVENTIONS.md` §3 exists to prevent — a future edit to one copy
+  (e.g. widening the probe) could silently diverge from the other with
+  nothing to catch it. → **Solution:** make `Module::consumes()`'s default
+  body call `crate::core::dependency::consumes_via_probe(self)` directly, so
+  drift becomes structurally impossible (one copy, not two kept in sync by
+  hand). **P3** (real drift risk, but both copies were behaviourally
+  identical at the time of discovery — no observed dispatch bug, an
+  anti-drift/hygiene fix).
+  ✅ **Fixed.** `consumes_via_probe` widened from `&dyn Module` to a generic
+  `<M: Module + ?Sized>(m: &M)` — calling it as `self` from inside
+  `consumes()`'s own default body needs `Self` to stay possibly-unsized
+  (the method must remain in `dyn Module`'s vtable for every existing
+  `&dyn Module`/`Arc<dyn Module>` call site), and an unsized coercion to
+  `&dyn Module` would have required a `Self: Sized` bound that breaks
+  exactly that. New regression test
+  `module_consumes_default_delegates_to_consumes_via_probe` asserts
+  `m.consumes() == consumes_via_probe(&m)` for two stub modules with
+  different `accepts()` gates — fails if a future edit reintroduces a
+  second, divergence-prone copy of the filter. `PROBE_VALUE`'s doc comment
+  (which cited the now-removed direct reference from `consumes()` as its
+  reason for `pub(crate)`) corrected to cite its real remaining
+  cross-module consumers (`modules::tests`, `selftest`). 1 new test; the
+  pre-existing `module_info_reflects_trait_defaults` and
+  `override_category_and_produces_propagate_to_info` tests (which already
+  exercised the trait default's *output*, just not the delegation
+  specifically) still pass unchanged — behaviour-preserving.
+- **`[ ]` T2.17 · `web_crawler`'s module doc claims a concurrency the BFS
+  crawl loop doesn't have** *(found 2026-07-01, fresh discovery pass;
+  logged, not yet fixed — see rationale)* —
+  `src/modules/web_crawler/mod.rs`'s module-level doc comment (lines 5, 26)
+  claims "async concurrent page fetching" / "4 concurrent requests," but
+  `process()`'s BFS crawl loop (lines 225-319) is a plain sequential `while
+  let Some((url, depth)) = state.queue.pop_front()` with exactly one
+  in-flight `ctx.http.get(&url).send().await` per iteration and a single
+  `tokio::time::sleep(INTER_REQUEST_MS)` between them — no `Semaphore`,
+  `JoinSet`, or `buffer_unordered` anywhere in that loop. The 64 KB body cap
+  and 200ms inter-request delay the doc also claims ARE accurate; only the
+  concurrency figure is false. (The module's *separate* config-leak probe,
+  `probe_config_leaks` in `crawl_util/mod.rs`, genuinely does run 16-way
+  concurrent via `Semaphore::new(16)` + `JoinSet` — a different subsystem,
+  correctly documented on its own terms.) → **Solution options:** (a)
+  correct the doc to describe the real sequential behaviour (trivial,
+  zero risk, but leaves the crawl slower than the product intends — a live
+  C2 "demonstrably faster on a phone" concern); (b) make the BFS crawl
+  genuinely concurrent, mirroring `probe_config_leaks`'s
+  `Semaphore`/`JoinSet` pattern already proven in the same module — real
+  perf value, but a BFS queue processed concurrently needs deliberate care
+  to keep page-visit order (and therefore which pages fall inside the
+  60-page cap) deterministic regardless of network completion timing
+  (§1.7's determinism-by-construction doctrine), e.g. fetch one same-depth
+  batch concurrently, then sort/enqueue its discovered children
+  deterministically before starting the next batch — a genuinely bigger,
+  riskier change than a doc fix, deliberately not forced into this cycle's
+  focused commit. **P3** *(doc-accuracy floor; the perf upside is a C2-tier
+  capability call, not a correctness bug — nothing currently depends on the
+  4-way figure being true)*.
 
 ---
 
@@ -3438,3 +3508,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `None`/empty. Gate green: 4279 lib tests (+3), fmt/clippy
   `--all-targets`/doc clean, full `cargo test` green. **Paired:**
   `SOLUTION_TREE` SOL-UPDATE residual closed + §4a/§5 — same commit.
+
+- **2026-07-01** — **Fresh discovery pass: `consumes_via_probe` was dead
+  code behind a false doc comment (new T2.16, fixed); `web_crawler`'s
+  4-concurrent-requests doc claim doesn't match its sequential crawl loop
+  (new T2.17, logged not fixed).** With every in-progress node either
+  closed this session or genuinely blocked (T2.7's golden fixtures; T2.11's
+  accepted residual; F.1-3's remaining legs lacking a natural trigger), ran
+  a fresh code-grounded discovery pass — a multi-angle fan-out (dead-code
+  hunting, doc-comment-vs-implementation audits, `.take(N)` truncation
+  review, a re-audit for more instances of the T0.1/T0.2
+  `to_lowercase()`-then-`find()`-on-the-original bug class) rather than one
+  linear read. Two real findings surfaced; picked the smaller for this
+  cycle. `core/dependency/mod.rs::consumes_via_probe`'s doc comment claimed
+  it was "the default body" for `Module::consumes()`, but the actual trait
+  default (`core/module/mod.rs`) independently re-implemented the identical
+  filter inline — confirmed by grep: the function's only callers outside
+  its own definition were its two unit tests. Fixed by widening
+  `consumes_via_probe` to `<M: Module + ?Sized>(m: &M)` (from `&dyn
+  Module`) so `consumes()`'s default body can delegate to it as `self`
+  without needing a `Self: Sized` bound that would remove the method from
+  `dyn Module`'s vtable — confirmed the hard way, the naive `&dyn Module`
+  version failed to compile with exactly that error. New regression test
+  pins the delegation. The second finding (`web_crawler`'s doc overclaims
+  concurrency the BFS crawl doesn't have) was deliberately left open as new
+  T2.17: the doc fix is trivial, but building the real concurrency needs
+  deliberate care to keep page-visit order deterministic under concurrent
+  completion timing, a bigger change than this cycle's scope. Gate green:
+  4280 lib tests (+1), fmt/clippy `--all-targets`/doc clean, full `cargo
+  test` green. **Paired:** `SOLUTION_TREE` new SOL-CONSUMES-DELEGATE `[x]` +
+  new SOL-CRAWL-CONCURRENCY `[ ]` + §4a/§5 — same commit.

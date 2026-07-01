@@ -350,6 +350,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`Module::consumes()`'s default was a live duplicate of an already-dead
+  function, not a delegation to it (`PROBLEM_TREE` T2.16).**
+  `core::dependency::consumes_via_probe`'s doc comment claimed it was "the
+  default body" for `Module::consumes()`, but the trait's actual default
+  independently re-implemented the identical probe-filter logic inline —
+  the function was dead everywhere except its own tests. Two live copies of
+  logic feeding the per-scan dispatch index and expansion "richness" factor
+  is a real drift risk: a future change to one copy could silently diverge
+  from the other. The trait default now delegates to
+  `consumes_via_probe` directly (widened to a generic `<M: Module +
+  ?Sized>` so the delegation doesn't require a `Self: Sized` bound that
+  would break every `&dyn Module` call site), with a new regression test
+  pinning the delegation so it can't quietly drift apart again. No
+  behaviour change — both copies computed identically before this fix.
 - **The dossier's "ROI" wasted-spend hint could never fire, on any scan
   (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
   "N keyed/paid module(s) yielded nothing — consider --exclude …" when a

@@ -69,15 +69,28 @@ pub const ALL_TARGET_KINDS: &[TargetKind] = &[
 /// the default `consumes()` implementation. Modules that gate by value
 /// shape (rather than `t.kind`) MUST override `consumes()` explicitly.
 ///
-/// `pub(crate)` so the trait-default in `module::Module::consumes()`
-/// can reach it without a method-pointer indirection.
+/// `pub(crate)` so the cross-module coverage checks in `modules::tests`
+/// and `selftest` — which independently probe every module's `accepts()`
+/// gate against the same stable value to catch an undeclared `consumes()`
+/// override — can reach it.
 pub(crate) const PROBE_VALUE: &str = "huntsman-graph-probe-1.2.3.4@example.com";
 
 /// Run `m.accepts()` against every `TargetKind` to discover which kinds
-/// the module dispatches on. Used as the default body for
-/// [`Module::consumes()`] so modules that don't override the method
-/// still report sensible data.
-pub fn consumes_via_probe(m: &dyn Module) -> Vec<TargetKind> {
+/// the module dispatches on. This **is** the default body of
+/// [`Module::consumes()`] — that trait method's default calls straight
+/// through to this function (previously it duplicated the identical
+/// filter inline instead of delegating, so this function was live only
+/// in its own tests — a single-sourcing drift risk this delegation
+/// removes for good).
+///
+/// Generic over `M: Module + ?Sized` (rather than `&dyn Module`) so it can
+/// be called both with concrete stub types (existing tests) and from
+/// inside `Module::consumes()`'s own default body, where `Self` may be
+/// unsized in the trait-object-dispatch case — an unsized coercion to
+/// `&dyn Module` there would require an explicit `Self: Sized` bound on
+/// `consumes()`, which would remove it from `dyn Module`'s vtable and
+/// break every existing `&dyn Module`/`Arc<dyn Module>` call site.
+pub fn consumes_via_probe<M: Module + ?Sized>(m: &M) -> Vec<TargetKind> {
     ALL_TARGET_KINDS
         .iter()
         .copied()
