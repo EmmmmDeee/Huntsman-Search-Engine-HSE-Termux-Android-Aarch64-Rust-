@@ -185,3 +185,21 @@ fn extract_division_no_panic_on_multibyte_before_marker() {
     let (div, _) = extract_division(html).expect("division parses without panic");
     assert!(div.starts_with("Sydney"), "got {div:?}");
 }
+
+/// Adversarial-input coverage (PROBLEM_TREE T2.7): `au_electoral` was one of
+/// the two modules (alongside `au_property`) still missing the never-panics
+/// proptest already applied to `au_people`'s HTML parsers. `html` is the
+/// untrusted, scraped AEC/state-EC response; a plain proptest string covers
+/// it directly since `extract_division` takes no seed name.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::extract_division;
+
+    proptest! {
+        #[test]
+        fn extract_division_never_panics(s in ".{0,256}") {
+            let _ = extract_division(&s);
+        }
+    }
+}

@@ -378,9 +378,14 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `.{0,256}` input. This closes the panic-safety gap for one of the five
   modules, not the "layout drift fails a test" goal T2.7's solution actually
   asks for (proptest catches crashes on adversarial bytes, not silent
-  semantic drift from a real site's markup changing shape) — `au_electoral`/
-  `au_property`'s equivalent gap and the golden-fixture/health-signal legs
-  (T2.14's sibling, SOL-HEALTH-SIGNAL) remain open.
+  semantic drift from a real site's markup changing shape).
+  *Partial (2026-07-01, cont'd):* the identical gap is now closed for
+  `au_electoral` (`extract_division`) and `au_property`
+  (`parse_nsw_response`/`parse_vic_response`/`parse_qld_response`) —
+  3 of the 5 named modules now carry never-panics proptest coverage.
+  `search_engines` and `username_search` still lack it, and the
+  golden-fixture/health-signal legs (T2.14's sibling, SOL-HEALTH-SIGNAL)
+  remain fully open.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -3412,3 +3417,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   whole node. Gate green: 4272 lib tests (+4 net), fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE +
   §5 — same commit.
+
+- **2026-07-01** — **T2.7 continued: `au_electoral`/`au_property` gain the
+  same proptest never-panics coverage `au_people` got two cycles ago.**
+  T2.7's own note explicitly named these two as the remaining modules with
+  the identical gap, so this cycle closed it directly rather than
+  re-discovering it. `au_electoral::parse::extract_division` and
+  `au_property::parse::{parse_nsw_response,parse_vic_response,
+  parse_qld_response}` had zero adversarial-input regression tests despite
+  parsing untrusted scraped HTML/text, unlike the shared primitives they
+  delegate to. 4 new `proptest!` cases (`.{0,256}` arbitrary strings) added
+  in each module's `tests.rs`, mirroring `au_people`'s established `mod
+  prop` shape exactly. All 4 passed on first run — no latent panic found,
+  only missing proof. T2.7 stays `[~]`: `search_engines` and
+  `username_search` still lack this coverage, and the golden-fixture/
+  health-signal legs (T2.14, SOL-HEALTH-SIGNAL) remain fully open. Gate
+  green: 4276 lib tests (+4), fmt/clippy `--all-targets`/doc clean.
+  **Paired:** `SOLUTION_TREE` §2/§5 — same commit.

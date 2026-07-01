@@ -127,11 +127,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Correction (2026-07-01):* "no-panic crash-resistance for every network
   parser" above was an overclaim — `au_people`'s three HTML parsers had zero
   proptest coverage (found via T2.7 investigation); closed for that one
-  module (see T2.7 below); `au_electoral`/`au_property` have the identical
-  gap, still open.
+  module (see T2.7 below).
+  *Continued (2026-07-01):* `au_electoral`/`au_property` (the two modules
+  named as the remaining gap) now carry the identical proptest coverage —
+  4 more never-panics cases (see T2.7 below).
   *Gap:* `cargo-fuzz` (nightly CI lane), the dossier/txt/html **import**
-  proptest, and `au_electoral`/`au_property`'s parser no-panic coverage are
-  outstanding. **(§4b)**
+  proptest, and `search_engines`/`username_search`'s parser no-panic
+  coverage are outstanding. **(§4b)**
 
 ### S.CORE — Correctness & determinism
 
@@ -631,8 +633,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
   **Adversarial-input leg (2026-07-01):** `au_people` proptested (SOL-F3
-  correction above); `au_electoral`/`au_property` have the same gap, not yet
-  started. Golden-fixture/health-signal legs unchanged.
+  correction above); `au_electoral`/`au_property` now proptested too (SOL-F3
+  continuation above) — 3 of 5 named modules covered. `search_engines`/
+  `username_search` remain. Golden-fixture/health-signal legs unchanged.
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
@@ -2624,3 +2627,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   stays narrow — this closes one function's coverage, not the whole node.
   Gate green: 4272 lib tests (+4 net), fmt/clippy `--all-targets`/doc clean.
   Paired: `PROBLEM_TREE` C6 + §8 — same commit.
+
+- **2026-07-01** — **SOL-F3 continued: `au_electoral`/`au_property` gain the
+  never-panics proptest coverage `au_people` got two cycles ago, closing
+  T2.7's explicitly-named remaining gap.** `au_electoral::parse::
+  extract_division` and `au_property::parse::{parse_nsw_response,
+  parse_vic_response,parse_qld_response}` parse untrusted scraped
+  HTML/text with zero adversarial-input regression tests, unlike the
+  shared primitives they delegate to. 4 new `proptest!` cases (`.{0,256}`
+  arbitrary strings) added, mirroring `au_people`'s established `mod prop`
+  shape. All passed first run — no latent panic, only missing proof. T2.7
+  stays `[~]`: `search_engines`/`username_search` still lack this coverage,
+  and the golden-fixture/health-signal legs (T2.14, SOL-HEALTH-SIGNAL)
+  remain fully open. Gate green: 4276 lib tests (+4), fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` T2.7 + §8 — same commit.
