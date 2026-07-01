@@ -327,6 +327,82 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_resolves_graph_link_endpoints_to_node_objects() {
+        // buildD3Graph() builds links keyed by entity UID *strings*
+        // (source:seedId, target:e.uid, ...). The vendored d3.min.js is D3 v3,
+        // whose force.start() only auto-resolves *numeric* link.source/target
+        // (treating them as indices into .nodes()); string keys pass through
+        // untouched, and its internal neighbor-seeding pass then does
+        // `e[u.source.index].push(...)` — `.index` on a bare string is
+        // undefined, `e[undefined]` is undefined, and `.push` throws. This was
+        // reproduced directly against src/web/vendor/d3.min.js in a Node vm
+        // sandbox: force.start() threw `TypeError: Cannot read properties of
+        // undefined (reading 'push')` on the very first scan with >=1 entity
+        // (every scan has an unconditional seed->entity link). The fix
+        // resolves source/target to real node object references via a
+        // nodesById map before `.links()` is called — this guard pins that
+        // resolution step so it cannot silently regress.
+        let graph_fn = SPA_HTML
+            .split_once("function buildD3Graph(")
+            .and_then(|(_, b)| b.split_once("\nfunction "))
+            .map(|(b, _)| b)
+            .expect("buildD3Graph() present in SPA");
+        assert!(
+            graph_fn.contains("nodesById"),
+            "buildD3Graph must build a nodesById map to resolve string-keyed \
+             link endpoints to node object references before calling \
+             d3.layout.force().links(...), or D3 v3 throws on any scan with \
+             at least one entity"
+        );
+        let links_call_idx = graph_fn
+            .find(".links(")
+            .expect("buildD3Graph calls .links(...)");
+        assert!(
+            graph_fn[..links_call_idx].contains("nodesById.get(l.source)")
+                && graph_fn[..links_call_idx].contains("nodesById.get(l.target)"),
+            "link source/target must be resolved via nodesById.get(...) before \
+             the .links(...) call, matching the tick handler's existing \
+             d.source.x/d.target.x object-reference assumption"
+        );
+    }
+
+    #[test]
+    fn embedded_spa_deep_links_resolve_to_a_visible_section() {
+        // The Report/Location "no leads yet" hint and the correlation-count
+        // callout link to `#/scaninfo?...&tab=network` / `&tab=corr`, but
+        // renderScanInfo's tab dispatch only special-cases 'browse'/'graph'/
+        // 'log' — every other tab value (including these two) silently fell
+        // through to the plain Report view with no indication the link did
+        // anything at all. The Report view already renders both sections
+        // (#rpt-network / #rpt-corr) inline, so the fix is to scroll to the
+        // matching anchor rather than add a redundant sub-tab.
+        for path in [
+            "tab=network\">Network</a>",
+            "tab=corr\">Correlations</a>",
+        ] {
+            assert!(
+                SPA_HTML.contains(path),
+                "expected deep-link anchor text `{path}` in the SPA"
+            );
+        }
+        let dispatch = SPA_HTML
+            .split_once("const body = $('#scan-body');")
+            .and_then(|(_, b)| b.split_once("\n\n"))
+            .map(|(b, _)| b)
+            .expect("renderScanInfo's tab dispatch block present");
+        assert!(
+            dispatch.contains("tab==='corr'") && dispatch.contains("$('#rpt-corr')"),
+            "tab=corr must scroll to the #rpt-corr section instead of \
+             silently falling through with no visible effect"
+        );
+        assert!(
+            dispatch.contains("tab==='network'") && dispatch.contains("$('#rpt-network')"),
+            "tab=network must scroll to the #rpt-network section instead of \
+             silently falling through with no visible effect"
+        );
+    }
+
+    #[test]
     fn embedded_spa_renders_every_event_kind() {
         // Event contract: every `EventKind` variant the engine/live loop emits
         // over the bus must have a friendly `mapEvent` case in the SPA, or it

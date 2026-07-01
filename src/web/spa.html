@@ -1778,7 +1778,14 @@ async function renderScanInfo(v){
   if (tab==='browse')      renderBrowse(body);
   else if (tab==='graph')  renderGraph(body);
   else if (tab==='log')    renderLog(body, scan);
-  else                     renderReport(body, id, scan);
+  else {
+    // 'corr'/'network' (and any other unrecognised tab) fall through to the
+    // consolidated Report view, which already contains both sections — just
+    // scroll straight to the relevant one instead of leaving the link inert.
+    renderReport(body, id, scan);
+    if (tab==='corr')         $('#rpt-corr')?.scrollIntoView({behavior:'smooth', block:'start'});
+    else if (tab==='network') $('#rpt-network')?.scrollIntoView({behavior:'smooth', block:'start'});
+  }
 
   // SpiderFoot-style live refresh: while the scan is still running, re-pull and
   // re-render every 8s so entity/correlation counts and duration climb on their
@@ -2789,9 +2796,21 @@ function buildD3Graph(){
   for (const r of (S.relations||[]))
     links.push({source:r.from_uid, target:r.to_uid, rel:true, kind:r.kind});
 
-  // Drop links to unknown nodes.
+  // Drop links to unknown nodes, then resolve source/target to the actual
+  // node object references. D3 v3's force layout only auto-resolves
+  // *numeric* link.source/target (treating them as indices into .nodes());
+  // our ids are entity UID strings, which it leaves untouched, so its
+  // internal neighbor-seeding pass (`e[u.source.index].push(...)`) reads
+  // `.index` off a bare string, gets undefined, and throws on the very
+  // first `.start()` call for any scan with at least one entity. Handing
+  // it real node references up front — same object identity the `tick`
+  // handler below already expects via `d.source.x`/`d.target.x` — avoids
+  // that path entirely.
   const ids = new Set(nodes.map(n=>n.id));
-  const validLinks = links.filter(l=>ids.has(l.source) && ids.has(l.target));
+  const nodesById = new Map(nodes.map(n=>[n.id, n]));
+  const validLinks = links
+    .filter(l=>ids.has(l.source) && ids.has(l.target))
+    .map(l=>({...l, source: nodesById.get(l.source), target: nodesById.get(l.target)}));
 
   const force = d3.layout.force()
     .nodes(nodes)
