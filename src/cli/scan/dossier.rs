@@ -460,6 +460,26 @@ fn zero_yield_keyed_or_paid_modules(
     names
 }
 
+/// A near-certain misconfiguration/dead-target signal (PROBLEM_TREE T2.14):
+/// every dispatched module ran and the scan still yielded ZERO entities.
+/// Distinct from the per-module "many modules found nothing for this target
+/// kind" case (normal — a 40-module scan routinely leaves most modules at
+/// zero yield for a given kind, so flooding one line per module would be
+/// noise, not signal, per T2.14's own analysis): this fires at most once per
+/// scan, only when the scan-wide total is zero despite modules actually
+/// having run — never when every module was gate-skipped (`modules_run ==
+/// 0`, e.g. an unsupported target kind excluded every candidate module
+/// before dispatch), which is a different, already-explained situation. Pure
+/// and deterministic so it's testable without a live scan.
+fn total_dead_scan_hint(entities: &[Entity], modules_run: usize) -> Option<String> {
+    (entities.is_empty() && modules_run > 0).then(|| {
+        format!(
+            "{modules_run} module(s) ran and found nothing scan-wide — check the target is \
+             reachable/valid, or this seed kind may be unsupported"
+        )
+    })
+}
+
 /// The dossier's one-line "online since X" headline — the same tenure/
 /// recency computation `api::scan_handlers::intel::scan_timeline` already
 /// returns as `tenure`/`recency` JSON fields, rendered for the CLI. Pure so
@@ -491,7 +511,10 @@ fn print_diagnostics(
         .and_then(|f| f.checked_sub(scan.started_at))
         .unwrap_or(0)
         .saturating_mul(1000);
-    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+    let mut diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+    if let Some(hint) = total_dead_scan_hint(entities, scan.modules_run) {
+        diag.optimization_hints.insert(0, hint);
+    }
 
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
@@ -811,5 +834,34 @@ mod tests {
             tenure_headline(&tenure(0), &recency(FootprintStatus::Recent)),
             "Online since 2008-01-01 — 17y span, 0 breach exposures, footprint recent"
         );
+    }
+
+    use super::total_dead_scan_hint;
+
+    /// The whole point of this hint: every dispatched module ran and the scan
+    /// still yielded nothing at all — a near-certain misconfiguration/dead-
+    /// target signal, distinct from the normal "many modules found nothing
+    /// for this kind" case.
+    #[test]
+    fn total_dead_scan_hint_fires_when_modules_ran_and_found_nothing() {
+        let hint = total_dead_scan_hint(&[], 12).expect("must fire");
+        assert!(hint.contains("12"));
+        assert!(hint.contains("scan-wide"));
+    }
+
+    /// Every candidate module was gate-skipped before dispatch (e.g. an
+    /// unsupported target kind) — a different, already-explained situation,
+    /// not "ran and found nothing". Must not fire.
+    #[test]
+    fn total_dead_scan_hint_is_silent_when_nothing_was_even_dispatched() {
+        assert_eq!(total_dead_scan_hint(&[], 0), None);
+    }
+
+    /// A normal successful scan — must never fire regardless of module count.
+    #[test]
+    fn total_dead_scan_hint_is_silent_when_entities_were_found() {
+        use crate::core::entity::{Entity, EntityKind};
+        let entities = vec![Entity::new(EntityKind::Email, "a@b.com", 0.5, "s")];
+        assert_eq!(total_dead_scan_hint(&entities, 12), None);
     }
 }

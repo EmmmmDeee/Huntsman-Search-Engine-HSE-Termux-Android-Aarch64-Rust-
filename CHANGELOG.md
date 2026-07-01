@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The dossier now warns when a scan ran modules but found nothing at
+  all.** `hse scan --output dossier` previously printed the same
+  reassuring "pipeline is well-tuned for this seed" message whether a
+  scan succeeded quietly or came back completely empty. It now leads the
+  OPTIMIZATION HINTS section with "N module(s) ran and found nothing
+  scan-wide — check the target is reachable/valid, or this seed kind may
+  be unsupported" whenever that's actually what happened — the strongest
+  "something's wrong" signal a scan can give.
 - **`virustotal` now surfaces its passive-DNS history as pivot entities.**
   VirusTotal's already-called domain/IP report endpoint returns
   `last_dns_records` — a snapshot of historical A/AAAA/MX/NS/CNAME records —

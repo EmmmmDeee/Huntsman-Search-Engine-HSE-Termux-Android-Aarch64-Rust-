@@ -616,7 +616,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -625,8 +625,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   given target kind (normal, not noteworthy), so a naive per-module
   reinstatement would flood the hints list with the opposite of signal.
   Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count.
+  *Delivered (2026-07-01):* not the literal reinstatement — two prior
+  investigations this session found the "60s reinstatement is simple"
+  premise false (same noise problem). Instead, a third, differently
+  designed hint: `total_dead_scan_hint` fires a scan-wide "N modules ran,
+  scan found nothing" line only when `entities.is_empty() &&
+  scan.modules_run > 0` — at most once per scan, categorically distinct
+  from the per-module noise case, silent on a legitimately-gate-skipped
+  scan (`modules_run == 0`). Heads the hints list; 3 unit tests. Known
+  wart left honest, not hidden: doesn't remove the pre-existing "well-
+  tuned" fallback line, so both can print together on an empty scan —
+  cosmetic, deferred.
+  *Gap:* the two ORIGINAL dead hints (scan-level 60s-and-zero-yield,
+  per-module zero-entities) remain unrestored; the per-module noise
+  decision is still open. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -711,7 +724,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -735,10 +748,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
-  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
-  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
-  Not yet started.
+- **T2.14** — `[~]` (SOL-HINT-NOISE). A third, differently-designed
+  scan-wide dead-hint delivered 2026-07-01 (`total_dead_scan_hint`); the
+  two ORIGINAL `analyse()` hints T2.13 removed remain unrestored, and the
+  per-module noise decision is still open.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -3000,3 +3013,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C9 + §8 — same
   commit.
+
+- **2026-07-01** — **SOL-HINT-NOISE `[ ]`→`[~]`: a third, differently
+  designed dead-scan hint closes real T2.14 value without hitting the
+  noise problem that blocked two prior attempts at reinstating either
+  original dead hint.** Two earlier investigations this session already
+  found the "60s reinstatement is simple" premise in this node's own
+  text false — the old scan-level condition has the same per-module
+  noise problem this node reserves for the per-module hint. This pass
+  tried a different angle: a new, scan-wide "every dispatched module ran
+  and the scan found nothing at all" hint
+  (`entities.is_empty() && scan.modules_run > 0`), firing at most once
+  per scan, categorically distinct from the noise case, silent on a
+  legitimately-gate-skipped scan. New pure `total_dead_scan_hint` helper
+  mirrors SOL-ROI-HINT's `zero_yield_keyed_or_paid_modules` pattern
+  exactly; heads the hints list. 3 unit tests. Noted honestly rather than
+  hidden: doesn't remove the pre-existing "well-tuned" fallback line, so
+  both can print together on an empty scan — cosmetic, deferred. The two
+  ORIGINAL dead hints remain unrestored and the per-module noise
+  decision is still open — SOL-HINT-NOISE stays `[~]`, not `[x]`. Gate
+  green: 4294 lib tests (+3), full suite (lib + smoke + architecture +
+  doctests, all binaries) green, fmt/clippy `--all-targets`/doc clean.
+  Paired: `PROBLEM_TREE` T2.14 + §8 — same commit.

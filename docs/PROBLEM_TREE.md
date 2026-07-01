@@ -684,7 +684,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -704,6 +704,31 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+  *Partial (2026-07-01):* two prior investigations this session confirmed
+  the literal scan-level "60s + zero-yield module" reinstatement is NOT
+  actually simple — the old condition has the same noise problem T2.14
+  reserves for the per-module hint. A third, differently-designed hint
+  closes real value instead, without reinstating either dead one: a
+  scan-wide "every dispatched module ran and the scan still found nothing"
+  signal (`entities.is_empty() && scan.modules_run > 0`) — categorically
+  distinct from the per-module noise case, since it fires at most once per
+  scan and only on a near-certain misconfiguration/dead-target scenario,
+  never when a scan legitimately dispatched nothing (`modules_run == 0`,
+  e.g. an unsupported target kind gate-skipped every candidate module
+  first — a different, already-explained situation). New pure
+  `total_dead_scan_hint` helper in `cli/scan/dossier.rs`, mirroring
+  T2.13's `zero_yield_keyed_or_paid_modules` pattern exactly; heads the
+  OPTIMIZATION HINTS list (`insert(0, …)`) rather than getting buried. 3
+  unit tests. Known wart, noted honestly rather than glossed over: this
+  doesn't remove the pre-existing "no optimization signals detected —
+  pipeline is well-tuned for this seed" fallback line, which can still
+  print alongside the new hint when entities are empty (that fallback
+  fires whenever the geo/module-yield hints found nothing to say, which is
+  always true on an empty scan) — a cosmetic redundancy, not a
+  correctness issue, left for a future polish pass. The two ORIGINAL dead
+  hints (scan-level 60s-and-zero-yield, per-module zero-entities) remain
+  unrestored; this closes T2.14's underlying value gap with a safer
+  design, not the literal restoration the node's title describes.
 
 ---
 
@@ -3851,3 +3876,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite (lib + smoke + architecture + doctests, all binaries) green,
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-CACHE-INTERSCAN + §5 — same commit.
+
+- **2026-07-01** — **T2.14 `[ ]`→`[~]`: a third, differently-designed
+  dead-scan hint closes real value without hitting the noise problem
+  that blocked two prior attempts at literally reinstating either
+  original dead hint.** Selected from the same third discovery +
+  adversarial-verification pass. Two earlier investigations this session
+  had already concluded the scan-level "60s + zero-yield module"
+  reinstatement isn't actually simple (same noise problem as the
+  per-module hint); this pass tried a different angle instead of a third
+  attempt at the same reinstatement — a new, scan-wide "every dispatched
+  module ran and the scan found nothing at all" hint
+  (`entities.is_empty() && scan.modules_run > 0`), which fires at most
+  once per scan and is categorically distinct from the "many modules
+  found nothing for this kind" noise case, since it never fires when a
+  scan legitimately dispatched nothing (`modules_run == 0`, e.g. every
+  candidate module was gate-skipped for an unsupported target kind — a
+  different, already-explained situation). New pure
+  `total_dead_scan_hint` helper mirrors T2.13's
+  `zero_yield_keyed_or_paid_modules` pattern exactly; heads the
+  OPTIMIZATION HINTS list. 3 unit tests (fires when modules ran and found
+  nothing; silent when nothing was even dispatched; silent on a normal
+  successful scan). Noted honestly: this doesn't remove the pre-existing
+  misleading "well-tuned" fallback line, which can still print alongside
+  the new hint on an empty scan — a cosmetic redundancy, left for a
+  future polish pass, not glossed over. The two ORIGINAL dead hints
+  remain unrestored — T2.14 stays `[~]`, not `[x]`; this closes the
+  node's underlying value gap with a safer design, not the literal
+  restoration its title describes. Gate green: 4294 lib tests (+3), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-HINT-NOISE + §5 — same commit.
