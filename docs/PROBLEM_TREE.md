@@ -1476,6 +1476,174 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `--all-targets --locked -D warnings`/strict-rustdoc clean, full
   `cargo test` green. **Paired:** `SOLUTION_TREE` new
   SOL-IDENTITY-PATH-CEILING `[x]` + §3/§4/§5 — same commit.
+- **`[x]` T2.26 · `ahpra`'s national health-practitioner register scrape
+  silently truncates at 20 results with no signal to the operator**
+  *(found + fixed 2026-07-01, a 6-angle multi-agent discovery pass run
+  after T2.7/C1/C6/C7 were confirmed still genuinely blocked/gated)* —
+  `Registers-of-Practitioners.aspx` has no page-size/limit query param, so
+  the response already holds every matching row; `process()`
+  (`src/modules/ahpra/mod.rs`) then did `practitioners.iter().take(20)`
+  with no record of the true row count anywhere (no evidence attribute,
+  no log, no test past a 1-row fixture). AHPRA is the national register
+  for ALL registered health practitioners in Australia — a common-surname
+  search (a routine, non-adversarial query) can easily exceed 20 matches,
+  so the operator sees a silently-incomplete result with no way to tell
+  it apart from a genuinely complete one — the same "reported success,
+  actually incomplete" evidentiary-completeness class T2.18 fixed for
+  OathNet. Independently re-verified by 3 adversarial refuters before
+  being actioned (this discovery pass's own verify phase), each reading
+  the current source directly rather than trusting the initial report.
+  ✅ **Fixed:** extracted a pure `build_practitioner_entities` (mirroring
+  `opencorporates`'s established `build_company_entities`/
+  `build_officer_entities` split) that captures `total = practitioners.
+  len()` BEFORE the `.take(20)` cap and attaches it as a `total_matches`
+  evidence attribute on every emitted entity — the SAME established
+  pattern already used by `opencorporates`, `gleif_lei`, `acnc_charities`,
+  `au_unclaimed`, and `api_key_probe`, not a bespoke new mechanism. 2 new
+  regression tests (above the cap: `total_matches` is the true row count,
+  not 20; under the cap: reports its own count), `git stash`-confirmed
+  non-vacuous. Gate green: 4308 lib tests (4306→4308, +2), fmt/clippy
+  `--all-targets --locked -D warnings`/strict-rustdoc clean, full
+  `cargo test` green, `hse selftest` 9/9. **P2** (evidentiary-completeness
+  gap under ordinary, non-adversarial use — the same class T2.18 treated
+  as real severity, not a cosmetic nit). **The same discovery pass found
+  three structurally-identical instances in other modules, correctly NOT
+  fixed this cycle to keep the unit of work small — see new T2.27
+  (`acma_rrl`), T2.28 (`crtsh`), T2.29 (`bgpview`).**
+- **`[ ]` T2.27 · `acma_rrl`'s ACMA Radiocommunications Register scrape has
+  the SAME unsignalled 20-result truncation T2.26 just fixed for `ahpra`**
+  *(found 2026-07-01, same discovery pass as T2.26; independently
+  confirmed real by 3 adversarial refuters)* — `process()`
+  (`src/modules/acma_rrl/mod.rs`) builds an unpaginated search URL (no
+  page-size/limit param), parses every `<tr>` row in the response with no
+  internal cap, then emits `licences.iter().take(20)` with no
+  `total_matches`/similar signal and no test past a single-row fixture. A
+  large AU licensee (telco, utility, point-to-point radio operator)
+  commonly holds well over 20 individual licences. → **Solution:** same
+  fix T2.26 just applied — extract a pure entity-builder that captures the
+  true row count before the cap and attaches `total_matches`, mirroring
+  the now-5-module-deep established pattern. **P2** (same evidentiary-
+  completeness class as T2.26; deferred only to keep this cycle's unit of
+  work to one module).
+- **`[ ]` T2.28 · `crtsh`'s Certificate Transparency lookup truncates to
+  200 highest-confidence entities with no total-count signal** *(found
+  2026-07-01, same discovery pass; independently confirmed real by 3
+  adversarial refuters)* — `process()` (`src/modules/crtsh/mod.rs`)
+  fetches the full crt.sh JSON response with no `limit`/pagination
+  parameter, builds an entity per extracted name across every returned
+  certificate, sorts by confidence, then `out.truncate(MAX_ENTITIES)`
+  (200) with the true pre-truncation count recorded nowhere. A domain
+  with thousands of CT-log-derived subdomains (common for a large
+  organisation) would silently show only 200. → **Solution:** same
+  `total_matches`-style signal, sized to this module's own emit shape
+  (a single summary entity or per-entity attribute — needs its own look
+  at `build_entities`'s exact structure before choosing which). **P2**
+  (lower urgency than T2.26/T2.27: 200 is a much more generous cap than
+  20, so the realistic hit rate is lower, but the underlying pattern is
+  identical).
+- **`[ ]` T2.29 · `bgpview`'s ASN prefix enumeration caps IPv4 prefixes at
+  20 with no total-count signal, and never deserializes `ipv6_prefixes`
+  at all** *(found 2026-07-01, same discovery pass; independently
+  confirmed real by 3 adversarial refuters)* — `asn_prefix_entities()`
+  (`src/modules/bgpview/mod.rs`) does `data.ipv4_prefixes.iter().
+  take(MAX_ANNOUNCED_PREFIXES)` (20) with no total-count evidence
+  attribute, and `BgpPrefixData` never deserializes the response's
+  `ipv6_prefixes` field at all — a second, distinct gap (silently
+  dropped IPv6 announcements, not just a truncation-signal miss). A large
+  ISP/hosting ASN commonly announces well over 20 IPv4 prefixes plus a
+  meaningful IPv6 footprint. → **Solution:** the `total_matches` pattern
+  for the truncation half; add `ipv6_prefixes` deserialization + entity
+  emission for the missing-field half — two coordinated but independent
+  fixes, likely still one commit given they're in the same function.
+  **P2** (evidentiary-completeness; the IPv6 gap is arguably the more
+  serious half since it's total omission, not just a cap).
+- **`[ ]` T2.30 · Three diagnostic/catalogue accessors are documented as
+  feeding a specific consumer (`hse doctor`, CLI `--help`, an API/SPA
+  picker) that never actually calls them** *(found 2026-07-01, same
+  discovery pass, the "dead code that claims to do something" family
+  T2.13/T2.14/T2.15/T2.16/T2.21 already established; independently
+  confirmed real by 3 adversarial refuters each)* —
+  1. `see_know::is_key_invalid` (`src/util/see_know/budget.rs`): doc
+     comment states verbatim "The diagnostic accessor for `hse doctor` /
+     the selftest to report it as an actionable problem." The only real
+     call site (`src/util/see_know/endpoints.rs`) uses it purely as an
+     internal fast-fail gate; `hse doctor` (`src/cli/doctor/mod.rs`) and
+     the selftest engine (`src/selftest/`) never reference it. Contrast:
+     the sibling `quota_exhausted` flag DOES reach `/api/v1/stats` via
+     `BudgetSnapshot`; `key_invalid` has no equivalent field anywhere. A
+     permanently-dead SeekNow API key currently surfaces only as a single
+     one-time `tracing::warn!` log line for the rest of the process.
+  2. `core::profiles::list_profiles` (`src/core/profiles/mod.rs`): doc
+     comment claims it is "the catalogue the CLI `--help` and the
+     API/SPA profile picker render." Zero real callers anywhere; the CLI
+     `--help` text for `--profile` (`src/cli/command.rs`) is instead a
+     separate, hand-maintained literal string that has ALREADY drifted
+     (it omits `skiptrace`/`locate`, which `resolve_profile` in the same
+     file supports) — exactly the single-sourced-vocabulary drift this
+     accessor exists to prevent.
+  3. `core::path::shortest_path` (`src/core/path/mod.rs`): framed by the
+     module's own top doc comment as one of its two headline
+     capabilities. Fully implemented and tested, but has zero non-test
+     call sites anywhere in the codebase — the API's `/scans/{id}/path`
+     endpoint and every other production caller use a different function.
+     **Confidence: medium** (the module doc's phrasing is somewhat
+     aspirational rather than a hard claim of wiring — needs a closer
+     read before committing to a specific fix) — re-verify this one
+     specifically before fixing.
+     → **Solution:** (1) wire `is_key_invalid` into `hse doctor` and/or
+     the selftest report, matching how `quota_exhausted` already
+     surfaces; (2) either wire `list_profiles` into `--help`'s dynamic
+     text (closing the drift as a side effect) or delete it if truly
+     unneeded — decide which after re-reading `command.rs`'s exact
+     `--help` rendering path; (3) re-verify `shortest_path`'s status
+     before deciding fix vs. removal. **P3** (dead/drifted documentation-
+     of-intent, not a runtime-correctness bug — matches the existing
+     T2.13-T2.16/T2.21 severity precedent).
+- **`[ ]` T2.31 · Four tests whose names promise more coverage than their
+  bodies verify — the same T2.20 family, found in modules not yet
+  audited for it** *(found 2026-07-01, same discovery pass; independently
+  confirmed real by 3 adversarial refuters each)* —
+  1. `device_class_as_str_round_trips` (`src/util/oui/tests.rs`): its own
+     comment admits "Just assert the discriminant has a non-empty label"
+     — no actual round trip is even possible (`DeviceClass` has no
+     `from_str`/`Deserialize`), and it silently skips 2 of 15 variants
+     (`Tablet`, `Laptop`).
+  2. `module_name_matches_correlator_breach_list`
+     (`src/modules/xposed_or_not/tests.rs`): a single tautological
+     `assert_eq!(XposedOrNot.name(), "xposed_or_not")` that never reads
+     `core::correlator`'s actual breach-source lists at all.
+  3. `all_services_defined` (`src/util/key_pool/tests.rs`): asserts only
+     `defs.len() >= 24` plus per-entry field sanity — a one-sided floor
+     that can never catch a silently-missing service, the exact T2.20
+     shape.
+  4. `probe_count_matches_services` (`src/modules/api_key_probe/tests.rs`):
+     same one-sided-floor shape as #3, despite its name implying a
+     cross-check against an independent services list that is never
+     actually read.
+     → **Solution:** per T2.20's precedent, strengthen each test body to
+     verify what its name promises (e.g. #2 should assert the literal
+     name string appears in the correlator's actual breach-source
+     constant(s), not just match `name()`; #3/#4 need either a real
+     independent source of truth to compare against or a renamed,
+     honestly-scoped assertion). **P3** (test-trust gap, not a runtime
+     bug — matches T2.20's own severity precedent exactly).
+- **Stale tree claims found and corrected in place (not new nodes — pure
+  accuracy fixes, no code change; found 2026-07-01, same discovery pass,
+  each independently confirmed by 3 adversarial refuters):**
+  1. §4 C1's `SOL-CORR` "Remaining: first-class timeline output" (§4,
+     below) was stale — `src/core/timeline/mod.rs` already implements a
+     full, tested `reconstruct()` engine, wired into the CLI full dossier
+     (`src/cli/scan/dossier.rs`'s "TIMELINE (N events)" section).
+  2. §4 C3's `SOL-AU-MOAT` "Remaining: ... state cadastre/property" was
+     stale — `au_property` (registered, wired) already queries NSW
+     Spatial/ELVIS, VIC MapShare, and QLD Globe cadastral/land-title
+     portals, exactly that capability.
+  3. §4 C6's `SOL-OFFENSIVE` marker `[ ]` ("not started") was stale for
+     its "`aho-corasick` key-harvest + entropy gate" sub-claim —
+     `oathnet_pro::key_harvest`'s `is_likely_real_key` already combines
+     both: an aho-corasick-backed context-exclusion gate (`util::scan`,
+     SOL-F1) and a Shannon-entropy ≥3.5 threshold.
+  Corrected in §4/`SOLUTION_TREE` below — same commit.
 
 ---
 
@@ -1665,7 +1833,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   *Remaining:* tighter AU bounding; movement/timeline geo; genuine
   unattended cell-DB re-sync still needs either new daemon infrastructure
   or an OS-cron documentation deliverable — neither attempted this cycle.
-- **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
+- **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
   **credential-reuse graph** (link accounts by shared salted hash / session token
@@ -1673,6 +1841,14 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   scanner + entropy gate; richer stealer-log cross-referencing
   (`oathnet_pro`/`see_know` presence → pivot). Active, authorised collection.
   **CAP-med**
+  *Correction (2026-07-01, found during a discovery pass — marker was
+  stale at `[ ]`):* the aho-corasick key-harvest + entropy gate half of
+  the solution is already shipped —
+  `oathnet_pro::key_harvest::is_likely_real_key` combines a cached
+  aho-corasick context-exclusion pass (SOL-F1's `util::scan`) with a
+  Shannon-entropy ≥3.5 threshold. *Remaining:* broaden exposure-dork
+  coverage; mature the credential-reuse graph; richer stealer-log
+  cross-referencing.
 - **`[ ]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
@@ -4759,3 +4935,55 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   -D warnings`/strict-rustdoc clean, full `cargo test` green, `hse
   selftest` 9/9. **Paired:** `SOLUTION_TREE` SOL-REDACT `[~]`→`[x]` +
   §3/§4/§5 — same commit.
+
+- **2026-07-01** — **New: T2.26 closed (`ahpra`'s silent 20-result
+  truncation) — the smallest, highest-leverage pick from a 6-angle,
+  54-agent discovery pass run to verify the backlog was genuinely
+  exhausted before checkpointing; 5 more real findings logged (T2.27-31)
+  rather than dropped, plus 3 stale tree claims corrected in place.** With
+  T2.25, C5's auto-sync increment, and §7 S4 all closed last cycle, the
+  orient step found only genuinely-blocked (T2.7) or apparently-gated
+  (C1/C6/C7) work remaining — so, per the standing protocol's own
+  priority (4), ran a fresh discovery pass rather than assume exhaustion.
+  Six independent angles (ignored-tests, dead-or-unwired accessors,
+  test-name-overclaim, silent-truncation-or-caps, stale-tree-claims,
+  newer-clippy-lints), each candidate independently re-verified by 3
+  adversarial refuters before being trusted, surfaced 14 confirmed-real
+  findings from 16 raw candidates — decisively not a stopping point.
+  Picked the highest-leverage one: `ahpra` (`src/modules/ahpra/mod.rs`)
+  builds an unpaginated request against the AHPRA national
+  health-practitioner register (no page-size/limit param exists — the
+  response already holds every matching row) then emits only
+  `practitioners.iter().take(20)` with no record of the true row count
+  anywhere. AHPRA is the register for ALL registered health practitioners
+  in Australia; a common-surname search (routine, non-adversarial) can
+  easily exceed 20 matches, silently looking complete when it isn't — the
+  same evidentiary-completeness class T2.18 already established as real
+  severity, not a cosmetic nit. ✅ **Fixed:** extracted a pure
+  `build_practitioner_entities` (mirroring `opencorporates`'s established
+  `build_company_entities`/`build_officer_entities` split) that captures
+  the true count BEFORE the cap and attaches `total_matches` to every
+  emitted entity's evidence — the SAME pattern `opencorporates`,
+  `gleif_lei`, `acnc_charities`, `au_unclaimed`, and `api_key_probe`
+  already use. 2 new regression tests, `git stash`-confirmed non-vacuous.
+  **The other 13 confirmed findings were not silently dropped:** logged
+  as new T2.27 (`acma_rrl`, same truncation shape), T2.28 (`crtsh`, same
+  shape at a 200 cap), T2.29 (`bgpview`, same shape at a 20 cap PLUS a
+  distinct missing-field gap — `ipv6_prefixes` never deserialized at
+  all), T2.30 (three dead/unwired diagnostic accessors — the established
+  T2.13/14/15/16/21 family), and T2.31 (four test-name-overclaim
+  instances — the established T2.20 family) — each logged with a concrete
+  fix sketch rather than force-fixed in this same commit or dropped. Three
+  further findings were STALE tree claims, corrected in place (no code
+  change): §4 C1's `SOL-CORR` "Remaining: first-class timeline output"
+  (already shipped, `core::timeline::reconstruct`, wired into the full
+  dossier), §4 C3's `SOL-AU-MOAT` "state cadastre/property" (already
+  shipped, `au_property`'s NSW/VIC/QLD cadastral search), and §4 C6's
+  `[ ]` marker (the aho-corasick key-harvest + entropy gate sub-item was
+  already shipped in `oathnet_pro::key_harvest` — flipped to `[~]`; C1's
+  own marker was also found stale in `SOLUTION_TREE` despite its
+  cycle-26 deliverables, corrected alongside it). Gate green: 4308 lib
+  tests (4306→4308, +2), fmt/clippy `--all-targets --locked -D warnings`/
+  strict-rustdoc clean, full `cargo test` green, `hse selftest` 9/9.
+  **Paired:** `SOLUTION_TREE` new SOL-AHPRA-TRUNCATION `[x]` +
+  SOL-OFFENSIVE `[~]` + C1/C3 corrections + §3/§4/§5 — same commit.

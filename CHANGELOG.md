@@ -380,6 +380,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   byte-identical crawl output.
 
 ### Fixed
+- **The `ahpra` module (AHPRA national health-practitioner register)
+  silently truncated results at 20 with no signal to the operator
+  (`PROBLEM_TREE` T2.26).** The register's search endpoint has no
+  page-size/limit parameter, so a common-surname search — a routine,
+  non-adversarial query against the national register for ALL registered
+  health practitioners — can easily return more than 20 matches, which
+  previously looked indistinguishable from a complete result. Every
+  emitted practitioner now carries a `total_matches` evidence attribute
+  with the true row count, the same pattern already used by
+  `opencorporates`, `gleif_lei`, `acnc_charities`, `au_unclaimed`, and
+  `api_key_probe`.
 - **The full dossier's embedded RAW SOURCE RECORDS could carry the
   operator's own configured API key into a shared export
   (`PROBLEM_TREE` §7 S4).** Some providers echo the request URL/params

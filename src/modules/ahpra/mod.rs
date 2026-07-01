@@ -155,9 +155,28 @@ impl Module for Ahpra {
 
         let practitioners = parse_ahpra_html(&html);
         let mut result = ModuleResult::new();
+        result.extend(build_practitioner_entities(&practitioners, &ctx.scan_id));
+        Ok(result)
+    }
+}
 
-        for (name, profession, reg_no) in practitioners.iter().take(20) {
-            let mut person = Entity::new(EntityKind::Person, name, 0.70, &ctx.scan_id);
+/// Emit up to 20 [`EntityKind::Person`] entities from parsed AHPRA rows, each carrying the
+/// TRUE row count (`total_matches`) captured before the cap — the register has
+/// no page-size/limit query param, so the response already holds every
+/// matching row, and a common-name search would otherwise silently look
+/// complete when it isn't (`PROBLEM_TREE` T2.26). Pure so it's unit-testable
+/// without a mock HTTP server, mirroring `opencorporates`' `build_company_
+/// entities`/`build_officer_entities` split.
+pub(super) fn build_practitioner_entities(
+    practitioners: &[(String, String, String)],
+    scan_id: &str,
+) -> Vec<Entity> {
+    let total = practitioners.len() as u64;
+    practitioners
+        .iter()
+        .take(20)
+        .map(|(name, profession, reg_no)| {
+            let mut person = Entity::new(EntityKind::Person, name, 0.70, scan_id);
             person.tag("ahpra");
             person.tag("health-practitioner");
             if !profession.is_empty() {
@@ -168,13 +187,12 @@ impl Module for Ahpra {
             }
             person.add_evidence(
                 Evidence::new(SRC, format!("AHPRA registered practitioner: {name}"))
-                    .with_attr("profession", profession)
-                    .with_attr("registration_number", reg_no)
-                    .with_attr("source", "ahpra.gov.au"),
+                    .with_attr("profession", profession.as_str())
+                    .with_attr("registration_number", reg_no.as_str())
+                    .with_attr("source", "ahpra.gov.au")
+                    .with_attr("total_matches", total.to_string()),
             );
-            result.push(person);
-        }
-
-        Ok(result)
-    }
+            person
+        })
+        .collect()
 }

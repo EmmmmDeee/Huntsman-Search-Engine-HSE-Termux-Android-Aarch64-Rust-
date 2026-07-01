@@ -350,8 +350,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (deterministic shortest typed paths between identity entities, order-independence
   proptested) now backs **both** AU-060 transitive identity closure (refactored to
   delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
-  that renders the shortest typed thread between identities as text. *Remaining:*
-  first-class timeline output + further AU-0xx rule-gap fill.
+  that renders the shortest typed thread between identities as text.
+  *Correction (2026-07-01, found during a discovery pass):* "Remaining:
+  first-class timeline output" was stale — `src/core/timeline/mod.rs` (+
+  `tests.rs`) already ships a full, tested `reconstruct()` engine (10
+  `TimelineEventKind` variants — breach exposure, domain registration/
+  expiry, account creation, incorporation/dissolution, first/last seen,
+  date of birth, generic — dependency-free date parsing, sorted
+  oldest-first), wired into the CLI full dossier's "TIMELINE (N events)"
+  section (`cli/scan/dossier.rs`). *Remaining:* further AU-0xx rule-gap
+  fill; the "controller behind reused secrets" link facet (PROBLEM_TREE
+  C1's own text); wider timeline consumers beyond the full dossier (e.g.
+  the SPA, the JSON export) if warranted.
 - **`[~]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -377,7 +387,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Delivered (cycle 20, 2026-06-18):* `austlii` — free AustLII court/legislation
   scraper; `FullName`/`Organisation` → `Url` (court-judgment) + `Organisation`
   (legal-footprint signal); Corporate-9; 125→126 modules, 93 free.
-  *Remaining:* GNAF/AusPost; fuller ASIC/ABR graph; state cadastre/property.
+  *Correction (2026-07-01, found during a discovery pass):* "state
+  cadastre/property" in *Remaining* below was stale — `au_property`
+  (registered, wired module) already queries NSW Spatial/ELVIS, VIC
+  MapShare, and QLD Globe cadastral/land-title portals for owner-name
+  matches, exactly that capability.
+  *Remaining:* GNAF/AusPost; fuller ASIC/ABR graph; broader state
+  cadastral coverage beyond NSW/VIC/QLD (e.g. SA/WA/TAS land-title
+  portals) if warranted.
 - **`[~]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
   discovery, ASN/BGP pivots, passive-DNS/cert-hash origin candidates; v4+**v6**
   `is_cdn_edge_ip` already demotes the noise.
@@ -483,8 +500,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   daemon infrastructure `hse` doesn't have or an OS-cron documentation
   deliverable — neither attempted; staleness DETECTION is now solved,
   staleness PREVENTION (auto re-import) is not.
-- **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
+- **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
+  *Correction (2026-07-01, found during a discovery pass):* the marker was
+  stale at `[ ]` (fully not started) — the `aho-corasick` key-harvest +
+  entropy gate sub-item is already shipped:
+  `oathnet_pro::key_harvest::is_likely_real_key` combines a cached
+  aho-corasick context-exclusion pass (`util::scan::MatchSet`, SOL-F1)
+  with a Shannon-entropy ≥3.5 threshold, its own doc comment confirming
+  "One cached `aho-corasick` pass via `util::scan` (SOL-F1)". *Remaining:*
+  broaden SERP-dork coverage; mature the credential-reuse graph (link
+  accounts by shared salted hash/session token across sources).
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
   exports + evidence chains as the auditable, machine-diffable deliverable.
 
@@ -873,6 +899,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   from ~5.6s to ~483µs, 20 identities against 2,000 nodes (under the
   ceiling) still runs in ~1.1s. `hse selftest`'s correlator check
   unchanged (3 rules fire).
+- **`[x]` SOL-AHPRA-TRUNCATION · Surface the true row count above `ahpra`'s
+  20-result emit cap** → **T2.26**: `Registers-of-Practitioners.aspx` has
+  no page-size/limit query param, so the response already holds every
+  matching row; `process()` did `practitioners.iter().take(20)` with no
+  record of the true count anywhere. AHPRA is the national register for
+  ALL registered health practitioners in Australia — a common-surname
+  search (routine, non-adversarial) can easily exceed 20 matches, so an
+  operator got a silently-incomplete result indistinguishable from a
+  complete one. Found by a 6-angle multi-agent discovery pass (run after
+  confirming T2.7/C1/C6/C7 were still genuinely blocked/gated), verified
+  real by 3 independent adversarial refuters before being actioned. ✅
+  **Fixed:** extracted a pure `build_practitioner_entities` (mirroring
+  `opencorporates`'s established `build_company_entities`/
+  `build_officer_entities` split) that captures the true row count BEFORE
+  the `.take(20)` cap and attaches it as `total_matches` on every emitted
+  entity's evidence — the SAME established pattern `opencorporates`,
+  `gleif_lei`, `acnc_charities`, `au_unclaimed`, and `api_key_probe`
+  already use, not a bespoke mechanism. 2 new regression tests (above the
+  cap: `total_matches` is the true count, not 20; under the cap: reports
+  its own count), `git stash`-confirmed non-vacuous. Gate green: 4308 lib
+  tests (4306→4308, +2), fmt/clippy/strict-rustdoc clean, full
+  `cargo test` green, `hse selftest` 9/9. **The same discovery pass found
+  three structurally-identical instances** (`acma_rrl`, `crtsh`,
+  `bgpview`) and two unrelated bug families (dead/unwired diagnostic
+  accessors; test-name-overclaim) — logged as new T2.27–T2.31 rather than
+  fixed in this same commit, keeping the unit of work to one module.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -965,6 +1017,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-DISPATCH-HANG | T2.23 | `[x]` |
 | SOL-BROKER-CEILING | T2.24 | `[x]` |
 | SOL-IDENTITY-PATH-CEILING | T2.25 | `[x]` |
+| SOL-AHPRA-TRUNCATION | T2.26 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -973,7 +1026,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CORR | C1 | `[~]` |
 | SOL-PERF-PUBLISH | C2 | `[~]` |
 | SOL-GEOINT | C5 | `[~]` |
-| SOL-OFFENSIVE | C6 | `[ ]` |
+| SOL-OFFENSIVE | C6 | `[~]` |
 | SOL-FORENSIC | C7 | `[ ]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
@@ -988,6 +1041,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.26** — **delivered** ✅ (2026-07-01, `ahpra` `total_matches` signal —
+  see `PROBLEM_TREE`). Off the open queue.
+- **T2.27** (new, 2026-07-01) — `acma_rrl` has the same unsignalled
+  20-result truncation T2.26 just fixed for `ahpra`. No solution node yet;
+  fix is the same established `total_matches` pattern, just not yet
+  applied to this module.
+- **T2.28** (new, 2026-07-01) — `crtsh` truncates to 200 entities with no
+  total-count signal. No solution node yet.
+- **T2.29** (new, 2026-07-01) — `bgpview` caps IPv4 prefixes at 20 with no
+  total-count signal, and never deserializes `ipv6_prefixes` at all (a
+  second, distinct gap). No solution node yet.
+- **T2.30** (new, 2026-07-01) — three diagnostic/catalogue accessors
+  (`see_know::is_key_invalid`, `core::profiles::list_profiles`,
+  `core::path::shortest_path`) are documented as feeding a specific
+  consumer that never actually calls them — the T2.13/14/15/16/21 "dead
+  code that claims to do something" family. No solution node yet.
+- **T2.31** (new, 2026-07-01) — four tests (`src/util/oui/tests.rs`,
+  `src/modules/xposed_or_not/tests.rs`, `src/util/key_pool/tests.rs`,
+  `src/modules/api_key_probe/tests.rs`) whose names promise more coverage
+  than their bodies verify — the T2.20 family, found in modules not
+  previously audited for it. No solution node yet.
 - **T2.25** — **delivered** ✅ (SOL-IDENTITY-PATH-CEILING, 2026-07-01). Off
   the open queue.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
@@ -1010,8 +1084,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
-- **C1/C6/C7** — capability nodes; solutions sketched, none started (gated on
-  the §3.F enablers landing first, by design).
+- **C1** — `[~]` (SOL-CORR, cycle 26: `identity_paths` + CONNECTIONS dossier
+  section delivered; timeline engine already shipped too, per the
+  2026-07-01 correction above — remaining is rule-gap fill + the
+  reused-secrets controller facet). **C6** — `[~]` (SOL-OFFENSIVE,
+  2026-07-01 correction: aho-corasick key-harvest + entropy gate already
+  shipped; remaining is SERP-dork breadth + the credential-reuse graph).
+  **C7** — still genuinely `[ ]`, gated on the §3.F enablers landing
+  first, by design.
 - **C2** — `[~]` (SOL-PERF-PUBLISH). **Delivered (2026-07-01):** the concrete
   scoped increment identified while resolving T2.17 — genuinely
   parallelising `web_crawler`'s BFS crawl loop (`crawl_util::fetch_batch`,
@@ -1121,8 +1201,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   adversarial review before shipping, fixed the same cycle), seven
   consumer surfaces across two primitives now covered by two shared,
   reused ceilings — three ceilings total: pairwise-count, graph-node-
-  count, and node-times-identity-count); T2.7 open (blocked for an
-  unattended cycle); **T2.11 `[x]`**
+  count, and node-times-identity-count); **T2.26 `[x]`** ✅ (2026-07-01,
+  `ahpra`'s `total_matches` truncation signal — a discovery-pass find,
+  fixed same-day); **T2.27/T2.28/T2.29 `[ ]`** (new, 2026-07-01 —
+  `acma_rrl`/`crtsh`/`bgpview` share T2.26's silent-truncation shape,
+  correctly deferred to keep the unit of work small); **T2.30/T2.31 `[ ]`**
+  (new, 2026-07-01 — dead/unwired diagnostic accessors and test-name-
+  overclaim instances, the established T2.13-16/21 and T2.20 families
+  respectively, found in previously-unaudited modules); T2.7 open
+  (blocked for an unattended cycle); **T2.11 `[x]`**
   ✅ (2026-07-01, status-marker reconciliation — oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
   closed; the one residual, the `QuotaBudget` per-scan `reset_scan()`-zeroing
@@ -1138,7 +1225,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   2026-07-01 — `redact_own_keys` masks the operator's own echoed key in the
   dossier's exportable RAW SOURCE RECORDS copy; `raw_archive`'s own
   never-redact policy stays untouched). §7 fully closed.
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 + cell-DB staleness warning 2026-07-01 delivered, Weiszfeld/centroid fusion + genuine unattended cron/daemon re-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C2 `[~]`** (SOL-PERF-PUBLISH: `web_crawler` BFS crawl loop now fetches same-round batches concurrently, ~3.2× measured speedup, 2026-07-01; the published benchmark itself remains gated on §3.F); C1/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 + cell-DB staleness warning 2026-07-01 delivered, Weiszfeld/centroid fusion + genuine unattended cron/daemon re-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii`/`au_property` shipped, courts/AustLII + state cadastre closed; GNAF/ASIC/broader-cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C2 `[~]`** (SOL-PERF-PUBLISH: `web_crawler` BFS crawl loop now fetches same-round batches concurrently, ~3.2× measured speedup, 2026-07-01; the published benchmark itself remains gated on §3.F); **C1 `[~]`** (SOL-CORR: `identity_paths`/CONNECTIONS + the timeline engine both already shipped, per the 2026-07-01 correction; rule-gap fill + reused-secrets facet remaining); **C6 `[~]`** (SOL-OFFENSIVE, 2026-07-01 correction: aho-corasick key-harvest + entropy gate already shipped; SERP-dork breadth + credential-reuse graph remaining); C7 still `[ ]`, gated on §3.F by design. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -3599,3 +3686,46 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   --locked -D warnings`/strict-rustdoc clean, 4306 lib tests
   (4304→4306, +2), all 30 `tests/architecture.rs` guards pass, full
   `cargo test` green, `hse selftest` 9/9.
+
+- **2026-07-01** — **New: SOL-AHPRA-TRUNCATION closes T2.26 (`ahpra`'s
+  silent 20-result truncation) — the smallest, highest-leverage pick from
+  a 6-angle, 54-agent discovery pass run to verify the backlog was
+  genuinely exhausted before checkpointing.** With T2.25, C5's auto-sync
+  increment, and §7 S4 all closed last cycle, step 1's orient pass found
+  only genuinely-blocked (T2.7) or gated-by-design (C1/C6/C7 — though see
+  below) work remaining, so — per the standing protocol's own priority
+  (4) — ran a fresh, code-grounded, multi-angle discovery pass rather than
+  assume the backlog was exhausted from that alone. Six independent
+  angles (ignored-tests, dead-or-unwired accessors, test-name-overclaim,
+  silent-truncation-or-caps, stale-tree-claims, newer-clippy-lints), each
+  independently verified by 3 adversarial refuters, surfaced **14
+  confirmed-real findings** (of 16 raw candidates) — far from a genuine
+  stopping point. Picked the single highest-leverage one to fix this
+  cycle: `ahpra`'s national health-practitioner register scraper silently
+  truncated at 20 results with no signal, the same "reported success,
+  actually incomplete" evidentiary-completeness class T2.18 already
+  established as real severity. Fixed by extracting a pure
+  `build_practitioner_entities` that attaches the TRUE row count as
+  `total_matches` — the SAME established pattern 5 other modules already
+  use (`opencorporates`, `gleif_lei`, `acnc_charities`, `au_unclaimed`,
+  `api_key_probe`), not a bespoke mechanism. 2 new regression tests, `git
+  stash`-confirmed non-vacuous. **The other 13 confirmed findings were
+  NOT silently dropped** — logged honestly as new backlog: three
+  structurally-identical truncation bugs (T2.27 `acma_rrl`, T2.28
+  `crtsh`, T2.29 `bgpview`), a dead/unwired-accessor triple (T2.30, the
+  established T2.13-16/21 family), a test-name-overclaim quadruple (T2.31,
+  the established T2.20 family), and three STALE tree claims corrected
+  IN PLACE this same commit (no code change needed): SOL-CORR's
+  "Remaining: first-class timeline output" (already shipped,
+  `core::timeline`), SOL-AU-MOAT's "state cadastre/property" (already
+  shipped, `au_property`), and SOL-OFFENSIVE/C6's `[ ]` marker (the
+  aho-corasick key-harvest + entropy gate sub-item was already shipped —
+  flipped to `[~]`, and C1 was ALSO found still marked as if ungated
+  despite its own cycle-26 deliverables, corrected alongside it). **Gap
+  refresh:** leverage-map gains SOL-AHPRA-TRUNCATION `[x]`, SOL-OFFENSIVE
+  ◦→`[~]`; §4a gains T2.26 (closed) + T2.27-T2.31 (new, open); §4d's C1/C6
+  markers corrected, T2 row gains T2.26. Paired: `PROBLEM_TREE` new T2.26
+  `[x]` + T2.27-T2.31 `[ ]` + C1/C6 corrections + §8 — same commit. Gate
+  green: fmt/clippy `--all-targets --locked -D warnings`/strict-rustdoc
+  clean, 4308 lib tests (4306→4308, +2), full `cargo test` green, `hse
+  selftest` 9/9.
