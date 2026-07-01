@@ -353,15 +353,19 @@ pub(super) struct DispatchCx<'a> {
 }
 
 /// Mutable per-scan dispatch accumulators threaded through every module run: the
-/// working entity set (merged by uid), the run/skip/error/dedup tallies, and the
-/// paid-dedup ledger (each `module × normalised-target` fired at most once). One
-/// `&mut` borrow replaces three always-together out-parameters; the fields are
-/// borrowed separately at their use sites so the entity merge, the stat bump,
-/// and the ledger insert never contend.
+/// working entity set (merged by uid), the run/skip/error/dedup tallies, the
+/// paid-dedup ledger (each `module × normalised-target` fired at most once), and
+/// the UIDs of entities genuinely NEW this dispatch (never merged into an
+/// existing one) — lets a caller attribute lineage (`DerivedFrom`) without
+/// re-diffing the whole `entity_map` before and after. One `&mut` borrow
+/// replaces four always-together out-parameters; the fields are borrowed
+/// separately at their use sites so the entity merge, the stat bump, the
+/// ledger insert, and the new-uid record never contend.
 pub(super) struct DispatchState<'a> {
     pub(super) entity_map: &'a mut HashMap<String, Entity>,
     pub(super) stats: &'a mut ModuleStats,
     pub(super) dispatched: &'a mut DispatchLog,
+    pub(super) newly_inserted: &'a mut Vec<String>,
 }
 
 impl super::ScanEngine {
@@ -577,6 +581,7 @@ impl super::ScanEngine {
                     if let Some(existing) = state.entity_map.get_mut(&entity.uid) {
                         existing.merge(entity);
                     } else {
+                        state.newly_inserted.push(entity.uid.clone());
                         state.entity_map.insert(entity.uid.clone(), entity);
                     }
                     found += 1;

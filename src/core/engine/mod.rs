@@ -435,10 +435,14 @@ impl ScanEngine {
                 is_expansion: false,
                 seed_kind: target.kind,
             };
+            // Seed dispatch has no parent to attribute lineage to, so the
+            // new-uid buffer is write-only here and discarded.
+            let mut seed_newly_inserted: Vec<String> = Vec::new();
             let mut dstate = DispatchState {
                 entity_map: &mut entity_map,
                 stats: &mut stats,
                 dispatched: &mut *dispatched,
+                newly_inserted: &mut seed_newly_inserted,
             };
             if let Err(e) = self.dispatch_target(&cx, &mut ctx, &mut dstate).await {
                 warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
@@ -1262,7 +1266,7 @@ impl ScanEngine {
         }
 
         let by_uid: HashMap<&str, &Entity> = ents.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let mut before: HashSet<String> = HashSet::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
         let mut probed = 0usize;
 
         for probe in probes {
@@ -1308,8 +1312,7 @@ impl ScanEngine {
                 ..opts.clone()
             };
 
-            before.clear();
-            before.extend(entity_map.keys().cloned());
+            newly_inserted.clear();
             {
                 let cx = DispatchCx {
                     scan_id,
@@ -1322,14 +1325,15 @@ impl ScanEngine {
                     entity_map: &mut *entity_map,
                     stats: &mut *stats,
                     dispatched: &mut *dispatched,
+                    newly_inserted: &mut newly_inserted,
                 };
                 if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
                     warn!(scan_id, error = %e, "gap-fill dispatch failed (continuing)");
                 }
             }
             // New entities this probe surfaced are derived from the gap endpoint.
-            for (uid, child) in entity_map.iter() {
-                if !before.contains(uid) {
+            for uid in newly_inserted.drain(..) {
+                if let Some(child) = entity_map.get(&uid) {
                     relations.push(Relation::new(
                         uid.as_str(),
                         probe.endpoint_uid.as_str(),
@@ -1377,11 +1381,12 @@ impl ScanEngine {
             relations,
             emitted_corr,
         } = state;
-        // Reused across candidates to capture lineage: the set of entity UIDs
-        // present *before* a candidate's dispatch, so new UIDs afterward are
-        // children that candidate surfaced. Reusing the buffer avoids a
-        // per-candidate allocation; the key clones are bounded by max_entities.
-        let mut before: HashSet<String> = HashSet::new();
+        // Reused across candidates to capture lineage: the UIDs a candidate's
+        // dispatch genuinely inserted (never merged into an existing entity),
+        // populated directly by `DispatchState::newly_inserted` — no snapshot
+        // of the whole (up to `max_entities`-sized) entity_map needed per
+        // candidate. Reusing the buffer avoids a per-candidate allocation.
+        let mut newly_inserted: Vec<String> = Vec::new();
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round. Keys
             // discovered during the previous round (oathnet_pro breach data,
@@ -1733,12 +1738,9 @@ impl ScanEngine {
                     );
                     return stop;
                 }
-                // Snapshot UIDs before dispatch so we can attribute the
-                // entities this candidate surfaces back to its parent.
-                before.clear();
-                before.extend(entity_map.keys().cloned());
+                newly_inserted.clear();
                 {
-                    // Re-borrow the mutable accumulator trio into a
+                    // Re-borrow the mutable accumulator quartet into a
                     // `DispatchState` for this candidate; the block scopes the
                     // borrows so the lineage attribution below is free to read
                     // `entity_map` again.
@@ -1753,6 +1755,7 @@ impl ScanEngine {
                         entity_map: &mut *entity_map,
                         stats: &mut *stats,
                         dispatched: &mut *dispatched,
+                        newly_inserted: &mut newly_inserted,
                     };
                     if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
                         // Per-target dispatch errors are already surfaced as
@@ -1766,8 +1769,8 @@ impl ScanEngine {
                 // Direction is child -> parent: the new entity (`uid`) was
                 // *derived from* the parent it was expanded out of (`parent_uid`),
                 // matching the `DerivedFrom` edge name.
-                for (uid, child) in entity_map.iter() {
-                    if !before.contains(uid) {
+                for uid in newly_inserted.drain(..) {
+                    if let Some(child) = entity_map.get(&uid) {
                         relations.push(Relation::new(
                             uid.as_str(),
                             parent_uid.as_str(),

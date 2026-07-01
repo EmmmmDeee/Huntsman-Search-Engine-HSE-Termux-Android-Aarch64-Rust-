@@ -339,9 +339,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   dossier and SPA now render the `online_tenure`/`footprint_recency`
   headline the JSON API already computed and returned but neither UI
   surfaced. *Remaining:* only the AU-047 Relation-graph wiring.
-- **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
+- **`[~]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
+  *Delivered (2026-07-01):* one concrete "cap+chunk, never slurp" violation
+  closed. `run_expansion`/`run_gap_fill` cloned the entire `entity_map` key
+  set into a fresh `HashSet` before every single expansion candidate's
+  dispatch (not once per round — once per candidate) purely to diff "what's
+  new" for `DerivedFrom` lineage afterward, then rescanned the full map
+  again to find it — O(candidates × entity_map_size) per round, unbounded
+  by default (`max_roi` defaults `false`, so `apply_roi_cutoff` never caps
+  `next.len()`), growing worst exactly as a scan approaches the
+  2500-entity default cap. `DispatchState` gained a `newly_inserted:
+  Vec<String>` buffer, appended only at the true-insert branch inside
+  `finalise_module_result` — O(1) per genuinely new entity — replacing both
+  the per-candidate snapshot and the after-the-fact full-map rescan with an
+  O(new-entities-this-candidate) drain. Verified against the real
+  `expansion_records_derived_from_lineage` end-to-end integration test
+  (exercises this exact lineage-attribution path, not a hand-built
+  fixture) plus the full test suite (lib + smoke + architecture +
+  doctests). *Remaining:* no published throughput/RAM benchmark yet — the
+  node's actual deliverable.
 - **`[~]` SOL-AU-MOAT · Australian collection breadth** → **C3** (AHPRA/ACMA/GNAF/
   fuller ASIC, BYO-key HLR/CNAM). All free or BYO-key, AU-first.
   *Delivered (2026-06-18, cycle 17):* `hlr_cnam` (HLR + CNAM, BYO keys, priority
@@ -622,7 +640,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-NETINT | C4 | `[~]` |
 | SOL-CACHE-INTERSCAN | C9 | `[x]` |
 | SOL-CORR | C1 | `[~]` |
-| SOL-PERF-PUBLISH | C2 | `[ ]` |
+| SOL-PERF-PUBLISH | C2 | `[~]` |
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[~]` |
 | SOL-FORENSIC | C7 | `[~]` |
@@ -666,8 +684,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
-- **C1/C2** — capability nodes; solutions sketched, none started (gated on
-  the §3.F enablers landing first, by design).
+- **C1** — capability node; solution sketched, not started (gated on the
+  §3.F enablers landing first, by design).
+- **C2** — `[~]` (SOL-PERF-PUBLISH). One hot-loop `HashSet`-rebuild
+  inefficiency in `run_expansion`/`run_gap_fill` closed 2026-07-01.
+  *Remaining:* the actual published throughput/RAM benchmark deliverable.
 - **C6** — `[~]` (SOL-OFFENSIVE). Exposure-dork Phone/FullName coverage
   delivered 2026-07-01; entropy gate, `aho-corasick` scanner, credential-reuse
   graph, and shared key pipeline all confirmed already mature. *Remaining:*
@@ -2690,3 +2711,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unmasking — verified real but larger/`PARTIALLY_CONFIRMED` with plan gaps;
   left for a future cycle. Gate green: 4277 lib tests (+1), fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C7 + §8 — same commit.
+
+- **2026-07-01** — **SOL-PERF-PUBLISH `[ ]`→`[~]`: closed the
+  `run_expansion`/`run_gap_fill` per-candidate `HashSet` rebuild the same
+  discovery pass flagged as `PARTIALLY_CONFIRMED`, re-verified directly
+  against live code rather than applied from the plan as written.** The
+  candidate's self-description had two nits — a wrong test-coverage
+  citation and an understated `DispatchState` blast radius (5
+  struct-literal construction sites, not 2) — both caught and corrected
+  before implementing. Confirmed: `before.clear();
+  before.extend(entity_map.keys().cloned())` ran once per expansion
+  candidate / gap-fill probe (an O(entity_map_size) allocation each time),
+  immediately followed by an O(entity_map_size) full-map rescan to find
+  what changed for `DerivedFrom` lineage — unbounded by default, since
+  `ScanOptions::max_roi` defaults `false` and the only cap on
+  candidates-per-round is gated behind it. Both replaced by a
+  `newly_inserted: Vec<String>` field on `DispatchState`, appended only at
+  the true-insert branch inside `finalise_module_result` (never on merge)
+  — O(1) per genuinely new entity — then drained directly instead of
+  diffed. All 5 `DispatchState` construction sites updated (3 real call
+  sites — seed dispatch gets a discarded throwaway buffer, since it has no
+  parent to attribute lineage to — plus 2 test fixtures). Verified against
+  the real `expansion_records_derived_from_lineage` end-to-end integration
+  test (`tests/smoke.rs`, exercises this exact code path against a live
+  two-hop expansion, not a hand-built fixture) plus the full `cargo test`
+  suite (lib + smoke + architecture + doctests, every binary green).
+  SOL-PERF-PUBLISH stays `[~]`: this is one hot-loop cost closed, not the
+  published "N selectors, on-device, in T s, M MB" benchmark the node
+  targets. Gate green: 4277 lib tests (unchanged — no observable-behavior
+  change, only dispatch cost), fmt/clippy `--all-targets`/doc clean.
+  Paired: `PROBLEM_TREE` C2 + §8 — same commit.

@@ -748,13 +748,34 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   `online_tenure`/`footprint_recency` functions were already independently
   tested in `core::timeline::tests`. *Remaining:* the AU-047 Relation-graph
   wiring only.
-- **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
+- **`[~]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
   F.2 flat-RAM datasets, publish a reproducible "N selectors, on-device, in T
   seconds, M MB RAM" benchmark; enforce streaming/bounded memory everywhere
   (cap+chunk, never slurp). SpiderFoot (CPython) structurally cannot match
   on-device aarch64 throughput. **CAP-high**
+  *Partial (2026-07-01):* closed one concrete "cap+chunk, never slurp"
+  violation. `run_expansion`'s (and the bounded `run_gap_fill`'s)
+  `DerivedFrom`-lineage attribution cloned the ENTIRE `entity_map` key set
+  into a fresh `HashSet` before every single expansion candidate's dispatch
+  — not once per round, once per *candidate* — purely to diff "what's new"
+  afterward, then re-scanned the whole map again to find it. Unbounded by
+  default: `ScanOptions::max_roi` defaults `false`, so the only mechanism
+  that would cap candidates-per-round (`apply_roi_cutoff`) is skipped, and
+  `entity_map` itself grows toward the 2500-entity default cap — so this
+  was O(candidates × entity_map_size) string-clone-and-scan cost per round,
+  scaling worst exactly when a scan is largest. `DispatchState` gained a
+  `newly_inserted: &mut Vec<String>` field, populated only at the single
+  true-insert chokepoint (`finalise_module_result`'s merge-vs-insert
+  branch) — O(1) per genuinely new entity — replacing both the per-candidate
+  snapshot-clone and the after-the-fact full-map rescan with an O(new
+  entities this candidate) drain. Verified against the existing end-to-end
+  `expansion_records_derived_from_lineage` integration test (exercises this
+  exact code path, not just a hand-built fixture) plus the full test suite.
+  *Remaining:* no published throughput/RAM benchmark yet — this closes one
+  hot-loop inefficiency the target state explicitly calls out, not the
+  benchmark deliverable itself.
 - **`[~]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
   `abn_lookup`, `acnc`, `au_electoral`, `au_property`, `qld_unclaimed`,
   `au_people`, `gleif_lei`, AU phone/carrier/postcode geo. → **Solution
@@ -3485,3 +3506,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   rather than force-fit here. Gate green: 4277 lib tests (+1), fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §4a/§5 — same
   commit.
+
+- **2026-07-01** — **C2 `[ ]`→`[~]`: closed the `run_expansion`/
+  `run_gap_fill` per-candidate `HashSet` rebuild the same discovery pass
+  flagged, verified and re-derived independently rather than applied
+  blindly.** The `PARTIALLY_CONFIRMED` candidate from this session's
+  parallel discovery pass (see the C7 entry above) had two accuracy nits in
+  its self-description — a wrong test-coverage citation and an understated
+  `DispatchState` blast radius (5 struct-literal sites, not 2) — so this
+  cycle re-verified the core finding directly against the live code before
+  implementing, rather than trusting the plan as written. Confirmed:
+  `before.clear(); before.extend(entity_map.keys().cloned())` ran once per
+  expansion candidate / gap-fill probe, an O(entity_map_size) allocation
+  each time, immediately followed by an O(entity_map_size) full-map rescan
+  to find what changed — both replaced by a `newly_inserted: Vec<String>`
+  buffer on `DispatchState`, appended only at the true-insert branch inside
+  `finalise_module_result` (never on merge), then drained directly. All 5
+  `DispatchState` construction sites updated (3 real call sites, 2 test
+  fixtures — the seed-dispatch site has no parent to attribute lineage to,
+  so it gets a discarded throwaway buffer). Verified against the actual
+  `expansion_records_derived_from_lineage` end-to-end integration test
+  (`tests/smoke.rs`), which exercises this exact lineage-attribution code
+  path against a real two-hop expansion — not a hand-built `Relation`
+  fixture — plus the full `cargo test` suite (lib + smoke + architecture +
+  doctests, all binaries). C2 stays `[~]`: this is one hot-loop
+  inefficiency closed, not the published throughput/RAM benchmark the node
+  ultimately targets. Gate green: 4277 lib tests (unchanged — this refactor
+  touches no observable behavior, only cost), fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` §4a/§5 — same commit.
