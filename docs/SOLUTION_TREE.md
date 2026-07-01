@@ -539,17 +539,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   invariant directly. 1 new test; behaviour-preserving (both copies
   computed identically before the fix — this closes a drift *risk*, not an
   observed dispatch bug).
-- **`[ ]` SOL-CRAWL-CONCURRENCY · Reconcile `web_crawler`'s doc-claimed
-  concurrency with its actual sequential BFS loop** → **T2.17** (found by
-  the same discovery pass, logged not fixed): the module doc claims "4
-  concurrent requests" but `process()`'s crawl loop fetches one URL at a
-  time. Two live options, neither forced this cycle: correct the doc to
-  match reality (trivial), or make the crawl genuinely concurrent mirroring
-  the same module's `probe_config_leaks` `Semaphore`/`JoinSet` pattern —
-  real perf value but needs deliberate care to keep page-visit order (and
-  which pages fall inside the page cap) deterministic under concurrent
-  completion timing. *Gap:* not yet started; a real design decision (doc
-  fix vs. build the concurrency), not a mechanical reinstatement.
+- **`[x]` SOL-CRAWL-CONCURRENCY · Reconcile `web_crawler`'s doc-claimed
+  concurrency with its actual sequential BFS loop** → **T2.17**: the module
+  doc claimed "4 concurrent requests" but `process()`'s crawl loop fetches
+  one URL at a time. ✅ **Resolved via option (a) (2026-07-01):** corrected
+  the module doc (`src/modules/web_crawler/mod.rs` lines 5-9, 28-38) to
+  state the crawl loop is sequential (one request in flight), contrasting
+  it explicitly with the genuinely-16-way-concurrent config-leak probe in
+  the same file so the two subsystems can't be conflated again. Option (b)
+  (build real concurrency, mirroring `probe_config_leaks`'s
+  `Semaphore`/`JoinSet`) is real perf value but needs deliberate care to
+  keep page-visit order — and which pages fall inside the page cap —
+  deterministic under concurrent completion timing; not forced into a
+  doc-only cycle. Folded into **C2**'s solution text as a concrete, scoped
+  future increment rather than left as an orphan node. Doc-only; no code
+  behaviour change, no new test (consistent with this session's other pure
+  doc-audit corrections).
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -633,7 +638,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-LEDGER-ZERO-YIELD | T2.15 | `[x]` |
 | SOL-CONSUMES-DELEGATE | T2.16 | `[x]` |
-| SOL-CRAWL-CONCURRENCY | T2.17 | `[ ]` |
+| SOL-CRAWL-CONCURRENCY | T2.17 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -657,10 +662,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.17** (new, 2026-07-01) — `web_crawler`'s doc claims 4-way concurrency
-  its BFS crawl loop doesn't have. SOL-CRAWL-CONCURRENCY sketched (doc-only
-  correction vs. building real concurrency with deterministic ordering);
-  neither started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -681,7 +682,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
 - **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
-  the §3.F enablers landing first, by design).
+  the §3.F enablers landing first, by design). **C2 update (2026-07-01):**
+  gained one concrete, scoped increment (not yet started) — genuinely
+  parallelising `web_crawler`'s BFS crawl loop, mirroring the same module's
+  already-proven `probe_config_leaks` `Semaphore`/`JoinSet` pattern, found
+  while resolving T2.17.
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
   real when logged (cycle 20) but was built and shipped 2026-06-30
@@ -763,10 +768,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16 `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE,
-  SOL-LEDGER-ZERO-YIELD, SOL-CONSUMES-DELEGATE — the dead-hint/dead-ledger/
-  dead-delegation bug family, all closed); T2.7/T2.17 open; T2.11 mostly
-  done (oathnet + found_keys/SOL-ISOLATE + LOW over-dispatch/
+  **T2.13/T2.14/T2.15/T2.16/T2.17 `[x]`** ✅ (SOL-ROI-HINT, SOL-HINT-NOISE,
+  SOL-LEDGER-ZERO-YIELD, SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY — the
+  dead-hint/dead-ledger/dead-delegation/false-doc bug family, all closed);
+  T2.7 open (blocked for an unattended cycle); T2.11 mostly done (oathnet +
+  found_keys/SOL-ISOLATE + LOW over-dispatch/
   SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
@@ -2721,3 +2727,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.17 alongside T2.7 as open. Paired: `PROBLEM_TREE` new T2.16/T2.17 + §8
   — same commit. Gate green (fmt/clippy `--all-targets`/doc clean, 4280 lib
   tests (4279→4280, +1), full `cargo test` green).
+
+- **2026-07-01** — **SOL-CRAWL-CONCURRENCY delivered `[ ]`→`[x]`, closing
+  T2.17 — the doc-fix half of last cycle's deferred design decision.**
+  **P→S step:** with T2.7 still blocked, T2.11 down to its accepted-`[-]`
+  residual, and F.1-3's remaining legs each lacking a natural trigger, T2.17
+  (the only genuinely open node) was picked, and this cycle made the design
+  call its own text had left open: fix the doc now, track the bigger build
+  separately rather than force either extreme (building unreviewed
+  concurrency under time pressure, or leaving a known-false doc claim
+  sitting unfixed indefinitely). Corrected `web_crawler`'s module doc (crawl
+  bullet + "Termux-friendly" bullet) to state the BFS crawl is sequential
+  (one request in flight), explicitly contrasting it with the genuinely
+  16-way-concurrent `probe_config_leaks` in the same file. **S→P step:**
+  folded the deferred "build real concurrency" option into **C2**'s
+  solution text as a concrete, scoped, not-yet-started increment — naming
+  the exact pattern to mirror (`probe_config_leaks`'s `Semaphore`/`JoinSet`)
+  and the exact hazard a future implementer must design around (keeping
+  page-visit order, and therefore which pages land inside the 60-page cap,
+  deterministic under concurrent completion timing, §1.7) — rather than
+  letting the idea evaporate once the node closed. Doc-only; no code
+  behaviour change, so no new test — the same category as this session's
+  other pure doc-audit corrections. **Gap refresh:** §4a loses its T2.17
+  entry; leverage-map row `[ ]`→`[x]`; §4d's T2 row folds T2.17 into the
+  closed dead-code/false-doc family; C1/C2/C6/C7's bundled §4a note gains
+  C2's concrete increment. Paired: `PROBLEM_TREE` T2.17 `[ ]`→`[x]` + C2
+  solution text + §8 — same commit. Gate green (fmt/clippy
+  `--all-targets`/doc clean, 4280 lib tests — unchanged, no code change —
+  full `cargo test` green).

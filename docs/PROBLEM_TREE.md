@@ -792,9 +792,9 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `override_category_and_produces_propagate_to_info` tests (which already
   exercised the trait default's *output*, just not the delegation
   specifically) still pass unchanged — behaviour-preserving.
-- **`[ ]` T2.17 · `web_crawler`'s module doc claims a concurrency the BFS
+- **`[x]` T2.17 · `web_crawler`'s module doc claims a concurrency the BFS
   crawl loop doesn't have** *(found 2026-07-01, fresh discovery pass;
-  logged, not yet fixed — see rationale)* —
+  doc corrected same session — see rationale)* —
   `src/modules/web_crawler/mod.rs`'s module-level doc comment (lines 5, 26)
   claims "async concurrent page fetching" / "4 concurrent requests," but
   `process()`'s BFS crawl loop (lines 225-319) is a plain sequential `while
@@ -822,6 +822,19 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   focused commit. **P3** *(doc-accuracy floor; the perf upside is a C2-tier
   capability call, not a correctness bug — nothing currently depends on the
   4-way figure being true)*.
+  ✅ **Resolved via option (a) (2026-07-01).** Corrected both doc sites: the
+  crawl bullet now says "one request in flight at a time; the crawl loop is
+  sequential, not concurrent"; the "Termux-friendly" bullet drops the false
+  "4 concurrent requests" claim and explicitly contrasts the sequential BFS
+  loop with the genuinely-concurrent (16-way `Semaphore`) config-leak probe
+  in the same module, so a future reader can't conflate the two subsystems
+  again. Option (b) (build real concurrency) deliberately NOT done — folded
+  into **C2** as a concrete, scoped future increment rather than a new
+  orphan node (see C2's solution text), since it needs its own deliberate
+  design pass for deterministic page-visit ordering. Doc-only change; no
+  code behaviour altered, so no new test — matching this session's other
+  pure doc-audit corrections (SOL-UPDATE, C5 provenance-radius). T2.17
+  `[ ]`→`[x]`.
 
 ---
 
@@ -863,6 +876,18 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   seconds, M MB RAM" benchmark; enforce streaming/bounded memory everywhere
   (cap+chunk, never slurp). SpiderFoot (CPython) structurally cannot match
   on-device aarch64 throughput. **CAP-high**
+  *Concrete scoped increment identified (2026-07-01, T2.17):* `web_crawler`'s
+  BFS crawl loop (`src/modules/web_crawler/mod.rs::process`) fetches one page
+  at a time despite the module having a proven concurrent-fetch pattern
+  already in the same file (`probe_config_leaks`'s `Semaphore::new(16)` +
+  `JoinSet`, used for its separate config-leak probe). Genuinely
+  parallelising the BFS crawl (same pattern, smaller `Semaphore` bound)
+  needs deliberate care to keep page-visit order — and therefore which
+  pages fall inside the 60-page cap — deterministic under concurrent
+  completion timing (§1.7), e.g. fetch one same-depth batch concurrently
+  then sort/enqueue its discovered children deterministically before the
+  next batch. Not started; a real, boundable next C2 increment when picked
+  up.
 - **`[~]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
   `abn_lookup`, `acnc`, `au_electoral`, `au_property`, `qld_unclaimed`,
   `au_people`, `gleif_lei`, AU phone/carrier/postcode geo. → **Solution
@@ -3538,3 +3563,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   4280 lib tests (+1), fmt/clippy `--all-targets`/doc clean, full `cargo
   test` green. **Paired:** `SOLUTION_TREE` new SOL-CONSUMES-DELEGATE `[x]` +
   new SOL-CRAWL-CONCURRENCY `[ ]` + §4a/§5 — same commit.
+
+- **2026-07-01** — **Closed T2.17: corrected `web_crawler`'s false
+  concurrency claim rather than building the bigger fix under time
+  pressure.** **P→S step:** T2.17 (P3) was the only genuinely open node
+  left — T2.7 (P2) stays blocked for an unattended cycle (needs a live
+  third-party fetch or a fixture that would only look real), T2.11 carries
+  only its accepted-`[-]` residual, and F.1-3's remaining legs each lack a
+  natural trigger — so this cycle picked T2.17 and made the real design
+  decision its own text had deferred: doc-fix now, real-concurrency later.
+  Corrected `src/modules/web_crawler/mod.rs`'s module doc (the crawl-loop
+  bullet and the "Termux-friendly" bullet) to state the BFS crawl fetches
+  one page at a time, contrasting it explicitly with the genuinely
+  16-way-concurrent config-leak probe in the same file so the two
+  subsystems can't be conflated again by a future reader. **S→P step:** the
+  larger option (making the crawl genuinely concurrent, mirroring the
+  proven `probe_config_leaks` `Semaphore`/`JoinSet` pattern already in the
+  same module) is real perf value but needs its own deliberate design pass
+  for deterministic page-visit ordering under concurrent completion timing
+  (§1.7) — folded into **C2**'s solution text as a concrete, scoped future
+  increment instead of left as an orphan node or force-built under this
+  cycle's doc-only scope. Doc-only change; no code behaviour altered, so no
+  new test, matching this session's other pure doc-audit corrections
+  (SOL-UPDATE, C5 provenance-radius). Gate green: 4280 lib tests
+  (unchanged — no code change), fmt/clippy `--all-targets`/doc clean, full
+  `cargo test` green. **Paired:** `SOLUTION_TREE` SOL-CRAWL-CONCURRENCY
+  `[ ]`→`[x]` + C2 solution text updated + §4a/§4d/§5 — same commit.

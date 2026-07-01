@@ -2,9 +2,11 @@
 //! + sfp_webframework + sfp_webserver in a single async BFS crawler.
 //!
 //! Capabilities (all executed in one `process()` call):
-//!   1. **Recursive BFS crawl** — async concurrent page fetching within the
-//!      target domain, bounded by depth (3) and page count (60). Respects
-//!      robots.txt `Disallow` rules and filters binary file extensions.
+//!   1. **Recursive BFS crawl** — async page fetching (one request in
+//!      flight at a time; the crawl loop is sequential, not concurrent —
+//!      see the "Termux-friendly" note below) within the target domain,
+//!      bounded by depth (3) and page count (60). Respects robots.txt
+//!      `Disallow` rules and filters binary file extensions.
 //!   2. **Link discovery** — extracts internal links (same domain), external
 //!      links (other domains), and subdomain links. Each discovered subdomain
 //!      becomes a Domain entity for expansion.
@@ -23,9 +25,18 @@
 //!     and string-based extraction (same approach as SpiderFoot's regex).
 //!   - Bounded memory — visited set is capped, page bodies are processed
 //!     and discarded (not accumulated).
-//!   - Termux-friendly — 4 concurrent requests, 200ms inter-request delay,
-//!     64 KB body cap per page. Total wall-time stays under 60s for typical
-//!     sites.
+//!   - Termux-friendly — the BFS crawl fetches one page at a time (no
+//!     concurrency primitive in that loop) with a 200ms inter-request
+//!     delay and a 64 KB body cap per page, so total wall-time stays under
+//!     60s for typical sites. The separate config-leak probe below (run
+//!     once, before the crawl) genuinely IS concurrent — 16-way, bounded by
+//!     a `Semaphore` — a different code path from the BFS loop
+//!     (`PROBLEM_TREE` T2.17: an earlier version of this comment claimed
+//!     the BFS crawl itself ran "4 concurrent requests," which was never
+//!     true; corrected rather than built, since making the BFS loop
+//!     genuinely concurrent while keeping page-visit order deterministic —
+//!     `docs/CONVENTIONS.md` §5 — is a real, larger increment tracked
+//!     separately under C2).
 
 use std::collections::{HashSet, VecDeque};
 

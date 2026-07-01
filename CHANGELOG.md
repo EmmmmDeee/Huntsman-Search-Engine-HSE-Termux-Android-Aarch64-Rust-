@@ -350,6 +350,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`web_crawler`'s module doc claimed the BFS crawl runs "4 concurrent
+  requests"; it actually fetches one page at a time (`PROBLEM_TREE`
+  T2.17).** Corrected the doc to describe the real sequential behaviour,
+  and to explicitly distinguish it from the module's separate config-leak
+  probe, which genuinely does run 16-way concurrent. No code behaviour
+  change. The real-concurrency opportunity is tracked as a scoped future
+  increment under the C2 performance capability, not dropped.
 - **`Module::consumes()`'s default was a live duplicate of an already-dead
   function, not a delegation to it (`PROBLEM_TREE` T2.16).**
   `core::dependency::consumes_via_probe`'s doc comment claimed it was "the
