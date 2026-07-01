@@ -530,7 +530,11 @@ const CO_RESIDENCE_DAMP: f64 = 0.8;
 /// Tags that mark an `Address` as too COARSE to be a dwelling — a postcode / suburb
 /// centroid, not a specific home. Two people sharing a postcode are not
 /// co-residents, so these places never link a household.
-const COARSE_ADDRESS_TAGS: &[&str] = &["coarse", "postcode-only", "candidate-suburb"];
+const COARSE_ADDRESS_TAGS: &[&str] = &[
+    crate::core::tags::COARSE,
+    "postcode-only",
+    "candidate-suburb",
+];
 
 /// Max residents paired per place — a household is small; this bounds the O(k²)
 /// pairing on a pathological owner list (Determinism + low-RAM Termux).

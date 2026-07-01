@@ -85,7 +85,7 @@ impl Module for EmailLocale {
             .with_attr("locale", locale_code);
             let mut ae = Entity::new(EntityKind::Address, country, 0.40, &ctx.scan_id);
             ae.tag("geoint");
-            ae.tag("coarse");
+            ae.tag(crate::core::tags::COARSE);
             ae.tag("cctld-inferred");
             ae.add_evidence(ev.clone());
             result.push(ae);
@@ -93,7 +93,7 @@ impl Module for EmailLocale {
                 let coords = format!("{lat},{lon}");
                 let mut ce = Entity::new(EntityKind::Coordinates, &coords, 0.30, &ctx.scan_id);
                 ce.tag("geoint");
-                ce.tag("coarse");
+                ce.tag(crate::core::tags::COARSE);
                 ce.tag("cctld-inferred");
                 ce.add_evidence(ev);
                 result.push(ce);
@@ -115,7 +115,7 @@ impl Module for EmailLocale {
                 &ctx.scan_id,
             );
             e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::COARSE);
             e.tag("locale-inferred");
             e.add_evidence(ev.clone());
             result.push(e);
@@ -133,7 +133,7 @@ impl Module for EmailLocale {
                     &ctx.scan_id,
                 );
                 ce.tag("geoint");
-                ce.tag("coarse");
+                ce.tag(crate::core::tags::COARSE);
                 ce.tag("locale-inferred");
                 ce.add_evidence(ev);
                 result.push(ce);

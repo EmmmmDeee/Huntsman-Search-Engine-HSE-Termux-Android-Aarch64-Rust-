@@ -38,7 +38,7 @@ fn single_ioc_marks_malicious_with_threat_band_confidence() {
     assert!(
         e.has_tag("threatfox")
             && e.has_tag(crate::core::tags::THREAT_INTEL)
-            && e.has_tag("malicious")
+            && e.has_tag(crate::core::tags::MALICIOUS)
     );
     assert!((e.confidence - 0.92).abs() < 1e-9);
     assert_eq!(attr(&e, "hits"), Some("1"));

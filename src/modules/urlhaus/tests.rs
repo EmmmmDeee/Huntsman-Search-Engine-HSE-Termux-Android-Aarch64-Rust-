@@ -63,7 +63,7 @@ fn accepts_domain_and_ip() {
         );
         let e = build_threat_entity(EntityKind::Domain, "evil.test", &body, 3, "s");
         assert_eq!(e.kind, EntityKind::Domain);
-        assert!(e.has_tag("malicious") && e.has_tag("urlhaus"));
+        assert!(e.has_tag(crate::core::tags::MALICIOUS) && e.has_tag("urlhaus"));
         assert!((e.confidence - 0.90).abs() < 1e-9);
         assert_eq!(attr(&e, "url_count"), Some("3"));
         assert_eq!(

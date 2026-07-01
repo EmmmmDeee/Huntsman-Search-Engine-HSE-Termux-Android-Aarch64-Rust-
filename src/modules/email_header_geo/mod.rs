@@ -87,7 +87,7 @@ impl Module for EmailHeaderGeo {
                 &ctx.scan_id,
             );
             e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::COARSE);
             e.tag("email-infra-inferred");
             // Attach au-state when region resolves to Australia so AU-056
             // jurisdiction cross-check and the address→coords enrichment pass
@@ -132,7 +132,7 @@ impl Module for EmailHeaderGeo {
         if let Some((provider, region)) = detect_corporate_provider(domain) {
             let mut e = Entity::new(EntityKind::Address, region, 0.40, &ctx.scan_id);
             e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::COARSE);
             e.tag("email-provider-inferred");
             e.add_evidence(
                 Evidence::new(

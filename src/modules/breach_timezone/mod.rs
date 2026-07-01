@@ -65,7 +65,7 @@ impl Module for BreachTimezone {
         if let Some(tz) = infer_timezone(&hours) {
             let mut e = Entity::new(EntityKind::Address, tz.region, tz.confidence, &ctx.scan_id);
             e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::COARSE);
             e.tag("timezone-inferred");
             // Tag AU timezones so AU-056 jurisdiction cross-check can use them.
             match tz.utc_offset {

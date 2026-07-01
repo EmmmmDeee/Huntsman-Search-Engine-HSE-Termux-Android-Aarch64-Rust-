@@ -33,7 +33,7 @@ pub(super) async fn process_phone_prefix_only(
             let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.52, &ctx.scan_id);
             e.tag("geoint");
             e.tag("phone-prefix");
-            e.tag("coarse");
+            e.tag(crate::core::tags::COARSE);
             e.tag(format!("country:{cc}"));
             e.add_evidence(
                 Evidence::new(

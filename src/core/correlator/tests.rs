@@ -785,7 +785,11 @@ fn au003_uses_distinct_sources_not_summed_corroboration() {
 fn au004_fires_on_malicious_domain() {
     // Requires two independent sources to reach CRITICAL — shared infra appears
     // in single blocklists without being subject-owned.
-    let mut e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    let mut e = tagged(
+        EntityKind::Domain,
+        "evil.example",
+        &[crate::core::tags::MALICIOUS],
+    );
     e.add_evidence(Evidence::new(
         "ip_reputation",
         "flagged malicious".to_string(),
@@ -800,7 +804,11 @@ fn au004_fires_on_malicious_domain() {
 fn au004_no_fire_single_source() {
     // Single-source malicious tag must NOT produce a CRITICAL — insufficient
     // corroboration to distinguish CDN/ESP blocklist noise from real malice.
-    let mut e = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    let mut e = tagged(
+        EntityKind::Domain,
+        "evil.example",
+        &[crate::core::tags::MALICIOUS],
+    );
     e.add_evidence(Evidence::new(
         "ip_reputation",
         "flagged malicious".to_string(),
@@ -1276,7 +1284,7 @@ fn evaluate_rules_fires_expected_subset() {
         EntityKind::Domain,
         "evil.example",
         &[
-            "malicious",
+            crate::core::tags::MALICIOUS,
             crate::core::tags::VULNERABLE,
             crate::core::tags::THREAT_INTEL,
         ],
@@ -1513,7 +1521,12 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
         "QLD 4552, Australia",
         0.38,
         &["qld_unclaimed", "geo_normalize"],
-        &["postcode-only", "geoint", "coarse", "exact-name-match"],
+        &[
+            "postcode-only",
+            "geoint",
+            crate::core::tags::COARSE,
+            "exact-name-match",
+        ],
     ));
     for pc in ["QLD 4555, Australia", "QLD 4557, Australia"] {
         ents.push(mk(
@@ -1521,7 +1534,12 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
             pc,
             0.32,
             &["qld_unclaimed", "geo_normalize"],
-            &["postcode-only", "geoint", "coarse", "family-candidate"],
+            &[
+                "postcode-only",
+                "geoint",
+                crate::core::tags::COARSE,
+                "family-candidate",
+            ],
         ));
     }
     for s in [
@@ -1537,7 +1555,7 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
             s,
             0.30,
             &["qld_unclaimed", "geo_normalize"],
-            &["candidate-suburb", "geoint", "coarse"],
+            &["candidate-suburb", "geoint", crate::core::tags::COARSE],
         ));
     }
     for c in [
@@ -1550,7 +1568,7 @@ fn ground_truth_erik_avery_scan_yields_only_real_correlations() {
             c,
             0.30,
             &["qld_unclaimed", "geo_normalize"],
-            &["geoint", "postcode-centroid", "coarse"],
+            &["geoint", "postcode-centroid", crate::core::tags::COARSE],
         ));
     }
     // ── name_intel permutations (single-source Candidate guesses) ──
@@ -1784,7 +1802,11 @@ fn rule_017_drops_out_of_range_coordinates() {
 #[test]
 fn au031_fires_on_edge_to_malicious_node() {
     use crate::core::relation::{Relation, RelationKind};
-    let bad = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    let bad = tagged(
+        EntityKind::Domain,
+        "evil.example",
+        &[crate::core::tags::MALICIOUS],
+    );
     let benign = tagged(EntityKind::Domain, "blog.evil.example", &[]);
     let rel = Relation::new(
         benign.uid.clone(),
@@ -1821,7 +1843,11 @@ fn au031_no_fire_when_neither_endpoint_flagged() {
 #[test]
 fn au031_no_fire_when_both_endpoints_flagged() {
     use crate::core::relation::{Relation, RelationKind};
-    let a = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    let a = tagged(
+        EntityKind::Domain,
+        "evil.example",
+        &[crate::core::tags::MALICIOUS],
+    );
     let b = tagged(
         EntityKind::Domain,
         "bad.example",
@@ -1841,7 +1867,11 @@ fn au031_no_fire_when_both_endpoints_flagged() {
 fn au031_skips_edges_with_missing_endpoints() {
     use crate::core::relation::{Relation, RelationKind};
     // Edge references a uid not in the entity set → no fire, no panic.
-    let bad = tagged(EntityKind::Domain, "evil.example", &["malicious"]);
+    let bad = tagged(
+        EntityKind::Domain,
+        "evil.example",
+        &[crate::core::tags::MALICIOUS],
+    );
     let rel = Relation::new(
         "ghost-uid",
         bad.uid.clone(),
@@ -1929,7 +1959,11 @@ fn au031_benign_infra_verdict_vetoes_adjacency() {
 
     // A genuine high-fan-out MALICIOUS cluster (no benign verdict) stays
     // loud: aggregated, but High — not silently downgraded.
-    let evil = tagged(EntityKind::Domain, "evil.apex", &["malicious"]);
+    let evil = tagged(
+        EntityKind::Domain,
+        "evil.apex",
+        &[crate::core::tags::MALICIOUS],
+    );
     let mut ents = vec![evil.clone()];
     let mut er = Vec::new();
     for i in 0..20 {

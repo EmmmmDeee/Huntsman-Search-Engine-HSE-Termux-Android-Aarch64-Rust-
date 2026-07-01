@@ -89,7 +89,7 @@ pub(super) fn is_cross_scan_candidate(e: &Entity) -> bool {
         // far too many people to be a meaningful cross-investigation bridge.
         EntityKind::Address => {
             e.confidence >= 0.40
-                && !e.has_tag("coarse")
+                && !e.has_tag(crate::core::tags::COARSE)
                 && !e.has_tag("postcode-only")
                 && !e.has_tag("candidate-suburb")
         }

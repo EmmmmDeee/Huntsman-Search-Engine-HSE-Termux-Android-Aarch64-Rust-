@@ -182,10 +182,18 @@ pub(super) fn build_email_entity(target: &Target, body: &RepResp, scan_id: &str)
     if let Some(d) = &body.details {
         // `(field == Some(true))` flags → attribute + a pivotable tag.
         for (flag, attr, tag) in [
-            (d.credential_leaked, "credential_leaked", "breach"),
-            (d.data_breach, "data_breach", "breach"),
+            (
+                d.credential_leaked,
+                "credential_leaked",
+                crate::core::tags::BREACH,
+            ),
+            (d.data_breach, "data_breach", crate::core::tags::BREACH),
             (d.blacklisted, "blacklisted", "blacklisted"),
-            (d.malicious_activity, "malicious_activity", "malicious"),
+            (
+                d.malicious_activity,
+                "malicious_activity",
+                crate::core::tags::MALICIOUS,
+            ),
             (d.spam, "spam", "spam-source"),
             (d.disposable, "disposable", "disposable"),
             (d.free_provider, "free_provider", "freemail"),

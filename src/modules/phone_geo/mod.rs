@@ -186,7 +186,7 @@ fn carrier_pass(digits: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
             &ctx.scan_id,
         );
         e.tag("geoint");
-        e.tag("coarse");
+        e.tag(crate::core::tags::COARSE);
         e.tag("carrier-inferred");
         if carrier.country.eq_ignore_ascii_case("australia") {
             e.tag("country:AU");

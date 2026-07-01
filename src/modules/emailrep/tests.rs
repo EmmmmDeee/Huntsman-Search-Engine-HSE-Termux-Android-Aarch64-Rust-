@@ -60,9 +60,9 @@ fn surfaces_breach_blacklist_and_reputation() {
     assert!(e.has_tag("emailrep"));
     assert!(e.has_tag("reputation:low"));
     assert!(e.has_tag("suspicious"));
-    assert!(e.has_tag("breach"));
+    assert!(e.has_tag(crate::core::tags::BREACH));
     assert!(e.has_tag("blacklisted"));
-    assert!(e.has_tag("malicious"));
+    assert!(e.has_tag(crate::core::tags::MALICIOUS));
     let ev = &e.evidence[0];
     assert_eq!(
         ev.attributes.get("reputation").map(String::as_str),
@@ -134,9 +134,9 @@ fn clean_email_gets_only_the_source_tag() {
     assert!(e.has_tag("reputation:high"));
     for risk in [
         "suspicious",
-        "breach",
+        crate::core::tags::BREACH,
         "blacklisted",
-        "malicious",
+        crate::core::tags::MALICIOUS,
         "spam-source",
         "new-domain",
         "domain-nonexistent",

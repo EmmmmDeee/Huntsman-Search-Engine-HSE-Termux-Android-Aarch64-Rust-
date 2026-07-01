@@ -281,7 +281,7 @@ async fn mobile_runs_carrier_pass_and_emits_phone_carrier_geo_source() {
         .find(|e| e.kind == EntityKind::Address && e.has_tag("carrier-inferred"))
         .expect("carrier pass must emit a coarse Address");
     assert_eq!(addr.value, "Australia");
-    assert!(addr.has_tag("coarse"));
+    assert!(addr.has_tag(crate::core::tags::COARSE));
     assert!(
         addr.has_evidence_from(SRC_CARRIER),
         "carrier Address must carry the `phone_carrier_geo` source needle"

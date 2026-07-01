@@ -111,7 +111,7 @@ impl Module for GeoDomainClassifier {
                 &ctx.scan_id,
             );
             e.tag("geoint");
-            e.tag("coarse");
+            e.tag(crate::core::tags::COARSE);
             e.tag("domain-inferred");
             // Distinguish a location inferred from an email's institutional
             // domain (a `@uni.edu.au` / `@*.gov.au` affiliation) from one read off

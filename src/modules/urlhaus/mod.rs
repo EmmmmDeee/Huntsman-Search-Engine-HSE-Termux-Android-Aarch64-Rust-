@@ -85,7 +85,7 @@ fn build_threat_entity(
     use std::collections::{BTreeMap, BTreeSet};
 
     let mut entity = Entity::new(kind, host, 0.90, scan_id);
-    entity.tag("malicious");
+    entity.tag(crate::core::tags::MALICIOUS);
     entity.tag("urlhaus");
 
     let mut ev = Evidence::new(

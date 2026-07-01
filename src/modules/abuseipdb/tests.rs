@@ -88,7 +88,7 @@ fn build_entities_surfaces_resolved_domains_and_isp() {
         .iter()
         .find(|e| e.kind == EntityKind::IpAddress)
         .unwrap();
-    assert!(ip.has_tag("malicious") && ip.has_tag("high-risk"));
+    assert!(ip.has_tag(crate::core::tags::MALICIOUS) && ip.has_tag("high-risk"));
     assert_eq!(
         ip.evidence[0].attributes.get("domain").map(String::as_str),
         Some("digitalocean.com")

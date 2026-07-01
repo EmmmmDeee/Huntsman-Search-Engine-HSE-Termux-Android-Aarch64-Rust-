@@ -160,7 +160,7 @@ impl Module for CellIntel {
                 let mut e = Entity::new(EntityKind::Coordinates, &coords, 0.25, &ctx.scan_id);
                 e.tag("geoint");
                 e.tag(crate::core::tags::CELL_TOWER);
-                e.tag("coarse");
+                e.tag(crate::core::tags::COARSE);
                 e.tag(format!("country:{country}"));
                 if country == "AU"
                     && let Some(state) = crate::util::geo::au_state_for_coords(lat, lon)

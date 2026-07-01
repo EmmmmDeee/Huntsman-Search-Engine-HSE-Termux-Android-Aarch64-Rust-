@@ -166,7 +166,7 @@ async fn bigpond_email_produces_two_entities() {
         .expect("bigpond.com must yield a provider-inferred Address");
     assert!(!provider.value.is_empty(), "region value must not be blank");
     assert!(
-        provider.has_tag("geoint") && provider.has_tag("coarse"),
+        provider.has_tag("geoint") && provider.has_tag(crate::core::tags::COARSE),
         "provider-inferred Address must carry geoint+coarse tags, got {:?}",
         provider.tags
     );

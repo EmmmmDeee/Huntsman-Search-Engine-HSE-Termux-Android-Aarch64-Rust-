@@ -106,7 +106,7 @@ use super::*;
         assert!(subject.has_tag("greynoise-noise"));
         assert!(subject.has_tag("greynoise-riot"));
         assert!(subject.has_tag("greynoise-benign"));
-        assert!(!subject.has_tag("malicious"));
+        assert!(!subject.has_tag(crate::core::tags::MALICIOUS));
 
         let ev = &subject.evidence[0];
         let attr = |k: &str| ev.attributes.get(k).map(String::as_str);
@@ -134,7 +134,7 @@ use super::*;
         let subject = build_entities(&body, "71.6.135.131", "s").remove(0);
         // malicious → 0.80
         assert!((subject.confidence - 0.80).abs() < 1e-9);
-        assert!(subject.has_tag("malicious"));
+        assert!(subject.has_tag(crate::core::tags::MALICIOUS));
         assert!(subject.has_tag("greynoise-malicious"));
         assert!(subject.has_tag("greynoise-noise"));
         assert!(!subject.has_tag("greynoise-riot"));

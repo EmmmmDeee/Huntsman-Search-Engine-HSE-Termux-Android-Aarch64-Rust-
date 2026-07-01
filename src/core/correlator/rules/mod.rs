@@ -240,7 +240,7 @@ const EMAIL_CONFIRMATION_SOURCES: &[&str] = &[
 
 /// Tags that mark an entity as known-bad for adjacency analysis.
 const ADJACENCY_BAD_TAGS: &[&str] = &[
-    "malicious",
+    crate::core::tags::MALICIOUS,
     crate::core::tags::THREAT_INTEL,
     crate::core::tags::VULNERABLE,
 ];
