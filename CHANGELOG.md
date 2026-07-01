@@ -343,6 +343,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Concurrent scans could dispatch a whole extra target's worth of modules past
+  `max_entities` (`PROBLEM_TREE` T2.11 LOW).** `dispatch_target_concurrent`'s
+  spawn loop judged the entity-budget cap against the count from before this
+  target's spawn loop began — completed sibling results were only merged in
+  the trailing blocking drain, which ran AFTER every accepting module had
+  already been spawned, so the check never saw them mid-round. The sequential
+  path already re-checked the live count before every module; the concurrent
+  path did not, so a `max_concurrent > 0` scan could overshoot the operator's
+  stated cap by an entire target's module set (real network calls, real
+  budget). Fixed with a non-blocking `JoinSet::try_join_next` drain at the top
+  of every spawn-loop iteration, sharing a new `absorb_dispatch_outcome`
+  helper with the trailing drain so a result is finalised exactly once.
+  Regression-tested: `max_concurrent: 1` forces the interleave
+  deterministically, proven to fail against the unfixed code (all 10 of 10
+  modules dispatch despite `max_entities: Some(1)`) and pass against the fix.
 - **`contact_enrich` computed the WRONG Gravatar hash — a guaranteed miss for any
   email with capitals or whitespace.** The lookup hashed the RAW email value (the
   `normalised` binding was named for normalisation it never did), but the

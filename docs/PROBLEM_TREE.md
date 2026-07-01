@@ -517,7 +517,18 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
     consumer loop, so the count never advances mid-round → over-dispatches by up to
     one target's module set (the *sequential* path re-checks fresh, so the modes
     diverge). → re-check the live count in the consumer loop, or interleave
-    `join_next` with spawning. **P3**
+    `join_next` with spawning. **P3** ✅ **Fixed (the SOL-LIVE-DISPATCH-BUDGET
+    solution).** `dispatch_target_concurrent`'s Phase-2 spawn loop now drains any
+    already-finished sibling tasks via `JoinSet::try_join_next` (non-blocking) at
+    the top of every iteration, finalising them through a new shared
+    `absorb_dispatch_outcome` helper (also used by the trailing blocking
+    `join_next` drain, so a result is finalised exactly once regardless of which
+    loop collects it) — so `entity_map.len()` in the `max_entities` check is live
+    mid-round, not the snapshot from before this target's spawn loop started.
+    Regression test `concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_set`
+    (10 accepting modules, `max_entities: Some(1)`, `max_concurrent: 1` to force
+    the interleave deterministically) fails against the unfixed code — all 10
+    modules dispatch — and passes against the fix.
   **Root cause:** per-scan/per-session budgets and the key sink live in `static`s
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
@@ -3017,3 +3028,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   local toolchain, exactly the CI/local skew CLAUDE.md warns about. Clippy reported "1 previous
   error", confirming it was the sole crate-wide violation. **Paired:** `SOLUTION_TREE` — same
   commit.
+
+- **2026-07-01** — **T2.11's LOW bounded-over-dispatch closed.** The concurrent
+  dispatcher's Phase-2 spawn loop now non-blockingly drains (`JoinSet::try_join_next`)
+  any sibling module that finished since the last check, at the TOP of every loop
+  iteration, so the `max_entities` cap reads a live `entity_map.len()` instead of the
+  snapshot from before this target's spawn loop began. A new `absorb_dispatch_outcome`
+  helper is shared by that interleave and the trailing blocking `join_next` drain, so
+  a joined result is finalised exactly once regardless of which loop collects it.
+  Regression test `concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_set`
+  (10 accepting modules, `max_concurrent: 1` to force the interleave deterministically,
+  `max_entities: Some(1)`) proven to fail against the unfixed code (all 10 modules
+  dispatched) and pass against the fix. T2.11 stays `[~]` — the budget-static
+  `reset_scan`-zeroing sub-item is untouched by this change. **Paired:**
+  `SOLUTION_TREE` SOL-LIVE-DISPATCH-BUDGET (new) `[x]` + §3/§4/§5 — same commit.

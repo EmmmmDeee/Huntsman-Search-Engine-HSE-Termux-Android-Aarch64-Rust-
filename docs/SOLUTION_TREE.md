@@ -232,6 +232,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `key_chaining_{sequential,concurrent}_dispatch` integration tests green; no
   single-scan regression. *Residual:* the per-scan **budget** statics'
   `reset_scan`-zeroing folds into the same ambient later (LOW).
+- **`[x]` SOL-LIVE-DISPATCH-BUDGET · Live `max_entities` check inside the
+  concurrent spawn loop** — `dispatch_target_concurrent`'s Phase-2 loop now calls
+  `JoinSet::try_join_next` (non-blocking) at the top of every iteration, absorbing
+  any sibling module that already finished before re-checking the `max_entities`
+  cap; a new `absorb_dispatch_outcome` helper does the archive+finalise work
+  shared with the trailing blocking `join_next` drain, so a result is finalised
+  exactly once regardless of which loop collects it. *Closes:* **T2.11 LOW
+  bounded over-dispatch** (the sequential path already re-checked fresh per
+  module — this brings the concurrent path to parity). Regression test
+  `concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_set`
+  (`max_concurrent: 1` forces the interleave deterministically) fails against
+  the pre-fix code (all 10 accepting modules dispatch) and passes against the
+  fix. *Residual:* the budget-static `reset_scan`-zeroing (SOL-BUDGET's
+  accepted-`[-]` note) is untouched by this change.
 
 ### S.SECURITY — Security controls (paired with `PROBLEM_TREE` §7)
 
@@ -460,6 +474,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
 | SOL-ISOLATE | T2.11 found_keys | `[x]` |
+| SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
 | SOL-REDACT | §7 S4 | ◑ |
@@ -560,8 +575,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE; LOW over-dispatch +
-  budget-reset-zeroing remain).
+  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
+  LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
+  budget-reset-zeroing note remains, and no further action is planned on it).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2224,3 +2240,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   violation — no need to chase a toolchain install. A multiline scan for sibling
   `.map(…).unwrap_or(…)` shapes confirmed the rest are `.and_then`/`.or_else`/`.find_map`
   chains the lint does not target. Paired: `PROBLEM_TREE` — same commit.
+
+- **2026-07-01** — **SOL-LIVE-DISPATCH-BUDGET delivered `[ ]`→`[x]`, closing
+  T2.11's last open bullet.** **P→S step:** T2.11's LOW bounded-over-dispatch
+  bullet had a fix already sketched ("re-check the live count in the consumer
+  loop, or interleave `join_next` with spawning") but no solution node — picked
+  as this cycle's unit of work per §5's execution order (T2 robustness, after
+  T0/F/T1). Implemented the interleave option: `dispatch_target_concurrent`'s
+  spawn loop now non-blockingly drains finished siblings
+  (`JoinSet::try_join_next`) before each `max_entities` check, via a shared
+  `absorb_dispatch_outcome` helper also used by the final blocking drain.
+  **S→P step:** proven against the class it fixes, not just the fix — the new
+  regression test fails on the pre-fix code (all 10 modules of a 10-module
+  target dispatch despite `max_entities: Some(1)`) and passes after. **Gap
+  refresh:** §3 leverage map gains the new row; §4d's T2 row now lists T2.11 as
+  fully closed bar the already-accepted `[-]` budget-reset-zeroing note (no
+  change there — SOL-BUDGET's cycle-18 finding stands). Paired: `PROBLEM_TREE`
+  T2.11 + §8 updated in the same commit. Gate green (fmt/clippy `--all-targets`/
+  doc/test clean).
