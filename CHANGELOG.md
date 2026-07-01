@@ -359,6 +359,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The full dossier renderer never stated the MITRE ATT&CK tactic its
+  per-entity technique lines belong to (`PROBLEM_TREE` T2.21).**
+  `core::attack::TACTIC_ID`/`TACTIC_NAME` (`TA0043`/"Reconnaissance") were
+  declared and documented but had zero call sites anywhere — `render_full`
+  (`--format full`/`debug`) printed a `"MITRE ATT&CK: <id>"` line per
+  tagged entity but never named the overarching tactic. `render_full` now
+  emits an `"ATT&CK     : TA0043 (Reconnaissance)"` header, shown only when
+  at least one entity actually carries an `attack:`-prefixed tag, so it
+  never claims tactic coverage a scan's data doesn't have.
 - **`chain_intel`'s on-chain BTC/LTC transaction count could silently
   become wrong on a real device (`PROBLEM_TREE` T2.19).**
   `enrich_esplora` summed two `u64` transaction counts taken directly from

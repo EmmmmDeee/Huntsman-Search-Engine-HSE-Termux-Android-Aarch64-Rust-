@@ -96,6 +96,21 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     let _ = writeln!(s, "status     : {:?}", scan.status);
     let _ = writeln!(s, "entities   : {}", entities.len());
     let _ = writeln!(s, "relations  : {}", relations.len());
+    // Only claim ATT&CK coverage when at least one entity actually carries an
+    // `attack:<ID>` provenance tag — printing the tactic header unconditionally
+    // would assert a capability this scan's data doesn't have (the same class
+    // of dead/misleading claim `PROBLEM_TREE` T2.13 removed elsewhere).
+    if entities
+        .iter()
+        .any(|e| e.tags.iter().any(|t| t.starts_with("attack:")))
+    {
+        let _ = writeln!(
+            s,
+            "ATT&CK     : {} ({}) — see per-entity \"MITRE ATT&CK:\" lines below",
+            crate::core::attack::TACTIC_ID,
+            crate::core::attack::TACTIC_NAME
+        );
+    }
 
     // Exposure Index — the calibrated 0–100 headline with its transparent
     // per-signal breakdown, mirroring the live dossier (`print_dossier`) so the

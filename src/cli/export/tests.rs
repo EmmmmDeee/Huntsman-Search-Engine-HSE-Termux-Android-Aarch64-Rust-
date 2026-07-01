@@ -46,6 +46,67 @@ fn render_full_dumps_every_field_and_provenance() {
     assert!(out.contains("Exposure "));
 }
 
+/// The bug: `core::attack::TACTIC_ID`/`TACTIC_NAME` (`TA0043`/"Reconnaissance")
+/// were declared for exactly this purpose (`/// Human name of [TACTIC_ID]`)
+/// but never read anywhere — the full dossier's per-entity MITRE lines named
+/// individual techniques but never stated the tactic they all belong to.
+#[test]
+fn render_full_states_the_attck_tactic_when_a_technique_is_tagged() {
+    use crate::core::entity::{Entity, EntityKind};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("attack_tactic_test.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let target = Target::new(TargetKind::Email, "attck-tactic@example-real.com");
+    let scan = Scan::new("scan-attck", target);
+    store.upsert_scan(&scan).unwrap();
+
+    let mut e = Entity::new(
+        EntityKind::Email,
+        "attck-tactic@example-real.com",
+        0.8,
+        "scan-attck",
+    );
+    e.tag("attack:T1589.002"); // a real catalogued Reconnaissance technique
+    store.upsert_entities_batch(&[e]).unwrap();
+
+    let out = render_full(&store, "scan-attck").unwrap();
+    assert!(
+        out.contains("ATT&CK     : TA0043 (Reconnaissance)"),
+        "the dossier header must state the ATT&CK tactic when a technique is tagged:\n{out}"
+    );
+    assert!(out.contains("MITRE ATT&CK: T1589.002"));
+}
+
+/// The tactic header must NOT appear when no entity carries an `attack:` tag —
+/// asserting ATT&CK coverage a scan doesn't have would be the same class of
+/// dead/misleading claim `PROBLEM_TREE` T2.13 already removed elsewhere.
+#[test]
+fn render_full_omits_the_attck_tactic_header_when_nothing_is_tagged() {
+    use crate::core::entity::{Entity, EntityKind};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("attack_tactic_absent_test.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let target = Target::new(TargetKind::Email, "no-attck@example-real.com");
+    let scan = Scan::new("scan-no-attck", target);
+    store.upsert_scan(&scan).unwrap();
+
+    let e = Entity::new(
+        EntityKind::Email,
+        "no-attck@example-real.com",
+        0.8,
+        "scan-no-attck",
+    );
+    store.upsert_entities_batch(&[e]).unwrap();
+
+    let out = render_full(&store, "scan-no-attck").unwrap();
+    assert!(
+        !out.contains("ATT&CK     :"),
+        "must not claim ATT&CK tactic coverage when no entity is tagged:\n{out}"
+    );
+}
+
 #[test]
 fn structured_exports_quarantine_candidates_but_full_retains_them() {
     // H1: the CSV/JSON/GEXF exports used to ship the quarantined `candidate`

@@ -987,6 +987,48 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   assertions are logically sound and pass cleanly against the real,
   known-correct registry/report (30/30 architecture tests green, no
   duplicate module name found in the live registry).
+- **`[x]` T2.21 · `core::attack::TACTIC_ID`/`TACTIC_NAME` were declared and
+  documented but never read anywhere** *(found + fixed 2026-07-01, fresh
+  discovery pass)* — `src/core/attack/mod.rs:33-35` declares
+  `pub const TACTIC_ID: &str = "TA0043"` and `pub const TACTIC_NAME: &str =
+  "Reconnaissance"`, each with a doc comment stating its purpose (`/// Human
+  name of [TACTIC_ID]`), but `grep -rn "TACTIC_ID\|TACTIC_NAME" src` shows
+  both names appear **only** on their own declaration lines — no call site
+  anywhere in `src/` ever reads them. The natural consumer already existed:
+  `src/cli/export/renderers.rs`'s `render_full` (the `--format full`/`debug`
+  dossier renderer) prints a `"MITRE ATT&CK: <technique-id>"` line per
+  tagged entity but never states the overarching tactic those techniques
+  belong to — the exact fact `TACTIC_ID`/`TACTIC_NAME` exist to supply. Same
+  bug family as T2.13/T2.14 (dead hints), T2.15 (dead ledger tracking), and
+  T2.16 (dead delegated function): code written to do something real that
+  structurally never runs. No crash, no wrong data — a documented capability
+  (stating which ATT&CK tactic a dossier's findings map to) simply never
+  reaches the user. → **Solution:** consume the constants in `render_full`,
+  but only when at least one entity in the scan actually carries an
+  `attack:`-prefixed provenance tag — printing the tactic header
+  unconditionally would assert ATT&CK coverage the scan's data doesn't have,
+  the same false-capability-claim class T2.13 already ruled out elsewhere.
+  **P3** (dead code / missing documented capability — no correctness or
+  safety impact).
+  ✅ **Fixed.** `render_full` now emits `"ATT&CK     : TA0043
+  (Reconnaissance) — see per-entity \"MITRE ATT&CK:\" lines below"`
+  immediately after the entity/relation counts, gated on
+  `entities.iter().any(|e| e.tags.iter().any(|t|
+  t.starts_with("attack:")))`. 2 new regression tests in
+  `src/cli/export/tests.rs`: `render_full_states_the_attck_tactic_when_a_
+  technique_is_tagged` (tags an entity `attack:T1589.002`, asserts both the
+  new tactic header and the existing per-technique line appear) and
+  `render_full_omits_the_attck_tactic_header_when_nothing_is_tagged` (no
+  `attack:` tag on any entity → asserts the header is absent, guarding
+  against the false-claim failure mode). Verified via `git stash`/`pop` that
+  the new test functions don't exist against the unfixed code. Full gate
+  green: `cargo fmt --check`, `cargo clippy --all-targets --locked -D
+  warnings`, strict rustdoc (`-D rustdoc::broken_intra_doc_links -D
+  rustdoc::bare_urls -D rustdoc::invalid_html_tags`), and `cargo test`
+  (4286 lib tests + 63 doctests, all passing). Live-verified the real code
+  path: `src/cli/export/tests.rs`'s two new tests exercise the actual
+  `render_full` function against a real `rusqlite`-backed `Store` (not
+  mocked) — the same production call path `hse export --format full` uses.
 
 ---
 
@@ -3848,3 +3890,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   strengthened, no new tests), fmt/clippy `--all-targets`/doc clean, full
   `cargo test` green (30/30 architecture tests). **Paired:** `SOLUTION_TREE`
   SOL-TEST-NAME-OVERCLAIM `[ ]`→`[x]` + §4a/§4d/§5 — same commit.
+
+- **2026-07-01** — **Closed T2.21 — dead `TACTIC_ID`/`TACTIC_NAME`
+  constants, found via a fresh discovery pass steered away from every
+  angle already swept this arc (doc-comment audits, `.take(N)` truncation,
+  offset bugs, dead-delegation, unguarded arithmetic, misleading test
+  names).** **P→S step:** with T2.7 the sole remaining open T-series node
+  and still genuinely blocked (no live third-party fetch available
+  unattended), ran discovery along two new angles: live scan inspection and
+  unwired/dead constants. `grep -rn "TACTIC_ID\|TACTIC_NAME" src` confirmed
+  both constants in `src/core/attack/mod.rs` appear only on their own
+  declaration lines — declared, documented, never read — the same dead-code
+  bug family as T2.13/T2.14/T2.15/T2.16. **S→P step:** wired both constants
+  into `render_full` (`src/cli/export/renderers.rs`) as a new "ATT&CK"
+  header line, gated on at least one entity carrying an `attack:`-prefixed
+  tag so the header never asserts tactic coverage a scan's data doesn't
+  have — the same false-capability-claim guard T2.13 established. 2 new
+  regression tests in `src/cli/export/tests.rs` (header present when
+  tagged, absent when not), both exercised against a real `rusqlite`-backed
+  `Store`, not a mock. Confirmed non-vacuous via `git stash`/`pop` (the new
+  test functions don't exist against the unfixed code). Gate green: 4286
+  lib tests (+2) and 63 doctests, fmt/clippy `--all-targets --locked -D
+  warnings`/strict-rustdoc clean, full `cargo test` green. With T2.21
+  closed, T2.7 remains the sole open T-series node (still correctly
+  blocked). **Paired:** `SOLUTION_TREE` new SOL-ATTACK-TACTIC `[x]` +
+  §3/§4/§5 — same commit.

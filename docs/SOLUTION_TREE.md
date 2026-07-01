@@ -626,6 +626,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   test count); verified logically sound and passing cleanly against the
   real, known-correct registry/report (30/30 architecture tests green,
   live registry has zero duplicate module names).
+- **`[x]` SOL-ATTACK-TACTIC · Wire the dead `TACTIC_ID`/`TACTIC_NAME`
+  constants into the full dossier renderer** → **T2.21**:
+  `core::attack::TACTIC_ID`/`TACTIC_NAME` (`"TA0043"`/`"Reconnaissance"`)
+  were declared and documented for exactly this purpose but had zero call
+  sites anywhere in `src/` — `render_full` printed per-entity
+  `"MITRE ATT&CK: <id>"` lines but never stated the tactic those techniques
+  roll up to, the same dead-code-that-claims-to-do-something family as
+  T2.13/T2.14/T2.15/T2.16. ✅ **Fixed.** `render_full`
+  (`src/cli/export/renderers.rs`) now emits an `"ATT&CK     : TA0043
+  (Reconnaissance) — see per-entity \"MITRE ATT&CK:\" lines below"` header,
+  gated on at least one entity carrying an `attack:`-prefixed tag so the
+  header never claims tactic coverage a scan's data doesn't have — the same
+  false-capability-claim guard T2.13 established elsewhere. 2 new tests in
+  `src/cli/export/tests.rs`, both against a real `rusqlite`-backed `Store`
+  (not mocked): header present + correct text when a technique is tagged;
+  header absent when nothing is tagged. Verified non-vacuous via
+  `git stash`/`pop` (the new test functions don't exist against the
+  unfixed code).
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -713,6 +731,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-VICTIM-TRUNCATION | T2.18 | `[x]` |
 | SOL-CHAIN-TXCOUNT | T2.19 | `[x]` |
 | SOL-TEST-NAME-OVERCLAIM | T2.20 | `[x]` |
+| SOL-ATTACK-TACTIC | T2.21 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -842,13 +861,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20 `[x]`** ✅
+  **T2.13/T2.14/T2.15/T2.16/T2.17/T2.18/T2.19/T2.20/T2.21 `[x]`** ✅
   (SOL-ROI-HINT, SOL-HINT-NOISE, SOL-LEDGER-ZERO-YIELD,
   SOL-CONSUMES-DELEGATE, SOL-CRAWL-CONCURRENCY, SOL-VICTIM-TRUNCATION,
-  SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM — the dead-hint/dead-ledger/
-  dead-delegation/false-doc/silent-truncation/unguarded-arithmetic/
-  overclaimed-test-coverage bug family, all closed); T2.7 open (blocked
-  for an unattended cycle); T2.11 mostly done (oathnet +
+  SOL-CHAIN-TXCOUNT, SOL-TEST-NAME-OVERCLAIM, SOL-ATTACK-TACTIC — the
+  dead-hint/dead-ledger/dead-delegation/false-doc/silent-truncation/
+  unguarded-arithmetic/overclaimed-test-coverage/dead-constant bug family,
+  all closed); T2.7 open (blocked for an unattended cycle); T2.11 mostly
+  done (oathnet +
   found_keys/SOL-ISOLATE + LOW over-dispatch/
   SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
@@ -2937,3 +2957,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   — same commit. Gate green (fmt/clippy `--all-targets`/doc clean, 4284
   lib tests — unchanged, no new tests, existing bodies strengthened — full
   `cargo test` green, 30/30 architecture tests).
+
+- **2026-07-01** — **New: SOL-ATTACK-TACTIC delivered `[x]`, closing
+  T2.21 — a dead-constant finding from a fresh discovery pass steered away
+  from every bug angle already swept this arc.** **P→S step:** T2.7
+  remained the sole open T-series node and still genuinely blocked (no
+  live third-party fetch available unattended), so ran discovery along two
+  new angles this cycle explicitly hadn't tried yet: live scan inspection
+  and unwired/dead constants. The dead-constant angle paid off:
+  `core::attack::TACTIC_ID`/`TACTIC_NAME` were declared with purpose-stating
+  doc comments (`/// Human name of [TACTIC_ID]`) but `grep -rn
+  "TACTIC_ID\|TACTIC_NAME" src` showed zero call sites — the same
+  dead-code-that-claims-to-do-something family as T2.13/T2.14/T2.15/T2.16.
+  **S→P step:** the natural consumer already existed — `render_full`
+  printed per-entity `"MITRE ATT&CK: <id>"` lines but never stated the
+  overarching tactic. Wired both constants into a new header line, gated on
+  at least one entity carrying an `attack:`-prefixed tag so the header
+  never claims tactic coverage a scan's data doesn't have (the same
+  false-capability-claim guard T2.13 established — printing it
+  unconditionally would have been a new instance of the exact bug class
+  this fix's own sibling nodes exist to eliminate). 2 new regression tests
+  in `src/cli/export/tests.rs`, both against a real `rusqlite`-backed
+  `Store` (not mocked) — the actual `hse export --format full`/`debug` call
+  path. Confirmed non-vacuous via `git stash`/`pop` (the new test functions
+  don't exist against the unfixed code). **Gap refresh:** leverage-map
+  gains the new row (`[x]` from creation — found-and-fixed same cycle, no
+  §4a entry needed); §4d's T2 row folds T2.21 into the closed dead-code bug
+  family. T2.7 remains the sole open T-series node. Paired: `PROBLEM_TREE`
+  new T2.21 `[x]` + §8 — same commit. Gate green: fmt/clippy
+  `--all-targets --locked -D warnings`/strict-rustdoc clean, 4286 lib tests
+  (4284→4286, +2) and 63 doctests, full `cargo test` green.
