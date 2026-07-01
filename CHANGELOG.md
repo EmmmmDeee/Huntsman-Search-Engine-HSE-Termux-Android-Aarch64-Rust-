@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse update --check`'s git plumbing (`commits_behind`/`changelog_lines`) now
+  has real test coverage.** New fixture-driven tests build a genuine local
+  upstream repo and a real `git clone` (via `tempfile`) and drive the actual
+  `git` binary rather than asserting against reasoning about the code —
+  covering new-commits-available, already-up-to-date, and not-a-git-repo. No
+  behaviour change; the code was already correct, just previously unverified
+  against real git output.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

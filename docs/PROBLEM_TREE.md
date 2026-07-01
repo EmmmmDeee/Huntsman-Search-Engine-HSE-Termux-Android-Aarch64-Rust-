@@ -3415,3 +3415,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `--all-targets`/doc clean, full `cargo test` green. **Paired:**
   `SOLUTION_TREE` SOL-HINT-NOISE `[~]`→`[x]` + new SOL-LEDGER-ZERO-YIELD
   `[x]` + §3/§4/§5 — same commit.
+
+- **2026-07-01** — **Closed `SOLUTION_TREE` SOL-UPDATE's last real residual:
+  `commits_behind`/`changelog_lines` (`cli/update.rs`) had zero test
+  coverage of the actual `git` subprocess calls they shell out to.** No
+  PROBLEM_TREE node covers `hse update` directly (it lives only in this log,
+  per cycle-22 precedent), and this cycle's other candidates were either
+  blocked (T2.7's golden-fixture work needs a live third-party fetch or a
+  fixture that would only look real) or already closed (T2.14/T2.15) — so
+  this cycle picked the concrete, correctly-sized follow-on `SOLUTION_TREE`
+  §4a had flagged twice already, across two separate prior corrections,
+  rather than inventing new speculative work. New `cli/update.rs` test
+  fixtures drive a REAL `git` binary against `tempfile` temp directories — a
+  genuine upstream repo plus a real `git clone`, not a mocked subprocess.
+  Hit and fixed a real hermeticity trap along the way: this environment's
+  global git config has `commit.gpgsign=true`, which fails every commit
+  unless disabled per-repo — exactly the kind of environment-dependent
+  breakage a naive fixture (or CI running under different git config) would
+  have hit silently. 3 new tests: new commits pushed to the upstream after
+  a clone are counted correctly (`Some(2)`) and listed newest-first; an
+  up-to-date clone reports `Some(0)`/empty; a non-git directory reports
+  `None`/empty. Gate green: 4279 lib tests (+3), fmt/clippy
+  `--all-targets`/doc clean, full `cargo test` green. **Paired:**
+  `SOLUTION_TREE` SOL-UPDATE residual closed + §4a/§5 — same commit.

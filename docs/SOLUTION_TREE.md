@@ -551,11 +551,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   count. Predates this repo's single root commit (`770df4c9`), so — unlike
   most corrections this session — no specific delivery cycle can be
   attributed; it simply was never reconciled into this note.
-  *Remaining (real):* `changelog_lines`/`commits_behind` have no test
-  exercising the actual `git` subprocess calls (a real local git-repo-pair
-  fixture, `tempfile` already a dev-dep, would close it) — left as a
-  separate, smaller follow-on.
-  **(cycle 22)**
+  ✅ **Test coverage closed (2026-07-01).** `commits_behind`/`changelog_lines`
+  now have real fixture-driven tests (`cli/update.rs`): a `tempfile` upstream
+  repo + a real `git clone`, with signing/identity config set per-repo so the
+  test is hermetic regardless of the host's global git config (this
+  environment has `commit.gpgsign=true` set globally, which would otherwise
+  fail every test commit). 3 new tests drive the actual `git` binary — no
+  mocked subprocess output: new commits pushed upstream are correctly
+  counted and listed newest-first; an up-to-date clone reports 0/empty; a
+  non-repo directory reports `None`/empty. No `Remaining` left on this node.
+  **(cycle 22; test-coverage closed same session as the doc corrections)**
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -675,12 +680,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   import, not an incremental change), so — unlike the AU-084 correction
   above — no earlier delivery date or authoring cycle can be attributed from
   `git log` here; it simply predates this repo's history and was never
-  reconciled into this note. **Residual, real gap:** `changelog_lines` and
-  `commits_behind` are both untested — no fixture exercises the actual `git`
-  subprocess calls (unlike most of this codebase's I/O-adjacent logic). A
-  real local git-repo-pair fixture (`tempfile`, already a dev-dep) would
-  close it; left as a separate, smaller follow-on rather than bolted onto
-  this doc correction.
+  reconciled into this note. **Residual closed (2026-07-01):** see
+  SOL-UPDATE above — `commits_behind`/`changelog_lines` now have real
+  fixture-driven tests. Off the open queue.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -2617,3 +2619,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `PROBLEM_TREE` T2.14 addendum + new T2.15 + §8 updated in the same
   commit. Gate green (fmt/clippy `--all-targets`/doc clean, 4276 lib tests,
   full `cargo test` green — 4267→4276, +9).
+
+- **2026-07-01** — **Closed SOL-UPDATE's last real residual: `commits_behind`/
+  `changelog_lines` had zero test coverage of the actual `git` subprocess
+  calls.** **P→S step:** with T2.7 still blocked for an unattended cycle
+  (needs a live third-party fetch or a fixture that would only look real)
+  and no other in-progress node open, picked the concrete, well-scoped
+  follow-on §4a had flagged twice already (the cycle-22 and 2026-07-01 doc
+  corrections both named it explicitly as the correct-sized next step,
+  rather than re-litigating either correction). Added `cli/update.rs` test
+  helpers (`init_repo`, `commit`, `clone`) that drive a REAL `git` binary
+  against `tempfile` temp directories — a genuine upstream repo plus a real
+  `git clone`, not a mocked subprocess. Had to set `commit.gpgsign=false`
+  per test repo: this environment's global git config has
+  `commit.gpgsign=true`, which would otherwise fail every test commit — a
+  real hermeticity trap a naive fixture would have hit. **S→P step:** 3 new
+  tests prove real behaviour, not assumed behaviour: new commits pushed
+  upstream after a clone are correctly counted (`Some(2)`) and listed
+  newest-first by `changelog_lines`; an up-to-date clone reports `Some(0)`/
+  empty; a plain (non-git) directory reports `None`/empty. **Gap refresh:**
+  §4a's `hse update --check changelog` entry loses its residual (fully off
+  the open queue); SOL-UPDATE's `Remaining` bullet removed. Paired:
+  `PROBLEM_TREE` §8 — same commit (no dedicated PROBLEM_TREE node exists for
+  SOL-UPDATE; it lives only in the maintained log, per cycle-22 precedent).
+  Gate green (fmt/clippy `--all-targets`/doc clean, 4279 lib tests
+  (4276→4279, +3), full `cargo test` green).

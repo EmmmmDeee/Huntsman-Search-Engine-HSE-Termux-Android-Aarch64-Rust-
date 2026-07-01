@@ -468,4 +468,99 @@ mod tests {
             "cache files live under ~/.cache when HOME is set"
         );
     }
+
+    // `commits_behind`/`changelog_lines` shell out to real `git` subprocesses
+    // (`git fetch`, `git rev-list`, `git log`) — no prior test exercised that
+    // path at all (`SOLUTION_TREE` §4a residual left open by the 2026-07-01
+    // `hse update --check` doc corrections). These build a real local
+    // upstream/clone repo pair with `tempfile` and drive the actual `git`
+    // binary — no mocked or fabricated command output.
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git must be installed to run this test");
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    /// A repo with signing/identity config that works headlessly regardless
+    /// of the host's global git config (this environment has
+    /// `commit.gpgsign=true` set globally, which would otherwise fail every
+    /// commit below).
+    fn init_repo(dir: &Path) {
+        run_git(dir, &["init", "-q", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+        run_git(dir, &["config", "commit.gpgsign", "false"]);
+    }
+
+    fn commit(dir: &Path, filename: &str, message: &str) {
+        std::fs::write(dir.join(filename), message).unwrap();
+        run_git(dir, &["add", filename]);
+        run_git(dir, &["commit", "-q", "-m", message]);
+    }
+
+    fn clone(src: &Path, dest: &Path) {
+        let status = std::process::Command::new("git")
+            .args(["clone", "-q", src.to_str().unwrap(), dest.to_str().unwrap()])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git must be installed to run this test");
+        assert!(status.success(), "git clone failed");
+    }
+
+    #[test]
+    fn commits_behind_and_changelog_lines_reflect_real_new_commits() {
+        let upstream = tempfile::tempdir().unwrap();
+        init_repo(upstream.path());
+        commit(upstream.path(), "a.txt", "initial commit");
+
+        // Clone while local == upstream, THEN add commits upstream — mirrors
+        // the real "hse update --check" scenario: an existing local checkout
+        // that has fallen behind its tracked remote.
+        let local = tempfile::tempdir().unwrap();
+        clone(upstream.path(), local.path());
+
+        commit(upstream.path(), "b.txt", "second commit");
+        commit(upstream.path(), "c.txt", "third commit");
+
+        assert_eq!(commits_behind(local.path()), Some(2));
+
+        // `git log --oneline` lists newest first.
+        let lines = changelog_lines(local.path());
+        assert_eq!(lines.len(), 2);
+        assert!(
+            lines[0].ends_with("third commit"),
+            "newest commit listed first: {lines:?}"
+        );
+        assert!(
+            lines[1].ends_with("second commit"),
+            "second commit listed after it: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn commits_behind_is_zero_and_changelog_is_empty_when_up_to_date() {
+        let upstream = tempfile::tempdir().unwrap();
+        init_repo(upstream.path());
+        commit(upstream.path(), "a.txt", "initial commit");
+
+        let local = tempfile::tempdir().unwrap();
+        clone(upstream.path(), local.path());
+
+        assert_eq!(commits_behind(local.path()), Some(0));
+        assert!(changelog_lines(local.path()).is_empty());
+    }
+
+    #[test]
+    fn commits_behind_is_none_outside_a_git_repository() {
+        let dir = tempfile::tempdir().unwrap();
+        assert_eq!(commits_behind(dir.path()), None);
+        assert!(changelog_lines(dir.path()).is_empty());
+    }
 }
