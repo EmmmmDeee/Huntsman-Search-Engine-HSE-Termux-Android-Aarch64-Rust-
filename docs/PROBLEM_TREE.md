@@ -4479,3 +4479,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   touched. Gate green: 4321 lib tests (+2), full suite (lib + smoke +
   architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
   clean. **Paired:** `SOLUTION_TREE` SOL-F3 + §5 — same commit.
+
+- **2026-07-02** — **Doc accuracy: `SOLUTION_TREE` §4a's `hse update --check
+  changelog` bullet claimed a "residual, real gap" (changelog_lines/
+  commits_behind untested) that was itself stale — the fixture test already
+  exists.** A code-grounded discovery pass this cycle found no new small code
+  gap (TODO/FIXME sweep clean; a `fullcontact` dropped-field hypothesis was
+  correctly rejected as ungroundable — the repo has only synthetic fixtures,
+  so claiming FullContact returns dropped `emails`/`phones` would be a
+  fabricated finding), but did confirm a stale finish-queue claim:
+  `cli/update.rs::commits_behind_and_changelog_lines_reflect_real_git_state`
+  is a real fixture test (local `tempfile` remote+clone git pair, no network)
+  exercising BOTH functions across the up-to-date / behind-by-2-with-subjects
+  / not-a-repo states, and it passes. Corrected the §4a note so the false
+  "untested" residual can't lure a future cycle into re-adding an
+  already-present test. Doc-only; no code, tests, or architecture changes.
+  Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §4a + §5 — same commit.

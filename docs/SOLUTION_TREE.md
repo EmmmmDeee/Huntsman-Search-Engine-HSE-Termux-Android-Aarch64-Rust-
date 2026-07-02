@@ -932,12 +932,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   import, not an incremental change), so — unlike the AU-084 correction
   above — no earlier delivery date or authoring cycle can be attributed from
   `git log` here; it simply predates this repo's history and was never
-  reconciled into this note. **Residual, real gap:** `changelog_lines` and
-  `commits_behind` are both untested — no fixture exercises the actual `git`
-  subprocess calls (unlike most of this codebase's I/O-adjacent logic). A
-  real local git-repo-pair fixture (`tempfile`, already a dev-dep) would
-  close it; left as a separate, smaller follow-on rather than bolted onto
-  this doc correction.
+  reconciled into this note. ~~**Residual, real gap:** `changelog_lines` and
+  `commits_behind` are both untested…~~ **Also stale, corrected 2026-07-02.**
+  The claimed test gap is already closed: `cli/update.rs` carries
+  `commits_behind_and_changelog_lines_reflect_real_git_state`, a fixture test
+  that builds a genuine local git-repo pair (a "remote" plus a clone with
+  upstream tracking, via `tempfile` — no network) and exercises BOTH functions
+  across all three states — freshly-cloned (`commits_behind == Some(0)`,
+  empty changelog), advanced-remote (`Some(2)` with the two commit subjects
+  in newest-first order), and not-a-repo (`None`/empty fallback) — using a
+  fixed isolated git identity + `commit.gpgsign=false` so it's portable. It
+  passes (verified this cycle). So this whole bullet is now fully off the
+  queue: the feature exists AND is fixture-tested; nothing remains.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -3402,3 +3408,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   architecture guard, no clippy/unsafe posture touched. Gate green: 4321 lib
   tests (+2), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
   `PROBLEM_TREE` T2.7 + §8 — same commit.
+
+- **2026-07-02** — **§4a accuracy: the `hse update --check changelog` bullet's
+  "residual, real gap" (changelog_lines/commits_behind untested) was itself
+  stale — the fixture test already exists.** Verified against the code:
+  `cli/update.rs` carries `commits_behind_and_changelog_lines_reflect_real_git_state`,
+  which builds a genuine local remote+clone git pair via `tempfile` (no network)
+  and asserts BOTH functions across freshly-cloned (`Some(0)`/empty),
+  advanced-remote (`Some(2)` + the two commit subjects newest-first), and
+  not-a-repo (`None`/empty) states, with a fixed isolated git identity +
+  `commit.gpgsign=false` for portability. It passes (run this cycle). A false
+  "untested" claim in the finish queue would have lured a future cycle into
+  re-adding a test that already exists — corrected so §4a reflects the code.
+  Doc-only; no code/tests/architecture. Gate: n/a (docs). Paired: `PROBLEM_TREE`
+  §8 — same commit.
