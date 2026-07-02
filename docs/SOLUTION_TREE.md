@@ -607,6 +607,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   excluded — weaker breach-relevance than a street address, not
   force-fit into scope. 2 new tests; full 291-test `search_engines`
   suite re-run to confirm no regression.
+  *Delivered (2026-07-02):* fixed an AU-105 credential-reuse accuracy bug.
+  AU-105 groups breach records by the `dbname` evidence attribute (then
+  `breach`, then the Evidence `source` FIELD = module name). `oathnet_pro`
+  stamps `dbname` correctly, but `dehashed` and `see_know` labelled the
+  per-record breach name under a `source` **attribute** instead — which
+  `breach_of` never reads — so every record from each provider collapsed
+  to a single pseudo-breach and cross-breach reuse within one provider's
+  results never reached the ≥2-breaches threshold. Both modules now ALSO
+  stamp the canonical `dbname` attr (retaining `source`), so AU-105 sees
+  true per-breach granularity. 2 regression tests, red/green-verified.
   *Correction (2026-07-01):* the "C7 has no comparably small gap" note above
   was itself wrong — a follow-up discovery pass found one directly (see
   SOL-FORENSIC below).
@@ -3343,3 +3353,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   archived-body residual is unchanged; this only fixes the residual-surface
   enumeration. Doc-only; no code/tests/architecture. Gate: n/a (docs). Paired:
   `PROBLEM_TREE` §7 S4 + §8 — same commit.
+
+- **2026-07-02** — **C6 (SOL-OFFENSIVE): AU-105 credential-reuse now sees true
+  per-breach granularity from `dehashed`/`see_know`.** From a fifth discovery
+  pass's evidence-attr-consistency candidate, promoted from PARTIALLY_CONFIRMED
+  to a real bug by verifying the attribute names against both the rule and the
+  modules. AU-105 groups breach records by the `dbname` evidence attribute
+  (then `breach`, then the Evidence `source` FIELD = module name). `oathnet_pro`
+  uses `dbname` correctly, but `dehashed` and `see_know` stamped the per-record
+  breach database name under a `source` **attribute** that `breach_of` never
+  reads — so every record from each provider collapsed to one pseudo-breach and
+  cross-breach credential reuse within a single provider's results (the common
+  case for these aggregators) could never fire. Fixed additively: both modules
+  now ALSO stamp the canonical `dbname` attr (retaining `source` for existing
+  consumers). 2 regression tests (one per module), each red/green-verified by
+  reverting the fix. No identity/PII decision logic, no architecture guard, no
+  clippy/unsafe posture touched. Gate green: 4319 lib tests (+2), full suite
+  green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C6 + §8 —
+  same commit.

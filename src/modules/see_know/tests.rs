@@ -466,6 +466,44 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn record_evidence_stamps_canonical_dbname_for_au105() {
+        use serde_json::json;
+        // AU-105 (credential reuse across breaches) groups records by the `dbname`
+        // evidence attribute. SeekNow labels the breach under `source` (renamed to
+        // `source_db` when folding the raw field), so a record that carries the
+        // breach name in `source` with NO `dbname` field previously produced NO
+        // `dbname` attribute at all — AU-105 then fell back to the module name and
+        // collapsed every SeekNow record into one pseudo-breach. The breach name
+        // must be stamped under the canonical `dbname` attr.
+        let item = json!({
+            "source": "TestBreach",
+            "email": "victim@example.com",
+            "password": "reused-secret-1",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim@example.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let email = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "victim@example.com")
+            .expect("the subject email entity");
+        assert_eq!(
+            email.evidence[0].attributes.get("dbname").map(String::as_str),
+            Some("TestBreach"),
+            "the breach name must be on the canonical `dbname` attr AU-105 reads"
+        );
+    }
+
+    #[test]
     fn extract_rich_detail_surfaces_the_whole_record() {
         use serde_json::json;
         // A fat record with the long tail SeekNow returns: composed name, org,

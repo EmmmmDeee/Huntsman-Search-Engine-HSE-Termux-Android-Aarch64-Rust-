@@ -223,6 +223,37 @@ fn non_target_stranger_record_is_quarantined_not_dropped() {
 }
 
 #[test]
+fn record_evidence_stamps_canonical_dbname_for_au105() {
+    // AU-105 (credential reuse across breaches) groups records by the `dbname`
+    // evidence attribute, falling back to the Evidence `source` FIELD (the module
+    // name "dehashed") when it is absent. DeHashed must therefore stamp the breach
+    // name under `dbname`, not only the `source` attribute — otherwise every
+    // DeHashed record collapses to one pseudo-breach and cross-breach reuse among
+    // a subject's DeHashed hits can never fire.
+    let entries = vec![json!({
+        "email": ["a@b.com"],
+        "password": ["reused-secret-1"],
+        "database_name": ["Collection#1"]
+    })];
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(&entries, "a@b.com", "fp", "s", &mut seen, &mut result);
+
+    let email = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "a@b.com")
+        .expect("the subject email entity");
+    assert_eq!(
+        attr(email, "dbname"),
+        Some("Collection#1"),
+        "the breach name must be on the canonical `dbname` attr AU-105 reads"
+    );
+    // The `source` attribute is retained for existing consumers.
+    assert_eq!(attr(email, "source"), Some("Collection#1"));
+}
+
+#[test]
 fn weak_hash_is_cracked_offline_to_its_plaintext() {
     // hashed_password is md5("password") — the offline reverse-lookup recovers the
     // plaintext, surfaces it as a first-class node, and tags the hash entity with

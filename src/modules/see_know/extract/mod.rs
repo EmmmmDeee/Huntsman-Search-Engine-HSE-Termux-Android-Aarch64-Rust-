@@ -102,6 +102,13 @@ pub(super) fn extract_message_mentions(
 /// actual raw source record rather than just a module name + entity hash.
 fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> Evidence {
     let ev = Evidence::new(SRC, format!("SeekNow record from {dbname}"))
+        // `dbname` is the canonical breach-name attribute the credential-reuse
+        // correlator (AU-105) groups on; without it AU-105 falls back to the
+        // Evidence `source` FIELD (the module name) and collapses every SeekNow
+        // record into one pseudo-breach, so cross-breach reuse among a subject's
+        // SeekNow hits could never fire. `source` is retained (existing consumers
+        // read it) but is an attribute, not the field AU-105's fallback inspects.
+        .with_attr("dbname", dbname)
         .with_attr("source", dbname)
         // Provenance: which provider, which exact API key, and which endpoint
         // returned this record. Stamped on EVERY record so a finding always

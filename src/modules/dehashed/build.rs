@@ -169,6 +169,14 @@ pub(super) fn build_breach_entity(
 fn record_evidence(item: &Value, key_fp: &str) -> Evidence {
     let db = record_dbname(item);
     let ev = Evidence::new(SRC, format!("DeHashed record from {db}"))
+        // `dbname` is the canonical breach-name attribute the credential-reuse
+        // correlator (AU-105) groups on; without it AU-105 falls back to the
+        // Evidence `source` FIELD (the module name "dehashed") and collapses
+        // every DeHashed record into one pseudo-breach, so cross-breach reuse
+        // among a subject's DeHashed hits could never fire. `source` is retained
+        // (existing consumers read it) but is an attribute, not the field
+        // AU-105's fallback inspects — hence both are stamped.
+        .with_attr("dbname", db.as_str())
         .with_attr("source", db)
         .with_attr("provider", "dehashed.com")
         .with_attr("api_key_origin", key_fp);

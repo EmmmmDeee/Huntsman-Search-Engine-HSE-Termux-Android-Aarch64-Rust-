@@ -419,6 +419,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Credential-reuse detection now works for DeHashed and SeekNow results.**
+  The credential-reuse finding (the same secret appearing in two or more
+  distinct breaches — the account-takeover signal) groups records by the
+  breach database name. DeHashed and SeekNow recorded that name under a
+  different evidence field than the correlator reads, so every record from
+  one provider looked like a single breach and reuse across breaches those
+  providers aggregate never surfaced. Both now record the breach name where
+  the correlator expects it, so cross-breach reuse fires correctly.
 - **`au_people` no longer loses cross-source corroboration when the same
   address or phone appears in both AU directories it searches.** The module
   scrapes White Pages AU and True People Search AU and de-duplicated its

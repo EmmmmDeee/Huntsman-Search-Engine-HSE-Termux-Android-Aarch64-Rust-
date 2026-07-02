@@ -1115,6 +1115,22 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   Phone/FullName test pattern exactly. *Remaining:* this is again a
   narrow slice (one more function's target-kind coverage) — C6 as a
   whole node is not closed.
+  *Delivered (2026-07-02):* fixed a correctness bug in the credential-reuse
+  graph's AU-105 leg. AU-105 measures the same secret's reuse across DISTINCT
+  breaches, grouping records by the `dbname` evidence attribute (falling back
+  to `breach`, then the Evidence `source` FIELD = the module name). But two of
+  the breach modules that feed it — `dehashed` and `see_know` — stamped the
+  per-record breach database name under a `source` **attribute**, not `dbname`
+  (`oathnet_pro`, by contrast, correctly uses `dbname`). Since `breach_of`
+  never consults the `source` attribute, every DeHashed record collapsed to one
+  pseudo-breach ("dehashed") and every SeekNow record to one ("see_know"), so
+  credential reuse across two different breaches both surfaced by the same
+  provider — the common case for these aggregators — could never reach AU-105's
+  ≥2-distinct-breaches threshold and silently never fired. Fixed additively:
+  both modules now also stamp the canonical `dbname` attribute (retaining
+  `source` for existing consumers), so AU-105 sees the true per-breach
+  granularity. 2 regression tests (one per module), each red/green-verified.
+  *Remaining:* C6 as a whole node is not closed.
 - **`[~]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
@@ -4380,3 +4396,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   architecture changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §5 (the
   SOL-REDACT node carries no module list, so no live-node text there changes) —
   same commit.
+
+- **2026-07-02** — **C6: AU-105 credential-reuse was blind to cross-breach reuse
+  within `dehashed`/`see_know` because those modules label the breach name with
+  a non-canonical evidence attribute.** Selected from a fifth discovery pass's
+  evidence-attr-consistency candidate (`PARTIALLY_CONFIRMED`), promoted to a
+  real bug by re-verifying the attribute names against both the rule and the
+  modules. AU-105 (`rule_au_105_credential_reuse`) counts a secret's reuse
+  across DISTINCT breaches, and its `breach_of` helper reads the breach name
+  from the `dbname` evidence attribute, then `breach`, then falls back to the
+  Evidence `source` FIELD (which is the module name). `oathnet_pro` correctly
+  stamps `dbname`. But `dehashed` (`build.rs::record_evidence`) and `see_know`
+  (`extract/mod.rs::record_evidence`) both stamped the per-record breach
+  database name under a `source` **attribute** — a different thing from the
+  `source` FIELD `breach_of` falls back to, and one `breach_of` never inspects.
+  So every DeHashed record collapsed to the single pseudo-breach "dehashed" and
+  every SeekNow record to "see_know": a subject whose password appeared in three
+  different breaches, all surfaced by DeHashed, registered as ONE breach, so the
+  ≥2-distinct-breaches reuse finding — the whole point of AU-105, and the common
+  case for these aggregators — silently never fired. (For `see_know` the miss
+  was conditional: a record whose raw JSON already carried a literal `dbname`
+  field worked via the raw-field fold; only records labelling the breach under
+  `source` — which see_know's fold renames to `source_db` — were blind.) Fixed
+  additively: both modules now ALSO stamp the canonical `dbname` attribute
+  (`source` retained for existing consumers), matching `oathnet_pro`'s
+  convention, so AU-105 sees true per-breach granularity. 2 regression tests
+  (one per module), each red/green-verified by reverting the fix and watching it
+  fail. No identity/PII decision logic, no architecture guard, no clippy/unsafe
+  posture touched. Gate green: 4319 lib tests (+2), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` C6 + §5 — same commit.
