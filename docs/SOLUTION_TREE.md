@@ -3241,3 +3241,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   serde round-trip test. Gate green: 4307 lib tests (+1), full suite
   green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C4 +
   §8 — same commit.
+
+- **2026-07-02** — **T2.12 follow-up: `hse selftest` now signals failure by
+  returning `Err`, not `std::process::exit(1)`, so `hse diagnostics` can
+  aggregate it.** From a fifth discovery pass's CLI-contract sweep. The
+  aggregate `diagnostics` command (doctor → selftest → engines, documented to
+  run all three in one pass and print an "N section(s) failed" summary) was
+  defeated because `cmd_selftest` hard-exited the process on failure — so a
+  failing self-test killed the run at section 2/3, `engines` never ran, and
+  the aggregate summary never printed. Same exit-code-contract defect class
+  T2.12 fixed for `audit`/`provision --verify`, but in `cli/diagnostics.rs`,
+  which postdates the T2.12 sweep. Fix: extracted a pure
+  `report_to_result(&Report)` helper returning `Err` on failure; `main` already
+  maps a returned error to a non-zero exit, so standalone `hse selftest` is
+  unchanged, while `cmd_diagnostics` (only the selftest section hard-exited;
+  doctor/engines already return `Result`) can now catch it. 2 unit tests on the
+  pure helper (the old `process::exit` path was untestable). No identity/PII
+  logic, no architecture guard touched. Gate green: 4309 lib tests (+2), full
+  suite green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE`
+  T2.12 follow-up + §8 — same commit.

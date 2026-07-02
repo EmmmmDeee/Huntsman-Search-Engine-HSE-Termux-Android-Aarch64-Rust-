@@ -419,6 +419,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`hse diagnostics` now reports every failing section instead of dying at
+  the self-test.** The aggregate command runs three checks in sequence
+  (doctor → selftest → engines) and is documented to run all of them in one
+  pass and summarise which failed. But the self-test section signalled
+  failure by calling `std::process::exit(1)` directly, so a failing
+  self-test terminated the whole process mid-pass — the engine-liveness
+  section never ran and the aggregate "N section(s) failed" summary never
+  printed. The self-test now returns an error instead (the process still
+  exits non-zero, so the standalone `hse selftest` gate is unchanged),
+  letting `hse diagnostics` catch it and complete the full sweep.
 - **The full dossier / debug bundle now shows every entity's `uid`, raw
   (pre-normalisation) value, and observed-at timestamp.** The full-dossier
   renderer promised "nothing omitted" but silently dropped these three

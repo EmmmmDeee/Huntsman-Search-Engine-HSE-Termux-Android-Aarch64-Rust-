@@ -642,6 +642,28 @@ direct.**
     (export/diff/audit on a non-complete scan was silent, misleading, or empty).
     Test `resolve_scan_id_rejects_incomplete_scans` guards it. T2.12 fully closed ✅.
     **P3.** *(All contained; none crash or corrupt persisted scan data.)*
+  - **Follow-up (2026-07-02): the same exit-code-contract defect class, in a
+    command added after this sweep.** A fifth discovery pass's CLI-contract
+    sweep found the aggregate `hse diagnostics` command (`cli/diagnostics.rs`,
+    added 2026-06-30 — 13 days *after* the 2026-06-17 T2.12 sweep, so genuinely
+    out of its reach) defeated by exactly the class of bug T2.12 fixed
+    elsewhere. `cmd_diagnostics` runs doctor → selftest → engines and both its
+    doc comment and its code promise to run all three "in a single pass" and,
+    on any failure, print an aggregate "N section(s) failed" summary (it
+    collects failures into a `Vec<&str>` and returns one `Err` at the end).
+    But section 2/3, `selftest::cmd_selftest`, signalled failure by calling
+    `std::process::exit(1)` **directly** — so a failing self-test killed the
+    whole process mid-pass: the `engines` section (3/3) never ran, the `if let
+    Err(e)` arm that was supposed to catch it was unreachable, and the aggregate
+    summary never printed. `cmd_selftest` is the only one of the three sections
+    that hard-exited (`doctor`/`engines` correctly return `Result`). Fixed by
+    having `cmd_selftest` *return* an `Err` on failure instead — the binary's
+    `main` already maps any returned error to `exit(1)`, so the standalone `hse
+    selftest` non-zero-exit contract is unchanged, while `cmd_diagnostics` can
+    now catch the failure and finish its pass. Extracted a pure
+    `report_to_result(&Report)` helper (the `process::exit` path was inherently
+    untestable) so the pass→`Ok`/fail→`Err` contract is unit-tested (2 tests).
+    ✅ **Fixed (2026-07-02).**
 - **`[x]` T2.13 · Dead "ROI" hint — dossier's "keyed/paid module(s) yielded
   nothing" line could never fire** *(found + fixed 2026-07-01)* —
   `cli/scan/dossier.rs::print_diagnostics` computed its wasted-spend hint by
@@ -4209,3 +4231,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (+1), full suite (lib + smoke + architecture + doctests, all binaries)
   green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-NETINT + §5 — same commit.
+
+- **2026-07-02** — **T2.12 follow-up: `hse diagnostics` couldn't aggregate a
+  self-test failure because `cmd_selftest` hard-exited the process.**
+  Selected from a fifth discovery pass's CLI-contract sweep. The aggregate
+  `hse diagnostics` command runs doctor → selftest → engines and promises —
+  in both its doc comment and its code (a `Vec<&str>` of failed sections, one
+  `Err` returned at the end) — to run all three in a single pass and print an
+  aggregate "N section(s) failed" summary. But section 2/3
+  (`selftest::cmd_selftest`) signalled failure with a direct
+  `std::process::exit(1)`, so a failing self-test killed the whole process
+  mid-pass: `engines` (3/3) never ran, the `if let Err(e)` arm meant to catch
+  it was unreachable, and the aggregate summary never printed. This is exactly
+  the exit-code-contract defect class T2.12 fixed elsewhere (`audit` always
+  `Ok`, `provision --verify` exit 0 on failure), but in `cli/diagnostics.rs`,
+  which was added 2026-06-30 — after the 2026-06-17 T2.12 sweep, so out of its
+  reach. `cmd_selftest` was the only one of the three sections that hard-exited
+  (`doctor`/`engines` correctly return `Result`). Fix: `cmd_selftest` now
+  *returns* `Err` on failure via a new pure `report_to_result(&Report)` helper —
+  the binary's `main` already maps any returned error to `exit(1)`, so the
+  standalone `hse selftest` non-zero-exit contract is unchanged, while
+  `cmd_diagnostics` can now catch the failure and finish its pass. The old
+  `process::exit` path was inherently untestable; the extracted pure helper is
+  covered by 2 unit tests (all-pass → `Ok`; any-fail → `Err` naming the count).
+  No identity/PII logic, no architecture guard, no clippy/unsafe posture
+  touched. Gate green: 4309 lib tests (+2), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` §5 (T2.12 node is `[x]`; recorded as a
+  dated follow-up, not a status change) — same commit.
