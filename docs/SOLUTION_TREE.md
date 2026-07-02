@@ -288,6 +288,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `key_chaining_{sequential,concurrent}_dispatch` integration tests green; no
   single-scan regression. *Residual:* the per-scan **budget** statics'
   `reset_scan`-zeroing folds into the same ambient later (LOW).
+  **New residual found (2026-07-02):** `search_engines::REGIONAL_SEARCH` — a
+  single process-global `AtomicBool` set by the `core::hooks::set_regional`
+  hook and read by every search-query builder for the scan's duration — has
+  the identical unisolated-static shape `with_scan` was built to fix, and its
+  own code comment self-documents the race ("last writer wins for the overlap
+  window"), but this instance was never captured in either tree until now
+  (MED — a determinism/data-quality corruption: a concurrently-started scan
+  can silently flip another in-flight scan's actual search-query behaviour).
+  The SOL-ISOLATE pattern applies directly (a new `util` task-local,
+  `with_regional`, set around `run_with_ledger` + re-set at the
+  `dispatch.rs:993` spawn point exactly like `found_keys`), but retiring the
+  `fn(bool)`-shaped `ModuleHooks::set_regional` hook for a future-wrapping
+  task-local is a real `core::hooks` interface change, correctly scoped as
+  separate follow-on work, not folded into this finding. *Not yet fixed.*
 - **`[x]` SOL-LIVE-DISPATCH-BUDGET · Live `max_entities` check inside the
   concurrent spawn loop** — `dispatch_target_concurrent`'s Phase-2 loop now calls
   `JoinSet::try_join_next` (non-blocking) at the top of every iteration, absorbing
@@ -3567,3 +3581,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   recorded as permanently rejected so it isn't re-attempted). Doc-only; no
   code/tests/architecture. Gate: n/a (docs). Paired: `PROBLEM_TREE` §7 S4 +
   §8 — same commit.
+
+- **2026-07-02** — **SOL-ISOLATE: found a fourth process-global-isolation
+  defect, `search_engines::REGIONAL_SEARCH`, via a codebase-wide sweep of
+  every mutable `static` after T2.11's tracked `QuotaBudget` residual proved
+  architecturally too large for direct pattern replication.** Investigated
+  `QuotaBudget::reset_scan()`'s residual in depth first: real (unconditional
+  cross-scan zeroing of `scan_count`/`quota_exhausted`/`cap_override`), but
+  `try_increment`'s hot-path lock-free CAS design means per-scan keying needs
+  a real architectural decision (lock contention / unbounded-growth
+  trade-offs), not a `found_keys`-style drop-in — correctly left open.
+  Swept every process-global `Mutex`/`RwLock`/`Atomic*`/`LazyLock<Mutex<…>>`
+  for a smaller, directly-portable instance instead: `REGIONAL_SEARCH` (a
+  single `AtomicBool`) is structurally identical to the already-fixed
+  `found_keys` sink and its own code comment already self-documents the exact
+  race, but neither tree had ever captured it. The SOL-ISOLATE task-local
+  pattern applies directly (proven, not novel), but implementing it means
+  retiring `core::hooks::ModuleHooks::set_regional` (`fn(bool)`, can't wrap a
+  future) for a genuine future-wrapping combinator — a real `core::hooks`
+  interface change across `core/hooks.rs`, both dispatch paths, and a new
+  `util` module, correctly scoped as its own unit. Recorded as a new
+  MED-severity T2.11 sub-item with the exact fix shape sketched (mirroring
+  `found_keys::with_scan`/`current_scan()`, the `dispatch.rs:993` re-scope
+  point) so a future cycle can implement it directly. Doc-only this cycle.
+  Gate: n/a (docs). Paired: `PROBLEM_TREE` T2.11 + §8 — same commit.

@@ -619,6 +619,43 @@ direct.**
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
   through `ModuleContext`), which also subsumes the budget-reset race. **P2**
+  - **MED — regional-search toggle contamination (found 2026-07-02, NOT the
+    budget-static residual above — a distinct, previously-untracked instance of
+    the same root cause).** `modules::search_engines::REGIONAL_SEARCH` is a
+    single process-global `AtomicBool`, set by `core::hooks::set_regional`
+    partway through `run_with_ledger_inner` from
+    `scan.options.regional_search || settings::get_bool("feature.regional", …)`,
+    and read by `search_engines::regional_enabled()` deep inside every query-
+    builder call for the whole scan. The field's OWN doc comment already
+    self-documents the exact race: *"A process-global, like the see_know
+    per-scan budget — concurrent scans in `serve` share it (last writer wins
+    for the overlap window)."* Under `hse serve`'s 8-concurrent-scan model, if
+    scan B starts (and calls `set_regional`) while scan A's search-engine
+    modules are still mid-flight, A's in-progress query builders silently start
+    reading B's regional setting instead of A's own — a scan's actual search
+    queries (and therefore its results) can silently deviate from what the
+    operator configured for THAT scan, purely as a function of unrelated
+    concurrent-scan timing. This is a determinism/data-quality corruption, not
+    a resource-cost one (unlike the LOW over-dispatch item above), so it sits
+    with the MED-severity siblings. This exact defect was self-documented in
+    the code but never captured in either tree despite T2.11 existing
+    specifically to track "process-global state not isolated across the 8
+    concurrent `serve` scans" — confirmed via a direct code read, not
+    speculation. → the SOL-ISOLATE pattern already proven for `found_keys`
+    (a `tokio::task_local!` ambient in a new small `util` module — mirroring
+    `util::found_keys::SCAN`/`with_scan`/`current_scan()` exactly — set by
+    `run_with_ledger` around `run_with_ledger_inner`'s future AND re-set inside
+    the concurrent dispatch path's per-module `set.spawn(...)` at
+    `dispatch.rs:993`, since task-locals don't cross `spawn`) applies directly;
+    unlike `found_keys`, the regional value is a `Copy` `bool` computed once
+    per scan (no per-call cloning needed). This requires retiring
+    `core::hooks::ModuleHooks::set_regional` (currently a plain `fn(bool)`
+    hook, which can't wrap a future the way task-local scoping needs) and its
+    `modules::mod.rs` installation, and adding the new `util` module to the
+    `core_does_not_import_util_directly` architecture-guard allowlist — a
+    real, multi-file restructuring of the `core::hooks` interface itself, not
+    a drop-in swap, so it is correctly scoped as a separate unit rather than
+    folded into this cycle's smaller finding. *Not yet fixed.*
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -4713,3 +4750,49 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   neither requested nor undertaken. Doc-only; no code, tests, or architecture
   changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` SOL-REDACT + §4a +
   §5 — same commit.
+
+- **2026-07-02** — **T2.11: found a fourth, previously-untracked process-global-
+  state isolation defect — `search_engines::REGIONAL_SEARCH` — via direct code
+  investigation after the tracked `QuotaBudget` residual proved too large for
+  one cycle.** This cycle first investigated T2.11's own explicitly-noted
+  remaining item (the budget-static `reset_scan`-zeroing race) in real depth:
+  confirmed it is genuinely real (`QuotaBudget::reset_scan()` unconditionally
+  zeroes process-global `scan_count`/`quota_exhausted`/`cap_override` atomics
+  shared by oathnet/see_know/wigle's 7 budget instances, called from every
+  scan's `reset_per_scan` hook with no `scan_id` scoping), but converting it
+  to per-scan state is architecturally larger than the `found_keys` precedent
+  — `QuotaBudget::try_increment` is a hot-path lock-free CAS primitive
+  specifically designed to avoid contention across a scan's own concurrent
+  module dispatch, so per-scan keying would need a real design decision (a
+  `HashMap<String, …>` behind a lock reintroduces the exact contention the CAS
+  design avoids; an unbounded-growth/GC question for a long-running `hse
+  serve` process needs answering) rather than a direct pattern replication —
+  correctly left as still-open, not attempted this cycle. A broader sweep of
+  every process-global mutable `static` in the codebase (`Mutex`/`RwLock`/
+  `Atomic*`/`LazyLock<Mutex<…>>`) for a SMALLER, more directly-portable
+  instance of the same SOL-ISOLATE pattern surfaced
+  `search_engines::REGIONAL_SEARCH`: a single `AtomicBool`, structurally
+  identical in shape to the ALREADY-FIXED `found_keys` sink, whose own code
+  comment already self-documents the exact cross-scan race ("last writer wins
+  for the overlap window") but which neither tree had ever captured despite
+  T2.11 existing precisely to track this defect class. Confirmed via direct
+  reads of `core/engine/mod.rs` (where `set_regional` is called, in the same
+  `run_with_ledger_inner` body `reset_per_scan` already lives in) and
+  `core/engine/dispatch.rs:993` (the exact spawn point `found_keys::with_scan`
+  already re-scopes at, which a `with_regional` equivalent would need too).
+  The SOL-ISOLATE task-local pattern applies directly and with high
+  confidence — it is a proven, already-tested mechanism, not a novel design —
+  but implementing it requires retiring `core::hooks::ModuleHooks::set_regional`
+  (a `fn(bool)`-shaped hook that cannot wrap a future the way task-local
+  scoping needs) for a genuine future-wrapping combinator, which is a real
+  `core::hooks` interface change touching `core/hooks.rs`, both dispatch
+  paths, and a new `util` module — correctly scoped as its own unit rather
+  than rushed into this cycle's commit, per the "never expand scope mid-cycle"
+  constraint. Recorded as a new MED-severity T2.11 sub-item (the two other MED
+  items are financial-overspend and credential-mis-attribution; this one is a
+  determinism/search-result-quality corruption, the same severity class) with
+  the exact fix shape sketched, so a future cycle can implement it directly
+  rather than re-deriving this investigation. Doc-only this cycle; no code,
+  tests, or architecture changes — the fix itself is the next unit, not this
+  one. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` SOL-ISOLATE + §5 — same
+  commit.
