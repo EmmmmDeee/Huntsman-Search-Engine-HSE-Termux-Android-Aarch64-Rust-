@@ -419,6 +419,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`ipinfo`/`ipquery` geolocation fixes now contribute to the person-location
+  corroboration signal**, closing the same gap fixed for `ip_whois_geo`
+  above: both recorded a resolved IP's coordinates without the field the
+  shared login-IP recognition logic reads, so their fixes never counted
+  toward the independent-source corroboration count even when they agreed
+  with `ip_geo` on the same subject IP. All four free, always-dispatched
+  geo sources (`ip_geo`, `ip_whois_geo`, `ipinfo`, `ipquery`) are now
+  correctly recognized as independent corroborating classes.
 - **`ip_whois_geo` geolocation fixes now contribute to the person-location
   corroboration signal.** The headline "Best location estimate" and its
   independent-source count recognize an IP geolocation as tied to a subject's

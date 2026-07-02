@@ -1119,8 +1119,31 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   `.with_attr("ip", ip)` to `ip_whois_geo`'s evidence fold, mirroring `ip_geo`'s
   exact pattern and comment. 1 regression test, red/green-verified. No new
   `EntityKind`, no architecture-guard impact.
-  *Remaining:* tighter AU bounding; movement/timeline geo; `ipinfo`/`ipquery`
-  unconfirmed for the same gap.
+  *Delivered (2026-07-02, cont'd):* verified and fixed the deferred
+  `ipinfo`/`ipquery` follow-up. Both are confirmed genuine instances of the
+  identical gap, not merely plausible: both use the shared
+  `crate::core::validation::untrusted_ip_geo_reason`/`untrusted_geo_reason`
+  trust gate that drops CDN/anycast/VPN/Tor/proxy/datacenter IPs specifically
+  because "the coordinates are infrastructure, so admitting them as a person's
+  location poisons identity-location correlation" (`ipquery`'s own doc
+  comment) — proving their Coordinates fixes ARE meant to represent the
+  subject, exactly like `ip_geo`/`ip_whois_geo` — and both call the same
+  `util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)` helper with the
+  identical "Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs" comment,
+  confirming they are siblings in the same provider family, not a different
+  class of module. Neither stamped `ip`. Fixed both additively: `ipinfo`'s
+  evidence fold and `ipquery`'s shared `geo_ev()` closure (used for both its
+  Coordinates and Address evidence — harmless, since `ip` has exactly one
+  correlator consumer and it filters `EntityKind::Coordinates` only) now
+  carry `.with_attr("ip", ip)`. 2 regression tests
+  (`coordinates_carry_the_originating_ip_for_login_ip_recognition` in each
+  module), red/green-verified by reverting both fixes together. This closes
+  the C5 person-location evidence-attribute-consistency sweep: 6 of 9
+  IP→Coordinates modules confirmed correct (`ip2location`/`ip_geo`/`shodan`/
+  `netlas`/`whois` already right, `ip_whois_geo` fixed 2026-07-02), 2 fixed
+  this cycle (`ipinfo`/`ipquery`), and `censys`/`onyphe` deliberately excluded
+  as infra/host-scan tools (extending risks fabricating corroboration).
+  *Remaining:* tighter AU bounding; movement/timeline geo.
 - **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -4592,5 +4615,40 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   red/green-verified by reverting the fix. No new `EntityKind`, no
   architecture-guard impact, no identity/PII logic, no clippy/unsafe posture
   touched. Gate green: 4323 lib tests (+1), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` SOL-GEOINT + §5 — same commit.
+
+- **2026-07-02** — **C5, cont'd: closed the deferred `ipinfo`/`ipquery`
+  person-location corroboration follow-up — verified (not assumed) as the
+  identical evidence-attribute-consistency gap `ip_whois_geo` had, fixed
+  additively in both.** The prior cycle explicitly left these two "unconfirmed
+  ... left for a future cycle to verify rather than guess"; this cycle did
+  exactly that. Both `ipinfo` and `ipquery` gate their Coordinates emission
+  behind the shared "is this actually the subject" trust logic
+  (`untrusted_ip_geo_reason`/`untrusted_geo_reason`, which `ipquery`'s own doc
+  comment says exists because admitting untrusted coords "poisons
+  identity-location correlation") and call the identical
+  `util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)` helper carrying
+  the identical "Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs"
+  cross-reference comment — proof, not inference, that they are siblings in
+  `ip_geo`'s provider family and their fixes are meant to represent the
+  subject. Neither stamped the `ip` evidence attribute
+  `core::correlator::rules::location::person_login_ip_coords` requires to
+  recognise a login-IP fix. Fixed both: `ipinfo`'s evidence fold and
+  `ipquery`'s shared `geo_ev()` closure now carry `.with_attr("ip", ip)`
+  (mirroring `ip_geo`'s comment). `geo_ev()` is used for both `ipquery`'s
+  Coordinates AND Address evidence — harmless, since `ip` has exactly one
+  correlator consumer, which filters `EntityKind::Coordinates` only. 2
+  regression tests
+  (`coordinates_carry_the_originating_ip_for_login_ip_recognition`, one per
+  module), red/green-verified together by reverting both production fixes.
+  This closes C5's evidence-attribute-consistency sweep: of the 9
+  IP→Coordinates modules, 6 were already correct
+  (`ip2location`/`ip_geo`/`shodan`/`netlas`/`whois`, plus `ip_whois_geo` after
+  the prior fix), 2 fixed this cycle, and `censys`/`onyphe` deliberately
+  excluded (infra/host-scan tools where extension risks fabricating
+  corroboration, not closing a real gap). No new `EntityKind`, no
+  architecture-guard impact, no identity/PII logic, no clippy/unsafe posture
+  touched. Gate green: 4325 lib tests (+2), full suite (lib + smoke +
   architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
   clean. **Paired:** `SOLUTION_TREE` SOL-GEOINT + §5 — same commit.

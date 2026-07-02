@@ -605,9 +605,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `censys`/`onyphe` (infra/host-scan tools — extending risks false
   corroboration, not closing a real gap). Additive one-attribute fix
   mirroring `ip_geo`'s exact pattern; 1 regression test, red/green-verified.
+  *Delivered (2026-07-02, cont'd):* closed the `ipinfo`/`ipquery` follow-up —
+  verified, not assumed, as the same gap. Both gate their Coordinates output
+  behind the same "is this the subject" trust logic (`ipquery`'s own doc
+  comment: untrusted coords would "poison identity-location correlation")
+  and call the identical `coarse_provider_coords(…, 0.58, …)` helper with the
+  identical "see ip_geo.rs" cross-reference — proof they are siblings in
+  `ip_geo`'s family, not a different module class. Neither stamped `ip`.
+  Fixed both additively (`ipinfo`'s fold; `ipquery`'s shared `geo_ev()`
+  closure, harmlessly also touching its Address evidence). 2 regression
+  tests, red/green-verified together. C5's evidence-attribute-consistency
+  sweep is now closed: 6/9 IP→Coordinates modules were already correct, 2
+  fixed (`ip_whois_geo`, then `ipinfo`+`ipquery`), `censys`/`onyphe`
+  deliberately excluded.
   *Remaining:* movement/timeline layer; auto-scheduled re-sync of the
-  local cell DB (currently requires manual `hse cells import` trigger);
-  `ipinfo`/`ipquery` unconfirmed for the same login-IP-tie-back gap.
+  local cell DB (currently requires manual `hse cells import` trigger).
 - **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
   *Audit + delivered (2026-07-01):* the entropy gate, `aho-corasick`
@@ -3475,3 +3487,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the fix. No new `EntityKind`, no architecture-guard impact, no identity/PII
   logic touched. Gate green: 4323 lib tests (+1), full suite green, fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8 — same commit.
+
+- **2026-07-02** — **SOL-GEOINT (C5) cont'd: closed the deferred
+  `ipinfo`/`ipquery` follow-up, verified (not assumed) as the identical
+  person-location corroboration gap `ip_whois_geo` had.** Both modules gate
+  Coordinates emission behind the shared "is this the subject" trust logic
+  (`ipquery`'s own doc comment: untrusted coords would "poison
+  identity-location correlation") and call the identical
+  `coarse_provider_coords(…, 0.58, …)` helper carrying the identical "see
+  ip_geo.rs" cross-reference comment — proof they are siblings in `ip_geo`'s
+  provider family, meant to represent the subject, not a different module
+  class. Neither stamped the `ip` evidence attribute
+  `person_login_ip_coords` requires. Fixed additively: `ipinfo`'s evidence
+  fold and `ipquery`'s shared `geo_ev()` closure (used for both its
+  Coordinates and Address evidence — harmless, `ip` has exactly one
+  correlator consumer filtering `EntityKind::Coordinates` only) now carry
+  `.with_attr("ip", ip)`, mirroring `ip_geo`'s pattern. 2 regression tests,
+  red/green-verified together by reverting both fixes. Closes C5's
+  evidence-attribute-consistency sweep: 6/9 IP→Coordinates modules were
+  already correct, 2 fixed across this cycle and the last
+  (`ip_whois_geo`/`ipinfo`/`ipquery`), `censys`/`onyphe` deliberately
+  excluded (infra tools — extension risks false corroboration). No new
+  `EntityKind`, no architecture-guard impact, no identity/PII logic, no
+  clippy/unsafe posture touched. Gate green: 4325 lib tests (+2), full suite
+  green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8
+  — same commit.
