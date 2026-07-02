@@ -169,6 +169,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clamped-max confidence, saturating corroboration, lexicographic-min canonical
   spelling; UID = `SHA-256(kind:normalised)`. *Closes:* **T1.1** (the determinism
   core), the identity model behind **C1**. Order-independence proptested. ✅
+  *Enforcement fix (2026-07-02):* found and fixed a module that bypassed this
+  invariant. `au_people::dedup_by_kind_value` de-duplicated its accumulated
+  results with a keep-**first** `HashSet::retain`, silently DROPPING later
+  duplicates instead of GREATEST-merging them. Because the module scrapes two
+  independent AU directories (White Pages AU + True People Search AU) and the
+  same address/phone is routinely listed by both, an entity confirmed by BOTH
+  sources — same normalised `(kind, value)`, hence same UID, but distinct source
+  evidence — kept only the first source's evidence and confidence; the second
+  directory's independent confirmation was discarded *at the module boundary*,
+  before the engine's own UID-merge (which correctly applies SOL-MERGE) could
+  ever see it. Rewrote the dedup to fold duplicates through `Entity::merge`, so a
+  fact both directories agree on now surfaces with unioned evidence, summed
+  corroboration, and max confidence — the exact GREATEST-semantics this node
+  guarantees everywhere else. Order-preserving; 1 red/green-verified regression
+  test.
 - **`[x]` SOL-ORDER · Deterministic emission** — sort-before-emit (GEXF shared-source
   labels, live-session list) **and** a unique final SQL tie-break on every order-
   sensitive read-back (`scans … , id DESC`; `entity_facets … , e.kind ASC`;
@@ -3295,3 +3310,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   identity/PII logic, no architecture guard touched. Gate green: 4316 lib tests
   (+7), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
   `PROBLEM_TREE` F.3 + §8 — same commit.
+
+- **2026-07-02** — **SOL-MERGE enforcement: `au_people` dedup now GREATEST-merges
+  cross-source duplicates instead of dropping them.** From a fifth discovery
+  pass's dedup-merge-correctness candidate (verified directly against the code).
+  `au_people::dedup_by_kind_value` used a keep-first `HashSet::retain`, so when
+  its two scraped AU directories (White Pages AU + True People Search AU) both
+  listed the same address/phone — same normalised `(kind, value)` → same UID,
+  distinct source evidence — the second directory's independent confirmation was
+  silently discarded at the module boundary, before the engine's own SOL-MERGE
+  UID-merge could see it. That threw away exactly the cross-source corroboration
+  that makes a people-finder hit trustworthy. Rewrote the dedup to fold
+  duplicates via `Entity::merge` (max confidence, summed corroboration, unioned
+  evidence + tags); order-preserving, commutative in the folded signal. 1
+  regression test, red/green-verified (asserts the survivor carries both
+  directories' evidence, corroboration 2, and the higher confidence — all three
+  of which the old keep-first behaviour failed). No identity/PII decision logic,
+  no architecture guard, no clippy/unsafe posture touched. Gate green: 4317 lib
+  tests (+1), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
+  `PROBLEM_TREE` SOL-MERGE enforcement + §8 — same commit.

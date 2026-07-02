@@ -122,6 +122,46 @@ fn dedup_removes_same_kind_value() {
 }
 
 #[test]
+fn dedup_greatest_merges_duplicates_preserving_both_sources() {
+    // The SAME address listed by both AU directories: identical normalised
+    // (kind, value) → identical UID, but distinct source evidence. Dedup must
+    // GREATEST-merge them (keep both evidence records, take the max confidence,
+    // grow corroboration), NOT silently drop the second directory's independent
+    // confirmation the way a keep-first `retain` did.
+    let mut wp = Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.5, "s");
+    wp.add_evidence(
+        Evidence::new("au_people", "White Pages AU listing").with_attr("source", "whitepages_au"),
+    );
+    let mut tps = Entity::new(EntityKind::Address, "Sydney NSW 2000", 0.7, "s");
+    tps.add_evidence(
+        Evidence::new("au_people", "True People Search AU listing").with_attr("source", "tps_au"),
+    );
+
+    let mut ents = vec![wp, tps];
+    dedup_by_kind_value(&mut ents);
+
+    assert_eq!(ents.len(), 1, "same (kind, value) collapses to one entity");
+    let merged = &ents[0];
+    assert!(
+        (merged.confidence - 0.7).abs() < 1e-9,
+        "GREATEST confidence wins, not the first-seen 0.5 (got {})",
+        merged.confidence
+    );
+    assert_eq!(
+        merged.corroboration, 2,
+        "both independent directory sources are counted"
+    );
+    assert_eq!(
+        merged.evidence.len(),
+        2,
+        "both directories' evidence records are retained, not just the first"
+    );
+    let summaries: Vec<&str> = merged.evidence.iter().map(|e| e.summary.as_str()).collect();
+    assert!(summaries.iter().any(|s| s.contains("White Pages")));
+    assert!(summaries.iter().any(|s| s.contains("True People Search")));
+}
+
+#[test]
 fn state_tag_from_text_recognises_au_states() {
     assert_eq!(
         state_tag_from_text("Bondi Beach NSW 2026"),

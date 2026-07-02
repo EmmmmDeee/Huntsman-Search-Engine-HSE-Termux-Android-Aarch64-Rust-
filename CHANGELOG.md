@@ -419,6 +419,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`au_people` no longer loses cross-source corroboration when the same
+  address or phone appears in both AU directories it searches.** The module
+  scrapes White Pages AU and True People Search AU and de-duplicated its
+  combined results by keeping the first copy of each entity and dropping the
+  rest — so a fact both directories confirmed kept only one source's
+  evidence and confidence, discarding the second, independent confirmation.
+  Duplicates are now merged (highest confidence, combined corroboration
+  count, union of evidence), so a hit two directories agree on now reads as
+  corroborated.
 - **`hse diagnostics` now reports every failing section instead of dying at
   the self-test.** The aggregate command runs three checks in sequence
   (doctor → selftest → engines) and is documented to run all of them in one

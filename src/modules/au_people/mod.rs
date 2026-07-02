@@ -535,10 +535,38 @@ pub(super) fn parse_relatives(html: &str, full_name: &str, scan_id: &str) -> Vec
     out
 }
 
-/// Deduplicate entities by (kind, value) from a mutable result. Pure.
+/// Deduplicate entities by (kind, value), GREATEST-merging duplicates into the
+/// first occurrence rather than discarding them. Pure; order-preserving.
+///
+/// This module accumulates results from two independent AU directories (White
+/// Pages AU + True People Search AU, plus a relatives pass over each). The SAME
+/// address or phone is frequently listed by both — each source emits an entity
+/// with the same normalised `(kind, value)`, hence the same UID, but carrying
+/// its own distinct evidence. Simply keeping the first and dropping the rest
+/// (the previous behaviour) silently discarded the second directory's
+/// independent confirmation *at the module boundary*, before the engine's own
+/// UID-merge could ever see it — throwing away exactly the cross-source
+/// corroboration that makes a people-finder hit trustworthy. Folding duplicates
+/// through [`Entity::merge`] (GREATEST-semantics: max confidence, summed
+/// corroboration, unioned + de-duplicated evidence and tags) means a fact both
+/// directories agree on now reads as corroborated. `merge` is commutative in the
+/// folded signal, so the result is independent of input order (only the surviving
+/// slot's position follows first-occurrence order).
 pub(super) fn dedup_by_kind_value(entities: &mut Vec<Entity>) {
-    let mut seen = std::collections::HashSet::new();
-    entities.retain(|e| seen.insert((e.kind.clone(), e.value.clone())));
+    use std::collections::HashMap;
+    let mut index: HashMap<(EntityKind, String), usize> = HashMap::new();
+    let mut deduped: Vec<Entity> = Vec::with_capacity(entities.len());
+    for e in entities.drain(..) {
+        let key = (e.kind.clone(), e.value.clone());
+        match index.get(&key) {
+            Some(&i) => deduped[i].merge(e),
+            None => {
+                index.insert(key, deduped.len());
+                deduped.push(e);
+            }
+        }
+    }
+    *entities = deduped;
 }
 
 #[async_trait]

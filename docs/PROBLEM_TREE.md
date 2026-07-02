@@ -4306,3 +4306,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tests (+7), full suite (lib + smoke + architecture + doctests, all binaries)
   green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-F3 + §5 — same commit.
+
+- **2026-07-02** — **SOL-MERGE enforcement: `au_people` was dropping
+  cross-source corroboration by de-duplicating with a keep-first `retain`
+  instead of a GREATEST-merge.** Selected from a fifth discovery pass's
+  dedup-merge-correctness candidate, verified directly against the code.
+  `au_people` scrapes two independent AU residential directories (White Pages
+  AU + True People Search AU, plus a relatives pass over each) and accumulates
+  every hit into one result vector, then calls `dedup_by_kind_value`. That
+  helper used `HashSet::retain`, keeping the FIRST entity for each `(kind,
+  value)` and discarding the rest. But the same address or phone is routinely
+  listed by BOTH directories: each emits an entity with the same normalised
+  `(kind, value)` — hence the same UID — but its own distinct source evidence.
+  Keep-first therefore silently threw away the second directory's independent
+  confirmation *at the module boundary*, before the engine's own UID-merge
+  (which correctly applies the GREATEST-semantics SOL-MERGE guarantees) could
+  ever see it — losing the max-confidence, the summed corroboration count, and
+  half the evidence trail on exactly the facts two sources agreed on. This is
+  a data-loss/correctness bug, distinct from T2.7's scraper-*resilience* axis
+  (panic-safety / layout drift) even though it lives in the same module. Fixed
+  by rewriting `dedup_by_kind_value` to fold duplicates through `Entity::merge`
+  (max confidence, saturating corroboration, evidence + tag union), preserving
+  first-occurrence order; `merge` is commutative in the folded signal, so the
+  result is order-independent. 1 regression test, red/green-verified: it asserts
+  the survivor carries BOTH directories' evidence, corroboration 2, and the
+  higher of the two confidences — all three of which the old keep-first
+  behaviour demonstrably failed (confirmed by reverting the fix and watching it
+  go red, then restoring). No identity/PII decision logic, no architecture
+  guard, no clippy/unsafe posture touched. Gate green: 4317 lib tests (+1), full
+  suite (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-MERGE enforcement +
+  §5 — same commit.
