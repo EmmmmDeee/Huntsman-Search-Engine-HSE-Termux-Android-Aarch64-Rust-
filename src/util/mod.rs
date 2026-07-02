@@ -41,6 +41,7 @@ pub mod postcode_au;
 pub mod preflight;
 pub mod proxy;
 pub mod raw_archive;
+pub mod regional;
 pub mod response_cache;
 pub mod scan;
 pub mod see_know;

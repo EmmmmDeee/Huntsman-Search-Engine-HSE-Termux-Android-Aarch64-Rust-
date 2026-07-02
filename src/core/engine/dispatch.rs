@@ -984,50 +984,63 @@ impl super::ScanEngine {
             // where `finalise_module_result` stamps each admitted entity.
             let attack_techniques = module.attack_techniques();
 
-            // Re-set the foreign-key scan-scope ambient INSIDE the spawned task:
-            // tokio task-locals do NOT propagate across `spawn`, so without this the
-            // concurrent path's `scan_body` calls would land in the unscoped bucket
-            // and be lost at drain (PROBLEM_TREE T2.11). `with_scan` is the
-            // allow-listed pure `core → util::found_keys` leaf.
+            // Re-set the foreign-key scan-scope AND regional-search ambients
+            // INSIDE the spawned task: tokio task-locals do NOT propagate
+            // across `spawn`, so without this the concurrent path's
+            // `scan_body` calls would land in the unscoped bucket and be lost
+            // at drain, and `search_engines::regional_enabled()` would
+            // silently read the unscoped `false` default instead of this
+            // scan's actual setting (PROBLEM_TREE T2.11). Both `with_scan`
+            // and `with_regional` are allow-listed pure `core → util` leaves.
+            // `regional_enabled()` reads the CURRENT task's ambient — still
+            // valid here since dispatch runs on the same task `with_regional`
+            // was established on in `run_with_ledger`, right up to this spawn.
             let scope_sid = sid.to_string();
-            set.spawn(crate::util::found_keys::with_scan(scope_sid, async move {
-                let _permit = permit;
+            let regional_on = crate::util::regional::regional_enabled();
+            set.spawn(crate::util::found_keys::with_scan(
+                scope_sid,
+                crate::util::regional::with_regional(regional_on, async move {
+                    let _permit = permit;
 
-                log_module_dispatch(name, &target);
-                emitter.emit(
-                    &sid,
-                    EventKind::ModuleStart {
-                        module: name.into(),
-                    },
-                );
+                    log_module_dispatch(name, &target);
+                    emitter.emit(
+                        &sid,
+                        EventKind::ModuleStart {
+                            module: name.into(),
+                        },
+                    );
 
-                // `.instrument()` (not an ambient span) because a spawned task
-                // does NOT inherit the dispatcher's current span — without it the
-                // external HTTP logs from this concurrently-running module would
-                // be context-less. Carries {scan_id, module, target} for the same
-                // end-to-end trace the sequential path gets.
-                let result =
-                    run_module_guarded(module_timeout_ms, name, module_arc.process(&target, &ctx))
-                        .instrument(tracing::info_span!(
-                            "module",
-                            module = name,
-                            scan_id = %sid,
-                            target = %target.value
-                        ))
-                        .await;
+                    // `.instrument()` (not an ambient span) because a spawned task
+                    // does NOT inherit the dispatcher's current span — without it the
+                    // external HTTP logs from this concurrently-running module would
+                    // be context-less. Carries {scan_id, module, target} for the same
+                    // end-to-end trace the sequential path gets.
+                    let result = run_module_guarded(
+                        module_timeout_ms,
+                        name,
+                        module_arc.process(&target, &ctx),
+                    )
+                    .instrument(tracing::info_span!(
+                        "module",
+                        module = name,
+                        scan_id = %sid,
+                        target = %target.value
+                    ))
+                    .await;
 
-                if throttle_ms > 0 {
-                    sleep(Duration::from_millis(throttle_ms)).await;
-                }
+                    if throttle_ms > 0 {
+                        sleep(Duration::from_millis(throttle_ms)).await;
+                    }
 
-                DispatchOutcome {
-                    name,
-                    result,
-                    ttl_secs,
-                    cache_key,
-                    attack_techniques,
-                }
-            }));
+                    DispatchOutcome {
+                        name,
+                        result,
+                        ttl_secs,
+                        cache_key,
+                        attack_techniques,
+                    }
+                }),
+            ));
         }
 
         while let Some(joined) = set.join_next().await {

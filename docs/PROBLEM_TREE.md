@@ -641,21 +641,46 @@ direct.**
     the code but never captured in either tree despite T2.11 existing
     specifically to track "process-global state not isolated across the 8
     concurrent `serve` scans" — confirmed via a direct code read, not
-    speculation. → the SOL-ISOLATE pattern already proven for `found_keys`
-    (a `tokio::task_local!` ambient in a new small `util` module — mirroring
-    `util::found_keys::SCAN`/`with_scan`/`current_scan()` exactly — set by
-    `run_with_ledger` around `run_with_ledger_inner`'s future AND re-set inside
-    the concurrent dispatch path's per-module `set.spawn(...)` at
-    `dispatch.rs:993`, since task-locals don't cross `spawn`) applies directly;
-    unlike `found_keys`, the regional value is a `Copy` `bool` computed once
-    per scan (no per-call cloning needed). This requires retiring
-    `core::hooks::ModuleHooks::set_regional` (currently a plain `fn(bool)`
-    hook, which can't wrap a future the way task-local scoping needs) and its
-    `modules::mod.rs` installation, and adding the new `util` module to the
-    `core_does_not_import_util_directly` architecture-guard allowlist — a
-    real, multi-file restructuring of the `core::hooks` interface itself, not
-    a drop-in swap, so it is correctly scoped as a separate unit rather than
-    folded into this cycle's smaller finding. *Not yet fixed.*
+    speculation. **P2** ✅ **Fixed (2026-07-02, cont'd):** the sketched
+    SOL-ISOLATE replication was implemented in full. New `util::regional`
+    module: a `tokio::task_local!` ambient (`REGIONAL: bool`) with
+    `with_regional`/`regional_enabled`, mirroring `util::found_keys::SCAN`/
+    `with_scan`/`current_scan()` exactly. `run_with_ledger` now computes
+    `regional_on` from `scan.options.regional_search || settings::get_bool(…)`
+    BEFORE moving `scan` into `run_with_ledger_inner`, and wraps the inner
+    future in `with_regional(regional_on, …)`, nested inside the existing
+    `found_keys::with_scan`; the concurrent dispatch path's per-module
+    `set.spawn(...)` at `dispatch.rs:993` reads the ambient value with
+    `regional_enabled()` (valid — dispatch runs on the same task the ambient
+    was set on, right up to the spawn) and re-establishes it inside the
+    spawned task, since task-locals don't cross `spawn`. Retired
+    `core::hooks::ModuleHooks::set_regional` (the `fn(bool)` hook couldn't
+    wrap a future) and its `modules::mod.rs` installation entirely — the
+    engine now sets the ambient directly via the allow-listed pure
+    `core → util` leaf, exactly like `found_keys::with_scan`. `search_engines`'s
+    `REGIONAL_SEARCH: AtomicBool` + `set_regional` are gone;
+    `regional_enabled()` is now a thin wrapper over `util::regional::regional_enabled()`.
+    3 new test layers: 4 `util::regional` unit tests (unscoped-default,
+    scoped-read-back, nested-scope non-leakage, async `with_regional`); a
+    `search_engines` wiring test
+    (`build_queries_reads_the_per_scan_regional_ambient`) proving `build_queries`
+    picks up the ambient and that nested/overlapping scopes don't contaminate
+    each other; and — the strongest proof — a genuine dual-concurrent-scan
+    integration test
+    (`concurrent_scans_do_not_contaminate_each_others_regional_setting` in
+    `tests/smoke.rs`) that runs TWO real scans through the actual engine via
+    `tokio::join!` with opposite `regional_search` settings on the concurrent
+    dispatch path, asserting each scan's `search_engines`-observed setting is
+    its own. Verified as a genuine regression test by reverting only the
+    `dispatch.rs` re-scope and re-running: the integration test failed (it
+    did not return within a 30 s bound and was killed by the test harness's
+    timeout, rather than completing with a wrong-value assertion failure —
+    the exact underlying mechanism was not further root-caused, since the
+    observed FAILED result was sufficient proof the re-scope is load-bearing);
+    restored the fix and re-confirmed the test passes cleanly (well under a
+    second) with it in place. Full gate green (fmt/clippy/doc/test);
+    `hse selftest` (161 modules, dispatch graph intact) and `hse doctor` both
+    exercised the real CLI surface post-change with no regression.
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -4796,3 +4821,78 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tests, or architecture changes — the fix itself is the next unit, not this
   one. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` SOL-ISOLATE + §5 — same
   commit.
+
+- **2026-07-02** — **T2.11: implemented the sketched `REGIONAL_SEARCH`
+  isolation fix in full — the SOL-ISOLATE task-local pattern replicated
+  exactly, with a genuine dual-concurrent-scan integration proof.** New
+  `src/util/regional/mod.rs`: a `tokio::task_local!` ambient (`REGIONAL:
+  bool`) with `with_regional`/`regional_enabled`, mirroring
+  `util::found_keys::SCAN`/`with_scan`/`current_scan()` line-for-line.
+  `core::engine::mod.rs::run_with_ledger` now computes `regional_on` from
+  `scan.options.regional_search || settings::get_bool("feature.regional", …)`
+  BEFORE moving `scan` into `run_with_ledger_inner` (hoisted from where it
+  used to live, since the value must be known before the future is
+  constructed), and wraps the inner future in `with_regional(regional_on, …)`,
+  nested inside the pre-existing `found_keys::with_scan`.
+  `core::engine::dispatch.rs`'s concurrent spawn point (`set.spawn(...)` at
+  what was line 993) reads `regional_enabled()` — valid, since dispatch runs
+  on the same task the ambient was set on, right up to the spawn call — and
+  re-establishes it inside the spawned task via a second nested
+  `with_regional`, exactly mirroring the existing `found_keys::with_scan`
+  re-scope immediately above it (task-locals do not cross `spawn`). Retired
+  `core::hooks::ModuleHooks::set_regional` (a plain `fn(bool)` hook — it
+  cannot wrap a future, which task-local scoping structurally needs) and its
+  `modules::mod.rs` installation entirely; the engine now sets the ambient
+  directly via the allow-listed pure `core → util` leaf
+  (`util::regional::{with_regional,regional_enabled}` added to
+  `core_does_not_import_util_directly`'s allowlist, same justification as
+  `found_keys::with_scan`). `modules::search_engines::REGIONAL_SEARCH`
+  (`AtomicBool`) and its `set_regional` fn are gone; `regional_enabled()` is
+  now a one-line wrapper over the new `util` fn — every existing call site
+  (`mod.rs:450`'s trace log, `queries/mod.rs:326`'s `build_queries` gate)
+  needed zero changes, since they read the SAME function name with a swapped
+  implementation.
+  Three test layers, from narrowest to broadest: (1) 4 `util::regional` unit
+  tests (unscoped degrades to `false`; a scoped value reads back exactly;
+  nested scopes don't leak into each other after the inner exits; the async
+  `with_regional` wrapper scopes a real future). (2) A `search_engines` wiring
+  test, `build_queries_reads_the_per_scan_regional_ambient`, proving the ACTUAL
+  toggle consumer (`build_queries`, not just the primitive) reads the ambient
+  correctly, including through nested/overlapping scopes. (3) The strongest
+  proof — a genuine dual-concurrent-scan integration test in `tests/smoke.rs`,
+  `concurrent_scans_do_not_contaminate_each_others_regional_setting`: two real
+  scans, run genuinely concurrently via `tokio::join!` through the REAL engine
+  (`ScanEngine::run_with_ledger`, `max_concurrent: 4` so both exercise the
+  concurrent dispatch path — the one needing the `dispatch.rs` re-scope, not
+  just `run_with_ledger`'s outer wrap), with OPPOSITE `regional_search`
+  settings, asserting each scan's dispatched module observes only its OWN
+  setting via a purpose-built `RegionalProbeModule` that tags an entity with
+  what it saw. Verified as a genuine regression test, not just a passing test:
+  reverting ONLY the `dispatch.rs` re-scope (via `git stash push` on that one
+  file, confirmed via `git status`/`git stash list` before and after) and
+  re-running the integration test produced a FAILED result — the test did not
+  return within a 30 s bound and was killed by the harness's timeout, rather
+  than completing with a wrong-value assertion (the precise underlying
+  mechanism was not further root-caused; the FAILED outcome was sufficient
+  proof the re-scope is load-bearing). Restored the fix (`git stash pop`,
+  confirmed via `git status` and a direct grep for the restored code) and
+  re-ran: passes cleanly in well under a second.
+  Also corrected a stale `SOLUTION_TREE` §4d coverage-snapshot line while
+  refreshing T2.11's status (the gap changed): it previously conflated
+  SOL-BUDGET's accepted-`[-]` "does `reset_per_scan` get called" resolution
+  (cycle 18, unrelated) with the genuinely-still-open `QuotaBudget::reset_scan`
+  cross-scan zeroing race this session identified as real-but-architecturally-
+  larger — the two are different findings about different functions, and only
+  the QuotaBudget one remains open.
+  Full gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` (4330 lib tests, +8; every integration suite,
+  including `tests/smoke.rs`, green). Behaviour-touching change to
+  `core::engine`'s concurrency model, so also exercised the real CLI surface
+  per `CONVENTIONS.md` §9: `hse selftest` (161 modules, dispatch graph intact,
+  9/9 checks pass) and `hse doctor` both ran clean post-change. No identity/PII
+  logic, no weakening of `#![forbid(unsafe_code)]` or any architecture guard —
+  the `core_does_not_import_util_directly` allowlist addition EXTENDS the
+  guard's designed pure-leaf mechanism (the same one `found_keys::with_scan`
+  already uses), not a weakening of it. T2.11 remains `[~]` — the
+  `QuotaBudget::reset_scan` residual is still genuinely open. **Paired:**
+  `SOLUTION_TREE` SOL-ISOLATE + §4d correction + §5 — same commit.

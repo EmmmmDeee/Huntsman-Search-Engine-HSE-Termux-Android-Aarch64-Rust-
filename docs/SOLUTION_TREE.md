@@ -288,20 +288,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `key_chaining_{sequential,concurrent}_dispatch` integration tests green; no
   single-scan regression. *Residual:* the per-scan **budget** statics'
   `reset_scan`-zeroing folds into the same ambient later (LOW).
-  **New residual found (2026-07-02):** `search_engines::REGIONAL_SEARCH` — a
-  single process-global `AtomicBool` set by the `core::hooks::set_regional`
-  hook and read by every search-query builder for the scan's duration — has
-  the identical unisolated-static shape `with_scan` was built to fix, and its
-  own code comment self-documents the race ("last writer wins for the overlap
-  window"), but this instance was never captured in either tree until now
-  (MED — a determinism/data-quality corruption: a concurrently-started scan
-  can silently flip another in-flight scan's actual search-query behaviour).
-  The SOL-ISOLATE pattern applies directly (a new `util` task-local,
-  `with_regional`, set around `run_with_ledger` + re-set at the
-  `dispatch.rs:993` spawn point exactly like `found_keys`), but retiring the
-  `fn(bool)`-shaped `ModuleHooks::set_regional` hook for a future-wrapping
-  task-local is a real `core::hooks` interface change, correctly scoped as
-  separate follow-on work, not folded into this finding. *Not yet fixed.*
+  **Second instance fixed (2026-07-02, cont'd):** `search_engines::
+  REGIONAL_SEARCH` had the identical unisolated-static shape `with_scan` was
+  built to fix — a single process-global `AtomicBool`, self-documented in its
+  own code comment as racing across concurrent scans ("last writer wins for
+  the overlap window") — a MED determinism/data-quality corruption (a
+  concurrently-started scan could silently flip another in-flight scan's
+  actual search-query behaviour). Replicated the SOL-ISOLATE pattern in full:
+  new `util::regional` module (`tokio::task_local! { REGIONAL: bool }` +
+  `with_regional`/`regional_enabled`, mirroring `found_keys::SCAN`/
+  `with_scan`/`current_scan()` exactly); `run_with_ledger` computes
+  `regional_on` before moving `scan` into `run_with_ledger_inner` and wraps
+  the inner future in `with_regional`, nested inside the existing
+  `found_keys::with_scan`; `dispatch.rs:993`'s concurrent spawn point re-reads
+  and re-scopes it inside the spawned task, exactly like `found_keys` needs
+  (task-locals don't cross `spawn`). Retired `core::hooks::ModuleHooks::
+  set_regional` (a `fn(bool)` hook, incompatible with future-wrapping scoping)
+  and its installation entirely — the engine now sets the ambient directly via
+  the allow-listed pure `core → util` leaf, same as `found_keys`.
+  `search_engines::REGIONAL_SEARCH`/`set_regional` are gone; `regional_enabled()`
+  is a thin wrapper over the new util fn. 3 test layers: 4 `util::regional`
+  unit tests, a `search_engines` wiring test proving `build_queries` picks up
+  the ambient with no cross-scope leakage, and — the strongest proof — a
+  genuine dual-concurrent-scan integration test
+  (`concurrent_scans_do_not_contaminate_each_others_regional_setting`) running
+  two real scans through the actual engine via `tokio::join!` with opposite
+  settings on the concurrent dispatch path. Verified as a real regression
+  test: reverting only the `dispatch.rs` re-scope made the integration test
+  fail (it did not return within a 30 s bound); restored and re-confirmed
+  green (well under a second). Full gate green; `hse selftest`/`hse doctor`
+  both exercised post-change with no regression.
 - **`[x]` SOL-LIVE-DISPATCH-BUDGET · Live `max_entities` check inside the
   concurrent spawn loop** — `dispatch_target_concurrent`'s Phase-2 loop now calls
   `JoinSet::try_join_next` (non-blocking) at the top of every iteration, absorbing
@@ -866,7 +882,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
-| SOL-ISOLATE | T2.11 found_keys | `[x]` |
+| SOL-ISOLATE | T2.11 found_keys + regional-search | `[x]` |
 | SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
@@ -1050,9 +1066,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
-  LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
-  budget-reset-zeroing note remains, and no further action is planned on it).
+  T2.7 open; T2.11 mostly done (oathnet overspend + found_keys +
+  regional-search/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
+  closed). **Corrected (2026-07-02):** this line previously conflated two
+  DIFFERENT items under "accepted-`[-]`, no further action planned" —
+  SOL-BUDGET's `[-]` (whether `reset_per_scan` is CALLED — yes, a faulty-
+  premise residual, correctly accepted) is unrelated to
+  `QuotaBudget::reset_scan`'s cross-scan zeroing race (whether that call
+  WIPES A CONCURRENTLY-RUNNING SCAN's budget state — confirmed real, genuinely
+  still open, NOT accepted-won't-fix: `try_increment`'s hot-path lock-free CAS
+  design means per-scan keying needs a real architectural decision, not a
+  direct `found_keys`/regional-search-style replication). One MED item (the
+  budget-static residual) remains genuinely open on T2.11.
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -3605,3 +3630,37 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `found_keys::with_scan`/`current_scan()`, the `dispatch.rs:993` re-scope
   point) so a future cycle can implement it directly. Doc-only this cycle.
   Gate: n/a (docs). Paired: `PROBLEM_TREE` T2.11 + §8 — same commit.
+
+- **2026-07-02** — **SOL-ISOLATE: `REGIONAL_SEARCH` isolation implemented in
+  full — the sketch delivered as a real fix, with a genuine dual-concurrent-
+  scan integration proof.** New `util::regional` module: `tokio::task_local!
+  { REGIONAL: bool }` + `with_regional`/`regional_enabled`, mirroring
+  `found_keys::SCAN`/`with_scan`/`current_scan()` line-for-line.
+  `run_with_ledger` computes `regional_on` before moving `scan` into
+  `run_with_ledger_inner` and wraps the inner future in `with_regional`,
+  nested inside `found_keys::with_scan`; `dispatch.rs`'s concurrent spawn
+  point reads and re-establishes the ambient inside the spawned task, exactly
+  mirroring the pre-existing `found_keys` re-scope right beside it. Retired
+  `core::hooks::ModuleHooks::set_regional` (a `fn(bool)` hook, incompatible
+  with future-wrapping scoping) and its installation entirely — the engine
+  sets the ambient directly via the allow-listed pure `core → util` leaf, same
+  as `found_keys`. `search_engines::REGIONAL_SEARCH`/`set_regional` are gone;
+  every existing consumer call site needed zero changes (same function name,
+  swapped implementation). Three test layers: 4 `util::regional` unit tests;
+  a `search_engines` wiring test proving `build_queries` reads the ambient
+  with no cross-scope leakage; and a genuine dual-concurrent-scan integration
+  test in `tests/smoke.rs` running two real scans through the actual engine
+  via `tokio::join!` on the concurrent dispatch path with opposite settings,
+  each asserting only its own via a purpose-built probe module. Verified as a
+  real regression test: reverting only the `dispatch.rs` re-scope made the
+  integration test FAIL (did not return within 30 s, killed by the harness
+  timeout); restored and re-confirmed passing cleanly in well under a second.
+  Also corrected a stale §4d coverage-snapshot line that conflated
+  SOL-BUDGET's unrelated accepted-`[-]` resolution with the genuinely-still-
+  open `QuotaBudget::reset_scan` residual. Full gate green (4330 lib tests,
+  +8; every integration suite green); `hse selftest`/`hse doctor` both
+  exercised the real CLI surface post-change with no regression. No
+  identity/PII logic; the architecture-guard allowlist addition extends the
+  guard's designed pure-leaf mechanism, not a weakening. T2.11 remains `[~]`
+  — the `QuotaBudget::reset_scan` residual is still genuinely open. Paired:
+  `PROBLEM_TREE` T2.11 + §4d correction + §8 — same commit.

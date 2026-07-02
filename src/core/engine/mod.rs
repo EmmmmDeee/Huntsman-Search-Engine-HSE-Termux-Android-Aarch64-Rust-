@@ -281,9 +281,22 @@ impl ScanEngine {
         dispatched: &mut DispatchLog,
     ) -> Result<Scan> {
         let sid = scan.id.clone();
+        // Regional augmentation is on when EITHER the per-scan flag
+        // (`--regional`) is set OR the persistent default `feature.regional`
+        // is on (universal toggleability; default off ⇒ geolocation-neutral
+        // queries). Computed here, before `scan` moves into the inner call, so
+        // it can be captured into the `with_regional` ambient below — a per-
+        // scan task-local (PROBLEM_TREE T2.11), not the process-global
+        // `search_engines` used to read, which `hse serve`'s concurrent scans
+        // could silently flip for each other.
+        let regional_on = scan.options.regional_search
+            || crate::util::settings::get_bool("feature.regional", false);
         crate::util::found_keys::with_scan(
             sid,
-            self.run_with_ledger_inner(scan, target, ctx, dispatched),
+            crate::util::regional::with_regional(
+                regional_on,
+                self.run_with_ledger_inner(scan, target, ctx, dispatched),
+            ),
         )
         .await
     }
@@ -304,16 +317,9 @@ impl ScanEngine {
         // Driven through the module-hook registry so core stays module-agnostic
         // (see `core::hooks`).
         crate::core::hooks::reset_per_scan(&scan.id);
-        // Apply the regional-search toggle for this scan. Regional augmentation
-        // is on when EITHER the per-scan flag (`--regional`) is set OR the
-        // persistent default `feature.regional` is on (universal toggleability;
-        // default off ⇒ geolocation-neutral queries). The per-scan flag only
-        // adds regional — set the standing baseline via `hse config
-        // feature.regional <on|off>`. Mirrors the see_know per-scan global.
-        crate::core::hooks::set_regional(
-            scan.options.regional_search
-                || crate::util::settings::get_bool("feature.regional", false),
-        );
+        // The regional-search ambient is already established by
+        // `run_with_ledger` (the caller), which wraps this whole function's
+        // future in `util::regional::with_regional` — nothing to do here.
 
         // Apply per-scan SeekNow budget override if the operator asked
         // for one. Capped at 500 so a single scan cannot blow the

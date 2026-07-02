@@ -111,6 +111,18 @@ fn core_does_not_import_util_directly() {
                 // scans (PROBLEM_TREE T2.11). reset/drain still go through the module
                 // hook (they bridge to `core::entity`); only the pure scope is here.
                 && !line.contains("util::found_keys::with_scan")
+                // Pure task-local ambient (no I/O): the regional-search
+                // scan-scope, the same shape/justification as
+                // `found_keys::with_scan` immediately above. The engine wraps
+                // each scan + each spawned dispatch task in `with_regional` so
+                // `search_engines::regional_enabled()` reads the setting of
+                // the scan actually executing on the calling task, never a
+                // concurrently-running sibling's (PROBLEM_TREE T2.11).
+                // `regional_enabled` itself is read directly at the dispatch
+                // spawn site to capture the value before re-scoping it inside
+                // the spawned task.
+                && !line.contains("util::regional::with_regional")
+                && !line.contains("util::regional::regional_enabled")
                 // Persistent capability toggles (universal toggleability): the
                 // engine's module gate reads `module.<name>` on/off.
                 && !line.contains("util::settings::get_bool")

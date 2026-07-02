@@ -237,6 +237,44 @@ fn regional_dorks_are_minimal_and_region_scoped() {
     assert!(regional_dorks(&Target::new(TargetKind::Username, "")).is_empty());
 }
 
+#[tokio::test]
+async fn build_queries_reads_the_per_scan_regional_ambient() {
+    // PROBLEM_TREE T2.11: `regional_enabled()` used to read a process-global
+    // `AtomicBool` shared unkeyed across `hse serve`'s concurrent scans — a
+    // concurrently-started scan could silently flip another in-flight scan's
+    // query building. It now reads `util::regional`'s per-scan task-local
+    // ambient, so this proves the WIRING end-to-end: `build_queries` (the
+    // actual toggle consumer, via `search_engines::regional_enabled()`)
+    // produces MORE queries when scoped `true` than when scoped `false` (or
+    // unscoped, which degrades to `false`), for the same AU-region-signalled
+    // target — and, critically, that two overlapping scopes never leak into
+    // each other, mirroring `found_keys`'s own concurrent-isolation proof.
+    let t = Target::new(TargetKind::Phone, "+61 2 9374 4000");
+
+    let neutral = build_queries(&t);
+    let regional = crate::util::regional::with_regional(true, async { build_queries(&t) }).await;
+    assert!(
+        regional.len() > neutral.len(),
+        "regional=true must add AU dorks on top of the geo-neutral base: \
+         neutral={neutral:?} regional={regional:?}"
+    );
+
+    // Nested/overlapping scopes (standing in for two concurrent `hse serve`
+    // scans) never contaminate each other.
+    crate::util::regional::with_regional(true, async {
+        assert_eq!(build_queries(&t).len(), regional.len(), "outer scope=true");
+        let inner_off =
+            crate::util::regional::with_regional(false, async { build_queries(&t) }).await;
+        assert_eq!(inner_off.len(), neutral.len(), "inner scope=false");
+        assert_eq!(
+            build_queries(&t).len(),
+            regional.len(),
+            "outer scope=true must be unaffected after the inner scope exited"
+        );
+    })
+    .await;
+}
+
 #[test]
 fn address_extractor_finds_city_state_pattern() {
     let text = "Jordan lives in Nundah, Queensland with his family";

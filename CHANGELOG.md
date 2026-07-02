@@ -419,6 +419,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A scan's regional-search setting can no longer be silently overridden by
+  another scan running concurrently under `hse serve`.** The toggle that
+  decides whether search queries get geolocation-biased augmentation lived
+  in a single process-global flag shared, unkeyed, across every concurrent
+  scan — if a second scan started while the first's search-engine module
+  was still running, the first scan's queries could silently start using
+  the second scan's setting instead of its own. The setting is now scoped
+  per-scan, so each scan's search behaviour depends only on its own
+  configuration, never on unrelated concurrent scan timing.
 - **`ipinfo`/`ipquery` geolocation fixes now contribute to the person-location
   corroboration signal**, closing the same gap fixed for `ip_whois_geo`
   above: both recorded a resolved IP's coordinates without the field the
