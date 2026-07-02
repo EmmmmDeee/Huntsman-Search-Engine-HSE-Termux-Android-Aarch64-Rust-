@@ -154,10 +154,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fifth-pass candidates were re-verified and rejected as not-real (a
   `HostedOn` Url→IpAddress gap — the edge is correctly Url→Domain — and a
   CLI/SPA `report.json` parity gap — both surfaces share one builder).
-  *Gap:* `cargo-fuzz` (nightly CI lane), the dossier/txt/html **import**
-  proptest, and `username_search`'s parser no-panic coverage (unconfirmed
-  whether this pattern applies — its detection logic is table-driven, not
-  a bespoke parser) are outstanding. **(§4b)**
+  *Continued (2026-07-02, cont'd):* closed the `username_search` T2.7
+  adversarial-input question by covering the function it actually feeds
+  attacker-controlled data into. `username_search` itself is table-driven
+  (no bespoke parser), but its `scan_text_for_keys` delegates to
+  `key_harvest::identify_api_key`, whose non-vendor paths (generic-hex gate,
+  URL-embedded-key byte-slice under a length cap, `user:password` split,
+  recursive self-call) had no never-panics property — only
+  `identify_vendor_api_key` did. Added a `.{0,512}` never-panics proptest for
+  `identify_api_key` plus a deterministic regression test for an oversized
+  multibyte `?key=` value (byte cap lands mid-codepoint; `truncate_safe`
+  boundary-snap keeps it total). Already-total, no bug found — pure hardening.
+  *Gap:* `cargo-fuzz` (nightly CI lane) and the dossier/txt/html **import**
+  proptest are outstanding. **(§4b)**
 
 ### S.CORE — Correctness & determinism
 
@@ -849,12 +858,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
-  **Adversarial-input leg (2026-07-01):** `au_people` proptested (SOL-F3
-  correction above); `au_electoral`/`au_property` now proptested too (SOL-F3
-  continuation above); `search_engines` too (SOL-F3 cont'd) — 4 of 5 named
-  modules covered. `username_search` remains, and whether this exact
-  pattern applies to it is unconfirmed (table-driven detection logic, not
-  a bespoke per-site parser). Golden-fixture/health-signal legs unchanged.
+  **Adversarial-input leg — now 5/5 (2026-07-02):** `au_people`,
+  `au_electoral`/`au_property`, and `search_engines` proptested (SOL-F3
+  above). `username_search` scoped 2026-07-02: confirmed table-driven (three
+  total `Detect` variants: status compare + `str::contains`), so no bespoke
+  parser to proptest — its only untrusted-input processor, `scan_text_for_keys`,
+  delegates to `key_harvest::identify_api_key`, whose non-vendor paths
+  (generic-hex, URL-param byte-slice under cap, user:pass, recursion) were the
+  real uncovered surface; added a never-panics proptest + oversized-multibyte
+  regression test there. Golden-fixture/health-signal legs unchanged.
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
@@ -3371,3 +3383,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clippy/unsafe posture touched. Gate green: 4319 lib tests (+2), full suite
   green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C6 + §8 —
   same commit.
+
+- **2026-07-02** — **SOL-F3 / T2.7: `identify_api_key` never-panics coverage —
+  closes the `username_search` adversarial-input leg (now 5/5).** Scoped the
+  last of T2.7's 5 named scraper modules against the code: `username_search` is
+  table-driven (three total `Detect` variants — status compare + `str::contains`)
+  with no bespoke parser, so a module-level proptest would be vacuous. Its only
+  untrusted-input processor, `scan_text_for_keys`, delegates to
+  `key_harvest::identify_api_key` — and only `identify_vendor_api_key` had a
+  never-panics property, leaving `identify_api_key`'s superset paths (generic-hex
+  gate, URL-embedded-key byte-slice under a cap, `user:password` split, recursive
+  self-call) uncovered despite processing attacker-controlled bytes (also via
+  `oathnet_pro` stealer harvesting). Added a `.{0,512}` never-panics proptest for
+  `identify_api_key` plus a deterministic test for an oversized multibyte `?key=`
+  value (byte cap mid-codepoint; `truncate_safe` boundary-snap keeps it total).
+  Already-total, no bug — pure hardening, a property test for the
+  panic-on-hostile-input class. No production code, no identity/PII logic, no
+  architecture guard, no clippy/unsafe posture touched. Gate green: 4321 lib
+  tests (+2), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
+  `PROBLEM_TREE` T2.7 + §8 — same commit.

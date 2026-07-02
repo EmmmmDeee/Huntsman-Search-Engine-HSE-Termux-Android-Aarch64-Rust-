@@ -537,6 +537,20 @@ fn user_password_skips_http_urls() {
     assert!(identify_api_key("https://example.com").is_none());
 }
 
+#[test]
+fn url_param_value_far_over_cap_with_multibyte_does_not_panic() {
+    // A `?key=` value much longer than EXTRACTED_VALUE_MAX, built from 3-byte
+    // characters so the byte cap lands MID-codepoint — a raw `&rest[..cap]`
+    // slice would panic here, so the extractor's `truncate_safe` boundary-snap
+    // is what keeps this total. This is the exact shape a hostile profile page
+    // or stealer record can drive into `identify_api_key` (via
+    // `username_search::scan_text_for_keys`), so a panic would be a scan DoS.
+    // `€` is 3 bytes; 2000 of them = 6000 bytes, comfortably past the cap.
+    let hostile = format!("?key={}", "€".repeat(2000));
+    // Must return without panicking; the value is not a real key, so None.
+    assert!(identify_api_key(&hostile).is_none());
+}
+
 // ─── extract_api_keys_from_item orchestrator ──────────────────
 
 fn empty_state() -> (HashSet<String>, ModuleResult) {
@@ -2239,7 +2253,7 @@ fn jwt_validation_refines_tier_and_flags_alg_none() {
 
 // ─── PrefixMatcher property tests ────────────────────────────────────────────
 mod prop {
-    use super::super::{identify_vendor_api_key, pattern_catalogue};
+    use super::super::{identify_api_key, identify_vendor_api_key, pattern_catalogue};
     use proptest::prelude::*;
 
     proptest! {
@@ -2248,6 +2262,20 @@ mod prop {
         #[test]
         fn vendor_key_never_panics_on_arbitrary_input(s in ".{0,128}") {
             let _ = identify_vendor_api_key(&s);
+        }
+
+        /// The PUBLIC entry point `identify_api_key` is a superset of
+        /// `identify_vendor_api_key` — it adds the generic-hex gate, the
+        /// URL-embedded-key extraction (byte-slicing at a computed offset,
+        /// capped and boundary-snapped), a `user:password` split, and a
+        /// RECURSIVE self-call — so it carries its own panic surface the
+        /// vendor-only property above never exercises. It is run over fully
+        /// attacker-controlled data (`username_search` probe-page bodies via
+        /// `scan_text_for_keys`, and stealer-log records), where a panic is a
+        /// scan-killing DoS, so it must be total on arbitrary input too.
+        #[test]
+        fn identify_api_key_never_panics_on_arbitrary_input(s in ".{0,512}") {
+            let _ = identify_api_key(&s);
         }
 
         /// Synthesised valid-shaped token (prefix + high-entropy suffix at

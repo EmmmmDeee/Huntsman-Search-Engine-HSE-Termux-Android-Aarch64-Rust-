@@ -425,11 +425,32 @@ direct.**
   guarantee the other four modules now have, which exercises the full
   `.{0,256}` arbitrary-input space rather than a fixed case list. Added a
   `mod prop` block mirroring the established pattern exactly (5 new
-  cases). `username_search` remains the sole uncovered module — its
-  detection logic is table-driven pattern matching, not a bespoke parser,
-  so this proptest pattern may not directly apply; unconfirmed, left for a
-  future cycle to scope. The golden-fixture/health-signal legs (T2.14's
-  sibling, SOL-HEALTH-SIGNAL) remain fully open.
+  cases).
+  *Partial (2026-07-02, cont'd 3 — `username_search` scoped, leg now 5/5):*
+  confirmed against the code what the prior note left unconfirmed.
+  `username_search` genuinely has no bespoke parser: its `Detect` enum is
+  exactly three total variants (`StatusEq`, `StatusAndBody`,
+  `StatusAndNotBody`) resolved by an HTTP-status compare plus
+  `str::contains` (both total), so there is nothing parser-shaped to
+  proptest at the module level. Its ONE untrusted-input processor is
+  `scan_text_for_keys(&body)`, which runs over the fully attacker-controlled
+  probe-page body and delegates to `oathnet_pro::key_harvest::identify_api_key`.
+  That delegate turned out to be the real, uncovered panic surface: the
+  existing `mod prop` never-panics property covered only
+  `identify_vendor_api_key`, while the PUBLIC `identify_api_key` is a
+  superset (generic-hex gate, URL-embedded-key extraction that byte-slices
+  at a computed offset under a length cap, a `user:password` split, and a
+  recursive self-call) — none of which the vendor-only property exercises.
+  Added a `.{0,512}` never-panics proptest for `identify_api_key` plus a
+  deterministic regression test driving a `?key=` value far past the
+  extraction cap built from 3-byte characters (so the byte cap lands
+  mid-codepoint — a raw slice would panic; the extractor's `truncate_safe`
+  boundary-snap keeps it total). So the adversarial-input leg is now 5/5:
+  four modules carry bespoke-parser never-panics proptests, and
+  `username_search`'s untrusted-input path is covered where it actually
+  lives (`identify_api_key`, which also serves `oathnet_pro` stealer
+  harvesting). The golden-fixture/health-signal legs (T2.14's sibling,
+  SOL-HEALTH-SIGNAL) remain fully open.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -4426,3 +4447,35 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   posture touched. Gate green: 4319 lib tests (+2), full suite (lib + smoke +
   architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
   clean. **Paired:** `SOLUTION_TREE` C6 + §5 — same commit.
+
+- **2026-07-02** — **T2.7 (SOL-F3): closed the `username_search`
+  adversarial-input question — the last of the 5 named scraper modules — by
+  covering the function it actually feeds attacker-controlled data into.** The
+  prior cycle left this "unconfirmed, left for a future cycle to scope." Scoped
+  it against the code: `username_search` genuinely has NO bespoke parser — its
+  `Detect` enum is three total variants (`StatusEq`/`StatusAndBody`/
+  `StatusAndNotBody`), resolved by an HTTP-status compare plus `str::contains`,
+  both total — so there is nothing parser-shaped to proptest at the module
+  level, and adding a module-level test would be near-vacuous busywork. Its ONE
+  untrusted-input processor is `scan_text_for_keys(&body)`, run over the fully
+  attacker-controlled probe-page body, which delegates to
+  `oathnet_pro::key_harvest::identify_api_key`. That delegate was the real,
+  uncovered panic surface: the existing `mod prop` never-panics property covered
+  only `identify_vendor_api_key`, but the PUBLIC `identify_api_key` is a superset
+  — it adds a generic-hex gate, URL-embedded-key extraction that byte-slices at a
+  computed offset under a 4 KiB cap, a `user:password` split, and a RECURSIVE
+  self-call — none of which the vendor-only property exercises, and all of which
+  process attacker-controlled bytes (also via `oathnet_pro` stealer harvesting).
+  Added a `.{0,512}` never-panics proptest for `identify_api_key`, plus a
+  deterministic regression test driving a `?key=` value far past the extraction
+  cap built from 3-byte characters so the byte cap lands mid-codepoint (a raw
+  `&rest[..cap]` slice would panic there; the extractor's `truncate_safe`
+  boundary-snap keeps it total). The function proved already-total (no bug
+  surfaced) — pure adversarial-input hardening, a property test for the
+  panic-on-hostile-input class (`CONVENTIONS.md` §7). So T2.7's adversarial-input
+  leg is now 5/5: four modules with bespoke-parser proptests + `username_search`
+  covered where its untrusted-input processing actually lives. No production
+  code, no identity/PII logic, no architecture guard, no clippy/unsafe posture
+  touched. Gate green: 4321 lib tests (+2), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` SOL-F3 + §5 — same commit.
