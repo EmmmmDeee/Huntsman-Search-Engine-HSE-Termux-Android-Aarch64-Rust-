@@ -71,6 +71,18 @@ fn pbs_v1_found_with_blocks_tags_breach_and_pivots_names() {
     emit_pbs_v1(resp, &mut entity, &mut result, "x@y.com", "s");
     assert!(entity.has_tag("breach"));
     assert!(entity.has_tag("niamonx:breach:exampleleak"));
+    // The breach-block evidence carries the canonical `breach_date` key AU-019's
+    // temporal breach-cluster rule reads (mirroring the PBS-v2 path), taken from
+    // `first_seen` — without it a PBS-v1 hit could never date-cluster.
+    let block_ev = entity
+        .evidence
+        .iter()
+        .find(|e| e.attributes.contains_key("blocks_total"))
+        .expect("PBS-v1 breach-block evidence must be present");
+    assert_eq!(
+        block_ev.attributes.get("breach_date").map(String::as_str),
+        Some("2019-01-01")
+    );
     // One Email pivot + one Person pivot.
     assert!(
         result

@@ -690,6 +690,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   results never reached the ≥2-breaches threshold. Both modules now ALSO
   stamp the canonical `dbname` attr (retaining `source`), so AU-105 sees
   true per-breach granularity. 2 regression tests, red/green-verified.
+  *Delivered (2026-07-02, cont'd):* same evidence-attribute-consistency class,
+  the temporal-clustering sibling of the AU-105 fix. AU-019
+  (`rule_au_019_temporal_breach_cluster`) reads a `breach`-tagged entity's
+  exposure date only under `breach_date`/`not_before`/`earliest_record`/`date`,
+  but `psbdmp` stamped its earliest paste date under `earliest_paste` and
+  `niamonx`'s PBS-**v1** path stamped it under `first_seen` (its own PBS-v2 path
+  already used the canonical `breach_date` — an intra-module inconsistency), so
+  both producers' breach-tagged hits could never enter AU-019's 30-day
+  coordinated-compromise clustering. Both now additively stamp `breach_date`
+  (retaining their existing key), red/green-verified by extending each module's
+  existing temporal-signal test. Split off explicitly (not force-fit into this
+  commit): `hudsonrock` has the same gap (`breach`-tagged, date under
+  `date_compromised`) but builds its evidence inline in the async `process()`
+  with no pure test seam, so a clean fix needs a small seam-extraction first —
+  left as the next unit, mirroring how the `ip_whois_geo` cycle deferred
+  `ipinfo`/`ipquery` to the cycle after.
   *Correction (2026-07-01):* the "C7 has no comparably small gap" note above
   was itself wrong — a follow-up discovery pass found one directly (see
   SOL-FORENSIC below).
@@ -3685,4 +3701,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   test needed. Gate: fmt/clippy/strict-rustdoc `cargo doc` (verified the new
   `crate::util::surnames::is_common` intra-doc link resolves)/`cargo test`
   all clean (4330 lib tests unchanged). Paired: `PROBLEM_TREE` §8 — same
+  commit.
+
+- **2026-07-02** — **C6 (SOL-OFFENSIVE): AU-019 temporal breach clustering was
+  blind to `psbdmp` and `niamonx` PBS-v1 hits because both stamped the breach
+  date under a non-canonical evidence attribute — the temporal-clustering
+  sibling of this session's AU-105 `dbname` fix.** Selected from a fresh
+  6-angle discovery pass (Workflow: 6 parallel finders → adversarial
+  verification; 11 of 13 candidates confirmed, this the highest-OSINT-value
+  one). AU-019 (`rule_au_019_temporal_breach_cluster`, `rules/breach.rs:697`)
+  collects a `breach`-tagged entity's exposure date only from the attribute
+  names `breach_date`/`not_before`/`earliest_record`/`date`, then clusters
+  entities whose dates fall within a 30-day coordinated-compromise window.
+  `psbdmp` tags its re-emitted seed identity `breach` but stamped the earliest
+  paste date under `earliest_paste`; `niamonx`'s PBS-v1 breach-block path tags
+  `breach` but stamped the date under `first_seen` — while its OWN PBS-v2 path
+  (`emit_pbs_v2`) already used the canonical `breach_date`, an intra-module
+  inconsistency. So neither producer's hits could ever enter AU-019's
+  clustering, despite carrying a real exposure date. Fixed additively — each
+  now ALSO stamps `breach_date` (retaining its existing key for any other
+  consumer), exactly the shape of the shipped `xposed_or_not` breach_date and
+  `dehashed`/`see_know` `dbname` fixes. Verified each cited site against the
+  real code before editing (never trusting the discovery finder's claim
+  blindly). Regression coverage by extending each module's existing
+  temporal-signal test with a `breach_date` assertion
+  (`psbdmp::extract_marks_seed_identity_paste_exposed_with_temporal_signal`,
+  `niamonx::pbs_v1_found_with_blocks_tags_breach_and_pivots_names`) — both
+  assert an attribute that did not exist before the fix, so both are genuine
+  red-before/green-after. `hudsonrock` (same class: `breach`-tagged, date under
+  `date_compromised`) deliberately split off — its evidence is built inline in
+  an async `process()` with no pure test seam, so a clean regression needs a
+  small seam-extraction first; recorded as the explicit next unit rather than
+  force-fit here (per "never expand scope mid-cycle"). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4330 lib
+  tests — existing tests extended, not added; every integration suite green).
+  Behaviour-touching (two modules emit a new evidence attribute), so also
+  exercised the real CLI surface per `CONVENTIONS.md` §9: `hse selftest` 9/9,
+  161 modules, dispatch graph intact. No identity/PII logic, no architecture
+  guard or `unsafe` posture touched. Paired: `PROBLEM_TREE` C6 + §8 — same
   commit.

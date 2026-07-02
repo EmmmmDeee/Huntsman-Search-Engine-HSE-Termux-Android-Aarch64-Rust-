@@ -190,6 +190,12 @@ fn extract(
             .with_attr("paste_count", paste_count.to_string());
         if let Some(d) = earliest {
             ev = ev.with_attr("earliest_paste", d);
+            // Also stamp the canonical `breach_date` key AU-019's temporal
+            // breach-cluster rule reads (rules/breach.rs) — the seed is
+            // `breach`-tagged, so without this alias its earliest-exposure date
+            // is invisible to the 30-day coordinated-compromise clustering and
+            // its pastes can never cluster with HIBP/IntelX/xposed_or_not hits.
+            ev = ev.with_attr("breach_date", d);
         }
         let mut seed = Entity::new(seed_kind, term, 0.55, scan_id);
         seed.tag(SRC);

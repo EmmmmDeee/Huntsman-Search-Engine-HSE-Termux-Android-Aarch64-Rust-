@@ -405,6 +405,13 @@ fn emit_pbs_v1(
             .with_attr("blocks_total", meta.blocks_total.to_string());
             if let Some(first_seen) = &meta.first_seen {
                 ev = ev.with_attr("first_seen", first_seen);
+                // Mirror the PBS-v2 path's canonical `breach_date` key (see the
+                // `.with_attr("breach_date", …)` in emit_pbs_v2): the entity is
+                // `breach`-tagged, so AU-019's temporal breach-cluster rule
+                // (rules/breach.rs) reads `breach_date`, not `first_seen`. Its
+                // absence here left every PBS-v1 breach hit unable to
+                // date-cluster despite carrying an earliest-exposure date.
+                ev = ev.with_attr("breach_date", first_seen);
             }
             if let Some(last_seen) = &meta.last_seen {
                 ev = ev.with_attr("last_seen", last_seen);

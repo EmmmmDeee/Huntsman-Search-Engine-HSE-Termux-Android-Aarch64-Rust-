@@ -419,6 +419,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`psbdmp` and `niamonx` breach hits now participate in temporal breach
+  clustering (AU-019).** Both modules tag their entity as a breach source but
+  recorded the exposure date under a module-specific attribute
+  (`psbdmp`'s `earliest_paste`, `niamonx`'s PBS-v1 `first_seen`) that the
+  AU-019 temporal-breach-cluster rule — which keys off `breach_date` — never
+  read, so their dated hits could never join a 30-day coordinated-compromise
+  cluster with HIBP/IntelX/`xposed_or_not`. Each now also stamps the canonical
+  `breach_date` attribute (keeping its existing key), so a subject's full
+  breach timeline clusters regardless of which source dated it. (`niamonx`'s
+  PBS-v2 path already did this correctly; this aligns its v1 path.)
 - **A scan's regional-search setting can no longer be silently overridden by
   another scan running concurrently under `hse serve`.** The toggle that
   decides whether search queries get geolocation-biased augmentation lived

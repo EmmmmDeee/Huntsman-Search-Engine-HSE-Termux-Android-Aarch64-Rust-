@@ -4924,3 +4924,42 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `crate::util::surnames::is_common` intra-doc link resolves clean)/
   `cargo test` all clean (4330 lib tests unchanged, 0 failures). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-02** — **C6: AU-019 temporal breach clustering was blind to
+  `psbdmp` and `niamonx` PBS-v1 hits — the temporal-clustering sibling of the
+  AU-105 `dbname` fix, same evidence-attribute-consistency class.** Surfaced by
+  a fresh 6-angle discovery pass (Workflow: 6 parallel finders → adversarial
+  verification, 11/13 candidates confirmed real+new+single-cycle-sized); this
+  was the highest-OSINT-value one, selected as the single unit this cycle.
+  AU-019 (`rule_au_019_temporal_breach_cluster`, `rules/breach.rs:697`) reads a
+  `breach`-tagged entity's exposure date only under
+  `breach_date`/`not_before`/`earliest_record`/`date`, then clusters entities
+  whose dates fall within a 30-day window (a coordinated-compromise signal).
+  `psbdmp` tags its re-emitted seed identity `breach` (`mod.rs:197`) but stamped
+  the earliest paste date under `earliest_paste` (`mod.rs:192`); `niamonx`'s
+  PBS-v1 breach-block path tags `breach` (`mod.rs:397`) but stamped the date
+  under `first_seen` (`mod.rs:407`) — while its own PBS-v2 path already used the
+  canonical `breach_date` (`mod.rs:535`), an intra-module inconsistency. So
+  neither producer's breach hits could ever enter AU-019's clustering despite
+  carrying a real exposure date. Verified every cited site against the actual
+  code myself before editing (the discovery finder's claim was not trusted
+  blindly). Fixed additively — each producer now ALSO stamps `breach_date`
+  (retaining its existing key for back-compat), the identical shape of the
+  already-shipped `xposed_or_not` breach_date fix and the `dehashed`/`see_know`
+  `dbname` fix. Regression coverage by extending each module's existing
+  temporal-signal test with a `breach_date` assertion — both assert an
+  attribute that did not exist pre-fix, so both are genuine red-before/
+  green-after. `hudsonrock` (same class: `breach`-tagged, date under
+  `date_compromised`) was deliberately **split off as the next unit**: its
+  evidence is built inline in an async `process()` with no pure test seam, so a
+  clean regression needs a small seam-extraction refactor first — not force-fit
+  into this commit (per "never expand scope mid-cycle"), mirroring how the
+  `ip_whois_geo` cycle deferred `ipinfo`/`ipquery` to the following cycle. Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4330 lib tests — existing tests extended, not added; full
+  suite across all binaries green). Behaviour-touching (two modules emit a new
+  evidence attribute), so also exercised the real CLI surface per
+  `CONVENTIONS.md` §9: `hse selftest` 9/9 pass, 161 modules, dispatch graph
+  intact. No identity/PII logic, no weakening of any architecture guard or
+  `#![forbid(unsafe_code)]`. **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) +
+  §5 — same commit.
