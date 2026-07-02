@@ -4495,3 +4495,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   "untested" residual can't lure a future cycle into re-adding an
   already-present test. Doc-only; no code, tests, or architecture changes.
   Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §4a + §5 — same commit.
+
+- **2026-07-02** — **Correlation accuracy: `social_probe`'s multi-platform
+  confirmations were invisible to AU-011 (cross-platform username footprint)
+  because it stamped the platform count under a non-canonical evidence
+  attribute — the same evidence-attr-consistency class as the AU-105
+  dehashed/see_know fix.** Found by a fresh code-grounded discovery pass this
+  cycle: after ruling the determinism vein clean (every module HashMap→output
+  path sorts with a deterministic tiebreak) and confirming every attribute the
+  correlator reads is written by some module, a closer look at the three
+  aggregate username probes surfaced a real miss. AU-011
+  (`rule_au_011_cross_platform_username`) counts how many platforms ONE module
+  confirmed a handle on by reading the `platforms_count` evidence attribute,
+  falling back to counting distinct `PLATFORM_SOURCES` modules when it is
+  absent. `username_search` and `streaming_probe` both stamp `platforms_count`;
+  `social_probe` stamped only `found` (its profiles-checked count) and
+  `platforms` (the list) — NOT `platforms_count` — and `social_probe` is not on
+  the `PLATFORM_SOURCES` fallback list. So a handle `social_probe` confirmed on
+  ≥3 platforms (which it even self-tags `multi-platform`) registered as a count
+  of 0 in AU-011 and silently never fired the cross-platform-footprint finding
+  — the one finding that exact confirmation is meant to produce. The value was
+  present all along, just under the wrong key, exactly like AU-105's breach name
+  under `source` instead of `dbname`. Fixed additively: `build_target_summary`
+  now also stamps `platforms_count = found_platforms.len()` (retaining `found`),
+  matching its two sibling probes and the attribute AU-011 reads. 1 regression
+  test (`build_target_summary_stamps_platforms_count_for_au011`),
+  red/green-verified by reverting the fix. No identity/PII decision logic, no
+  architecture guard, no clippy/unsafe posture touched. Gate green: 4322 lib
+  tests (+1), full suite (lib + smoke + architecture + doctests, all binaries)
+  green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

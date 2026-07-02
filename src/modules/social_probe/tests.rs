@@ -134,3 +134,26 @@ fn build_target_summary_evidence_lists_confirmed_platforms() {
     let platforms = attr.unwrap();
     assert!(platforms.contains("github") && platforms.contains("reddit"));
 }
+
+#[test]
+fn build_target_summary_stamps_platforms_count_for_au011() {
+    // AU-011 (cross-platform username footprint) counts how many platforms ONE
+    // module confirmed a handle on by reading the `platforms_count` evidence
+    // attribute — the same attribute the sibling aggregate probes
+    // (`username_search`, `streaming_probe`) stamp, and `social_probe` is not on
+    // AU-011's PLATFORM_SOURCES fallback list. `social_probe` previously wrote
+    // only `found`/`platforms`, so AU-011 read a count of 0 and a handle
+    // confirmed here on ≥3 platforms silently never fired the finding. The
+    // canonical count attribute must now be present and equal the number of
+    // confirmed platforms.
+    let t = Target::new(TargetKind::Username, "testuser");
+    let e = build_target_summary(&t, 3, 30, &["github", "reddit", "twitch"], "scan").unwrap();
+    assert_eq!(
+        e.evidence[0]
+            .attributes
+            .get("platforms_count")
+            .map(String::as_str),
+        Some("3"),
+        "platforms_count must equal the confirmed-platform count so AU-011 can count it"
+    );
+}

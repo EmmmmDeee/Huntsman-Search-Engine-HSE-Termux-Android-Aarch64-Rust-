@@ -439,6 +439,16 @@ pub(super) fn build_target_summary(
         )
         .with_attr("checked", checked_count.to_string())
         .with_attr("found", found_count.to_string())
+        // `platforms_count` is the canonical attribute the cross-platform
+        // username-footprint correlator (AU-011) reads to count how many
+        // platforms one module confirmed a handle on. The sibling aggregate
+        // probes (`username_search`, `streaming_probe`) both stamp it; without
+        // it AU-011 falls back to counting distinct PLATFORM_SOURCES modules —
+        // and `social_probe` is not on that list — so a handle this module
+        // confirmed on ≥3 platforms would silently never fire AU-011 despite
+        // being tagged `multi-platform` here. Kept alongside `found` (its own
+        // profiles-checked convention) rather than replacing it.
+        .with_attr("platforms_count", found_platforms.len().to_string())
         .with_attr("platforms", found_platforms.join(", ")),
     );
     Some(summary)

@@ -3422,3 +3422,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   re-adding a test that already exists — corrected so §4a reflects the code.
   Doc-only; no code/tests/architecture. Gate: n/a (docs). Paired: `PROBLEM_TREE`
   §8 — same commit.
+
+- **2026-07-02** — **Correlation accuracy: `social_probe` now stamps the
+  canonical `platforms_count` evidence attribute, so AU-011 (cross-platform
+  username footprint) can finally count its multi-platform confirmations.**
+  Fresh discovery pass (determinism vein confirmed clean; every correlator-read
+  attribute confirmed written) surfaced the miss: AU-011 counts platforms via
+  the `platforms_count` attr (fallback: distinct `PLATFORM_SOURCES` modules).
+  `username_search`/`streaming_probe` stamp `platforms_count`; `social_probe`
+  stamped only `found`/`platforms` and is not on the fallback list, so a handle
+  it confirmed on ≥3 platforms read as count 0 and never fired AU-011 — the same
+  wrong-attribute-name class as the AU-105 dehashed/see_know fix. Added
+  `platforms_count = found_platforms.len()` in `build_target_summary` (retaining
+  `found`); 1 regression test, red/green-verified. No identity/PII logic, no
+  architecture guard, no clippy/unsafe posture touched. Gate green: 4322 lib
+  tests (+1), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
+  `PROBLEM_TREE` §8 — same commit.

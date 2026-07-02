@@ -419,6 +419,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The cross-platform username footprint finding now fires for
+  `social_probe` results.** The finding (a handle confirmed on three or more
+  platforms) reads a per-module platform count from the evidence, but
+  `social_probe` recorded that count under a different field name than its
+  two sibling probe modules use, so a handle it confirmed across the social
+  platforms never contributed to the footprint finding. `social_probe` now
+  records the count under the expected field, so its multi-platform
+  confirmations count.
 - **Credential-reuse detection now works for DeHashed and SeekNow results.**
   The credential-reuse finding (the same secret appearing in two or more
   distinct breaches — the account-takeover signal) groups records by the
