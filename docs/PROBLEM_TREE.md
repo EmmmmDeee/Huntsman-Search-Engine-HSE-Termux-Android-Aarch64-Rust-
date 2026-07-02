@@ -4963,3 +4963,36 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   intact. No identity/PII logic, no weakening of any architecture guard or
   `#![forbid(unsafe_code)]`. **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) +
   §5 — same commit.
+
+- **2026-07-02** — **C6: closed the `hudsonrock` third leg of the AU-019 arc —
+  the unit deliberately split off the prior cycle now finished.** Same
+  evidence-attribute-consistency gap as the `psbdmp`/`niamonx` fix above:
+  `hudsonrock`'s stealer-log evidence tags the subject `breach` (`mod.rs:173`)
+  but stamped the compromise date only under `date_compromised` (`mod.rs:210`)
+  and an index date under `date_uploaded` — neither a key AU-019's
+  `rule_au_019_temporal_breach_cluster` reads. Unlike `psbdmp`/`niamonx`, which
+  had pure `extract`/`emit_pbs_v1` seams to extend, `hudsonrock` built its
+  entities inline in the async `process()`, so this cycle first extracted a
+  behaviour-preserving pure seam `fn build_result(target, &data, scan_id) ->
+  ModuleResult` (everything after the HTTP fetch), matching the sibling
+  modules' testable-helper convention — then stamped `breach_date` from the
+  compromise date via the existing optional-attribute fold (only when present,
+  so AU-019 never parses the `"-"` placeholder the retained `date_compromised`
+  attribute carries). One new regression test
+  (`build_result_stamps_canonical_breach_date_for_au019`) drives the pure seam
+  with a `CavalierResp` fixture and asserts the `breach`-tagged subject entity
+  carries `breach_date` (red before the fix — the attribute did not exist); the
+  refactor is proven behaviour-preserving by the module's three existing
+  `process()`-driven tests still passing. A stale intra-doc link in the new
+  seam's doc comment (`crate::core::correlator::rules::…`, unreachable because
+  the `rules` module is private to `correlator`) surfaced under strict rustdoc
+  and was corrected to plain prose `(rules/breach.rs)`, matching the sibling
+  modules' comment style. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` (4331 lib tests, +1; full
+  suite across all binaries green). Behaviour-touching, so also `hse selftest`
+  9/9 (161 modules, dispatch graph intact) per `CONVENTIONS.md` §9. No
+  identity/PII logic, no weakening of any architecture guard or
+  `#![forbid(unsafe_code)]` — the pure `build_result` seam is an internal
+  refactor with no layering change. **The AU-019 arc is now complete across all
+  three breach-tagged producers** (`psbdmp`, `niamonx` PBS-v1, `hudsonrock`).
+  **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) + §5 — same commit.

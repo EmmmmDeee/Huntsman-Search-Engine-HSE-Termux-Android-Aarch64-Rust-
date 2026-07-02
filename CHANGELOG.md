@@ -419,6 +419,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`hudsonrock` stealer-log hits now participate in temporal breach
+  clustering (AU-019).** Completing the same fix applied to `psbdmp`/`niamonx`
+  below: HudsonRock tags the subject as a breach source but recorded the
+  compromise date only under `date_compromised`, which the AU-019 rule does
+  not read, so a subject's stealer-log exposure could never date-cluster with
+  their database-breach exposures. The compromise date is now also stamped
+  under the canonical `breach_date` key, so an active infostealer compromise
+  joins the subject's full breach timeline.
 - **`psbdmp` and `niamonx` breach hits now participate in temporal breach
   clustering (AU-019).** Both modules tag their entity as a breach source but
   recorded the exposure date under a module-specific attribute

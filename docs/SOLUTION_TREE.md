@@ -700,12 +700,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   both producers' breach-tagged hits could never enter AU-019's 30-day
   coordinated-compromise clustering. Both now additively stamp `breach_date`
   (retaining their existing key), red/green-verified by extending each module's
-  existing temporal-signal test. Split off explicitly (not force-fit into this
-  commit): `hudsonrock` has the same gap (`breach`-tagged, date under
-  `date_compromised`) but builds its evidence inline in the async `process()`
-  with no pure test seam, so a clean fix needs a small seam-extraction first —
-  left as the next unit, mirroring how the `ip_whois_geo` cycle deferred
-  `ipinfo`/`ipquery` to the cycle after.
+  existing temporal-signal test. `hudsonrock` (same gap) was split off as the
+  next unit and closed the following cycle — see below.
+  *Delivered (2026-07-02, cont'd):* closed the `hudsonrock` third leg of the
+  AU-019 arc. Its stealer-log evidence tags the subject `breach` but recorded
+  the compromise date only under `date_compromised` (plus a `date_uploaded`
+  index date), neither a key AU-019 reads. Unlike `psbdmp`/`niamonx`,
+  `hudsonrock` built its entities inline in the async `process()` with no pure
+  test seam, so first extracted a behaviour-preserving `build_result(target,
+  &data, scan_id)` helper (matching the sibling modules' `extract`/`emit_pbs_v1`
+  seams), then stamped `breach_date` from the compromise date via the existing
+  optional-attribute fold (so it is only stamped when present — AU-019 never
+  sees the `"-"` placeholder the human-facing `date_compromised` attribute
+  carries). One new regression test drives the pure seam with a `CavalierResp`
+  fixture and asserts the `breach`-tagged subject entity carries `breach_date`
+  (red before the fix: the attribute did not exist). The refactor is proven
+  behaviour-preserving by the module's existing `process()`-driven tests still
+  passing. AU-019 arc now complete across all three breach-tagged producers.
   *Correction (2026-07-01):* the "C7 has no comparably small gap" note above
   was itself wrong — a follow-up discovery pass found one directly (see
   SOL-FORENSIC below).
@@ -3740,3 +3751,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   161 modules, dispatch graph intact. No identity/PII logic, no architecture
   guard or `unsafe` posture touched. Paired: `PROBLEM_TREE` C6 + §8 — same
   commit.
+
+- **2026-07-02** — **C6 (SOL-OFFENSIVE): closed the `hudsonrock` third leg of
+  the AU-019 arc — the unit deliberately split off the prior cycle.** Same
+  evidence-attribute-consistency gap: `hudsonrock`'s stealer-log evidence tags
+  the subject `breach` but stamped the compromise date only under
+  `date_compromised` (plus `date_uploaded`), neither a key AU-019's
+  `rule_au_019_temporal_breach_cluster` reads. Unlike `psbdmp`/`niamonx` (which
+  had pure `extract`/`emit_pbs_v1` seams to extend), `hudsonrock` built its
+  entities inline in the async `process()`, so this cycle first extracted a
+  behaviour-preserving pure seam — `fn build_result(target, &data, scan_id) ->
+  ModuleResult`, everything after the HTTP fetch — matching the sibling
+  modules' testable-helper convention, then added `breach_date` to the existing
+  optional-attribute fold (stamped from the compromise date, only when present,
+  so AU-019 never parses the `"-"` placeholder the retained `date_compromised`
+  attribute carries). One new regression test
+  (`build_result_stamps_canonical_breach_date_for_au019`) drives the pure seam
+  with a `CavalierResp` fixture and asserts the `breach`-tagged subject entity's
+  evidence carries `breach_date` — red before the fix (the attribute did not
+  exist). The seam extraction is proven behaviour-preserving by the module's
+  three existing `process()`-driven tests still passing unchanged. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test`
+  (4331 lib tests, +1; every integration suite green). Behaviour-touching, so
+  also exercised `hse selftest` 9/9 (161 modules, dispatch graph intact) per
+  `CONVENTIONS.md` §9. No identity/PII logic, no architecture guard or `unsafe`
+  posture touched — the pure `build_result` seam is an internal refactor, no
+  layering change. **The AU-019 temporal-clustering arc is now complete across
+  all three breach-tagged producers** (`psbdmp`, `niamonx` PBS-v1,
+  `hudsonrock`). Paired: `PROBLEM_TREE` C6 + §8 — same commit.
