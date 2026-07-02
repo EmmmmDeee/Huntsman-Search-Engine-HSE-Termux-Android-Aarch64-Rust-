@@ -11,6 +11,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`shodan` paid host lookup now surfaces the host classification tags.**
+  Shodan's keyed `/shodan/host/{ip}` response returns the same top-level
+  `tags` array (`compromised`, `malware`, `honeypot`, `self-signed`,
+  `vpn`, `cloud`, `cdn`, …) that the free InternetDB path already emits,
+  but the paid `HostResp` struct omitted the field and silently dropped
+  it — losing a keyed operator's highest-value threat signal despite the
+  module documenting the paid path as a strict superset of the free one.
+  The paid path now records a `tags` evidence attribute and applies a
+  per-tag `shodan:<tag>` entity tag, exactly mirroring the free path so
+  correlation rules can pivot on `compromised`/`malware`/… uniformly
+  regardless of which Shodan tier produced the entity.
 - **New correlation rule AU-112 — IP within a discovered network block.**
   When a scan discovers both an IP address and an announced BGP prefix /
   netblock (from `bgpview`, `ripestat`, `netblock`, or `intelx`) that

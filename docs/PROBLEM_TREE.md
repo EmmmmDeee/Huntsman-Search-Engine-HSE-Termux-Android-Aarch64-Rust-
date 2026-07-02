@@ -948,6 +948,23 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   doesn't weaken it). 5 unit tests (in-block v4 fire with owner text, ASN
   fallback, out-of-block no-fire, IPv6 containment, malformed/
   cross-family no-panic-no-false-fire).
+  *Delivered (2026-07-02, cont'd):* the `shodan` paid-path asset-depth leg —
+  the seventh "dropped-field depth gap" this session (after `austlii`,
+  `wigle`, `virustotal`, `hunter_io`, `proxycurl`). The merged `shodan`
+  module's free InternetDB path already deserialized and emitted the
+  top-level host classification `tags` array (`compromised`/`malware`/
+  `honeypot`/`self-signed`/`vpn`/`cloud`/`cdn`…) as a `tags` evidence attr
+  plus per-tag `shodan:<tag>` entity tags, but the paid `HostResp` struct
+  had no `tags` field at all — so serde silently dropped it and a keyed
+  operator got *less* threat classification than a free user, inverting the
+  module's own "paid path is a superset" contract. Added `#[serde(default)]
+  tags: Vec<String>` to `HostResp` and an emission block in `query_paid`
+  that mirrors the free path to the letter, so the tag vocabulary is now
+  identical across both tiers and existing correlator rules pivot on it
+  uniformly. Note this is the exact `tags` field the earlier `virustotal`
+  leg (above) explicitly deferred as "a separate C4 asset-depth concern";
+  this closes the Shodan slice of it. No new `EntityKind`, no `produces()`
+  change, no guard impact; 1 serde round-trip test.
   *Remaining:* SSL-cert-hash pivoting on Censys/Shodan (the one leg that
   genuinely needs new data-source work).
 - **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
@@ -4160,3 +4177,35 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-FORENSIC +
   §5 — same commit.
+
+- **2026-07-02** — **C4: `shodan`'s paid host lookup now surfaces the host
+  classification `tags` its free InternetDB path already emits — the
+  seventh "dropped-field depth gap" this session (after `austlii`,
+  `wigle`, `virustotal`, `hunter_io`, `proxycurl`).** Selected from a
+  fifth discovery pass's round-4 dropped-field sweep, re-verified directly
+  against both code paths before acting. The merged `shodan` module runs a
+  free path (`InternetDbResp`, no key) and a paid path (`HostResp`, keyed
+  `/shodan/host/{ip}`), with the module doc framing the paid path as a
+  strict superset of the free one — yet the free path deserialized and
+  emitted the top-level `tags` array (`compromised`/`malware`/`honeypot`/
+  `self-signed`/`vpn`/`cloud`/`cdn`…) as a `tags` evidence attr plus
+  per-tag `shodan:<tag>` entity tags, while the paid `HostResp` struct had
+  no `tags` field at all — so serde silently dropped it (no
+  `deny_unknown_fields`) and a keyed operator received *less* threat
+  classification than a free user, inverting the module's own contract.
+  Shodan documents the same `tags` array on both records, so this was a
+  pure parity omission, not a schema difference. This is the exact `tags`
+  field the earlier `virustotal` C4 leg explicitly deferred as "a separate
+  asset-depth concern"; this closes the Shodan slice. Fixed by adding
+  `#[serde(default)] tags: Vec<String>` to `HostResp` and an emission
+  block in `query_paid` that mirrors the free path to the letter (same
+  `ev.with_attr("tags", …)`, same per-tag `entity.tag(format!("shodan:
+  {t}"))`), so the tag vocabulary is now identical across both tiers and
+  existing correlator rules pivot on it uniformly. No new `EntityKind`, no
+  `produces()` change (the paid path already yields `IpAddress`), no
+  architecture-guard impact. 1 serde round-trip test
+  (`paid_host_resp_deserializes_the_tags_array`): populated array
+  deserializes, absent array defaults to empty. Gate green: 4307 lib tests
+  (+1), full suite (lib + smoke + architecture + doctests, all binaries)
+  green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-NETINT + §5 — same commit.

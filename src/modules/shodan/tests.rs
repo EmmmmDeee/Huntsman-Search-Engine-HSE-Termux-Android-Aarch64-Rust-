@@ -54,3 +54,17 @@ fn target_entity_builds_ip_entity() {
     assert_eq!(e.value, "8.8.8.8");
     assert!((e.confidence - 0.90).abs() < 1e-9);
 }
+
+#[test]
+fn paid_host_resp_deserializes_the_tags_array() {
+    // The paid host record carries the same `tags` classification array
+    // (compromised/cloud/…) the free InternetDB path already surfaces —
+    // HostResp must capture it, not silently drop it.
+    let body: HostResp =
+        serde_json::from_str(r#"{"ports":[443],"tags":["compromised","cloud","self-signed"]}"#)
+            .unwrap();
+    assert_eq!(body.tags, ["compromised", "cloud", "self-signed"]);
+    // Absent `tags` defaults to empty (no deserialize failure).
+    let bare: HostResp = serde_json::from_str(r#"{"ports":[80]}"#).unwrap();
+    assert!(bare.tags.is_empty());
+}

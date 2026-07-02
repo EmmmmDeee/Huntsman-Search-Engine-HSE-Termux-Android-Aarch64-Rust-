@@ -441,6 +441,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `core_does_not_import_util_directly` allowlist entry for those two
   pure structs mirrors the existing `util::geometry` carve-out. 5 unit
   tests.
+  *Delivered (2026-07-02, cont'd):* the `shodan` paid-path asset-depth
+  slice — the seventh dropped-field depth gap this session (after
+  `austlii`/`wigle`/`virustotal`/`hunter_io`/`proxycurl`), and precisely
+  the `tags` field the `virustotal` leg above explicitly deferred as "a
+  separate asset-depth concern". The merged `shodan` module's free
+  InternetDB path already emitted the top-level host classification `tags`
+  array (`compromised`/`malware`/`honeypot`/`self-signed`/`vpn`/`cloud`/
+  `cdn`…) as a `tags` evidence attr plus per-tag `shodan:<tag>` entity
+  tags, but the paid `HostResp` struct had no `tags` field at all — serde
+  silently dropped it (no `deny_unknown_fields`), so the keyed operator
+  paying for the richer endpoint got *less* threat classification than a
+  free user, inverting the module's "paid = superset" contract. Added
+  `#[serde(default)] tags: Vec<String>` to `HostResp` and a `query_paid`
+  emission block mirroring the free path to the letter, so the tag
+  vocabulary is identical across both tiers and downstream correlator
+  rules pivot on it uniformly. No new `EntityKind`, no `produces()`
+  change, no guard impact. 1 serde round-trip test.
   *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already
   ship); SSL-cert-hash pivoting on Censys/Shodan (genuinely needs new
   data-source work, not just surfacing an already-fetched field).
@@ -3203,3 +3220,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green: 4306 lib tests (+3), full suite green, fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C7 + §8 — same
   commit.
+
+- **2026-07-02** — **SOL-NETINT: `shodan`'s paid host lookup now surfaces
+  the host classification `tags` its free InternetDB path already emits.**
+  From a fifth discovery pass's round-4 dropped-field sweep — the seventh
+  such gap this session (after `austlii`/`wigle`/`virustotal`/`hunter_io`/
+  `proxycurl`), and exactly the `tags` field the earlier `virustotal` leg
+  explicitly deferred as "a separate asset-depth concern". The merged
+  `shodan` module frames its paid path (`HostResp`, keyed `/shodan/host/
+  {ip}`) as a strict superset of its free path (`InternetDbResp`), yet the
+  free path deserialized and emitted the top-level `tags` array
+  (`compromised`/`malware`/`honeypot`/`self-signed`/`vpn`/`cloud`/`cdn`…)
+  as a `tags` evidence attr plus per-tag `shodan:<tag>` entity tags, while
+  the paid `HostResp` had no `tags` field at all — serde silently dropped
+  it (no `deny_unknown_fields`), so a keyed operator got *less* threat
+  classification than a free user. Added `#[serde(default)] tags:
+  Vec<String>` to `HostResp` and a `query_paid` emission block mirroring
+  the free path to the letter, unifying the tag vocabulary across both
+  tiers. No new `EntityKind`, no `produces()` change, no guard impact. 1
+  serde round-trip test. Gate green: 4307 lib tests (+1), full suite
+  green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C4 +
+  §8 — same commit.
