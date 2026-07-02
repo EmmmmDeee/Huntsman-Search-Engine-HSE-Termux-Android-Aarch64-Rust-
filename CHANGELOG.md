@@ -419,6 +419,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A scan's OathNet search session can no longer be clobbered by another scan
+  running concurrently under `hse serve`.** OathNet lets a target's breach and
+  stealer queries share a single paid lookup via a search session, but the
+  session id was held in a single process-global slot keyed only by the target
+  value. If a second scan initialised its own session in between, the first
+  scan's follow-up query silently lost its session and paid for two lookups
+  instead of one. The session id is now threaded through each query explicitly
+  rather than via shared state, so a scan's OathNet quota spend depends only on
+  its own queries, never on concurrent-scan timing.
 - **`hudsonrock` stealer-log hits now participate in temporal breach
   clustering (AU-019).** Completing the same fix applied to `psbdmp`/`niamonx`
   below: HudsonRock tags the subject as a breach source but recorded the

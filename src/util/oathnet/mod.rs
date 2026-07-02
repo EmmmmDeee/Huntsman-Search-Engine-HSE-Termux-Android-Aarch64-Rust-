@@ -2,8 +2,6 @@
 //! search_engines enrichment pass. Lives in util/ so any module can
 //! call it without violating the "no inter-module imports" invariant.
 
-use std::sync::Mutex;
-
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -173,12 +171,39 @@ struct SearchData {
 /// Search a specific OathNet surface (breach, stealer, etc.) by field.
 /// Returns the raw item array on success, empty vec on 404/clean miss.
 /// Returns empty vec immediately if daily quota is exhausted.
+/// Build the OathNet search URL. Pure (no I/O, no shared state) so the
+/// session-id threading — the id is appended as `&search_id=` iff the caller
+/// supplies one — is unit-testable without a live endpoint. Extracted from
+/// [`search`] when the per-value session lookup moved off a process-global slot
+/// (which a concurrently-running scan under `hse serve` could clobber) to an
+/// explicit parameter.
+fn build_search_url(
+    base: &str,
+    path: &str,
+    field: &str,
+    value: &str,
+    page_size: u32,
+    session_id: Option<&str>,
+) -> String {
+    let encoded = crate::util::http::urlencode(value);
+    // sort=indexed_at:desc gives the freshest records first within
+    // the page_size cap, maximising data freshness per query.
+    let mut url =
+        format!("{base}{path}?{field}%5B%5D={encoded}&page_size={page_size}&sort=indexed_at:desc");
+    if let Some(sid) = session_id {
+        url.push_str("&search_id=");
+        url.push_str(&crate::util::http::urlencode(sid));
+    }
+    url
+}
+
 pub async fn search(
     key: &str,
     path: &str,
     field: &str,
     value: &str,
     page_size: u32,
+    session_id: Option<&str>,
 ) -> Result<Vec<Value>> {
     let ck = cache_key(path, field, value);
     if let Some(cached) = cache_get(&ck) {
@@ -187,21 +212,11 @@ pub async fn search(
     if is_quota_exhausted() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let encoded = crate::util::http::urlencode(value);
-    // sort=indexed_at:desc gives the freshest records first within
-    // the page_size cap, maximising data freshness per query.
-    let mut url = format!(
-        "{}{}?{}%5B%5D={}&page_size={}&sort=indexed_at:desc",
-        base_url(),
-        path,
-        field,
-        encoded,
-        page_size
-    );
-    if let Some(sid) = session_id_for(value) {
-        url.push_str("&search_id=");
-        url.push_str(&crate::util::http::urlencode(&sid));
-    }
+    // A search session (when the caller initialised one for this value) lets the
+    // breach + stealer queries share ONE lookup. The id is threaded in
+    // explicitly — never read from shared process state — so a concurrent scan
+    // under `hse serve` can't clobber which session THIS query uses.
+    let url = build_search_url(&base_url(), path, field, value, page_size, session_id);
     let body = CLIENT.get(&url, key).await?;
     // Retain the paid response verbatim BEFORE parsing/extraction — operator
     // policy: purchased data is kept in absolute completeness until manually
@@ -394,15 +409,15 @@ pub fn stealer_indexable(field: &str) -> bool {
     matches!(field, "email" | "username")
 }
 
-/// Per-scan search session ID. When set, breach and stealer queries for
-/// the same target value consume only ONE OathNet lookup instead of two.
-/// Sessions are valid for 60 minutes on the OathNet side.
-static SEARCH_SESSION: std::sync::LazyLock<Mutex<Option<(String, String)>>> =
-    std::sync::LazyLock::new(|| Mutex::new(None));
-
 /// Initialise a search session for `value`. Returns the session ID on
 /// success, or None if the init call fails (non-fatal — queries still
 /// work without a session, they just cost more quota).
+///
+/// The caller owns the returned id and threads it into [`search`] explicitly.
+/// It is deliberately NOT stashed in shared process state: a single-slot global
+/// (keyed only by value) was clobbered by any concurrently-running scan under
+/// `hse serve`, so a scan's own query silently lost its session — costing double
+/// quota — whenever another scan initialised a session in between.
 pub async fn init_session(key: &str, value: &str) -> Option<String> {
     if is_quota_exhausted() {
         return None;
@@ -418,24 +433,8 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         .or_else(|| parsed.pointer("/data/session/id"))
         .and_then(|v| v.as_str())
         .map(str::to_string)?;
-    let lower = value.to_lowercase();
-    if let Ok(mut guard) = SEARCH_SESSION.lock() {
-        *guard = Some((lower, sid.clone()));
-    }
     tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
     Some(sid)
-}
-
-/// Return the cached session ID if it matches the given target value.
-pub fn session_id_for(value: &str) -> Option<String> {
-    let lower = value.to_lowercase();
-    SEARCH_SESSION.lock().ok().and_then(|guard| {
-        guard.as_ref().and_then(
-            |(q, sid)| {
-                if q == &lower { Some(sid.clone()) } else { None }
-            },
-        )
-    })
 }
 
 // The curl-subprocess transport now lives in `util::curl_client` —

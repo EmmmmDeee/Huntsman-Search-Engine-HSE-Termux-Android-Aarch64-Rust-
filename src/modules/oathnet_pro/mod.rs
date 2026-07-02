@@ -159,7 +159,10 @@ impl Module for OathnetPro {
         // Initialise a search session so breach + stealer queries on the
         // same target consume only ONE OathNet lookup instead of two.
         // Non-fatal: if init fails, queries still work at higher quota cost.
-        let _ = oathnet::init_session(key, &target.value).await;
+        // The id is held locally and passed explicitly to each `search` call
+        // below — never through shared process state a concurrent `hse serve`
+        // scan could clobber.
+        let session_id = oathnet::init_session(key, &target.value).await;
 
         // ── Query 1: Breach search ──────────────────────────────────────
         // Highest value endpoint: single query returns emails, usernames,
@@ -174,7 +177,15 @@ impl Module for OathnetPro {
             TargetKind::IpAddress | TargetKind::Domain => 50,
             _ => 50,
         };
-        let items = oathnet::search(key, paths::BREACH, field, &target.value, page_size).await?;
+        let items = oathnet::search(
+            key,
+            paths::BREACH,
+            field,
+            &target.value,
+            page_size,
+            session_id.as_deref(),
+        )
+        .await?;
         if items.is_empty() {
             return Ok(result);
         }
@@ -225,8 +236,15 @@ impl Module for OathnetPro {
         // rarely productive. IP/Domain are already breach-only above.
         if oathnet::stealer_indexable(field)
             && !ctx.cancel.is_cancelled()
-            && let Ok(stealer_items) =
-                oathnet::search(key, paths::STEALER, field, &target.value, 100).await
+            && let Ok(stealer_items) = oathnet::search(
+                key,
+                paths::STEALER,
+                field,
+                &target.value,
+                100,
+                session_id.as_deref(),
+            )
+            .await
         {
             result.entities.reserve(stealer_items.len());
             for item in &stealer_items {

@@ -152,7 +152,10 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
             stopped_on_budget = true;
             break;
         }
-        match oathnet::search(key, q.surface.path(), q.field, &q.value, page_size).await {
+        // No session for the batch path — pass None explicitly rather than
+        // relying on (now-removed) shared session state, which a concurrent
+        // `hse serve` scan could otherwise have populated for the same value.
+        match oathnet::search(key, q.surface.path(), q.field, &q.value, page_size, None).await {
             Ok(items) => {
                 dispatched += 1;
                 total_hits += items.len();

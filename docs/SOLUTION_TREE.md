@@ -318,6 +318,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fail (it did not return within a 30 s bound); restored and re-confirmed
   green (well under a second). Full gate green; `hse selftest`/`hse doctor`
   both exercised post-change with no regression.
+  **Third instance fixed (2026-07-02, cont'd) — by REMOVAL, not a task-local:**
+  OathNet's `SEARCH_SESSION` (a single-slot `Mutex<Option<(value, session_id)>>`
+  that shared one paid lookup across a target's breach + stealer queries) was
+  clobbered by any concurrent scan's `init_session`, so a scan that ran its
+  `search` after another scan's init silently lost its session and paid double
+  quota. Unlike `found_keys`/`regional`, the session id is available right at
+  the call site, so the ambient-task-local mechanism was unnecessary: the fix
+  threads the id as an explicit `search(…, session_id: Option<&str>)` parameter
+  and deletes the global outright (`init_session` returns the id;
+  `oathnet_pro::process` holds it locally and passes it to both `search` calls;
+  the `hse oathnet` batch path passes `None`; `SEARCH_SESSION`/`session_id_for`/
+  the now-unused `Mutex` import are gone). Extracted a pure `build_search_url`
+  seam so the threading is unit-testable; regression test
+  `build_search_url_appends_search_id_only_when_a_session_is_supplied` asserts
+  `&search_id=` appears iff a session is supplied (red against the old
+  shared-slot read). This is the strictly-simpler resolution of the class when
+  the state doesn't need to reach deep into the shared HTTP layer — removing the
+  shared mutable state beats keying it. *Still open:* `typosquat`'s
+  `SEEN_REGISTRABLE` cross-scan dedup set — investigated this cycle and confirmed
+  real, but its set must be scan-global (shared across ~30 dispatches/scan) with
+  no scan-END drain hook, so a keyed map would leak per scan on a long-running
+  `serve`; left as a tracked T2.11 sub-item alongside the `QuotaBudget` residual,
+  both blocked on the same end-of-scan-cleanup design question.
 - **`[x]` SOL-LIVE-DISPATCH-BUDGET · Live `max_entities` check inside the
   concurrent spawn loop** — `dispatch_target_concurrent`'s Phase-2 loop now calls
   `JoinSet::try_join_next` (non-blocking) at the top of every iteration, absorbing
@@ -909,7 +932,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
-| SOL-ISOLATE | T2.11 found_keys + regional-search | `[x]` |
+| SOL-ISOLATE | T2.11 found_keys + regional-search + oathnet-session | `[x]` |
 | SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
@@ -3779,3 +3802,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   layering change. **The AU-019 temporal-clustering arc is now complete across
   all three breach-tagged producers** (`psbdmp`, `niamonx` PBS-v1,
   `hudsonrock`). Paired: `PROBLEM_TREE` C6 + §8 — same commit.
+
+- **2026-07-02** — **SOL-ISOLATE (third instance): OathNet `SEARCH_SESSION`
+  cross-scan contamination fixed by REMOVING the global, not keying it.**
+  Selected from the same discovery pass as the AU-019 arc, after investigating
+  the two most-promising process-global candidates in depth. `typosquat`'s
+  `SEEN_REGISTRABLE` is a real instance but its dedup set must be scan-global
+  (shared across the module's ~30 dispatches/scan, so a task-local won't do) and
+  has no scan-END drain hook, so keying it by `scan_id` would leak per scan on a
+  long-running `serve` — the same end-of-lifecycle question that keeps
+  `QuotaBudget::reset_scan` open; left as a tracked T2.11 sub-item rather than a
+  leaky fix. `SEARCH_SESSION` admitted the cleaner resolution: it was a
+  single-slot `Mutex<Option<(value, session_id)>>` that `init_session` wrote and
+  `search` read via `session_id_for(value)` to share one paid lookup across a
+  target's breach + stealer queries — clobbered by any concurrent scan's init,
+  so a scan whose `search` ran after another's init silently lost its session
+  and paid double quota (the session-less `hse oathnet` batch path could also
+  pick up a session id a concurrent scan left in the slot). Because the id is
+  available at the call site — unlike `found_keys`/`regional`, which needed a
+  task-local to reach the shared HTTP layer — the fix threads it as an explicit
+  `search(…, session_id: Option<&str>)` parameter and deletes the global:
+  `init_session` only returns the id; `oathnet_pro::process` holds it locally and
+  passes it to both `search` calls; the batch path passes `None`; `SEARCH_SESSION`,
+  `session_id_for`, and the now-unused `Mutex` import are gone. Extracted a pure
+  `build_search_url` seam so the threading is unit-testable without a live
+  endpoint; regression test `build_search_url_appends_search_id_only_when_a_session_is_supplied`
+  asserts `&search_id=` appears (url-encoded) iff a session is supplied — red
+  against the old shared-slot read. This is the strictly-simpler resolution of
+  the isolation class when the state need not reach deep into shared code:
+  removing the shared mutable state beats keying it. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4332 lib
+  tests, +1; every integration suite green). Behaviour-touching (a `pub` util
+  signature change threaded through the module + the CLI batch path), so also
+  `hse selftest` 9/9 (161 modules, dispatch graph intact) per `CONVENTIONS.md`
+  §9. No identity/PII logic; removes shared mutable state rather than adding
+  any, so no architecture-guard or `unsafe` impact. Paired: `PROBLEM_TREE` T2.11
+  + §8 — same commit.

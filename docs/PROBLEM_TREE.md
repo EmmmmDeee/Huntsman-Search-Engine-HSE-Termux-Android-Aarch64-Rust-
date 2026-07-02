@@ -681,6 +681,35 @@ direct.**
     second) with it in place. Full gate green (fmt/clippy/doc/test);
     `hse selftest` (161 modules, dispatch graph intact) and `hse doctor` both
     exercised the real CLI surface post-change with no regression.
+  - **MED — OathNet search-session contamination (found 2026-07-02, another
+    previously-untracked instance of the same root cause).**
+    `util/oathnet/mod.rs`'s `SEARCH_SESSION` was a **single-slot** process-
+    global `Mutex<Option<(value, session_id)>>`: `init_session(value)` stored the
+    one pair, and `search(value)` read it back via `session_id_for(value)` to add
+    `&search_id=` (so a target's breach + stealer queries share ONE paid lookup
+    instead of two). Keyed only by value, with room for exactly one entry, it was
+    clobbered by any concurrently-running scan: under `hse serve`, scan B's
+    `init_session` for its own target overwrote the slot while scan A was between
+    its `init_session` and its `search`, so A's `session_id_for` missed and A
+    silently paid **double quota** — the session optimisation defeated purely by
+    concurrent-scan timing. The `hse oathnet` batch path (which never inits a
+    session) could also read a session id a concurrent `serve` scan left in the
+    slot for the same value. **P2** ✅ **Fixed (2026-07-02):** the process-global
+    is **removed entirely** — a cleaner shape than the SOL-ISOLATE task-local,
+    applicable here because the session id is available right at the call site
+    (unlike `found_keys`, which needed the ambient because `scan_body` is reached
+    deep in the shared HTTP chokepoint with no `scan_id`). `init_session` now just
+    returns the id; the caller (`oathnet_pro::process`) holds it in a local and
+    threads it explicitly into each `search` call via a new
+    `session_id: Option<&str>` parameter; the batch path passes `None`.
+    `SEARCH_SESSION`/`session_id_for` and the now-unused `Mutex` import are gone.
+    The URL construction was extracted into a pure `build_search_url(base, path,
+    field, value, page_size, session_id)` seam so the threading is unit-testable
+    without a live endpoint; regression test
+    `build_search_url_appends_search_id_only_when_a_session_is_supplied` asserts
+    the id is appended (url-encoded) iff a session is supplied — red against the
+    old code, which read the id from the shared slot rather than the parameter.
+    Gate green (fmt/clippy/doc/test, 4332 lib tests +1); `hse selftest` 9/9.
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -4996,3 +5025,45 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   refactor with no layering change. **The AU-019 arc is now complete across all
   three breach-tagged producers** (`psbdmp`, `niamonx` PBS-v1, `hudsonrock`).
   **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) + §5 — same commit.
+
+- **2026-07-02** — **T2.11: fixed a fifth process-global-isolation defect —
+  OathNet's `SEARCH_SESSION` single-slot global — by REMOVING the shared state
+  entirely (a cleaner shape than the SOL-ISOLATE task-local).** Selected from
+  the same fresh discovery pass that surfaced the AU-019 arc; investigated the
+  two most-promising process-global candidates in depth first. `typosquat`'s
+  `SEEN_REGISTRABLE` (a cross-scan dedup `HashSet`) is a genuine instance of the
+  class, but its dedup set must be scan-global (shared across the module's ~30
+  dispatches per scan, so a task-local set won't do), and it has no
+  scan-END drain hook — keying it by `scan_id` with only the scan-START
+  `reset_per_scan` cleanup would leak one bucket per scan on a long-running `hse
+  serve`, the same end-of-lifecycle design question that keeps
+  `QuotaBudget::reset_scan` open; left as a tracked T2.11 sub-item rather than
+  shipping a leaky fix. OathNet's `SEARCH_SESSION`, by contrast, admitted the
+  cleanest possible fix: it was a single-slot `Mutex<Option<(value,
+  session_id)>>` that `init_session` wrote and `search` read back via
+  `session_id_for(value)` to share one paid lookup across a target's breach +
+  stealer queries — but keyed only by value with room for one entry, a
+  concurrent scan's `init_session` clobbered it, so a scan whose `search` ran
+  after another scan's init silently lost its session and paid double quota (and
+  the session-less `hse oathnet` batch path could read a session id a concurrent
+  scan left behind). Because the session id is available right at the call site
+  (unlike `found_keys`/`regional`, which needed a task-local ambient to reach
+  deep into the shared HTTP layer), the fix simply threads it as an explicit
+  `session_id: Option<&str>` parameter and deletes the global: `init_session`
+  now only returns the id, `oathnet_pro::process` holds it in a local and passes
+  it to both `search` calls, the batch path passes `None`, and
+  `SEARCH_SESSION`/`session_id_for`/the now-unused `Mutex` import are gone.
+  Extracted a pure `build_search_url(base, path, field, value, page_size,
+  session_id)` seam so the threading is unit-testable without a live endpoint;
+  regression test `build_search_url_appends_search_id_only_when_a_session_is_supplied`
+  asserts the `&search_id=` param is appended (url-encoded) iff a session is
+  supplied — red against the old code, which sourced the id from the shared slot,
+  not the parameter. Verified each cited site against the real code before
+  editing. Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` (4332 lib tests, +1; full suite across all binaries
+  green). Behaviour-touching (a `pub` util signature change threaded through two
+  call sites + the CLI batch path), so also `hse selftest` 9/9 (161 modules,
+  dispatch graph intact) per `CONVENTIONS.md` §9. No identity/PII logic, no
+  weakening of any architecture guard or `#![forbid(unsafe_code)]` — this
+  removes shared mutable state rather than adding any. **Paired:**
+  `SOLUTION_TREE` SOL-ISOLATE + §5 — same commit.

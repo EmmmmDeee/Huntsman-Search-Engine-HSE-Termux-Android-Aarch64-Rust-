@@ -17,6 +17,38 @@ use super::*;
     }
 
     #[test]
+    fn build_search_url_appends_search_id_only_when_a_session_is_supplied() {
+        // The session id is threaded in explicitly (T2.11: it used to be read
+        // from a single-slot process-global a concurrent scan could clobber). No
+        // session ⇒ no `search_id`; a session ⇒ exactly that id, url-encoded.
+        let no_sess =
+            build_search_url("https://api", "/breach/search", "email", "a@b.com", 100, None);
+        assert_eq!(
+            no_sess,
+            "https://api/breach/search?email%5B%5D=a%40b.com&page_size=100&sort=indexed_at:desc"
+        );
+        assert!(
+            !no_sess.contains("search_id"),
+            "no session ⇒ no search_id param, got {no_sess}"
+        );
+
+        let with_sess = build_search_url(
+            "https://api",
+            "/breach/search",
+            "email",
+            "a@b.com",
+            100,
+            Some("sess/42"),
+        );
+        // Same base query, plus the session id appended and url-encoded (the `/`
+        // becomes %2F) so a raw session id can never break the query string.
+        assert_eq!(
+            with_sess,
+            "https://api/breach/search?email%5B%5D=a%40b.com&page_size=100&sort=indexed_at:desc&search_id=sess%2F42"
+        );
+    }
+
+    #[test]
     fn budget_try_increment_enforces_a_finite_scan_cap() {
         // PROBLEM_TREE T2.11: oathnet's quota gate must be the atomic reserve
         // (`try_increment`/CAS), not the racy `remaining()`-then-`increment()` that
