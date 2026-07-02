@@ -1382,15 +1382,28 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `hse export -o <path>` is left to the user's umask — they chose the destination
   (often to share), so forcing 0600 there would surprise; the internal auto-written
   files are the ones locked down.
-- **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** ~7 modules
-  put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
-  `opencellid`/`opencorporates`/`mls`). Well-contained: no module logs the keyed URL,
-  `redact_credentials` masks `key=`/`token=` + literal `HUNTSMAN_*` on error paths,
-  `raw_archive` stores only `provider/endpoint/query` (not the URL). *Residual:* the
-  archived success **body** is verbatim, so a key echoed by an upstream persists in
-  `raw/*.json` (0600, but pulled into the non-0600 DB/dossiers via S3). → prefer
-  header auth where supported; optionally `redact_literal_secrets(body,
-  own_api_keys())` the archived body.
+- **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** 9 modules
+  put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`opencellid`/
+  `opencorporates`/`mls`/`hlr_cnam`/`contact_enrich`/`cell_intel`) and `ipqs`
+  embeds it in the URL **path** (`/api/json/{endpoint}/{key}/…`) — 10 modules in
+  all. *(List re-verified against the code 2026-07-02: the previous "~7"
+  enumeration was both overstated — `numverify` has since migrated to `apikey`-
+  **header** auth, the exact "prefer header auth" mitigation below, so it is no
+  longer key-in-URL — and understated: `hlr_cnam` (`api_key=` + its OpenCNAM leg's
+  `auth_token=`), `contact_enrich` (`access_key=`), `cell_intel` (its OpenCelliD
+  helper's `key=`), and `ipqs` (path) were all missing.)* Well-contained: no
+  module logs the keyed URL, `redact_credentials` masks `api_key=`/`apiKey=`/
+  `key=`/`token=`/`access_token=`/`secret=`/`auth=` + literal `HUNTSMAN_*` on
+  error paths, `raw_archive` stores only `provider/endpoint/query` (not the URL).
+  *Residual:* the archived success **body** is verbatim, so a key echoed by an
+  upstream persists in `raw/*.json` (0600, but pulled into the non-0600
+  DB/dossiers via S3). *Also noted (follow-up, not fixed this cycle):* the
+  path-embedded `ipqs` key and the `access_key=`/`api_token=`/`auth_token=` query
+  names fall outside `redact_credentials`' current `name=`-param set, so should
+  one of those URLs ever reach an error string it would not be masked — worth
+  widening the param set when the archived-body residual below is addressed. →
+  prefer header auth where supported (as `numverify` now does); optionally
+  `redact_literal_secrets(body, own_api_keys())` the archived body.
 - **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
@@ -4337,3 +4350,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-MERGE enforcement +
   §5 — same commit.
+
+- **2026-07-02** — **§7 S4: corrected the stale key-in-URL module enumeration —
+  it was BOTH overstated and understated, in a security node whose whole purpose
+  is to bound the residual key-exposure surface.** Selected from a fifth
+  discovery pass's stale-doc-sweep candidate; the correction was derived by
+  re-verifying every keyed module's actual auth mechanism against the code, not
+  by trusting the candidate's summary. The S4 node listed "~7 modules" that put
+  the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
+  `opencellid`/`opencorporates`/`mls`). Ground truth (grep of every module's URL
+  construction + header calls): `numverify` was migrated to `apikey`-**header**
+  auth (`.header("apikey", key)`, `api.apilayer.com` — no key in the URL), so
+  listing it is wrong; and four key-in-URL modules were missing — `hlr_cnam`
+  (`api_key=` plus its OpenCNAM leg's `auth_token=`), `contact_enrich`
+  (`access_key=`, `apilayer.net/api/validate`), `cell_intel` (its OpenCelliD
+  helper's `key=`), and `ipqs` (which embeds the key in the URL **path**,
+  `/api/json/{endpoint}/{key}/…`, not the query string at all). Corrected the
+  list to the accurate 10 modules (9 query-string + `ipqs` path), noted
+  `numverify`'s migration as an instance of the node's own "prefer header auth"
+  mitigation already applied, and made the `redact_credentials` masked-param
+  description match the actual set (`api_key`/`apiKey`/`key`/`token`/
+  `access_token`/`secret`/`auth`). Also flagged — explicitly as a follow-up, NOT
+  fixed this cycle to avoid scope creep — that `ipqs`'s path form and the
+  `access_key=`/`api_token=`/`auth_token=` param names sit outside that redaction
+  set. This is the eighth-plus instance of the recurring doc-drift pattern this
+  session keeps finding, and the most security-relevant: an S4 residual-surface
+  enumeration that names the wrong modules misdirects any operator or auditor
+  reasoning about where a key could leak. Doc-only; no code, tests, or
+  architecture changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §5 (the
+  SOL-REDACT node carries no module list, so no live-node text there changes) —
+  same commit.

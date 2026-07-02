@@ -3329,3 +3329,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   no architecture guard, no clippy/unsafe posture touched. Gate green: 4317 lib
   tests (+1), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
   `PROBLEM_TREE` SOL-MERGE enforcement + §8 — same commit.
+
+- **2026-07-02** — **§7 S4 (SOL-REDACT context): corrected the stale key-in-URL
+  module enumeration.** From a fifth discovery pass's stale-doc-sweep, verified
+  by re-checking every keyed module's auth against the code. S4 listed "~7"
+  query-string-key modules; ground truth is 10 (9 query-string + `ipqs` path):
+  `numverify` had migrated to `apikey`-header auth (so it is no longer key-in-URL
+  and was wrongly listed), while `hlr_cnam`/`contact_enrich`/`cell_intel` (query)
+  and `ipqs` (path) were missing. Corrected the list + count, aligned the
+  `redact_credentials` masked-param description with the real set, and flagged
+  (as a follow-up, not fixed) that the path form + `access_key`/`api_token`/
+  `auth_token` names sit outside that set. SOL-REDACT stays `[x]`/◑ — its
+  archived-body residual is unchanged; this only fixes the residual-surface
+  enumeration. Doc-only; no code/tests/architecture. Gate: n/a (docs). Paired:
+  `PROBLEM_TREE` §7 S4 + §8 — same commit.
