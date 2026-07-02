@@ -4652,3 +4652,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   touched. Gate green: 4325 lib tests (+2), full suite (lib + smoke +
   architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
   clean. **Paired:** `SOLUTION_TREE` SOL-GEOINT + §5 — same commit.
+
+- **2026-07-02** — **`SOLUTION_TREE` §4a's C5 gap-analysis bullet was stale:
+  "Weiszfeld/Welzl centroid + provenance radius … still open" — both are
+  fully delivered and live, verified directly against the code (not
+  assumed).** `util::geometry::location_fix` — part of the original codebase
+  import, predating every dated "Delivered" note in either tree — fuses the
+  confidence-weighted geometric median (Weiszfeld, outlier-robust) with
+  Welzl's minimum enclosing circle into one `LocationFix`, and is fully wired
+  into AU-052 (`rule_au_052_geographic_area_of_operation`), whose
+  `Correlation::description` embeds `fix.location_summary()`: BOTH the robust
+  median radius and the Chebyshev bounding-circle radius, live, operator-
+  facing today. Separately, AU-059's headline synergy fix
+  (`au059_synergy_fix`) already uses `weighted_geometric_median` (Weiszfeld)
+  with a `median_distance_km` provenance radius — its own doc comment cites
+  "same fallback `LocationFix`… uses — PROBLEM_TREE C5" as the deliberate,
+  already-consistent design between the two rules. Welzl's worst-case bound is
+  correctly used only by AU-052 (bounding a whole area of operation, where a
+  worst-case radius is the right semantics), not AU-059 (a single best-point
+  estimate, where the robust median radius is the right semantics) — a
+  reasoned design choice, not a gap. This §4a bullet's claim was never true at
+  any point checked (`git log --follow` shows `location_fix`/AU-052 both date
+  to the repo's single root import commit), so it was stale from the moment it
+  was written, not a drift that developed later — the same
+  "docs describe a smaller/different codebase" failure mode this register's
+  own baseline note was opened to guard against. Corrected the §4a text to
+  drop the false claim; only *auto-sync* (the `cell_local` re-sync trigger)
+  remains genuinely open for C5, matching what the C5/SOL-GEOINT §2 node text
+  in both trees already correctly says (neither claimed Weiszfeld/Welzl were
+  open — only this one §4 gap-analysis bullet was wrong). Doc-only; no code,
+  tests, or architecture changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE`
+  §4a + §5 — same commit.

@@ -911,8 +911,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `virustotal` passive-DNS pivots delivered 2026-07-01.
   *Remaining:* SSL-cert-hash origin pivot (needs new data-source work).
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
-  delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
-  radius + auto-sync still open).
+  delivered; free offline DB leg now available; evidence-attribute-consistency
+  sweep — `ip_whois_geo`/`ipinfo`/`ipquery` — delivered 2026-07-02 (both this
+  cycle and the prior one).
+  **Corrected (2026-07-02):** "Weiszfeld/Welzl centroid + provenance radius…
+  still open" was stale — both are fully delivered and live, verified directly
+  against the code, not assumed. `util::geometry::location_fix` (part of the
+  original codebase import, predating this tree's every dated "Delivered"
+  note) fuses the confidence-weighted geometric median (Weiszfeld,
+  outlier-robust) with Welzl's minimum enclosing circle in one `LocationFix`,
+  and is fully wired into AU-052 (`rule_au_052_geographic_area_of_operation`),
+  whose `Correlation::description` embeds `fix.location_summary()` — both the
+  robust median radius AND the Chebyshev bounding-circle radius, live,
+  operator-facing output today. Separately, AU-059's headline synergy fix
+  (`au059_synergy_fix`) already uses `weighted_geometric_median` (Weiszfeld)
+  with a `median_distance_km` provenance radius — its own doc comment cites
+  "same fallback `LocationFix`… uses — PROBLEM_TREE C5" as the deliberate,
+  already-consistent design. Welzl's worst-case bound is correctly used only
+  by AU-052 (bounding a whole area of operation), not AU-059 (a single best
+  point estimate) — a reasoned choice, not a gap. Only *auto-sync* remains
+  genuinely open.
 - **C1** — capability node; solution sketched, not started (gated on the
   §3.F enablers landing first, by design).
 - **C2** — `[~]` (SOL-PERF-PUBLISH). One hot-loop `HashSet`-rebuild
@@ -3512,3 +3530,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clippy/unsafe posture touched. Gate green: 4325 lib tests (+2), full suite
   green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8
   — same commit.
+
+- **2026-07-02** — **§4a stale-doc correction: C5's "Weiszfeld/Welzl centroid +
+  provenance radius … still open" was never true.** `util::geometry::
+  location_fix` (dates to the repo's single root import, per `git log
+  --follow`) already fuses Weiszfeld's geometric median with Welzl's minimum
+  enclosing circle in one `LocationFix`, fully wired into AU-052, whose
+  `Correlation::description` embeds `fix.location_summary()` — both radii,
+  live, today. AU-059's headline synergy fix separately uses
+  `weighted_geometric_median` with a `median_distance_km` provenance radius,
+  its own comment explicitly citing the same `LocationFix` fallback pattern
+  "— PROBLEM_TREE C5." Welzl's worst-case bound belongs only in AU-052 (a
+  whole-area bound), not AU-059 (a single point estimate) — by design, not
+  omission. Corrected §4a; only auto-sync remains genuinely open for C5,
+  matching what the C5/SOL-GEOINT §2 node text already correctly said. Doc-
+  only; no code/tests/architecture. Gate: n/a (docs). Paired: `PROBLEM_TREE`
+  §8 — same commit.
