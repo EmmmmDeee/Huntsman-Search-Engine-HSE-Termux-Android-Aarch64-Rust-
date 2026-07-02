@@ -1471,28 +1471,33 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `hse export -o <path>` is left to the user's umask — they chose the destination
   (often to share), so forcing 0600 there would surprise; the internal auto-written
   files are the ones locked down.
-- **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** 9 modules
-  put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`opencellid`/
-  `opencorporates`/`mls`/`hlr_cnam`/`contact_enrich`/`cell_intel`) and `ipqs`
-  embeds it in the URL **path** (`/api/json/{endpoint}/{key}/…`) — 10 modules in
-  all. *(List re-verified against the code 2026-07-02: the previous "~7"
-  enumeration was both overstated — `numverify` has since migrated to `apikey`-
-  **header** auth, the exact "prefer header auth" mitigation below, so it is no
-  longer key-in-URL — and understated: `hlr_cnam` (`api_key=` + its OpenCNAM leg's
-  `auth_token=`), `contact_enrich` (`access_key=`), `cell_intel` (its OpenCelliD
-  helper's `key=`), and `ipqs` (path) were all missing.)* Well-contained: no
-  module logs the keyed URL, `redact_credentials` masks `api_key=`/`apiKey=`/
-  `key=`/`token=`/`access_token=`/`secret=`/`auth=` + literal `HUNTSMAN_*` on
-  error paths, `raw_archive` stores only `provider/endpoint/query` (not the URL).
-  *Residual:* the archived success **body** is verbatim, so a key echoed by an
-  upstream persists in `raw/*.json` (0600, but pulled into the non-0600
-  DB/dossiers via S3). *Also noted (follow-up, not fixed this cycle):* the
-  path-embedded `ipqs` key and the `access_key=`/`api_token=`/`auth_token=` query
-  names fall outside `redact_credentials`' current `name=`-param set, so should
-  one of those URLs ever reach an error string it would not be masked — worth
-  widening the param set when the archived-body residual below is addressed. →
-  prefer header auth where supported (as `numverify` now does); optionally
-  `redact_literal_secrets(body, own_api_keys())` the archived body.
+- **S4 · `[-]` P3 (LOW) — key-in-URL (mostly mitigated; archived-body residual
+  explicitly rejected, not pursued).** 9 modules put the key in the query
+  string (`shodan`/`hunter_io`/`whoisxml`/`opencellid`/`opencorporates`/`mls`/
+  `hlr_cnam`/`contact_enrich`/`cell_intel`) and `ipqs` embeds it in the URL
+  **path** (`/api/json/{endpoint}/{key}/…`) — 10 modules in all. *(List
+  re-verified against the code 2026-07-02: the previous "~7" enumeration was
+  both overstated — `numverify` has since migrated to `apikey`-**header**
+  auth, so it is no longer key-in-URL — and understated: `hlr_cnam`
+  (`api_key=` + its OpenCNAM leg's `auth_token=`), `contact_enrich`
+  (`access_key=`), `cell_intel` (its OpenCelliD helper's `key=`), and `ipqs`
+  (path) were all missing.)* Well-contained: no module logs the keyed URL,
+  `redact_credentials` masks `api_key=`/`apiKey=`/`key=`/`token=`/
+  `access_token=`/`secret=`/`auth=` + literal `HUNTSMAN_*` on error paths,
+  `raw_archive` stores only `provider/endpoint/query` (not the URL).
+  **`[-]` Accepted-won't-build (2026-07-02, explicit operator directive:
+  "never redact anything ever"):** the archived success **body** is verbatim,
+  so a key echoed by an upstream persists in `raw/*.json`. Redacting it
+  (`redact_literal_secrets(body, own_api_keys())` — both already exist and
+  were confirmed usable for this) was investigated this cycle but is now
+  explicitly OUT OF SCOPE by direct instruction, permanently — do not
+  re-propose or re-investigate without new, explicit operator authorisation.
+  This does not touch the EXISTING `redact_credentials`/`redact_literal_secrets`
+  machinery already protecting error bodies/URLs (S4's "Well-contained"
+  paragraph above) — only the *unbuilt* archived-body extension is rejected.
+  The related "widen `redact_credentials`' param set for `ipqs`'s path-embedded
+  key / `access_key=`/`api_token=`/`auth_token=`" follow-up is likewise not
+  pursued for the same reason.
 - **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
@@ -4683,3 +4688,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   open — only this one §4 gap-analysis bullet was wrong). Doc-only; no code,
   tests, or architecture changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE`
   §4a + §5 — same commit.
+
+- **2026-07-02** — **§7 S4 flipped `[ ]`→`[-]` (accepted-won't-build): the
+  archived-success-body redaction residual is now explicitly out of scope by
+  direct operator instruction ("never redact anything ever"), issued while
+  this cycle was investigating it as a candidate unit of work.** Before the
+  instruction landed, the investigation had confirmed the residual was
+  genuinely implementable as a small, well-scoped fix — `redact_literal_secrets`
+  (`util::http::redact.rs`, already handles path-embedded keys per its own
+  comment citing `ipqs` by name) and `own_api_keys()`
+  (`util::keys::constants.rs`) both already exist and compose exactly as the
+  node's own "→ Solution" line proposed — but the instruction is unambiguous
+  and immediate, so the investigation stopped there without writing any
+  redaction code, and the item is now recorded as permanently rejected rather
+  than left as a live-looking open TODO a future cycle could pick up and
+  re-attempt. Scope is deliberately narrow: this rejects only the *unbuilt*
+  archived-body extension and the related "widen `redact_credentials`'s
+  param set" follow-up: it does **not** touch the EXISTING
+  `redact_credentials`/`redact_literal_secrets` machinery already protecting
+  error bodies/URLs (S4's own "Well-contained" paragraph), which remains
+  exactly as it was — the instruction was given in response to a proposed
+  NEW redaction extension being investigated, not as a directive to remove
+  already-shipped security controls, and removing shipped controls was
+  neither requested nor undertaken. Doc-only; no code, tests, or architecture
+  changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` SOL-REDACT + §4a +
+  §5 — same commit.

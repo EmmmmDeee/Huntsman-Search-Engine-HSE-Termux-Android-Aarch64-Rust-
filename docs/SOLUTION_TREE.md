@@ -328,8 +328,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   destination).
 - **`[x]` SOL-REDACT · Credential redaction** — `redact_credentials` (param + literal
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
-  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
-  **success body** isn't run through `redact_literal_secrets` — **§7 S4** residual. ◑
+  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Rejected
+  (2026-07-02, explicit operator directive: "never redact anything ever"):*
+  extending redaction to the archived **success body** (`redact_literal_secrets`
+  on `raw_archive`'s `raw/*.json`) — **§7 S4** residual — was investigated this
+  cycle and is now permanently out of scope; do not re-propose without new,
+  explicit operator authorisation. The EXISTING `redact_credentials`/
+  `redact_literal_secrets` machinery on error bodies/URLs above is unaffected —
+  only the unbuilt archived-body extension is rejected. §7 S4 flipped
+  `[ ]`→`[-]` (accepted-won't-build).
 - **`[x]` SOL-INSTALL-INTEGRITY · sha256 sidecar required for auto-discovered prebuilt** —
   `_validate_prebuilt` in `install.sh` accepts a second arg `require_sha` (default 1 for
   auto-discovered binaries, 0 for explicitly-set `HSE_PREBUILT`). When `require_sha=1`:
@@ -849,7 +856,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
-| SOL-REDACT | §7 S4 | ◑ |
+| SOL-REDACT | §7 S4 | `[x]` (residual `[-]` accepted-won't-build) |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
@@ -894,10 +901,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (generic-hex, URL-param byte-slice under cap, user:pass, recursion) were the
   real uncovered surface; added a never-panics proptest + oversized-multibyte
   regression test there. Golden-fixture/health-signal legs unchanged.
-- **§7 S4** — SOL-REDACT residual: archived success body not run through
-  `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
-  this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
+  this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.
+  §7 S4/SOL-REDACT's archived-body residual — off this queue 2026-07-02,
+  `[-]` accepted-won't-build by explicit operator directive, not delivered.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
 - **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
@@ -3545,4 +3552,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   omission. Corrected §4a; only auto-sync remains genuinely open for C5,
   matching what the C5/SOL-GEOINT §2 node text already correctly said. Doc-
   only; no code/tests/architecture. Gate: n/a (docs). Paired: `PROBLEM_TREE`
+  §8 — same commit.
+
+- **2026-07-02** — **SOL-REDACT / §7 S4 flipped to `[x]`(residual `[-]`
+  accepted-won't-build): archived-body redaction is now explicitly out of
+  scope by direct operator instruction ("never redact anything ever").** This
+  cycle had confirmed the residual was implementable — `redact_literal_secrets`
+  and `own_api_keys()` both already exist and compose exactly as the node
+  proposed — when the instruction landed mid-investigation; no redaction code
+  was written. Rejects only the unbuilt archived-body extension and its
+  related param-set-widening follow-up; the existing `redact_credentials`/
+  `redact_literal_secrets` machinery already protecting error bodies/URLs is
+  untouched. Removed from §4a's open queue (was a live-looking TODO; now
+  recorded as permanently rejected so it isn't re-attempted). Doc-only; no
+  code/tests/architecture. Gate: n/a (docs). Paired: `PROBLEM_TREE` §7 S4 +
   §8 — same commit.
