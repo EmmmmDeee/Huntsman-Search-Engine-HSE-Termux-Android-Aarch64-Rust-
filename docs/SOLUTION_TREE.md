@@ -590,6 +590,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   mirroring the finalise path; both call sites updated. New regression
   test, verified as genuine by confirming it fails against the reverted
   pre-fix code before restoring.
+  *Delivered (2026-07-01, cont'd 2):* the full-dossier renderer's own
+  completeness contract. `render_full`'s doc promises "nothing … omitted",
+  but its per-entity block dropped the `uid`, pre-normalisation
+  `raw_value`, and `observed_at` fields `render_json`/CSV both carry —
+  and `raw_value` diverges from the normalised `value` for
+  Email/Username/Domain, so the actual source spelling was hidden. The
+  existing "dumps_every_field" test missed it (its `Password` fixture is a
+  passthrough kind where `raw_value == value`). Added the three fields;
+  strengthened the test with a divergent mixed-case Email fixture,
+  red/green-verified.
   *Remaining:* everything else in "byte-stable exports" as a *proven*
   property (proptest coverage across export paths) rather than a
   case-by-case one; the node stays `[~]`, not `[x]`.
@@ -3173,4 +3183,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   architecture guards pass. Bumps baseline to 110 rules / ceiling
   AU-112. Gate green: 4306 lib tests (+5), full suite green, fmt/clippy
   `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C4 + §8 — same
+  commit.
+
+- **2026-07-01** — **SOL-FORENSIC: `render_full` now keeps its own
+  "nothing omitted" promise.** From the fourth discovery pass's
+  export-renderer-completeness candidate (verifier rate-limited, so
+  re-verified directly against the code). The full-dossier renderer's doc
+  promised "every attribute verbatim … nothing … omitted" but its
+  per-entity block dropped the SHA-256 `uid`, the pre-normalisation
+  `raw_value`, and `observed_at` — three fields `render_json`/CSV already
+  carry. `raw_value` diverges from `value` for Email/Username/Domain, so
+  the source spelling of every such finding was hidden in the "full,
+  unredacted" artifact. The existing "every field" test used a `Password`
+  fixture (passthrough kind, `raw_value == value`) so never caught it.
+  Added the three fields (`observed_at` raw + compact-UTC via
+  `util::timefmt::compact_utc`); strengthened the test with a divergent
+  mixed-case Email fixture, red/green-verified. Additive text-renderer
+  change; no identity/PII logic or architecture guard touched. Gate
+  green: 4306 lib tests (+3), full suite green, fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C7 + §8 — same
   commit.

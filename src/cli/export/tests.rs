@@ -27,7 +27,13 @@ fn render_full_dumps_every_field_and_provenance() {
             .with_attr("source", "Snusbase")
             .with_attr("username", "3toadsloth"),
     );
-    store.upsert_entities_batch(&[e]).unwrap();
+    // An Email whose raw source spelling (mixed-case) DIVERGES from the
+    // normalised `value` — exercises the "nothing omitted" promise for the
+    // entity's own top-level `raw_value`/`observed_at`/`uid` fields, which the
+    // Password fixture above (a passthrough-normalise kind) can't.
+    let mut mixed = Entity::new(EntityKind::Email, "TestUser@Example.COM", 0.6, "scan-full");
+    mixed.observed_at = 1_700_000_000;
+    store.upsert_entities_batch(&[e, mixed]).unwrap();
 
     let out = render_full(&store, "scan-full").unwrap();
     // Header + provenance roll-up.
@@ -40,6 +46,26 @@ fn render_full_dumps_every_field_and_provenance() {
     assert!(out.contains("api_key_origin = see-know.eu:seek-62650f9a…0fd0a4"));
     assert!(out.contains("via_endpoint = search"));
     assert!(out.contains("username = 3toadsloth"));
+    // "Nothing omitted": the entity's own top-level fields must all appear —
+    // the normalised value, its DIVERGENT raw spelling, and the observed_at
+    // timestamp (raw + compact-UTC), none of which render_full carried before.
+    assert!(
+        out.contains("email = testuser@example.com"),
+        "normalised value"
+    );
+    assert!(
+        out.contains("raw_value=TestUser@Example.COM"),
+        "divergent raw_value must be surfaced verbatim: {out}"
+    );
+    assert!(
+        out.contains("observed_at=1700000000"),
+        "raw observed_at timestamp must appear"
+    );
+    assert!(
+        out.contains("20231114T221320Z"),
+        "observed_at must also render as a compact-UTC string"
+    );
+    assert!(out.contains("uid="), "the SHA-256 uid must appear");
     // Exposure Index headline + breakdown mirror the live dossier — the on-disk
     // full dossier opens with the same operator-facing verdict.
     assert!(out.contains("── EXPOSURE INDEX ──"));

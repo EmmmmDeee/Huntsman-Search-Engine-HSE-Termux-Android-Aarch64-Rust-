@@ -408,6 +408,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The full dossier / debug bundle now shows every entity's `uid`, raw
+  (pre-normalisation) value, and observed-at timestamp.** The full-dossier
+  renderer promised "nothing omitted" but silently dropped these three
+  per-entity fields that the JSON and CSV exports already carried — so the
+  raw source spelling a finding was captured under (e.g. the original
+  mixed-case email before normalisation) was invisible in the artifact
+  whose whole purpose is total transparency. All three now appear.
 - **`censys` and `trove_au` never used the inter-scan cache, despite being
   the two named examples in the feature's own design.** The inter-scan
   cache lets a paid/key-gated module serve a recent result instead of

@@ -1102,6 +1102,23 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   policy) remains open — this closes the two concrete determinism bugs
   this session found in the recovery/checkpoint paths, not the whole
   node.
+  *Partial (2026-07-01, cont'd 2):* closed a completeness gap in the
+  full-dossier renderer's own contract. `render_full`'s doc promises
+  "every attribute verbatim … nothing hashed, masked, truncated, or
+  omitted", yet its per-entity block dropped three top-level fields that
+  `render_json` and the CSV export both carry: the SHA-256 `uid`, the
+  pre-normalisation `raw_value`, and `observed_at`. `raw_value` genuinely
+  diverges from the normalised `value` for Email/Username/Domain (case-
+  folding, sigil/quote stripping), so a human reading the "full,
+  unredacted" dossier never saw the actual source spelling a finding came
+  from. The pre-existing `render_full_dumps_every_field_and_provenance`
+  test missed it because its fixture used a `Password` entity — a
+  passthrough-normalise kind where `raw_value == value` — so the "every
+  field" claim was never exercised for a divergent case. Fix: `render_full`
+  now emits `uid`/`raw_value`/`observed_at` (raw + compact-UTC via
+  `util::timefmt::compact_utc`) per entity; test strengthened with a
+  mixed-case Email fixture whose `raw_value` provably diverges, and
+  confirmed to fail against the pre-fix renderer (red/green verified).
 - **`[x]` C8 · Webcam, fan-subscription & adult-video platform identity (DELIVERED)**
   — *Problem:* `username_search` covers mainstream social/dev/gaming/music platforms
   only; webcam performers, fan-content creators, and adult-video contributors are an
@@ -4117,3 +4134,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   smoke + architecture + doctests, all binaries) green, fmt/clippy
   `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
   same commit.
+
+- **2026-07-01** — **C7: the full dossier now actually keeps its own
+  "nothing omitted" promise — `render_full` was silently dropping three
+  entity-level fields.** Selected from the fourth discovery pass's
+  export-renderer-completeness candidate (its verifier was rate-limited,
+  so this cycle re-verified the finding directly against the code before
+  acting). `render_full`'s doc comment promises "every attribute verbatim
+  … nothing hashed, masked, truncated, or omitted", but the per-entity
+  block never emitted the SHA-256 `uid`, the pre-normalisation
+  `raw_value`, or `observed_at` — all three of which `render_json` and the
+  CSV export already carry. `raw_value` genuinely diverges from the
+  normalised `value` for Email/Username/Domain (case-folding, sigil/quote
+  stripping), so the "full, unredacted" forensic artifact was hiding the
+  actual source spelling of every such finding. The existing
+  "dumps_every_field" test never caught it: its fixture was a `Password`
+  entity (a passthrough-normalise kind where `raw_value == value`), so the
+  divergent case was never exercised. Added the three fields to
+  `render_full` (`observed_at` rendered raw + compact-UTC via the existing
+  `util::timefmt::compact_utc` helper), and strengthened the test with a
+  mixed-case Email fixture whose `raw_value` provably diverges — verified
+  as a genuine regression test by reverting the renderer fix and watching
+  it fail. Additive text-renderer change; no identity/PII logic, no
+  architecture guard touched. Gate green: 4306 lib tests (+3), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-FORENSIC +
+  §5 — same commit.

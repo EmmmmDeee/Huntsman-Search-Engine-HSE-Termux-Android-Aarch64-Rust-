@@ -166,6 +166,20 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
     for (i, e) in entities.iter().enumerate() {
         let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
+        // "Nothing omitted" (see the module doc): the entity's own top-level
+        // fields — the SHA-256 uid, the pre-normalisation raw_value, and the
+        // decay timestamp — that `render_json`/CSV already carry but a human
+        // reading the full dossier previously never saw. `raw_value` genuinely
+        // diverges from `value` for Email/Username/Domain (case-folding, sigil
+        // stripping, …), so it is real provenance, not noise.
+        let _ = writeln!(
+            s,
+            "    uid={}  raw_value={}  observed_at={} ({})",
+            e.uid,
+            e.raw_value,
+            e.observed_at,
+            crate::util::timefmt::compact_utc(e.observed_at)
+        );
         let _ = writeln!(
             s,
             "    confidence={:.2}  c_eff={:.2}  corroboration={}  class={}",
