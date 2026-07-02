@@ -591,8 +591,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the coordinate `au-state:XX` (resolved via `util::address_au::
   state_code`, the same helper `au_people` already uses) + `country:AU`,
   letting the correlator's tag-preferred path fire. 2 new unit tests.
+  *Delivered (2026-07-02):* fixed a person-location corroboration gap —
+  `ip_whois_geo` never stamped the `ip` evidence attribute
+  `person_login_ip_coords` (shared by `best_au_location_estimate` and
+  `au_location_corroboration`) requires to recognise a `Coordinates` fix as a
+  subject's login-IP location, despite the module's own doc comment framing
+  it as `ip_geo`'s corroborating "second-source" and its code proving the fix
+  is meant to represent the subject (explicit CDN/anycast-IP skip: "its geo
+  is the datacenter's, not the subject's"). Swept all 9 IP→Coordinates
+  modules; only `ip_whois_geo` was missing it (`ip2location`/`shodan`/
+  `netlas`/`whois` already correct). Deliberately did not extend to
+  `ipinfo`/`ipquery` (unconfirmed, left for a future cycle) or
+  `censys`/`onyphe` (infra/host-scan tools — extending risks false
+  corroboration, not closing a real gap). Additive one-attribute fix
+  mirroring `ip_geo`'s exact pattern; 1 regression test, red/green-verified.
   *Remaining:* movement/timeline layer; auto-scheduled re-sync of the
-  local cell DB (currently requires manual `hse cells import` trigger).
+  local cell DB (currently requires manual `hse cells import` trigger);
+  `ipinfo`/`ipquery` unconfirmed for the same login-IP-tie-back gap.
 - **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
   *Audit + delivered (2026-07-01):* the entropy gate, `aho-corasick`
@@ -3438,3 +3453,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   architecture guard, no clippy/unsafe posture touched. Gate green: 4322 lib
   tests (+1), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
   `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-02** — **SOL-GEOINT (C5): `ip_whois_geo` fixed to stamp the `ip`
+  evidence attribute `person_login_ip_coords` requires — the third
+  evidence-attribute-consistency miss found this arc (after AU-105, AU-011).**
+  A systematic sweep enumerated every attribute correlator rules read (every
+  `.attributes.get(...)` in `src/core/correlator/`) and cross-checked each
+  against producing modules. `person_login_ip_coords` — the shared definition
+  `best_au_location_estimate`/`au_location_corroboration` both call —
+  recognises a `Coordinates` fix as a subject's login-IP location only via the
+  `ip` attribute. `ip_geo` stamps it; `ip_whois_geo` — its documented
+  "second-source" corroboration partner, whose own code proves its fix
+  represents the subject (explicit CDN/anycast-edge skip) — did not, so its
+  fixes on the same login IP silently never corroborated. Swept all 9
+  IP→Coordinates modules; only `ip_whois_geo` was wrong (`ip2location`/
+  `shodan`/`netlas`/`whois` already correct). Scoped tight: did not extend to
+  `ipinfo`/`ipquery` (unverified this cycle) or `censys`/`onyphe`
+  (infrastructure/host-scan tools — extending risks fabricating corroboration,
+  worse than missing coverage). Additive one-attribute fix mirroring
+  `ip_geo`'s exact pattern; 1 regression test, red/green-verified by reverting
+  the fix. No new `EntityKind`, no architecture-guard impact, no identity/PII
+  logic touched. Gate green: 4323 lib tests (+1), full suite green, fmt/clippy
+  `--all-targets`/doc clean. Paired: `PROBLEM_TREE` C5 + §8 — same commit.

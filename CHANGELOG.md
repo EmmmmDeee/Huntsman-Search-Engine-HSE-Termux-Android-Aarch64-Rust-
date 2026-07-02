@@ -419,6 +419,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`ip_whois_geo` geolocation fixes now contribute to the person-location
+  corroboration signal.** The headline "Best location estimate" and its
+  independent-source count recognize an IP geolocation as tied to a subject's
+  login IP by matching an evidence field, but `ip_whois_geo` recorded the IP
+  under a different field than the shared recognition logic reads — unlike
+  its sibling `ip_geo`, whose fixes were always recognized. So a location fix
+  from `ip_whois_geo` on the same IP `ip_geo` also resolved silently never
+  counted as a second, independent confirmation. `ip_whois_geo` now records
+  the IP where it's expected, so both sources' agreement is counted.
 - **The cross-platform username footprint finding now fires for
   `social_probe` results.** The finding (a handle confirmed on three or more
   platforms) reads a per-module platform count from the evidence, but

@@ -1091,7 +1091,36 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   tests are unaffected (they all use tolerant range assertions on real,
   closely-clustered fixtures where the two estimators don't meaningfully
   diverge).
-  *Remaining:* tighter AU bounding; movement/timeline geo.
+  *Delivered (2026-07-02):* fixed a person-location corroboration gap in
+  `ip_whois_geo` — the same evidence-attribute-consistency class as the AU-105/
+  AU-011 fixes. `core::correlator::rules::location::person_login_ip_coords`
+  (the shared definition `best_au_location_estimate` and
+  `au_location_corroboration` both call) recognises a `Coordinates` fix as tied
+  to a subject's breach/stealer login IP only when its evidence carries an `ip`
+  attribute matching that IP. `ip_geo` stamps it (with an explicit comment
+  explaining why); `ip_whois_geo` — whose own doc comment frames it as `ip_geo`'s
+  "second-source geo module... corroborating the location," and whose
+  `build_entities` explicitly skips CDN/anycast edge IPs because "its geo is the
+  datacenter's, not the subject's" (i.e. its fix is meant to represent the
+  subject) — never stamped it. So an ipwho.is fix on the exact same login IP
+  `ip_geo` also geolocated silently never counted toward the person-location
+  signal, despite being eligible (not tagged hosting/proxy/platform-infra).
+  Swept every module that accepts an IP and produces `Coordinates` (9
+  candidates: `ip2location`/`ip_whois_geo`/`ipinfo`/`ipquery`/`censys`/
+  `shodan`/`netlas`/`onyphe`/`whois`); confirmed `ip2location`/`shodan`/
+  `netlas`/`whois` already stamp `ip` correctly, leaving `ip_whois_geo` as the
+  one real gap. Deliberately did NOT extend the fix to `ipinfo`/`ipquery`
+  (same class, plausible, but unconfirmed against a real response this
+  session — left for a future cycle to verify rather than guess) or to
+  `censys`/`onyphe` (explicit infrastructure/host-scan tools whose geo fix more
+  often reflects hosting, not the subject's connection — extending
+  person-location recognition to them risks introducing false corroboration,
+  which the doctrine ranks worse than missing coverage). Fixed by adding
+  `.with_attr("ip", ip)` to `ip_whois_geo`'s evidence fold, mirroring `ip_geo`'s
+  exact pattern and comment. 1 regression test, red/green-verified. No new
+  `EntityKind`, no architecture-guard impact.
+  *Remaining:* tighter AU bounding; movement/timeline geo; `ipinfo`/`ipquery`
+  unconfirmed for the same gap.
 - **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -4525,3 +4554,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tests (+1), full suite (lib + smoke + architecture + doctests, all binaries)
   green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+
+- **2026-07-02** — **C5: `ip_whois_geo` never stamped the evidence attribute
+  that lets its geolocation fixes count as person-location corroboration —
+  the third evidence-attribute-consistency silent miss found this arc, after
+  AU-105 (dehashed/see_know) and AU-011 (social_probe).** A code-grounded
+  discovery pass systematically enumerated every attribute correlator rules
+  read (`grep` of every `.attributes.get(...)` in `src/core/correlator/`,
+  multi-line calls included) and cross-checked each against its producing
+  modules. `core::correlator::rules::location::person_login_ip_coords` — the
+  ONE shared definition `best_au_location_estimate` and
+  `au_location_corroboration` both call — recognises a `Coordinates` fix as a
+  subject's breach/stealer login-IP location only when its evidence carries
+  an `ip` attribute equal to that IP. `ip_geo` stamps it, with an explicit
+  comment explaining the tie-back is for exactly this purpose. `ip_whois_geo`
+  did not, despite its own module doc comment framing it as `ip_geo`'s
+  "second-source geo module... corroborating the location," and despite
+  `build_entities` explicitly skipping CDN/anycast edge IPs with the comment
+  "its geo is the datacenter's, not the subject's" — i.e. the module's own
+  code proves its fix is meant to represent the subject. So an ipwho.is fix
+  on the SAME login IP `ip_geo` also geolocated silently never contributed to
+  the person-location signal, weakening exactly the multi-source
+  corroboration this pair of modules exists to provide. Swept all 9 modules
+  that accept an IP target and produce `Coordinates`
+  (`ip2location`/`ip_whois_geo`/`ipinfo`/`ipquery`/`censys`/`shodan`/
+  `netlas`/`onyphe`/`whois`); confirmed `ip2location`/`shodan`/`netlas`/
+  `whois` already stamp `ip`. Deliberately scoped the fix to `ip_whois_geo`
+  only: `ipinfo`/`ipquery` are plausible instances of the same gap but were
+  not verified this cycle (left rather than guessed); `censys`/`onyphe` are
+  explicit infrastructure/host-scan tools whose geo fix more often reflects
+  hosting than the subject's own connection, so extending person-location
+  recognition to them risks fabricating corroboration rather than closing a
+  real gap — worse than missing coverage per the evidentiary doctrine. Fixed
+  by adding `.with_attr("ip", ip)` to `ip_whois_geo`'s evidence fold,
+  mirroring `ip_geo`'s exact pattern and rationale comment. 1 regression test
+  (`coordinates_carry_the_originating_ip_for_login_ip_recognition`),
+  red/green-verified by reverting the fix. No new `EntityKind`, no
+  architecture-guard impact, no identity/PII logic, no clippy/unsafe posture
+  touched. Gate green: 4323 lib tests (+1), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` SOL-GEOINT + §5 — same commit.
