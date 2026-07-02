@@ -140,6 +140,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   generic `parse_results` plus constituent iterators now carry 5 more
   never-panics cases, on top of its pre-existing hand-written adversarial
   regression test (see T2.7 below).
+  *Continued (2026-07-02):* `util::extract` — the shared free-text
+  identifier miner run over attacker-shaped scraped/breach/stealer input,
+  and the home of the byte-walking `page_emails` and char-slicing
+  `ibans`/`macs` normalisers this node names as a panic surface — had zero
+  property coverage. Added a `mod prop` of 7 properties (totality +
+  well-formedness for `emails`/`page_emails`/`ibans`/`macs`/`phones`/
+  `labeled_ssids`; totality + internal consistency for
+  `classify_credential_field`), encoding the real asymmetry that strict
+  `page_emails` output always satisfies `looks_like_email` while the looser
+  regex `emails` does not. Extractors proved already-total (no bug found);
+  pure test-hardening, 4,316 lib tests. Selected only after two other
+  fifth-pass candidates were re-verified and rejected as not-real (a
+  `HostedOn` Url→IpAddress gap — the edge is correctly Url→Domain — and a
+  CLI/SPA `report.json` parity gap — both surfaces share one builder).
   *Gap:* `cargo-fuzz` (nightly CI lane), the dossier/txt/html **import**
   proptest, and `username_search`'s parser no-panic coverage (unconfirmed
   whether this pattern applies — its detection logic is table-driven, not
@@ -3260,3 +3274,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   logic, no architecture guard touched. Gate green: 4309 lib tests (+2), full
   suite green, fmt/clippy `--all-targets`/doc clean. Paired: `PROBLEM_TREE`
   T2.12 follow-up + §8 — same commit.
+
+- **2026-07-02** — **SOL-F3: property-test coverage for `util::extract`, the
+  shared free-text identifier miner.** From a fifth discovery pass's
+  util-proptest-coverage candidate — selected only after two other fifth-pass
+  candidates were re-verified against the code and rejected as not-real (a
+  claimed `HostedOn` Url→IpAddress relation gap — the edge is correctly defined
+  and derived as Url→Domain, with Url→IpAddress an intentional 2-hop path — and
+  a claimed CLI/SPA `report.json` "Exposure Index" parity gap — both report
+  surfaces call the same `build_scan_report`, and no such metric exists). The
+  extract module every scraper/breach/stealer parser runs over attacker-shaped
+  text had thorough example tests but zero property coverage, despite housing
+  the byte-walking `page_emails` and char-slicing `ibans`/`macs` normalisers
+  SOL-F3 explicitly flags as a panic surface. Added a `mod prop` of 7 properties
+  (totality + output well-formedness for the six extractors; totality + internal
+  consistency for `classify_credential_field`), encoding the real asymmetry that
+  strict `page_emails` always satisfies `looks_like_email` while the looser
+  regex `emails` does not (it can match a dot-leading host). Extractors proved
+  already-total — pure test-hardening, no production code changed, no
+  identity/PII logic, no architecture guard touched. Gate green: 4316 lib tests
+  (+7), full suite green, fmt/clippy `--all-targets`/doc clean. Paired:
+  `PROBLEM_TREE` F.3 + §8 — same commit.

@@ -159,3 +159,125 @@ use super::*;
         // Not IBAN-shaped.
         assert!(ibans("just some words and 12345 digits").is_empty());
     }
+
+    /// Property tests: these extractors run over raw scraped HTML, SERP snippets,
+    /// breach blobs, and stealer logs — fully attacker-shaped input — so the
+    /// load-bearing guarantee is that arbitrary bytes (multibyte UTF-8, control
+    /// characters, `@`/`.`/`:` noise) never panic them and every returned token
+    /// is well-formed. The byte-walking `page_emails` and the char-slicing
+    /// `ibans`/`macs` normalisers are the real panic surface a fuzz-shaped input
+    /// probes; example-based tests above cover the intended positive matches.
+    mod prop {
+        use proptest::prelude::*;
+
+        use super::{
+            CredentialField, classify_credential_field, emails, ibans, is_placeholder_secret,
+            labeled_ssids, looks_like_email, macs, page_emails, phones,
+        };
+
+        proptest! {
+            /// `emails` (regex-based, scanner-grade) is total; every hit contains
+            /// an `@` with a dotted host part, is lower-cased, and is de-duplicated.
+            /// It does NOT assert `looks_like_email`: the loose regex can match a
+            /// host that starts with a dot (`a@.example.com`), which the stricter
+            /// structural gate rejects — that divergence is by design.
+            #[test]
+            fn emails_is_total_and_shaped(s in ".{0,256}") {
+                let got = emails(&s);
+                let mut uniq = std::collections::HashSet::new();
+                for e in &got {
+                    prop_assert!(!e.chars().any(char::is_uppercase), "not lower-cased: {e:?}");
+                    let (local, host) = e.split_once('@').expect("email hit must contain '@'");
+                    prop_assert!(!local.is_empty(), "empty local part: {e:?}");
+                    prop_assert!(host.contains('.'), "host has no dot: {e:?}");
+                    prop_assert!(uniq.insert(e.clone()), "duplicate email: {e:?}");
+                }
+            }
+
+            /// `page_emails` (the manual byte-walker) is total AND strictly enough
+            /// filtered that every hit satisfies the structural `looks_like_email`
+            /// gate — it requires a non-empty local, an alphanumeric-leading dotted
+            /// host, and strips trailing dots, so unlike the raw regex it can never
+            /// emit a dot-leading host. Also lower-cased and de-duplicated.
+            #[test]
+            fn page_emails_is_total_and_well_formed(s in ".{0,256}") {
+                let got = page_emails(&s);
+                let mut uniq = std::collections::HashSet::new();
+                for e in &got {
+                    prop_assert!(!e.chars().any(char::is_uppercase), "not lower-cased: {e:?}");
+                    prop_assert!(looks_like_email(e), "ill-formed page email: {e:?}");
+                    prop_assert!(uniq.insert(e.clone()), "duplicate page email: {e:?}");
+                }
+            }
+
+            /// `ibans` is total; every hit is upper-case ASCII-alphanumeric of a
+            /// valid IBAN length (checksum validity is pinned by the example test).
+            #[test]
+            fn ibans_is_total_and_shaped(s in ".{0,256}") {
+                for iban in ibans(&s) {
+                    prop_assert!((15..=34).contains(&iban.len()), "bad IBAN length: {iban:?}");
+                    prop_assert!(
+                        iban.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit()),
+                        "non-uppercase-alnum IBAN: {iban:?}"
+                    );
+                }
+            }
+
+            /// `macs` is total; every hit is the canonical lower-case colon form
+            /// and never the all-zero or broadcast address.
+            #[test]
+            fn macs_is_total_and_canonical(s in ".{0,256}") {
+                for mac in macs(&s) {
+                    prop_assert_eq!(mac.len(), 17, "bad MAC length: {}", mac);
+                    prop_assert!(
+                        mac.bytes()
+                            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b) || b == b':'),
+                        "non-canonical MAC: {mac:?}"
+                    );
+                    prop_assert_ne!(mac.as_str(), "00:00:00:00:00:00");
+                    prop_assert_ne!(mac.as_str(), "ff:ff:ff:ff:ff:ff");
+                }
+            }
+
+            /// `phones` is total; every hit is `+` followed by 10..=15 digits only.
+            #[test]
+            fn phones_is_total_and_e164_shaped(s in ".{0,256}") {
+                for p in phones(&s) {
+                    prop_assert!(p.starts_with('+'), "no leading '+': {p:?}");
+                    let digits = p[1..].chars().filter(char::is_ascii_digit).count();
+                    prop_assert_eq!(p.len() - 1, digits, "non-digit after '+': {}", p);
+                    prop_assert!((10..=15).contains(&digits), "bad phone digit count: {p:?}");
+                }
+            }
+
+            /// `labeled_ssids` is total; every hit is within the 802.11 1..=32
+            /// character bound.
+            #[test]
+            fn labeled_ssids_is_total_and_bounded(s in ".{0,256}") {
+                for ssid in labeled_ssids(&s) {
+                    let n = ssid.chars().count();
+                    prop_assert!((1..=32).contains(&n), "SSID out of 802.11 range: {ssid:?}");
+                }
+            }
+
+            /// The credential-field classifier is total and internally consistent
+            /// with its own building blocks: an `Email` verdict implies the trimmed
+            /// value passes `looks_like_email`; a `Sentinel` implies it is empty or
+            /// a placeholder; a `Secret` implies it is none of those.
+            #[test]
+            fn classify_credential_field_is_total_and_consistent(s in ".{0,256}") {
+                let t = s.trim();
+                match classify_credential_field(&s) {
+                    CredentialField::Email => prop_assert!(looks_like_email(t)),
+                    CredentialField::Sentinel => {
+                        prop_assert!(t.is_empty() || is_placeholder_secret(t));
+                    }
+                    CredentialField::Secret => {
+                        prop_assert!(!t.is_empty());
+                        prop_assert!(!is_placeholder_secret(t));
+                        prop_assert!(!looks_like_email(t));
+                    }
+                }
+            }
+        }
+    }

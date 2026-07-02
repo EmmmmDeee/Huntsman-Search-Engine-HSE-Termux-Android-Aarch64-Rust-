@@ -310,6 +310,23 @@ direct.**
   property (`mod prop` in `cli/import/tests.rs`) over arbitrary Unicode strings
   (≤512 chars); also asserts every emitted entity value is non-empty. 3 new
   properties, 3,032 lib tests, gate green.
+  **+extract-parser proptest (2026-07-02, SOL-F3):** `util::extract` — the
+  shared free-text identifier miner every scraper/breach/stealer-log module runs
+  over fully attacker-shaped input — had comprehensive example-based tests but
+  ZERO property coverage, despite housing exactly the byte-walking (`page_emails`
+  manually walks `text.as_bytes()` and re-slices at computed offsets) and
+  char-slicing (`ibans`/`macs` normalisers) code F.3 flags as the panic surface.
+  Added a `mod prop` (7 properties over arbitrary `.{0,256}` strings) asserting
+  totality-plus-well-formedness for `emails`/`page_emails`/`ibans`/`macs`/
+  `phones`/`labeled_ssids` and totality-plus-internal-consistency for
+  `classify_credential_field`. The properties encode a real behavioural asymmetry
+  rather than a blanket no-panic: `page_emails` (strict byte-walker: non-empty
+  local, alphanumeric-leading dotted host, trailing dots stripped) is asserted to
+  always satisfy `looks_like_email`, while the looser regex-based `emails` is
+  NOT — it can legitimately match a dot-leading host (`a@.example.com`) the
+  structural gate rejects, so over-asserting there would be a false invariant.
+  No production code changed (the extractors proved already-total); 7 new
+  properties, 4,316 lib tests, gate green.
   *Remaining:* `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device
   aarch64); widen criterion to the correlation pass once a bench-visible entry
   point exists.
@@ -4259,3 +4276,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
   clean. **Paired:** `SOLUTION_TREE` §5 (T2.12 node is `[x]`; recorded as a
   dated follow-up, not a status change) — same commit.
+
+- **2026-07-02** — **F.3: property-test coverage for `util::extract`, the
+  shared free-text identifier miner — the parser F.3 flags as a panic surface
+  but that had zero proptest coverage.** Selected from a fifth discovery pass's
+  util-proptest-coverage candidate, after two other fifth-pass candidates
+  (a claimed `HostedOn` Url→IpAddress relation gap and a claimed CLI/SPA
+  `report.json` "Exposure Index" parity gap) were re-verified against the code
+  and REJECTED as not-real — `HostedOn` is defined and correctly derived as
+  Url→Domain (Url→IpAddress is intentionally a 2-hop path), and the CLI and API
+  reports call the same `build_scan_report` builder so their envelopes cannot
+  diverge (and no "Exposure Index" metric exists anywhere). `util::extract` is
+  the module every scraper/breach/stealer-log parser calls to mine emails,
+  phones, IBANs, MACs, SSIDs, and credential-field classifications out of fully
+  attacker-shaped input; it had thorough example-based tests but no property
+  coverage, despite housing the byte-walking `page_emails` (walks
+  `text.as_bytes()`, re-slices at computed offsets) and the char-slicing
+  `ibans`/`macs` normalisers — exactly the code F.3's plan names. Added a
+  `mod prop` (7 properties over arbitrary `.{0,256}` strings) asserting
+  totality + output well-formedness for the six extractors and totality +
+  internal consistency for `classify_credential_field`. The properties encode a
+  real behavioural asymmetry, not a blanket no-panic: strict `page_emails` is
+  asserted to always satisfy `looks_like_email`, while the looser regex-based
+  `emails` is deliberately NOT (it can match a dot-leading host the structural
+  gate rejects) — over-asserting there would be a false invariant. The
+  extractors proved already-total (no production bug surfaced), so this is a
+  pure test-hardening addition; no production code, no identity/PII logic, no
+  architecture guard, no clippy/unsafe posture touched. Gate green: 4316 lib
+  tests (+7), full suite (lib + smoke + architecture + doctests, all binaries)
+  green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-F3 + §5 — same commit.
