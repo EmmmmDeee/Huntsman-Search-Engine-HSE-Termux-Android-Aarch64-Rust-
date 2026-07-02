@@ -342,12 +342,21 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
 /// AU-051 — Shared-surname kin signal (likely relatives).
 ///
 /// A strict escalation of AU-049: when two or more co-residents at one address
-/// also share a **family name**, they are very likely *relatives*, not merely
+/// also share a **family name**, they are likely *relatives*, not merely
 /// roommates — the kin link that lets an investigator walk a family tree to a
-/// target who is themselves dark. Requires both a shared residence (so two
-/// unrelated people named "Smith" never link) and a shared surname, and fires
-/// Critical because a confirmed kin relationship is the highest-value pivot in
-/// this family.
+/// target who is themselves dark. Requires both a shared residence and a
+/// shared surname (so two unrelated same-surname people at different
+/// addresses never link).
+///
+/// Severity depends on how distinctive the surname is
+/// ([`crate::util::surnames::is_common`]): a distinctive shared surname fires
+/// Critical as a confirmed kin pivot, but a *common* surname (Smith, Nguyen,
+/// …) is downgraded to a High "verify before treating as a kin pivot" lead —
+/// an apartment tower or share-house whose unit numbers are absent from the
+/// data can collapse unrelated same-surname co-residents onto one residence
+/// key, and a popular name makes that coincidence likely enough that
+/// asserting a confirmed kin pivot at Critical would be a confident false
+/// claim.
 pub(in crate::core::correlator) fn rule_au_051_shared_surname_kin(
     entities: &[Entity],
     scan_id: &str,

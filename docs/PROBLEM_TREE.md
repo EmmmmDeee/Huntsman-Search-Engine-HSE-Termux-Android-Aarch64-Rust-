@@ -4896,3 +4896,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   already uses), not a weakening of it. T2.11 remains `[~]` — the
   `QuotaBudget::reset_scan` residual is still genuinely open. **Paired:**
   `SOLUTION_TREE` SOL-ISOLATE + §4d correction + §5 — same commit.
+
+- **2026-07-02** — **AU-051's top-level doc comment was stale: it claimed the
+  rule "fires Critical" unconditionally and that "two unrelated people named
+  'Smith' never link," but the code (and 3 existing tests) already implement a
+  deliberate common-surname discount.** Found via a fresh discovery pass over
+  correlator rules whose doc comments state specific severity-escalation
+  thresholds (also checked AU-030's "Medium→High→Critical at 3/4/5+" and
+  AU-089's "escalates at three" claims — both verified accurate against the
+  code; not every audit finds a stale claim). `rule_au_051_shared_surname_kin`
+  (`src/core/correlator/rules/assoc.rs`) actually branches on
+  `util::surnames::is_common(&sn)`: a distinctive shared surname at one
+  residence still fires Critical ("likely relatives; kin pivot to reach the
+  subject"), but a common surname (Smith, Nguyen, …) is downgraded to High
+  with a "possibly relatives … verify before treating as a kin pivot"
+  qualifier — the exact behaviour already covered by
+  `au051_shared_surname_at_residence_is_kin`,
+  `au051_requires_shared_residence_and_distinguishes_roommates`, and
+  `au051_common_surname_is_a_high_lead_not_critical_kin`. Rewrote the doc
+  comment to describe the discount and correct the misleading framing: the
+  actual behaviour is a severity downgrade, not an exclusion — a
+  common-surname co-residence still fires, just at High rather than Critical.
+  Doc-only; no code, tests, or architecture changes — the code and its tests
+  were already correct. Gate: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc` (checked directly, since this edits a Rust doc comment,
+  not Markdown — confirmed the new
+  `crate::util::surnames::is_common` intra-doc link resolves clean)/
+  `cargo test` all clean (4330 lib tests unchanged, 0 failures). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

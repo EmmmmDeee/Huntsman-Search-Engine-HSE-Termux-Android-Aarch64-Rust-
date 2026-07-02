@@ -3664,3 +3664,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   guard's designed pure-leaf mechanism, not a weakening. T2.11 remains `[~]`
   — the `QuotaBudget::reset_scan` residual is still genuinely open. Paired:
   `PROBLEM_TREE` T2.11 + §4d correction + §8 — same commit.
+
+- **2026-07-02** — **AU-051 doc-comment correction: the rule's top-level doc
+  claimed an unconditional Critical severity and a "Smith never links"
+  framing that the code has never actually implemented.** A fresh discovery
+  pass over correlator rules with doc-stated severity thresholds (AU-030,
+  AU-051, AU-089 checked; AU-030/AU-089 both verified accurate) found
+  `rule_au_051_shared_surname_kin`'s doc silent on the `is_common` common-
+  surname discount its own code already applies — a High-severity "verify
+  before treating as a kin pivot" downgrade for common surnames (Smith,
+  Nguyen, …), Critical retained only for distinctive ones — already exercised
+  by 3 existing tests (`au051_shared_surname_at_residence_is_kin`,
+  `au051_requires_shared_residence_and_distinguishes_roommates`,
+  `au051_common_surname_is_a_high_lead_not_critical_kin`). Rewrote the doc
+  comment to state the discount and drop the misleading "unrelated people
+  named 'Smith' never link" line — the shared-residence requirement is what
+  prevents cross-address false links, not surname commonality; a common
+  surname within one residence still fires, just at a softer severity.
+  Doc-only; code and tests already correct, so no behaviour change and no new
+  test needed. Gate: fmt/clippy/strict-rustdoc `cargo doc` (verified the new
+  `crate::util::surnames::is_common` intra-doc link resolves)/`cargo test`
+  all clean (4330 lib tests unchanged). Paired: `PROBLEM_TREE` §8 — same
+  commit.
