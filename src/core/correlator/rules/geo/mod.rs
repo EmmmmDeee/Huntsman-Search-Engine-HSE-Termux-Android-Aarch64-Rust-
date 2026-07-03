@@ -16,12 +16,17 @@ pub(in crate::core::correlator) use profile::*;
 /// The AU state/territory a confirmed `Coordinates` entity asserts. Prefers the
 /// `au-state:XX` tag the geo builders attach, but falls back to deriving the
 /// state straight from the lat/long via [`crate::util::geo::au_state_for_coords`]
-/// when the tag is absent — a coordinate enters the graph from many modules
-/// (`geo_normalize`, `search_engines`, `exif_geo`, …), only three of which tag
-/// it, so a tag-only read silently dropped most real fixes (seen on a live
-/// scan: a Brisbane coordinate from `geo_normalize` carried no tag and the
-/// jurisdiction cross-check never fired). Only confirmed fixes (≥0.50) count, so
-/// an off-region candidate can't assert a jurisdiction.
+/// when the tag is absent. Most AU-geo-producing modules (`au_geo`, `wigle`,
+/// `geocode`, `ip_geo`, `search_engines`, and ~25 others) already tag
+/// `au-state:XX` directly at the point they mint the entity, but a smaller set
+/// of general-purpose, non-AU-specific enrichment passes — the engine's own
+/// `geo_normalize` post-processing step and modules like `exif_geo` — never do,
+/// since they have no AU-specific logic to derive one from (seen on a live
+/// scan: a Brisbane coordinate carrying only `geo_normalize`'s evidence had no
+/// tag, and the jurisdiction cross-check never fired until this fallback was
+/// added). The bbox fallback exists precisely for that remaining set. Only
+/// confirmed fixes (≥0.50) count, so an off-region candidate can't assert a
+/// jurisdiction.
 pub(super) fn coord_state(e: &Entity) -> Option<&'static str> {
     if e.kind != EntityKind::Coordinates || e.confidence < 0.50 {
         return None;

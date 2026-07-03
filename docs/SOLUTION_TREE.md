@@ -4006,3 +4006,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   there. Gate green (fmt/clippy/doc/`cargo test`, 4337 lib tests, existing test
   extended); `hse selftest` 9/9. No identity/PII, architecture-guard, or `unsafe`
   impact. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **`coord_state()`'s doc comment corrected: the "only three"
+  au-state-tagging-module count was ~30 low, and `search_engines` was listed as
+  a non-tagger when it now tags directly at two sites.** Last verified-real item
+  from the fleet-wide discovery pass. Grep-verified rather than trusted: ~30
+  modules tag `au-state:` on a `Coordinates` entity today; separately confirmed
+  the doc's other two named examples (`geo_normalize` — an engine post-
+  processing pass, not a `modules/` module — and `exif_geo`) genuinely still
+  never tag it, so the comment's underlying point (the bbox fallback exists for
+  the AU-non-specific producers) remains true. Rewrote to drop the fragile exact
+  count for a shape description ("most... and ~25 others") that won't re-stale
+  on the next module added, and removed `search_engines` from the non-tagger
+  examples. Pure doc comment; `coord_state()`'s logic and its 4 existing tests
+  are untouched and pass unchanged. Gate: fmt/clippy/strict-rustdoc `cargo doc`
+  (checked directly — this edits a Rust doc comment)/`cargo test` all clean
+  (4340 lib tests unchanged). No behaviour change. Paired: `PROBLEM_TREE` §8 —
+  same commit.

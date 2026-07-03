@@ -5369,3 +5369,38 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   guess. No identity/PII decision logic (existing OathNet response data, no new
   collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
   **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) + §5 — same commit.
+
+- **2026-07-03** — **`coord_state()`'s doc comment was stale in two ways: "only
+  three" au-state-tagging modules is now off by roughly an order of magnitude,
+  and its own example list named `search_engines` as a non-tagger when it now
+  tags directly.** The last verified-real, single-cycle item carried over from
+  the fleet-wide discovery pass. Verified directly rather than trusting the
+  finder: `grep`-counted every module that constructs a `Coordinates` entity and
+  tags it `au-state:XX` — ~30 modules do (`au_geo`, `wigle`, `geocode`, `ip_geo`,
+  `search_engines`, and more), not the doc's stated three. Separately checked
+  each of the doc's three NAMED examples individually: `geo_normalize`
+  (`core::engine::enrich::enrich_geospatial`, a general-purpose engine
+  post-processing pass, not a `modules/` module) and `exif_geo` genuinely still
+  never tag `au-state:` (confirmed by direct grep — `geo_normalize` only tags
+  `country:{iso}`), so the comment's core POINT (the bbox fallback exists because
+  some Coordinates producers have no AU-specific logic to derive a state from)
+  remains true and valuable — but `search_engines` was listed as a third
+  non-tagger and now demonstrably tags `au-state:` directly at two sites
+  (`extract/mod.rs:148`, `build.rs:282,586`), so citing it as a non-tagging
+  example was actively wrong, not just an outdated count. Rewrote the comment to
+  drop the fragile exact count (replaced with "most... and ~25 others," a shape
+  that won't re-stale on the next module added) and to name only the two
+  examples still verified accurate (`geo_normalize`, `exif_geo`), removing
+  `search_engines` from the non-tagger list entirely. `coord_state()`'s own
+  logic is untouched — this is purely a doc-comment correction; its 4 existing
+  tests (`coord_state_prefers_the_au_state_tag`,
+  `coord_state_falls_back_to_lat_lon_when_untagged`,
+  `coord_state_none_below_threshold_or_wrong_kind`,
+  `au_056_derives_coord_state_from_latlong_without_a_tag`) already correctly
+  exercise both the tagged and untagged/fallback paths and pass unchanged. Gate:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc` (checked
+  directly since this is a Rust doc comment, not Markdown — the
+  `[`crate::util::geo::au_state_for_coords`]` intra-doc link still resolves)/
+  `cargo test` all clean (4340 lib tests unchanged, 0 failures). No behaviour
+  change, so no CLI surface to exercise. **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
