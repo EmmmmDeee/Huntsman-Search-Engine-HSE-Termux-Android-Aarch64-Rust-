@@ -366,6 +366,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   deliberately unrestored — it needs a noise-control decision first (a
   realistic scan leaves dozens of modules at zero yield for a given target
   kind, so a naive per-module reinstatement would flood the hints list).
+- **Reinstated the companion per-module hint too, as a bounded count
+  (`PROBLEM_TREE` T2.14, fully closed).** The noise-control decision above is
+  resolved: rather than one line per zero-yield module (the flood risk) or an
+  arbitrary cap, a new `zero_yield_module_summary` counts distinct dispatched
+  modules and reports one line — "N of M dispatched module(s) found nothing
+  for this target kind" — regardless of how many modules a scan runs. A
+  module re-dispatched across expansion rounds is judged on whether it ever
+  yielded anything this scan, not per-dispatch, so it isn't double-counted or
+  misclassified.
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

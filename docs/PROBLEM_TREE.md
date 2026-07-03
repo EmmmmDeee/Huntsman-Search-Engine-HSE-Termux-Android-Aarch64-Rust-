@@ -650,7 +650,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[x]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -687,6 +687,25 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `ignores_a_long_scan_where_every_module_found_something`). *Remaining:* the
   per-module "module X returned 0 entities" hint — still needs the noise
   decision above; not attempted this cycle to keep the unit small.
+  ✅ **Per-module leg delivered (2026-07-03): the noise question resolved as
+  the "bounded count" candidate.** New
+  `cli/scan/dossier.rs::zero_yield_module_summary(events) -> Option<(usize,
+  usize)>` counts DISTINCT dispatched modules (deduped across expansion-round
+  re-dispatch — a module judged on whether it EVER yielded anything this
+  scan, not per-dispatch) and how many of them yielded nothing, with **no**
+  per-module enumeration and **no** cap-N or cost-tier gate needed: one
+  bounded `"{zero} of {total} dispatched module(s) found nothing for this
+  target kind"` line regardless of scan size, so it structurally cannot flood
+  the hints list the way the original dead per-module hint would have. Cost-
+  gating it like the ROI hint was rejected — that would just duplicate the
+  ROI hint's existing `KeyGated`/`Paid`-only signal instead of adding the
+  general pipeline-tuning value this hint exists for. Wired into
+  `print_diagnostics` alongside the scan-level hint, sharing the same
+  fallback-removal guard. 3 new unit tests
+  (`summarises_zero_yield_modules_as_a_bounded_count`,
+  `a_module_dispatched_twice_counts_by_its_best_result`,
+  `no_completed_modules_is_none_not_a_zero_of_zero`). T2.14 fully closed ✅
+  (4269 lib tests, +3). Gate green: fmt/clippy `--all-targets`/doc clean.
 
 ---
 
@@ -3308,3 +3327,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   threshold and the free/paid-agnostic gate. Gate green: 4266 lib tests (+3),
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   SOL-HINT-NOISE `[ ]`→`[~]` + §3/§4/§5 — same commit.
+
+- **2026-07-03** — **T2.14 fully closed: the per-module hint's noise question
+  resolved as a bounded count, no per-module enumeration.** Finishing the
+  `[~]` node this cycle's prior work left open. Of the three candidates T2.14
+  named (cap-N, cost-gate like the ROI hint, or a bounded "N of M" summary),
+  the bounded-count form was chosen: it needs no arbitrary N and no cost-tier
+  gate (which would only duplicate the ROI hint's existing `KeyGated`/`Paid`
+  signal) — a single line is structurally incapable of flooding the hints
+  list regardless of how many modules a scan dispatches. New
+  `cli/scan/dossier.rs::zero_yield_module_summary(events) ->
+  Option<(usize, usize)>` dedupes `ModuleDone` events by module name (a
+  module re-dispatched across expansion rounds is judged on whether it EVER
+  yielded anything this scan, not per-dispatch — pinned by
+  `a_module_dispatched_twice_counts_by_its_best_result`), returning
+  `(zero_yield_count, total_dispatched_count)`; `print_diagnostics` pushes
+  `"{zero} of {total} dispatched module(s) found nothing for this target
+  kind"` when `zero > 0`, sharing the scan-level hint's fallback-removal
+  guard so the "well-tuned" line and either real hint can never coexist.
+  3 new unit tests
+  (`summarises_zero_yield_modules_as_a_bounded_count`,
+  `a_module_dispatched_twice_counts_by_its_best_result`,
+  `no_completed_modules_is_none_not_a_zero_of_zero`). Gate green: 4269 lib
+  tests (+3), fmt/clippy `--all-targets`/doc clean. **Paired:**
+  `SOLUTION_TREE` SOL-HINT-NOISE `[~]`→`[x]` + §3/§4/§5 — same commit.

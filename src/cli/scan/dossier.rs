@@ -483,6 +483,42 @@ fn scan_ran_long_with_a_zero_yield_module(
             .any(|ev| matches!(&ev.kind, EventKind::ModuleDone { found: 0, .. }))
 }
 
+/// `(zero_yield, total_dispatched)` distinct-module counts from the scan's own
+/// `ModuleDone` events — the flood-avoidance form of the per-module "module X
+/// returned 0 entities" hint T2.13's addendum removed as dead code, resolving
+/// T2.14's noise-decision question. Enumerating every zero-yield module by
+/// name (as the original dead hint did) floods the hints list on a realistic
+/// multi-module scan, where dozens of modules legitimately find nothing for a
+/// given target kind — that IS the noise the precision doctrine exists to
+/// filter out. A single bounded "N of M" count carries the same signal (the
+/// pipeline left yield on the table for this target) without the flood, so no
+/// cap-N or cost-tier gate is needed: one line regardless of scan size.
+/// Modules are deduped by name (a module re-dispatched across expansion
+/// rounds is judged on whether it EVER yielded anything, not per-dispatch) —
+/// `None` when nothing completed. `crate::util::diagnostics::analyse` cannot
+/// compute this itself (a pure `util` fn with no `StoragePort` access).
+fn zero_yield_module_summary(events: &[crate::core::event::Event]) -> Option<(usize, usize)> {
+    use crate::core::event::EventKind;
+    use std::collections::HashMap;
+
+    let mut yielded_by_module: HashMap<&str, bool> = HashMap::new();
+    for ev in events {
+        if let EventKind::ModuleDone { module, found } = &ev.kind {
+            let this_run_yielded = *found > 0;
+            yielded_by_module
+                .entry(module.as_str())
+                .and_modify(|ever| *ever = *ever || this_run_yielded)
+                .or_insert(this_run_yielded);
+        }
+    }
+    if yielded_by_module.is_empty() {
+        return None;
+    }
+    let total = yielded_by_module.len();
+    let zero = yielded_by_module.values().filter(|&&ever| !ever).count();
+    Some((zero, total))
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -498,14 +534,26 @@ fn print_diagnostics(
         .saturating_mul(1000);
     let mut diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
     let events = store.events_for_scan(sid).unwrap_or_default();
-    if scan_ran_long_with_a_zero_yield_module(diag.wall_time_ms, &events) {
+    let scan_slow_zero_yield = scan_ran_long_with_a_zero_yield_module(diag.wall_time_ms, &events);
+    let zero_yield_summary = zero_yield_module_summary(&events);
+    let has_zero_yield_modules = zero_yield_summary.is_some_and(|(zero, _)| zero > 0);
+    if scan_slow_zero_yield || has_zero_yield_modules {
         // The "no signals" fallback and a real hint can't both be true.
         diag.optimization_hints
             .retain(|h| h != crate::util::diagnostics::NO_OPTIMIZATION_SIGNALS_HINT);
+    }
+    if scan_slow_zero_yield {
         diag.optimization_hints.push(
             "scan exceeded 60s with at least one zero-yield module — tighten module_timeout_ms"
                 .into(),
         );
+    }
+    if let Some((zero, total)) = zero_yield_summary
+        && zero > 0
+    {
+        diag.optimization_hints.push(format!(
+            "{zero} of {total} dispatched module(s) found nothing for this target kind"
+        ));
     }
 
     println!("━━━ DIAGNOSTICS ━━━");
@@ -818,5 +866,68 @@ mod tests {
             },
         )];
         assert!(!scan_ran_long_with_a_zero_yield_module(61_000, &events));
+    }
+
+    use super::zero_yield_module_summary;
+
+    /// The whole point of this helper: counts, never names — 2 zero-yield
+    /// modules out of 3 dispatched, with no per-module enumeration.
+    #[test]
+    fn summarises_zero_yield_modules_as_a_bounded_count() {
+        let events = vec![
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "shodan".into(),
+                    found: 0,
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "hunter_io".into(),
+                    found: 0,
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "search_engines".into(),
+                    found: 5,
+                },
+            ),
+        ];
+        assert_eq!(zero_yield_module_summary(&events), Some((2, 3)));
+    }
+
+    /// A module re-dispatched across expansion rounds is judged on whether it
+    /// EVER yielded anything this scan, not per-dispatch — a zero-then-hit
+    /// module must not count toward the zero-yield side.
+    #[test]
+    fn a_module_dispatched_twice_counts_by_its_best_result() {
+        let events = vec![
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "shodan".into(),
+                    found: 0,
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "shodan".into(),
+                    found: 2,
+                },
+            ),
+        ];
+        assert_eq!(zero_yield_module_summary(&events), Some((0, 1)));
+    }
+
+    /// No `ModuleDone` events at all (nothing completed) — nothing to
+    /// summarise, so the caller must not print a hint about zero modules.
+    #[test]
+    fn no_completed_modules_is_none_not_a_zero_of_zero() {
+        assert_eq!(zero_yield_module_summary(&[]), None);
     }
 }

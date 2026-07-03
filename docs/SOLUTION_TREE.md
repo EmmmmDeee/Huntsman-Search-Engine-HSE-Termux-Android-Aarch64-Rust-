@@ -471,7 +471,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[x]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -486,8 +486,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   signal is wasted wall-clock, not wasted spend), and `print_diagnostics`
   appends the reinstated hint to `diag.optimization_hints` post-call after
   `retain`-ing out `analyse()`'s now-exported `NO_OPTIMIZATION_SIGNALS_HINT`
-  fallback so the two can't coexist. 3 new unit tests. *Remaining:* the
-  per-module hint — the noise decision above is still open. **(§4a)**
+  fallback so the two can't coexist. 3 new unit tests.
+  ✅ **Per-module leg delivered (2026-07-03): the noise question resolved as
+  "collapse to a bounded summary count."** Cap-N and cost-gating were both
+  rejected — cap-N is an arbitrary threshold with no natural value, and
+  cost-gating would just duplicate SOL-ROI-HINT's existing `KeyGated`/`Paid`
+  signal instead of adding orthogonal pipeline-tuning value. New
+  `zero_yield_module_summary(events) -> Option<(usize, usize)>` dedupes
+  `ModuleDone` events by module name (a module re-dispatched across expansion
+  rounds is judged on whether it EVER yielded anything, not per-dispatch) and
+  returns `(zero_yield_count, total_dispatched_count)`; `print_diagnostics`
+  pushes one `"N of M dispatched module(s) found nothing for this target
+  kind"` line — a single bounded line regardless of scan size, so it cannot
+  flood the hints list the way per-module enumeration would. 3 more unit
+  tests. **T2.14 fully closed.** **(§4b→closed)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -563,7 +575,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[~]` |
+| SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -647,11 +659,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   this doc correction.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-HINT-NOISE** (T2.14) — scan-level "60s + zero-yield module" hint
-  reinstated (2026-07-03): event-sourced, caller-side, no cost-tier gate.
-  *Remaining:* the per-module "module X returned 0 entities" hint still needs
-  the noise decision (cap to worst-N, cost-gate like SOL-ROI-HINT, or a
-  bounded summary count) before it can be built.
+- **SOL-HINT-NOISE** (T2.14) — ✅ **delivered, off this queue (2026-07-03).**
+  Both legs shipped: the scan-level "60s + zero-yield module" hint
+  (event-sourced, caller-side, no cost-tier gate) and the per-module hint
+  (resolved to a bounded "N of M dispatched modules found nothing" count —
+  no per-module enumeration, so it can't flood the hints list).
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
   key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, the
   **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
@@ -692,8 +704,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it);
-  **T2.13 `[x]`** ✅ (SOL-ROI-HINT); **T2.14 `[~]`** (SOL-HINT-NOISE, scan-level
-  leg delivered 2026-07-03, per-module leg still needs the noise decision).
+  **T2.13 `[x]`** ✅ (SOL-ROI-HINT); **T2.14 `[x]`** ✅ (SOL-HINT-NOISE, both
+  legs delivered 2026-07-03 — scan-level hint + per-module bounded-count hint).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2532,3 +2544,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   open, and force-fitting it here would have exceeded one focused unit of
   work. Gate green: 4266 lib tests (+3), fmt/clippy `--all-targets`/doc clean.
   **Paired:** `PROBLEM_TREE` T2.14 + §8 — same commit.
+
+- **2026-07-03** — **SOL-HINT-NOISE's per-module leg delivered — T2.14
+  `[~]`→`[x]`, fully closed, moved §4b→closed.** Finishing the `[~]` node the
+  prior commit this same cycle left open. Resolved the noise question as
+  "collapse to a bounded summary count" — the third of T2.14's three named
+  candidates: cap-N was rejected as an arbitrary threshold with no natural
+  value, and cost-gating (mirroring SOL-ROI-HINT) was rejected as redundant —
+  it would just re-surface the ROI hint's existing `KeyGated`/`Paid` signal
+  rather than add new pipeline-tuning value. New
+  `zero_yield_module_summary(events) -> Option<(usize, usize)>` dedupes
+  `ModuleDone` events by module name — a module re-dispatched across
+  expansion rounds is judged on whether it EVER yielded anything this scan,
+  not per-dispatch (pinned by
+  `a_module_dispatched_twice_counts_by_its_best_result`) — and returns
+  `(zero_yield_count, total_dispatched_count)`. `print_diagnostics` pushes
+  `"{zero} of {total} dispatched module(s) found nothing for this target
+  kind"` when `zero > 0`, sharing the scan-level hint's fallback-removal
+  guard. A single bounded line, independent of scan size, so it structurally
+  cannot flood the hints list the way the original per-module enumeration
+  would have. 3 more unit tests
+  (`summarises_zero_yield_modules_as_a_bounded_count`,
+  `a_module_dispatched_twice_counts_by_its_best_result`,
+  `no_completed_modules_is_none_not_a_zero_of_zero`). Gate green: 4269 lib
+  tests (+3), fmt/clippy `--all-targets`/doc clean. **Paired:**
+  `PROBLEM_TREE` T2.14 fully closed + §8 — same commit.

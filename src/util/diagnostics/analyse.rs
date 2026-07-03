@@ -333,15 +333,16 @@ pub fn analyse(
     // be unreachable dead code (PROBLEM_TREE T2.13 found and removed two:
     // this one, and the dossier's now-fixed "ROI" hint, which reads the
     // scan's own `ModuleDone` events instead, from the caller layer that has
-    // `StoragePort` access `util` may not depend on). The scan-level "60s +
-    // zero-yield" hint is reinstated the same event-sourced, caller-side way
-    // (`cli::scan::dossier::scan_ran_long_with_a_zero_yield_module`, appended
-    // to `ScanDiagnostics::optimization_hints` post-call — PROBLEM_TREE
-    // T2.14). The per-module "module X returned 0 entities" hint still needs
-    // a noise decision first (a realistic scan dispatches dozens of modules
-    // that legitimately find nothing for a given target kind, so a naive
-    // per-module reinstatement would flood the hints list) — deferred as its
-    // own increment rather than force-fit here.
+    // `StoragePort` access `util` may not depend on). Both are reinstated the
+    // same event-sourced, caller-side way (PROBLEM_TREE T2.14, now closed):
+    // `cli::scan::dossier::scan_ran_long_with_a_zero_yield_module` for the
+    // scan-level "60s + zero-yield" hint, and
+    // `cli::scan::dossier::zero_yield_module_summary` for the per-module one —
+    // resolved to a single bounded "N of M dispatched modules found nothing"
+    // count rather than one line per module, so it can't flood the hints list
+    // on a realistic multi-module scan where dozens legitimately yield
+    // nothing for a given target kind. Both are appended to
+    // `ScanDiagnostics::optimization_hints` post-call.
     let mut hints: Vec<String> = Vec::new();
     for perf in &modules_by_yield {
         if perf.mean_confidence < 0.35 && perf.entities_emitted > 10 {
