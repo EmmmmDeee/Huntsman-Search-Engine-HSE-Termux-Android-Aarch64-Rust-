@@ -97,7 +97,7 @@ fn env_secret_values() -> impl Iterator<Item = String> {
 /// values aren't touched. Split out from [`redact_credentials`] so it is
 /// unit-testable without mutating the process environment (which is `unsafe`
 /// under `#![forbid(unsafe_code)]`).
-pub(super) fn redact_literal_secrets(text: &str, secrets: impl Iterator<Item = String>) -> String {
+pub(crate) fn redact_literal_secrets(text: &str, secrets: impl Iterator<Item = String>) -> String {
     let mut out = text.to_string();
     for v in secrets {
         if v.len() >= 8 && out.contains(v.as_str()) {

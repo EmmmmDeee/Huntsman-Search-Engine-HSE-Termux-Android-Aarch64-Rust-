@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Security
+- **Closed the archived-body key-leak residual (`PROBLEM_TREE` §7 S4) —
+  correctly scoped, not naively.** ~7 free/key-gated modules put their API
+  key in the request URL's query string; an upstream that echoes the
+  request URL back in its response body could leave that key persisted
+  verbatim in the on-disk raw-response archive. The archive's own module
+  doc states an explicit operator policy that PAID providers' responses
+  must never be redacted, kept in absolute completeness — so a blanket
+  fix would have broken that guarantee for three paid modules the
+  original note didn't account for. The archive now redacts the
+  operator's own configured secret values from every non-paid provider's
+  archived body, while the five genuinely paid providers (SeekNow,
+  OathNet, IntelX, DeHashed, Proxycurl) remain archived fully verbatim,
+  per the standing policy.
+
 ### Fixed
 - **Corrected the stale test count in `README.md`.** The architecture
   summary claimed "3,100+ tests" — the second of two stale counts an

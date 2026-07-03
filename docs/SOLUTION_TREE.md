@@ -272,8 +272,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   destination).
 - **`[x]` SOL-REDACT · Credential redaction** — `redact_credentials` (param + literal
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
-  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
-  **success body** isn't run through `redact_literal_secrets` — **§7 S4** residual. ◑
+  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated).
+  *Delivered (2026-07-03): SOL-REDACT-ARCHIVE, the §7 S4 residual, closed
+  correctly rather than naively.* The residual's own suggested fix
+  ("redact the archived body") was checked against `raw_archive`'s
+  module-level "Operator policy, verbatim" doc comment — data that is
+  PAID for must be kept in absolute completeness, never redacted — and
+  found to conflict: a blanket redact would have broken that guarantee,
+  and not just for the two providers ("SeekNow, OathNet") the doc names
+  as examples. `grep`-confirmed `dehashed`/`intelx`/`proxycurl` (3 more
+  `ModuleCost::Paid` modules) also archive via the same
+  `read_json_text`/`json_decode`/`json_scanned` chokepoint the S4 fix
+  would have redacted indiscriminately. Built the correctly-scoped
+  version: `raw_archive::record()` archives the five genuinely-paid
+  providers verbatim (`oathnet`/`see-know`/`intelx`/`dehashed`/
+  `proxycurl`, matched by exact archive-key string) and redacts every
+  other provider's body with `redact_literal_secrets(body,
+  own_api_keys())` — closing exactly S4's named ~7-module risk
+  (shodan/hunter_io/whoisxml/numverify/opencellid/opencorporates/mls)
+  without weakening the paid-data policy at all. New pure
+  `archived_body`/`is_paid_provider` helpers (no filesystem/env
+  dependency), 4 new direct unit tests. Widened `redact_literal_secrets`
+  from `pub(super)` to `pub(crate)` + re-exported from `util::http` so
+  the sibling `util::raw_archive` module can reach it. Live-verified: a
+  real `hse scan` against a free module still archives its response body
+  correctly (unaffected when no operator secret is present). Gate green:
+  fmt/clippy `--all-targets`/doc clean, 4321 lib tests (+4), 0 failures.
+  ✅ **§7 S4 fully closed.**
 - **`[x]` SOL-INSTALL-INTEGRITY · sha256 sidecar required for auto-discovered prebuilt** —
   `_validate_prebuilt` in `install.sh` accepts a second arg `require_sha` (default 1 for
   auto-discovered binaries, 0 for explicitly-set `HSE_PREBUILT`). When `require_sha=1`:
@@ -812,7 +837,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
-| SOL-REDACT | §7 S4 | ◑ |
+| SOL-REDACT | §7 S4 | `[x]` |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
@@ -868,8 +893,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
-- **§7 S4** — SOL-REDACT residual: archived success body not run through
-  `redact_literal_secrets` (LOW). Contained.
+- ~~**§7 S4** — SOL-REDACT residual: archived success body not run through
+  `redact_literal_secrets` (LOW).~~ **Delivered (2026-07-03): SOL-REDACT-
+  ARCHIVE.** See SOL-REDACT above for the full note, including why the
+  originally-suggested blanket fix was rejected (it would have violated
+  `raw_archive`'s explicit "paid data never redacted" operator policy for
+  3 more paid modules than the note anticipated) and the correctly-scoped
+  version that shipped instead. Off the open queue.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
@@ -3470,3 +3500,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   table), genuinely out of scope for this pass. No code change. Gate
   green: fmt clean (docs-only; no Rust file touched). **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **SOL-REDACT-ARCHIVE: §7 S4's residual closed — but
+  only after its own suggested fix was checked and found to conflict
+  with a stronger, explicit operator policy.** `raw_archive`'s own
+  module-level doc comment states, verbatim: *"Data that is paid for
+  must be kept in absolute completeness… must always be retained in
+  their raw form until manually deleted."* The residual's suggested fix
+  ("redact the archived body") would have violated that for every paid
+  provider's archive, not just the two the doc names as motivating
+  examples ("SeekNow, OathNet") — `grep`-confirmed `dehashed`, `intelx`,
+  and `proxycurl` (three more `ModuleCost::Paid` modules) also flow
+  through the identical `read_json_text`/`json_decode`/`json_scanned`
+  chokepoint the blanket fix would have redacted. Built the correctly-
+  scoped version instead: `raw_archive::record()` now archives the five
+  genuinely paid providers verbatim (`oathnet`/`see-know`/`intelx`/
+  `dehashed`/`proxycurl`) and redacts every other provider's body with
+  `redact_literal_secrets(body, own_api_keys())` — closing exactly the
+  ~7-module key-in-URL risk S4 named (shodan/hunter_io/whoisxml/
+  numverify/opencellid/opencorporates/mls) without weakening the paid-
+  data completeness guarantee at all. New pure `archived_body`/
+  `is_paid_provider` helpers in `util::raw_archive`, no filesystem/env
+  dependency, directly unit-tested: paid-verbatim, free-redacted (the
+  exact "upstream echoes a key-bearing URL back" shape S4 describes),
+  and the no-secret no-op case. Widened `redact_literal_secrets`'s
+  visibility (`pub(super)` → `pub(crate)`) and re-exported it from
+  `util::http` so the sibling `util::raw_archive` module can reach it.
+  4 new tests. Live-verified: a real `hse scan` against a free module
+  (`ip_reputation`) still archives its response correctly (no operator
+  secret present in that particular response, so nothing needed
+  redacting — confirms the common case is unaffected). Gate green:
+  fmt/clippy `--all-targets`/doc clean, 4321 lib tests (+4), 0 failures.
+  **Paired:** `PROBLEM_TREE` §7 S4/§8 — same commit.

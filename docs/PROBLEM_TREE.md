@@ -1378,7 +1378,7 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `hse export -o <path>` is left to the user's umask — they chose the destination
   (often to share), so forcing 0600 there would surprise; the internal auto-written
   files are the ones locked down.
-- **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** ~7 modules
+- **S4 · `[x]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** ~7 modules
   put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
   `opencellid`/`opencorporates`/`mls`). Well-contained: no module logs the keyed URL,
   `redact_credentials` masks `key=`/`token=` + literal `HUNTSMAN_*` on error paths,
@@ -1387,6 +1387,38 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `raw/*.json` (0600, but pulled into the non-0600 DB/dossiers via S3). → prefer
   header auth where supported; optionally `redact_literal_secrets(body,
   own_api_keys())` the archived body.
+  ✅ **Fixed (2026-07-03): SOL-REDACT-ARCHIVE.** Investigated the naive fix
+  ("redact the archived body") against `util::raw_archive`'s own module doc
+  — an explicit, verbatim "Operator policy": *"Data that is paid for must
+  be kept in absolute completeness… must always be retained in their raw
+  form until manually deleted."* Redacting the body unconditionally would
+  have violated that policy for `raw_archive::record()`'s callers — and not
+  just the two providers ("SeekNow, OathNet") the doc comment names as
+  examples: `grep`-confirmed THREE MORE `ModuleCost::Paid` modules
+  (`dehashed`, `intelx`, `proxycurl`) also route their archived bodies
+  through the identical `read_json_text`/`json_decode`/`json_scanned`
+  chokepoint, so a blanket redact-everything fix would have newly broken
+  the completeness guarantee for those three too — a real risk the
+  original residual note didn't anticipate. Built the correctly-scoped
+  version instead: `raw_archive::record()` now archives the five genuinely
+  paid providers' bodies verbatim (`oathnet`, `see-know`, `intelx`,
+  `dehashed`, `proxycurl` — matched by their exact `SRC`/archive-key
+  strings) and redacts every other provider's body with
+  `redact_literal_secrets(body, own_api_keys())` — closing exactly the
+  ~7-module risk this residual named, without touching the paid-data
+  policy at all. New pure `archived_body`/`is_paid_provider` helpers,
+  directly unit-tested (no filesystem/env dependency): the paid-verbatim
+  path, the free-redacted path (using the exact "upstream echoes a
+  key-bearing URL back" shape S4 describes), and the no-secret-present
+  no-op case. Widened `redact_literal_secrets`'s visibility from
+  `pub(super)` (private to `util::http`) to `pub(crate)` + re-exported it
+  from `util::http`, so `util::raw_archive` (a sibling module) can reach
+  it. 4 new tests, all four correlator architecture guards unaffected
+  (this touches no correlator code). Live-verified: a real `hse scan`
+  against a free module (`ip_reputation`) still archives its full response
+  correctly (no operator secret present, so nothing needed redacting —
+  the common case is unaffected). Gate green: fmt/clippy `--all-targets`/
+  doc clean, 4321 lib tests (+4), 0 failures.
 - **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
@@ -4264,3 +4296,44 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   numbers woven through prose/tables, not a facts block, genuinely
   larger scope than this pass. No code change. Gate green: fmt clean
   (docs-only). **Paired:** `SOLUTION_TREE` §4a + §5 — same commit.
+
+- **2026-07-03** — **§7 S4 closed: the archived-body key-leak residual —
+  but only after its own suggested fix was investigated and found to
+  conflict with a stronger, explicit operator policy elsewhere in the
+  codebase.** Before writing any code, checked `util::raw_archive`'s own
+  module-level doc comment, which states an "Operator policy, verbatim":
+  *"Data that is paid for must be kept in absolute completeness…
+  retained in their raw form until manually deleted… never encrypted,
+  hashed, or redacted."* S4's own suggested fix — unconditionally
+  redacting the archived body — would have directly violated this for
+  every paid provider, and `grep`-confirmed the doc's own two named
+  examples ("SeekNow, OathNet") don't cover the full paid set: three
+  more modules with `ModuleCost::Paid` (`dehashed`, `intelx`,
+  `proxycurl`) flow through the identical `read_json_text`/
+  `json_decode`/`json_scanned` chokepoint the naive fix would have
+  redacted, a real gap the original residual note didn't anticipate.
+  Built the correctly-scoped fix instead of either forcing the naive
+  version or deferring again: `raw_archive::record()` archives the five
+  genuinely paid providers verbatim (matched by exact archive-key
+  string: `oathnet`/`see-know`/`intelx`/`dehashed`/`proxycurl`) and
+  redacts every other provider's body with `redact_literal_secrets(body,
+  own_api_keys())` — closing exactly the ~7-module key-in-URL risk S4
+  named (shodan/hunter_io/whoisxml/numverify/opencellid/opencorporates/
+  mls) without touching the paid-data completeness guarantee at all. New
+  pure `archived_body`/`is_paid_provider` helpers (no filesystem/env
+  dependency, unlike `record()` itself, matching this module's own
+  established test-the-pure-layer-not-the-env-wrapper convention). 4 new
+  direct unit tests: paid stays verbatim; a free provider's echoed
+  key-bearing URL gets redacted (the exact S4 scenario); a free
+  provider's body with no secret present is left untouched. Widened
+  `redact_literal_secrets`'s visibility (`pub(super)` → `pub(crate)`)
+  and re-exported it from `util::http` so the sibling `util::raw_archive`
+  module can reach it — a small, safe visibility widening (adds a
+  caller, breaks none). All four correlator architecture guards
+  unaffected (no correlator code touched). Live-verified: a real `hse
+  scan` against a free module (`ip_reputation`) still archives its
+  response body correctly end-to-end — no operator secret was present
+  in that response, so nothing needed redacting, confirming the common
+  case is unaffected by the change. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4321 lib tests (+4), 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-REDACT + §4a + §5 — same commit.

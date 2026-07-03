@@ -1,10 +1,64 @@
+use super::archived_body;
 use super::config::enabled_from;
 use super::format::{build_body, build_filename, format_utc, slug};
 use super::io::write_file;
+use super::is_paid_provider;
 use super::query::records_filtered_dir;
 use super::url::describe_url;
 
 use serde_json::Value;
+
+#[test]
+fn is_paid_provider_matches_exactly_the_five_paid_archive_keys() {
+    for p in ["oathnet", "see-know", "intelx", "dehashed", "proxycurl"] {
+        assert!(is_paid_provider(p), "{p} should be paid");
+    }
+    // The §7 S4 risk list — free/key-gated modules that put a key in the
+    // query string — must NOT be exempted from redaction.
+    for p in [
+        "shodan",
+        "hunter_io",
+        "whoisxml",
+        "numverify",
+        "opencellid",
+        "opencorporates",
+        "mls",
+        "see_know", // underscore variant must not accidentally match "see-know"
+        "",
+    ] {
+        assert!(!is_paid_provider(p), "{p} should not be paid");
+    }
+}
+
+#[test]
+fn archived_body_keeps_a_paid_providers_secret_verbatim() {
+    let raw = r#"{"api_key":"OPERATOR-OWN-KEY-12345678"}"#;
+    let secrets = std::iter::once("OPERATOR-OWN-KEY-12345678".to_string());
+    let got = archived_body("see-know", raw, secrets);
+    assert_eq!(got, raw, "paid archives are never redacted");
+}
+
+#[test]
+fn archived_body_redacts_an_operators_own_key_for_a_free_provider() {
+    // Simulates the §7 S4 scenario: shodan echoes the request URL (with the
+    // operator's own key) back in a non-error response body that then flows
+    // into the archive.
+    let raw = r#"{"query_url":"https://api.shodan.io/host/1.2.3.4?key=OPERATOR-OWN-KEY-12345678"}"#;
+    let secrets = std::iter::once("OPERATOR-OWN-KEY-12345678".to_string());
+    let got = archived_body("shodan", raw, secrets);
+    assert!(
+        !got.contains("OPERATOR-OWN-KEY-12345678"),
+        "the operator's own key must not survive into the archive: {got}"
+    );
+    assert!(got.contains("query_url"), "everything else is preserved");
+}
+
+#[test]
+fn archived_body_leaves_a_free_providers_body_untouched_when_no_secret_is_present() {
+    let raw = r#"{"results":["nothing sensitive here"]}"#;
+    let got = archived_body("shodan", raw, std::iter::empty());
+    assert_eq!(got, raw);
+}
 
 #[test]
 fn disable_switch_is_opt_out_only() {

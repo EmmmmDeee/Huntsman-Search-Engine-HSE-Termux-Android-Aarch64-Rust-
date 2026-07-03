@@ -1,14 +1,31 @@
-//! Per-query raw-response archive for **paid** intelligence providers.
+//! Per-query raw-response archive for **paid** intelligence providers (and,
+//! secret-redacted, every other module too — see [`is_paid_provider`]).
 //!
 //! Operator policy, verbatim: *"Data that is paid for must be kept in absolute
 //! completeness. These legitimate services cost money per query and should
 //! never ever be wasted or discarded, and must always be retained in their raw
 //! form until manually deleted."*
 //!
-//! Every byte a paid provider (SeekNow, OathNet) returns is saved here —
-//! verbatim, before any parsing, extraction, deduplication, or budget/quota
-//! filtering — so the complete purchased corpus survives even the parts the
-//! entity extractor doesn't (yet) recognise.
+//! Every byte a **paid** provider (SeekNow, OathNet, IntelX, DeHashed,
+//! Proxycurl — [`is_paid_provider`]) returns is saved here verbatim, before
+//! any parsing, extraction, deduplication, or budget/quota filtering, or
+//! redaction — so the complete purchased corpus survives even the parts the
+//! entity extractor doesn't (yet) recognise; the operator's policy above is
+//! absolute for these five.
+//!
+//! Every **free/key-gated** provider's response is ALSO archived here (the
+//! `record_http` doc below explains why: it's the universal transport
+//! chokepoint, not a paid-only path), but with the operator's own configured
+//! secret values redacted first (`redact::redact_literal_secrets` +
+//! `keys::own_api_keys`) — closing `PROBLEM_TREE.md` §7 S4's residual: ~7
+//! free/key-gated modules put their key in the query string
+//! (shodan/hunter_io/whoisxml/numverify/opencellid/opencorporates/mls), and an
+//! upstream that echoes the request URL back in its response body would
+//! otherwise persist that key verbatim in a non-0600-inherited archive file.
+//! This is narrower than a blanket "redact everything" fix would be: it
+//! deliberately does NOT touch the five paid providers' archives, since
+//! that would violate the operator policy quoted above for data actually
+//! paid for.
 //!
 //! ## One self-describing file per query (intuitive, individual names)
 //!
@@ -59,9 +76,48 @@ pub fn record_http(provider: &str, url: &str, body: &str) {
     record(provider, &endpoint, &query, body);
 }
 
-/// Persist one paid-provider response to its own file, verbatim. Best-effort and
-/// infallible from the caller's view: any I/O error is logged at debug and
-/// swallowed so archiving can never fail a scan or drop the in-flight result.
+/// The five providers the operator's "kept in absolute completeness, never
+/// redacted" policy (module-level doc above) applies to — every module with
+/// [`crate::core::module::ModuleCost::Paid`], by their exact `provider`/`SRC`
+/// archive-key string. `raw_archive` sits below `core::module` (no `Module`
+/// trait access at this layer), so this is a small, explicit, literal list
+/// rather than a derived one — matches five real `SRC`/client-name constants
+/// (`modules::dehashed::build::SRC`, `modules::intelx::SRC`,
+/// `modules::proxycurl::SRC`, and the two paid clients' own literal archive
+/// keys `"oathnet"`/`"see-know"`), not a guess.
+const PAID_PROVIDERS: &[&str] = &["oathnet", "see-know", "intelx", "dehashed", "proxycurl"];
+
+/// True if `provider` is one of the five paid archive-keys — see
+/// [`PAID_PROVIDERS`]. **Pure**, so the exemption list is unit-testable
+/// without touching the filesystem.
+fn is_paid_provider(provider: &str) -> bool {
+    PAID_PROVIDERS.contains(&provider)
+}
+
+/// The exact bytes [`record`] persists for `provider`: `raw` verbatim for a
+/// paid provider, or `raw` with every value in `secrets` masked otherwise.
+/// **Pure** (no I/O, no env read) — separated from [`record`] so the
+/// paid-verbatim / free-redacted split is directly unit-testable without
+/// touching the filesystem or `own_api_keys()`'s environment-dependent live
+/// overrides (its compile-time `HARDCODED`/`SUPERSEDED` entries are enough
+/// to exercise this).
+fn archived_body(provider: &str, raw: &str, secrets: impl Iterator<Item = String>) -> String {
+    if is_paid_provider(provider) {
+        raw.to_string()
+    } else {
+        crate::util::http::redact_literal_secrets(raw, secrets)
+    }
+}
+
+/// Persist one response to its own file. **Paid** providers ([`is_paid_provider`])
+/// are archived verbatim, per the operator's absolute-completeness policy
+/// (module doc above). Every other provider is archived with the operator's
+/// own configured secret values redacted first (`PROBLEM_TREE.md` §7 S4) — an
+/// upstream that echoes a key-bearing request URL back in its response body
+/// must not leave that key sitting verbatim in an archive file. Best-effort
+/// and infallible from the caller's view: any I/O error is logged at debug
+/// and swallowed so archiving can never fail a scan or drop the in-flight
+/// result.
 ///
 /// `endpoint` is the human label for the queried surface (e.g. `stealer`,
 /// `search-email`, `breach-search`); `query` is the actual value looked up
@@ -74,17 +130,20 @@ pub fn record(provider: &str, endpoint: &str, query: &str, raw: &str) {
     // through here, so this is the universal detection point). Runs regardless
     // of whether on-disk archiving is enabled — key identification is a finding,
     // not an archive feature. Our own auth keys are excluded inside the sink.
+    // Scans the ORIGINAL body, not the (possibly redacted) archived copy below —
+    // key-harvest correctness must never depend on the archive-redaction gate.
     crate::util::found_keys::scan_body(provider, query, raw);
 
     if !config::enabled() {
         return;
     }
+    let archived = archived_body(provider, raw, crate::util::keys::own_api_keys().into_iter());
     let unix_secs = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs());
     let seq = config::SEQ.fetch_add(1, Ordering::Relaxed);
     let filename = format::build_filename(provider, endpoint, query, unix_secs, seq);
-    let body = format::build_body(provider, endpoint, query, unix_secs, raw);
+    let body = format::build_body(provider, endpoint, query, unix_secs, &archived);
     let dir = config::archive_dir();
     let path = dir.join(filename);
     if let Err(e) = io::write_file(&path, &body) {
