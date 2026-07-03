@@ -4225,3 +4225,42 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   change. Gate green: fmt/clippy `--all-targets`/doc clean, 4317 lib
   tests (unchanged), 0 failures. **Paired:** `SOLUTION_TREE` §4a + §5 —
   same commit.
+
+- **2026-07-03** — **`docs/ARCHITECTURE_AUDIT.md` fresh dated re-audit
+  — the deferred dated-snapshot gap closed, not deferred again.**
+  Re-oriented after several small doc-fix cycles by re-checking
+  `SOLUTION_TREE` §4a for the next real gap; this one had been logged
+  and correctly deferred multiple times ("needs a fresh dated re-audit
+  pass, not a field edit") — picked it up rather than deferring a
+  fourth time. Recomputed every "Facts" table figure directly from the
+  live tree, not carried forward: **162** modules (`hse modules --json`
+  — 129 free · 28 key-gated · 5 paid · full 14-category breakdown),
+  **113** correlator rules — investigated a genuine surprise along the
+  way: this doc's prior recount methods (and this session's own earlier
+  claims) always summed both `core::correlator::mod::RULES` (101
+  entries) AND `RELATION_RULES` (12 entries, e.g. AU-031/060/070 —
+  graph-aware rules whose `RelationRuleFn` signature additionally takes
+  `&[Relation]`), so a naive single-array grep undercounts by exactly
+  those 12; confirmed both arrays dispatch `Vec<Correlation>` (the same
+  finding type), so the combined 113 figure is correct and this
+  session's prior "N rules registered" claims were right all along —
+  worth documenting precisely so a future cycle doesn't rediscover the
+  same trap. **4,437** tests (4,317 lib + 89 API + 30 architecture-
+  guard), **~218k** LOC / **789** `.rs` files, **298** locked deps.
+  Installed `cargo machete` fresh in-session rather than trust the
+  two-week-old "0 unused" claim forward: it flagged `kamadak-exif`/
+  `md-5`, both `grep`-verified genuine false positives (real production
+  usage in `exif_geo`, `gravatar`, `name_intel`, `contact_enrich`,
+  `util/hashcat` — not test-only). `cargo deny` install timed out
+  in-session, so the licence line now explicitly defers to `audit.yml`
+  rather than re-asserting an unverified figure — an honest gap, not a
+  silently-carried-forward claim. Also fixed a shifted `Cargo.toml`
+  line reference (`panic = "unwind"`, 125→137) and widened the
+  correlator rule-family list with four families the old list omitted
+  (`breach_pii`/`locale`/`payid`/`robust`, all genuinely present under
+  `src/core/correlator/rules/` today). `OSINT_SERVICE_VALUE_vs_HSE.md`'s
+  separate, still-stale "Date: 2026-06-12" snapshot deliberately left
+  open in `SOLUTION_TREE` §4a — a commercial-comparison document with
+  numbers woven through prose/tables, not a facts block, genuinely
+  larger scope than this pass. No code change. Gate green: fmt clean
+  (docs-only). **Paired:** `SOLUTION_TREE` §4a + §5 — same commit.

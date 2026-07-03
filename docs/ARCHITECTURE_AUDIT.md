@@ -6,25 +6,32 @@
 > plan live in [`PROBLEM_TREE.md`](PROBLEM_TREE.md) (the living problem +
 > capability tree), which is the single source of truth for what to change.
 
-## Facts (verified against the tree, 2026-06-17)
+## Facts (verified against the tree, 2026-07-03)
+
+> **Re-audit note.** This table drifted for over two weeks before this pass —
+> logged as a known gap in `SOLUTION_TREE.md` §4a since 2026-07-03's earlier
+> README rule-count correction and left deliberately unfixed then (a *dated*
+> snapshot's numbers must not be silently overwritten without a fresh audit —
+> see that entry's own reasoning). This is that fresh audit: every figure
+> below was recomputed from the live tree this pass, not carried forward.
 
 | Metric | Value |
 |---|---|
-| Version / edition / MSRV | 1.9.0 · edition 2024 · 1.88 |
-| Source | ~137k LOC · 602 `.rs` files |
-| Modules | **118** registered — 89 Free · 24 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **69** deterministic (AU-001 … AU-064, AU-067/068/069/070/071) + 2 engine-emitted (AU-065/066) |
-| Tests | ~2,995 lib + API/integration + architecture guards |
+| Version / edition / MSRV | 1.13.0 · edition 2024 · 1.88 |
+| Source | ~218k LOC · 789 `.rs` files |
+| Modules | **162** registered — 129 Free · 28 KeyGated · 5 Paid · 14 categories |
+| Correlation rules | **113** deterministic (AU-001 … AU-115, spanning the plain `RULES` table and the graph-aware `RELATION_RULES` table — both dispatch `Vec<Correlation>`, split only because `RelationRuleFn` additionally takes the relation graph) + 2 engine-emitted (AU-065/066) |
+| Tests | 4,437 (4,317 lib + 89 API-integration + 30 architecture-guard) + further integration suites (`smoke`, `cli_seed_validation`, `audit_regression`, `halting`) + 63 doctests |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`) |
-| Panic strategy | `panic = "unwind"` (`Cargo.toml:125`) + per-module `catch_unwind` at the dispatch boundary |
-| Dependencies | 311 locked packages (`Cargo.lock`) · **0** AI/ML/LLM/vector (guard-enforced) · 100% permissive licences (`cargo deny`) · 0 unused (`cargo machete`) |
+| Panic strategy | `panic = "unwind"` (`Cargo.toml:137`) + per-module `catch_unwind` at the dispatch boundary |
+| Dependencies | 298 locked packages (`Cargo.lock`) · **0** AI/ML/LLM/vector (guard-enforced) · licences enforced by `audit.yml` (`cargo deny`, not re-run this pass) · **0 unused** confirmed by a real `cargo machete` run this pass — it flagged `kamadak-exif`/`md-5` as candidates, both verified genuine false positives by direct `grep` (`exif_geo/mod.rs:50`, `gravatar`/`name_intel`/`contact_enrich`/`util/hashcat` all import them in real, non-test code) |
 | HTTP / DB | reqwest 0.12 (rustls, no native-TLS) · rusqlite 0.39 bundled (WAL + FTS5) · axum 0.8 · hickory-resolver 0.26 |
 | Release profile | `opt-level="s"`, `lto=true`, `codegen-units=1` |
 | Runtime | tokio, 2 worker threads (Termux-tuned) |
 
-**Module categories (sum = 118):** Infrastructure 20 · Geo 19 · People 15 ·
-DnsRecon 13 · Breach 11 · Social 10 · Email 6 · Corporate 6 · Web 5 · Sensor 4 ·
-Threat 3 · Search 2 · Phone 2 · Other 2.
+**Module categories (sum = 162):** Social 36 · Geo 22 · Infrastructure 20 ·
+People 16 · DnsRecon 13 · Corporate 13 · Breach 12 · Web 7 · Email 6 ·
+Sensor 4 · Phone 4 · Threat 3 · Search 3 · Other 3.
 
 ## Dependency direction
 
@@ -32,9 +39,9 @@ Threat 3 · Search 2 · Phone 2 · Other 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (69 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (113 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
- modules (124) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
+ modules (162) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
 
 **Invariant (enforced):** `core` is module-agnostic — the engine drives modules
@@ -63,9 +70,10 @@ allowlist remains.
   `circuit`/`timeout`, `enrich` (geo + key harvest), `ledger` (dedup/lineage). A
   panicking module is caught at the dispatch boundary (`run_module_guarded`), so
   it degrades to zero results rather than aborting the process.
-- **`core::correlator`** (`src/core/correlator/rules/`) — 69 deterministic rules
-  across `assoc`/`breach`/`broker`/`crypto`/`gap`/`geo`/`infra`/`identity`/
-  `integrity`/`location`/`multipath`/`org`/`resolved`/`sim`/`template`/`transitive`,
+- **`core::correlator`** (`src/core/correlator/rules/`) — 113 deterministic
+  rules across `assoc`/`breach`/`breach_pii`/`broker`/`crypto`/`gap`/`geo`/
+  `identity`/`infra`/`integrity`/`locale`/`location`/`multipath`/`org`/
+  `payid`/`resolved`/`robust`/`sim`/`template`/`transitive`,
   synthesising entities into findings; candidate-quarantine before correlation. The
   recursive-linking family — `transitive` (AU-060), `multipath` (AU-062), `gap`
   (AU-063), `template` (AU-064), `resolved` (AU-067), `integrity` (AU-069), `broker`
@@ -89,7 +97,7 @@ allowlist remains.
   `Entity::c_effective` noisy-OR/multiplicative confidence fusion (clamped,
   monotone, contract-tested), SHA-256 deterministic UIDs, GREATEST-semantics
   merge.
-- **`modules`** (124) — OSINT sources, each `Module: accepts/produces/process`,
+- **`modules`** (162) — OSINT sources, each `Module: accepts/produces/process`,
   registered in `modules::registry()`; every module is mapped to MITRE ATT&CK
   Reconnaissance (TA0043) — by a per-category default (`techniques_for_category`),
   overridden where the category is too coarse (the two `Other`-category modules,
@@ -113,7 +121,7 @@ allowlist remains.
   proven in ≥2 prior scans is resolved by the engine-emitted **AU-066** cross-scan
   gap-fill, which also boosts its endpoints; both are storage-dependent so they
   are emitted by the engine at finalise, not by pure correlator rules, and are
-  therefore distinct from the 69 correlator rules).
+  therefore distinct from the 113 correlator rules).
 - **`api`** (axum 0.8) — versioned `/api/v1`, SSE live stream, embedded SPA +
   vendor bundle; CSP + `127.0.0.1`-only bind (architecture invariant).
 - **`util`** — HTTP client (rustls + SSRF-guarded resolver), key pool, atomic

@@ -958,18 +958,53 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
   DB fresh without user intervention. No solution node yet.
-- **Dated-snapshot docs are stale (new, 2026-07-03 S→P find, same pass as the
-  README rule-count fix):** `docs/ARCHITECTURE_AUDIT.md` ("Facts (verified
-  against the tree, 2026-06-17)": 118 modules, 69 correlator rules, ~2,995 lib
-  tests, ~137k LOC) and `OSINT_SERVICE_VALUE_vs_HSE.md` ("Date: 2026-06-12":
-  125 modules, 43 correlator rules) are both real, dated point-in-time
-  snapshots whose numbers now read stale against the live tree (161 modules,
-  110 correlator rules, 4290 lib tests). Deliberately not touched by the
-  README fix: silently overwriting a *dated* snapshot's numbers to today's
-  values would misrepresent it as still accurate as of its stated date — the
-  honest fix is either a fresh dated re-audit pass (new "Facts (verified
-  against the tree, <today>)" table) or an explicit "superseded by" pointer,
-  not a silent field edit. No solution node yet.
+- ~~**`docs/ARCHITECTURE_AUDIT.md` dated-snapshot staleness (found
+  2026-07-03, same pass as the README rule-count fix).**~~ **Delivered
+  (2026-07-03).** Its "Facts (verified against the tree, 2026-06-17)"
+  table had drifted badly (118 modules, 69 correlator rules, ~2,995 lib
+  tests, ~137k LOC) against the live tree. Took the "fresh dated
+  re-audit pass" option this note itself proposed, not a silent field
+  edit: every figure recomputed live this pass — **162** modules (129
+  free · 28 key-gated · 5 paid · 14 categories, full breakdown
+  recounted from `hse modules --json`), **113** correlator rules
+  (discovered along the way that the prior count only ever covered the
+  plain `RULES` dispatch table, 101 entries — the graph-aware
+  `RELATION_RULES` table's 12 entries, e.g. AU-031/060/070, also
+  dispatch `Vec<Correlation>` and were always part of the true total,
+  just split into a second array because `RelationRuleFn` takes an
+  extra `&[Relation]` parameter `RuleFn` doesn't), **4,437** tests
+  (4,317 lib + 89 API + 30 architecture-guard), **~218k** LOC across
+  **789** `.rs` files, **298** locked dependencies. Live-ran `cargo
+  machete` (installed fresh in-session) rather than trusting the old
+  "0 unused" claim forward: it flagged `kamadak-exif`/`md-5` as
+  candidates, both `grep`-verified genuine false positives (real,
+  non-test production usage in `exif_geo`, `gravatar`, `name_intel`,
+  `contact_enrich`, `util/hashcat`) — so "0 unused" still holds, now on
+  freshly-checked evidence instead of a two-week-old claim. `cargo deny`
+  (licences) was NOT re-run — install timed out in-session — so that
+  one line explicitly defers to `audit.yml`'s own enforcement rather
+  than re-asserting an unverified "100%" figure. Also fixed the
+  `panic = "unwind"` Cargo.toml line reference (125→137, shifted by
+  intervening edits) and widened the correlator rule-family list
+  (`assoc`/`breach`/`breach_pii`/`broker`/`crypto`/`gap`/`geo`/
+  `identity`/`infra`/`integrity`/`locale`/`location`/`multipath`/`org`/
+  `payid`/`resolved`/`robust`/`sim`/`template`/`transitive` — the old
+  list omitted `breach_pii`/`locale`/`payid`/`robust`, four families
+  that exist in `src/core/correlator/rules/` today). No code change.
+  `OSINT_SERVICE_VALUE_vs_HSE.md`'s own dated staleness ("Date:
+  2026-06-12": 125 modules, 43 correlator rules) is a separate document
+  with a different structure (a commercial-comparison analysis, not an
+  architecture-facts table) — deliberately NOT touched this pass to
+  avoid scope creep; still open below.
+- **`OSINT_SERVICE_VALUE_vs_HSE.md` dated-snapshot staleness (still
+  open):** "Date: 2026-06-12" · "125 modules" · "43 correlator rules" —
+  now stale against the live tree (162 modules, 113 correlator rules).
+  Unlike `ARCHITECTURE_AUDIT.md`, this is a commercial-comparison
+  analysis document (pricing tables, competitor feature matrices), not
+  a pure architecture-facts table — a correct fix needs a read of the
+  whole document to find every stale figure woven into prose/tables,
+  not just one "Facts" block, so it's a larger, separately-scoped task.
+  No solution node yet.
 - ~~**README.md "3,100+ tests" is stale (found 2026-07-03, same pass as
   the rule-count fix).**~~ **Delivered (2026-07-03).** Same architecture
   bullet list as the rule-count fix. Real figures as of this cycle: 4317
@@ -3408,3 +3443,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   style test exists. No code change. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4317 lib tests (unchanged), 0 failures.
   **Paired:** `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **`docs/ARCHITECTURE_AUDIT.md` fresh dated re-audit —
+  the deferred dated-snapshot gap finally closed, not just deferred
+  again.** This exact staleness was found and logged with two explicit
+  options (a fresh dated re-audit, or a superseded-by pointer) several
+  cycles ago and correctly deferred each time rather than force-fit
+  into an unrelated commit. Took the fresh-audit option: recomputed
+  every figure live — 162 modules (`hse modules --json`, full
+  free/key-gated/paid + 14-category breakdown), 113 correlator rules
+  (found along the way that the true count spans TWO dispatch tables,
+  `RULES` + the graph-aware `RELATION_RULES`, not just the one prior
+  cycles' counts always used — both tables dispatch `Vec<Correlation>`,
+  so nothing about the finding count itself was ever wrong, just this
+  doc's specific recount method), 4,437 tests, ~218k LOC / 789 files,
+  298 locked deps. Installed `cargo machete` fresh in-session rather
+  than trust the old "0 unused" claim: it flagged 2 candidates, both
+  `grep`-verified real false positives (genuine non-test production
+  usage). `cargo deny` was not re-run (install timed out) — that line
+  now explicitly defers to `audit.yml` instead of re-asserting an
+  unverified figure. Also fixed a shifted Cargo.toml line reference and
+  widened the correlator rule-family list to include four families
+  (`breach_pii`/`locale`/`payid`/`robust`) the old list omitted.
+  `OSINT_SERVICE_VALUE_vs_HSE.md`'s separate staleness deliberately left
+  open — different document shape (commercial comparison, not a facts
+  table), genuinely out of scope for this pass. No code change. Gate
+  green: fmt clean (docs-only; no Rust file touched). **Paired:**
+  `PROBLEM_TREE` §8 — same commit.
