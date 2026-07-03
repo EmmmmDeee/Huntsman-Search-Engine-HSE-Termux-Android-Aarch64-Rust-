@@ -2502,6 +2502,88 @@ fn au_112_is_distinct_from_au_001_multi_source_corroboration() {
 }
 
 #[test]
+fn au_113_fires_on_multi_device_tag() {
+    // The exact shape hudsonrock tags: an Email whose stealer-log records
+    // name >=2 distinct computer_name values (PROBLEM_TREE C1 "(d)"
+    // rule-gap fill, third instance).
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Email,
+            "alice@example.com",
+            "hudsonrock",
+            &[crate::core::tags::MULTI_DEVICE],
+        ),
+        mk_tagged(EntityKind::Email, "bob@example.com", "hudsonrock", &[]),
+    ];
+    let out = rule_au_113_multi_device_stealer_compromise(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-113");
+    assert_eq!(out[0].severity, Severity::High);
+    assert_eq!(out[0].entity_uids.len(), 1, "only the flagged identifier");
+    assert!(out[0].description.contains("1 identifier"));
+}
+
+#[test]
+fn au_113_does_not_fire_without_the_tag() {
+    let ents = vec![mk_tagged(
+        EntityKind::Email,
+        "bob@example.com",
+        "hudsonrock",
+        &[],
+    )];
+    assert!(rule_au_113_multi_device_stealer_compromise(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_113_ignores_a_domain_tagged_multi_device() {
+    // hudsonrock also tags Domain targets — a search-by-domain result
+    // surfaces OTHER users' stealer hits for that domain, not the subject's
+    // own. AU-113 must stay Email-only, mirroring AU-009's exact filter, or
+    // it would misattribute a stranger's multi-device footprint.
+    let ents = vec![mk_tagged(
+        EntityKind::Domain,
+        "example.com",
+        "hudsonrock",
+        &[crate::core::tags::MULTI_DEVICE],
+    )];
+    assert!(rule_au_113_multi_device_stealer_compromise(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_113_is_distinct_from_au_009_single_device_stealer_log() {
+    // AU-009 fires on the bare `stealer-log` tag regardless of device count
+    // (1 or N compromised machines fire it identically). AU-113 fires only
+    // when hudsonrock's own device-breadth signal (MULTI_DEVICE) is present
+    // — an email with `stealer-log` but no MULTI_DEVICE tag fires AU-009,
+    // never AU-113, proving the two rules cover genuinely disjoint evidence
+    // (presence vs. device-breadth corroboration).
+    let single_device = tagged(EntityKind::Email, "single@example.com", &["stealer-log"]);
+    assert_eq!(
+        rule_au_009_stealer_log(std::slice::from_ref(&single_device), "scan", 0).len(),
+        1
+    );
+    assert!(rule_au_113_multi_device_stealer_compromise(&[single_device], "scan", 0).is_empty());
+
+    let multi_device = mk_tagged(
+        EntityKind::Email,
+        "multi@example.com",
+        "hudsonrock",
+        &[
+            crate::core::tags::STEALER_LOG,
+            crate::core::tags::MULTI_DEVICE,
+        ],
+    );
+    assert_eq!(
+        rule_au_009_stealer_log(std::slice::from_ref(&multi_device), "scan", 0).len(),
+        1
+    );
+    assert_eq!(
+        rule_au_113_multi_device_stealer_compromise(&[multi_device], "scan", 0).len(),
+        1
+    );
+}
+
+#[test]
 fn shared_tracking_id_fires_only_across_multiple_sites() {
     // A TrackingId carrying source_domain evidence for two distinct sites is the
     // affiliate signal: same analytics id ⇒ common ownership.

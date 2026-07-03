@@ -418,10 +418,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   including a direct AU-001/AU-112 disjoint-fixture proof. All four
   architecture guards pass with 112 rules registered. Live-verified: a
   real `hse scan` completes with 112 rules evaluating without error. Gate
-  green: 4290 lib tests (+3). *Remaining (deliberately open-ended, like the
-  audit cadence itself):* further AU-0xx rule-gap fill — no further
-  candidate identified this pass; the dead-tag-audit method has now closed
-  2 gaps and is a reusable technique for a future cycle.
+  green: 4290 lib tests (+3).
+  *Delivered (2026-07-03): AU-113, Multi-device stealer compromise.*
+  Re-ran the dead-tag audit against the full `core::tags` registry (34
+  constants, not just the 2 already closed) — most zero-hit tags were
+  confirmed correctly administrative (`candidate`, `recalled`, `derived`,
+  …) or audit-method false positives (`tor-exit`/`proxy`/`vpn` ARE read by
+  AU-005/AU-006, just via inline string literals the `tags::` grep
+  missed). Two genuine candidates surfaced: `tags::MULTI_DEVICE`
+  (`hudsonrock`) and `tags::MISSING_SECURITY_HEADERS` (`web_crawler`).
+  Built the former only — MULTI_DEVICE is person-evidentiary (AU-009
+  already fires identically on 1 or N compromised machines, silently
+  collapsing the device-breadth fact), MISSING_SECURITY_HEADERS describes
+  a domain's own server hygiene, not a fact about the subject, and risks
+  noise (most crawled sites are missing at least one header). New
+  `rule_au_113_multi_device_stealer_compromise` fires on `MULTI_DEVICE`,
+  `EntityKind::Email`-only (mirrors AU-009's own `Domain` exclusion
+  exactly — a `search-by-domain` hit surfaces *other* users' stealer
+  records, not the subject's), `High` severity (same tier as AU-009 — the
+  new evidence is device breadth, not a stronger secret-recovery claim).
+  Confirmed non-overlap: a `stealer-log`-tagged email with no
+  `MULTI_DEVICE` tag fires AU-009, never AU-113. 4 new tests (fires;
+  silent without tag; `Domain`-kind entity ignored; direct AU-009/AU-113
+  disjoint-fixture proof). All four architecture guards pass with 111
+  rules registered (`AU-001`–`AU-113`, `AU-065`/`AU-066` still
+  engine-emitted). Live-verified: a real end-to-end `hse scan`
+  (rust-lang.org) completes and renders the full dossier without error;
+  AU-113 correctly silent (no breach data in this scan). Gate green:
+  fmt/clippy `--all-targets`/doc clean, 4294 lib tests (+4), 0 failures.
+  *Remaining (deliberately open-ended, like the audit cadence itself):*
+  further AU-0xx rule-gap fill — `MISSING_SECURITY_HEADERS` logged in §4a
+  as a deliberately-deferred, weaker candidate rather than force-built
+  this pass; the dead-tag-audit method has now closed 3 gaps across 2
+  cycles and remains a reusable technique for a future pass once more
+  modules/tags accumulate.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -766,7 +796,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   own entry above already records *(c) the timeline widened* delivered the
   same day (12 real date-shaped keys, `core::timeline::classify`) — the
   §4d coverage snapshot caught up at the time, this §4a line did not.
-  *Remaining:* further AU-0xx rule-gap fill only.
+  **AU-113 delivered (2026-07-03):** a third dead-tag-audit gap
+  (`tags::MULTI_DEVICE`) closed — see SOL-CORR above for the full note.
+  *Remaining:* further AU-0xx rule-gap fill only —
+  `tags::MISSING_SECURITY_HEADERS` (`web_crawler`) was found by the same
+  audit and deliberately left unbuilt: it describes a crawled domain's own
+  header hygiene, not a fact about the subject, and risks noise (most
+  crawled sites are missing at least one recommended header); a future
+  pass should decide whether it belongs in a *site-hygiene*-flavoured
+  rule at low severity or is correctly out of scope for a person-focused
+  evidentiary tool before building anything.
 - **C2/C6/C7** — capability nodes; solutions sketched, genuinely none started
   (gated on the §3.F enablers landing first, by design — confirmed against
   `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/`SOL-FORENSIC`, all still `[ ]`).
@@ -3038,3 +3077,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   only." `PROBLEM_TREE`'s own C1 node (§4) never claimed the timeline item
   as outstanding, so this drift was confined to this file. **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **SOL-CORR: AU-113 closes a third dead-tag-audit gap —
+  Multi-device stealer compromise.** Re-ran the audit against all 34
+  `core::tags` constants (not just the 2 already closed). Confirmed most
+  zero-correlator-hit tags are correctly administrative/provenance;
+  caught the audit method's own false positives (`tor-exit`/`proxy`/`vpn`
+  ARE read by AU-005/AU-006, via inline literals a `tags::X` grep
+  misses). Two genuine candidates: `tags::MULTI_DEVICE` (`hudsonrock`)
+  and `tags::MISSING_SECURITY_HEADERS` (`web_crawler`). Built only
+  MULTI_DEVICE — a real person-evidentiary signal AU-009 silently
+  collapses (fires identically on 1 or N compromised machines);
+  MISSING_SECURITY_HEADERS describes a domain's own header hygiene, not a
+  subject fact, and risks noise, so it's logged in §4a as a
+  deliberately-deferred weaker candidate rather than built under time
+  pressure. New `rule_au_113_multi_device_stealer_compromise`,
+  `EntityKind::Email`-only (mirrors AU-009's own `Domain` exclusion —
+  `hudsonrock`'s `search-by-domain` path surfaces other users' hits, not
+  the subject's), `High` severity matching AU-009's tier (device breadth
+  is additional evidence, not a stronger secret-recovery claim). **S→P
+  proof:** 4 new tests, including a direct AU-009/AU-113 disjoint-fixture
+  proof and a `Domain`-kind misattribution guard. All four architecture
+  guards pass with 111 rules registered (`AU-001`–`AU-113`). Live-verified:
+  a real `hse scan` completes and renders the full dossier without error,
+  AU-113 correctly silent. Gate green: fmt/clippy `--all-targets`/doc
+  clean, 4294 lib tests (+4), 0 failures. **Paired:** `PROBLEM_TREE` C1 +
+  §8 — same commit.

@@ -1153,6 +1153,58 @@ pub(in crate::core::correlator) fn rule_au_112_high_exposure_footprint(
     )]
 }
 
+/// AU-113 — Multi-device stealer compromise.
+///
+/// Fires when an `Email` is tagged `MULTI_DEVICE` — `hudsonrock` sets this
+/// when the identifier's harvested credentials appear in stealer-log records
+/// naming **two or more distinct `computer_name` values** (the
+/// `seen_hosts.len() >= 2` check in [`crate::modules::hudsonrock`]), i.e.
+/// info-stealer malware independently harvested this identifier's
+/// credentials from two or more separate physical machines. Distinct from
+/// [`rule_au_009_stealer_log`]
+/// (AU-009), which fires on the mere presence of the `stealer-log` tag
+/// regardless of host count — a single-machine hit and a five-machine hit
+/// both fire AU-009 identically, so the device-breadth signal was silently
+/// collapsed. `High` — the same tier as AU-009, since neither rule reaches a
+/// first-class `Password`/`Credential` entity (`hudsonrock` never constructs
+/// one — confirmed by the same source read AU-111 relied on), so this is
+/// still catalogue/count-level evidence, not a recovered secret in hand;
+/// the value here is the additional, distinct fact of device breadth, not a
+/// severity escalation over the base finding. Deliberately restricted to
+/// `EntityKind::Email`, mirroring AU-009's own filter exactly: `hudsonrock`
+/// also tags `Domain` targets (a `search-by-domain` query surfaces *other*
+/// employees'/users' stealer hits for that domain, not the subject's own),
+/// and AU-009 already excludes `Domain` for the same reason — firing a
+/// personal "compromised across N of your devices" claim on an
+/// organisation-wide domain result would misattribute a stranger's
+/// multi-device footprint to the subject.
+pub(in crate::core::correlator) fn rule_au_113_multi_device_stealer_compromise(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let uids: Vec<String> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email && e.has_tag(crate::core::tags::MULTI_DEVICE))
+        .map(|e| e.uid.clone())
+        .collect();
+    if uids.is_empty() {
+        return Vec::new();
+    }
+    vec![Correlation::new(
+        "AU-113",
+        "Multi-device stealer compromise",
+        Severity::High,
+        format!(
+            "{} identifier(s) harvested by info-stealer malware from 2+ distinct machines",
+            uids.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-082 — API key exposed via two independent source families.
 ///
 /// AU-021 fires whenever a single `ApiKey` entity is present; this rule

@@ -24,6 +24,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **New correlator rule AU-113 (Multi-device stealer compromise) —
+  `PROBLEM_TREE` C1, "further AU-0xx rule-gap fill".** `hudsonrock` tags an
+  email `multi-device` when its stealer-log records name two or more
+  distinct compromised machines — but the existing stealer-log rule fires
+  identically whether the credentials were harvested from one machine or
+  five, silently collapsing the device-breadth signal. Restricted to
+  `Email` entities only, mirroring the existing rule's own exclusion of
+  `Domain` targets (which surface other users' stealer hits for that
+  domain, not the subject's own). High severity, matching the base
+  stealer-log finding's tier — the new evidence is device breadth, not a
+  stronger secret-recovery claim.
 - **New correlator rule AU-112 (High-exposure breach footprint) —
   `PROBLEM_TREE` C1, "further AU-0xx rule-gap fill".** `hibp` and
   `xposed_or_not` each independently tag an identifier `high-exposure` when

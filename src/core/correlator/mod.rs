@@ -402,6 +402,11 @@ const RULES: &[RuleFn] = &[
     // judged severe-exposure threshold, distinct from AU-001's cross-source
     // corroboration axis; no rule read the underlying count before this.
     rule_au_112_high_exposure_footprint,
+    // AU-113: an Email tagged MULTI_DEVICE (hudsonrock: stealer-log records
+    // naming >=2 distinct computer_name values) — the device-breadth signal
+    // AU-009 silently collapses (fires identically on 1 or N compromised
+    // machines).
+    rule_au_113_multi_device_stealer_compromise,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
