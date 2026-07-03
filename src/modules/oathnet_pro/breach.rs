@@ -13,6 +13,15 @@ pub(super) fn breach_evidence(item: &Value) -> Evidence {
     let db = val_str(item, "dbname").unwrap_or_else(|| "unknown".to_string());
     let mut ev = Evidence::new(SRC, format!("Breach on {db}")).with_attr("dbname", &db);
     for (field, attr) in [
+        // The breach's own occurrence date — `util::oathnet::search` additively
+        // stamps this onto the row from the response's sibling `dbname_info`
+        // block (keyed by this row's own `dbname`) when the row doesn't already
+        // carry one. Every entity built from this evidence is `breach`-tagged, so
+        // this is the canonical `breach_date` key AU-019's temporal breach-
+        // cluster rule (`rules/breach.rs`) reads — without it, oathnet-sourced
+        // hits (a paid, high-quality breach source) could never date-cluster
+        // with HIBP/IntelX/xposed_or_not/psbdmp/niamonx/hudsonrock.
+        ("breach_date", "breach_date"),
         // Account join-keys — the email/username this record belongs to. The
         // reused-secret correlator (AU-047) reads these off a leaked secret's
         // evidence to tie the accounts that share it to one controller, and the

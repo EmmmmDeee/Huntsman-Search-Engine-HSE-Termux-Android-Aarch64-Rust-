@@ -2,6 +2,8 @@
 //! search_engines enrichment pass. Lives in util/ so any module can
 //! call it without violating the "no inter-module imports" invariant.
 
+use std::collections::HashMap;
+
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -166,6 +168,22 @@ struct ErrorDetail {
 struct SearchData {
     #[serde(default)]
     items: Vec<Value>,
+    // A breach-search response's `data` object carries this sibling of `items`:
+    // per-`dbname` metadata (HIBP-style — `BreachDate`/`Description`/`PwnCount`/
+    // `Title`) for every distinct breach database the hits belong to. Previously
+    // entirely unparsed (not a field on this struct, so serde silently dropped
+    // it), so every oathnet-sourced breach hit's actual breach date was
+    // discarded even though the response carried it. Only `BreachDate` is
+    // captured for now — see the enrichment note in `search()`; `Description`/
+    // `PwnCount`/`Title` are left for a future cycle to avoid scope creep.
+    #[serde(default)]
+    dbname_info: HashMap<String, DbMeta>,
+}
+
+#[derive(Deserialize, Default)]
+struct DbMeta {
+    #[serde(rename = "BreachDate", default)]
+    breach_date: Option<String>,
 }
 
 /// Search a specific OathNet surface (breach, stealer, etc.) by field.
@@ -271,8 +289,51 @@ pub async fn search(
     };
     let sd: SearchData =
         serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
-    cache_put(ck, &sd.items);
-    Ok(sd.items)
+    let items = enrich_with_breach_dates(sd.items, &sd.dbname_info);
+    cache_put(ck, &items);
+    Ok(items)
+}
+
+/// Additively stamp each row with the canonical `breach_date` its OWN `dbname`
+/// entry in `dbname_info` carries, never overriding a `breach_date` a row
+/// already has. Pure (no I/O), so the enrichment is unit-testable without a
+/// live endpoint — extracted from [`search`].
+///
+/// This is the ONLY thing that lets AU-019's temporal breach-cluster rule
+/// (which reads `breach_date` off breach-tagged entity evidence) see
+/// oathnet-sourced hits at all: `oathnet_pro::breach::breach_evidence` forwards
+/// this key straight through to the entity's evidence once present, exactly
+/// like every other mapped field.
+fn enrich_with_breach_dates(
+    mut items: Vec<Value>,
+    dbname_info: &HashMap<String, DbMeta>,
+) -> Vec<Value> {
+    if dbname_info.is_empty() {
+        return items;
+    }
+    for item in &mut items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        if obj.contains_key("breach_date") {
+            continue;
+        }
+        let Some(date) = obj
+            .get("dbname")
+            .and_then(Value::as_str)
+            .and_then(|dbname| dbname_info.get(dbname))
+            .and_then(|m| m.breach_date.clone())
+        else {
+            continue;
+        };
+        // Re-borrow mutably: the lookup above held `obj` (and, via `dbname`,
+        // `dbname_info`) immutably, so the owned `date` above must be resolved
+        // first — an object mutation can't overlap that borrow.
+        item.as_object_mut()
+            .expect("already confirmed to be an object above")
+            .insert("breach_date".to_string(), Value::String(date));
+    }
+    items
 }
 
 /// Extract a string field from a JSON Value.

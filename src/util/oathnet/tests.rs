@@ -49,6 +49,57 @@ use super::*;
     }
 
     #[test]
+    fn enrich_with_breach_dates_stamps_from_the_rows_own_dbname_only() {
+        let items = vec![
+            json!({"dbname": "poshmark.com", "email": "a@x.com"}),
+            // A dbname with no dbname_info entry — untouched.
+            json!({"dbname": "unknown-db.com", "email": "b@x.com"}),
+            // Already carries its own breach_date — never overridden.
+            json!({"dbname": "poshmark.com", "email": "c@x.com", "breach_date": "1999-01-01"}),
+            // Not an object — passed through unchanged, no panic.
+            json!("not-an-object"),
+        ];
+        let mut dbname_info = std::collections::HashMap::new();
+        dbname_info.insert(
+            "poshmark.com".to_string(),
+            DbMeta {
+                breach_date: Some("2018-05-16".to_string()),
+            },
+        );
+        // wattpad.com has no BreachDate on this response — items from it must
+        // stay unenriched, not stamped with an empty/garbage value.
+        dbname_info.insert("wattpad.com".to_string(), DbMeta { breach_date: None });
+
+        let out = enrich_with_breach_dates(items, &dbname_info);
+
+        assert_eq!(
+            out[0].get("breach_date").and_then(Value::as_str),
+            Some("2018-05-16"),
+            "a row whose dbname has a BreachDate must be stamped"
+        );
+        assert!(
+            out[1].get("breach_date").is_none(),
+            "a row whose dbname has no dbname_info entry must stay unstamped"
+        );
+        assert_eq!(
+            out[2].get("breach_date").and_then(Value::as_str),
+            Some("1999-01-01"),
+            "a row's own pre-existing breach_date must never be overridden"
+        );
+        assert_eq!(out[3], json!("not-an-object"), "non-object rows pass through");
+    }
+
+    #[test]
+    fn enrich_with_breach_dates_is_a_no_op_when_dbname_info_is_empty() {
+        // The common case for non-breach-search endpoints (e.g. stealer search,
+        // which has no dbname_info block at all): items must be returned exactly
+        // as given, not merely "not stamped" but structurally untouched.
+        let items = vec![json!({"dbname": "x.com", "email": "a@x.com"})];
+        let out = enrich_with_breach_dates(items.clone(), &std::collections::HashMap::new());
+        assert_eq!(out, items);
+    }
+
+    #[test]
     fn budget_try_increment_enforces_a_finite_scan_cap() {
         // PROBLEM_TREE T2.11: oathnet's quota gate must be the atomic reserve
         // (`try_increment`/CAS), not the racy `remaining()`-then-`increment()` that

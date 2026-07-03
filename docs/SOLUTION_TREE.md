@@ -740,6 +740,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (red before the fix: the attribute did not exist). The refactor is proven
   behaviour-preserving by the module's existing `process()`-driven tests still
   passing. AU-019 arc now complete across all three breach-tagged producers.
+  *Delivered (2026-07-03):* a FOURTH breach-tagged producer joins the arc —
+  `oathnet_pro`, the highest-quality (paid) breach source, was blind to AU-019
+  the whole time. Surfaced by a third operator-supplied real debug bundle
+  (`username = mriconic`): its `RAW SOURCE RECORDS` section showed OathNet's
+  breach-search response carries a `dbname_info` sibling object alongside
+  `items` — per-breach-database metadata (`BreachDate`/`Description`/
+  `PwnCount`/`Title`, one entry per distinct `dbname` the hits belong to) — that
+  `util::oathnet::search`'s `SearchData` struct never declared a field for, so
+  serde silently dropped the whole block on every parse; no oathnet-sourced hit
+  ever carried a `breach_date`. Fixed additively and non-invasively: `SearchData`
+  now also captures `dbname_info` (only `BreachDate`, via a new `DbMeta` struct
+  — `Description`/`PwnCount`/`Title` deliberately deferred, scope discipline);
+  a new pure `enrich_with_breach_dates` helper stamps each row's own
+  `dbname`-matched `BreachDate` onto it (never overriding a row's own existing
+  `breach_date`) BEFORE `search()` returns — so `search()`'s public
+  `Result<Vec<Value>>` signature is completely unchanged and NONE of its 3 call
+  sites (oathnet_pro's breach + stealer queries, the `hse oathnet` batch CLI)
+  needed touching. `oathnet_pro::breach_evidence`'s existing field-mapping list
+  (an explicit allowlist, not a verbatim fold, unlike see_know's) gained one
+  entry, `("breach_date", "breach_date")`, so the enriched key flows straight to
+  the canonical evidence attribute AU-019 reads — every oathnet_pro entity is
+  already `breach`-tagged, so this closes the entire gap. Two new pure-function
+  tests (`enrich_with_breach_dates_stamps_from_the_rows_own_dbname_only` — covers
+  stamp / no-matching-dbname / already-has-a-date / non-object-row / no-BreachDate
+  cases in one pass; `enrich_with_breach_dates_is_a_no_op_when_dbname_info_is_empty`
+  — the common stealer-search-response shape) plus one `breach_evidence` test
+  mirroring the established `dbname`-attribute precedent — all red/green-verified
+  (the `breach_evidence` mapping via a scoped `git stash` revert of just that one
+  line). AU-019 now covers 4 independent producers: `psbdmp`, `niamonx`,
+  `hudsonrock`, `oathnet_pro`.
   *Correction (2026-07-01):* the "C7 has no comparably small gap" note above
   was itself wrong — a follow-up discovery pass found one directly (see
   SOL-FORENSIC below).

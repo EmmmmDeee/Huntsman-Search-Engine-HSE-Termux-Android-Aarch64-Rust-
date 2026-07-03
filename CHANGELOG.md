@@ -419,6 +419,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **OathNet breach hits now participate in temporal breach clustering
+  (AU-019).** The breach-search response includes per-breach metadata
+  (including the breach's actual occurrence date) alongside the matched
+  records, but it was silently discarded during parsing, so no OathNet-sourced
+  hit ever carried a date usable for clustering — despite OathNet being the
+  richest breach source the engine queries. Each hit's breach date is now
+  recovered from that metadata and attached to its evidence, so a subject's
+  OathNet exposure can now date-cluster with every other breach source.
 - **Curl failures in the paid-API client (`see_know`, `oathnet`) now report why
   they failed, not just an exit code.** The shared curl subprocess was invoked
   with `-s` (silent) but not `-S` (show-error), so curl's own error text was

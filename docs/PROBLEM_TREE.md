@@ -5317,3 +5317,55 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   output is unaffected), so also `hse selftest` 9/9 (161 modules, dispatch graph
   intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
   `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-03** — **C6: `oathnet_pro` — the highest-quality (paid) breach
+  source — joins the AU-019 arc as a fourth producer; its breach-search
+  response's `dbname_info` block was silently discarded at the parse
+  boundary.** Found by reading a third operator-supplied real debug bundle's
+  `RAW SOURCE RECORDS` section directly (`username = mriconic`): OathNet's
+  breach-search response carries a `dbname_info` object SIBLING to `items` —
+  per-`dbname` metadata (`BreachDate`/`Description`/`PwnCount`/`Title`, one
+  entry per distinct breach database the returned hits belong to). `SearchData`
+  (`util::oathnet::mod.rs`) never declared a field for it, so `serde_json`
+  silently ignored the whole block on every parse — not merely "unused by
+  callers" but discarded at the very first deserialization step, before any
+  caller could ever see it. Consequently NO oathnet-sourced breach hit — across
+  ANY module that calls `oathnet::search` — has ever carried a `breach_date`, so
+  none could enter AU-019's temporal clustering, despite OathNet being the
+  richest, paid breach source in the engine. Fixed additively, with zero call-
+  site changes: `SearchData` now also captures `dbname_info` (a new `DbMeta`
+  struct, `BreachDate` only — `Description`/`PwnCount`/`Title` deliberately
+  deferred to avoid scope creep); a new pure `enrich_with_breach_dates(items,
+  dbname_info)` helper stamps each row's own `dbname`-matched `BreachDate` onto
+  it (never overriding a row's own pre-existing `breach_date`) inside `search()`
+  BEFORE it returns — so `search()`'s public `Result<Vec<Value>>` signature is
+  completely unchanged, and NONE of its 3 call sites (oathnet_pro's breach AND
+  stealer queries, the `hse oathnet` batch CLI) needed touching. In
+  `oathnet_pro::breach.rs`'s `breach_evidence` (an EXPLICIT field-mapping
+  allowlist, unlike `see_know`'s verbatim fold — confirmed by reading it before
+  assuming the enrichment would just flow through automatically), added one
+  entry, `("breach_date", "breach_date")`, so the enriched key reaches the
+  canonical evidence attribute AU-019 reads; every `oathnet_pro` entity is
+  already `breach`-tagged (confirmed directly against the same debug bundle's
+  `ENTITIES` section), so this closes the whole gap. Three new tests, all
+  red/green-verified: `enrich_with_breach_dates_stamps_from_the_rows_own_dbname_only`
+  (stamp / no-matching-dbname / already-has-a-date / non-object-row /
+  no-BreachDate-on-that-db, in one pass) and
+  `enrich_with_breach_dates_is_a_no_op_when_dbname_info_is_empty` (the common
+  stealer-search-response shape, which has no `dbname_info` block at all) — both
+  pure-function tests, no live endpoint needed; plus
+  `breach_evidence_carries_breach_date_for_au019`, mirroring the file's existing
+  `dbname`-join-key test precedent, verified red via a scoped `git stash` revert
+  of just the one new mapping-table line. AU-019 now covers 4 independent
+  breach-tagged producers: `psbdmp`, `niamonx`, `hudsonrock`, `oathnet_pro`.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4340 lib tests, +3; every oathnet-related test — 261 total
+  — and the full suite green). Behaviour-touching (oathnet-sourced breach
+  entities gain a new evidence attribute), so also `hse selftest` 9/9 (161
+  modules, dispatch graph intact) per `CONVENTIONS.md` §9 — a live-endpoint
+  exercise was not possible (paid API, no network access from this
+  environment), so verification rests on unit tests built from the EXACT raw
+  response shape the operator's own debug bundle captured, not a synthetic
+  guess. No identity/PII decision logic (existing OathNet response data, no new
+  collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) + §5 — same commit.
