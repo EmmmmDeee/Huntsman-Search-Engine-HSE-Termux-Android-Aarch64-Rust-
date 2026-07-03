@@ -5162,3 +5162,38 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   graph intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
   `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` C4 (SOL-NETINT) +
   §5 — same commit.
+
+- **2026-07-02** — **C4: `ripestat` never stamped the announcing ASN on its
+  `Cidr` evidence, so AU-112 could not attribute a ripestat-sourced netblock —
+  fixed at the PRODUCER (closing the gap), which also made the `cidr_owner`
+  doc accurate rather than just correcting it.** From the same discovery pass (a
+  doc-staleness candidate that, on investigation, was better resolved as a
+  producer fix). `cidr_owner` (`rules/infra.rs:598`), which supplies AU-112's
+  "(announced by <owner>)" attribution, reads the `name`/`asn` attributes "the
+  BGP/whois sources (bgpview/ripestat) already stamp" — but `bgpview` stamps both
+  (`asn_prefix_entities`), while `ripestat`'s `build_asns` (`ripestat/mod.rs:174`)
+  emitted the covering-prefix `Cidr` with a bare evidence record carrying NO
+  attributes, despite having the announcing ASN(s) (`ni.asns`) in hand at that
+  exact point. So a ripestat-only-sourced netblock silently got no owner in
+  AU-112 (which handles `None` gracefully — the clause is simply omitted). Rather
+  than the finder's suggested doc-correction ("state that ripestat-only Cidrs
+  return None"), fixed the actual gap: `build_asns` now stamps `asn` on the Cidr
+  evidence from `ni.asns` — but ONLY when the origin is unambiguous (a single
+  announcing ASN); a multi-origin (MOAS) prefix has no one holder to assert, so it
+  stays unattributed rather than fabricating a single owner (accuracy over
+  coverage). This makes the existing `cidr_owner` doc TRUE (both sources now stamp
+  the fields it reads) — the ideal resolution of a doc-vs-code mismatch: fix the
+  code to match the doc, closing the capability gap. Verified the org NAME is
+  genuinely unavailable at `build_asns` (it comes from a separate `as-overview`
+  fetch), so only `asn` can be stamped here — matching what `cidr_owner`'s
+  `name`-then-`asn` fallback already expects. Regression coverage: extended
+  `build_asns_emits_prefixed_asn_with_prefix_evidence` to assert the single-origin
+  Cidr now carries `asn`, plus a new
+  `build_asns_leaves_a_multi_origin_prefix_unattributed` proving MOAS stays
+  unattributed — the single-origin assertion is red against the unfixed producer.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4335 lib tests, +1; full suite green). Behaviour-touching
+  (ripestat Cidrs gain an `asn` attribute; AU-112 attribution improves), so also
+  `hse selftest` 9/9 (161 modules, dispatch graph intact) per `CONVENTIONS.md`
+  §9. No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` C4 (SOL-NETINT) + §5 — same commit.

@@ -3897,3 +3897,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `cargo test`, 4334 lib tests, existing test extended); `hse selftest` 9/9 per
   `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or `unsafe` impact.
   Paired: `PROBLEM_TREE` C4 + §8 — same commit.
+
+- **2026-07-02** — **C4 (SOL-NETINT): `ripestat` now stamps the announcing ASN on
+  its covering-prefix `Cidr`, so AU-112 can attribute a ripestat-sourced netblock
+  — producer fix that made the existing `cidr_owner` doc true.** A doc-staleness
+  candidate (the `cidr_owner` doc claimed "bgpview/ripestat already stamp
+  name/asn" but ripestat stamped neither) resolved by closing the gap rather than
+  documenting it: `build_asns` had the announcing ASN(s) in hand but emitted a
+  bare Cidr evidence record, so AU-112's `cidr_owner` returned `None` for
+  ripestat-only netblocks. Now stamps `asn` from `ni.asns` when the origin is a
+  single ASN; a MOAS prefix stays unattributed (no single holder to assert —
+  accuracy over coverage). Matches bgpview's Cidr convention; the org NAME is
+  genuinely unavailable here (separate `as-overview` endpoint), so only `asn` is
+  stamped, which is exactly what `cidr_owner`'s name-then-asn fallback expects.
+  Regression coverage: extended the single-origin Cidr test to assert the new
+  `asn`, plus a new MOAS test proving no attribution — red against the unfixed
+  producer. Gate green (fmt/clippy/doc/`cargo test`, 4335 lib tests +1);
+  `hse selftest` 9/9 per `CONVENTIONS.md` §9. No identity/PII, architecture-guard,
+  or `unsafe` impact. Paired: `PROBLEM_TREE` C4 + §8 — same commit.

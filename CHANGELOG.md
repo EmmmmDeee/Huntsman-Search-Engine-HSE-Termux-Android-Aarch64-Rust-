@@ -419,6 +419,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`ripestat` netblocks can now be attributed to their announcing network
+  (AU-112).** RIPEstat's covering-prefix `Cidr` entity was emitted without the
+  announcing ASN, so the "IP within a discovered network block" correlation
+  couldn't name the block's owner for a ripestat-sourced prefix. The covering
+  prefix now carries the origin ASN when it is unambiguous (a single announcing
+  AS), so an IP inside it is attributed to that network; a multi-origin prefix
+  is left unattributed rather than asserting one arbitrary owner.
 - **`netlas` now surfaces the query's total match count.** The Netlas search
   response's top-level `count` — how many indexed responses exist for the host,
   i.e. whether the returned page was truncated — was parsed but never surfaced.
