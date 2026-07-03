@@ -37,10 +37,12 @@ confirm that. Never invent work to look busy.
 Smallest, highest-leverage, real. In priority order:
 
 1. An in-progress (`[~]`) node left by a prior cycle — finish it.
-2. The highest-priority open (`[ ]`) node per `PROBLEM_TREE` §5's execution
-   order (P0 crash/corruption → P1 core guarantees → P2 quality/robustness →
-   P3 minor → CAP capability), respecting the doctrine's stated sequencing
-   rationale (§1: foundations before features).
+2. The highest-priority open (`[ ]`) node per `PROBLEM_TREE` §2's priority
+   legend (P0 crash/corruption → P1 core guarantees → P2 quality/robustness →
+   P3 minor → CAP capability), in the concrete order §5 lays out (T0 panics →
+   F primitives → T1 guarantees → T2 quality → C capability program),
+   respecting the doctrine's stated sequencing rationale (§1: foundations
+   before features).
 3. A concrete coverage gap, unfinished solution, or unjustified solution
    surfaced by `SOLUTION_TREE` §4.
 4. If — and only if — both trees show no open or in-progress node: run one
@@ -50,15 +52,25 @@ Smallest, highest-leverage, real. In priority order:
    exposes a gap). A finding only becomes work if it is grounded in actual
    code/data you can point to — never a speculative "might be nice."
 
-Pick **one**. This loop advances by many small, honest cycles (see
-`docs/SOLUTION_TREE.md` §5 for the established "Cycle N" granularity), not by
+A user-supplied debug bundle or bug report, when one exists this session, is
+real operator evidence and outranks a speculative discovery pass — investigate
+what it actually shows and fix the concrete failure before inventing new work.
+
+Pick **one**. This loop advances by many small, honest cycles — one dated,
+cross-referenced log entry per cycle in `PROBLEM_TREE` §8 and `SOLUTION_TREE`
+§5 (see the recent entries there for the established granularity) — not by
 one large sweep.
 
 ## 2. Do the work
 
+- Treat a discovery pass's or reviewer's claimed root cause as a hypothesis,
+  not a fact — read the actual code path it points at before trusting its
+  suggested fix. A plausible-sounding diagnosis has pointed at the wrong
+  function before; only ship fixes verified against real code and, for
+  behaviour-touching bugs, a real run.
 - Real code against real behaviour — no mocks, no fabricated data, no
   invented findings. If evidence is needed to justify a fix, find it in the
-  code or a real run (`hse selftest`, `hse audit`, or the command itself —
+  code or a real run (`hse diagnostics`, `hse audit`, or the command itself —
   `docs/CONVENTIONS.md` §9).
 - Hold the architecture doctrine: layering (`cli`/`api` → `core` → `util`;
   `core` never imports `modules` or `storage` directly — see
@@ -109,7 +121,7 @@ cargo test
 If anything fails, fix it before proceeding — never commit red, never
 `--no-verify`, never silence a lint by broadening an `#[allow]` beyond the
 one site that needs it. For a behaviour-touching change, also exercise the
-real surface (`hse selftest`, `hse audit`, or the changed command) per
+real surface (`hse diagnostics`, `hse audit`, or the changed command) per
 `docs/CONVENTIONS.md` §9.
 
 ## 5. Ship it
