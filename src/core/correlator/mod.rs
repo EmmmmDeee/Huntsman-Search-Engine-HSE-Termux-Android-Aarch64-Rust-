@@ -407,6 +407,12 @@ const RULES: &[RuleFn] = &[
     // AU-009 silently collapses (fires identically on 1 or N compromised
     // machines).
     rule_au_113_multi_device_stealer_compromise,
+    // AU-114: a Domain tagged MISSING_SECURITY_HEADERS (web_crawler) whose
+    // crawl evidence shows ZERO present security headers, not merely one
+    // missing — restores AU-008's precision bar (the raw tag fires on any
+    // 1-of-6 headers absent, a near-universal condition unfit for AU-008's
+    // EXPOSURE_TAGS list).
+    rule_au_114_no_security_header_hardening,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

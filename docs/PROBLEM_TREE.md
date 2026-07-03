@@ -939,6 +939,40 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   `MISSING_SECURITY_HEADERS` logged as a deliberately-deferred, weaker
   candidate in `SOLUTION_TREE` §4a rather than force-built this cycle.
   *(d) remains genuinely open-ended*, as before.
+  ✅ **A fourth instance closed (2026-07-03): AU-114, No security-header
+  hardening — builds the `MISSING_SECURITY_HEADERS` candidate deferred
+  earlier the same day, once the deferral's own stated reason was
+  corrected from "out of scope" to "the raw tag is too broad."**
+  `rule_au_114_no_security_header_hardening` (`core::correlator::rules::
+  infra`, alongside AU-008) does not read the raw `MISSING_SECURITY_
+  HEADERS` tag alone — it additionally requires the crawl evidence to
+  show **zero** present headers (no evidence record carries a
+  `present_security_headers` attribute), restoring the precision bar
+  AU-008's own tags meet: "this domain has done no security-header
+  hardening at all" is a meaningfully rarer, stronger signal than "missing
+  one of six recommended headers." Robust to `web_crawler`'s checked-
+  header list changing size, since the rule never hardcodes a count.
+  `Low` severity — a defensive-posture gap, well short of AU-008's
+  `High`-tier active-exposure signals (a zone-transfer leak or open
+  bucket is a direct compromise vector; absent hardening headers is not).
+  Also mirrors AU-008's `!is_benign_infra(e)` exclusion (a shared-edge
+  domain GreyNoise-catalogued benign must not be reported). **S→P
+  proof:** 5 new tests — fires when zero headers present; silent when
+  even one is present (the AU-008-dilution guard, using the realistic
+  "5 of 6 present" shape); silent without the tag; silent under a benign-
+  infra verdict; and a direct proof that AU-008/AU-114 fire on disjoint
+  fixtures (a missing-headers-only domain fires AU-114 never AU-008; a
+  `VULNERABLE`-tagged domain fires AU-008 never AU-114). All four
+  correlator architecture guards pass with 112 rules registered
+  (`AU-001`–`AU-114`, `AU-065`/`AU-066` still reserved for engine-emitted
+  findings). **Live-verified against a real crawl, not just fixtures:**
+  a real `hse scan -m web_crawler,ip_reputation` against rust-lang.org
+  fired AU-114 ("1 domain(s) have none of the checked security headers
+  configured") — rust-lang.org's own site genuinely carries none of the
+  six checked headers as of this scan — while AU-008 correctly stayed
+  silent (no exposure tag present); the full dossier rendered without
+  error. (d) remains genuinely open-ended, as before — the dead-tag-
+  audit technique has now closed 4 gaps across 3 cycles.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -3919,3 +3953,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   headers missing, not any one of six), not conclude it's out of scope
   for the tool. **Paired:** `SOLUTION_TREE` SOL-CORR + §4a + §5 — same
   commit.
+
+- **2026-07-03** — **New correlator rule AU-114 — No security-header
+  hardening — a fourth instance of C1's open-ended "(d) further AU-0xx
+  rule-gap fill," building the `MISSING_SECURITY_HEADERS` candidate the
+  immediately-prior cycle deferred and re-scoped.** That cycle corrected
+  the deferral's stated reason from "out of scope for a person-focused
+  tool" to "the raw tag is too broad to reuse unmodified" and prescribed
+  the fix: require a stricter threshold than "any one of six headers
+  missing" before this belongs anywhere near AU-008. Built exactly that.
+  New `rule_au_114_no_security_header_hardening`
+  (`core::correlator::rules::infra`, placed beside AU-008 rather than in
+  `breach.rs`, matching this file's one-category-per-file convention)
+  filters `Domain` entities tagged `MISSING_SECURITY_HEADERS`, excludes
+  `is_benign_infra` verdicts (mirroring AU-008 exactly), and fires only
+  when **no** evidence record on the entity carries a `present_security_
+  headers` attribute — `web_crawler` only ever writes that attribute when
+  at least one of the checked headers is present, so its total absence
+  means the crawl found zero hardening, not merely one gap. Deliberately
+  reads the evidence shape rather than hardcoding "6" anywhere, so it
+  stays correct if `web_crawler`'s checked-header list grows or shrinks.
+  `Low` severity — a defensive-posture gap, materially weaker evidence
+  than AU-008's `High`-tier active-exposure tags (a DNS zone-transfer
+  leak or open cloud bucket is a direct compromise vector; absent
+  hardening headers is not). **S→P proof:** 5 new tests — fires when zero
+  headers are present; stays silent under the realistic "5 of 6 present"
+  shape (the exact case that would have diluted AU-008 had this been
+  folded in unmodified); silent without the tag; silent under a benign-
+  infra verdict; and a direct proof that AU-008 and AU-114 fire on
+  disjoint fixtures. All four correlator architecture guards pass with
+  112 rules registered (`AU-001`–`AU-114`, `AU-065`/`AU-066` still
+  reserved for engine-emitted findings). **Live-verified against a real
+  crawl, not just fixtures:** `hse scan -m web_crawler,ip_reputation`
+  against rust-lang.org fired AU-114 for real — rust-lang.org's own site
+  genuinely carries none of the six checked headers as of this scan —
+  while AU-008 correctly stayed silent (no exposure tag present); the
+  full dossier rendered without error. (d) remains genuinely open-ended,
+  as before — the dead-tag-audit technique has now closed 4 gaps across
+  3 cycles. Gate green: fmt/clippy `--all-targets`/doc clean, 4299 lib
+  tests (+5), 0 failures. **Paired:** `SOLUTION_TREE` SOL-CORR + §4a +
+  §5 — same commit.

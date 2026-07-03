@@ -459,12 +459,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (rust-lang.org) completes and renders the full dossier without error;
   AU-113 correctly silent (no breach data in this scan). Gate green:
   fmt/clippy `--all-targets`/doc clean, 4294 lib tests (+4), 0 failures.
+  *Delivered (2026-07-03): AU-114, No security-header hardening — builds
+  the MISSING_SECURITY_HEADERS candidate once the deferral's own stated
+  reason was corrected (from "out of scope" to "the raw tag is too
+  broad").* `rule_au_114_no_security_header_hardening`
+  (`core::correlator::rules::infra`, alongside AU-008) reads past the raw
+  tag into the crawl evidence: fires only when **zero** security headers
+  are present (no evidence record carries a `present_security_headers`
+  attribute) — restoring AU-008's precision bar without hardcoding the
+  checked-header count. `Low` severity (a defensive-posture gap, well
+  short of AU-008's `High`-tier active-exposure signals); mirrors AU-008's
+  `!is_benign_infra(e)` exclusion. 5 new tests, including a direct
+  AU-008/AU-114 disjoint-fixture proof and a "5-of-6-present" guard
+  against diluting AU-008. All four architecture guards pass with 112
+  rules registered (`AU-001`–`AU-114`). **Live-verified against a real
+  crawl:** `hse scan -m web_crawler,ip_reputation` against rust-lang.org
+  fired AU-114 for real (rust-lang.org's own site carries none of the six
+  checked headers as of this scan) while AU-008 correctly stayed silent;
+  the full dossier rendered without error. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4299 lib tests (+5), 0 failures.
   *Remaining (deliberately open-ended, like the audit cadence itself):*
-  further AU-0xx rule-gap fill — `MISSING_SECURITY_HEADERS` logged in §4a
-  as a deliberately-deferred, weaker candidate rather than force-built
-  this pass; the dead-tag-audit method has now closed 3 gaps across 2
-  cycles and remains a reusable technique for a future pass once more
-  modules/tags accumulate.
+  further AU-0xx rule-gap fill — the dead-tag-audit method has now closed
+  4 gaps across 3 cycles and remains a reusable technique for a future
+  pass once more modules/tags accumulate.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -811,24 +828,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   §4d coverage snapshot caught up at the time, this §4a line did not.
   **AU-113 delivered (2026-07-03):** a third dead-tag-audit gap
   (`tags::MULTI_DEVICE`) closed — see SOL-CORR above for the full note.
-  *Remaining:* further AU-0xx rule-gap fill only —
-  `tags::MISSING_SECURITY_HEADERS` (`web_crawler`) was found by the same
-  audit and deliberately left unbuilt. **Reasoning corrected same day
-  (2026-07-03):** the original note reasoned it was "not a fact about the
-  subject," but `rule_au_008_exposed_service` already treats domain/IP
-  infrastructure-exposure tags (`VULNERABLE`/`ssh-exposed`/`leak`) as
-  legitimate correlator findings, so that framing doesn't hold — a
-  subject's own domain having exposed infrastructure IS in-scope NETINT
-  evidence in this codebase's own established taxonomy. The real blocker
-  is precision: `audit_security_headers` tags on any ONE of 6 checked
-  headers missing (HSTS/CSP/X-Frame-Options/X-Content-Type-Options/
-  Permissions-Policy/Referrer-Policy) — a condition most real domains meet
-  — unlike AU-008's existing tags, all genuinely rare (a DNS zone-transfer
-  leak, an open cloud bucket, a Shodan CVE, a takeover risk, a
-  leakix-indexed exposed service). A future pass should build a
-  *stricter* threshold (e.g. requiring several specific critical headers
-  missing, not any one of six) before this belongs in AU-008 or a new
-  rule — not decide it's out of scope.
+  **AU-114 delivered (2026-07-03), same day:** the `tags::
+  MISSING_SECURITY_HEADERS` candidate this line previously listed as
+  deferred is now built — see SOL-CORR above. The original deferral
+  reasoning ("not a fact about the subject") was itself corrected first
+  (`rule_au_008_exposed_service` already treats domain/IP infrastructure-
+  exposure tags as legitimate findings), then the real blocker
+  (precision: the raw tag fires on any 1-of-6 headers missing) was solved
+  by requiring the crawl evidence to show zero present headers, not by
+  declaring the candidate out of scope. *Remaining:* further AU-0xx
+  rule-gap fill only — the dead-tag-audit method has now closed 4 gaps
+  across 3 cycles.
 - **C2/C6/C7** — capability nodes; solutions sketched, genuinely none started
   (gated on the §3.F enablers landing first, by design — confirmed against
   `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/`SOL-FORENSIC`, all still `[ ]`).
@@ -3143,3 +3153,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   and §4a's C1 bullet — the deferral decision stands, but the documented
   reason is now precision (a too-broad tag needing a stricter threshold),
   not scope (never true). **Paired:** `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **SOL-CORR: AU-114 closes a fourth dead-tag-audit gap
+  — No security-header hardening, building the `MISSING_SECURITY_HEADERS`
+  candidate re-scoped earlier the same day.** The prior cycle corrected
+  the deferral's stated reason and prescribed the fix: require a
+  stricter threshold than "any one of six headers missing" before this
+  belongs anywhere near AU-008. New `rule_au_114_no_security_header_
+  hardening` (`core::correlator::rules::infra`, beside AU-008) fires only
+  when the crawl evidence shows **zero** present headers (no
+  `present_security_headers` attribute on any evidence record) —
+  restoring AU-008's precision bar without hardcoding a header count, so
+  it survives `web_crawler`'s checked-header list changing size. `Low`
+  severity, well short of AU-008's `High`-tier active-exposure tags;
+  mirrors AU-008's `is_benign_infra` exclusion. **S→P proof:** 5 new
+  tests, including a "5-of-6-present" AU-008-dilution guard and a direct
+  AU-008/AU-114 disjoint-fixture proof. All four architecture guards pass
+  with 112 rules registered (`AU-001`–`AU-114`). **Live-verified against
+  a real crawl:** `hse scan -m web_crawler,ip_reputation` against
+  rust-lang.org fired AU-114 for real (the site genuinely carries none of
+  the six checked headers) while AU-008 stayed silent; the full dossier
+  rendered without error. Gate green: fmt/clippy `--all-targets`/doc
+  clean, 4299 lib tests (+5), 0 failures. **Paired:** `PROBLEM_TREE` C1 +
+  §8 — same commit.

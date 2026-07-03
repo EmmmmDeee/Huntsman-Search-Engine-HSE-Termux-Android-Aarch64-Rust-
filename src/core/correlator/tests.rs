@@ -894,6 +894,111 @@ fn au008_benign_infra_verdict_vetoes_exposed_service() {
     assert!(rule_au_008_exposed_service(&[e], "s", 0).is_empty());
 }
 
+// ── AU-114 ──────────────────────────────────────────────────────────
+
+/// Builds a crawled `Domain` entity matching `web_crawler`'s real shape: the
+/// `MISSING_SECURITY_HEADERS` tag plus evidence carrying `missing_security_headers`
+/// and, only when `present` is non-empty, `present_security_headers` — exactly
+/// mirroring the producer's `with_attr` calls (never an empty-string attr).
+fn crawled_domain_with_headers(missing: &[&str], present: &[&str]) -> Entity {
+    let mut e = Entity::new(EntityKind::Domain, "example.com", 0.9, "scan");
+    if !missing.is_empty() {
+        e.tag(crate::core::tags::MISSING_SECURITY_HEADERS);
+    }
+    let mut ev = Evidence::new("web_crawler", "Crawled example.com");
+    if !missing.is_empty() {
+        ev = ev.with_attr("missing_security_headers", missing.join(", "));
+    }
+    if !present.is_empty() {
+        ev = ev.with_attr("present_security_headers", present.join(", "));
+    }
+    e.add_evidence(ev);
+    e
+}
+
+#[test]
+fn au_114_fires_when_zero_headers_are_present() {
+    let e = crawled_domain_with_headers(
+        &[
+            "Strict-Transport-Security",
+            "Content-Security-Policy",
+            "X-Frame-Options",
+            "X-Content-Type-Options",
+            "Permissions-Policy",
+            "Referrer-Policy",
+        ],
+        &[],
+    );
+    let r = rule_au_114_no_security_header_hardening(&[e], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-114");
+    assert_eq!(r[0].severity, Severity::Low);
+}
+
+#[test]
+fn au_114_does_not_fire_when_some_headers_are_present() {
+    // The common real-world case AU-008 must not be diluted with: one
+    // header missing, five present. MISSING_SECURITY_HEADERS is still
+    // tagged (web_crawler tags on ANY gap), but AU-114 requires zero
+    // present headers, so it must stay silent here.
+    let e = crawled_domain_with_headers(
+        &["Permissions-Policy"],
+        &[
+            "Strict-Transport-Security",
+            "Content-Security-Policy",
+            "X-Frame-Options",
+            "X-Content-Type-Options",
+            "Referrer-Policy",
+        ],
+    );
+    assert!(rule_au_114_no_security_header_hardening(&[e], "s", 0).is_empty());
+}
+
+#[test]
+fn au_114_does_not_fire_without_the_tag() {
+    let e = crawled_domain_with_headers(&[], &["Strict-Transport-Security"]);
+    assert!(rule_au_114_no_security_header_hardening(&[e], "s", 0).is_empty());
+}
+
+#[test]
+fn au_114_benign_infra_verdict_vetoes_the_finding() {
+    // Mirrors AU-008's own exclusion: a shared-edge domain GreyNoise (or an
+    // equivalent authoritative source) has catalogued benign must not be
+    // reported, even with zero headers observed.
+    let mut e = crawled_domain_with_headers(&["Strict-Transport-Security"], &[]);
+    e.tag("greynoise-benign");
+    assert!(rule_au_114_no_security_header_hardening(&[e], "s", 0).is_empty());
+}
+
+#[test]
+fn au_114_is_distinct_from_au_008_exposed_service() {
+    // AU-008 fires on VULNERABLE/ssh-exposed/leak — active exposure signals
+    // — never on a missing-header tag. AU-114 fires on zero present headers
+    // — never on AU-008's exposure tags alone. Genuinely disjoint evidence.
+    let missing_headers_only = crawled_domain_with_headers(
+        &["Strict-Transport-Security", "Content-Security-Policy"],
+        &[],
+    );
+    assert!(
+        rule_au_008_exposed_service(std::slice::from_ref(&missing_headers_only), "s", 0).is_empty()
+    );
+    assert_eq!(
+        rule_au_114_no_security_header_hardening(&[missing_headers_only], "s", 0).len(),
+        1
+    );
+
+    let vulnerable_only = tagged(
+        EntityKind::Domain,
+        "vuln.example",
+        &[crate::core::tags::VULNERABLE],
+    );
+    assert_eq!(
+        rule_au_008_exposed_service(std::slice::from_ref(&vulnerable_only), "s", 0).len(),
+        1
+    );
+    assert!(rule_au_114_no_security_header_hardening(&[vulnerable_only], "s", 0).is_empty());
+}
+
 // ── AU-009 ──────────────────────────────────────────────────────────
 
 #[test]

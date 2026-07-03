@@ -24,6 +24,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **New correlator rule AU-114 (No security-header hardening) —
+  `PROBLEM_TREE` C1, "further AU-0xx rule-gap fill".** `web_crawler` tags a
+  domain `missing-security-headers` when even one of six checked headers
+  (Strict-Transport-Security, Content-Security-Policy, X-Frame-Options,
+  X-Content-Type-Options, Permissions-Policy, Referrer-Policy) is absent —
+  a bar most real domains fail, too broad to fold into the existing
+  exposed-service rule unmodified. This rule instead requires the crawl
+  evidence to show **zero** present headers, restoring a precision bar
+  comparable to that rule's other, genuinely rare signals (a DNS
+  zone-transfer leak, an open cloud bucket, a CVE, a takeover risk). Low
+  severity — a defensive-posture gap, not an active exposure. Excludes
+  benign-infrastructure verdicts, mirroring the exposed-service rule's own
+  exclusion.
 - **New correlator rule AU-113 (Multi-device stealer compromise) —
   `PROBLEM_TREE` C1, "further AU-0xx rule-gap fill".** `hudsonrock` tags an
   email `multi-device` when its stealer-log records name two or more

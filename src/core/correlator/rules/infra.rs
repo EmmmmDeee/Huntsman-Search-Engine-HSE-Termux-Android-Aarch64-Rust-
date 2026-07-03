@@ -189,6 +189,63 @@ pub(in crate::core::correlator) fn rule_au_008_exposed_service(
         .collect()
 }
 
+/// AU-114 — No security-header hardening.
+///
+/// `web_crawler` tags a crawled `Domain` `MISSING_SECURITY_HEADERS` when even
+/// ONE of six checked headers (`Strict-Transport-Security`,
+/// `Content-Security-Policy`, `X-Frame-Options`, `X-Content-Type-Options`,
+/// `Permissions-Policy`, `Referrer-Policy`) is absent — a bar most real
+/// domains fail, unlike AU-008's `EXPOSURE_TAGS` (each a genuinely rare,
+/// specific misconfiguration: a DNS zone-transfer leak, an open cloud
+/// bucket, a Shodan CVE, a takeover risk, a leakix-indexed exposed
+/// service). Folding the raw tag into AU-008 would dilute a High-severity
+/// rule with a near-universal, low-precision signal — the reason a prior
+/// cycle correctly deferred it (see `PROBLEM_TREE` C1 "(d)").
+///
+/// This rule restores the precision bar by reading past the tag into the
+/// crawl evidence itself: it fires only when **none** of the six headers
+/// are present — `web_crawler` only ever writes a `present_security_headers`
+/// evidence attribute when at least one header is configured, so its
+/// absence across every evidence record on the entity means zero
+/// hardening, not merely one gap. This is robust to the checked-header
+/// list changing size in `web_crawler` (it never hardcodes "6" here).
+/// `Low` severity — a defensive-posture gap is meaningfully weaker
+/// evidence than AU-008's active-exposure signals (a zone-transfer leak
+/// or open bucket is a direct compromise vector; absent hardening headers
+/// is not).
+pub(in crate::core::correlator) fn rule_au_114_no_security_header_hardening(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let uids: Vec<String> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && !is_benign_infra(e))
+        .filter(|e| e.has_tag(crate::core::tags::MISSING_SECURITY_HEADERS))
+        .filter(|e| {
+            !e.evidence
+                .iter()
+                .any(|ev| ev.attributes.contains_key("present_security_headers"))
+        })
+        .map(|e| e.uid.clone())
+        .collect();
+    if uids.is_empty() {
+        return Vec::new();
+    }
+    vec![Correlation::new(
+        "AU-114",
+        "No security-header hardening",
+        Severity::Low,
+        format!(
+            "{} domain(s) have none of the checked security headers configured",
+            uids.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 pub(in crate::core::correlator) fn rule_au_010_infra_consensus(
     entities: &[Entity],
     scan_id: &str,
