@@ -14,7 +14,7 @@ pub(super) mod ledger;
 mod tests;
 pub mod types;
 
-pub use analyse::{analyse, read_adaptive_routing};
+pub use analyse::{NO_OPTIMIZATION_SIGNALS_HINT, analyse, read_adaptive_routing};
 pub use cluster::{country_coherence_weight, filter_country_coherent};
 pub use types::{
     AdaptiveRouting, ConfidenceStats, CoordinateCluster, EntityCluster, EntityOverlap,

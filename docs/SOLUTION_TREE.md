@@ -471,7 +471,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -480,8 +480,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   given target kind (normal, not noteworthy), so a naive per-module
   reinstatement would flood the hints list with the opposite of signal.
   Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count.
+  ✅ **Scan-level leg delivered (2026-07-03):** `scan_ran_long_with_a_zero_yield_module`
+  reads `ModuleDone` events with no cost-tier gate (unlike SOL-ROI-HINT — the
+  signal is wasted wall-clock, not wasted spend), and `print_diagnostics`
+  appends the reinstated hint to `diag.optimization_hints` post-call after
+  `retain`-ing out `analyse()`'s now-exported `NO_OPTIMIZATION_SIGNALS_HINT`
+  fallback so the two can't coexist. 3 new unit tests. *Remaining:* the
+  per-module hint — the noise decision above is still open. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -557,7 +563,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -581,10 +587,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
-  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
-  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
-  Not yet started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -645,6 +647,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   this doc correction.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
+- **SOL-HINT-NOISE** (T2.14) — scan-level "60s + zero-yield module" hint
+  reinstated (2026-07-03): event-sourced, caller-side, no cost-tier gate.
+  *Remaining:* the per-module "module X returned 0 entities" hint still needs
+  the noise decision (cap to worst-N, cost-gate like SOL-ROI-HINT, or a
+  bounded summary count) before it can be built.
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
   key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, the
   **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
@@ -684,7 +691,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
-  budget-reset-zeroing note remains, and no further action is planned on it).
+  budget-reset-zeroing note remains, and no further action is planned on it);
+  **T2.13 `[x]`** ✅ (SOL-ROI-HINT); **T2.14 `[~]`** (SOL-HINT-NOISE, scan-level
+  leg delivered 2026-07-03, per-module leg still needs the noise decision).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2496,3 +2505,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   have no test against real `git` subprocess behaviour (`tempfile` is already
   a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
   bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **SOL-HINT-NOISE's scan-level leg delivered — T2.14
+  `[ ]`→`[~]`, moved §4a→§4b.** Of the two hints T2.13's addendum removed as
+  unreachable dead code, only the scan-level "60s + zero-yield module" one
+  had a named, straightforward fix (option (b) from T2.14's own text): compute
+  it at the caller layer, which already holds `StoragePort` access, and append
+  to `ScanDiagnostics.optimization_hints` post-call, mirroring SOL-ROI-HINT's
+  `zero_yield_keyed_or_paid_modules` pattern. New
+  `cli/scan/dossier.rs::scan_ran_long_with_a_zero_yield_module(wall_time_ms,
+  events)` — deliberately **no** cost-tier gate, unlike SOL-ROI-HINT: this hint
+  is about wasted wall-clock (a module that ran to its timeout and found
+  nothing), not wasted spend, so a free module's zero yield counts too.
+  `print_diagnostics` fetches `events` once, up-front (previously fetched
+  lower down, only for the ROI hint), and when the predicate fires,
+  `retain`s `analyse()`'s "no optimization signals detected" fallback out of
+  `diag.optimization_hints` before pushing the real hint — the fallback
+  string is now `util::diagnostics::NO_OPTIMIZATION_SIGNALS_HINT`, exported
+  so the two homes of the same literal can't drift apart and silently
+  coexist. 3 new unit tests
+  (`flags_a_long_scan_with_a_zero_yield_module`,
+  `ignores_a_fast_scan_even_with_a_zero_yield_module`,
+  `ignores_a_long_scan_where_every_module_found_something`). *Deliberately not
+  attempted this cycle:* the per-module "module X returned 0 entities" hint —
+  its noise decision (cap to worst-N / cost-gate / bounded summary) is still
+  open, and force-fitting it here would have exceeded one focused unit of
+  work. Gate green: 4266 lib tests (+3), fmt/clippy `--all-targets`/doc clean.
+  **Paired:** `PROBLEM_TREE` T2.14 + §8 — same commit.

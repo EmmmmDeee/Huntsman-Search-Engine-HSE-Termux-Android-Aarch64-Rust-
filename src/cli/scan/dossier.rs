@@ -460,6 +460,29 @@ fn zero_yield_keyed_or_paid_modules(
     names
 }
 
+/// True once a scan both ran long AND left at least one dispatched module at
+/// zero yield — the scan-level companion to [`zero_yield_keyed_or_paid_modules`],
+/// reinstating the hint PROBLEM_TREE T2.13 removed as dead code (it was keyed
+/// on the same unreachable `entities_emitted == 0` premise inside
+/// [`crate::util::diagnostics::analyse`]'s pure `modules_by_yield`, which never
+/// contains a zero-yield module at all). Unlike the ROI hint above, EVERY
+/// zero-yield module counts here, free or not: the point is wasted wall-clock
+/// (a module that ran to its timeout for nothing), not wasted spend — so it is
+/// computed the same event-sourced, caller-side way (`ModuleDone` events, which
+/// `util` cannot reach without a `StoragePort`) but without the cost-tier gate.
+fn scan_ran_long_with_a_zero_yield_module(
+    wall_time_ms: u64,
+    events: &[crate::core::event::Event],
+) -> bool {
+    use crate::core::event::EventKind;
+    const SLOW_SCAN_MS: u64 = 60_000;
+
+    wall_time_ms > SLOW_SCAN_MS
+        && events
+            .iter()
+            .any(|ev| matches!(&ev.kind, EventKind::ModuleDone { found: 0, .. }))
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -473,7 +496,17 @@ fn print_diagnostics(
         .and_then(|f| f.checked_sub(scan.started_at))
         .unwrap_or(0)
         .saturating_mul(1000);
-    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+    let mut diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+    let events = store.events_for_scan(sid).unwrap_or_default();
+    if scan_ran_long_with_a_zero_yield_module(diag.wall_time_ms, &events) {
+        // The "no signals" fallback and a real hint can't both be true.
+        diag.optimization_hints
+            .retain(|h| h != crate::util::diagnostics::NO_OPTIMIZATION_SIGNALS_HINT);
+        diag.optimization_hints.push(
+            "scan exceeded 60s with at least one zero-yield module — tighten module_timeout_ms"
+                .into(),
+        );
+    }
 
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
@@ -504,7 +537,6 @@ fn print_diagnostics(
             kinds
         );
     }
-    let events = store.events_for_scan(sid).unwrap_or_default();
     let wasted = zero_yield_keyed_or_paid_modules(&events, &cost_by_module);
     if !wasted.is_empty() {
         println!(
@@ -741,5 +773,50 @@ mod tests {
             zero_yield_keyed_or_paid_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
+    }
+
+    use super::scan_ran_long_with_a_zero_yield_module;
+
+    /// The whole point of this helper: a long scan with a zero-yield module —
+    /// of ANY cost tier — must be flagged, even though `analyse()`'s pure
+    /// `modules_by_yield` can never contain a zero-yield entry (T2.14).
+    #[test]
+    fn flags_a_long_scan_with_a_zero_yield_module() {
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "search_engines".into(),
+                found: 0,
+            },
+        )];
+        assert!(scan_ran_long_with_a_zero_yield_module(61_000, &events));
+    }
+
+    /// A fast scan (≤ 60s) is not flagged even with a zero-yield module —
+    /// there is nothing slow to tighten a timeout against.
+    #[test]
+    fn ignores_a_fast_scan_even_with_a_zero_yield_module() {
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "search_engines".into(),
+                found: 0,
+            },
+        )];
+        assert!(!scan_ran_long_with_a_zero_yield_module(60_000, &events));
+    }
+
+    /// A long scan where every dispatched module found something is not
+    /// flagged — nothing was wasted.
+    #[test]
+    fn ignores_a_long_scan_where_every_module_found_something() {
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "search_engines".into(),
+                found: 3,
+            },
+        )];
+        assert!(!scan_ran_long_with_a_zero_yield_module(61_000, &events));
     }
 }

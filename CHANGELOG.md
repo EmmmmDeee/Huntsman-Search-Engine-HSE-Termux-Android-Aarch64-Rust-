@@ -354,6 +354,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   yield) instead, and correctly names every wasted `KeyGated`/`Paid` module —
   verified against a real scan both before the fix (silent) and after
   (correctly listed 11).
+- **Reinstated the dossier's "scan exceeded 60s with a zero-yield module" hint,
+  removed as dead code alongside the ROI hint above (`PROBLEM_TREE` T2.14).**
+  Same unreachable-condition bug, same fix: a new
+  `scan_ran_long_with_a_zero_yield_module` reads the scan's own `ModuleDone`
+  events at the caller layer, with no cost-tier gate (this hint is about
+  wasted wall-clock, not wasted spend, so a free module's zero yield still
+  counts). The stale "no optimization signals detected" fallback is now
+  removed before the real hint is added, so the two can never print together.
+  The companion per-module "module X returned 0 entities" hint remains
+  deliberately unrestored — it needs a noise-control decision first (a
+  realistic scan leaves dozens of modules at zero yield for a given target
+  kind, so a naive per-module reinstatement would flood the hints list).
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

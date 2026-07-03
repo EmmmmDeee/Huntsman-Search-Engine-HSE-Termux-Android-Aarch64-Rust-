@@ -650,7 +650,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -670,6 +670,23 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+  ✅ **Scan-level leg delivered (2026-07-03): option (b), the straightforward
+  half.** `cli/scan/dossier.rs::scan_ran_long_with_a_zero_yield_module(wall_time_ms,
+  events)` reads the scan's own `ModuleDone` events (unlike the ROI hint, with
+  **no** cost-tier gate — every zero-yield module counts, since the signal is
+  wasted wall-clock, not wasted spend) and, in `print_diagnostics`, is combined
+  with the already-fetched `events` + `diag.wall_time_ms` to conditionally push
+  `"scan exceeded 60s with at least one zero-yield module — tighten
+  module_timeout_ms"` onto `diag.optimization_hints` post-call — exactly SOL-ROI-HINT's
+  pattern. The `analyse()`-internal `"no optimization signals detected"` fallback
+  (now `util::diagnostics::NO_OPTIMIZATION_SIGNALS_HINT`, exported so the two
+  can't silently disagree) is `retain`-filtered out first, so a scan can't carry
+  both a real hint and the "well-tuned" fallback at once. 3 new unit tests
+  (`flags_a_long_scan_with_a_zero_yield_module`,
+  `ignores_a_fast_scan_even_with_a_zero_yield_module`,
+  `ignores_a_long_scan_where_every_module_found_something`). *Remaining:* the
+  per-module "module X returned 0 entities" hint — still needs the noise
+  decision above; not attempted this cycle to keep the unit small.
 
 ---
 
@@ -3266,3 +3283,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `tempfile` (already a dev-dep) would support a local-repo-pair fixture,
   left as its own smaller follow-on. **Paired:** `SOLUTION_TREE` SOL-UPDATE +
   §4a + §5 — same commit.
+
+- **2026-07-03** — **T2.14's scan-level hint reinstated (the per-module half
+  stays open).** Of the two `analyse()` hints T2.13's addendum removed as
+  unreachable dead code, the scan-level "60s + zero-yield module" one had a
+  named straightforward fix (option (b): compute at the caller layer, which
+  already has `StoragePort` access, and append post-call) — the per-module
+  one still needs the noise-question decision, so only the scan-level leg
+  was built this cycle rather than force-fitting both. New
+  `cli/scan/dossier.rs::scan_ran_long_with_a_zero_yield_module(wall_time_ms,
+  events)` reads the scan's own durable `ModuleDone` events with **no**
+  cost-tier gate (deliberately unlike the ROI hint — the signal here is
+  wasted wall-clock from a module that ran to its timeout for nothing, not
+  wasted API spend, so a free module counts too); `print_diagnostics` now
+  fetches `events` once, up-front, and — when the predicate fires — removes
+  `analyse()`'s "no optimization signals detected" fallback (newly exported
+  as `util::diagnostics::NO_OPTIMIZATION_SIGNALS_HINT`, a single-sourced
+  literal instead of a duplicated one) from `diag.optimization_hints` before
+  pushing the real hint, so a scan can never report both "well-tuned" and a
+  concrete signal at once. 3 new unit tests
+  (`flags_a_long_scan_with_a_zero_yield_module`,
+  `ignores_a_fast_scan_even_with_a_zero_yield_module`,
+  `ignores_a_long_scan_where_every_module_found_something`) pin the
+  threshold and the free/paid-agnostic gate. Gate green: 4266 lib tests (+3),
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-HINT-NOISE `[ ]`→`[~]` + §3/§4/§5 — same commit.
