@@ -3915,3 +3915,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   producer. Gate green (fmt/clippy/doc/`cargo test`, 4335 lib tests +1);
   `hse selftest` 9/9 per `CONVENTIONS.md` §9. No identity/PII, architecture-guard,
   or `unsafe` impact. Paired: `PROBLEM_TREE` C4 + §8 — same commit.
+
+- **2026-07-02** — **C6 (SOL-OFFENSIVE): `psbdmp` now surfaces the provider's own
+  total-hit count when it exceeds the distinct-paste count — the last
+  dropped-field-class instance; the sweep otherwise found the fleet clean.** A
+  second fleet-wide dropped-field Workflow sweep returned empty from 5 of 6
+  finders and one low-confidence candidate, confirming `netlas::count` (prior
+  cycle) was the one genuinely-valuable instance. The candidate,
+  `psbdmp::SearchResp.count`, is genuinely parsed-but-never-read, but psbdmp
+  returns all hits inline so it usually equals the already-surfaced deduplicated
+  `paste_count`. Fixed honestly (not netlas's unconditional stamp): surface
+  `provider_result_count` ONLY when `resp.count > paste_count`, so it carries a
+  real truncation/duplicate signal rather than a redundant echo. Regression test
+  covers both the exceeds case (red before the fix) and the equal/no-attr case.
+  Gate green (fmt/clippy/doc/`cargo test`, 4336 lib tests +1); `hse selftest` 9/9.
+  No identity/PII, architecture-guard, or `unsafe` impact. Paired: `PROBLEM_TREE`
+  C6 + §8 — same commit.

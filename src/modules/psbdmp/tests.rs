@@ -109,6 +109,76 @@ use super::*;
     }
 
     #[test]
+    fn extract_surfaces_provider_total_only_when_it_exceeds_distinct_pastes() {
+        // psbdmp's own `count` tally is surfaced as `provider_result_count` ONLY
+        // when it exceeds the deduplicated distinct-paste count — i.e. when the
+        // provider returned duplicate ids or a capped page, so the real exposure
+        // scale is larger than the distinct pastes shown. In the common case the
+        // two agree and no redundant attribute is added.
+        let two_pastes = || {
+            vec![
+                Paste {
+                    id: "p1".into(),
+                    date: "2023-01-01 00:00:00".into(),
+                    tags: String::new(),
+                },
+                Paste {
+                    id: "p2".into(),
+                    date: "2023-01-02 00:00:00".into(),
+                    tags: String::new(),
+                },
+            ]
+        };
+
+        // Provider reports 5 total but only 2 distinct pastes came back → surface 5.
+        let capped = SearchResp {
+            count: 5,
+            data: two_pastes(),
+        };
+        let mut r = ModuleResult::new();
+        extract(&capped, "subject", TargetKind::Email, "scan", &mut r);
+        let seed = r
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "subject")
+            .expect("seed identity entity");
+        assert_eq!(
+            seed.evidence[0]
+                .attributes
+                .get("paste_count")
+                .map(String::as_str),
+            Some("2")
+        );
+        assert_eq!(
+            seed.evidence[0]
+                .attributes
+                .get("provider_result_count")
+                .map(String::as_str),
+            Some("5"),
+            "a provider total above the distinct-paste count must surface as scale"
+        );
+
+        // Provider total equals the distinct count → no redundant attribute.
+        let exact = SearchResp {
+            count: 2,
+            data: two_pastes(),
+        };
+        let mut r2 = ModuleResult::new();
+        extract(&exact, "subject", TargetKind::Email, "scan", &mut r2);
+        let seed2 = r2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "subject")
+            .expect("seed identity entity");
+        assert!(
+            !seed2.evidence[0]
+                .attributes
+                .contains_key("provider_result_count"),
+            "when the provider total equals the distinct count, no redundant attr is added"
+        );
+    }
+
+    #[test]
     fn module_metadata() {
         let m = Psbdmp;
         assert_eq!(m.name(), "psbdmp");

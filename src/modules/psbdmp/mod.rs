@@ -188,6 +188,19 @@ fn extract(
         let mut ev = Evidence::new(SRC, summary)
             .with_attr("search_term", term)
             .with_attr("paste_count", paste_count.to_string());
+        // psbdmp reports its own total-hit tally (`count`) in the response
+        // envelope. `paste_count` above is the DEDUPLICATED distinct-paste count
+        // we actually surface; when the provider's raw total EXCEEDS it, the
+        // search returned duplicate ids or a capped page, so the true exposure
+        // scale is larger than the distinct pastes shown. Surface that provider
+        // total only then — when it carries a genuine truncation/under-count
+        // signal — since an unconditional stamp would usually just echo
+        // `paste_count`. (Same "provider's own total" signal as netlas
+        // `result_count`, but gated because psbdmp normally returns all hits
+        // inline, so the two counts usually agree.)
+        if resp.count as usize > paste_count {
+            ev = ev.with_attr("provider_result_count", resp.count.to_string());
+        }
         if let Some(d) = earliest {
             ev = ev.with_attr("earliest_paste", d);
             // Also stamp the canonical `breach_date` key AU-019's temporal

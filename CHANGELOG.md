@@ -419,6 +419,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`psbdmp` now surfaces the provider's total paste-hit count when it exceeds
+  the distinct pastes returned.** The paste-dump search reports its own total
+  tally alongside the paste list; the module surfaced only the deduplicated
+  distinct-paste count. When the provider's total is higher — duplicate ids or a
+  capped page — the exposure was under-reported. That total now appears as a
+  `provider_result_count` evidence attribute, but only when it exceeds the
+  distinct count, so the common (equal) case adds no redundant noise.
 - **`ripestat` netblocks can now be attributed to their announcing network
   (AU-112).** RIPEstat's covering-prefix `Cidr` entity was emitted without the
   announcing ASN, so the "IP within a discovered network block" correlation

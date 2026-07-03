@@ -5197,3 +5197,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `hse selftest` 9/9 (161 modules, dispatch graph intact) per `CONVENTIONS.md`
   §9. No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]` impact.
   **Paired:** `SOLUTION_TREE` C4 (SOL-NETINT) + §5 — same commit.
+
+- **2026-07-02** — **`psbdmp` dropped the provider's own total-hit `count` — the
+  last dropped-field-class instance a fleet-wide sweep surfaced; also the sweep's
+  headline result: the class is essentially exhausted.** A second Workflow sweep
+  (6 finders over the ~165-module fleet → adversarial verification) for
+  parsed-but-never-read response fields returned EMPTY from 5 of 6 finders and one
+  low-confidence candidate — strong evidence that `netlas::count` (fixed the prior
+  cycle) was the one genuinely-valuable instance and the fleet is otherwise clean.
+  The one candidate, `psbdmp::SearchResp.count` (`psbdmp/mod.rs:33`), is real:
+  deserialized from the response envelope but never read — the module surfaces
+  `paste_count = seen.len()`, the DEDUPLICATED distinct-paste count, and never
+  touches `resp.count`. But unlike netlas (whose `items` page is capped by
+  `fields=*`, so `count` is a true truncation signal), psbdmp returns all hits
+  inline, so `count` usually equals the distinct count already surfaced. Fixed
+  HONESTLY rather than mirroring netlas's unconditional stamp: `extract` now
+  surfaces `provider_result_count` ONLY when `resp.count` EXCEEDS `paste_count`
+  — i.e. when the provider returned duplicate ids or a capped page and the true
+  exposure scale is larger than the distinct pastes shown — so the attribute
+  carries a genuine under-count signal instead of a near-always-redundant echo.
+  Regression test `extract_surfaces_provider_total_only_when_it_exceeds_distinct_pastes`
+  covers both the exceeds case (5 total vs 2 distinct → surfaces `5`, red before
+  the fix) and the equal case (no redundant attribute). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4336 lib
+  tests, +1; full suite green). Behaviour-touching (a new conditional evidence
+  attribute), so also `hse selftest` 9/9 (161 modules, dispatch graph intact) per
+  `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
+  `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE)
+  + §5 — same commit.
