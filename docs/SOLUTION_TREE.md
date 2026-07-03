@@ -500,6 +500,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   kind"` line — a single bounded line regardless of scan size, so it cannot
   flood the hints list the way per-module enumeration would. 3 more unit
   tests. **T2.14 fully closed.** **(§4b→closed)**
+- **`[x]` SOL-ADAPTIVE-LEDGER · Fix the cross-scan ledger's own dead
+  zero-yield tracking, restoring `hse scan --adaptive`** → **T2.15** (found +
+  fixed same cycle, 2026-07-03, discovery pass): the same "absent, not
+  present-at-zero" premise that broke the ROI hint (T2.13) and the two
+  `analyse()` hints (T2.14) also broke
+  `util/diagnostics/ledger.rs::persist_ledger`'s `zero_yield_scans` counter —
+  `modules_by_yield` structurally never contains an `entities_emitted == 0`
+  entry, so the counter could never move off `0`, so
+  `LedgerEntry::zero_yield_rate` was permanently `0.0` for every module in
+  every ledger, so `read_adaptive_routing`'s `recommended_skips` (gated on
+  `zero_yield_rate >= 0.80`) was permanently empty, so `--adaptive` never
+  skipped a single module since the feature was written. Fixed with the same
+  event-sourced, caller-side pattern SOL-ROI-HINT/SOL-HINT-NOISE
+  established: new `core::event::module_yield_outcomes`/
+  `zero_yield_module_names` (pure; the single canonical source SOL-HINT-NOISE's
+  `zero_yield_module_summary` now delegates to as well, replacing its own
+  duplicate dedup logic) feed a new `util::diagnostics::record_zero_yield_dispatches`
+  (pure `apply_zero_yield_dispatches` arithmetic + a thin atomic-write I/O
+  wrapper), called from all three of `analyse()`'s existing callers
+  (`cli/scan/dossier.rs`, `cli/scan/mod.rs`'s JSON branch, and
+  `api/handlers/mod.rs`'s post-scan spawn — the last one exists *purely* for
+  this ledger side effect, discarding `analyse()`'s return value entirely).
+  *Closes:* **T2.15**. ✅ **Verified against the real running binary:** a
+  bounded live `hse scan -k domain -v rust-lang.org --free-only -m
+  subdomain_takeover,waf_detect,crtsh --output json` left
+  `subdomain_takeover` at 0 entities; `~/.huntsman/module_stats.json`
+  gained `scans_present: 1, zero_yield_scans: 1, zero_yield_rate: 1.0` for
+  it post-fix (absent from the ledger entirely, pre-fix), while
+  `crtsh`/`waf_detect` (which each yielded 1 entity) correctly stayed at
+  `zero_yield_scans: 0`. 9 new unit tests, incl.
+  `five_zero_yield_scans_reach_the_adaptive_skip_threshold` proving the
+  `--adaptive` gate (`scans_present >= 5 && zero_yield_rate >= 0.80`) is
+  reachable at all — impossible for any input under the unfixed code.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -576,6 +609,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[x]` |
+| SOL-ADAPTIVE-LEDGER | T2.15 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -705,7 +739,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it);
   **T2.13 `[x]`** ✅ (SOL-ROI-HINT); **T2.14 `[x]`** ✅ (SOL-HINT-NOISE, both
-  legs delivered 2026-07-03 — scan-level hint + per-module bounded-count hint).
+  legs delivered 2026-07-03 — scan-level hint + per-module bounded-count hint);
+  **T2.15 `[x]`** ✅ (SOL-ADAPTIVE-LEDGER, 2026-07-03 — the ledger's own
+  zero-yield tracking was the same dead-code pattern; `--adaptive` now has a
+  reachable skip path for the first time).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2569,3 +2606,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `no_completed_modules_is_none_not_a_zero_of_zero`). Gate green: 4269 lib
   tests (+3), fmt/clippy `--all-targets`/doc clean. **Paired:**
   `PROBLEM_TREE` T2.14 fully closed + §8 — same commit.
+
+- **2026-07-03** — **New: SOL-ADAPTIVE-LEDGER closes T2.15 — `--adaptive`
+  could never skip a module, the same T2.13/T2.14 dead-code pattern found a
+  third time.** This cycle's discovery pass (no open/in-progress node ready:
+  T2.7 blocked on live-fetch/fabricated-fixture concerns, the C-phase
+  capability nodes need substantial new-source integration rather than a
+  smallest-unit fix) re-applied T2.13/T2.14's own root cause — "a module
+  absent from `entities`-derived data is invisible, never present-at-zero" —
+  against every other consumer of that same data shape, and found
+  `util/diagnostics/ledger.rs::persist_ledger`'s `zero_yield_scans` counter
+  had the identical bug, one layer further downstream: it checked
+  `m.entities_emitted == 0` over `modules_by_yield`, which structurally never
+  contains such an element. Traced the blast radius before fixing: this
+  permanently floors `LedgerEntry::zero_yield_rate` at `0.0` for every
+  module, which permanently empties `read_adaptive_routing`'s
+  `recommended_skips` (`scans_present >= 5 && zero_yield_rate >= 0.80`), so
+  `hse scan --adaptive` has never skipped a single module regardless of
+  ledger history — the entire self-optimization feedback loop the flag
+  exists for was inert. Fixed with the same caller-side, event-sourced
+  pattern already proven twice: new `core::event::module_yield_outcomes` /
+  `zero_yield_module_names` (pure; also refactored SOL-HINT-NOISE's
+  `zero_yield_module_summary` to delegate to it instead of re-deriving the
+  same dedup-by-best-outcome logic — single-sourced now, not duplicated
+  three times) feed a new `util::diagnostics::record_zero_yield_dispatches`,
+  wired into all three of `analyse()`'s production callers. Verified against
+  the real running binary, not just unit tests: a bounded live `hse scan -k
+  domain -v rust-lang.org --free-only -m
+  subdomain_takeover,waf_detect,crtsh --output json` left
+  `subdomain_takeover` at 0 entities; `~/.huntsman/module_stats.json`
+  correctly gained `scans_present: 1, zero_yield_scans: 1, zero_yield_rate:
+  1.0` for it post-fix (no entry at all, pre-fix), while
+  `crtsh`/`waf_detect` (1 entity each) stayed at `zero_yield_scans: 0`. 9 new
+  unit tests, including one proving the `--adaptive` skip threshold is
+  reachable at all for the first time. Gate green: 4278 lib tests (+9),
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `PROBLEM_TREE` new T2.15
+  + §8 — same commit.

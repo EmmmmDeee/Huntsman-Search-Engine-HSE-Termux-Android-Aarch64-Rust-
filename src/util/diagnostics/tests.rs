@@ -293,3 +293,80 @@ fn fuzzy_cluster_keeps_triplet_from_single_source() {
         .any(|c| c.canonical_value.to_lowercase().contains("haigen"));
     assert!(found);
 }
+
+// ── ledger::apply_zero_yield_dispatches (discovery pass: the ledger's own
+// zero-yield tracking was dead code, identical to the T2.13/T2.14 pattern,
+// so `--adaptive` could never learn to skip anything) ────────────────────
+
+/// The whole point of the fix: a module dispatched but zero-yield this scan
+/// is invisible to `persist_ledger` (it only ever sees
+/// `modules_by_yield`, which structurally excludes `entities_emitted == 0`)
+/// — this is the ONLY path that can ever move `zero_yield_scans` off zero.
+#[test]
+fn apply_zero_yield_dispatches_bumps_a_fresh_entry() {
+    let mut ledger = ModuleLedger::default();
+    ledger::apply_zero_yield_dispatches(&mut ledger, &["shodan".to_string()]);
+
+    let entry = &ledger.per_module["shodan"];
+    assert_eq!(entry.scans_present, 1);
+    assert_eq!(entry.zero_yield_scans, 1);
+    assert!((entry.zero_yield_rate - 1.0).abs() < f64::EPSILON);
+}
+
+/// Pre-existing entity history (from real yielding scans, tracked by
+/// `persist_ledger`) must survive a zero-yield correction: `total_entities`
+/// is untouched, but `mean_entities_per_scan` recomputes against the now-
+/// larger `scans_present` denominator — the mean must fall, not stay stale,
+/// once the ledger honestly counts the scan that found nothing.
+#[test]
+fn apply_zero_yield_dispatches_recomputes_the_mean_against_the_new_denominator() {
+    let mut ledger = ModuleLedger::default();
+    ledger.per_module.insert(
+        "shodan".to_string(),
+        LedgerEntry {
+            scans_present: 4,
+            total_entities: 20,
+            mean_entities_per_scan: 5.0,
+            zero_yield_scans: 0,
+            zero_yield_rate: 0.0,
+        },
+    );
+
+    ledger::apply_zero_yield_dispatches(&mut ledger, &["shodan".to_string()]);
+
+    let entry = &ledger.per_module["shodan"];
+    assert_eq!(entry.scans_present, 5);
+    assert_eq!(
+        entry.total_entities, 20,
+        "entity history must not be touched"
+    );
+    assert!((entry.mean_entities_per_scan - 4.0).abs() < f64::EPSILON);
+    assert_eq!(entry.zero_yield_scans, 1);
+    assert!((entry.zero_yield_rate - 0.2).abs() < f64::EPSILON);
+}
+
+/// Reaching the `--adaptive` skip threshold end-to-end against the pure
+/// ledger logic: 5 consecutive zero-yield scans (the `recommended_skips`
+/// gate's own `scans_present >= 5 && zero_yield_rate >= 0.80`) must leave the
+/// entry eligible. Before this fix, no sequence of scans — zero-yield or
+/// not — could ever raise `zero_yield_rate` above 0.0.
+#[test]
+fn five_zero_yield_scans_reach_the_adaptive_skip_threshold() {
+    let mut ledger = ModuleLedger::default();
+    for _ in 0..5 {
+        ledger::apply_zero_yield_dispatches(&mut ledger, &["dead_module".to_string()]);
+    }
+    let entry = &ledger.per_module["dead_module"];
+    assert_eq!(entry.scans_present, 5);
+    assert!((entry.zero_yield_rate - 1.0).abs() < f64::EPSILON);
+    assert!(entry.scans_present >= 5 && entry.zero_yield_rate >= 0.80);
+}
+
+/// An empty name list — the common case, most scans have no zero-yield
+/// module — must not fabricate a ledger entry or perturb an existing one.
+#[test]
+fn apply_zero_yield_dispatches_is_a_noop_for_an_empty_list() {
+    let mut ledger = ModuleLedger::default();
+    ledger::apply_zero_yield_dispatches(&mut ledger, &[]);
+    assert!(ledger.per_module.is_empty());
+}

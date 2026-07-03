@@ -304,6 +304,15 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .saturating_mul(1000);
         let diag =
             crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
+        // See the matching comment in `dossier.rs::print_diagnostics`: corrects
+        // the cross-scan ledger for modules `analyse()`'s internal
+        // `persist_ledger` structurally cannot see (dispatched, zero-yield —
+        // absent from the entity-derived `modules_by_yield`), without which
+        // `--adaptive` could never learn to skip anything.
+        let events = store.events_for_scan(&sid).unwrap_or_default();
+        crate::util::diagnostics::record_zero_yield_dispatches(
+            &crate::core::event::zero_yield_module_names(&events),
+        );
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({

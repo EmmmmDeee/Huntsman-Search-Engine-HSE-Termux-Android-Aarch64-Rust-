@@ -493,29 +493,18 @@ fn scan_ran_long_with_a_zero_yield_module(
 /// filter out. A single bounded "N of M" count carries the same signal (the
 /// pipeline left yield on the table for this target) without the flood, so no
 /// cap-N or cost-tier gate is needed: one line regardless of scan size.
-/// Modules are deduped by name (a module re-dispatched across expansion
-/// rounds is judged on whether it EVER yielded anything, not per-dispatch) —
-/// `None` when nothing completed. `crate::util::diagnostics::analyse` cannot
-/// compute this itself (a pure `util` fn with no `StoragePort` access).
+/// Built on the shared [`crate::core::event::module_yield_outcomes`] dedup
+/// (a module re-dispatched across expansion rounds is judged on whether it
+/// EVER yielded anything, not per-dispatch) — `None` when nothing completed.
+/// `crate::util::diagnostics::analyse` cannot compute this itself (a pure
+/// `util` fn with no `StoragePort` access).
 fn zero_yield_module_summary(events: &[crate::core::event::Event]) -> Option<(usize, usize)> {
-    use crate::core::event::EventKind;
-    use std::collections::HashMap;
-
-    let mut yielded_by_module: HashMap<&str, bool> = HashMap::new();
-    for ev in events {
-        if let EventKind::ModuleDone { module, found } = &ev.kind {
-            let this_run_yielded = *found > 0;
-            yielded_by_module
-                .entry(module.as_str())
-                .and_modify(|ever| *ever = *ever || this_run_yielded)
-                .or_insert(this_run_yielded);
-        }
-    }
-    if yielded_by_module.is_empty() {
+    let outcomes = crate::core::event::module_yield_outcomes(events);
+    if outcomes.is_empty() {
         return None;
     }
-    let total = yielded_by_module.len();
-    let zero = yielded_by_module.values().filter(|&&ever| !ever).count();
+    let total = outcomes.len();
+    let zero = outcomes.values().filter(|&&yielded| !yielded).count();
     Some((zero, total))
 }
 
@@ -534,6 +523,16 @@ fn print_diagnostics(
         .saturating_mul(1000);
     let mut diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
     let events = store.events_for_scan(sid).unwrap_or_default();
+    // Corrects the cross-scan ledger for modules `analyse()`'s internal
+    // `persist_ledger` structurally cannot see (PROBLEM_TREE, discovery
+    // pass) — a module dispatched but zero-yield this scan never appears in
+    // the entity-derived `modules_by_yield` it persists from, so
+    // `zero_yield_rate` could never rise above 0.0 and `--adaptive` never
+    // skipped anything. Unconditional (not gated on the hints above) — the
+    // ledger should reflect every scan that reaches this point.
+    crate::util::diagnostics::record_zero_yield_dispatches(
+        &crate::core::event::zero_yield_module_names(&events),
+    );
     let scan_slow_zero_yield = scan_ran_long_with_a_zero_yield_module(diag.wall_time_ms, &events);
     let zero_yield_summary = zero_yield_module_summary(&events);
     let has_zero_yield_modules = zero_yield_summary.is_some_and(|(zero, _)| zero > 0);

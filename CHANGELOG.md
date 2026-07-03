@@ -375,6 +375,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
   module re-dispatched across expansion rounds is judged on whether it ever
   yielded anything this scan, not per-dispatch, so it isn't double-counted or
   misclassified.
+- **`hse scan --adaptive` could never skip a single module, on any target,
+  ever (`PROBLEM_TREE` T2.15).** The self-optimization flag is supposed to
+  read the cross-scan ledger and skip modules with a historical zero-yield
+  rate ≥80% over ≥5 scans, but the ledger's own zero-yield counter had the
+  identical dead-code bug as the ROI hint and the two `analyse()` hints
+  above: it checked a diagnostics list that only ever contains modules which
+  emitted at least one entity, so a module dispatched but zero-yield was
+  structurally invisible to it, and the rate could never rise above 0.0.
+  `--adaptive` has printed "no skip recommendations" on every run since it
+  was written, regardless of how much scan history accumulated. Fixed with
+  the same event-sourced pattern: the scan's own `ModuleDone` events (via new
+  `core::event::module_yield_outcomes`/`zero_yield_module_names`) now feed a
+  new `util::diagnostics::record_zero_yield_dispatches`, correcting the
+  ledger for every module dispatched-but-zero-yield this scan. Verified
+  against the real running binary: a bounded live scan against a real domain
+  left one module at zero entities, and the on-disk ledger correctly gained
+  a `zero_yield_rate: 1.0` entry for it post-fix (no entry at all, pre-fix).
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

@@ -148,6 +148,15 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
                         wall_ms,
                         &entities,
                     );
+                    // See the matching comment in `cli/scan/dossier.rs::print_diagnostics`:
+                    // corrects the cross-scan ledger for modules dispatched but
+                    // zero-yield this scan — invisible to `analyse()`'s internal
+                    // entity-derived `persist_ledger` call, without which
+                    // `--adaptive` could never learn to skip anything.
+                    let events = store_clone.events_for_scan(&sid).unwrap_or_default();
+                    crate::util::diagnostics::record_zero_yield_dispatches(
+                        &crate::core::event::zero_yield_module_names(&events),
+                    );
                 }
             }
             Err(e) => tracing::warn!(scan_id = %sid, error = %e, "scan failed"),

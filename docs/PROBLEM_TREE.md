@@ -706,6 +706,62 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `a_module_dispatched_twice_counts_by_its_best_result`,
   `no_completed_modules_is_none_not_a_zero_of_zero`). T2.14 fully closed ✅
   (4269 lib tests, +3). Gate green: fmt/clippy `--all-targets`/doc clean.
+- **`[x]` T2.15 · `hse scan --adaptive` structurally could never skip a
+  module — the ledger's own zero-yield tracking was dead code, the exact
+  T2.13/T2.14 pattern rediscovered a third time** *(found + fixed
+  2026-07-03, discovery pass)* — `util/diagnostics/ledger.rs::persist_ledger`
+  computed `LedgerEntry::zero_yield_scans` with `if m.entities_emitted == 0 {
+  … }` over `modules: &[ModulePerformance]`, but its only caller
+  (`analyse()`) always passes `modules_by_yield`, which — like
+  `ScanDiagnostics::modules_by_yield` in T2.13 — is built exclusively from
+  emitted entities' evidence sources: a module contributes an entry there
+  only *after* immediately incrementing `entities_emitted` to ≥1 on
+  insertion, so a module that ran and found nothing is **absent**, never
+  present with a zero. The condition was unreachable, on every scan, since
+  the ledger was written. Traced the blast radius: `LedgerEntry::zero_yield_rate`
+  could therefore never rise above `0.0` for **any** module, in **any**
+  ledger, ever — which permanently empties `read_adaptive_routing`'s
+  `recommended_skips` (gated on `zero_yield_rate >= 0.80`), the list
+  `hse scan --adaptive` (`cli/scan/mod.rs:112-142`) reads to decide what to
+  skip. The flag has silently never skipped a single module, no matter how
+  many scans accumulated in `~/.huntsman/module_stats.json` — every
+  `--adaptive` run since the feature was written printed either "no ledger
+  yet" or "no skip recommendations", the latter unconditionally true.
+  → **Solution:** the same caller-side, event-sourced pattern T2.13/T2.14
+  established — `util` cannot reach `ModuleDone` events itself (no
+  `StoragePort` access). New `core::event::module_yield_outcomes`/
+  `zero_yield_module_names` (pure, dedup-by-best-outcome across
+  expansion-round re-dispatch — the single canonical source both this fix
+  and `cli/scan/dossier.rs::zero_yield_module_summary`, T2.14, now build on)
+  compute the dispatched-but-zero-yield module names from a scan's own
+  events; new `util::diagnostics::record_zero_yield_dispatches` (pure
+  `apply_zero_yield_dispatches` helper + a thin atomic-write I/O wrapper,
+  mirroring `persist_ledger`'s own durability) bumps `scans_present` +
+  `zero_yield_scans` for exactly those names, recomputing the derived rates
+  against the corrected denominator. Wired into all three of `analyse()`'s
+  callers that already invoke it for its `persist_ledger` side effect —
+  `cli/scan/dossier.rs::print_diagnostics`, `cli/scan/mod.rs`'s `--output
+  json` branch, and `api/handlers/mod.rs`'s post-scan spawn (the one that
+  discards `analyse()`'s return value entirely, existing purely to update
+  the ledger — its own comment already said "mirror the CLI's post-scan
+  diagnostics"). The old dead `if m.entities_emitted == 0` branch inside
+  `persist_ledger` was removed (not left as misleading dead code, per the
+  T2.13 precedent) with a comment pointing at the real mechanism. **Verified
+  live, not just by inspection:** a real `hse scan -k domain -v
+  rust-lang.org --free-only -m subdomain_takeover,waf_detect,crtsh --output
+  json` (bounded module set, free-only, single round) completed with
+  `subdomain_takeover` finding 0 entities; before the fix the module would
+  be entirely absent from `~/.huntsman/module_stats.json`, and after the fix
+  it appears with `scans_present: 1, zero_yield_scans: 1, zero_yield_rate:
+  1.0` while `crtsh`/`waf_detect` (which both yielded 1 entity) correctly
+  show `zero_yield_scans: 0`. 9 new unit tests across `core::event` (dedup
+  semantics) and `util::diagnostics` (the pure ledger arithmetic, incl.
+  `five_zero_yield_scans_reach_the_adaptive_skip_threshold`, which proves
+  the `scans_present >= 5 && zero_yield_rate >= 0.80` gate is now reachable
+  at all — impossible under the unfixed code for any input). **P2**
+  (self-optimization feedback loop silently inert; not correctness-critical
+  to any persisted scan output, but the flag's entire purpose was defeated).
+  Gate green: 4278 lib tests (+9), fmt/clippy `--all-targets`/doc clean.
 
 ---
 
@@ -3351,3 +3407,37 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `no_completed_modules_is_none_not_a_zero_of_zero`). Gate green: 4269 lib
   tests (+3), fmt/clippy `--all-targets`/doc clean. **Paired:**
   `SOLUTION_TREE` SOL-HINT-NOISE `[~]`→`[x]` + §3/§4/§5 — same commit.
+
+- **2026-07-03** — **T2.15 (new, found + fixed same cycle): `--adaptive` has
+  never been able to skip a module — the ledger's zero-yield tracking was
+  the same T2.13/T2.14 dead-code pattern, a third time.** With T2.14 closed
+  and no other open/in-progress node ready (T2.7 still needs either a live
+  third-party fetch or a fabricated-looking fixture, wrong for an
+  unattended cycle; the C-phase capability nodes are gated on §3.F
+  primitives or need substantial new-source integration work, not a
+  smallest-unit fix), this cycle's discovery pass re-read the two hint
+  fixes' own root cause — "a module absent from `entities`-derived data is
+  invisible, never present-at-zero" — against every OTHER consumer of the
+  same `ScanDiagnostics::modules_by_yield`-shaped data, and found
+  `util/diagnostics/ledger.rs::persist_ledger` had the identical bug:
+  `if m.entities_emitted == 0 { zero_yield_scans += 1 }` over a `modules`
+  slice that, structurally, can never contain an `entities_emitted == 0`
+  element. Traced the blast radius fully before fixing: this silently
+  disables `hse scan --adaptive`'s entire self-optimization premise
+  (`recommended_skips` gated on `zero_yield_rate >= 0.80`, permanently stuck
+  at `0.0`), not a cosmetic diagnostics gap. Fixed with the established
+  caller-side, event-sourced pattern: new `core::event::module_yield_outcomes`
+  / `zero_yield_module_names` (pure, single-sourced — `cli/scan/dossier.rs`'s
+  T2.14 helper now delegates to the same primitive instead of re-deriving
+  the dedup-by-best-outcome logic) feed a new
+  `util::diagnostics::record_zero_yield_dispatches`, called from all three
+  of `analyse()`'s existing callers. Verified against the real, running
+  binary (not just unit tests): a bounded live `hse scan` against
+  `rust-lang.org` left `subdomain_takeover` at zero entities, and
+  `~/.huntsman/module_stats.json` correctly gained `scans_present: 1,
+  zero_yield_scans: 1, zero_yield_rate: 1.0` for it post-fix, where pre-fix
+  it would have no entry at all. 9 new unit tests (2 new `core::event`
+  primitives + 4 pure ledger-arithmetic tests, one proving the
+  `--adaptive` threshold is reachable at all). Gate green: 4278 lib tests
+  (+9), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  new node SOL-ADAPTIVE-LEDGER (§2) + §3/§4/§5 — same commit.

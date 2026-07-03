@@ -109,6 +109,42 @@ pub enum EventKind {
     },
 }
 
+/// Distinct dispatched module names from this scan's own `ModuleDone` events,
+/// each judged on whether it EVER yielded ≥1 entity — a module re-dispatched
+/// across expansion rounds (e.g. an empty first round, a productive second)
+/// is judged on its best outcome, not per-dispatch. `true` = yielded
+/// something at least once this scan, `false` = zero yield throughout.
+/// Sorted by name (a `BTreeMap`), so downstream consumers get deterministic
+/// order for free. The single canonical source for this computation — both
+/// the dossier's bounded per-module optimization hint (`PROBLEM_TREE` T2.14)
+/// and the cross-scan module-stats ledger's zero-yield tracking build on it,
+/// rather than each re-deriving the same dedup-by-best-outcome logic.
+#[must_use]
+pub fn module_yield_outcomes(events: &[Event]) -> std::collections::BTreeMap<String, bool> {
+    let mut outcomes: std::collections::BTreeMap<String, bool> = std::collections::BTreeMap::new();
+    for ev in events {
+        if let EventKind::ModuleDone { module, found } = &ev.kind {
+            let yielded_this_dispatch = *found > 0;
+            outcomes
+                .entry(module.clone())
+                .and_modify(|ever| *ever = *ever || yielded_this_dispatch)
+                .or_insert(yielded_this_dispatch);
+        }
+    }
+    outcomes
+}
+
+/// Names of modules dispatched this scan that never yielded anything —
+/// see [`module_yield_outcomes`] for the dedup-by-best-outcome semantics.
+/// Sorted, deduped (a `BTreeMap` key set).
+#[must_use]
+pub fn zero_yield_module_names(events: &[Event]) -> Vec<String> {
+    module_yield_outcomes(events)
+        .into_iter()
+        .filter_map(|(name, yielded)| (!yielded).then_some(name))
+        .collect()
+}
+
 impl EventKind {
     /// The variant's stable snake_case tag — identical to the serde `type` field,
     /// so a consumer can switch on the event type without deserialising. One source

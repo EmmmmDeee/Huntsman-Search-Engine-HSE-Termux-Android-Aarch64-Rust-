@@ -145,3 +145,79 @@ use super::*;
             other => panic!("expected ModuleDone, got: {other:?}"),
         }
     }
+
+    // ── module_yield_outcomes / zero_yield_module_names ────────────────
+
+    fn done(module: &str, found: usize) -> Event {
+        Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: module.into(),
+                found,
+            },
+        )
+    }
+
+    #[test]
+    fn module_yield_outcomes_records_each_distinct_module_once() {
+        let events = vec![done("shodan", 0), done("hunter_io", 3)];
+        let outcomes = module_yield_outcomes(&events);
+        assert_eq!(outcomes.len(), 2);
+        assert!(!outcomes["shodan"]);
+        assert!(outcomes["hunter_io"]);
+    }
+
+    /// The whole point of the dedup: a module dispatched twice (e.g. an empty
+    /// first expansion round, a productive second one) is judged on whether
+    /// it EVER yielded anything, not on its first or last dispatch alone —
+    /// order of the events must not matter either.
+    #[test]
+    fn a_module_is_judged_by_its_best_outcome_across_dispatches() {
+        let zero_then_hit = vec![done("shodan", 0), done("shodan", 2)];
+        assert!(module_yield_outcomes(&zero_then_hit)["shodan"]);
+
+        let hit_then_zero = vec![done("shodan", 2), done("shodan", 0)];
+        assert!(module_yield_outcomes(&hit_then_zero)["shodan"]);
+
+        let always_zero = vec![done("shodan", 0), done("shodan", 0)];
+        assert!(!module_yield_outcomes(&always_zero)["shodan"]);
+    }
+
+    #[test]
+    fn non_module_done_events_are_ignored() {
+        let events = vec![
+            Event::new(
+                "s",
+                EventKind::ModuleStart {
+                    module: "shodan".into(),
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::ModuleError {
+                    module: "hunter_io".into(),
+                    error: "timeout".into(),
+                },
+            ),
+        ];
+        assert!(module_yield_outcomes(&events).is_empty());
+    }
+
+    #[test]
+    fn zero_yield_module_names_excludes_modules_that_yielded_anything() {
+        let events = vec![
+            done("shodan", 0),
+            done("hunter_io", 0),
+            done("search_engines", 5),
+        ];
+        assert_eq!(
+            zero_yield_module_names(&events),
+            vec!["hunter_io".to_string(), "shodan".to_string()]
+        );
+    }
+
+    #[test]
+    fn zero_yield_module_names_is_empty_when_nothing_was_zero_yield() {
+        let events = vec![done("shodan", 1)];
+        assert!(zero_yield_module_names(&events).is_empty());
+    }
