@@ -6,23 +6,27 @@ description: Run one cycle of Huntsman's autonomous improvement loop — idempot
 
 You are running one cycle of the standing autonomous loop that drives Huntsman
 toward `docs/PROBLEM_TREE.md`'s mission: the fastest, most correct, most
-reproducible on-device OSINT/GEOINT engine, surpassing SpiderFoot and Maltego,
-without ever fabricating a finding. `CLAUDE.md` is your standing contract
-(verification gate, layering, ATT&CK mapping) — this command is the loop that
-runs on top of it, cycle after cycle, until there is nothing left to do.
+reproducible on-device OSINT/GEOINT/NETINT engine, surpassing SpiderFoot and
+Maltego without heavy in-app graphing. `CLAUDE.md` is your standing contract
+(verification gate, layering, ATT&CK mapping); this command is the loop that
+runs on top of it, unattended, cycle after cycle, until the project is
+finished.
 
-This prompt is meant to be **run again and again, unattended, until the
-project is finished**. Treat idempotency as the primary correctness property:
-running this cycle when real work remains must make genuine, verified
-progress; running it when nothing remains must change nothing except to
-confirm that. Never invent work to look busy.
+Treat idempotency as the primary correctness property: running this cycle
+when real work remains must make genuine, verified progress; running it when
+nothing remains must change nothing except to confirm that. Never invent work
+to look busy.
 
 ## 0. Orient — read the live state, don't assume it
 
-1. `git status` and `git log -5 --oneline`. If the working tree is dirty or
-   `HEAD` looks mid-cycle (e.g. code changed but the trees/gate weren't
-   updated), **finish and verify that work first** — do not start something
-   new on top of an unfinished cycle.
+1. `git status` and `git log -5 --oneline`. If the working tree is dirty,
+   check whether it traces to an in-progress node (`[~]`) in either tree —
+   code changed for it but the trees/gate not yet updated. If so, resume and
+   verify that work first (pick up at whichever of steps 2-4 is still
+   outstanding) rather than starting something new on top of an unfinished
+   cycle. If the dirty state doesn't match any tracked node, it isn't this
+   loop's to resolve — stop, make no git changes, and report what's present
+   instead of committing or discarding it.
 2. Read `docs/PROBLEM_TREE.md` §3 (defects/foundations), §4 (capability
    program), §5 (execution order), §6 (verified sound — do not
    re-investigate), §7 (deferred — do not re-litigate without new evidence).
@@ -37,41 +41,38 @@ confirm that. Never invent work to look busy.
 Smallest, highest-leverage, real. In priority order:
 
 1. An in-progress (`[~]`) node left by a prior cycle — finish it.
-2. The highest-priority open (`[ ]`) node per `PROBLEM_TREE` §2's priority
+2. A user-supplied debug bundle or bug report from this session, if one
+   exists — real operator evidence; investigate what it actually shows and
+   fix the concrete failure before drawing from the backlog below.
+3. The highest-priority open (`[ ]`) node per `PROBLEM_TREE` §2's priority
    legend (P0 crash/corruption → P1 core guarantees → P2 quality/robustness →
-   P3 minor → CAP capability), in the concrete order §5 lays out (T0 panics →
-   F primitives → T1 guarantees → T2 quality → C capability program),
-   respecting the doctrine's stated sequencing rationale (§1: foundations
-   before features).
-3. A concrete coverage gap, unfinished solution, or unjustified solution
+   P3 minor → CAP capability), in the order §5 lays out (T0 panics → F.1/F.3
+   primitives → T1 guarantees → F.2 dataset → T2 quality → C capability
+   program) — §5 picks which phase to draw from, §2's legend breaks ties
+   between candidates within it — respecting the doctrine's stated
+   sequencing rationale (§1: foundations before features).
+4. A concrete coverage gap, unfinished solution, or unjustified solution
    surfaced by `SOLUTION_TREE` §4.
-4. If — and only if — both trees show no open or in-progress node: run one
-   fresh, code-grounded discovery pass (dead code, unwired constants, dropped
-   fields, silently truncated output, `TODO`/`FIXME`/`unimplemented!`, a
-   clippy lint the newer CI toolchain would catch, a real scan shape that
-   exposes a gap). A finding only becomes work if it is grounded in actual
-   code/data you can point to — never a speculative "might be nice."
+5. If — and only if — both trees show no open or in-progress node and
+   `SOLUTION_TREE` §4's gap analysis is empty: run one fresh, code-grounded
+   discovery pass (dead code, unwired constants, dropped fields, silently
+   truncated output, `TODO`/`FIXME`/`unimplemented!`, a clippy lint the newer
+   CI toolchain would catch, a real scan shape that exposes a gap). A finding
+   only becomes work if it is grounded in actual code/data you can point to —
+   never a speculative "might be nice."
 
-A user-supplied debug bundle or bug report, when one exists this session, is
-real operator evidence and outranks a speculative discovery pass — investigate
-what it actually shows and fix the concrete failure before inventing new work.
-
-Pick **one**. This loop advances by many small, honest cycles — one dated,
-cross-referenced log entry per cycle in `PROBLEM_TREE` §8 and `SOLUTION_TREE`
-§5 (see the recent entries there for the established granularity) — not by
-one large sweep.
+Pick **one** — this loop advances by many small, honest cycles, not one large
+sweep (step 3 below records each cycle's log entry; see the recent entries
+there for the established granularity).
 
 ## 2. Do the work
 
 - Treat a discovery pass's or reviewer's claimed root cause as a hypothesis,
   not a fact — read the actual code path it points at before trusting its
   suggested fix. A plausible-sounding diagnosis has pointed at the wrong
-  function before; only ship fixes verified against real code and, for
-  behaviour-touching bugs, a real run.
-- Real code against real behaviour — no mocks, no fabricated data, no
-  invented findings. If evidence is needed to justify a fix, find it in the
-  code or a real run (`hse diagnostics`, `hse audit`, or the command itself —
-  `docs/CONVENTIONS.md` §9).
+  function before. Ship only fixes verified against real code and, for
+  behaviour-touching bugs, a real run — no mocks, no fabricated data, no
+  invented findings.
 - Hold the architecture doctrine: layering (`cli`/`api` → `core` → `util`;
   `core` never imports `modules` or `storage` directly — see
   `docs/CONVENTIONS.md` §1), one module per file (§2), single-sourced
@@ -120,9 +121,18 @@ cargo test
 
 If anything fails, fix it before proceeding — never commit red, never
 `--no-verify`, never silence a lint by broadening an `#[allow]` beyond the
-one site that needs it. For a behaviour-touching change, also exercise the
-real surface (`hse diagnostics`, `hse audit`, or the changed command) per
-`docs/CONVENTIONS.md` §9.
+one site that needs it. For a behaviour-touching change, also run the real
+surface — `hse diagnostics`, the changed command, or `hse audit` where
+relevant — matching `docs/CONVENTIONS.md` §9's real-over-mocked rule.
+
+If the only apparent fix would itself violate a Hard Constraint (loosen a
+lint, touch `tests/architecture.rs`, add `unsafe`) — or the gate can't run at
+all because of an environment/toolchain problem unrelated to this cycle's
+diff — that's not something to work around: revert the change, leave the
+node `[~]` with a note on what blocked it, log the blocker in
+`docs/gap_register.md`, and end the cycle without committing or pushing.
+Never relax a Hard Constraint or route around a broken sandbox to force a
+green gate.
 
 ## 5. Ship it
 
@@ -130,33 +140,42 @@ One commit, one logical change, matching this repo's established style —
 `type(scope): summary` (see recent `git log` for the live convention: `fix`,
 `feat`, `test`, …). Stage only the files this cycle actually touched. Then
 push the current branch (`git push -u origin <branch>`; retry transient
-network failures with backoff, never force-push). This mirrors
-`PROBLEM_TREE.md`'s own standing instruction that every cycle's change ships,
-not accumulates unshipped.
+network failures with backoff, never force-push). If the push is rejected as
+non-fast-forward, that's a real conflict, not a transient failure — don't
+retry blindly and don't force-push. Fetch and look at what changed upstream:
+if it's this same loop's own prior commit(s), rebase on top and re-run the
+gate (step 4) before pushing again; otherwise stop and report the conflict
+rather than resolving it unilaterally. This mirrors `PROBLEM_TREE.md`'s own
+standing instruction that every cycle's change ships, not accumulates
+unshipped.
 
 ## 6. Stop condition — the idempotency contract
 
-Before doing ANY of the above, if step 1 finds:
+This is the exception path: if step 1 finds the following, stop here — do
+not proceed to steps 2-5:
 
 - no in-progress node,
+- no user-supplied debug bundle or bug report needing investigation,
 - no open node in either tree (§3/§4 of `PROBLEM_TREE`, honouring §6 verified-
   sound and §7 deferred as closed, not re-openable without new evidence),
-- and a fresh discovery pass turns up no new code-grounded gap,
+- `SOLUTION_TREE` §4's gap analysis empty (4a/4b/4c all clear), and
+- a fresh discovery pass turns up no new code-grounded gap,
 
-then the project is at a genuine stopping point. In that case:
+then the project is at a genuine stopping point. Make no other change to
+source code, tests, or tree node contents — the only git action permitted
+anywhere in this procedure is the single checkpoint-log commit in (b) below:
 
-1. Make **no** code change and touch no git state.
-2. Check the top entry of `docs/gap_register.md`. If it is already a
+a. Check the top entry of `docs/gap_register.md`. If it is already a
    "CHECKPOINT — backlog exhausted" entry from this same stopping point,
    do nothing further — this run is a true no-op (this is what makes the
    loop idempotent: re-running it after completion is a no-op, not a repeat
    checkpoint).
-3. Otherwise, append exactly one `CHECKPOINT — backlog exhausted` line to
+b. Otherwise, append exactly one `CHECKPOINT — backlog exhausted` line to
    `docs/gap_register.md`, in the register's existing voice, naming what was
    closed this arc and why what remains (if anything, in §7 Deferred) is
    correctly out of scope — mirroring the precedent already in the register.
    Commit and push only this one log line.
-4. Report the stopping point plainly: what "perfectly finished" means right
+c. Report the stopping point plainly: what "perfectly finished" means right
    now (gate green, both trees' open/in-progress sets empty, §4 gap analysis
    empty, every §7 deferral still justified) and that re-running this command
    will verify rather than repeat that state.
