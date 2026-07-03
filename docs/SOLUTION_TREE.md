@@ -709,13 +709,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
 *(T2.14 fully closed, 2026-07-03 — both halves shipped; off §4a and §4b.)*
-- **README.md rule-count drift (new, 2026-07-03 S→P find):** "74 correlator
-  rules (AU-001 through AU-086, with some IDs reserved for engine-emitted
-  cross-scan findings…)" is badly stale — 112 rules are registered as of
-  AU-112. Not just a number swap: the ID range and the category-list prose
-  both need a fresh read against the live rule set. Found incidentally
-  while shipping AU-111; deliberately not fixed in that commit (unrelated
-  scope, much larger than one rule). No solution node yet.
+- ~~**README.md rule-count drift (found 2026-07-03 S→P find, same audit as
+  AU-111).**~~ **Delivered same day.** Recounted from the source of truth
+  (`core::correlator::mod::RULES`, not the prior estimate): **110** entries,
+  one `rule_au_NNN_*` fn each, spanning `AU-001`–`AU-112` with `AU-065`/
+  `AU-066` confirmed still engine-emitted (not in the array). `README.md:338`
+  corrected to "110 correlator rules (AU-001 through AU-112, …)"; the
+  category-list prose was individually re-verified against its still-live
+  `rule_au_*` function and needed no change. Two further stale counts found
+  by the same pass were deliberately left open rather than force-fit into
+  this docs-only commit: `docs/ARCHITECTURE_AUDIT.md` / `OSINT_SERVICE_VALUE_
+  vs_HSE.md` are explicitly *dated* point-in-time snapshots (2026-06-17 /
+  2026-06-12) that need a fresh full audit pass, not a single-field edit;
+  `README.md`'s own "3,100+ tests" line (real count 4290) is a second,
+  separate stale count in the same file. Both logged below as their own
+  smaller follow-ons. Off the open queue.
 - ~~**`tags::HIGH_EXPOSURE`** (found 2026-07-03, same audit as AU-111).~~
   **Delivered same day as AU-112.** The deferred non-duplication check was
   done directly (not trusted from the original hedge): AU-009/AU-082
@@ -778,6 +786,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
   DB fresh without user intervention. No solution node yet.
+- **Dated-snapshot docs are stale (new, 2026-07-03 S→P find, same pass as the
+  README rule-count fix):** `docs/ARCHITECTURE_AUDIT.md` ("Facts (verified
+  against the tree, 2026-06-17)": 118 modules, 69 correlator rules, ~2,995 lib
+  tests, ~137k LOC) and `OSINT_SERVICE_VALUE_vs_HSE.md` ("Date: 2026-06-12":
+  125 modules, 43 correlator rules) are both real, dated point-in-time
+  snapshots whose numbers now read stale against the live tree (161 modules,
+  110 correlator rules, 4290 lib tests). Deliberately not touched by the
+  README fix: silently overwriting a *dated* snapshot's numbers to today's
+  values would misrepresent it as still accurate as of its stated date — the
+  honest fix is either a fresh dated re-audit pass (new "Facts (verified
+  against the tree, <today>)" table) or an explicit "superseded by" pointer,
+  not a silent field edit. No solution node yet.
+- **README.md "3,100+ tests" is stale (new, 2026-07-03 S→P find, same pass):**
+  same architecture bullet list as the just-fixed rule count; real count is
+  4290 lib tests (plus API/integration/architecture-guard tests not counted
+  in that figure). Left out of the rule-count commit deliberately — this
+  cycle's flagged gap was the rule count specifically, not every number in
+  the file. No solution node yet.
 - ~~**hse update --check changelog (cycle 22 S→P gap): `--check` reports only a
   commit count, no subject lines.**~~ **Delivered, stale note (found
   2026-07-01).** `cli/update.rs::changelog_lines` runs exactly the suggested
@@ -2970,3 +2996,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   future cycle once more modules/tags accumulate. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4290 lib tests (+3), 0 failures. **Paired:**
   `PROBLEM_TREE` C1 (unchanged `[~]`) + §4a/§8 — same commit.
+
+- **2026-07-03** — **README.md correlator-rule-count drift closed — the §4a
+  P→S gap the AU-111 cycle flagged and deliberately deferred.** Recounted
+  from the actual dispatch table rather than trusting the prior estimate:
+  `core::correlator::mod::RULES` holds exactly **110** entries (1:1 against
+  every `fn rule_au_NNN_*` under `src/core/correlator/rules/`), spanning
+  `AU-001`–`AU-112` with `AU-065`/`AU-066` `grep`-reconfirmed still
+  engine-emitted (`core::engine::mod.rs`), not correlator-dispatched —
+  exactly what the existing parenthetical already claimed, so only the
+  headline count/range needed correcting. `README.md:338` → "110 correlator
+  rules (AU-001 through AU-112, …)"; every category name in that same line
+  individually re-verified against its still-live `rule_au_*` function
+  (none had drifted — only the count/range had). Docs-only, zero code/test/
+  architecture-guard change. Found and deliberately left open two further
+  stale counts the same read surfaced: `docs/ARCHITECTURE_AUDIT.md` /
+  `OSINT_SERVICE_VALUE_vs_HSE.md` are dated point-in-time snapshots
+  (2026-06-17 / 2026-06-12) — silently overwriting a dated snapshot's
+  numbers would misrepresent it as current *as of that date*, so it needs a
+  fresh audit pass, not a field edit; `README.md`'s own "3,100+ tests" line
+  (real count 4290) is a second, separate stale count in the same file,
+  outside this cycle's specifically-flagged gap. Both logged in §4a as their
+  own smaller follow-ons rather than bolted onto this commit. Gate green:
+  fmt/clippy `--all-targets`/doc clean, 4290 lib tests (unchanged), 0
+  failures. **Paired:** `PROBLEM_TREE` §8 — same commit.

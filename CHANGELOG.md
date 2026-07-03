@@ -10,6 +10,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- **Corrected the stale correlator rule count in `README.md`.** The
+  architecture summary claimed "74 correlator rules (AU-001 through
+  AU-086)" — badly stale after several sessions of AU-0xx additions.
+  Recounted from `core::correlator::mod::RULES` (the actual dispatch
+  table): **110** rules registered, one `rule_au_NNN_*` function per
+  entry, spanning `AU-001` through `AU-112` with `AU-065`/`AU-066`
+  confirmed still reserved for engine-emitted cross-scan findings, not
+  correlator-dispatched. `README.md` now reads "110 correlator rules
+  (AU-001 through AU-112, …)"; the category-list prose alongside it was
+  individually re-verified against its still-live rule and needed no
+  change.
+
 ### Added
 - **New correlator rule AU-112 (High-exposure breach footprint) —
   `PROBLEM_TREE` C1, "further AU-0xx rule-gap fill".** `hibp` and

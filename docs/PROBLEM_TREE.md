@@ -3743,3 +3743,39 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   more modules/tags accumulate. Gate green: fmt/clippy `--all-targets`/doc
   clean, 4290 lib tests (+3), 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-CORR + §4a + §8 — same commit.
+
+- **2026-07-03** — ✅ **README.md correlator-rule-count drift fixed.** The
+  cycle that shipped AU-111 flagged `README.md`'s "74 correlator rules
+  (AU-001 through AU-086)" as badly stale and deliberately deferred it as
+  unrelated scope; `SOLUTION_TREE` §4a carried it since as a real,
+  scoped, docs-only P→S gap with "no solution node yet." Closed by
+  recounting from the source of truth rather than trusting the prior
+  estimate: `core::correlator::mod::RULES` — the actual dispatch array —
+  holds exactly **110** entries (one `rule_au_NNN_*` fn per entry,
+  verified 1:1 against every `fn rule_au_` definition under
+  `src/core/correlator/rules/`), spanning `AU-001` through `AU-112` with
+  two numbers genuinely absent from the array (`AU-065`/`AU-066`, which
+  `grep`-confirmed remain engine-emitted cross-scan findings in
+  `core::engine::mod.rs`, exactly as the existing parenthetical already
+  said). `README.md:338` corrected to "110 correlator rules (AU-001
+  through AU-112, …)"; every category name already named in that line
+  (transitive/multi-pathway/gap-analysis/jurisdiction/prediction-confirmed/
+  pathway-template/resolved-cluster/anonymous-SIM/high-integrity-connection/
+  connection-broker/robust-cluster) was individually re-verified against
+  its still-live `rule_au_*` function, so only the count and ID range
+  needed correcting, not the category prose. Docs-only — no code, test,
+  or architecture-guard change. Deliberately did **not** touch two other
+  stale-count docs found by the same pass, `docs/ARCHITECTURE_AUDIT.md`
+  ("69 correlator rules … 2,995 lib tests") and
+  `OSINT_SERVICE_VALUE_vs_HSE.md` ("43 correlator rules") — both are
+  explicitly dated point-in-time snapshots (`Facts (verified against the
+  tree, 2026-06-17)`; `Date: 2026-06-12`), so silently rewriting their
+  numbers to today's values would misrepresent them as still being
+  current as of their stated date; a correction there needs a fresh dated
+  audit pass of the *whole* snapshot (LOC, module count, test count, …),
+  not a single-field edit, and is logged as its own smaller follow-on
+  rather than force-fit into this commit. `README.md`'s own "3,100+
+  tests" line (real count 4290) is a second, separate stale count in the
+  same file — also left for a dedicated follow-on, since this cycle's
+  scope was the flagged rule-count drift specifically, not every number
+  in the file. **Paired:** `SOLUTION_TREE` §4a + §5 — same commit.
