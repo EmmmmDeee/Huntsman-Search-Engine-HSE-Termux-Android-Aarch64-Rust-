@@ -650,7 +650,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -670,6 +670,26 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+  ✅ **Scan-level 60s hint delivered (2026-07-03), option (b).** New pure
+  `cli/scan/dossier.rs::scan_exceeded_60s_with_a_zero_yield_module(wall_time_ms,
+  events)` reads the scan's own `ModuleDone { found: 0, .. }` events — the
+  same source `zero_yield_keyed_or_paid_modules` reads — deliberately with NO
+  cost-tier gate (a stalled *free* module is still worth tightening
+  `module_timeout_ms` for). `print_diagnostics` appends the exact original
+  message (`"scan exceeded 60s with at least one zero-yield module — tighten
+  module_timeout_ms"`, recovered verbatim from the pre-removal code via `git
+  log -p`) to the printed hints, replacing `analyse()`'s "no optimization
+  signals detected" placeholder when it fired only because `analyse()` itself
+  — event-blind by construction — couldn't see this. 4 new unit tests pin the
+  exact original semantics (`>` not `>=` at the 60 000 ms boundary; fires
+  regardless of cost tier; silent when no module found nothing). Verified live
+  end-to-end: a real `hse scan -k domain -v rust-lang.org --output dossier`
+  (0 ms wall-time, one zero-yield module) correctly still prints the "no
+  optimization signals" fallback — proving the merge doesn't regress the
+  common (non-triggering) case; the >60s branch itself is exhaustively covered
+  by the unit tests rather than a deliberately-slowed live scan.
+  *Remaining (unchanged scope):* the per-module "returned 0 entities" hint —
+  still blocked on the noise decision above; not attempted this cycle.
 
 ---
 
@@ -3266,3 +3286,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `tempfile` (already a dev-dep) would support a local-repo-pair fixture,
   left as its own smaller follow-on. **Paired:** `SOLUTION_TREE` SOL-UPDATE +
   §4a + §5 — same commit.
+
+- **2026-07-03** — **T2.14 `[ ]`→`[~]`: reinstated the scan-level "60s +
+  zero-yield module" hint T2.13's addendum had removed as dead code.** Step 1
+  found no in-progress node and no other open node offering a small, safe
+  increment (T2.7 still blocked on the golden-fixture question; the CAP
+  items are lower-priority per §5's execution order), so this cycle took
+  T2.14 itself — newly opened two days ago with its own scoping already done:
+  the node text names the scan-level hint as "a straightforward
+  reinstatement" via option (b) (caller-layer, event-sourced, mirroring
+  T2.13's `zero_yield_keyed_or_paid_modules`), while the per-module hint
+  needs a real noise decision first. Took exactly the scoped, safe half.
+  `git log -p` on `analyse.rs`'s history recovered the exact original
+  condition/message (`wall_time_ms > 60_000 &&
+  modules_by_yield.iter().any(|m| m.entities_emitted == 0)` →
+  `"scan exceeded 60s with at least one zero-yield module — tighten
+  module_timeout_ms"`), so the reinstatement corrects the mechanism
+  (event-sourced, not the never-populated `modules_by_yield`) while keeping
+  the wording and threshold identical — deliberately NOT cost-tier-gated
+  like the ROI hint, since a stalled free module still burns wall-clock. 4
+  new unit tests pin the exact boundary (`>` not `>=` at 60 000 ms) and the
+  "any module, any cost tier" scope. Live-verified the non-triggering path
+  (`hse scan -k domain -v rust-lang.org --output dossier`, 0 ms wall-time)
+  still prints the correct "no optimization signals" fallback — the merge
+  logic doesn't regress the common case; the >60s branch itself is exercised
+  by the unit tests (deliberately not by a live scan slowed past a minute
+  just to trigger a boolean already covered exhaustively offline). Gate
+  green: fmt/clippy `--all-targets`/doc clean, 4267 lib tests (+4).
+  *Remaining, unchanged scope:* the per-module "returned 0 entities" hint —
+  still blocked on its noise decision, not attempted this cycle (no scope
+  expansion). **Paired:** `SOLUTION_TREE` SOL-HINT-NOISE `[ ]`→`[~]` + §4a +
+  §5 — same commit.

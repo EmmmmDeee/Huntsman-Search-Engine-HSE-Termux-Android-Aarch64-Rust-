@@ -460,6 +460,27 @@ fn zero_yield_keyed_or_paid_modules(
     names
 }
 
+/// Whether the scan ran past 60s wall-clock with at least one module that
+/// finished having found nothing — a `module_timeout_ms` tuning signal
+/// (PROBLEM_TREE T2.14). Unlike [`zero_yield_keyed_or_paid_modules`] this is
+/// NOT cost-tier-gated: a free module stalling the scan for a minute is still
+/// worth tightening the timeout for, even though it wasted no spend. Sourced
+/// from the scan's own `ModuleDone` events for the same reason as the ROI
+/// hint — [`crate::util::diagnostics::analyse`]'s `modules_by_yield` never
+/// contains a zero-entity module, so a condition keyed on it is unreachable
+/// dead code (the original bug this reinstates a corrected version of).
+fn scan_exceeded_60s_with_a_zero_yield_module(
+    wall_time_ms: u64,
+    events: &[crate::core::event::Event],
+) -> bool {
+    use crate::core::event::EventKind;
+
+    wall_time_ms > 60_000
+        && events
+            .iter()
+            .any(|ev| matches!(ev.kind, EventKind::ModuleDone { found: 0, .. }))
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -653,7 +674,20 @@ fn print_diagnostics(
 
     println!("━━━ OPTIMIZATION HINTS ━━━");
     println!();
-    for hint in &diag.optimization_hints {
+    let mut hints = diag.optimization_hints.clone();
+    if scan_exceeded_60s_with_a_zero_yield_module(wall_ms, &events) {
+        // `analyse()` can't see this — it's event-sourced and `util` has no
+        // store access — so its "no signals" placeholder may be stale here;
+        // drop it if this is the only reason `hints` wasn't already empty.
+        if hints.len() == 1 && hints[0].starts_with("no optimization signals detected") {
+            hints.clear();
+        }
+        hints.push(
+            "scan exceeded 60s with at least one zero-yield module — tighten module_timeout_ms"
+                .to_string(),
+        );
+    }
+    for hint in &hints {
         println!("  • {hint}");
     }
     println!();
@@ -741,5 +775,65 @@ mod tests {
             zero_yield_keyed_or_paid_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
+    }
+
+    mod sixty_second_zero_yield_hint {
+        use super::super::scan_exceeded_60s_with_a_zero_yield_module;
+        use crate::core::event::{Event, EventKind};
+
+        fn zero_yield_event(module: &str) -> Event {
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: module.into(),
+                    found: 0,
+                },
+            )
+        }
+
+        /// The reinstated case (PROBLEM_TREE T2.14): a long scan with a
+        /// zero-yield module — of ANY cost tier, unlike the ROI hint — should
+        /// fire, tightening `module_timeout_ms`.
+        #[test]
+        fn fires_past_60s_with_a_zero_yield_module() {
+            assert!(scan_exceeded_60s_with_a_zero_yield_module(
+                61_000,
+                &[zero_yield_event("search_engines")],
+            ));
+        }
+
+        /// Under the 60s threshold, no matter how many modules found nothing —
+        /// the hint is about tuning a timeout for a slow scan, not zero yield
+        /// alone.
+        #[test]
+        fn ignores_under_60s() {
+            assert!(!scan_exceeded_60s_with_a_zero_yield_module(
+                59_000,
+                &[zero_yield_event("search_engines")],
+            ));
+        }
+
+        /// Exactly at the threshold does not fire — matches the original
+        /// strict `>` (not `>=`).
+        #[test]
+        fn ignores_exactly_60_000ms() {
+            assert!(!scan_exceeded_60s_with_a_zero_yield_module(
+                60_000,
+                &[zero_yield_event("search_engines")],
+            ));
+        }
+
+        /// Past 60s but every module found something — nothing to tune.
+        #[test]
+        fn ignores_past_60s_with_no_zero_yield_module() {
+            let events = vec![Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "search_engines".into(),
+                    found: 5,
+                },
+            )];
+            assert!(!scan_exceeded_60s_with_a_zero_yield_module(61_000, &events));
+        }
     }
 }

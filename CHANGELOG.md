@@ -354,6 +354,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   yield) instead, and correctly names every wasted `KeyGated`/`Paid` module —
   verified against a real scan both before the fix (silent) and after
   (correctly listed 11).
+- **Reinstated the dossier's "scan exceeded 60s with a zero-yield module"
+  hint, correctly this time (`PROBLEM_TREE` T2.14).** A follow-up sweep after
+  the ROI-hint fix above found the identical dead-code pattern still present
+  as a scan-level hint and removed it; it's now reinstated event-sourced, the
+  same way, but deliberately with no cost-tier gate — a stalled *free*
+  module still burns wall-clock worth tuning `module_timeout_ms` for, even
+  though it wasted no paid spend. Wording and the 60-second threshold are
+  unchanged from the original.
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

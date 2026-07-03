@@ -471,7 +471,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -480,8 +480,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   given target kind (normal, not noteworthy), so a naive per-module
   reinstatement would flood the hints list with the opposite of signal.
   Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count.
+  *Delivered (2026-07-03):* the scan-level 60s hint. New pure
+  `cli/scan/dossier.rs::scan_exceeded_60s_with_a_zero_yield_module` reads the
+  scan's own `ModuleDone` events (no cost-tier gate — unlike SOL-ROI-HINT, a
+  stalled free module still costs wall-clock), reinstating the exact original
+  message/threshold recovered via `git log -p` on the pre-removal code
+  (`wall_time_ms > 60_000`, strict). Wired into `print_diagnostics`,
+  replacing `analyse()`'s "no signals" placeholder when that placeholder only
+  fired because `analyse()` — event-blind by construction — couldn't see this
+  condition. 4 new unit tests pin the boundary + cost-tier-agnostic scope;
+  live-verified the non-triggering path renders unchanged.
+  *Remaining:* the per-module hint — still blocked on the noise decision
+  above, untouched this cycle. **(§4a, downgraded from "not yet started" to
+  the finish queue)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -557,7 +569,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -581,10 +593,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
-  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
-  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
-  Not yet started.
+*(T2.14 moved to §4b, 2026-07-03 — its scan-level half shipped.)*
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -666,6 +675,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **SOL-BUDGET** — ✅ accepted `[-]` (cycle 18 S→P): `reset_per_scan` already
   called at `run_with_ledger_inner:289`; cited residual was a faulty premise.
   Off the finish queue.
+- **SOL-HINT-NOISE** (new, 2026-07-03) — the scan-level "60s + zero-yield
+  module" half shipped (event-sourced, cost-tier-agnostic, exact original
+  wording/threshold recovered from git history). *Remaining:* the per-module
+  "returned 0 entities" hint, still blocked on its own noise decision
+  (cap-worst-N / cost-gate / bounded-summary — undecided).
 
 ### 4c · Solutions with no problem (over-build — prune candidates)
 - **None found.** Every solution node traces to ≥1 `PROBLEM_TREE` node or the shared
@@ -685,6 +699,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
+  **T2.13 `[x]`** ✅ (SOL-ROI-HINT, 2026-07-01); **T2.14 `[~]`**
+  (SOL-HINT-NOISE, 2026-07-03 — scan-level 60s hint shipped, per-module hint
+  blocked on its own noise decision).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2496,3 +2513,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   have no test against real `git` subprocess behaviour (`tempfile` is already
   a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
   bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **SOL-HINT-NOISE `[ ]`→`[~]`: shipped the scan-level half
+  of T2.14, the scoped increment its own node text had already identified as
+  "a straightforward reinstatement."** P→S pick: no in-progress node, and
+  T2.14 was the highest-priority open node this cycle offering a small, safe,
+  real code increment (T2.7 stays blocked on the golden-fixture question; the
+  remaining CAP items sit lower in §5's execution order). New pure
+  `cli/scan/dossier.rs::scan_exceeded_60s_with_a_zero_yield_module(wall_ms,
+  events)` mirrors `zero_yield_keyed_or_paid_modules`'s event-sourced
+  approach but deliberately carries NO cost-tier gate — a free module
+  stalling a scan past 60s still wastes wall-clock even though it wasted no
+  spend. `git log -p` on `analyse.rs` recovered the exact pre-removal
+  condition and message verbatim (`wall_time_ms > 60_000`, strict; "scan
+  exceeded 60s with at least one zero-yield module — tighten
+  module_timeout_ms"), so the fix corrects only the broken mechanism
+  (event-sourced instead of the never-populated `modules_by_yield`), not the
+  wording. Wired into `print_diagnostics`: appends to the printed hints,
+  dropping `analyse()`'s "no optimization signals detected" placeholder when
+  that placeholder fired only because `analyse()` — pure, no store access —
+  structurally cannot see this condition itself. **S→P proof:** 4 new unit
+  tests pin the `>` (not `>=`) boundary at 60 000 ms and the cost-tier-
+  agnostic scope (a free module's zero yield fires it, unlike the ROI hint).
+  Live-verified the common, non-triggering path: `hse scan -k domain -v
+  rust-lang.org --free-only --passive-only --output dossier` (0 ms wall-time)
+  still renders the correct "no optimization signals detected" fallback —
+  proving the merge logic doesn't regress the far-more-common case where the
+  new hint doesn't fire; the >60s branch itself is exhaustively covered by
+  the unit tests rather than a deliberately-slowed live scan burning over a
+  minute to exercise a boolean already proven offline. Deliberately did NOT
+  touch the per-module hint (kept the noise question exactly as scoped by
+  T2.14's own text) — no scope expansion. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4267 lib tests (+4), 0 failures. **Paired:**
+  `PROBLEM_TREE` T2.14 `[ ]`→`[~]` + §8 — same commit.
