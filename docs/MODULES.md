@@ -4,18 +4,19 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (161 modules: 128 free · 28 key-gated · 5 paid)
+## Catalogue (162 modules: 129 free · 28 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
 > `category` is the SpiderFoot-style bucket it appears under in the Web UI.
 
-### search (2)
+### search (3)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
+| `tor_search_pivot` | email, username, full_name, domain, crypto_address | free | yes | 90 | url |
 
 ### social (34)
 

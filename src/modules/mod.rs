@@ -157,6 +157,7 @@ pub mod structured_id;
 pub mod subdomain_takeover;
 pub mod sunrise_sunset;
 pub mod threatfox;
+pub mod tor_search_pivot;
 pub mod trove_au;
 pub mod typosquat;
 pub mod url_extract;
@@ -337,6 +338,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(rdap_domain::RdapDomain),
         Arc::new(ripestat::RipeStat),
         Arc::new(search_engines::SearchEngines),
+        Arc::new(tor_search_pivot::TorSearchPivot),
         Arc::new(webserver_banner::WebserverBanner),
         Arc::new(web_crawler::WebCrawler),
         Arc::new(app_links::AppLinks),

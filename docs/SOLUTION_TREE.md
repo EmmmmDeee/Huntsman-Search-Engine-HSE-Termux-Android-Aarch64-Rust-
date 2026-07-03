@@ -508,6 +508,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (no live IntelX key in this environment, so AU-115 stays silent as
   expected). Gate green: fmt/clippy `--all-targets`/doc clean, 4306 lib
   tests (+7), 0 failures.
+  *Delivered (2026-07-03), same day: `tor_search_pivot`, a free zero-
+  network-I/O module, resolving a repeated follow-up request for free
+  dark-web search engines by changing what "search" means for HSE
+  rather than relaxing the safety bar.* Re-verified and extended the
+  prior cycle's research rather than repeating it: `curl`-confirmed
+  Ahmia's own Terms of Service prohibits automated querying outright
+  ("Attempt to reverse-engineer, scrape, or replicate the service
+  without permission"), a contractual bar stronger than the robots.txt
+  finding alone; checked onionsearchengine.com and onionengine.com
+  (Cloudflare-walled, 403, same evasion class already declined for
+  `see_know`); checked Torch/notEvil/Phobos/Haystak/Tor66 (none publish
+  a moderation policy, several market "uncensored" as a feature —
+  reopens the CSAM-adjacent risk the whole investigation exists to
+  avoid). The reframe: every blocker found is a property of HSE
+  *fetching* content; a module that only builds a URL and never sends a
+  request toward it triggers none of them. New free `tor_search_pivot`
+  module (162nd registered): for Email/Username/FullName/Domain/
+  CryptoAddress targets, emits two `tags::CANDIDATE`-tier `Url` entities
+  — Ahmia's clearnet search gateway + its official `.onion` address
+  (sourced from Ahmia's own About page) — evidence text explicit that
+  HSE never fetches them; `CANDIDATE` tier keeps them out of the
+  correlator/exposure/confirmed-footprint, the same quarantine every
+  other speculative lead already goes through. 7 new tests, including
+  one pinning a real `Entity::new` `Url`-normalisation edge case
+  (trailing `/` stripped before the query) and live-`curl`-confirming
+  the resulting link still 301-redirects correctly on Ahmia's real
+  site. Live-verified end-to-end: a real scan produced exactly the two
+  expected pivots, correctly classed, correlator `fired: 0`. Updated
+  the module-count guards this tripped (`docs/MODULES.md`,
+  `README.md`). Complements, does not replace, the still-scoped BYO-key
+  vendor-API option below. Gate green: fmt/clippy `--all-targets`/doc
+  clean, 4314 lib tests (+8), 0 failures.
   *Remaining (deliberately open-ended, like the audit cadence itself):*
   further AU-0xx rule-gap fill — the dead-tag-audit method has now closed
   4 gaps across 3 cycles and remains a reusable technique for a future
@@ -876,13 +908,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-CORR above for the full note, including why a raw `.onion`
   crawler was declined (unsolvable CSAM-filtering guarantee) and why the
   free-scraping alternatives (Ahmia, darksearch.io) were ruled out.
+  **`tor_search_pivot` delivered (2026-07-03), same day:** a repeated
+  follow-up request for free dark-web search engines, resolved with a
+  free, zero-network-I/O module that generates (never fetches) an
+  Ahmia search pivot URL — see SOL-CORR above for the full note,
+  including why Ahmia's own ToS rules out automated querying, why
+  onionsearchengine.com/onionengine.com (Cloudflare-walled) and
+  Torch/notEvil/Phobos/Haystak/Tor66 (no moderation policy) were also
+  ruled out, and why link-generation-without-fetching sidesteps every
+  one of those blockers by construction.
   *Remaining:* further AU-0xx rule-gap fill (dead-tag-audit method, 4
-  gaps closed across 3 cycles) — **plus a new, real, scoped item:**
+  gaps closed across 3 cycles) — **plus the still-open, larger item:**
   BYO-key modules for dedicated dark-web-monitoring vendors (Flashpoint,
-  DarkOwl, Recorded Future, Webz.io, KELA) to widen Tor/darknet coverage
-  beyond IntelX's own bucket, using the identical safe selector-based
-  pattern (vendor's own crawler + moderation; HSE never fetches raw
-  onion content). Not built this pass — needs either a live key for one
+  DarkOwl, Recorded Future, Webz.io, KELA) for automated, selector-based
+  darknet coverage beyond IntelX's own bucket and beyond what a
+  manual-pivot link can offer, using the identical safe pattern
+  (vendor's own crawler + moderation; HSE never fetches raw onion
+  content). Not built this pass — needs either a live key for one
   candidate vendor to verify its real response shape, or public API docs
   clear enough to build against without one (this pass's research found
   neither for the free options it checked).
@@ -3269,4 +3311,48 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   safe selector-based pattern, gated on either a live key or clearer
   public docs than this pass found. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4306 lib tests (+7), 0 failures. **Paired:**
+  `PROBLEM_TREE` C1 + §8 — same commit.
+
+- **2026-07-03** — **New free module `tor_search_pivot` — a repeated
+  follow-up request for free dark-web search engines, resolved by
+  changing what "search" means for HSE rather than relaxing the safety
+  bar.** Asked twice more, verbatim, after the AU-115 cycle's declines.
+  Re-verified and extended the research rather than repeating the same
+  answer: `curl`-confirmed Ahmia's own Terms of Service prohibits
+  automated querying outright ("Attempt to reverse-engineer, scrape, or
+  replicate the service without permission") — a contractual bar,
+  stronger than the robots.txt finding alone. Checked
+  onionsearchengine.com and onionengine.com (a search-suggested "best
+  free API" candidate): both Cloudflare-walled (403) even to read their
+  own documentation — bypassing that would be the same evasion this
+  codebase already declined once for `see_know`. Checked Torch/notEvil/
+  Phobos/Haystak/Tor66: none publish any content-moderation policy,
+  several explicitly market "uncensored" as a feature — integrating
+  them reopens the exact unfiltered-content risk that ruled out a raw
+  crawler in the first place. The reframe that resolved it: every
+  blocker found (CSAM, ToS violation, Cloudflare evasion) is a property
+  of HSE *fetching* content. A module that only builds a search URL and
+  never sends a request toward it triggers none of them — a bookmark,
+  not a scrape. New `tor_search_pivot` module (free, pure, zero network
+  I/O, 162nd registered module): for Email/Username/FullName/Domain/
+  CryptoAddress targets, emits two `tags::CANDIDATE`-tier `Url`
+  entities — Ahmia's clearnet search gateway and its official `.onion`
+  address (sourced from Ahmia's own About page, not a third party,
+  since onion addresses are impersonation-prone) — with evidence text
+  explicit that HSE never fetches them. `CANDIDATE` tier keeps these
+  pivots out of the correlator/exposure/confirmed-footprint sections,
+  the same quarantine every other speculative lead in this codebase
+  already goes through. 7 new tests, including one that pins a real
+  normalisation edge case (`Entity::new`'s `Url` normaliser strips the
+  trailing `/` before a query string) and live-`curl`-confirms the
+  resulting link still 301-redirects correctly on Ahmia's real site.
+  Live-verified end-to-end: `hse scan -k username -v alice_researcher
+  -m tor_search_pivot` produced exactly the two expected pivots,
+  correctly `CANDIDATE`-classed, correlator `fired: 0`. Updated the
+  module-count guards this addition tripped: `docs/MODULES.md`
+  (161→162 modules, 128→129 free, `search` category 2→3) and
+  `README.md` (three "N modules" mentions + the module-overview
+  heading). Complements, does not replace, the still-scoped BYO-key
+  vendor-API option logged in §4a. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4314 lib tests (+8), 0 failures. **Paired:**
   `PROBLEM_TREE` C1 + §8 — same commit.

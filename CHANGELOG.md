@@ -24,6 +24,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **New module `tor_search_pivot` — free, one-click Tor search leads,
+  resolving a repeated request for free dark-web search engines without
+  compromising on safety.** Generates (but never fetches) a search URL
+  against Ahmia, a reputable, publicly-moderated Tor search engine, for
+  a scanned identifier — both its clearnet gateway and its official
+  `.onion` address. HSE never sends a request toward either URL; the
+  analyst opens the lead manually in their own Tor Browser. This design
+  followed a second research pass that ruled out every automated
+  alternative: Ahmia's own Terms of Service explicitly prohibit
+  automated scraping/replication; two Cloudflare-walled "free API"
+  candidates would require the same bot-wall evasion already declined
+  for another integration; five more free onion search engines publish
+  no content-moderation policy at all. Generating a link rather than
+  fetching one sidesteps every one of those blockers by construction.
+  Emitted as `Candidate`-tier evidence (a manual lead, not a confirmed
+  finding), so it never feeds the correlator or the confirmed-exposure
+  report.
 - **New correlator rule AU-115 (Darknet/Tor-venue exposure) — Tor OSINT
   coverage, delivered from a direct request to add Tor-network search,
   safety-scoped before writing any code.** A general `.onion` crawler with
