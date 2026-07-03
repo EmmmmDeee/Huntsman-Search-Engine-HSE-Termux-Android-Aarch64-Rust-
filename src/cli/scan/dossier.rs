@@ -508,6 +508,44 @@ fn zero_yield_module_summary(events: &[crate::core::event::Event]) -> Option<(us
     Some((zero, total))
 }
 
+/// Mutates `diag.optimization_hints` in place with the two event-sourced
+/// hints `analyse()` cannot compute itself (T2.14): the scan-level "60s +
+/// zero-yield module" hint and the bounded per-module "N of M dispatched
+/// module(s) found nothing" count. Single-sourced so every renderer of
+/// `ScanDiagnostics` — the CLI dossier text (`print_diagnostics`) and the
+/// `--output json` payload — shows the same hints for the same scan, rather
+/// than the JSON payload silently missing them (discovered this cycle: the
+/// JSON branch already called [`crate::util::diagnostics::record_zero_yield_dispatches`]
+/// for the ledger side effect but never applied this correction, so it could
+/// report "no optimization signals detected" on a scan whose dossier text
+/// output — same data, same scan — correctly flagged one).
+pub(super) fn apply_event_sourced_optimization_hints(
+    diag: &mut crate::util::diagnostics::ScanDiagnostics,
+    events: &[crate::core::event::Event],
+) {
+    let scan_slow_zero_yield = scan_ran_long_with_a_zero_yield_module(diag.wall_time_ms, events);
+    let zero_yield_summary = zero_yield_module_summary(events);
+    let has_zero_yield_modules = zero_yield_summary.is_some_and(|(zero, _)| zero > 0);
+    if scan_slow_zero_yield || has_zero_yield_modules {
+        // The "no signals" fallback and a real hint can't both be true.
+        diag.optimization_hints
+            .retain(|h| h != crate::util::diagnostics::NO_OPTIMIZATION_SIGNALS_HINT);
+    }
+    if scan_slow_zero_yield {
+        diag.optimization_hints.push(
+            "scan exceeded 60s with at least one zero-yield module — tighten module_timeout_ms"
+                .into(),
+        );
+    }
+    if let Some((zero, total)) = zero_yield_summary
+        && zero > 0
+    {
+        diag.optimization_hints.push(format!(
+            "{zero} of {total} dispatched module(s) found nothing for this target kind"
+        ));
+    }
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -528,32 +566,12 @@ fn print_diagnostics(
     // pass) — a module dispatched but zero-yield this scan never appears in
     // the entity-derived `modules_by_yield` it persists from, so
     // `zero_yield_rate` could never rise above 0.0 and `--adaptive` never
-    // skipped anything. Unconditional (not gated on the hints above) — the
+    // skipped anything. Unconditional (not gated on the hints below) — the
     // ledger should reflect every scan that reaches this point.
     crate::util::diagnostics::record_zero_yield_dispatches(
         &crate::core::event::zero_yield_module_names(&events),
     );
-    let scan_slow_zero_yield = scan_ran_long_with_a_zero_yield_module(diag.wall_time_ms, &events);
-    let zero_yield_summary = zero_yield_module_summary(&events);
-    let has_zero_yield_modules = zero_yield_summary.is_some_and(|(zero, _)| zero > 0);
-    if scan_slow_zero_yield || has_zero_yield_modules {
-        // The "no signals" fallback and a real hint can't both be true.
-        diag.optimization_hints
-            .retain(|h| h != crate::util::diagnostics::NO_OPTIMIZATION_SIGNALS_HINT);
-    }
-    if scan_slow_zero_yield {
-        diag.optimization_hints.push(
-            "scan exceeded 60s with at least one zero-yield module — tighten module_timeout_ms"
-                .into(),
-        );
-    }
-    if let Some((zero, total)) = zero_yield_summary
-        && zero > 0
-    {
-        diag.optimization_hints.push(format!(
-            "{zero} of {total} dispatched module(s) found nothing for this target kind"
-        ));
-    }
+    apply_event_sourced_optimization_hints(&mut diag, &events);
 
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
@@ -928,5 +946,109 @@ mod tests {
     #[test]
     fn no_completed_modules_is_none_not_a_zero_of_zero() {
         assert_eq!(zero_yield_module_summary(&[]), None);
+    }
+
+    // ── apply_event_sourced_optimization_hints — the single-sourced hint
+    // correction both the CLI dossier text output AND the `--output json`
+    // payload must apply. Before this cycle, only `print_diagnostics` called
+    // it (inline); the JSON branch in `cli/scan/mod.rs` computed `diag` and
+    // serialised it straight to the payload, so `diagnostics.optimization_hints`
+    // in `hse scan --output json` could claim "no optimization signals
+    // detected" on the exact same scan whose dossier text output correctly
+    // flagged a zero-yield module. These tests exercise the shared function
+    // directly, proving it produces the corrected hints regardless of which
+    // renderer calls it.
+
+    use super::apply_event_sourced_optimization_hints;
+    use crate::util::diagnostics::{NO_OPTIMIZATION_SIGNALS_HINT, ScanDiagnostics};
+
+    fn diag_with_fallback_hint(wall_time_ms: u64) -> ScanDiagnostics {
+        ScanDiagnostics {
+            wall_time_ms,
+            optimization_hints: vec![NO_OPTIMIZATION_SIGNALS_HINT.to_string()],
+            ..Default::default()
+        }
+    }
+
+    /// The whole point of the fix: a long scan with a zero-yield module must
+    /// gain the real hint AND lose the stale "well-tuned" fallback — the
+    /// exact correction `print_diagnostics` already applied, now reachable
+    /// from any caller (e.g. the JSON output path) via one shared function.
+    #[test]
+    fn applies_the_slow_scan_hint_and_drops_the_stale_fallback() {
+        let mut diag = diag_with_fallback_hint(61_000);
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "subdomain_takeover".into(),
+                found: 0,
+            },
+        )];
+        apply_event_sourced_optimization_hints(&mut diag, &events);
+        assert!(
+            !diag
+                .optimization_hints
+                .contains(&NO_OPTIMIZATION_SIGNALS_HINT.to_string()),
+            "stale fallback must be removed once a real hint fires: {:?}",
+            diag.optimization_hints
+        );
+        assert!(
+            diag.optimization_hints
+                .iter()
+                .any(|h| h.contains("scan exceeded 60s")),
+            "expected the slow-scan hint: {:?}",
+            diag.optimization_hints
+        );
+    }
+
+    /// The bounded per-module count hint must also apply through the shared
+    /// function, independent of the slow-scan condition.
+    #[test]
+    fn applies_the_bounded_zero_yield_count_hint() {
+        let mut diag = diag_with_fallback_hint(100);
+        let events = vec![
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "waf_detect".into(),
+                    found: 0,
+                },
+            ),
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: "crtsh".into(),
+                    found: 1,
+                },
+            ),
+        ];
+        apply_event_sourced_optimization_hints(&mut diag, &events);
+        assert!(
+            diag.optimization_hints
+                .iter()
+                .any(|h| h.contains("1 of 2 dispatched module(s) found nothing")),
+            "expected the bounded zero-yield count hint: {:?}",
+            diag.optimization_hints
+        );
+    }
+
+    /// A scan with nothing to flag must leave the fallback untouched — the
+    /// correction must not manufacture a hint (or drop the fallback) when
+    /// none of its conditions actually fire.
+    #[test]
+    fn leaves_the_fallback_alone_when_nothing_fires() {
+        let mut diag = diag_with_fallback_hint(100);
+        let events = vec![Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: "crtsh".into(),
+                found: 1,
+            },
+        )];
+        apply_event_sourced_optimization_hints(&mut diag, &events);
+        assert_eq!(
+            diag.optimization_hints,
+            vec![NO_OPTIMIZATION_SIGNALS_HINT.to_string()]
+        );
     }
 }

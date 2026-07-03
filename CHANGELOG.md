@@ -392,6 +392,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   against the real running binary: a bounded live scan against a real domain
   left one module at zero entities, and the on-disk ledger correctly gained
   a `zero_yield_rate: 1.0` entry for it post-fix (no entry at all, pre-fix).
+- **`hse scan --output json`'s optimization hints could disagree with the
+  dossier text output for the identical scan (`PROBLEM_TREE` T2.16).** The
+  two event-sourced hints above (scan-level "60s + zero-yield module" and
+  the bounded per-module "N of M dispatched module(s) found nothing" count)
+  were only applied to the CLI dossier text renderer; the `--output json`
+  branch computed the same diagnostics and fetched the same events for the
+  ledger correction, but never applied the same hint correction before
+  serialising — so the documented "Full self-optimization payload" could
+  show "no optimization signals detected" on a scan whose dossier text
+  output, from identical data, correctly named a zero-yield module. The
+  correction is now a single shared function called by both renderers, so
+  they can no longer disagree. Verified live: `hse scan --output json`'s
+  `diagnostics.optimization_hints` now correctly contains the bounded
+  zero-yield count for a scan where it previously never could, regardless
+  of scan content.
 
 ### Added
 - **Real git-repo-pair tests for `hse update --check`'s `commits_behind`/

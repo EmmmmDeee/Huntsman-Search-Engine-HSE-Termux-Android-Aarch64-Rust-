@@ -762,6 +762,48 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   (self-optimization feedback loop silently inert; not correctness-critical
   to any persisted scan output, but the flag's entire purpose was defeated).
   Gate green: 4278 lib tests (+9), fmt/clippy `--all-targets`/doc clean.
+- **`[x]` T2.16 · `hse scan --output json`'s `diagnostics.optimization_hints`
+  could claim "no optimization signals detected" on a scan whose dossier
+  text output, from the identical data, correctly flagged a real hint**
+  *(found + fixed 2026-07-03, discovery pass)* — T2.14 added two
+  event-sourced optimization hints (the scan-level "60s + zero-yield module"
+  hint and the bounded per-module "N of M dispatched module(s) found
+  nothing" count), but only wired the correction into
+  `cli/scan/dossier.rs::print_diagnostics` (the CLI dossier text renderer).
+  `cli/scan/mod.rs`'s `--output json` branch calls the same
+  `util::diagnostics::analyse()` and — since T2.15 — already fetches the
+  scan's events to correct the cross-scan *ledger*
+  (`record_zero_yield_dispatches`), but serialises `diag` straight into the
+  JSON payload's `"diagnostics"` field without ever applying the T2.14 hint
+  correction to `diag.optimization_hints`. A scripted operator consuming
+  `hse scan --output json` — the documented "Full self-optimization
+  payload" — could therefore see the stale "no optimization signals
+  detected — pipeline is well-tuned for this seed" fallback on the exact
+  same scan whose `hse scan --output dossier` text correctly named a
+  zero-yield module, a direct output-format inconsistency in a field
+  explicitly meant to drive automation. → **Solution:** extracted the
+  correction block already inline in `print_diagnostics` into one shared
+  `cli/scan/dossier.rs::apply_event_sourced_optimization_hints(diag: &mut
+  ScanDiagnostics, events: &[Event])` (`pub(super)`, single-sourced per the
+  same doctrine T2.15's `core::event::module_yield_outcomes` extraction
+  followed); `print_diagnostics` now calls it instead of the inline block
+  (behaviour-identical — same three tests still pass unchanged), and the
+  JSON branch calls it too, right after the ledger correction, before
+  serialising. **Verified live:** a bounded `hse scan -k domain -v
+  rust-lang.org --free-only -m subdomain_takeover,waf_detect,crtsh --output
+  json` (one module errored this run, two completed — `modules_errored: 1`
+  in the payload, confirming `ModuleError` is correctly excluded from the
+  zero-yield count, only real `ModuleDone{found:0}` counts) shows
+  `diagnostics.optimization_hints` containing `"1 of 2 dispatched
+  module(s) found nothing for this target kind"` — before this fix the
+  JSON payload could never contain either T2.14 hint, regardless of scan
+  content. 3 new unit tests on the shared function
+  (`applies_the_slow_scan_hint_and_drops_the_stale_fallback`,
+  `applies_the_bounded_zero_yield_count_hint`,
+  `leaves_the_fallback_alone_when_nothing_fires`). **P2** (scriptable-output
+  correctness gap; no persisted scan data affected, but the specific field
+  meant to drive automated tuning decisions was misleading). Gate green:
+  4283 lib tests (+3), fmt/clippy `--all-targets`/doc clean.
 
 ---
 
@@ -3465,3 +3507,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `SOLUTION_TREE` SOL-UPDATE + §4/§5 — same commit (SOL-UPDATE has no
   dedicated T-numbered node — it was delivered S→P in cycle 22 — so this
   entry is the problem-side pairing for that node's own residual).
+
+- **2026-07-03** — **T2.16 (new, found + fixed same cycle): `hse scan
+  --output json`'s optimization hints could disagree with the dossier text
+  output for the identical scan.** With the T2.13/T2.14/T2.15 discovery
+  thread re-confirmed exhausted and no other ready item in either tree
+  (this cycle's own SOL-UPDATE closure consumed the last documented
+  residual), re-read the JSON output branch in `cli/scan/mod.rs` — added
+  last cycle for T2.15's ledger fix — against the dossier text renderer it
+  mirrors, and found the two had silently diverged: `print_diagnostics`
+  applies the T2.14 event-sourced hint correction to `diag.optimization_hints`
+  before printing; the JSON branch computes the identical `diag` and fetches
+  the identical `events` (for the ledger correction), but never applied the
+  same hint correction before serialising — a genuine, reproducible,
+  code-grounded output-format inconsistency, not speculation. Extracted the
+  correction into one shared `pub(super)`
+  `cli/scan/dossier.rs::apply_event_sourced_optimization_hints`, called from
+  both renderers now. 3 new unit tests on the shared function; verified live
+  that `hse scan --output json`'s `diagnostics.optimization_hints` now
+  contains the corrected hints (previously it could never contain either
+  T2.14 hint, regardless of scan content). Gate green: 4283 lib tests (+3),
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` new node
+  SOL-JSON-HINT-PARITY (§2) + §3/§4/§5 — same commit.

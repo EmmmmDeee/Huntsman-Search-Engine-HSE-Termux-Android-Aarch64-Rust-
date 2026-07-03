@@ -302,7 +302,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .and_then(|f| f.checked_sub(scan.started_at))
             .unwrap_or(0)
             .saturating_mul(1000);
-        let diag =
+        let mut diag =
             crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
         // See the matching comment in `dossier.rs::print_diagnostics`: corrects
         // the cross-scan ledger for modules `analyse()`'s internal
@@ -313,6 +313,12 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         crate::util::diagnostics::record_zero_yield_dispatches(
             &crate::core::event::zero_yield_module_names(&events),
         );
+        // Same event-sourced hints the dossier text output applies (T2.14) —
+        // without this the JSON payload's `diagnostics.optimization_hints`
+        // could claim "no optimization signals detected" on a scan whose
+        // dossier text output, from the same underlying data, correctly
+        // flagged a zero-yield module (discovery pass, this cycle).
+        dossier::apply_event_sourced_optimization_hints(&mut diag, &events);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({

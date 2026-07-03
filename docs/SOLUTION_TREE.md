@@ -533,6 +533,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `five_zero_yield_scans_reach_the_adaptive_skip_threshold` proving the
   `--adaptive` gate (`scans_present >= 5 && zero_yield_rate >= 0.80`) is
   reachable at all — impossible for any input under the unfixed code.
+- **`[x]` SOL-JSON-HINT-PARITY · Apply T2.14's event-sourced hint correction
+  to the JSON output too, not just the dossier text** → **T2.16** (found +
+  fixed same cycle, 2026-07-03, discovery pass): SOL-HINT-NOISE only wired
+  the scan-level and per-module event-sourced hints into
+  `cli/scan/dossier.rs::print_diagnostics`; `cli/scan/mod.rs`'s `--output
+  json` branch computes the same `ScanDiagnostics` and (since
+  SOL-ADAPTIVE-LEDGER) fetches the same `events` for the ledger correction,
+  but serialised `diag` straight to the payload without ever correcting
+  `diag.optimization_hints` — so the documented "Full self-optimization
+  payload" could show the stale "no optimization signals detected" fallback
+  on a scan whose dossier text output, from identical data, correctly
+  flagged a real hint. *Closes:* **T2.16**. Extracted the inline correction
+  block already proven in `print_diagnostics` into one shared `pub(super)
+  apply_event_sourced_optimization_hints(diag, events)` — single-sourced,
+  same doctrine as `core::event::module_yield_outcomes` — called from both
+  renderers now. ✅ **Verified against the real running binary:** the same
+  bounded `hse scan -k domain -v rust-lang.org --free-only -m
+  subdomain_takeover,waf_detect,crtsh --output json` fixture used for
+  SOL-ADAPTIVE-LEDGER now shows `diagnostics.optimization_hints` containing
+  `"1 of 2 dispatched module(s) found nothing for this target kind"`
+  (`modules_errored: 1` this run confirms `ModuleError` is correctly
+  excluded from the zero-yield count — only real `ModuleDone{found:0}`
+  counts). 3 new unit tests
+  (`applies_the_slow_scan_hint_and_drops_the_stale_fallback`,
+  `applies_the_bounded_zero_yield_count_hint`,
+  `leaves_the_fallback_alone_when_nothing_fires`); the 3 pre-existing
+  `print_diagnostics` hint tests pass unchanged (behaviour-identical
+  refactor).
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -622,6 +650,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-ADAPTIVE-LEDGER | T2.15 | `[x]` |
+| SOL-JSON-HINT-PARITY | T2.16 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -752,7 +781,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   legs delivered 2026-07-03 — scan-level hint + per-module bounded-count hint);
   **T2.15 `[x]`** ✅ (SOL-ADAPTIVE-LEDGER, 2026-07-03 — the ledger's own
   zero-yield tracking was the same dead-code pattern; `--adaptive` now has a
-  reachable skip path for the first time).
+  reachable skip path for the first time); **T2.16 `[x]`** ✅
+  (SOL-JSON-HINT-PARITY, 2026-07-03 — `--output json`'s optimization hints
+  now match the dossier text output for the same scan).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2684,3 +2715,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   4280 lib tests (+2), fmt/clippy `--all-targets`/doc clean. **Paired:**
   `PROBLEM_TREE` §8 — same commit (SOL-UPDATE was an S→P delivery with no
   dedicated T-numbered node; this closes its own documented residual).
+
+- **2026-07-03** — **New: SOL-JSON-HINT-PARITY closes T2.16 — `--output
+  json`'s optimization hints could disagree with the dossier text for the
+  same scan.** With the T2.13/T2.14/T2.15 dead-code family re-confirmed
+  exhausted and SOL-UPDATE's residual (the last documented gap) closed
+  earlier this same cycle, re-read `cli/scan/mod.rs`'s JSON branch — touched
+  last cycle for SOL-ADAPTIVE-LEDGER — against the dossier renderer it
+  mirrors, rather than assuming it already matched. Found a real,
+  reproducible divergence: `print_diagnostics` applies SOL-HINT-NOISE's two
+  event-sourced hint corrections to `diag.optimization_hints` before
+  printing; the JSON branch computes the identical `ScanDiagnostics` and
+  fetches the identical `events` (for the ledger correction added last
+  cycle), but never applied the same hint correction before serialising —
+  so the documented "Full self-optimization payload" could show "no
+  optimization signals detected" on a scan whose dossier text output, from
+  the SAME data, correctly named a zero-yield module. Fixed by extracting
+  the correction block already proven correct in `print_diagnostics` into
+  one shared `cli/scan/dossier.rs::apply_event_sourced_optimization_hints`
+  (`pub(super)`), called from both renderers — single-sourced, matching the
+  precedent `core::event::module_yield_outcomes` set for the same class of
+  duplication risk. `print_diagnostics`'s 3 existing hint tests pass
+  unchanged (behaviour-identical refactor); 3 new unit tests on the shared
+  function. ✅ **Verified against the real running binary:** the same
+  bounded `hse scan -k domain -v rust-lang.org --free-only -m
+  subdomain_takeover,waf_detect,crtsh --output json` fixture now shows
+  `diagnostics.optimization_hints` containing `"1 of 2 dispatched
+  module(s) found nothing for this target kind"` (`modules_errored: 1`
+  this run confirms `ModuleError` is correctly excluded — only real
+  `ModuleDone{found:0}` counts toward the hint). Gate green: 4283 lib tests
+  (+3), fmt/clippy `--all-targets`/doc clean. **Paired:** `PROBLEM_TREE` new
+  T2.16 + §8 — same commit.
