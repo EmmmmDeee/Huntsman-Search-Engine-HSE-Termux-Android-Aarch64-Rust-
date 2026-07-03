@@ -471,7 +471,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[x]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -491,9 +491,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fired because `analyse()` — event-blind by construction — couldn't see this
   condition. 4 new unit tests pin the boundary + cost-tier-agnostic scope;
   live-verified the non-triggering path renders unchanged.
-  *Remaining:* the per-module hint — still blocked on the noise decision
-  above, untouched this cycle. **(§4a, downgraded from "not yet started" to
-  the finish queue)**
+  *Delivered (2026-07-03):* the per-module hint, resolved with the
+  bounded-summary-count candidate — the only one of the three that
+  structurally cannot flood the hints list (no per-module line is ever
+  emitted, at any scale). New pure `zero_yield_module_summary` folds
+  `ModuleDone` events by module name into one `(zero, total)` pair (a
+  module re-dispatched across expansion rounds is zero-yield only if it
+  found nothing on every round), rendered as a single `"N of M dispatched
+  module(s) found nothing for this target kind"` line that points at the
+  existing adaptive-routing `recommended_skips` mechanism for the by-name
+  follow-up, rather than inventing a second naming mechanism. Shares the
+  60s hint's placeholder-drop merge point, so both compose correctly. 5 new
+  unit tests; live-verified both branches with real network scans (a
+  single-module scan → "1 of 1"; a 4-module mixed scan with one genuine hit
+  → "2 of 3", correctly excluding the productive module).
+  **SOL-HINT-NOISE fully closed** — both halves of T2.14 delivered. **(§4b,
+  moved off the finish queue)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -569,7 +582,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[~]` |
+| SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -593,7 +606,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-*(T2.14 moved to §4b, 2026-07-03 — its scan-level half shipped.)*
+*(T2.14 fully closed, 2026-07-03 — both halves shipped; off §4a and §4b.)*
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -675,11 +688,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **SOL-BUDGET** — ✅ accepted `[-]` (cycle 18 S→P): `reset_per_scan` already
   called at `run_with_ledger_inner:289`; cited residual was a faulty premise.
   Off the finish queue.
-- **SOL-HINT-NOISE** (new, 2026-07-03) — the scan-level "60s + zero-yield
-  module" half shipped (event-sourced, cost-tier-agnostic, exact original
-  wording/threshold recovered from git history). *Remaining:* the per-module
-  "returned 0 entities" hint, still blocked on its own noise decision
-  (cap-worst-N / cost-gate / bounded-summary — undecided).
+- ~~**SOL-HINT-NOISE**~~ — ✅ **fully closed (2026-07-03).** Both the
+  scan-level 60s hint and the per-module bounded-summary hint delivered.
+  Off the finish queue.
 
 ### 4c · Solutions with no problem (over-build — prune candidates)
 - **None found.** Every solution node traces to ≥1 `PROBLEM_TREE` node or the shared
@@ -699,9 +710,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it).
-  **T2.13 `[x]`** ✅ (SOL-ROI-HINT, 2026-07-01); **T2.14 `[~]`**
-  (SOL-HINT-NOISE, 2026-07-03 — scan-level 60s hint shipped, per-module hint
-  blocked on its own noise decision).
+  **T2.13 `[x]`** ✅ (SOL-ROI-HINT, 2026-07-01); **T2.14 `[x]`** ✅
+  (SOL-HINT-NOISE, 2026-07-03 — both the scan-level 60s hint and the
+  per-module bounded-summary hint shipped).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -2546,3 +2557,41 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.14's own text) — no scope expansion. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4267 lib tests (+4), 0 failures. **Paired:**
   `PROBLEM_TREE` T2.14 `[ ]`→`[~]` + §8 — same commit.
+
+- **2026-07-03** — **SOL-HINT-NOISE `[~]`→`[x]`: finished T2.14, resolving
+  the per-module hint's noise question with the bounded-summary-count
+  candidate.** Step 1 priority: an in-progress node comes before any new
+  pick, and T2.14 was left `[~]` by the immediately prior cycle with one
+  clearly-scoped remainder and three named candidates. Chose the
+  bounded-summary count over cap-worst-N or cost-gate-like-ROI because it is
+  the only one that cannot reproduce the flooding failure mode at ANY
+  scale — no per-module line is ever emitted, so a 100-module scan with 90
+  zero-yield modules still prints exactly one line, not 90. New pure
+  `zero_yield_module_summary(events)` folds `ModuleDone` events by module
+  name into a `(zero, total)` pair; a module dispatched more than once
+  across expansion rounds counts as zero-yield only if it found nothing on
+  *every* round (finding something on any round makes it productive this
+  scan, so it must not count against a future `--exclude` decision). Renders
+  as `"N of M dispatched module(s) found nothing for this target kind — run
+  with --adaptive after a few more scans to learn which are worth
+  excluding"` — deliberately pointing at the ALREADY-BUILT adaptive-routing
+  mechanism (`recommended_skips`, ≥80% zero-yield over ≥5 scans) for the
+  by-name follow-up rather than inventing a second, redundant naming
+  mechanism. Shares the 60s hint's placeholder-drop merge point in
+  `print_diagnostics`, so `analyse()`'s "no optimization signals" fallback
+  correctly disappears whichever (or both) of the two hints fire. **S→P
+  proof:** 5 new unit tests (mixed fraction; silent when every module
+  succeeded; silent — not a false `0 of 0` — when nothing was dispatched;
+  re-dispatch productivity correctly excludes a module; a repeated
+  zero-yield dispatch dedupes to one, not two). Live-verified BOTH branches
+  with real network scans, not fixtures: `hse scan -k domain -v
+  rust-lang.org --free-only --passive-only --output dossier` (a single
+  zero-yield module) printed `"1 of 1 dispatched module(s) found nothing"`;
+  a second real scan (`-m
+  search_engines,urlhaus,ip_reputation,geo_domain_classifier`) printed `"2
+  of 3 dispatched module(s) found nothing"`, correctly excluding
+  `ip_reputation` — the one module that genuinely returned data — from the
+  zero count. No scope expansion beyond T2.14's own already-scoped
+  remainder. Gate green: fmt/clippy `--all-targets`/doc clean, 4272 lib
+  tests (+5), 0 failures. **Paired:** `PROBLEM_TREE` T2.14 `[~]`→`[x]` +
+  §4/§4b/§8 — same commit.

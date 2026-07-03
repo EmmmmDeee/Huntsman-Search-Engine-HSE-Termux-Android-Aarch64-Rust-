@@ -362,6 +362,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   module still burns wall-clock worth tuning `module_timeout_ms` for, even
   though it wasted no paid spend. Wording and the 60-second threshold are
   unchanged from the original.
+- **Reinstated the dossier's per-module "returned 0 entities" hint as a
+  bounded summary, resolving the noise question left open above
+  (`PROBLEM_TREE` T2.14).** The original per-module hint would have printed
+  one line per zero-yield module — dozens on a realistic multi-module scan,
+  flooding the signal it was meant to provide — so it was deliberately left
+  unreinstated pending a design decision. Now prints a single bounded `"N of
+  M dispatched module(s) found nothing for this target kind"` line instead
+  of enumerating every module by name, pointing at `--adaptive` (which
+  already tracks per-module historical zero-yield rate) for a by-name
+  follow-up.
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

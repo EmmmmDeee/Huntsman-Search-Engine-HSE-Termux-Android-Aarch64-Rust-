@@ -650,7 +650,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[x]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -688,8 +688,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   optimization signals" fallback — proving the merge doesn't regress the
   common (non-triggering) case; the >60s branch itself is exhaustively covered
   by the unit tests rather than a deliberately-slowed live scan.
-  *Remaining (unchanged scope):* the per-module "returned 0 entities" hint —
-  still blocked on the noise decision above; not attempted this cycle.
+  ✅ **Per-module hint delivered (2026-07-03), resolving the noise question
+  with the bounded-count candidate.** New pure
+  `cli/scan/dossier.rs::zero_yield_module_summary(events)` folds the scan's
+  `ModuleDone` events by module name (a module dispatched more than once
+  across expansion rounds counts as zero-yield only if it found nothing on
+  *every* round — finding something on any round makes it productive) and
+  reports one bounded `(zero, total)` count instead of enumerating every
+  zero-yield module by name — the exact flood the original per-module hint
+  would have caused, avoided. Rendered as a single line: `"N of M dispatched
+  module(s) found nothing for this target kind — run with --adaptive after a
+  few more scans to learn which are worth excluding"`, pointing at the
+  existing adaptive-routing mechanism (`analyse()`'s
+  `recommended_skips`/≥80%-zero-yield-over-≥5-scans) as the real, already-
+  built path to a by-name answer, rather than inventing a new one. 5 new unit
+  tests (mixed fraction; silent when every module succeeded; silent when
+  nothing dispatched — not a false `0 of 0`; a re-dispatched module that ever
+  found something is excluded; a repeated zero-yield dispatch is deduped to
+  one). Verified live end-to-end, both branches: `hse scan -k domain -v
+  rust-lang.org --free-only --passive-only --output dossier` (single
+  zero-yield module) printed `"1 of 1 dispatched module(s) found nothing"`;
+  a second real scan with a mixed module set (`-m
+  search_engines,urlhaus,ip_reputation,geo_domain_classifier`) printed `"2 of
+  3 dispatched module(s) found nothing"` — one module (`ip_reputation`)
+  genuinely found something and was correctly excluded from the zero count.
+  Both hints (this + the 60s hint) share one merge point in
+  `print_diagnostics`, so `analyse()`'s "no optimization signals" placeholder
+  is dropped correctly regardless of which (or both) fire. T2.14 fully
+  closed — both halves delivered, gap analysed `[~]`→`[x]` reflects it.
 
 ---
 
@@ -3317,3 +3343,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   still blocked on its noise decision, not attempted this cycle (no scope
   expansion). **Paired:** `SOLUTION_TREE` SOL-HINT-NOISE `[ ]`→`[~]` + §4a +
   §5 — same commit.
+
+- **2026-07-03** — **T2.14 `[~]`→`[x]`: finished the in-progress node,
+  delivering the per-module hint's noise decision.** Step 1's priority order
+  puts finishing an in-progress node first; T2.14 was left `[~]` by the prior
+  cycle with exactly one clearly-scoped remainder and three named candidate
+  designs (cap-worst-N, cost-gate-like-ROI, bounded-summary-count). Picked
+  the bounded-summary count: it's the only candidate that structurally cannot
+  reproduce the flooding failure mode (no per-module line, ever, regardless
+  of how many modules zero-yield), and it points at a real existing
+  mechanism — `analyse()`'s adaptive-routing `recommended_skips` (≥80%
+  zero-yield over ≥5 scans) — for the by-name answer, rather than inventing
+  a new one. New pure `zero_yield_module_summary` folds `ModuleDone` events
+  by module name (re-dispatch-safe: a module that found something on ANY
+  round across expansion is not zero-yield) into one `(zero, total)` pair,
+  rendered as a single hint line. Shares the same placeholder-drop merge
+  point in `print_diagnostics` as the 60s hint from two cycles ago, so both
+  compose correctly regardless of which fire. **S→P proof:** 5 new unit
+  tests (mixed fraction; silent when everything succeeded; silent — not a
+  false `0 of 0` — when nothing was dispatched; re-dispatch productivity
+  correctly excludes a module from the zero count; a repeated zero-yield
+  dispatch dedupes to one). Verified live, both branches, with real network
+  scans (not fixtures): a single-module domain scan printed `"1 of 1
+  dispatched module(s) found nothing"`; a 4-module mixed scan (one module,
+  `ip_reputation`, genuinely returned data) printed `"2 of 3 dispatched
+  module(s) found nothing"` — correctly excluding the productive module from
+  the count. No scope expansion: the 60s hint from the prior cycle was left
+  untouched; only T2.14's own named remainder was built. Gate green:
+  fmt/clippy `--all-targets`/doc clean, 4272 lib tests (+5), 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-HINT-NOISE `[~]`→`[x]` + §4/§4b/§5 — same
+  commit.

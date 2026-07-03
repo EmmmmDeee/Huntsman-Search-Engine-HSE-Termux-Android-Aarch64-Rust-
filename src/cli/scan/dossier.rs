@@ -481,6 +481,42 @@ fn scan_exceeded_60s_with_a_zero_yield_module(
             .any(|ev| matches!(ev.kind, EventKind::ModuleDone { found: 0, .. }))
 }
 
+/// `(zero_yield_count, dispatched_count)` for the scan's modules, or `None`
+/// when there is nothing to report (no modules dispatched, or every
+/// dispatched module found something). The bounded-summary resolution of
+/// T2.14's per-module noise question: the original per-module hint (`"module
+/// 'X' returned 0 entities"`) enumerated every zero-yield module by name,
+/// which a real 42-module scan showed would flood the hints list with ~30
+/// lines of "normal, not noteworthy" zero-yield free modules. Collapsing to
+/// one bounded count preserves the signal (the operator learns *how much* of
+/// the dispatch was unproductive) without the noise (no per-module line).
+/// Sourced from the scan's own `ModuleDone` events — the same reason
+/// [`zero_yield_keyed_or_paid_modules`] doesn't use
+/// [`crate::util::diagnostics::analyse`]'s `modules_by_yield` (it never
+/// contains a zero-entity module at all). A module dispatched more than once
+/// (recursive expansion re-visiting a target) counts as zero-yield only if
+/// it found nothing on *every* dispatch — finding something on any round
+/// means the module was productive this scan, so it must not be counted
+/// against the operator's future `--exclude` decision.
+fn zero_yield_module_summary(events: &[crate::core::event::Event]) -> Option<(usize, usize)> {
+    use crate::core::event::EventKind;
+    use std::collections::BTreeMap;
+
+    let mut ever_found: BTreeMap<&str, bool> = BTreeMap::new();
+    for ev in events {
+        if let EventKind::ModuleDone { module, found } = &ev.kind {
+            let entry = ever_found.entry(module.as_str()).or_insert(false);
+            *entry = *entry || *found > 0;
+        }
+    }
+    let total = ever_found.len();
+    let zero = ever_found
+        .values()
+        .filter(|&&found_anything| !found_anything)
+        .count();
+    (zero > 0).then_some((zero, total))
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -674,18 +710,29 @@ fn print_diagnostics(
 
     println!("━━━ OPTIMIZATION HINTS ━━━");
     println!();
+    // Both of these are event-sourced (`analyse()` is pure and has no store
+    // access, so it structurally cannot compute either — PROBLEM_TREE T2.14).
     let mut hints = diag.optimization_hints.clone();
+    let mut extra_hints: Vec<String> = Vec::new();
     if scan_exceeded_60s_with_a_zero_yield_module(wall_ms, &events) {
-        // `analyse()` can't see this — it's event-sourced and `util` has no
-        // store access — so its "no signals" placeholder may be stale here;
-        // drop it if this is the only reason `hints` wasn't already empty.
-        if hints.len() == 1 && hints[0].starts_with("no optimization signals detected") {
-            hints.clear();
-        }
-        hints.push(
+        extra_hints.push(
             "scan exceeded 60s with at least one zero-yield module — tighten module_timeout_ms"
                 .to_string(),
         );
+    }
+    if let Some((zero, total)) = zero_yield_module_summary(&events) {
+        extra_hints.push(format!(
+            "{zero} of {total} dispatched module(s) found nothing for this target kind — run with --adaptive after a few more scans to learn which are worth excluding"
+        ));
+    }
+    if !extra_hints.is_empty() {
+        // `analyse()`'s "no signals" placeholder may be stale now — drop it
+        // if that placeholder is the only reason `hints` wasn't already
+        // empty.
+        if hints.len() == 1 && hints[0].starts_with("no optimization signals detected") {
+            hints.clear();
+        }
+        hints.extend(extra_hints);
     }
     for hint in &hints {
         println!("  • {hint}");
@@ -834,6 +881,60 @@ mod tests {
                 },
             )];
             assert!(!scan_exceeded_60s_with_a_zero_yield_module(61_000, &events));
+        }
+    }
+
+    mod zero_yield_module_summary_tests {
+        use super::super::zero_yield_module_summary;
+        use crate::core::event::{Event, EventKind};
+
+        fn done(module: &str, found: usize) -> Event {
+            Event::new(
+                "s",
+                EventKind::ModuleDone {
+                    module: module.into(),
+                    found,
+                },
+            )
+        }
+
+        /// The reinstated case: some dispatched modules found nothing, others
+        /// did — reports a bounded count, never names.
+        #[test]
+        fn reports_the_zero_yield_fraction() {
+            let events = vec![done("shodan", 0), done("search_engines", 3)];
+            assert_eq!(zero_yield_module_summary(&events), Some((1, 2)));
+        }
+
+        /// Every dispatched module found something — nothing to report.
+        #[test]
+        fn silent_when_every_module_found_something() {
+            let events = vec![done("shodan", 2), done("search_engines", 3)];
+            assert_eq!(zero_yield_module_summary(&events), None);
+        }
+
+        /// No modules dispatched at all (e.g. no `ModuleDone` events yet) —
+        /// nothing to report, not a false `0 of 0`.
+        #[test]
+        fn silent_when_nothing_dispatched() {
+            assert_eq!(zero_yield_module_summary(&[]), None);
+        }
+
+        /// A module re-dispatched across expansion rounds that found nothing
+        /// on one round but something on another must NOT be counted as
+        /// zero-yield — it was productive this scan.
+        #[test]
+        fn a_module_that_ever_found_something_is_not_zero_yield() {
+            let events = vec![done("wigle", 0), done("wigle", 4)];
+            assert_eq!(zero_yield_module_summary(&events), None);
+        }
+
+        /// The same module dispatched twice, zero-yield both times, counts
+        /// ONCE in the total — not twice.
+        #[test]
+        fn a_repeated_zero_yield_module_is_deduped() {
+            let events = vec![done("shodan", 0), done("shodan", 0), done("hunter_io", 2)];
+            assert_eq!(zero_yield_module_summary(&events), Some((1, 2)));
         }
     }
 }
