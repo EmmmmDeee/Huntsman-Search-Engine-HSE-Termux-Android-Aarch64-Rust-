@@ -319,7 +319,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   proptested) now backs **both** AU-060 transitive identity closure (refactored to
   delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
   that renders the shortest typed thread between identities as text. *Remaining:*
-  first-class timeline output + further AU-0xx rule-gap fill.
+  first-class timeline output + further AU-0xx rule-gap fill + the "controller
+  behind reused secrets" link facet (reconciled from `PROBLEM_TREE` C1,
+  2026-07-03 — this tree's copy of the remaining list had silently dropped it;
+  see the scoping note below).
+  *Scoping note (2026-07-03, investigated not built — see the hard
+  constraint against sprawling a commit):* the correlator's AU-047/AU-106
+  already compute "this secret ties ≥2 accounts to one controller"
+  (`core::correlator::rules::breach`) but only as prose inside a
+  `Correlation` — never as a `Relation` edge, so `identity_paths`/
+  `resolve_identity_clusters`/`connection_brokers` (the primitives backing
+  CONNECTIONS/RESOLVED IDENTITIES/CONNECTION BROKERS) can't see it. A correct
+  `derive_shared_secret` in `core::relation::builders` must NOT duplicate
+  AU-047's precision-critical classification (entropy scoring +
+  common-password denylist for a reused plaintext password — false positives
+  here are the worst error class this tool can make); this codebase's own
+  established pattern for exactly this situation is a shared `util::`
+  predicate consumed by both sides, not a `relation`→`correlator` import (see
+  `util::domains::is_proxy_registrant`/`registrable_domain`, shared today by
+  `derive_co_ownership` and AU-109/AU-110). Concretely: move the two small,
+  stable, already-unit-tested leaf predicates `is_salted_hash`
+  (`correlator/rules/breach.rs`) and `canonical_handle`
+  (`correlator/rules/mod.rs`) into a new pure `util` module; migrate their
+  existing tests with them; have `derive_shared_secret` link only the
+  globally-unique-by-construction secret kinds (`CryptoAddress`, `ApiKey`,
+  salted-hash `Credential`/`Password`) — the reused-plaintext-password leg
+  stays correlator-only, explicitly out of scope for the graph edge, since
+  duplicating its entropy/denylist gates would be the exact kind of
+  precision-critical logic split this project's doctrine warns against.
+  Left as a clearly-scoped future increment rather than force-fit into one
+  commit alongside everything else this cycle found.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -626,8 +655,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
-- **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
-  the §3.F enablers landing first, by design).
+- **C1** — `[~]` (SOL-CORR). **Status correction (2026-07-03):** this line
+  previously grouped C1 with C2/C6/C7 as "none started," which was stale —
+  SOL-CORR has a substantial multi-cycle delivered arc (cycles 26–40:
+  `identity_paths` transitive closure + CONNECTIONS dossier section,
+  orthogonal-pathway corroboration, backward/forward cross-scan gap-fill,
+  `resolve_identity_clusters` + RESOLVED IDENTITIES, active in-scan gap-fill
+  — cycle 40's own log calls it "SOL-CORR's full arc… delivered"). *Remaining:*
+  first-class timeline output (widen beyond the shipped footprint timeline);
+  further AU-0xx rule-gap fill; **the "controller behind reused secrets" link
+  facet** (this bullet was missing from this tree even though `PROBLEM_TREE`
+  C1 has named it since import — reconciled below at SOL-CORR).
+- **C2/C6/C7** — capability nodes; solutions sketched, genuinely none started
+  (gated on the §3.F enablers landing first, by design — confirmed against
+  `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/`SOL-FORENSIC`, all still `[ ]`).
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
   real when logged (cycle 20) but was built and shipped 2026-06-30
@@ -2624,3 +2665,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `SOL-*` status changed (they were already correct — only the cross-tree
   summary prose was stale). No code, test, or behaviour change. **Paired:**
   `PROBLEM_TREE` T2.11 `[~]`→`[x]` + §8 — same commit.
+
+- **2026-07-03** — **S→P re-verification: two more stale spots found around
+  C1/SOL-CORR, reconciled; the genuine remaining work scoped, not built.**
+  With T2.11 closed and T2.7/F.1/F.2/F.3's remaining items all still
+  correctly blocked, step 1's priority-3 fallback (a concrete gap surfaced by
+  this tree's own §4) led to C1 — PROBLEM_TREE's C1 "Remaining" list names
+  three items, this tree's SOL-CORR node only named two, a genuine cross-tree
+  drift. Investigated the missing third item (the "controller behind reused
+  secrets" link facet) against the live code before deciding what to do with
+  it: confirmed real — `core::correlator::rules::breach`'s AU-047/AU-106
+  already detect "one secret ties ≥2 accounts to one controller" but only as
+  `Correlation` prose, never as a `Relation` edge, so `identity_paths`/
+  `resolve_identity_clusters`/`connection_brokers` (CONNECTIONS/RESOLVED
+  IDENTITIES/CONNECTION BROKERS' shared primitives) never see it — a genuine
+  gap, not a stale claim. Also found §4a's "C1/C2/C6/C7 — none started" line
+  was itself stale for C1 specifically: SOL-CORR has a substantial delivered
+  arc (cycles 26–40, cycle 40's own log calling it "the full arc… delivered"),
+  while C2/C6/C7 (re-verified against `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/
+  `SOL-FORENSIC`, all still `[ ]`) genuinely are untouched. **Deliberately
+  did NOT implement the controller facet this cycle** — sizing it up (which
+  secret kinds are safe to graph without duplicating AU-047's
+  precision-critical entropy/common-password gates, and how to share the two
+  small stable leaf predicates it needs — `is_salted_hash`/`canonical_handle`
+  — without inverting the established `correlator`→`relation` dependency
+  direction) revealed real design work, not a one-line fix; forcing it into
+  this commit would have been exactly the "sprawl" the hard constraints
+  warn against. Recorded the scoped design (`util`-shared-predicate approach,
+  mirroring the existing `util::domains::is_proxy_registrant` precedent) in
+  the SOL-CORR node above so a future cycle can execute it directly instead
+  of re-deriving the investigation. Reconciled both trees' Remaining lists
+  and §4a's C1 status in place. No code, test, or behaviour change. **Paired:**
+  `PROBLEM_TREE` §8 — same commit.

@@ -3421,3 +3421,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   all clean, as expected for a docs-only diff — see the T2.11 node's own
   "Status correction" addendum for the full trace). **Paired:**
   `SOLUTION_TREE` §4d coverage-snapshot wording + §5 — same commit.
+
+- **2026-07-03** — **S→P re-verification around C1: two `SOLUTION_TREE`
+  drifts reconciled, the genuine remaining gap scoped rather than built.**
+  With T2.11 closed and T2.7/F.1/F.2/F.3 still correctly blocked, step 1's
+  priority-3 fallback landed on C1: this node's own "Remaining" line (§3.2
+  above, unchanged by this entry — it was already accurate) names three
+  items, but `SOLUTION_TREE`'s mirror (SOL-CORR) only carried two — a
+  genuine cross-tree drift predating this session's own commit-level
+  history (confirmed via `git log -S`, same class as the `hse update
+  --check` note). Investigated the missing third item — "the controller
+  behind reused secrets link facet" — against the live code rather than
+  assuming it was still accurate: confirmed real. AU-047/AU-106
+  (`core::correlator::rules::breach`) already detect "one reused secret ties
+  ≥2 accounts to one controller," but only as `Correlation` description text
+  — it never becomes a `Relation` graph edge, so the CONNECTIONS/RESOLVED
+  IDENTITIES/CONNECTION BROKERS dossier sections (built on
+  `identity_paths`/`resolve_identity_clusters`/`connection_brokers`) can't
+  see it. `SOLUTION_TREE` §4a's "C1/C2/C6/C7 — none started" line was ALSO
+  stale for C1 specifically (SOL-CORR has a large delivered arc, cycles
+  26–40); C2/C6/C7 re-verified genuinely untouched. Deliberately did NOT
+  build the controller facet this cycle: correctly implementing it means
+  sharing two small precision-relevant predicates (`is_salted_hash`,
+  `canonical_handle`) between `core::correlator` and `core::relation` without
+  duplicating logic or inverting the established `correlator`→`relation`
+  dependency direction, and explicitly NOT graphing the reused-plaintext-
+  password leg (its entropy/common-password precision gates are exactly the
+  kind of logic this project's doctrine says must stay single-sourced,
+  never split) — real design work, sized and recorded in `SOLUTION_TREE`'s
+  SOL-CORR node for a future cycle to execute directly, rather than forced
+  into this commit. No code, test, or behaviour change. **Paired:**
+  `SOLUTION_TREE` SOL-CORR + §4a + §5 — same commit.
