@@ -191,6 +191,83 @@ use super::*;
         assert!(classify("").is_none());
     }
 
+    /// PROBLEM_TREE C1 "(c) widen the timeline": 12 real module attribute keys
+    /// a source-family audit found already carrying a parseable date under a
+    /// spelling `classify` didn't recognise. Each mapping here matches the
+    /// module it was found in (`wikidata`/`stackoverflow_user`/
+    /// `discord_snowflake`/`structured_id`/`ip_registry`/`crtsh`/`leakix`/
+    /// `wigle`/`psbdmp`/`hudsonrock`) — see the `classify` doc comment for the
+    /// per-key rationale, including the two keys deliberately left out
+    /// (HIBP's catalogue-metadata dates, not the subject's own chronology).
+    #[test]
+    fn classify_recognises_the_widened_source_family_keys() {
+        use TimelineEventKind::*;
+        for (key, expected) in [
+            ("birth_date", DateOfBirth),
+            ("account_created", Registered),
+            ("discord_created_date", Registered),
+            ("uuid_created_date", Registered),
+            ("objectid_created_date", Registered),
+            ("ulid_created_date", Registered),
+            ("ksuid_created_date", Registered),
+            ("allocated", Registered),
+            ("not_before", Registered),
+            ("not_after", Expiry),
+            ("earliest", FirstSeen),
+            ("earliest_paste", FirstSeen),
+            ("most_recent", LastSeen),
+            ("most_recent_observation", LastSeen),
+            ("date_uploaded", LastSeen),
+            ("date_compromised", BreachExposure),
+        ] {
+            assert_eq!(
+                classify(key),
+                Some(expected),
+                "{key} should classify as {expected:?}"
+            );
+        }
+        // Deliberately excluded: HIBP's own catalogue record-keeping dates,
+        // not an event in the subject's chronology.
+        assert!(classify("added_date").is_none());
+        assert!(classify("modified_date").is_none());
+    }
+
+    #[test]
+    fn reconstruct_includes_a_real_crtsh_certificate_validity_window() {
+        // End-to-end proof (not just classify()): the exact evidence shape
+        // `modules/crtsh` emits — this failed to appear in the timeline at
+        // all before `not_before`/`not_after` were recognised.
+        let cert = entity_with_attrs(
+            EntityKind::Domain,
+            "example.com",
+            "crtsh",
+            &[("not_before", "2024-01-01"), ("not_after", "2024-04-01")],
+        );
+        let events = reconstruct(&[cert]);
+        assert_eq!(events.len(), 2, "both cert dates become timeline events");
+        assert_eq!(events[0].kind, TimelineEventKind::Registered);
+        assert_eq!(events[0].iso, "2024-01-01");
+        assert_eq!(events[1].kind, TimelineEventKind::Expiry);
+        assert_eq!(events[1].iso, "2024-04-01");
+    }
+
+    #[test]
+    fn reconstruct_includes_a_real_hudsonrock_compromise_date() {
+        // The exact evidence shape `modules/hudsonrock` emits for a stealer
+        // log — the subject's own machine-compromise date, arguably the
+        // highest-value single event this widening adds.
+        let stealer_log = entity_with_attrs(
+            EntityKind::Credential,
+            "alice@example.com",
+            "hudsonrock",
+            &[("date_compromised", "2026-05-01T00:00:00Z")],
+        );
+        let events = reconstruct(&[stealer_log]);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].kind, TimelineEventKind::BreachExposure);
+        assert_eq!(events[0].iso, "2026-05-01");
+    }
+
     // ── is_leap ───────────────────────────────────────────────────────────────
 
     #[test]

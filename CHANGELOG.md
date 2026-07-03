@@ -24,6 +24,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   a reused *plaintext* password is not graphed — that leg needs entropy
   scoring and a common-password denylist to stay precise, kept
   single-sourced in the correlator rather than duplicated.
+- **The footprint timeline now recognises 12 more real date-shaped evidence
+  keys (`PROBLEM_TREE` C1, "widen the timeline").** A source-family audit
+  found modules already attaching genuine dates — a subject's own
+  machine-compromise date (`hudsonrock`), a certificate's issuance/expiry
+  window (`crtsh`), an account's true creation date recovered from a
+  Discord snowflake / UUIDv1 / ObjectID / ULID / KSUID rather than a
+  platform's self-reported field, a StackOverflow `account_created`, an
+  ASN's RIR allocation date, and more — under key spellings the timeline
+  reconstructor didn't recognise, so they silently never appeared.
+  Deliberately excluded HIBP's own catalogue `added_date`/`modified_date`:
+  those describe the breach *dataset's* record-keeping, not an event in the
+  subject's own chronology.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

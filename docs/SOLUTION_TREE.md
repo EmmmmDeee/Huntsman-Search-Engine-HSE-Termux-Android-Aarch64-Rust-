@@ -359,7 +359,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   edges when (as in a domain scan) no admissible secret is present. Gate
   green: fmt/clippy `--all-targets`/doc clean, 4281 lib tests (+9, net of
   2 removed exact-duplicate tests left behind by the predicate move).
-  *Remaining:* first-class timeline output + further AU-0xx rule-gap fill.
+  *Delivered (2026-07-03): (c) the timeline widened.* A source-family audit
+  of every `.with_attr(...)` call in `src/modules/` found 13 real
+  date-shaped evidence keys `core::timeline::classify` didn't recognise;
+  shipped the 12 that are clean near-misses/new fits for an existing
+  `TimelineEventKind` already in a `parse_date`-compatible shape (verified
+  per-key against each module's own test fixtures) — `birth_date`,
+  `account_created` + 4 decoded-ID timestamps + `allocated` + `not_before`
+  (→`Registered`), `not_after` (→`Expiry`), `earliest`/`earliest_paste`
+  (→`FirstSeen`), `most_recent`/`most_recent_observation`/`date_uploaded`
+  (→`LastSeen`), `date_compromised` (→`BreachExposure`, arguably the
+  highest-value single addition — the subject's own machine-compromise
+  date). Deliberately excluded `hibp`'s `added_date`/`modified_date` — the
+  breach *dataset's* catalogue dates, not an event in the subject's own
+  chronology, so adding them would violate `reconstruct`'s own
+  "subject's chronology" contract. Split off 2 further real gaps rather
+  than force-fitting: `acnc_charities`/`devto` need `parse_date` format
+  support this pass doesn't add; `rdap_domain`/`ip_registry`'s
+  dynamically-built `event_*` keys need prefix-matching logic `classify`'s
+  exact-match design can't do — both logged, not dropped. 3 new tests (all
+  12 keys + the 2 deliberate exclusions; 2 end-to-end `reconstruct` proofs
+  using `crtsh`/`hudsonrock`'s exact real evidence shape). Live-verified: a
+  real `hse scan` renders the TIMELINE section correctly (unchanged
+  0-events case); the specific new-source modules hit unrelated sandbox
+  network-egress limits reaching their third-party APIs, so the
+  fixture-level proofs carry the correctness burden. Gate green: 4284 lib
+  tests (+3). *Remaining:* further AU-0xx rule-gap fill.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -775,7 +800,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: transitive closure/CONNECTIONS/RESOLVED IDENTITIES/gap-fill/`SharesController` link facet all shipped across cycles 26–40 + 2026-07-03; first-class timeline + further AU-0xx rule-gap fill remaining — NOT gated on §3.F, corrected 2026-07-03); C2/C6/C7 genuinely open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: transitive closure/CONNECTIONS/RESOLVED IDENTITIES/gap-fill/`SharesController` link facet/timeline-widening all shipped across cycles 26–40 + 2026-07-03; only further AU-0xx rule-gap fill remaining — NOT gated on §3.F, corrected 2026-07-03); C2/C6/C7 genuinely open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -2761,3 +2786,52 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   predicate tests − 2 exact-duplicate tests removed from the move), 0
   failures. **Paired:** `PROBLEM_TREE` C1 (unchanged `[~]` — timeline/
   rule-gap-fill remain) + §4/§4a/§8 — same commit.
+
+- **2026-07-03** — **SOL-CORR: C1's "(c) widen the timeline" delivered —
+  12 real date-shaped evidence keys recognised.** Step 1: C1's remaining
+  two items (timeline widening, further AU-0xx rule-gap fill) are both
+  open-ended, so this cycle ran a fresh code-grounded discovery pass on the
+  smaller, more concretely scoped of the two — a subagent audit of every
+  `.with_attr(...)` call across `src/modules/` for date-shaped values under
+  a key `core::timeline::classify` doesn't recognise, cross-verified
+  per-key against each producing module's own test fixtures so a finding
+  was only accepted if the value is genuinely in a `parse_date`-compatible
+  shape, not merely a date-sounding key name. 13 real candidates found;
+  shipped the 12 that are clean near-misses or new-but-clear fits for an
+  EXISTING `TimelineEventKind`: `birth_date` (`wikidata`); `account_created`
+  (`stackoverflow_user`) + four decoded-ID creation timestamps
+  (`discord_snowflake`/`structured_id`) + `allocated` (`ip_registry`) +
+  `not_before` (`crtsh`) → `Registered`; `not_after` (`crtsh`) → `Expiry`;
+  `earliest`/`earliest_paste` (`leakix`/`psbdmp`) → `FirstSeen`;
+  `most_recent`/`most_recent_observation`/`date_uploaded`
+  (`leakix`/`wigle`/`hudsonrock`) → `LastSeen`; `date_compromised`
+  (`hudsonrock`, the subject's own machine-compromise date — arguably the
+  single highest-value addition) → `BreachExposure`. Deliberately excluded
+  `hibp`'s `added_date`/`modified_date`: HIBP's own catalogue
+  record-keeping dates, not an event in the subject's own chronology —
+  `reconstruct`'s own doc comment states the timeline IS "the SUBJECT's
+  chronology," so admitting them would be exactly the noise this function's
+  candidate-quarantine exclusion already guards against, just from a
+  different angle. Split off two further real gaps as explicitly-logged
+  follow-ons rather than force-fitting them into scope: `acnc_charities`'s
+  `registration_date`/`established` (`DD/MM/YYYY`) and `devto`'s
+  `joined_at` (`"Jan 1, 2019"`) need `parse_date` format support this pass
+  doesn't add; `rdap_domain`'s `event_{action}`/`ip_registry`'s
+  `event:{action}` are dynamically-built keys `classify`'s exact-match
+  design structurally can't reach without prefix logic. **S→P proof:** 3
+  new tests — one enumerating all 12 keys' expected classification (plus
+  asserting both deliberately-excluded HIBP keys still return `None`), two
+  end-to-end `reconstruct()` proofs built from the EXACT real evidence
+  attribute shape `crtsh`/`hudsonrock` emit (read from those modules' own
+  test fixtures, not invented). Live-verified: a real end-to-end `hse scan`
+  renders the dossier/TIMELINE section correctly (unchanged 0-events case
+  when no dated evidence exists); live attempts against the specific
+  new-source modules (`crtsh`, `ip_registry`, `stackoverflow_user`) hit
+  unrelated sandbox network-egress limits or a pre-existing, unrelated
+  module bug (`stackoverflow_user`'s API filter param — noted, explicitly
+  NOT fixed, out of this cycle's scope) reaching their third-party APIs —
+  not a defect in this change, so the fixture-level proofs carry the
+  correctness burden here. Gate green: fmt/clippy `--all-targets`/doc
+  clean, 4284 lib tests (+3), 0 failures. **Paired:** `PROBLEM_TREE` C1
+  (unchanged `[~]` — only (d) further AU-0xx rule-gap fill remains) +
+  §4/§8 — same commit.

@@ -95,17 +95,63 @@ pub struct TimelineEvent {
 
 /// Maps an evidence attribute key to the event class it represents. Returning
 /// `None` means the attribute is not a recognised timeline date.
+///
+/// Widened 2026-07-03 (`PROBLEM_TREE` C1 "(c) widen the timeline") with 12
+/// date-shaped keys a source-family audit found real modules already
+/// attaching under a spelling `classify` didn't recognise — every one
+/// verified against its module's own test fixtures to hold a value
+/// [`parse_date`] actually accepts, not merely a date-sounding key name:
+/// `birth_date` (`wikidata`, a `date_of_birth` near-miss); `account_created`
+/// (`stackoverflow_user`) plus the four decoded-ID creation timestamps
+/// (`discord_snowflake`/`structured_id` — a `created`/`created_at`
+/// near-miss); `allocated` (`ip_registry`, an ASN's RIR allocation —
+/// `registered` near-miss); `not_before`/`not_after` (`crtsh`, a
+/// certificate's validity window — issuance and expiry are the same
+/// semantic class as a domain `registered`/`expires`); `most_recent`/
+/// `earliest` (`leakix`) and `most_recent_observation` (`wigle`) and
+/// `earliest_paste` (`psbdmp`) — all `last_seen`/`first_seen` near-misses;
+/// `date_compromised` (`hudsonrock`, when a stealer infected the subject's
+/// machine — the same exposure class as `breach_date`) and its sibling
+/// `date_uploaded` (when that stealer log entered circulation — a
+/// `last_seen`-shaped observation). Deliberately EXCLUDED: `hibp`'s
+/// `added_date`/`modified_date` are HIBP's own catalogue record-keeping
+/// dates, not an event in the *subject's* chronology (`reconstruct`'s own
+/// contract) — adding them would be noise, not signal. Also deliberately
+/// left open (real gaps, out of scope here — see the same audit's
+/// findings): `acnc_charities`'s `registration_date`/`established`
+/// (`DD/MM/YYYY`) and `devto`'s `joined_at` (`"Jan 1, 2019"`) need
+/// [`parse_date`] format support this pass doesn't add; `rdap_domain`'s
+/// `event_{action}`/`ip_registry`'s `event:{action}` are dynamically-built
+/// keys `classify`'s exact-match design can't reach without prefix logic.
 fn classify(attr_key: &str) -> Option<TimelineEventKind> {
     use TimelineEventKind::*;
     let kind = match attr_key.to_ascii_lowercase().as_str() {
-        "breach_date" | "data_breach" => BreachExposure,
+        "breach_date" | "data_breach" | "date_compromised" => BreachExposure,
         "incorporation_date" => Incorporation,
         "dissolution_date" => Dissolution,
-        "registered" | "created" | "created_at" | "created_at_unix" => Registered,
-        "expires" | "expire_secs" => Expiry,
-        "first_seen" | "first_seen_iso" => FirstSeen,
-        "last_seen" | "last_seen_iso" | "last_updated" | "last_update" | "updated" => LastSeen,
-        "date_of_birth" => DateOfBirth,
+        "registered"
+        | "created"
+        | "created_at"
+        | "created_at_unix"
+        | "account_created"
+        | "discord_created_date"
+        | "uuid_created_date"
+        | "objectid_created_date"
+        | "ulid_created_date"
+        | "ksuid_created_date"
+        | "allocated"
+        | "not_before" => Registered,
+        "expires" | "expire_secs" | "not_after" => Expiry,
+        "first_seen" | "first_seen_iso" | "earliest" | "earliest_paste" => FirstSeen,
+        "last_seen"
+        | "last_seen_iso"
+        | "last_updated"
+        | "last_update"
+        | "updated"
+        | "most_recent"
+        | "most_recent_observation"
+        | "date_uploaded" => LastSeen,
+        "date_of_birth" | "birth_date" => DateOfBirth,
         "start_date" | "review_date" | "end_date" | "date" | "timestamp" => Generic,
         _ => return None,
     };

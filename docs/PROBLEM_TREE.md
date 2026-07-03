@@ -803,9 +803,42 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   mixed module set) completes and renders the full dossier unchanged —
   `derive_shared_secret` runs unconditionally every scan and degrades
   cleanly to zero edges when no admissible secret is present, exactly as
-  intended (a domain scan surfaces no breach credentials). *Remaining:*
-  (c) first-class timeline output (footprint timeline shipped; widen), (d)
-  further AU-0xx rule-gap fill.
+  intended (a domain scan surfaces no breach credentials).
+  ✅ **(c) Timeline widened (2026-07-03) — 12 real date-shaped evidence keys
+  recognised that a source-family audit found modules already attaching
+  under a spelling `core::timeline::classify` didn't cover.** `birth_date`
+  (`wikidata`, `date_of_birth` near-miss); `account_created`
+  (`stackoverflow_user`) + four decoded-ID creation timestamps
+  (`discord_snowflake`/`structured_id` — `created`/`created_at` near-miss);
+  `allocated` (`ip_registry`, an ASN's RIR allocation); `not_before`/
+  `not_after` (`crtsh`, a certificate's validity window — issuance/expiry,
+  the same semantic class as a domain's `registered`/`expires`);
+  `most_recent`/`earliest` (`leakix`), `most_recent_observation` (`wigle`),
+  `earliest_paste` (`psbdmp`) — all `last_seen`/`first_seen` near-misses;
+  `date_compromised` (`hudsonrock`, when a stealer infected the subject's
+  own machine — arguably the highest-value single addition) + its sibling
+  `date_uploaded`. Every key verified against its own module's real test
+  fixtures to hold a value `parse_date` genuinely accepts, not just a
+  date-sounding name. Deliberately EXCLUDED: `hibp`'s `added_date`/
+  `modified_date` are HIBP's own catalogue record-keeping dates, not an
+  event in the subject's own chronology — adding them would be noise
+  the timeline's own "subject's chronology" contract forbids. Two further
+  gaps the same audit found are deliberately left open, not silently
+  dropped: `acnc_charities`'s `registration_date`/`established`
+  (`DD/MM/YYYY`) and `devto`'s `joined_at` (`"Jan 1, 2019"`) need
+  `parse_date` format support this pass doesn't add; `rdap_domain`'s
+  `event_{action}`/`ip_registry`'s `event:{action}` are dynamically-built
+  keys `classify`'s exact-match design can't reach without prefix logic —
+  both real, scoped, smaller follow-ons for a future cycle. 3 new tests
+  (all 12 keys classify correctly + 2 end-to-end `reconstruct` proofs using
+  the exact real evidence shape `crtsh`/`hudsonrock` emit). Live-verified: a
+  real `hse scan` end-to-end run renders the dossier/TIMELINE section
+  correctly (0 events, matching the unchanged no-dated-evidence case); the
+  specific new-source modules (`crtsh`, `ip_registry`) hit unrelated sandbox
+  network-egress limits reaching their third-party APIs, not a defect in
+  this change, so the fixture-level proofs (built from each module's own
+  verified real evidence shape) carry the correctness burden here.
+  *Remaining:* (d) further AU-0xx rule-gap fill.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -3529,3 +3562,49 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   "Remaining" list now carries only (c) first-class timeline output and (d)
   further AU-0xx rule-gap fill. **Paired:** `SOLUTION_TREE` SOL-CORR + §4/
   §4a + §5 — same commit.
+
+- **2026-07-03** — **C1 "(c) widen the timeline" delivered: 12 real
+  date-shaped evidence keys a source-family audit found already attached by
+  modules but not recognised by `core::timeline::classify`.** Step 1: with
+  the "controller behind reused secrets" facet delivered last cycle, C1's
+  remaining two items were (c) widen the timeline and (d) further AU-0xx
+  rule-gap fill — both open-ended, so this cycle ran a fresh, code-grounded
+  discovery pass over (c) rather than guessing: a subagent audit of every
+  `.with_attr(...)` call in `src/modules/` for date-shaped values under a
+  key `classify` doesn't recognise, cross-checked against each module's own
+  test fixtures for whether the value is genuinely in a `parse_date`-
+  compatible shape (not just a date-sounding key name). Found 13 real
+  candidates; shipped the 12 that are clean near-misses or new-but-clear
+  fits for an EXISTING `TimelineEventKind` in an already-parseable format
+  (`birth_date`→DateOfBirth; `account_created` +
+  `discord_created_date`/`uuid_created_date`/`objectid_created_date`/
+  `ulid_created_date`/`ksuid_created_date` + `allocated` + `not_before`
+  →Registered; `not_after`→Expiry; `earliest`/`earliest_paste`→FirstSeen;
+  `most_recent`/`most_recent_observation`/`date_uploaded`→LastSeen;
+  `date_compromised`→BreachExposure). Deliberately excluded `hibp`'s
+  `added_date`/`modified_date` — HIBP's own catalogue record-keeping dates,
+  not an event in the *subject's* chronology (`reconstruct`'s own stated
+  contract), so adding them would be noise the same doctrine this function
+  already enforces (candidate-quarantine exclusion) forbids. Split off two
+  more real gaps rather than force-fitting them into this commit: `acnc_
+  charities`'s `registration_date`/`established` (`DD/MM/YYYY`) and
+  `devto`'s `joined_at` (`"Jan 1, 2019"`) need `parse_date` format support
+  this pass doesn't add; `rdap_domain`'s `event_{action}`/`ip_registry`'s
+  `event:{action}` are dynamically-built keys `classify`'s exact-match
+  design structurally can't reach — both explicitly logged as smaller
+  follow-ons, not silently dropped. **S→P proof:** 3 new tests — one
+  enumerating all 12 keys' expected classification (plus asserting the two
+  deliberately-excluded HIBP keys still return `None`), two end-to-end
+  `reconstruct()` proofs using the EXACT real evidence attribute shape
+  `crtsh`/`hudsonrock` emit (verified against those modules' own test
+  fixtures, not invented). Live-verified: a real end-to-end `hse scan`
+  renders the dossier/TIMELINE section correctly (unchanged 0-events case);
+  attempts to reach the specific new-source modules live (`crtsh`,
+  `ip_registry`, `stackoverflow_user`) hit unrelated sandbox network-egress
+  limits or a pre-existing unrelated module bug (stackoverflow_user's API
+  filter — noted, not fixed, out of this cycle's scope) reaching their
+  third-party APIs — not a defect in this change, so the fixture-level
+  proofs (built from each module's own verified real evidence shape) carry
+  the correctness burden. Gate green: fmt/clippy `--all-targets`/doc clean,
+  4284 lib tests (+3), 0 failures. **Paired:** `SOLUTION_TREE` SOL-CORR +
+  §4/§8 — same commit.
