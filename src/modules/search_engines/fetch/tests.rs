@@ -202,3 +202,53 @@ use super::*;
             "Bing's own chrome links must be filtered, got {urls:?}"
         );
     }
+
+    /// Golden fixture (T2.7): a real, saved Startpage SERP response for the
+    /// same benign public query as the Bing fixture, captured live via the
+    /// module's exact request shape (`EngineSpec` for `startpage`): `POST
+    /// https://www.startpage.com/sp/search` with body
+    /// `query=<query>&cat=web&abp=1&abd=1&abe=1` and `UA_FIREFOX`.
+    ///
+    /// Startpage's real markup carries the complete result URL directly in
+    /// `href=` (no percent-encoded redirect, unlike a typical meta-search
+    /// proxy), so [`HrefIter`] recovers every genuine result. It also
+    /// recovers Startpage's OWN footer social-media links
+    /// (`twitter.com/startpage`, `instagram.com/startpage`, …) as false
+    /// positives — real, current parser behaviour, not filtered by
+    /// [`super::super::helpers::is_engine_domain`] because those links live
+    /// on a different host entirely. This fixture pins that behaviour
+    /// honestly rather than asserting an idealised result set; a future
+    /// cycle can decide whether it is worth tightening.
+    #[test]
+    fn parse_results_extracts_real_startpage_serp_fixture() {
+        let html = include_str!("testdata/startpage_rust_programming_language.html");
+        assert!(
+            !is_captcha_page(html),
+            "fixture must be a genuine results page, not a bot-block/interstitial"
+        );
+
+        let results = parse_results(html, "startpage", "rust programming language");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+
+        assert!(
+            urls.len() >= 8,
+            "expected several real results from a live Startpage SERP, got {urls:?}"
+        );
+        assert!(
+            urls.contains(&"https://www.rust-lang.org/en-US"),
+            "the official rust-lang.org result must be extracted, got {urls:?}"
+        );
+        assert!(
+            urls.contains(&"https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+            "the Wikipedia result must be extracted, got {urls:?}"
+        );
+        assert!(
+            urls.contains(&"https://doc.rust-lang.org/book/"),
+            "the Rust Book result must be extracted, got {urls:?}"
+        );
+        // No engine-chrome domain (startpage.com itself) should ever surface.
+        assert!(
+            !urls.iter().any(|u| u.contains("startpage.com")),
+            "Startpage's own chrome links must be filtered, got {urls:?}"
+        );
+    }

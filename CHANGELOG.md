@@ -46,6 +46,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **Second golden fixture for the `search_engines` scraper-resilience effort:
+  Startpage.** `fetch/testdata/startpage_rust_programming_language.html` is a
+  real, saved Startpage SERP for the same benign public query as the Bing
+  fixture, captured via a real `POST` matching the module's exact request
+  shape. The new test honestly pins current behaviour, including a real,
+  minor limitation it surfaced: Startpage's own footer social-media links
+  leak through as false-positive results alongside the genuine ones. Along
+  the way, two of the three engines this codebase's own comments call "most
+  reliable" (`metager`, `swisscows`) were found to have drifted — one now
+  redirects to a locale picker, the other is a client-rendered shell with no
+  static markup — recorded as evidence on the relevant tree node rather than
+  acted on immediately. No parsing logic changed.
 - **First golden fixture for the `search_engines` scraper-resilience effort.**
   `fetch/testdata/bing_rust_programming_language.html` is a real, saved Bing
   results page for a benign public query — not a hand-typed HTML snippet — and

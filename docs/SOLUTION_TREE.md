@@ -906,6 +906,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   needs a real person's PII sent to a live government lookup, which stays out of
   bounds regardless of cycle cadence. **Remaining:** 16 more `search_engines`
   engines + `username_search`, still open (§4a).
+  **Second fixture landed same day (`startpage`):** tried the three
+  `RELIABLE_ENGINE_NAMES` engines first as the strongest candidates —
+  `metager` and `swisscows` both failed for real, structural, non-transient
+  reasons (`metager`'s classic results endpoint now redirects to a locale
+  picker; `swisscows.com` is now a client-rendered Next.js shell with no
+  static result markup), real evidence the "100% hit" doc comment predates
+  both sites' front-end changes. Recorded on the `PROBLEM_TREE` node, not
+  turned into a new tracked defect — one vantage point on one day isn't
+  proof of universal breakage, and re-scoping `RELIABLE_ENGINE_NAMES` needs
+  more evidence than gathered here. `startpage` worked cleanly instead:
+  real fixture + `parse_results_extracts_real_startpage_serp_fixture`,
+  which honestly pins a real minor limitation found along the way (the
+  engine's own footer social-media links leak through as false-positive
+  results, un-fixed this cycle). **Remaining:** 15 more `search_engines`
+  engines + `username_search`, still open (§4a).
 - ~~**§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW).~~ **Delivered (2026-07-03): SOL-REDACT-
   ARCHIVE.** See SOL-REDACT above for the full note, including why the
@@ -3594,4 +3609,48 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   closes; the three AU-gov PII modules stay correctly out of this node's
   remaining scope (blocked on consent, logged separately above in §4a).
   Gate green: fmt/clippy `--all-targets`/doc clean, 4322 lib tests (+1),
+  0 failures. **Paired:** `PROBLEM_TREE` T2.7/§8 — same commit.
+
+- **2026-07-03** — **T2.7 continued (second increment, same day): a
+  `startpage` golden fixture landed, and two of the three
+  `RELIABLE_ENGINE_NAMES` were found genuinely unreachable in their
+  documented form — recorded as evidence, not force-converted into a new
+  defect.** Priority order says finish the in-progress node before picking
+  anything new, so this cycle continued T2.7 rather than starting a fresh
+  item. Tried the strongest candidates first: `engines.rs`'s own
+  `RELIABLE_ENGINE_NAMES` comment claims `metager`/`swisscows`/`dogpile` hit
+  "100%… DC + residential." Direct testing found two of the three no longer
+  hold: `curl -L` against `metager`'s real `build_url`
+  (`/meta/meta.ger3?eingabe=…`) 302-redirects to a locale-picker landing
+  page with zero query-relevant content — tried with `Accept-Language` and a
+  warmed cookie jar, same result both times — and `swisscows.com`'s response
+  is a Next.js client-rendered shell (`/_next/static/chunks/…`) with no
+  static result markup a curl-based fetch can ever see through, structurally
+  not just today. `dogpile`/`mojeek`/`ecosia` returned HTTP 403 (bot-walled);
+  `yandex` redirected to an empty body. Deliberately NOT turned into a new
+  tracked gap or a `RELIABLE_ENGINE_NAMES` edit this cycle: one sandbox's
+  vantage point on one day is real evidence worth recording (which is why
+  it's logged, in place, on the `PROBLEM_TREE` T2.7 node), but re-scoping a
+  list three other subsystems may rely on needs a broader evidence base than
+  one cycle's single-query probe. `startpage` (untried before this cycle)
+  worked cleanly: a real `POST` matching its exact `EngineSpec` (`UA_FIREFOX`,
+  `query=<q>&cat=web&abp=1&abd=1&abe=1`) against the same benign public query
+  as the Bing fixture returned a genuine SERP, confirmed via
+  `is_captcha_page` returning `false`. Saved as `fetch/testdata/
+  startpage_rust_programming_language.html`; checked for embedded secrets
+  before committing — found only an ephemeral, anonymous, server-generated
+  analytics session token (`session_id`), the identical class of artifact
+  already accepted in the Bing fixture, not operator or subject data. New
+  test `parse_results_extracts_real_startpage_serp_fixture` pins the real,
+  current, *unfiltered* parser behaviour honestly rather than an idealised
+  one: `HrefIter` correctly recovers every genuine result (`rust-lang.org`,
+  Wikipedia, the Rust Book, a Reddit thread, …) but also picks up Startpage's
+  own footer social-media links (`twitter.com/startpage`, `instagram.com/
+  startpage`, …) as false positives, since `is_engine_domain` only matches
+  `startpage.com` itself, not the unrelated hosts those footer links point
+  to. Left unfixed and undramatized — a real, minor, honestly-documented
+  parser limitation the fixture now makes visible for the first time, not a
+  regression this change introduced. No production code changed. 15 more
+  `search_engines` engines and `username_search` remain before T2.7 closes.
+  Gate green: fmt/clippy `--all-targets`/doc clean, 4323 lib tests (+1),
   0 failures. **Paired:** `PROBLEM_TREE` T2.7/§8 — same commit.

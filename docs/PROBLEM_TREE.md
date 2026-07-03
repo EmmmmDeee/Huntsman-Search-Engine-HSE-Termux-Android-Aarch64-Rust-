@@ -373,6 +373,24 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   one. **Remaining:** 16 more engines in `search_engines`, plus `au_people`/
   `au_electoral`/`au_property` (blocked separately — see below) and
   `username_search`, before this closes.
+  **Progress (2026-07-03, same day, second increment):** `startpage` added as
+  the corpus's second fixture (`fetch/testdata/
+  startpage_rust_programming_language.html`) — real, live, `POST`-captured.
+  Two of the three documented `RELIABLE_ENGINE_NAMES` (`metager`, `swisscows`)
+  were tried and found genuinely unreachable in their *documented* form from
+  this vantage point today: `metager`'s `/meta/meta.ger3` endpoint now 302s to
+  a locale-picker page (its classic direct-results endpoint appears to have
+  been retired), and `swisscows.com` now serves a Next.js client-rendered
+  shell with zero static result markup — real evidence the "100% hit" comment
+  dates from before both sites' front-end migrations, not a claim this cycle
+  invented. `mojeek`, `ecosia`, `dogpile` returned HTTP 403 (bot-walled);
+  `yahoo`/`aol` (tried the prior cycle) returned HTTP 500/404; `yandex`
+  redirected to an empty body. Not treated as new tracked gaps this cycle —
+  a single sandbox vantage point on one day is evidence worth recording, not
+  proof of universal breakage, and re-scoping `RELIABLE_ENGINE_NAMES` itself
+  is a separate, larger decision for a future cycle with more evidence.
+  **Remaining:** 15 more engines in `search_engines`, plus the three AU-gov
+  PII modules (blocked separately — see below) and `username_search`.
   **Structural obstacle found for the three AU-gov PII modules:** `au_electoral`'s
   parser (`extract_division`) only produces a meaningful *positive-match* fixture
   from a real AEC "Check enrolment" response keyed to a real person's name and
@@ -4392,3 +4410,41 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   node's remaining scope. Gate green: fmt/clippy `--all-targets`/doc clean,
   4322 lib tests (+1), 0 failures. **Paired:** `SOLUTION_TREE` SOL-F1 +
   SOL-HEALTH-SIGNAL + §4a + §5 — same commit.
+
+- **2026-07-03** — **T2.7 second increment: `startpage` golden fixture added;
+  two of the three `RELIABLE_ENGINE_NAMES` found genuinely unreachable in
+  their documented form.** Continuing the in-progress node rather than
+  starting new work: tried `metager`/`swisscows`/`dogpile` first (the trio
+  `engines.rs` documents as "100% hit, 0% blocked… DC + residential") since
+  they were the strongest candidates on paper. Both `metager` and `swisscows`
+  failed for real, structural, verifiable reasons, not a transient block —
+  `curl -L` against `metager`'s exact `build_url` (`/meta/meta.ger3?eingabe=…`)
+  302-redirects to a locale-picker landing page with zero query-relevant
+  content regardless of `Accept-Language` or a warmed cookie jar (tried both);
+  `swisscows.com`'s response is a Next.js shell (`/_next/static/chunks/…`)
+  with no static result markup at all — a client-rendered SPA a curl-based
+  fetch structurally cannot see through. `dogpile`/`mojeek`/`ecosia` returned
+  HTTP 403 (bot-walled); `yandex` redirected to an empty body. This is
+  recorded as evidence, not a new tracked defect: one sandbox's vantage point
+  on one day doesn't prove universal breakage, and downgrading
+  `RELIABLE_ENGINE_NAMES` itself needs more evidence than this cycle gathered
+  — logged in-place on the T2.7 node so a future cycle doesn't re-spend the
+  same investigation. `startpage` (untried before this cycle) worked cleanly:
+  a real `POST` matching its exact `EngineSpec` (`UA_FIREFOX`,
+  `query=<q>&cat=web&abp=1&abd=1&abe=1`) returned a genuine SERP — saved as
+  `fetch/testdata/startpage_rust_programming_language.html`, checked for
+  embedded secrets before committing (only an ephemeral, anonymous, server-
+  generated analytics session token, the same class of artifact already
+  accepted in the Bing fixture — no operator or subject data). New test
+  `parse_results_extracts_real_startpage_serp_fixture` pins the real,
+  current, *unfiltered* behaviour honestly: `HrefIter` recovers every
+  genuine result (`rust-lang.org`, Wikipedia, the Rust Book, …) but also
+  Startpage's own footer social-media links (`twitter.com/startpage`,
+  `instagram.com/startpage`, …) as false positives, since those live on a
+  different host than `startpage.com` and so aren't caught by
+  `is_engine_domain`. Not fixed this cycle — a real, minor, honestly-recorded
+  parser limitation, not silently smoothed over in the test's assertions.
+  No production code changed. 15 more `search_engines` engines and
+  `username_search` remain before T2.7 closes. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4323 lib tests (+1), 0 failures. **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL + §4a + §5 — same commit.
