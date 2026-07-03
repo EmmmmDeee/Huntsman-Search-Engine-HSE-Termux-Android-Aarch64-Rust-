@@ -767,8 +767,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   stable enough to measure; each golden-fixture test (T2.7) becomes the
   acceptance criterion.
   *Closes / powers:* **T2.7** per-source health signal gap (currently no solution
-  node). *Gap:* not yet started — implementation deferred until the golden-fixture
-  golden-fixture corpus (T2.7 parser rewrites) is in place. **(§4a)**
+  node). *Gap:* SOL-HEALTH-SIGNAL itself not yet started — implementation still
+  deferred until the golden-fixture corpus (T2.7 parser rewrites) is further
+  along; that corpus is now genuinely underway (2026-07-03: `search_engines`/
+  bing's first real fixture landed — 1 engine of 17, 1 module of 5), not just
+  stated as a future prerequisite. **(§4a)**
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -893,6 +896,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
+  **Golden-fixture corpus actually started (2026-07-03):** prior cycles concluded a
+  live third-party fetch was categorically "out of bounds for an unattended cycle"
+  without testing that assumption; this cycle tested it directly for a benign,
+  non-personal query and it held for `search_engines`/bing — real fixture + real
+  regression test landed (`fetch/tests.rs::parse_results_extracts_real_bing_serp_fixture`).
+  The three AU-gov PII modules (`au_electoral`/`au_people`/`au_property`) remain
+  correctly blocked on a *different*, genuine obstacle — a positive-match fixture
+  needs a real person's PII sent to a live government lookup, which stays out of
+  bounds regardless of cycle cadence. **Remaining:** 16 more `search_engines`
+  engines + `username_search`, still open (§4a).
 - ~~**§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW).~~ **Delivered (2026-07-03): SOL-REDACT-
   ARCHIVE.** See SOL-REDACT above for the full note, including why the
@@ -3532,3 +3545,53 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   redacting — confirms the common case is unaffected). Gate green:
   fmt/clippy `--all-targets`/doc clean, 4321 lib tests (+4), 0 failures.
   **Paired:** `PROBLEM_TREE` §7 S4/§8 — same commit.
+
+- **2026-07-03** — **T2.7 `[ ]`→`[~]`: the golden-fixture corpus started for
+  real, after re-checking rather than re-trusting several prior cycles'
+  shared conclusion that a live third-party fetch was "out of bounds for
+  an unattended cycle."** That conclusion had never actually been tested —
+  it was reasoning, not evidence. Split T2.7's five target modules by
+  obstacle type before touching any code: `au_electoral`'s parser
+  (`extract_division`, read in full) needs a real person's name/address
+  sent to a live AEC "Check enrolment" lookup for a meaningful positive-
+  match fixture, a genuine consent obstacle that has nothing to do with
+  network reachability (`au_people`/`au_property` share the same real-
+  identity-lookup shape by strong structural implication — not directly
+  re-verified this cycle, logged as a remaining check). `search_engines`
+  has no such obstacle for a benign, non-personal query, so it was tried
+  directly: `curl` reproducing the module's own `EngineSpec` request shape
+  for `bing` (`UA_MOBILE`, `GET https://www.bing.com/search?q=<query>
+  &count=30`) against "rust programming language" (a generic public term,
+  zero PII) returned a genuine HTTP 200 SERP — confirmed not a bot-wall via
+  the module's own `is_captcha_page`, which returns `false` on it. DDG was
+  tried first and failed (HTTP 202, no result markers, both GET and the
+  module's exact POST shape) — consistent with `engines.rs`'s own "56%
+  unreachable from datacenter IPs" comment — so this is a real per-engine
+  result, not a blanket "it just works now" claim; yahoo/aol also failed
+  (HTTP 500 / 404) in the same pass. Saved the real Bing response as
+  `src/modules/search_engines/fetch/testdata/
+  bing_rust_programming_language.html` (checked for embedded PII/secrets
+  before committing — none: generic query, no cookies sent, no real
+  coordinates). Feeding the *unmodified* `parse_results` this fixture
+  surfaced a real, previously-undocumented structural fact: Bing's live
+  markup highlights query-term matches inside `<cite>` with nested
+  `<strong>` tags, which `CiteIter`'s own `!clean.contains('<')` guard
+  (`cite_iter_skips_non_domains_and_malformed`) correctly rejects by
+  design — so the `<cite>` fallback path extracts nothing from real,
+  current Bing HTML. The results still come through in full because
+  Bing's real result anchors also carry the complete absolute URL directly
+  in `href=`, which the primary `HrefIter` pass picks up unconditionally —
+  6 real results recovered (`rust-lang.org`, Wikipedia, `w3schools.com`,
+  `geeksforgeeks.org`, …), none of them Bing's own chrome links. New test
+  `parse_results_extracts_real_bing_serp_fixture` (`fetch/tests.rs`)
+  asserts on these actually-extracted URLs against the real fixture — the
+  first fixture in T2.7's own corpus, and the acceptance-shape
+  SOL-HEALTH-SIGNAL will eventually need many more of. No production code
+  changed: `parse_results`/`CiteIter`/`HrefIter` already worked correctly
+  against real Bing markup before this cycle: this is coverage that would
+  catch a *future* layout drift, not a bug fix for a present one. 16 more
+  `search_engines` engines and `username_search` remain before T2.7 fully
+  closes; the three AU-gov PII modules stay correctly out of this node's
+  remaining scope (blocked on consent, logged separately above in §4a).
+  Gate green: fmt/clippy `--all-targets`/doc clean, 4322 lib tests (+1),
+  0 failures. **Paired:** `PROBLEM_TREE` T2.7/§8 — same commit.

@@ -46,6 +46,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **First golden fixture for the `search_engines` scraper-resilience effort.**
+  `fetch/testdata/bing_rust_programming_language.html` is a real, saved Bing
+  results page for a benign public query — not a hand-typed HTML snippet — and
+  a new test asserts on the URLs `parse_results` actually extracts from it, so
+  a future Bing layout change fails a test instead of silently degrading live
+  scans. No parsing logic changed; this closes the first slice of a
+  previously-stalled item.
 - **Real git-subprocess test fixture for `hse update --check`.**
   `commits_behind` and `changelog_lines` (`cli/update.rs`) had never been
   exercised against actual `git` behaviour — only implicitly witnessed by

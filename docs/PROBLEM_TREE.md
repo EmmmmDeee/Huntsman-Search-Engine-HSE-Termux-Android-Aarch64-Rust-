@@ -357,7 +357,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   and renamed `SYNTH_EMAIL_PROVIDERS`. `KEY_ENV` left as-is: each literal is
   module-local and cannot drift against another module, so it's a cosmetic style
   nit, not a duplication/drift risk.
-- **`[ ]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
+- **`[~]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
   `search_engines` (17 SERPs), `username_search` (300+ sites) parse churning HTML;
   some endpoints speculative → high silent-breakage.
   → **Solution:** rewrite parsers on `bstr`/`aho-corasick` (F.1), back each with a
@@ -365,6 +365,23 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
+  **Progress (2026-07-03):** the golden-fixture corpus is genuinely started, not
+  just re-deferred again — `search_engines`/bing now has one (`fetch/testdata/
+  bing_rust_programming_language.html`, a real captured SERP, not hand-typed
+  HTML), closing out a run of prior cycles that all concluded a live third-party
+  fetch was "out of bounds for an unattended cycle" without actually attempting
+  one. **Remaining:** 16 more engines in `search_engines`, plus `au_people`/
+  `au_electoral`/`au_property` (blocked separately — see below) and
+  `username_search`, before this closes.
+  **Structural obstacle found for the three AU-gov PII modules:** `au_electoral`'s
+  parser (`extract_division`) only produces a meaningful *positive-match* fixture
+  from a real AEC "Check enrolment" response keyed to a real person's name and
+  address — fabricating query data yields only a negative/no-result fixture, and
+  submitting a real person's PII to a live government lookup without consent is
+  out of bounds regardless of cycle cadence. `au_people`/`au_property` are the
+  same shape (real-identity government/registry lookups). These three modules'
+  golden-fixture work stays correctly blocked on that consent gap, not on
+  network reachability.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -4337,3 +4354,41 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   case is unaffected by the change. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4321 lib tests (+4), 0 failures. **Paired:**
   `SOLUTION_TREE` SOL-REDACT + §4a + §5 — same commit.
+
+- **2026-07-03** — **T2.7 opened to `[~]`: the golden-fixture corpus actually
+  started, after several prior cycles concluded (without testing it) that a
+  live fetch was "out of bounds for an unattended cycle."** Re-checked that
+  assumption directly instead of re-trusting it: `au_electoral`'s parser
+  (`extract_division`) was read in full and confirmed to have a genuine,
+  real obstacle — a meaningful positive-match fixture needs a real person's
+  name/address sent to a live AEC lookup, which is correctly out of bounds
+  without consent (by strong implication `au_people`/`au_property` share the
+  same shape — real-identity government/registry lookups). `search_engines`
+  has no such obstacle for a benign, non-personal query term, so it was
+  tried for real: `curl` with the module's own `EngineSpec` request shape
+  (`UA_MOBILE`, `GET https://www.bing.com/search?q=<query>&count=30`)
+  against a public, generic query ("rust programming language" — no PII,
+  no target-specific data) returned a genuine, live, HTTP 200 Bing results
+  page (not a bot-wall — `is_captcha_page` confirms `false` on it), captured
+  once and saved as `src/modules/search_engines/fetch/testdata/
+  bing_rust_programming_language.html`. Feeding it through the *existing,
+  unmodified* `parse_results` surfaced a real structural fact worth
+  recording: Bing's live markup wraps query-term matches inside `<cite>` in
+  nested `<strong>` tags, which `CiteIter`'s `!clean.contains('<')` guard
+  correctly rejects by design — so the `<cite>` fallback path yields
+  nothing on real Bing HTML today. The primary `HrefIter` pass still
+  recovers all 6 real results (`rust-lang.org`, the Wikipedia article,
+  `w3schools.com`, `geeksforgeeks.org`, …) because Bing's real result
+  anchors also carry the complete absolute URL directly in `href=`. New
+  regression test `parse_results_extracts_real_bing_serp_fixture`
+  (`fetch/tests.rs`) asserts on the actually-extracted URLs from this real
+  fixture — exactly T2.7's ask ("a layout change fails a test"), and the
+  first fixture in what SOL-HEALTH-SIGNAL will eventually need a corpus of.
+  No production code changed — `parse_results`/`CiteIter`/`HrefIter` all
+  already worked correctly against real Bing markup; this is coverage, not
+  a bug fix. 16 more engines (`yahoo`/`aol`/`duckduckgo`/`google`/…) and
+  `username_search` remain before T2.7 closes; the three AU-gov PII modules
+  stay correctly blocked on the consent gap above, not folded into this
+  node's remaining scope. Gate green: fmt/clippy `--all-targets`/doc clean,
+  4322 lib tests (+1), 0 failures. **Paired:** `SOLUTION_TREE` SOL-F1 +
+  SOL-HEALTH-SIGNAL + §4a + §5 — same commit.

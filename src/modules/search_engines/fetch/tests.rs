@@ -156,3 +156,49 @@ use super::*;
         // No redirect markers at all.
         assert!(GoogleUrlIter::new("plain html").next().is_none());
     }
+
+    /// Golden fixture (T2.7): a real, saved Bing SERP response for a benign
+    /// public query, not a hand-typed HTML snippet. A layout change on Bing's
+    /// side that breaks extraction fails THIS test, whereas a synthetic
+    /// fixture only proves the parser matches what we assumed the markup
+    /// looks like. Captured live via curl with the module's exact request
+    /// shape (`EngineSpec` for `bing`): `GET
+    /// https://www.bing.com/search?q=<query>&count=30` with `UA_MOBILE`.
+    ///
+    /// Bing's real markup wraps query-term matches inside `<cite>` in nested
+    /// `<strong>` tags (e.g. `<cite>https://<strong>rust</strong>-lang.org
+    /// </cite>`), which [`CiteIter`]'s `!clean.contains('<')` guard rejects
+    /// by design (`cite_iter_skips_non_domains_and_malformed`). Real results
+    /// still come through because Bing's result anchors also carry the
+    /// complete absolute URL directly in `href=`, so [`HrefIter`] (the
+    /// primary pass) finds them; `<cite>` is a fallback for engines that
+    /// don't.
+    #[test]
+    fn parse_results_extracts_real_bing_serp_fixture() {
+        let html = include_str!("testdata/bing_rust_programming_language.html");
+        assert!(
+            !is_captcha_page(html),
+            "fixture must be a genuine results page, not a bot-block/interstitial"
+        );
+
+        let results = parse_results(html, "bing", "rust programming language");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+
+        assert!(
+            urls.len() >= 4,
+            "expected several real results from a live Bing SERP, got {urls:?}"
+        );
+        assert!(
+            urls.contains(&"https://rust-lang.org/"),
+            "the official rust-lang.org result must be extracted, got {urls:?}"
+        );
+        assert!(
+            urls.contains(&"https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+            "the Wikipedia result must be extracted, got {urls:?}"
+        );
+        // No engine-chrome or tracking domain should ever surface as a result.
+        assert!(
+            !urls.iter().any(|u| u.contains("bing.com")),
+            "Bing's own chrome links must be filtered, got {urls:?}"
+        );
+    }
