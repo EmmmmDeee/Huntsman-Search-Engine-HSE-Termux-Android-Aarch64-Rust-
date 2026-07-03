@@ -707,9 +707,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
-  LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
-  budget-reset-zeroing note remains, and no further action is planned on it).
+  T2.7 open; **T2.11 fully closed** ✅ (status-marker correction, 2026-07-03 —
+  oathnet + found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET
+  all `[x]`; the one residual, SOL-BUDGET's budget-reset-zeroing, was already
+  accepted `[-]` at cycle 18 with no further action planned — an accepted
+  residual is not open work, so the top-level marker was stale, not the
+  underlying solutions).
   **T2.13 `[x]`** ✅ (SOL-ROI-HINT, 2026-07-01); **T2.14 `[x]`** ✅
   (SOL-HINT-NOISE, 2026-07-03 — both the scan-level 60s hint and the
   per-module bounded-summary hint shipped).
@@ -2595,3 +2598,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   remainder. Gate green: fmt/clippy `--all-targets`/doc clean, 4272 lib
   tests (+5), 0 failures. **Paired:** `PROBLEM_TREE` T2.14 `[~]`→`[x]` +
   §4/§4b/§8 — same commit.
+
+- **2026-07-03** — **S→P re-verification: `PROBLEM_TREE` T2.11's top-level
+  `[~]` marker was stale against this tree's own already-terminal
+  solutions.** With T2.14 closed last cycle and F.1/F.3/F.2/T2.7's remaining
+  items all still correctly blocked (no natural `bstr` consumer, `cargo-fuzz`
+  needs a CI lane, criterion's correlation-pass entry point doesn't exist
+  yet, `fst` adoption already `[-]`, golden fixtures still out of bounds for
+  an unattended cycle), this cycle's step 1 fell through to re-verifying §4
+  against the code rather than inventing new work — the same discipline the
+  four 2026-07-01 stale-note audits established, this time turned on a
+  top-level status marker instead of a `Remaining:` bullet. All three
+  solutions closing T2.11 are already terminal here: `SOL-ISOLATE` `[x]`,
+  `SOL-LIVE-DISPATCH-BUDGET` `[x]`, `SOL-BUDGET` `[-]` (accepted at cycle
+  18 — `reset_per_scan` verified already called on every scan start, so the
+  cited residual was a faulty premise; the session ceiling bounds the
+  accepted residual risk). This tree's own §4d coverage line already read
+  "no further action is planned on it," yet `PROBLEM_TREE`'s node stayed
+  `[~]`. Re-verified the SOL-BUDGET claim against the live source before
+  acting (not re-trusted from the doc): `run_with_ledger_inner` calls
+  `core::hooks::reset_per_scan` unconditionally, wired to
+  `oathnet_pro`/`see_know`/`wigle::reset_budget` + `reset_found_keys` via
+  `modules::install_core_hooks` — exactly as described. Updated this tree's
+  §4d wording from "T2.11 mostly done" to "T2.11 fully closed" to match; no
+  `SOL-*` status changed (they were already correct — only the cross-tree
+  summary prose was stale). No code, test, or behaviour change. **Paired:**
+  `PROBLEM_TREE` T2.11 `[~]`→`[x]` + §8 — same commit.

@@ -465,7 +465,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   stamps to `SCHEMA_VERSION` when 0 (fresh or pre-versioned DB); `tracing::warn!`
   when `>SCHEMA_VERSION` (forward-compat signal — a newer binary wrote this DB).
   **Paired:** `SOLUTION_TREE` SOL-SCHEMA-VERSION `[x]` + §3/§4/§5 — same commit.
-- **`[~]` T2.11 · Concurrency — process-global state not isolated across the 8
+- **`[x]` T2.11 · Concurrency — process-global state not isolated across the 8
   concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
   scans at once, but several **process-global `static`s** are shared without
   per-scan isolation. The deep engine audit (2026-06-17) found three defects here;
@@ -533,6 +533,26 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
   through `ModuleContext`), which also subsumes the budget-reset race. **P2**
+  **Status correction (2026-07-03):** the top-level marker stayed `[~]` through
+  the 2026-07-01 cycle ("T2.11 stays `[~]` — the budget-static `reset_scan`-
+  zeroing sub-item is untouched by this change") even though `SOLUTION_TREE`'s
+  own three closing solutions were all already terminal: `SOL-ISOLATE` `[x]`
+  (found_keys), `SOL-LIVE-DISPATCH-BUDGET` `[x]` (LOW over-dispatch), and
+  `SOL-BUDGET` `[-]` — accepted-as-is back at *cycle 18*, not "untouched": that
+  cycle verified `reset_per_scan` is unconditionally called at the top of every
+  scan (`core::engine::run_with_ledger_inner`, now line 306, wired through
+  `modules::install_core_hooks` to `oathnet_pro`/`see_know`/`wigle::reset_budget`
+  + `reset_found_keys`), so the per-scan budget IS reset per scan; the residual
+  risk is bounded by the session ceiling, which is why it was accepted rather
+  than fixed. Re-verified against the live source this cycle (not re-trusted
+  from the doc) before flipping the marker: the call site, the hook wiring, and
+  all three budget-reset call sites are exactly as SOL-BUDGET's cycle-18 note
+  describes. `[~]`→`[x]`: every constituent problem is closed (two fixed, one
+  accepted with a documented reason) — an accepted residual is not open work,
+  the same standing this project already gives §7 S1. No code change; this is
+  the same "keep the trees honest" class of correction as the four 2026-07-01
+  stale-note audits, applied to a top-level status marker instead of a
+  `Remaining:` bullet.
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -3373,3 +3393,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy `--all-targets`/doc clean, 4272 lib tests (+5), 0 failures.
   **Paired:** `SOLUTION_TREE` SOL-HINT-NOISE `[~]`→`[x]` + §4/§4b/§5 — same
   commit.
+
+- **2026-07-03** — **T2.11 `[~]`→`[x]`: status-marker correction, no code
+  change.** Step 1 with no genuinely in-progress node this cycle (T2.14
+  closed last cycle; F.1/F.3's remaining items stay correctly blocked —
+  `bstr` has no natural consumer, `cargo-fuzz` needs a CI lane, criterion's
+  correlation-pass entry point still doesn't exist; F.2's `fst` adoption is
+  already `[-]`; T2.7 stays blocked on the golden-fixture question) fell
+  through to step 1.3: re-verify `SOLUTION_TREE` §4 against the code before
+  picking new work, the same discipline the four 2026-07-01 stale-note audits
+  established. Found: T2.11's own three constituent solutions are ALL
+  terminal (`SOL-ISOLATE` `[x]`, `SOL-LIVE-DISPATCH-BUDGET` `[x]`,
+  `SOL-BUDGET` `[-]` accepted back at cycle 18), and `SOLUTION_TREE` §4d's
+  own coverage-snapshot prose already said "no further action is planned on
+  it" — yet the 2026-07-01 cycle re-affirmed `[~]` with wording ("untouched
+  by this change") that reads as unaddressed defect rather than accepted
+  residual. Re-verified the underlying claim against the live source (not
+  re-trusted from the doc): `core::engine::run_with_ledger_inner` calls
+  `core::hooks::reset_per_scan(&scan.id)` unconditionally at the top of every
+  scan, wired via `modules::install_core_hooks` to
+  `oathnet_pro`/`see_know`/`wigle::reset_budget` + `reset_found_keys` — the
+  exact mechanism SOL-BUDGET's cycle-18 acceptance describes. An accepted
+  residual with a documented reason (the session ceiling bounds the
+  practical impact) is not open work — the same standing this project
+  already gives §7 S1 (`[-]` accepted, not re-litigated). No code, test, or
+  behaviour change; gate re-run anyway (fmt/clippy `--all-targets`/doc/test
+  all clean, as expected for a docs-only diff — see the T2.11 node's own
+  "Status correction" addendum for the full trace). **Paired:**
+  `SOLUTION_TREE` §4d coverage-snapshot wording + §5 — same commit.
