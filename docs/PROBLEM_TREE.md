@@ -391,6 +391,26 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   is a separate, larger decision for a future cycle with more evidence.
   **Remaining:** 15 more engines in `search_engines`, plus the three AU-gov
   PII modules (blocked separately — see below) and `username_search`.
+  **Progress (2026-07-03, third increment):** `brave` added as the corpus's
+  third fixture (`fetch/testdata/brave_rust_programming_language.html`) — a
+  real, live `GET` capture, and the highest-quality fixture so far: 30 real
+  results, all genuinely relevant, cleanly titled. Tried `google` first
+  (untried before this cycle) and found it hard-blocked with a real,
+  unambiguous "enable JavaScript" interstitial
+  (`/httpservice/retry/enablejs`), not a soft challenge — zero real results
+  possible from a plain HTTP fetch, matching `engines.rs`'s own top-of-file
+  comment that Google/Brave/DDG "work best from residential IPs (Termux)."
+  `qwant` redirected to an empty body; `presearch`/`searx` returned HTTP 403.
+  `you.com` returned HTTP 200 but is a Next.js client-rendered shell with no
+  static result markup (the same structural class of failure already found
+  for `swisscows`). Brave's own page embeds the literal string `"Switch to
+  traditional CAPTCHA"` in its JS i18n bundle (an accessibility-toggle
+  label) — confirmed this does NOT trip the real `is_captcha_page` detector
+  (multi-token phrase-set matching, not a bare substring check), a useful
+  real-world proof the detector is precise enough not to false-positive on
+  incidental UI copy. **Remaining:** 14 more engines in `search_engines`,
+  plus the three AU-gov PII modules (blocked separately — see below) and
+  `username_search`.
   **Structural obstacle found for the three AU-gov PII modules:** `au_electoral`'s
   parser (`extract_division`) only produces a meaningful *positive-match* fixture
   from a real AEC "Check enrolment" response keyed to a real person's name and
@@ -4448,3 +4468,37 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `username_search` remain before T2.7 closes. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4323 lib tests (+1), 0 failures. **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL + §4a + §5 — same commit.
+
+- **2026-07-03** — **T2.7 third increment: a `brave` golden fixture landed —
+  the highest-quality one yet — and `google`'s classic no-JS results path is
+  confirmed genuinely dead from this vantage point.** Continuing the
+  in-progress node: `google` (untried before this cycle) returned a real,
+  unambiguous "please enable JavaScript" interstitial
+  (`href="/httpservice/retry/enablejs?..."`, zero external result links of
+  any kind), not a soft CAPTCHA or a rate limit — a plain HTTP fetch cannot
+  retrieve real Google results at all today, matching this file's own
+  top-of-`engines.rs` comment that Google/Brave/DDG "work best from
+  residential IPs (Termux)." `qwant` redirected to an empty body;
+  `presearch`/`searx` returned HTTP 403; `you.com` returned HTTP 200 but is
+  a Next.js client-rendered shell with zero static result markup (the same
+  structural failure mode already found for `swisscows`). `brave` worked
+  cleanly and richly: a real `GET` matching its exact `EngineSpec`
+  (`UA_DESKTOP`, `https://search.brave.com/search?q=<query>`) against the
+  same benign query used for every fixture so far returned 30 real,
+  genuinely relevant results with clean titles — saved as `fetch/testdata/
+  brave_rust_programming_language.html`, checked for embedded secrets before
+  committing (none — no `Set-Cookie`, no literal `session_id`, only asset-
+  hash digit strings a naive IP-address grep false-positives on). Along the
+  way, confirmed a real precision property of the module's own
+  `is_captcha_page` detector: Brave's page embeds the literal string
+  `"Switch to traditional CAPTCHA"` in its JS i18n bundle (an accessibility-
+  toggle label, not an active challenge), and `is_captcha_page` correctly
+  returns `false` on it — its real multi-token phrase-set matching doesn't
+  false-positive the way a naive `contains("captcha")` check would have.
+  New test `parse_results_extracts_real_brave_serp_fixture` asserts on
+  ≥15 real results including `rust-lang.org` and Wikipedia, and pins the
+  `is_captcha_page` precision finding directly in its own failure message.
+  No production code changed. 14 more `search_engines` engines and
+  `username_search` remain before T2.7 closes. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4324 lib tests (+1), 0 failures. **Paired:**
+  `SOLUTION_TREE` §4a + §5 — same commit.

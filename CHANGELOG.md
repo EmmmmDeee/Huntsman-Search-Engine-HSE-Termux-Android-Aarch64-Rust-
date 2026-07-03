@@ -46,6 +46,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **Third golden fixture for the `search_engines` scraper-resilience effort:
+  Brave.** `fetch/testdata/brave_rust_programming_language.html` is a real,
+  saved Brave SERP for the same benign public query as the earlier fixtures,
+  the richest yet (30 real results). Confirmed along the way that
+  `is_captcha_page`'s real multi-token detector correctly does not
+  false-positive on Brave's embedded `"Switch to traditional CAPTCHA"` i18n
+  string. Also confirmed `google`'s classic no-JS results path is genuinely
+  dead from this environment (a hard "enable JavaScript" wall, zero result
+  links) and `you.com` is another JS-only client-rendered shell, the same
+  failure class already found for `swisscows`. No parsing logic changed.
 - **Second golden fixture for the `search_engines` scraper-resilience effort:
   Startpage.** `fetch/testdata/startpage_rust_programming_language.html` is a
   real, saved Startpage SERP for the same benign public query as the Bing

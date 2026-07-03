@@ -252,3 +252,46 @@ use super::*;
             "Startpage's own chrome links must be filtered, got {urls:?}"
         );
     }
+
+    /// Golden fixture (T2.7): a real, saved Brave SERP response for the same
+    /// benign public query as the Bing/Startpage fixtures, captured live via
+    /// the module's exact request shape (`EngineSpec` for `brave`): `GET
+    /// https://search.brave.com/search?q=<query>` with `UA_DESKTOP`.
+    ///
+    /// The page's JS i18n bundle happens to embed the literal string
+    /// `"Switch to traditional CAPTCHA"` (an accessibility-toggle label, not
+    /// an active challenge) — confirming [`is_captcha_page`]'s real,
+    /// multi-token phrase-set detector correctly does NOT fire on a bare
+    /// substring the way a naive `contains("captcha")` check would have.
+    #[test]
+    fn parse_results_extracts_real_brave_serp_fixture() {
+        let html = include_str!("testdata/brave_rust_programming_language.html");
+        assert!(
+            !is_captcha_page(html),
+            "fixture must be a genuine results page, not a bot-block/interstitial \
+             (the JS bundle's 'Switch to traditional CAPTCHA' i18n string must not \
+             be mistaken for an active challenge)"
+        );
+
+        let results = parse_results(html, "brave", "rust programming language");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+
+        assert!(
+            urls.len() >= 15,
+            "expected many real results from a live Brave SERP, got {} : {urls:?}",
+            urls.len()
+        );
+        assert!(
+            urls.contains(&"https://rust-lang.org/en-US/"),
+            "the official rust-lang.org result must be extracted, got {urls:?}"
+        );
+        assert!(
+            urls.contains(&"https://en.wikipedia.org/wiki/Rust_(programming_language)"),
+            "the Wikipedia result must be extracted, got {urls:?}"
+        );
+        // No engine-chrome or tracking domain should ever surface as a result.
+        assert!(
+            !urls.iter().any(|u| u.contains("search.brave.com")),
+            "Brave's own chrome links must be filtered, got {urls:?}"
+        );
+    }

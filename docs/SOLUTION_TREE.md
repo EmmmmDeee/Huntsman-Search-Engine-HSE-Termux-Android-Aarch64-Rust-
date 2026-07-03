@@ -921,6 +921,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   engine's own footer social-media links leak through as false-positive
   results, un-fixed this cycle). **Remaining:** 15 more `search_engines`
   engines + `username_search`, still open (§4a).
+  **Third fixture landed same day (`brave`):** `google`'s classic no-JS
+  results path confirmed genuinely dead from this vantage point today —
+  a real, unambiguous "enable JavaScript" interstitial with zero result
+  links, not a soft block, matching `engines.rs`'s own comment that
+  Google/Brave/DDG work best from residential IPs. `qwant` redirected
+  empty; `presearch`/`searx` returned 403; `you.com` is another Next.js
+  client-rendered shell (same failure class as `swisscows`). `brave` gave
+  the richest fixture yet — 30 real, relevant results — and incidentally
+  proved a real precision property of `is_captcha_page`: it correctly does
+  NOT fire on Brave's embedded `"Switch to traditional CAPTCHA"` i18n
+  string, unlike a naive substring check would have. **Remaining:** 14 more
+  `search_engines` engines + `username_search`, still open (§4a).
 - ~~**§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW).~~ **Delivered (2026-07-03): SOL-REDACT-
   ARCHIVE.** See SOL-REDACT above for the full note, including why the
@@ -3654,3 +3666,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `search_engines` engines and `username_search` remain before T2.7 closes.
   Gate green: fmt/clippy `--all-targets`/doc clean, 4323 lib tests (+1),
   0 failures. **Paired:** `PROBLEM_TREE` T2.7/§8 — same commit.
+
+- **2026-07-03** — **T2.7 third increment: a `brave` golden fixture landed,
+  the richest one yet, and `google`'s classic no-JS results path is
+  confirmed genuinely dead from this vantage point.** Continuing the
+  in-progress node a third time: `google` (untried before) returned a real,
+  unambiguous "please enable JavaScript" interstitial
+  (`/httpservice/retry/enablejs`) with literally zero external result links
+  — not a soft CAPTCHA or rate limit, a hard requirement for a JS runtime
+  this codebase deliberately doesn't carry, matching `engines.rs`'s own
+  top-of-file comment that Google/Brave/DDG "work best from residential IPs
+  (Termux)." `qwant` redirected to an empty body; `presearch`/`searx`
+  returned HTTP 403; `you.com` returned HTTP 200 but is a Next.js client-
+  rendered shell with zero static result markup — the identical structural
+  failure class already found for `swisscows` last cycle, now confirmed as
+  a second real instance rather than a one-off. `brave` worked cleanly and
+  richly: a real `GET` matching its exact `EngineSpec` (`UA_DESKTOP`,
+  `https://search.brave.com/search?q=<query>`) against the same benign
+  query used for every fixture so far returned 30 real, genuinely relevant
+  results with clean titles — noticeably higher yield and quality than the
+  Bing/Startpage fixtures. Saved as `fetch/testdata/
+  brave_rust_programming_language.html`; checked for embedded secrets
+  before committing (none found — no `Set-Cookie`, no literal `session_id`,
+  only asset-hash digit strings a naive IP-address grep false-positives
+  on, the same pattern already seen and dismissed in the prior two
+  fixtures). Along the way, verified a real precision property of the
+  module's own `is_captcha_page` detector rather than assuming it: Brave's
+  page embeds the literal string `"Switch to traditional CAPTCHA"` in its
+  JS i18n bundle (an accessibility-toggle label, not an active challenge),
+  and a direct probe confirmed `is_captcha_page` correctly returns `false`
+  on it — its real multi-token phrase-set matching doesn't false-positive
+  on incidental UI copy the way a naive `contains("captcha")` check would
+  have. New test `parse_results_extracts_real_brave_serp_fixture` asserts
+  on ≥15 real results including `rust-lang.org` and Wikipedia, and states
+  the `is_captcha_page` precision finding directly in its own assertion
+  message so a future reader doesn't have to rediscover why the check
+  matters. No production code changed. 14 more `search_engines` engines and
+  `username_search` remain before T2.7 closes. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4324 lib tests (+1), 0 failures. **Paired:**
+  `PROBLEM_TREE` T2.7/§8 — same commit.
