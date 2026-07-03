@@ -164,3 +164,99 @@ use super::*;
         assert!(BROWSER_UA.contains("Chrome/"));
         assert!(!BROWSER_UA.contains("huntsman-search-engine"));
     }
+
+    // ── account_exists (PROBLEM_TREE T2.7, scraper resilience) ─────────────
+
+    #[test]
+    fn account_exists_status_eq_ignores_body() {
+        let d = Detect::StatusEq(200);
+        assert!(account_exists(&d, 200, None));
+        assert!(!account_exists(&d, 404, None));
+        // A body present alongside a StatusEq rule must not change the verdict.
+        assert!(account_exists(&d, 200, Some("anything at all")));
+    }
+
+    #[test]
+    fn account_exists_status_and_body_requires_both() {
+        let d = Detect::StatusAndBody(200, "profile_exists_marker");
+        assert!(account_exists(&d, 200, Some("...profile_exists_marker...")));
+        assert!(
+            !account_exists(&d, 200, Some("no marker here")),
+            "status matches but needle absent"
+        );
+        assert!(
+            !account_exists(&d, 404, Some("...profile_exists_marker...")),
+            "needle present but status mismatched"
+        );
+    }
+
+    #[test]
+    fn account_exists_status_and_not_body_requires_needle_absent() {
+        let d = Detect::StatusAndNotBody(200, "user not found");
+        assert!(
+            account_exists(&d, 200, Some("<title>a real profile</title>")),
+            "status matches and the not-found marker is absent"
+        );
+        assert!(
+            !account_exists(&d, 200, Some("<title>user not found</title>")),
+            "status matches but the not-found marker is present"
+        );
+    }
+
+    /// A body-dependent rule asked to decide with no body at all (should not
+    /// happen — the caller always reads the body once status matches)
+    /// conservatively resolves to "not found" rather than assuming a hit.
+    #[test]
+    fn account_exists_body_dependent_rule_with_no_body_is_not_found() {
+        assert!(!account_exists(
+            &Detect::StatusAndBody(200, "x"),
+            200,
+            None
+        ));
+        assert!(!account_exists(
+            &Detect::StatusAndNotBody(200, "x"),
+            200,
+            None
+        ));
+    }
+
+    // ── Real golden-fixture regression (T2.7): a live-captured Lobste.rs
+    // response, run through the SAME `Detect` rule the live `SITES` table
+    // registers for it — not a hand-rolled synthetic — so a future edit to
+    // the table's rule (or the parsing logic) that would misclassify this
+    // real, previously-observed response fails here, offline, deterministically.
+
+    const LOBSTERS_FOUND_FIXTURE: &str = include_str!("testdata/lobsters_user_found.html");
+
+    fn lobsters_site() -> &'static sites::Site {
+        SITES
+            .iter()
+            .find(|s| s.name == "Lobste.rs")
+            .expect("Lobste.rs must remain registered in SITES")
+    }
+
+    /// Captured 2026-07-03 from `https://lobste.rs/u/pushcx` (a long-standing
+    /// public Lobsters admin handle, not private data) — HTTP 200, no "user
+    /// not found" marker anywhere in the body.
+    #[test]
+    fn lobsters_real_found_page_is_classified_as_found() {
+        let site = lobsters_site();
+        assert!(
+            !LOBSTERS_FOUND_FIXTURE.contains("user not found"),
+            "fixture sanity: the captured page must not contain the not-found marker"
+        );
+        assert!(account_exists(&site.detect, 200, Some(LOBSTERS_FOUND_FIXTURE)));
+    }
+
+    /// Captured 2026-07-03: `https://lobste.rs/u/<a fabricated nonexistent
+    /// handle>` returns a clean HTTP 404 for an absent account — not the
+    /// HTTP 200 + "user not found" body the site's own `Detect` rule was
+    /// written to expect. The status mismatch alone must still correctly
+    /// resolve to "not found" (the real-world path the live code takes,
+    /// short-circuiting before ever reading the body — see the call site
+    /// in `process()`).
+    #[test]
+    fn lobsters_real_not_found_status_is_classified_as_not_found() {
+        let site = lobsters_site();
+        assert!(!account_exists(&site.detect, 404, None));
+    }

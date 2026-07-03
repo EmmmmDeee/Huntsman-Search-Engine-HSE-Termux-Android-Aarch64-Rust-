@@ -11,6 +11,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`username_search`'s Lobste.rs check now has a real golden-fixture regression
+  test (`PROBLEM_TREE` T2.7).** The per-probe existence decision was inline in
+  the async dispatch closure, untestable without a live network call. Extracted
+  a pure `account_exists(detect, status, body)` and added tests driven by a
+  real captured HTTP response (a public Lobsters admin handle's profile page,
+  no PII) plus a live-verified 404 status for a nonexistent account. Along the
+  way, discovered that Lobste.rs's own site-table entry
+  (`StatusAndNotBody(200, "user not found")`) encodes a stale assumption — the
+  real site now returns a clean 404 for an absent account, not the HTTP 200 +
+  marker-body shape the rule expects — though the existing status-mismatch
+  short-circuit already resolves it correctly today. This is the first
+  instance of a pattern (extract the classification, live-verify real
+  responses, fixture the one path that's actually inspected) intended to
+  repeat across the ~333 remaining `username_search` sites and the other
+  scraper modules T2.7 covers, one source at a time.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

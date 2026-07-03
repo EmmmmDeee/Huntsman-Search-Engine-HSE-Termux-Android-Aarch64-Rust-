@@ -357,7 +357,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   and renamed `SYNTH_EMAIL_PROVIDERS`. `KEY_ENV` left as-is: each literal is
   module-local and cannot drift against another module, so it's a cosmetic style
   nit, not a duplication/drift risk.
-- **`[ ]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
+- **`[~]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
   `search_engines` (17 SERPs), `username_search` (300+ sites) parse churning HTML;
   some endpoints speculative → high silent-breakage.
   → **Solution:** rewrite parsers on `bstr`/`aho-corasick` (F.1), back each with a
@@ -365,6 +365,43 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
+  ◑ **First golden fixture landed (2026-07-04): `username_search`'s Lobste.rs
+  check.** Previous cycles repeatedly deferred this whole node — golden-fixture
+  work needs either a live fetch (fine in an interactive session, wrong for an
+  unattended one) or a fabricated-looking fixture (forbidden outright) — so this
+  increment picked the smallest real slice once a human was present to authorise
+  the live capture. `username_search`'s per-probe existence decision
+  (`Detect::StatusEq`/`StatusAndBody`/`StatusAndNotBody` against a live HTTP
+  response) was inline in the big async dispatch closure, untestable without a
+  live network call. Extracted it into a pure `account_exists(detect, status,
+  body) -> bool`. Live-verified (not assumed) against `https://lobste.rs/u/…`:
+  an EXISTING public handle (`pushcx`, a long-standing Lobsters admin, not
+  private data) returns HTTP 200 with no "user not found" marker; a FABRICATED
+  nonexistent handle returns a clean HTTP 404 — **not** the HTTP 200 +
+  `"user not found"`-body shape the site's own `SITES` table entry
+  (`Detect::StatusAndNotBody(200, "user not found")`) was written to expect.
+  The status-mismatch short-circuit already in `process()` happens to make this
+  harmless today (a 404 resolves to `NotFound` before the stale needle is ever
+  reached), but the table entry's stated assumption no longer matches the real
+  site — exactly the "layout drift the code doesn't notice" T2.7 exists to
+  catch. Committed the real captured 200-response body as
+  `username_search/testdata/lobsters_user_found.html` (a public handle's
+  profile page — no PII) and added two golden-fixture tests running it and the
+  live-verified 404 status through the **actual registered `SITES` entry**
+  (not a hand-rolled rule), so a future edit to either the table or the parsing
+  logic that would misclassify this real, previously-observed response fails
+  offline, deterministically, with no network dependency. Proved the fixture
+  tests are genuinely discriminating: inverted the `StatusAndNotBody` needle
+  logic, confirmed both a synthetic test AND the real-fixture test failed as
+  expected, reverted. Verified end-to-end against the real running binary too:
+  `hse scan -k username -v <fabricated>` emits no Lobste.rs hit;
+  `hse scan -k username -v pushcx` correctly emits `https://lobste.rs/u/pushcx`.
+  4 more synthetic `account_exists` unit tests cover the general
+  `StatusEq`/`StatusAndBody`/`StatusAndNotBody`/no-body-read cases. 6 new tests
+  total. *Remaining (large, tracked as future increments, not this one):* the
+  same extract-and-fixture treatment for the other ~333 `username_search`
+  sites and the other four named modules; the `bstr`/`aho-corasick` parser
+  rewrite (F.1); the per-source health signal (`hse doctor` + SPA).
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -3529,3 +3566,30 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   T2.14 hint, regardless of scan content). Gate green: 4283 lib tests (+3),
   fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` new node
   SOL-JSON-HINT-PARITY (§2) + §3/§4/§5 — same commit.
+
+- **2026-07-04** — **T2.7 `[ ]`→`[~]`: the first golden fixture landed.**
+  Previous unattended cycles correctly declined this node every time — its
+  own doctrine needs either a live fetch (undesirable with no human present
+  to authorise/monitor it) or a fabricated-looking fixture (forbidden
+  outright) — so with a human explicitly directing the choice this cycle,
+  took the smallest real slice: `username_search`'s inline, untestable
+  per-probe existence check. Extracted `account_exists(detect, status,
+  body) -> bool`, live-verified its Lobste.rs entry against two real
+  captured responses (an existing public handle, a fabricated nonexistent
+  one), and found the site's own `SITES` table rule
+  (`StatusAndNotBody(200, "user not found")`) encodes a stale assumption —
+  the real site now 404s an absent account outright, not the 200+marker
+  shape the rule expects — though the existing status-mismatch short-circuit
+  already makes this harmless in practice. Committed the real "found" HTML
+  as a `testdata/` fixture (a public handle's own profile page, no PII) and
+  added 2 golden-fixture tests against the SITES table's live rule + 4
+  synthetic unit tests for the general `Detect` cases. Verified the fixture
+  tests are genuinely discriminating (inverted the logic, confirmed failure,
+  reverted) and against the real running binary (`hse scan -k username`
+  correctly resolves both a real and a fabricated handle). Gate green: 4289
+  lib tests (+6), fmt/clippy `--all-targets`/doc clean. **Remaining is
+  large and explicitly deferred, not this increment:** ~333 more
+  `username_search` sites, `au_people`/`au_electoral`/`au_property`/
+  `search_engines`, the F.1 `bstr` rewrite, and the per-source health signal.
+  **Paired:** `SOLUTION_TREE` new node SOL-GOLDEN-FIXTURE (§2) + §3/§4/§5 —
+  same commit.

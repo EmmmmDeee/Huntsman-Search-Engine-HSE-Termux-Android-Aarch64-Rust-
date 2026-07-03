@@ -561,6 +561,37 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `leaves_the_fallback_alone_when_nothing_fires`); the 3 pre-existing
   `print_diagnostics` hint tests pass unchanged (behaviour-identical
   refactor).
+- **`[~]` SOL-GOLDEN-FIXTURE · Extract-and-fixture pattern for T2.7's
+  untestable live-probe parsers, first instance landed** → **T2.7**: every
+  prior unattended cycle correctly declined this node — golden-fixture work
+  needs either a live fetch (undesirable unsupervised) or a fabricated
+  fixture (forbidden) — so with a human present to authorise the choice,
+  took the smallest real slice instead of waiting indefinitely. `username_search`'s
+  per-probe existence decision was inline in the async dispatch closure;
+  extracted to a pure `account_exists(detect: &Detect, status: u16, body:
+  Option<&str>) -> bool`, the same "pull the classification out of the I/O"
+  shape `core::event::module_yield_outcomes` used for the T2.13–16 family.
+  Live-verified (two real HTTP calls, not assumed) that Lobste.rs's own
+  `SITES` table rule (`StatusAndNotBody(200, "user not found")`) encodes a
+  stale assumption: the real site 404s a nonexistent account outright today,
+  not the HTTP 200 + marker-body shape the rule was written for — caught
+  harmlessly today only because the existing status-mismatch short-circuit
+  resolves to the same answer either way. Committed the real captured
+  "found" response (a public Lobsters admin handle, `pushcx` — not private
+  data) as `username_search/testdata/lobsters_user_found.html`; 2
+  golden-fixture tests run it and the live-verified 404 through the actual
+  registered `SITES` entry (not a hand-rolled rule), so a future edit that
+  would misclassify this real, previously-observed response fails offline;
+  4 more synthetic tests cover the general `Detect` cases. Proved the
+  fixture tests discriminate (inverted the logic, confirmed failure,
+  reverted); verified end-to-end against the real binary
+  (`hse scan -k username -v pushcx` / a fabricated handle both resolve
+  correctly). 6 new tests. *Closes:* the first concrete slice of **T2.7**.
+  *Remaining (large, explicit follow-on, not this increment):* the same
+  treatment for the other ~333 `username_search` sites and the four other
+  named modules (`au_people`, `au_electoral`, `au_property`,
+  `search_engines`) — each needs its own live-verified fixture(s), picked
+  one source at a time.
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -661,6 +692,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
 | SOL-FORENSIC | C7 | `[ ]` |
+| SOL-GOLDEN-FIXTURE | T2.7 (extract-and-fixture pattern) | `[~]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 
@@ -674,10 +706,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
+- **T2.7's health-signal leg** — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
   ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
+  *(T2.7's golden-fixture leg is no longer "no solution started" — see SOL-GOLDEN-FIXTURE
+  in §4b, first instance landed 2026-07-04.)*
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
@@ -732,6 +766,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clone` over a filesystem path. Off the open queue — see SOL-UPDATE above.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
+- **SOL-GOLDEN-FIXTURE** (T2.7) — first instance landed 2026-07-04:
+  `username_search`'s Lobste.rs check now has a pure, testable
+  `account_exists` + a real captured golden fixture. *Remaining:* the same
+  extract-and-fixture treatment for ~333 more `username_search` sites plus
+  `au_people`/`au_electoral`/`au_property`/`search_engines` — pick one
+  source at a time in future increments, each independently live-verified.
 - **SOL-HINT-NOISE** (T2.14) — ✅ **delivered, off this queue (2026-07-03).**
   Both legs shipped: the scan-level "60s + zero-yield module" hint
   (event-sourced, caller-side, no cost-tier gate) and the per-module hint
@@ -774,7 +814,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
+  **T2.7 `[~]`** (SOL-GOLDEN-FIXTURE first instance 2026-07-04 —
+  `username_search`'s Lobste.rs check; health-signal leg still open;
+  ~333 more sites + 4 other modules remaining); T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it);
   **T2.13 `[x]`** ✅ (SOL-ROI-HINT); **T2.14 `[x]`** ✅ (SOL-HINT-NOISE, both
@@ -2746,3 +2788,44 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `ModuleDone{found:0}` counts toward the hint). Gate green: 4283 lib tests
   (+3), fmt/clippy `--all-targets`/doc clean. **Paired:** `PROBLEM_TREE` new
   T2.16 + §8 — same commit.
+
+- **2026-07-04** — **New: SOL-GOLDEN-FIXTURE lands T2.7's first concrete
+  slice — `[ ]`→`[~]`.** Every prior unattended cycle correctly declined
+  this node: its own doctrine needs either a live fetch (undesirable with
+  no human present to authorise/monitor it) or a fabricated-looking fixture
+  (forbidden outright), so it sat untouched pass after pass. With a human
+  explicitly directing the choice this cycle, took the smallest real slice
+  instead of waiting indefinitely: `username_search`'s per-probe existence
+  decision (`Detect::StatusEq`/`StatusAndBody`/`StatusAndNotBody` against a
+  live response) was inline in the async dispatch closure, untestable
+  without a live network call. Extracted `account_exists(detect, status,
+  body) -> bool` — the same "pull the classification out of the I/O" move
+  `core::event::module_yield_outcomes` made for the T2.13–16 family,
+  applied to a different subsystem. Live-verified with two real HTTP calls
+  (not assumed) against Lobste.rs: an existing public handle (`pushcx`, a
+  long-standing Lobsters admin, not private data) returns HTTP 200 with no
+  "user not found" marker; a fabricated nonexistent handle returns a clean
+  HTTP 404 — not the HTTP 200 + marker-body shape the site's own `SITES`
+  table rule (`StatusAndNotBody(200, "user not found")`) was written to
+  expect. The existing status-mismatch short-circuit in `process()` already
+  makes this harmless today (404 resolves to `NotFound` before the stale
+  needle is ever reached), but it's exactly the kind of "the code's
+  assumption about a site no longer matches the site" drift T2.7 exists to
+  catch — now pinned by a fixture instead of silently relying on a lucky
+  short-circuit. Committed the real captured 200-response body as
+  `username_search/testdata/lobsters_user_found.html` (a public handle's
+  own profile page, no PII); 2 golden-fixture tests run it and the
+  live-verified 404 status through the actual registered `SITES` entry
+  (not a hand-rolled rule), so a future edit to either the table or the
+  parsing logic that would misclassify this real, previously-observed
+  response fails offline, deterministically; 4 more synthetic tests cover
+  the general `Detect` cases. Proved the fixture tests discriminate:
+  inverted the `StatusAndNotBody` logic, confirmed both a synthetic test
+  and the real-fixture test failed exactly as expected, reverted. Verified
+  end-to-end against the real running binary: `hse scan -k username -v
+  <fabricated>` emits no Lobste.rs hit; `hse scan -k username -v pushcx`
+  correctly emits `https://lobste.rs/u/pushcx`. Gate green: 4289 lib tests
+  (+6), fmt/clippy `--all-targets`/doc clean. *Remaining, explicitly not
+  this increment:* the same treatment for ~333 more `username_search`
+  sites and the four other named T2.7 modules, one source at a time.
+  **Paired:** `PROBLEM_TREE` T2.7 `[ ]`→`[~]` + §8 — same commit.

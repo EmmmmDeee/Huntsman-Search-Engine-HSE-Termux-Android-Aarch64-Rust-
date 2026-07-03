@@ -165,25 +165,18 @@ impl Module for UsernameSearch {
                     verified: hit_verified,
                 };
                 match site.detect {
-                    Detect::StatusEq(want) if status == want => found(url),
-                    Detect::StatusEq(_) => ProbeResult::NotFound,
-                    Detect::StatusAndBody(want, needle) => {
-                        if status != want {
-                            return ProbeResult::NotFound;
-                        }
-                        let body =
-                            match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
-                                Some(t) => t,
-                                None => return ProbeResult::Error,
-                            };
-                        scan_text_for_keys(&body);
-                        if body.contains(needle) {
+                    Detect::StatusEq(want) => {
+                        if account_exists(&Detect::StatusEq(want), status, None) {
                             found(url)
                         } else {
                             ProbeResult::NotFound
                         }
                     }
-                    Detect::StatusAndNotBody(want, needle) => {
+                    Detect::StatusAndBody(want, _) | Detect::StatusAndNotBody(want, _) => {
+                        // Fast path preserved: a mismatched status is decisive on its
+                        // own (see `account_exists`'s doc comment for why this is also
+                        // what real sites' "absent" response usually looks like), so
+                        // the body is never read unless the status actually matches.
                         if status != want {
                             return ProbeResult::NotFound;
                         }
@@ -193,10 +186,10 @@ impl Module for UsernameSearch {
                                 None => return ProbeResult::Error,
                             };
                         scan_text_for_keys(&body);
-                        if body.contains(needle) {
-                            ProbeResult::NotFound
-                        } else {
+                        if account_exists(&site.detect, status, Some(&body)) {
                             found(url)
+                        } else {
+                            ProbeResult::NotFound
                         }
                     }
                 }
@@ -384,6 +377,33 @@ fn detection_strength(detect: &Detect) -> (f64, bool) {
     match detect {
         Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..) => (0.92, true),
         Detect::StatusEq(_) => (0.74, false),
+    }
+}
+
+/// True iff `detect`'s existence rule is satisfied — the single, pure
+/// decision point every probe funnels through, extracted (PROBLEM_TREE T2.7,
+/// scraper resilience) so it is unit-testable against real captured HTML
+/// fixtures instead of only ever being exercised by a live network probe.
+///
+/// `body` is `None` for `StatusEq` (no body read needed at all) or when the
+/// caller's status already mismatched `want` — the dominant real-world shape:
+/// live-verified against `https://lobste.rs/u/<nonexistent>`, which returns a
+/// clean HTTP 404 for an absent account (not the HTTP 200 + "user not found"
+/// marker body its own `Detect::StatusAndNotBody(200, "user not found")` table
+/// entry was written to expect), so the status mismatch alone already decides
+/// "not found" correctly without ever needing to reach the needle check. A
+/// `StatusAndBody`/`StatusAndNotBody` rule asked to decide with no body at all
+/// (should not happen — the caller always reads the body once status matches)
+/// conservatively resolves to "not found" rather than assuming a hit.
+fn account_exists(detect: &Detect, status: u16, body: Option<&str>) -> bool {
+    match detect {
+        Detect::StatusEq(want) => status == *want,
+        Detect::StatusAndBody(want, needle) => {
+            status == *want && body.is_some_and(|b| b.contains(needle))
+        }
+        Detect::StatusAndNotBody(want, needle) => {
+            status == *want && body.is_some_and(|b| !b.contains(needle))
+        }
     }
 }
 
