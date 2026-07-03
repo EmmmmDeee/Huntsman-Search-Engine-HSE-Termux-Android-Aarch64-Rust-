@@ -144,6 +144,10 @@ pub(super) fn build_entities(
     let mut u = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
     u.tag("pypi");
     u.tag("public-profile");
+    // The true package count, taken BEFORE the `MAX_PACKAGES` sample cap below —
+    // a maintainer with more packages than the cap must not have their real
+    // total silently understated by the capped sample's own length.
+    let total_packages = packages.len();
     let pkg_names: Vec<&str> = packages
         .iter()
         .take(MAX_PACKAGES)
@@ -158,8 +162,8 @@ pub(super) fn build_entities(
             .copied()
             .collect::<Vec<_>>()
             .join(", ");
-        let summary = if pkg_names.len() > 5 {
-            format!("{sample}, … ({} packages)", pkg_names.len())
+        let summary = if total_packages > 5 {
+            format!("{sample}, … ({total_packages} packages)")
         } else {
             sample
         };

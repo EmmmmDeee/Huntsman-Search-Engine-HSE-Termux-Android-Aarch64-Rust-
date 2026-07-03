@@ -91,6 +91,10 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
     pu.add_evidence(ev_base());
     result.push(pu);
 
+    // The true gem count, taken BEFORE the `MAX_GEMS` cap below consumes `gems`
+    // — a prolific gem owner with more gems than the cap must not have their
+    // real total silently understated by the capped `gem_names`'s own length.
+    let total_gems = gems.len();
     for gem in gems.into_iter().take(MAX_GEMS) {
         let gem_name = gem.name.as_deref().unwrap_or("").to_string();
         if !gem_name.is_empty() {
@@ -171,8 +175,8 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
             .cloned()
             .collect::<Vec<_>>()
             .join(", ");
-        let summary = if gem_names.len() > 5 {
-            format!("{coverage}, … ({} gems)", gem_names.len())
+        let summary = if total_gems > 5 {
+            format!("{coverage}, … ({total_gems} gems)")
         } else {
             coverage
         };

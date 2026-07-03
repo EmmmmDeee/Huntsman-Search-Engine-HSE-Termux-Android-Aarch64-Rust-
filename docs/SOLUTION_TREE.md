@@ -4023,3 +4023,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (checked directly — this edits a Rust doc comment)/`cargo test` all clean
   (4340 lib tests unchanged). No behaviour change. Paired: `PROBLEM_TREE` §8 —
   same commit.
+
+- **2026-07-03** — **`pypi_user`/`rubygems_user`: fixed a fabricated-count bug
+  (worse than silent truncation — a specific wrong number asserted as fact).**
+  From a fresh multi-angle discovery pass (Workflow, 5 finders on angles not
+  swept this session: determinism, dead public items, silent truncation, TODO
+  markers, confidence-value consistency; 6/8 confirmed). Both modules compute
+  their `packages`/`gems` evidence count from the POST-`.take(30)`-cap sample's
+  own length, not the true total — a 40-package/35-gem owner was reported as
+  exactly 30. Verified both files directly: `pypi_user` takes packages by
+  reference (count stays available after the cap); `rubygems_user` takes `Vec`
+  by value and consumes it, so the true count had to be captured before the
+  consuming loop. Fixed both to use the true pre-cap total; the 5-item text
+  sample is unaffected (5 < 30 always). One new regression test per module,
+  each constructing more-than-30 items and asserting the true count appears —
+  red/green-verified via a scoped two-file `git stash` revert. Gate green
+  (fmt/clippy/doc/`cargo test`, 4342 lib tests +2; all 25 existing tests in both
+  modules still pass); `hse selftest` 9/9. No identity/PII, architecture-guard,
+  or `unsafe` impact. Paired: `PROBLEM_TREE` §8 — same commit.

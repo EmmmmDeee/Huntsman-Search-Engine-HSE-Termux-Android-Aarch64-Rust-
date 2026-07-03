@@ -419,6 +419,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`pypi_user`/`rubygems_user` no longer understate a prolific maintainer's
+  package/gem count.** Both modules cap their sample of packages/gems at 30 for
+  the entity list, but were also using that capped sample's length for the
+  headline coverage count in the evidence text — so an owner with 40 packages
+  or 35 gems was reported as having exactly 30, a specific wrong number rather
+  than an honest "some were truncated" signal. The coverage count now reflects
+  the true total regardless of how many are sampled into entities.
 - **OathNet breach hits now participate in temporal breach clustering
   (AU-019).** The breach-search response includes per-breach metadata
   (including the breach's actual occurrence date) alongside the matched

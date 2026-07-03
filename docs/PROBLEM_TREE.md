@@ -5404,3 +5404,41 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `cargo test` all clean (4340 lib tests unchanged, 0 failures). No behaviour
   change, so no CLI surface to exercise. **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+
+- **2026-07-03** — **`pypi_user`/`rubygems_user` fabricated a wrong coverage
+  count instead of honestly reporting a truncated one — worse than a silent
+  drop, since the wrong number is asserted as fact.** Found by a fresh
+  multi-angle discovery pass (Workflow: 5 finders on angles not yet swept this
+  session — determinism, dead public items, silent truncation, literal
+  TODO/FIXME markers, cross-module confidence consistency — → adversarial
+  verification; 6 of 8 candidates confirmed). Both modules cap their sample at
+  `MAX_PACKAGES`/`MAX_GEMS` (30) BEFORE computing the count they stamp into the
+  `packages`/`gems` evidence attribute (`… (N packages)` / `… (N gems)`): the
+  count used `pkg_names.len()`/`gem_names.len()` — the length AFTER `.take(30)`
+  — not the true total. So a maintainer with 40 PyPI packages or 35 RubyGems was
+  reported as having exactly 30, a specific, confidently-asserted, WRONG number,
+  not a vague "some data missing" signal — exactly the class this doctrine rates
+  worse than missing coverage (a false claim, not an honest gap). Verified both
+  modules directly (identical bug shape, same author pattern per the finder,
+  confirmed independently by reading both files): `pypi_user::build_entities`
+  takes `packages: &[(String, String)]` (a reference, so `packages.len()` stays
+  available after the `.take()`); `rubygems_user::build_entities` takes
+  `gems: Vec<RgGem>` BY VALUE and consumes it via `.into_iter()`, so the true
+  count had to be captured (`let total_gems = gems.len();`) before the
+  consuming loop. Fixed both: the `> 5`/count-format logic now reads the
+  captured true total instead of the post-cap sample's own length; the 5-item
+  text SAMPLE itself is unaffected (5 < 30 always, so it was never wrong) — only
+  the trailing `(N …)` count changes. New regression test per module
+  (`package_coverage_reports_the_true_total_not_the_max_packages_cap`,
+  `gem_coverage_reports_the_true_total_not_the_max_gems_cap`) constructs 40/35
+  items respectively and asserts the evidence attribute ends with the TRUE
+  count, not 30 — red/green-verified via a scoped `git stash` revert of both
+  `mod.rs` files together (both failed as expected; restored, both pass). Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4342 lib tests, +2; every existing test in both modules —
+  25 total — still passes unchanged; full suite green). Behaviour-touching (the
+  evidence attribute's count changes for any subject with >30 packages/gems), so
+  also `hse selftest` 9/9 (161 modules, dispatch graph intact) per
+  `CONVENTIONS.md` §9. No identity/PII decision logic (existing provider data,
+  no new collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
