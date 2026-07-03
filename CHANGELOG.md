@@ -24,6 +24,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **Real git-subprocess test fixture for `hse update --check`.**
+  `commits_behind` and `changelog_lines` (`cli/update.rs`) had never been
+  exercised against actual `git` behaviour — only implicitly witnessed by
+  running the command live. Added a fixture that builds a genuine local
+  "origin" repository, clones it (so `@{u}` tracking is git's own doing),
+  and lands further real commits on the origin post-clone, so both
+  functions' real subprocess output is checked directly — no mocked git
+  behaviour anywhere in the new tests.
 - **New module `tor_search_pivot` — free, one-click Tor search leads,
   resolving a repeated request for free dark-web search engines without
   compromising on safety.** Generates (but never fetches) a search URL

@@ -762,11 +762,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   count. Predates this repo's single root commit (`770df4c9`), so — unlike
   most corrections this session — no specific delivery cycle can be
   attributed; it simply was never reconciled into this note.
-  *Remaining (real):* `changelog_lines`/`commits_behind` have no test
-  exercising the actual `git` subprocess calls (a real local git-repo-pair
-  fixture, `tempfile` already a dev-dep, would close it) — left as a
-  separate, smaller follow-on.
-  **(cycle 22)**
+  *Delivered (2026-07-03): the real git-subprocess fixture.* `changelog_lines`/
+  `commits_behind` are now exercised against a REAL local git-repo pair —
+  a genuine `git init`/`commit`/`clone` origin+clone (git's own `@{u}`
+  tracking-branch wiring, not hand-faked), with further real commits
+  landing on the origin after the clone to prove both functions' actual
+  subprocess behaviour: `commits_behind` correctly fetches and counts
+  (0, then 2, after 2 real commits); `changelog_lines` returns the real
+  `git log --oneline` subjects newest-first, matching the exact call
+  sequence `cmd_update --check` uses. A third test proves `commits_behind`
+  returns `None` (not a panic) outside any git repo. 3 new tests, all
+  spawning real `git` subprocesses against `tempfile` temp dirs — no
+  mocked git output. **(cycle 22, residual closed same session)**
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -980,12 +987,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   import, not an incremental change), so — unlike the AU-084 correction
   above — no earlier delivery date or authoring cycle can be attributed from
   `git log` here; it simply predates this repo's history and was never
-  reconciled into this note. **Residual, real gap:** `changelog_lines` and
-  `commits_behind` are both untested — no fixture exercises the actual `git`
-  subprocess calls (unlike most of this codebase's I/O-adjacent logic). A
-  real local git-repo-pair fixture (`tempfile`, already a dev-dep) would
-  close it; left as a separate, smaller follow-on rather than bolted onto
-  this doc correction.
+  reconciled into this note. **Residual closed (2026-07-03):**
+  `changelog_lines`/`commits_behind` are now covered by a real local
+  git-repo-pair fixture (`tempfile`) — see SOL-UPDATE above for the full
+  delivery note. Off the open queue.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -3356,3 +3361,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   vendor-API option logged in §4a. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4314 lib tests (+8), 0 failures. **Paired:**
   `PROBLEM_TREE` C1 + §8 — same commit.
+
+- **2026-07-03** — **SOL-UPDATE's real, standing residual closed:
+  `commits_behind`/`changelog_lines` now covered by a genuine git-
+  subprocess fixture, not a mock.** Read `cli/update.rs` directly:
+  `commits_behind` runs `git fetch` then `git rev-list --count
+  HEAD..@{u}`; `changelog_lines` runs `git log --oneline HEAD..@{u}` —
+  neither had ever been exercised against real git behaviour, only
+  implicitly witnessed via `--check`'s live output. Built a real fixture
+  in `#[cfg(test)]`: `tempfile::tempdir()` for a real "origin" repo
+  (`git init -b main` + a real first commit with explicit `GIT_AUTHOR_*`/
+  `GIT_COMMITTER_*` env so the test never depends on the running
+  environment's global git config), then a real `git clone` into a
+  second tempdir — git's own machinery wires up `@{u}` to `origin/main`,
+  not a hand-faked ref. Further real commits land on the origin AFTER
+  the clone, so `commits_behind`'s own `git fetch` has genuine new
+  history to discover. 3 new tests: a fresh clone reads `Some(0)`; two
+  more real commits on origin make it read `Some(2)`; `changelog_lines`
+  (called after the same `commits_behind` fetch `cmd_update` itself
+  relies on) returns the real two commit subjects, newest-first, exactly
+  matching `git log --oneline`'s own ordering; and `commits_behind`
+  returns `None` (not a panic) outside a git repo entirely. No mocked
+  git output anywhere in the fixture — every assertion is checked
+  against a real subprocess's real stdout. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4317 lib tests (+3), 0 failures. **Paired:**
+  `PROBLEM_TREE` §8 — same commit.

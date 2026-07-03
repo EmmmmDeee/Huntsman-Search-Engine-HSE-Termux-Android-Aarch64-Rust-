@@ -378,6 +378,108 @@ mod tests {
     use super::*;
     use crate::cli::Command;
 
+    // ── `commits_behind` / `changelog_lines` — real git-repo-pair fixture ──
+    //
+    // Both functions shell out to `git`; before this, nothing exercised the
+    // actual subprocess calls (`--check`'s live output was the only witness).
+    // Builds a REAL local "origin" repo, clones it (so `@{u}` is genuinely
+    // configured, not faked), then commits more onto "origin" so the clone
+    // is verifiably behind — real git behaviour end to end, not a mock.
+
+    fn git(dir: &std::path::Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.invalid")
+            .env("GIT_COMMITTER_NAME", "Test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.invalid")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git must be on PATH to run this test");
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    fn commit(dir: &std::path::Path, file: &str, message: &str) {
+        std::fs::write(dir.join(file), message).unwrap();
+        git(dir, &["add", "."]);
+        git(dir, &["commit", "--quiet", "-m", message]);
+    }
+
+    /// Real origin repo + a real clone of it, both on branch `main`, clone's
+    /// `@{u}` genuinely pointing at `origin/main` (git's own doing, not
+    /// hand-wired). Returns `(_origin_tempdir, origin_path, clone_tempdir)` —
+    /// the origin tempdir must stay alive (dropping it deletes the remote
+    /// `git fetch` reads from) even though only its path is used after setup.
+    fn origin_and_clone() -> (tempfile::TempDir, PathBuf, tempfile::TempDir) {
+        let origin_dir = tempfile::tempdir().expect("tempdir");
+        let origin = origin_dir.path().to_path_buf();
+        git(&origin, &["init", "--quiet", "-b", "main"]);
+        commit(&origin, "README.md", "initial commit");
+
+        let clone_dir = tempfile::tempdir().expect("tempdir");
+        let clone = clone_dir.path().join("dir");
+        let status = std::process::Command::new("git")
+            .args(["clone", "--quiet"])
+            .arg(&origin)
+            .arg(&clone)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git clone must succeed");
+        assert!(status.success());
+
+        (origin_dir, origin, clone_dir)
+    }
+
+    #[test]
+    fn commits_behind_counts_real_new_commits_on_the_tracking_branch() {
+        let (_origin_guard, origin, clone_dir) = origin_and_clone();
+        let clone = clone_dir.path().join("dir");
+
+        // Freshly cloned: up to date with its own origin/main.
+        assert_eq!(commits_behind(&clone), Some(0));
+
+        // Two more real commits land on origin AFTER the clone was made.
+        commit(&origin, "a.txt", "second commit");
+        commit(&origin, "b.txt", "third commit");
+
+        // commits_behind() does its own `git fetch`, so the clone picks up
+        // both without any manual fetch from the test.
+        assert_eq!(commits_behind(&clone), Some(2));
+    }
+
+    #[test]
+    fn changelog_lines_lists_the_new_commit_subjects_newest_first() {
+        let (_origin_guard, origin, clone_dir) = origin_and_clone();
+        let clone = clone_dir.path().join("dir");
+
+        assert!(
+            changelog_lines(&clone).is_empty(),
+            "a fresh clone has no pending changelog lines"
+        );
+
+        commit(&origin, "a.txt", "add alpha feature");
+        commit(&origin, "b.txt", "fix beta bug");
+        // fetch happens inside commits_behind(); call it first so
+        // changelog_lines() (which does NOT fetch on its own) sees the
+        // already-fetched refs — the exact sequence `cmd_update` uses.
+        assert_eq!(commits_behind(&clone), Some(2));
+
+        let lines = changelog_lines(&clone);
+        assert_eq!(lines.len(), 2);
+        // `git log --oneline` is newest-first; each line is `<short-sha> <subject>`.
+        assert!(lines[0].ends_with("fix beta bug"), "got: {lines:?}");
+        assert!(lines[1].ends_with("add alpha feature"), "got: {lines:?}");
+    }
+
+    #[test]
+    fn commits_behind_returns_none_outside_a_git_repo() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        assert_eq!(commits_behind(dir.path()), None);
+    }
+
     #[test]
     fn should_check_now_respects_the_throttle_window() {
         let throttle = 21_600; // 6 h

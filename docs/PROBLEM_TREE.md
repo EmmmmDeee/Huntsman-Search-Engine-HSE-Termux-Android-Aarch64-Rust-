@@ -4187,3 +4187,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   option in `SOLUTION_TREE` §4a. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4314 lib tests (+8), 0 failures. **Paired:**
   `SOLUTION_TREE` SOL-CORR + §4a + §5 — same commit.
+
+- **2026-07-03** — **SOL-UPDATE's standing residual closed: real
+  git-subprocess fixture for `commits_behind`/`changelog_lines`.**
+  Re-oriented after the Tor-search cycles by re-checking `SOLUTION_TREE`
+  §4a for the next real gap rather than continuing to chase C1's
+  open-ended "(d)"; T2.7 (scraper resilience) sits earlier in the
+  execution queue but its health-signal half is explicitly blocked on
+  the golden-fixture parser rewrites happening first, so picked the
+  next smallest real item instead: `cli/update.rs`'s `commits_behind`/
+  `changelog_lines` had never been exercised against real git subprocess
+  behaviour, witnessed only implicitly via `--check`'s live output.
+  Built a real fixture: a genuine `git init`/commit "origin" repo, a
+  genuine `git clone` (so `@{u}` tracking is git's own doing, not
+  hand-wired), further real commits landing on origin post-clone so
+  `commits_behind`'s own `git fetch` has real new history to discover.
+  3 new tests — `Some(0)` on a fresh clone, `Some(2)` after 2 real
+  commits, `changelog_lines` returns the real commit subjects
+  newest-first matching `git log --oneline`'s own ordering, and
+  `commits_behind` returns `None` (not a panic) outside a git repo —
+  all against a real subprocess's real stdout, no mocked git output.
+  Explicit `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env in the fixture so the
+  test never depends on the running environment's global git config.
+  Gate green: fmt/clippy `--all-targets`/doc clean, 4317 lib tests (+3),
+  0 failures. **Paired:** `SOLUTION_TREE` SOL-UPDATE + §4a + §5 — same
+  commit.
