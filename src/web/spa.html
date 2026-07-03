@@ -139,6 +139,14 @@
     .keyrow .kn{font-family:monospace;font-weight:600;color:#333;min-width:220px}
     .keyrow .kd{font-size:11px;color:#888}
     .keyrow input[type=password]{flex:1;min-width:200px}
+    /* Dim/secondary text on the Engine (search-engine liveness) and Settings
+       pages — was hardcoded inline hex (#666/#999/#aaa/#555) on each site,
+       which reads fine on the light background these values were tuned for
+       but is low-contrast to the point of near-invisibility once the
+       body.dark-theme override below applies (dark IS the default theme —
+       see applyTheme() — so this hit most page loads, not an edge case).
+       One class, themed like every other dark-aware rule in this file. */
+    .dim-text{color:#666}
     /* Phone (Chrome-Android): keep fixed-width controls from overflowing a
        narrow viewport. Overrides the inline widths via !important. */
     @media (max-width: 767px) {
@@ -274,6 +282,12 @@
     body.dark-theme .keyrow{background:#222;border-color:#333}
     body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
     body.dark-theme .mod-grid label{background:#272727;border-color:#333;color:#ddd}
+    /* Lighter variant of .dim-text so it stays readable against the near-
+       black dark-theme background — verified ≥4.5:1 contrast (WCAG AA)
+       against #1a1a1a. (.eng-* status-colour dark overrides live at the very
+       end of this block, after the file's other .stat-card .val rule, so
+       they reliably win the cascade against it — see the comment there.) */
+    body.dark-theme .dim-text{color:#999}
     /* Browse sidebar — SpiderFoot two-column layout */
     #browse-rollup tr.active-kind td{background:#059CD7 !important;color:#fff !important}
     #browse-rollup tr.active-kind .kind-pill{background:rgba(255,255,255,.25);color:#fff}
@@ -337,6 +351,25 @@
     /* Row hovers: the light-blue #f0f7ff is invisible on a dark table */
     body.dark-theme #browse-table tbody tr:hover{background:#243240 !important}
     body.dark-theme .search-results .sr-item:hover{background:#243240}
+    /* Engine-liveness (#/engines) status colours — deliberately avoid red/green
+       (the classic problem pairing for red-green colour blindness) in favour
+       of blue/amber/magenta, reusing hues this stylesheet already assigns the
+       same meaning elsewhere (info=blue, medium=amber, critical=magenta — see
+       .lv-info/.cv-medium/.cv-critical above), so the palette stays internally
+       consistent. Status is also always spelled out as text next to the dot,
+       never colour-only. Each has a `.val.` compound form too: the stat-card
+       count reuses the same class, and `.stat-card .val{color:#333}` (plus its
+       dark-theme echo, both declared earlier) outrank a bare single-class rule
+       on specificity alone — `.val.eng-*` matches that specificity and, placed
+       last, wins the cascade tie. */
+    .eng-up,.val.eng-up{color:#31708f}
+    .eng-blocked,.val.eng-blocked{color:#8a6d3b}
+    .eng-down,.val.eng-down{color:#9b1f9b}
+    .eng-off,.val.eng-off{color:#666}
+    body.dark-theme .eng-up,body.dark-theme .val.eng-up{color:#5aa0cf}
+    body.dark-theme .eng-blocked,body.dark-theme .val.eng-blocked{color:#e6c878}
+    body.dark-theme .eng-down,body.dark-theme .val.eng-down{color:#d17fd1}
+    body.dark-theme .eng-off,body.dark-theme .val.eng-off{color:#999}
   </style>
 </head>
 <body>
@@ -3106,7 +3139,7 @@ function renderInfo(host, scan){
     <div class="panel panel-default">
       <div class="panel-heading"><b>Scan settings</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
-        <tbody>${rows.map(([k,v])=>`<tr><td style="width:220px;color:#666">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
+        <tbody>${rows.map(([k,v])=>`<tr><td class="dim-text" style="width:220px">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
       </table>
     </div>
   `;
@@ -3223,10 +3256,10 @@ async function renderOpts(v){
       <div class="panel-heading"><b>Server</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
         <tbody>
-          <tr><td style="width:220px;color:#666">Version</td><td><code>${esc(S.version||'?')}</code></td></tr>
-          <tr><td style="color:#666">Health</td><td>${S.health ? '<span class="label label-success">ok</span>' : '<span class="label label-danger">unreachable</span>'}</td></tr>
-          <tr><td style="color:#666">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
-          <tr><td style="color:#666">Known keys</td><td>${data.count}</td></tr>
+          <tr><td class="dim-text" style="width:220px">Version</td><td><code>${esc(S.version||'?')}</code></td></tr>
+          <tr><td class="dim-text">Health</td><td>${S.health ? '<span class="label label-success">ok</span>' : '<span class="label label-danger">unreachable</span>'}</td></tr>
+          <tr><td class="dim-text">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
+          <tr><td class="dim-text">Known keys</td><td>${data.count}</td></tr>
         </tbody>
       </table>
     </div>
@@ -3332,7 +3365,7 @@ function wireDiagnostics(){
                       : s==='warn' ? '<span class="label label-warning">warn</span>'
                       : '<span class="label label-danger">fail</span>';
       const rows = (r.checks||[]).map(c =>
-        `<tr><td>${pill(c.status)}</td><td><code>${esc(c.name)}</code></td><td style="color:#aaa">${esc(c.detail)}</td></tr>`
+        `<tr><td>${pill(c.status)}</td><td><code>${esc(c.name)}</code></td><td class="dim-text">${esc(c.detail)}</td></tr>`
       ).join('');
       $('#st-results').innerHTML =
         `<table class="table table-condensed" style="margin-bottom:0"><tbody>${rows}</tbody></table>`;
@@ -3665,11 +3698,12 @@ async function renderEngines(v){
   // consistent with the rows the instant a toggle flips — the cached sweep can
   // lag a just-disabled engine until the next background probe.
   const cnt = {up:0, blocked:0, down:0, disabled:0, pending:0};
-  const dot = st => {
-    const c = st==='up' ? '#3c763d' : (st==='blocked' ? '#8a6d3b'
-            : (st==='disabled'||st==='pending') ? '#777' : '#a94442');
-    return `<span style="color:${c};font-weight:600">&#9679;&nbsp;${esc(st)}</span>`;
-  };
+  // Single source of truth for status→colour-class, shared by the per-row dot
+  // and the stat-card counts below (previously duplicated as two separate
+  // hardcoded hex maps that could silently drift out of sync).
+  const statusCls = st => st==='up' ? 'eng-up' : (st==='blocked' ? 'eng-blocked'
+    : (st==='disabled'||st==='pending') ? 'eng-off' : 'eng-down');
+  const dot = st => `<span class="${statusCls(st)}" style="font-weight:600">&#9679;&nbsp;${esc(st)}</span>`;
   const rows = engines.map(en=>{
     const p = probed[en.name];
     let status, latency, results;
@@ -3686,7 +3720,7 @@ async function renderEngines(v){
       <td>${dot(status)}</td>
       <td class="text-right">${latency}</td>
       <td class="text-right">${results}</td>
-      <td style="color:#999;font-size:12px">${detail}</td>
+      <td class="dim-text" style="font-size:12px">${detail}</td>
       <td class="text-right">${btn}</td>
     </tr>`;
   }).join('');
@@ -3697,10 +3731,10 @@ async function renderEngines(v){
       </h3>
     </div>
     <div class="row">
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Up</div><div class="val" style="color:#3c763d">${cnt.up}</div></div></div>
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Blocked</div><div class="val" style="color:#8a6d3b">${cnt.blocked}</div></div></div>
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Down</div><div class="val" style="color:#a94442">${cnt.down}</div></div></div>
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Disabled</div><div class="val" style="color:#777">${cnt.disabled}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Up</div><div class="val ${statusCls('up')}">${cnt.up}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Blocked</div><div class="val ${statusCls('blocked')}">${cnt.blocked}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Down</div><div class="val ${statusCls('down')}">${cnt.down}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Disabled</div><div class="val ${statusCls('disabled')}">${cnt.disabled}</div></div></div>
     </div>
     <p class="text-muted" style="margin-top:8px">Free, keyless engines — probed at startup and on a periodic cycle. Last sweep: ${esc(when)}. Auto-refreshes every 30&nbsp;s. Disable a noisy/blocked engine inline — it's then skipped by the probe and every scan (manage all toggles under <a href="#/opts">Settings</a>).</p>
     <div class="table-responsive"><table class="table table-striped table-condensed">
