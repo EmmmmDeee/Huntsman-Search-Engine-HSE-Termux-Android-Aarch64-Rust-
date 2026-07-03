@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **Corrected the stale test count in `README.md`.** The architecture
+  summary claimed "3,100+ tests" — the second of two stale counts an
+  earlier audit flagged. Recounted from a real `cargo test` run: 4317
+  lib tests + 89 API-integration tests + 30 architecture-guard tests —
+  the exact three categories the line names. `README.md` now reads
+  "4,400+ tests", kept as a safe floor since no CI guard enforces this
+  specific line the way the module-count/rule-count lines are.
 - **Corrected the stale correlator rule count in `README.md`.** The
   architecture summary claimed "74 correlator rules (AU-001 through
   AU-086)" — badly stale after several sessions of AU-0xx additions.

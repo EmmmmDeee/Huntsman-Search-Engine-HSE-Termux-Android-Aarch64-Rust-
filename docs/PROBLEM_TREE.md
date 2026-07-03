@@ -4212,3 +4212,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `--all-targets`/doc clean, 4317 lib tests (+3),
   0 failures. **Paired:** `SOLUTION_TREE` SOL-UPDATE + §4a + §5 — same
   commit.
+
+- **2026-07-03** — **README.md's "3,100+ tests" count fixed — the
+  second of two stale counts the AU-111 cycle's README audit flagged
+  and deliberately left open, now closed with the rule count already
+  fixed.** Recounted from a real `cargo test` run: 4317 lib + 89
+  API-integration + 30 architecture-guard = 4,437 across the three
+  categories the line names. `README.md:337` corrected from "3,100+" to
+  "4,400+ tests" — a safe floor under the precise figure, kept as a "+"
+  round number since no CI guard enforces this specific line the way
+  the module-count/rule-count lines are (confirmed by grep). No code
+  change. Gate green: fmt/clippy `--all-targets`/doc clean, 4317 lib
+  tests (unchanged), 0 failures. **Paired:** `SOLUTION_TREE` §4a + §5 —
+  same commit.

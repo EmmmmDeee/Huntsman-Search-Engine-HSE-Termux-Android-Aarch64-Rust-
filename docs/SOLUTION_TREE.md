@@ -970,12 +970,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   honest fix is either a fresh dated re-audit pass (new "Facts (verified
   against the tree, <today>)" table) or an explicit "superseded by" pointer,
   not a silent field edit. No solution node yet.
-- **README.md "3,100+ tests" is stale (new, 2026-07-03 S→P find, same pass):**
-  same architecture bullet list as the just-fixed rule count; real count is
-  4290 lib tests (plus API/integration/architecture-guard tests not counted
-  in that figure). Left out of the rule-count commit deliberately — this
-  cycle's flagged gap was the rule count specifically, not every number in
-  the file. No solution node yet.
+- ~~**README.md "3,100+ tests" is stale (found 2026-07-03, same pass as
+  the rule-count fix).**~~ **Delivered (2026-07-03).** Same architecture
+  bullet list as the rule-count fix. Real figures as of this cycle: 4317
+  lib (unit) tests + 89 API-integration tests + 30 architecture-guard
+  tests = 4,437 across the three categories the bullet names (plus
+  further integration suites — `smoke`, `cli_seed_validation`,
+  `audit_regression`, `halting` — and 63 doctests not counted in that
+  subtotal). `README.md:337` corrected from "3,100+ tests" to "4,400+
+  tests" — a safe floor under the precise 4,437, using the same "+"
+  rounding convention the line already used, since this count will keep
+  growing and doesn't need to be re-edited every single cycle the way an
+  exact figure would. No architecture guard enforces this line (unlike
+  the module-count/rule-count guards) — confirmed by grep, so this stays
+  a manual, periodic fix rather than a CI-enforced one. Off the open
+  queue.
 - ~~**hse update --check changelog (cycle 22 S→P gap): `--check` reports only a
   commit count, no subject lines.**~~ **Delivered, stale note (found
   2026-07-01).** `cli/update.rs::changelog_lines` runs exactly the suggested
@@ -3386,3 +3395,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   against a real subprocess's real stdout. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4317 lib tests (+3), 0 failures. **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **README.md's "3,100+ tests" count fixed — the second
+  of the two stale counts the AU-111 cycle's README audit flagged and
+  deliberately left open, now that the rule count is closed.** Recounted
+  from a real `cargo test` run rather than trusting the last-known
+  figure: 4317 lib tests + 89 API-integration + 30 architecture-guard =
+  4,437 across the three categories the line names. `README.md:337`
+  corrected to "4,400+ tests" — kept as a safe "+" floor, not the exact
+  figure, since (unlike the module-count/rule-count lines) no CI guard
+  enforces this one; confirmed by `grep` that no `readme_test_count`-
+  style test exists. No code change. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4317 lib tests (unchanged), 0 failures.
+  **Paired:** `PROBLEM_TREE` §8 — same commit.
