@@ -904,12 +904,21 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   security headers). Built the former, deliberately left the latter open:
   MULTI_DEVICE is a real, previously-invisible **person**-evidentiary
   signal (AU-009 already fires identically on 1 or N compromised
-  machines, silently collapsing the device-breadth fact), while
-  MISSING_SECURITY_HEADERS describes a *domain's own web-server hygiene*,
-  not a fact about the subject — firing a correlation on it would be
-  closer to a pentest finding than OSINT evidence about a person, and
-  risks noise on any crawled domain with imperfect header configuration
-  (the majority of the internet). New
+  machines, silently collapsing the device-breadth fact). MISSING_
+  SECURITY_HEADERS was reconsidered later the same day: the original
+  reasoning ("not a fact about the subject") does not survive contact
+  with `rule_au_008_exposed_service`, which already treats domain/IP
+  infrastructure-exposure tags (`VULNERABLE`/`ssh-exposed`/`leak`) as
+  legitimate correlator findings — a subject's own exposed infrastructure
+  IS in-scope NETINT evidence here, not out-of-bounds. The real blocker
+  is precision, not relevance: `audit_security_headers` (`web_crawler`)
+  tags on any ONE of 6 checked headers missing (HSTS/CSP/X-Frame-Options/
+  X-Content-Type-Options/Permissions-Policy/Referrer-Policy) — a bar most
+  real domains fail — unlike AU-008's existing tags, each genuinely rare
+  (a DNS zone-transfer leak, an open cloud bucket, a Shodan CVE, a
+  takeover risk, a leakix-indexed exposed service). Folding it into AU-008
+  unmodified would fire on nearly every crawled domain, diluting a
+  High-severity rule with a near-universal, low-value signal. New
   `rule_au_113_multi_device_stealer_compromise` fires on `MULTI_DEVICE`,
   restricted to `EntityKind::Email` (mirroring AU-009's own filter exactly
   — `hudsonrock` also tags `Domain` targets from a `search-by-domain`
@@ -3878,3 +3887,35 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   technique has now closed 3 gaps across 2 cycles. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4294 lib tests (+4), 0 failures. **Paired:**
   `SOLUTION_TREE` SOL-CORR + §4a + §5 — same commit.
+
+- **2026-07-03** — **Self-correction: the prior cycle's stated reason for
+  deferring `tags::MISSING_SECURITY_HEADERS` was wrong — fixed the
+  reasoning, not the decision. No code change.** Orienting for this
+  cycle, re-verified rather than re-stated the AU-113 cycle's own
+  deferral note ("MISSING_SECURITY_HEADERS describes a domain's own
+  web-server hygiene, not a fact about the subject"). Read
+  `rule_au_008_exposed_service` (`core::correlator::rules::infra`)
+  directly and found it already fires on domain/IP infrastructure-
+  exposure tags — `VULNERABLE`, `ssh-exposed`, `leak` — as legitimate
+  correlator findings; a subject's own exposed infrastructure is
+  established, in-scope NETINT evidence in this codebase, not merely a
+  "pentest finding" outside the tool's remit. The "not about the subject"
+  framing was therefore incorrect. Investigated the ACTUAL blocker:
+  `grep`-read `audit_security_headers` (`web_crawler`) and confirmed it
+  tags an entity when even ONE of 6 checked headers (Strict-Transport-
+  Security, Content-Security-Policy, X-Frame-Options, X-Content-Type-
+  Options, Permissions-Policy, Referrer-Policy) is absent — a bar most
+  real-world domains fail — while every existing tag in AU-008's
+  `EXPOSURE_TAGS` list is a genuinely rare, specific misconfiguration
+  (DNS zone-transfer leak, open cloud bucket, Shodan-flagged CVE,
+  subdomain-takeover risk, leakix-indexed exposed service). Folding
+  MISSING_SECURITY_HEADERS into AU-008 unmodified would fire on nearly
+  every crawled domain, diluting a High-severity rule with a
+  near-universal, low-precision signal — the real reason to defer it.
+  Corrected the deferral note in this tree's C1 body and
+  `SOLUTION_TREE`'s SOL-CORR + §4a bodies to reflect the verified
+  reasoning; the decision to defer stands, but a future cycle building
+  it should design a *stricter* threshold (several specific critical
+  headers missing, not any one of six), not conclude it's out of scope
+  for the tool. **Paired:** `SOLUTION_TREE` SOL-CORR + §4a + §5 — same
+  commit.

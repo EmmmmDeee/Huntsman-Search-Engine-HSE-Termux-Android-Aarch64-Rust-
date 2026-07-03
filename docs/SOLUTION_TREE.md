@@ -429,9 +429,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`hudsonrock`) and `tags::MISSING_SECURITY_HEADERS` (`web_crawler`).
   Built the former only — MULTI_DEVICE is person-evidentiary (AU-009
   already fires identically on 1 or N compromised machines, silently
-  collapsing the device-breadth fact), MISSING_SECURITY_HEADERS describes
-  a domain's own server hygiene, not a fact about the subject, and risks
-  noise (most crawled sites are missing at least one header). New
+  collapsing the device-breadth fact). MISSING_SECURITY_HEADERS was
+  reconsidered mid-cycle: `rule_au_008_exposed_service` already treats
+  domain/IP infrastructure-exposure tags (`VULNERABLE`, `ssh-exposed`,
+  `leak`) as legitimate correlator findings, so "describes infrastructure,
+  not the subject" was the wrong reason to defer it — the real blocker is
+  precision. `audit_security_headers` (`web_crawler`) checks 6 headers
+  (HSTS/CSP/X-Frame-Options/X-Content-Type-Options/Permissions-Policy/
+  Referrer-Policy) and tags on **any single one missing**, unlike
+  AU-008's existing tags (a DNS zone-transfer misconfiguration, an open
+  cloud bucket, a Shodan CVE, a subdomain-takeover risk, a leakix-indexed
+  exposed service — all genuinely rare). Folding it into AU-008 unmodified
+  would fire on nearly every crawled domain (real sites near-universally
+  lack at least one of the six), diluting a High-severity rule with a
+  near-constant true-but-low-value signal — exactly the noise this
+  session's precision doctrine (HIBP catalogue-date exclusion, the
+  reused-plaintext-password scope boundary) repeatedly guards against. New
   `rule_au_113_multi_device_stealer_compromise` fires on `MULTI_DEVICE`,
   `EntityKind::Email`-only (mirrors AU-009's own `Domain` exclusion
   exactly — a `search-by-domain` hit surfaces *other* users' stealer
@@ -800,12 +813,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`tags::MULTI_DEVICE`) closed — see SOL-CORR above for the full note.
   *Remaining:* further AU-0xx rule-gap fill only —
   `tags::MISSING_SECURITY_HEADERS` (`web_crawler`) was found by the same
-  audit and deliberately left unbuilt: it describes a crawled domain's own
-  header hygiene, not a fact about the subject, and risks noise (most
-  crawled sites are missing at least one recommended header); a future
-  pass should decide whether it belongs in a *site-hygiene*-flavoured
-  rule at low severity or is correctly out of scope for a person-focused
-  evidentiary tool before building anything.
+  audit and deliberately left unbuilt. **Reasoning corrected same day
+  (2026-07-03):** the original note reasoned it was "not a fact about the
+  subject," but `rule_au_008_exposed_service` already treats domain/IP
+  infrastructure-exposure tags (`VULNERABLE`/`ssh-exposed`/`leak`) as
+  legitimate correlator findings, so that framing doesn't hold — a
+  subject's own domain having exposed infrastructure IS in-scope NETINT
+  evidence in this codebase's own established taxonomy. The real blocker
+  is precision: `audit_security_headers` tags on any ONE of 6 checked
+  headers missing (HSTS/CSP/X-Frame-Options/X-Content-Type-Options/
+  Permissions-Policy/Referrer-Policy) — a condition most real domains meet
+  — unlike AU-008's existing tags, all genuinely rare (a DNS zone-transfer
+  leak, an open cloud bucket, a Shodan CVE, a takeover risk, a
+  leakix-indexed exposed service). A future pass should build a
+  *stricter* threshold (e.g. requiring several specific critical headers
+  missing, not any one of six) before this belongs in AU-008 or a new
+  rule — not decide it's out of scope.
 - **C2/C6/C7** — capability nodes; solutions sketched, genuinely none started
   (gated on the §3.F enablers landing first, by design — confirmed against
   `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/`SOL-FORENSIC`, all still `[ ]`).
@@ -3103,3 +3126,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   AU-113 correctly silent. Gate green: fmt/clippy `--all-targets`/doc
   clean, 4294 lib tests (+4), 0 failures. **Paired:** `PROBLEM_TREE` C1 +
   §8 — same commit.
+
+- **2026-07-03** — **Self-correction on the AU-113 cycle's deferral
+  reasoning for `tags::MISSING_SECURITY_HEADERS` — no code change.**
+  Verified rather than re-stated the prior cycle's own claim that the tag
+  "describes a domain's own server hygiene, not a fact about the
+  subject." Direct read of `rule_au_008_exposed_service` showed it
+  already treats domain/IP infrastructure-exposure tags (`VULNERABLE`,
+  `ssh-exposed`, `leak`) as legitimate correlator findings — the
+  "not about the subject" framing was wrong; a subject's own exposed
+  infrastructure is established in-scope evidence here. The real blocker,
+  confirmed by reading `audit_security_headers` directly: the tag fires
+  when even one of 6 checked headers is missing, a bar most real domains
+  fail, unlike AU-008's other tags, each a genuinely rare, specific
+  misconfiguration. Corrected the reasoning in SOL-CORR's delivery note
+  and §4a's C1 bullet — the deferral decision stands, but the documented
+  reason is now precision (a too-broad tag needing a stricter threshold),
+  not scope (never true). **Paired:** `PROBLEM_TREE` §8 — same commit.
