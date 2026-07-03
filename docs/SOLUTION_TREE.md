@@ -760,9 +760,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   — cycle 40's own log calls it "SOL-CORR's full arc… delivered"). **The
   "controller behind reused secrets" link facet delivered 2026-07-03**
   (`RelationKind::SharesController` + `derive_shared_secret` — see
-  SOL-CORR above for the full delivery note). *Remaining:* first-class
-  timeline output (widen beyond the shipped footprint timeline); further
-  AU-0xx rule-gap fill.
+  SOL-CORR above for the full delivery note). **Stale-note correction
+  (2026-07-03):** this line still listed "first-class timeline output
+  (widen beyond the shipped footprint timeline)" as remaining, but SOL-CORR's
+  own entry above already records *(c) the timeline widened* delivered the
+  same day (12 real date-shaped keys, `core::timeline::classify`) — the
+  §4d coverage snapshot caught up at the time, this §4a line did not.
+  *Remaining:* further AU-0xx rule-gap fill only.
 - **C2/C6/C7** — capability nodes; solutions sketched, genuinely none started
   (gated on the §3.F enablers landing first, by design — confirmed against
   `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/`SOL-FORENSIC`, all still `[ ]`).
@@ -3020,3 +3024,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   own smaller follow-ons rather than bolted onto this commit. Gate green:
   fmt/clippy `--all-targets`/doc clean, 4290 lib tests (unchanged), 0
   failures. **Paired:** `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **§4a self-contradiction on C1 fixed — no code change.**
+  Orienting for this cycle, re-read §4a's C1 bullet against the SOL-CORR
+  entry directly above it in this same document and found they disagreed:
+  §4a still listed "first-class timeline output (widen beyond the shipped
+  footprint timeline)" as a C1 remaining item, but SOL-CORR's own entry
+  already records *(c) the timeline widened* delivered the same day, and
+  §4d's coverage snapshot line had already been updated to say "only
+  further AU-0xx rule-gap fill remaining" — §4a alone was never
+  reconciled when (c) shipped. Corrected §4a's C1 bullet to match §4d and
+  SOL-CORR: C1's live remaining list is now "further AU-0xx rule-gap fill
+  only." `PROBLEM_TREE`'s own C1 node (§4) never claimed the timeline item
+  as outstanding, so this drift was confined to this file. **Paired:**
+  `PROBLEM_TREE` §8 — same commit.

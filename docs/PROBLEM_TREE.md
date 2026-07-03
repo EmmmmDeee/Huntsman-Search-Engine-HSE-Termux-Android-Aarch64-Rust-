@@ -3779,3 +3779,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   same file — also left for a dedicated follow-on, since this cycle's
   scope was the flagged rule-count drift specifically, not every number
   in the file. **Paired:** `SOLUTION_TREE` §4a + §5 — same commit.
+
+- **2026-07-03** — **`SOLUTION_TREE` §4a stale-note correction for C1 — no
+  code change.** While orienting for this cycle, re-read §4a's C1 bullet
+  against its own SOL-CORR entry above it and found a self-contradiction:
+  the bullet still listed "first-class timeline output (widen beyond the
+  shipped footprint timeline)" as remaining, but the very same document's
+  SOL-CORR node already records *(c) the timeline widened* delivered
+  earlier the same day (12 real date-shaped evidence keys added to
+  `core::timeline::classify`), and §4d's coverage snapshot had already
+  caught up ("only further AU-0xx rule-gap fill remaining" — written
+  correctly, just never propagated back into §4a). This C1 node's own body
+  in this tree (§4) never claimed the timeline item as outstanding in the
+  first place — it already narrates (c) as delivered inline — so the drift
+  was confined to `SOLUTION_TREE` §4a. Corrected that one line so C1's
+  live remaining list reads "further AU-0xx rule-gap fill only," matching
+  both this tree and §4d. **Paired:** `SOLUTION_TREE` §4a — same commit.
