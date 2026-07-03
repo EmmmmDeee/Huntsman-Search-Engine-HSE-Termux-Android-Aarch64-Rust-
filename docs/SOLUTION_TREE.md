@@ -3881,3 +3881,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   128 free), not a guess. Gate green (fmt/clippy/doc/`cargo test`, 4334 lib tests
   +1 guard). Docs + test only, no runtime behaviour change. Paired: `PROBLEM_TREE`
   §8 — same commit.
+
+- **2026-07-02** — **C4 (SOL-NETINT): `netlas` now surfaces the query's total
+  match count (`count` → `result_count`) — silently-dropped-response-field class,
+  same as shodan `tags` / proxycurl `certifications`.** Found by a fleet-wide
+  dropped-field sweep (Workflow). `NetlasResp.count: Option<u64>` was decoded from
+  the API response but never read — `build_entities` only iterated `body.items` —
+  so the total number of indexed responses Netlas holds for the host (whether the
+  `fields=*` page was truncated) was discarded. Fixed in the existing pure
+  `build_entities` seam: the IP entity's evidence gains a `result_count` attribute
+  when `count` is present, mirroring the `ssl_issuer`/`http_title`/`http_status`
+  previously-dropped fixes. Regression coverage by extending the existing
+  `build_entities_surfaces_previously_dropped_...` test with a `count` fixture and
+  a `result_count` assertion, red before the fix. Gate green (fmt/clippy/doc/
+  `cargo test`, 4334 lib tests, existing test extended); `hse selftest` 9/9 per
+  `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or `unsafe` impact.
+  Paired: `PROBLEM_TREE` C4 + §8 — same commit.

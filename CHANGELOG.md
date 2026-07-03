@@ -419,6 +419,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`netlas` now surfaces the query's total match count.** The Netlas search
+  response's top-level `count` — how many indexed responses exist for the host,
+  i.e. whether the returned page was truncated — was parsed but never surfaced.
+  It now appears as a `result_count` evidence attribute on the IP entity,
+  alongside the port/cert/HTTP intelligence the module already emits.
 - **SeekNow breach records now contribute their postcode to Australian
   residential-locality correlation (AU-091/AU-093).** SeekNow labels a
   subject's self-reported postcode `postal`, a field name the locality rules

@@ -5137,3 +5137,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   behaviour change, so no CLI surface to exercise; no identity/PII, architecture-
   guard, or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+
+- **2026-07-02** — **C4: `netlas` decoded the Netlas search endpoint's top-level
+  `count` (total matches for the query) but never surfaced it — the
+  silently-dropped-response-field class (same as the shipped shodan `tags` /
+  proxycurl `certifications` fixes).** Found by a fleet-wide dropped-field sweep
+  (Workflow: 6 finders over module slices → adversarial verification). `NetlasResp`
+  declares `count: Option<u64>` (`netlas/mod.rs:32`), parsed from the API
+  response, but `build_entities` only ever iterated `body.items` and never read
+  `body.count`, so the query's total-match count — how many indexed responses
+  Netlas holds for the host, i.e. whether the returned `fields=*` page was
+  truncated — was discarded. Verified directly (grepped every `count` read in the
+  module dir; the only occurrences are the struct decl and `body.items`
+  iteration). Fixed in the existing pure `build_entities` seam: the IP entity's
+  evidence now carries a `result_count` attribute when `body.count` is present,
+  alongside the other previously-dropped `ssl_issuer`/`http_title`/`http_status`
+  fields (whose fix this mirrors). Regression coverage by extending the existing
+  `build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields` test
+  with a `"count": 42` fixture field and a `result_count == "42"` assertion — red
+  before the fix (the attribute did not exist). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4334 lib
+  tests — existing test extended, not added; full suite green). Behaviour-touching
+  (one new evidence attribute), so also `hse selftest` 9/9 (161 modules, dispatch
+  graph intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
+  `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` C4 (SOL-NETINT) +
+  §5 — same commit.

@@ -24,8 +24,11 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
     use crate::core::entity::EntityKind;
     // fields=* fetches the cert issuer CA, the HTTP page title and status code;
     // they were decoded into the response structs but never surfaced. The pure
-    // builder must now fold all three onto the IP entity's evidence.
+    // builder must now fold all three onto the IP entity's evidence. The
+    // top-level `count` (total matches for the query) was likewise dropped and
+    // must now surface as `result_count`.
     let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "count": 42,
         "items": [{
             "data": {
                 "ip": "203.0.113.10",
@@ -56,6 +59,8 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
     assert_eq!(attr("ssl_issuer"), "Let's Encrypt R3");
     assert_eq!(attr("http_title"), "ACME Corporate Portal");
     assert_eq!(attr("http_status"), "200");
+    // The query's total match count, decoded but previously dropped.
+    assert_eq!(attr("result_count"), "42");
     // Pre-existing behaviour preserved: the subject CN still surfaces as ssl_cn.
     assert_eq!(attr("ssl_cn"), "example.com");
 }
