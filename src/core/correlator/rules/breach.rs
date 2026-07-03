@@ -4,6 +4,12 @@
 use std::collections::BTreeSet;
 
 use super::*;
+// `is_salted_hash` is also the join-key precision gate
+// `core::relation::builders::derive_shared_secret` uses to graph the same
+// globally-unique secret kinds AU-047 links on (PROBLEM_TREE C1's
+// "controller behind reused secrets" facet) — single-sourced in `util` so
+// the finding and the edge can never classify a hash differently.
+use crate::util::secret_link::is_salted_hash;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Secret-shape primitives
@@ -13,26 +19,6 @@ use super::*;
 // make that judgement. They are deliberately allocation-light and single-pass —
 // the correlator runs them across every credential-shaped entity in a scan.
 // ─────────────────────────────────────────────────────────────────────────────
-
-/// True if `s` is a **salted** password-hash digest — bcrypt / sha-crypt /
-/// argon2 / scrypt / yescrypt, all of which embed their salt. This is the
-/// precision gate that makes credential-based identity linking sound: a salted
-/// digest is globally unique by construction, so two identities carrying the
-/// *identical* value share the exact stored credential (the same person reused or
-/// copied it) — not a weak-password coincidence. A bare unsalted hex digest is
-/// deliberately EXCLUDED: `md5("123456")` is shared by millions, and linking
-/// people on it would manufacture false identities, which is the opposite of
-/// finding the real one.
-fn is_salted_hash(s: &str) -> bool {
-    let s = s.trim();
-    s.starts_with("$2") // bcrypt $2a/$2b/$2y
-        || s.starts_with("$argon2")
-        || s.starts_with("$scrypt")
-        || s.starts_with("$y$") // yescrypt
-        || s.starts_with("$7$") // scrypt (crypt format)
-        || s.starts_with("$6$") // sha512crypt
-        || s.starts_with("$5$") // sha256crypt
-}
 
 /// All-ASCII-hex of digest length — the shape of an **unsalted** password hash
 /// (md5/sha1/sha256/ntlm) or a raw hex token. Never treated as a plaintext
@@ -1141,32 +1127,9 @@ mod tests {
     use super::*;
     use crate::core::entity::Evidence;
 
-    // ── is_salted_hash ────────────────────────────────────────────────────────
-
-    #[test]
-    fn is_salted_hash_accepts_every_salted_scheme() {
-        for h in [
-            "$2a$10$abcdefghijklmnopqrstuv",
-            "$2b$12$....",
-            "$2y$10$....",
-            "$argon2id$v=19$m=65536",
-            "$scrypt$ln=16",
-            "$y$j9T$salt",
-            "$7$DU..../....",
-            "$6$rounds=5000$salt",
-            "$5$rounds=5000$salt",
-        ] {
-            assert!(is_salted_hash(h), "should be salted: {h}");
-        }
-    }
-
-    #[test]
-    fn is_salted_hash_rejects_bare_hex_and_trims() {
-        assert!(!is_salted_hash("5f4dcc3b5aa765d61d8327deb882cf99")); // md5 hex
-        assert!(!is_salted_hash("not a hash"));
-        // Leading/trailing whitespace is trimmed before the prefix test.
-        assert!(is_salted_hash("  $2a$10$x  "));
-    }
+    // `is_salted_hash` moved to `util::secret_link` (shared with
+    // `core::relation::builders::derive_shared_secret`); its tests moved
+    // with it.
 
     // ── is_hex_digest ─────────────────────────────────────────────────────────
 

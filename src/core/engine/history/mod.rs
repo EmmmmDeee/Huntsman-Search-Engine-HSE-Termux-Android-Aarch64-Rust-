@@ -437,6 +437,7 @@ fn is_identity_relation(kind: RelationKind) -> bool {
             | RelationKind::LocatedAt
             | RelationKind::AssociatedWith
             | RelationKind::RegisteredBy
+            | RelationKind::SharesController
     )
 }
 

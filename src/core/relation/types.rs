@@ -67,6 +67,19 @@ pub enum RelationKind {
     /// handle matches it — case-insensitively, across every supported social platform.
     /// Directed `Username → Url`.
     SameIdentity,
+    /// `from` and `to` (both Email/Username identity entities) share ONE
+    /// controller: a globally-unique-by-construction secret — a crypto
+    /// wallet address, a leaked API key, or a SALTED password hash — was
+    /// observed against both, so the same person almost certainly controls
+    /// both accounts. The identity-linking counterpart of
+    /// [`SameOperator`](RelationKind::SameOperator) (which links *domains*
+    /// an operator co-controls); this links *people*. Deliberately narrower
+    /// than the correlator's AU-047, which also links on a reused plaintext
+    /// password — that leg needs entropy scoring + a common-password
+    /// denylist to stay precise, logic kept single-sourced in the
+    /// correlator rather than duplicated here (PROBLEM_TREE C1). Symmetric;
+    /// emitted smaller-UID → larger.
+    SharesController,
 }
 
 impl RelationKind {
@@ -90,6 +103,7 @@ impl RelationKind {
             Self::SameAs => "same_as",
             Self::SameOperator => "same_operator",
             Self::SameIdentity => "same_identity",
+            Self::SharesController => "shares_controller",
         }
     }
 }

@@ -10,6 +10,11 @@ use std::collections::{BTreeSet, HashMap, HashSet};
 use super::{Correlation, Severity};
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::relation::{Relation, RelationKind};
+// Shared with `core::relation::builders` (single-sourced, mirroring the
+// `util::domains::is_proxy_registrant` precedent) so every rule descendant
+// module reaching it via `use super::*` and the relation graph can never
+// canonicalise a handle differently.
+use crate::util::secret_link::canonical_handle;
 
 fn entities_of_kind(entities: &[Entity], kind: EntityKind) -> Vec<&Entity> {
     entities.iter().filter(|e| e.kind == kind).collect()
@@ -166,19 +171,6 @@ const GENERIC_HANDLES: &[&str] = &[
 const NON_IDENTITY_TOKENS: &[&str] = &[
     "from", "dns", "www", "http", "https", "html", "href", "mailto", "tel", "url",
 ];
-
-/// Canonical comparison form of a handle: ASCII-lowercased with the handle
-/// separators (`.`, `_`, `-`) removed, so the same handle written with
-/// inconsistent punctuation collapses to one token (`jordan.meyers`,
-/// `jordan_meyers`, `jordanmeyers` → `jordanmeyers`). People reuse a single
-/// handle across services with different separators; this is the comparison
-/// the match needs.
-fn canonical_handle(s: &str) -> String {
-    s.chars()
-        .filter(|c| !matches!(c, '.' | '_' | '-'))
-        .map(|c| c.to_ascii_lowercase())
-        .collect()
-}
 
 /// True if `handle` (already canonicalised) is too generic to identify a
 /// person — a placeholder username, a role mailbox, or a non-identity

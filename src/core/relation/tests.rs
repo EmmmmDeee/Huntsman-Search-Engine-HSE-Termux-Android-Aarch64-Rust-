@@ -22,6 +22,7 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::LocatedAt,
         RelationKind::AssociatedWith,
         RelationKind::SameAs,
+        RelationKind::SharesController,
     ] {
         let json = serde_json::to_string(&k).unwrap();
         assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
@@ -1611,5 +1612,162 @@ fn regional_kinship_needs_a_postcode_anchor() {
     assert!(
         derive_regional_kinship(&[a, b], "s").is_empty(),
         "without a shared town the common-surname pair stays unlinked"
+    );
+}
+
+// ── derive_shared_secret (PROBLEM_TREE C1, "controller behind reused secrets") ──
+
+/// A secret entity (Credential/Password/CryptoAddress/ApiKey) whose evidence
+/// names the given emails, mirroring the breach-import evidence shape AU-047
+/// consumes (`ev.attributes["email"]`).
+fn secret_for_emails(kind: EntityKind, value: &str, emails: &[&str]) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut e = Entity::new(kind, value, 0.6, "rel-scan");
+    for em in emails {
+        e.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", *em));
+    }
+    e
+}
+
+fn secret_for_usernames(kind: EntityKind, value: &str, usernames: &[&str]) -> Entity {
+    use crate::core::entity::Evidence;
+    let mut e = Entity::new(kind, value, 0.6, "rel-scan");
+    for u in usernames {
+        e.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("username", *u));
+    }
+    e
+}
+
+#[test]
+fn shared_secret_links_two_identities_by_a_reused_salted_hash() {
+    // Same fixture shape as AU-047's own test: a salted bcrypt hash carried
+    // against two emails must link them — the graph-edge counterpart of the
+    // correlation finding.
+    let a = ent(EntityKind::Email, "burner1@proton.me", 0.6);
+    let b = ent(EntityKind::Email, "real.name@gmail.com", 0.6);
+    let bcrypt = secret_for_emails(
+        EntityKind::Credential,
+        "$2a$10$id3HAw6TcOjKvPH/RK7MS.abcdef",
+        &[&a.value, &b.value],
+    );
+    let rels = derive_shared_secret(&[bcrypt, a.clone(), b.clone()], "s");
+    assert_eq!(rels.len(), 1, "salted hash across 2 identities links them");
+    assert_eq!(rels[0].kind, RelationKind::SharesController);
+    let (lo, hi) = if a.uid <= b.uid { (&a, &b) } else { (&b, &a) };
+    assert_eq!(rels[0].from_uid, lo.uid);
+    assert_eq!(rels[0].to_uid, hi.uid);
+}
+
+#[test]
+fn shared_secret_ignores_an_unsalted_digest() {
+    // PRECISION GATE (mirrors AU-047 exactly, same reason): an unsalted hex
+    // digest may be the hash of a common password shared by millions — must
+    // NOT become a "same controller" edge.
+    let a = ent(EntityKind::Email, "a@x.com", 0.6);
+    let b = ent(EntityKind::Email, "b@x.com", 0.6);
+    let unsalted = secret_for_emails(
+        EntityKind::Credential,
+        "00346d91dd87c74089f3bfa88e13de8101000000dcb6",
+        &[&a.value, &b.value],
+    );
+    assert!(
+        derive_shared_secret(&[unsalted, a, b], "s").is_empty(),
+        "an unsalted digest must NOT link people"
+    );
+}
+
+#[test]
+fn shared_secret_ignores_a_reused_plaintext_password() {
+    // DELIBERATE SCOPE BOUNDARY (see the `derive_shared_secret` doc comment):
+    // unlike AU-047, this builder does not link on a reused plaintext
+    // password — that leg needs entropy scoring + a common-password
+    // denylist to stay precise, kept single-sourced in the correlator.
+    let a = ent(EntityKind::Email, "a@x.com", 0.6);
+    let b = ent(EntityKind::Email, "b@x.com", 0.6);
+    let plaintext = secret_for_emails(
+        EntityKind::Password,
+        "Tr0ub4dor&3xtraLong!",
+        &[&a.value, &b.value],
+    );
+    assert!(
+        derive_shared_secret(&[plaintext, a, b], "s").is_empty(),
+        "a reused plaintext password is explicitly out of this builder's scope"
+    );
+}
+
+#[test]
+fn shared_secret_links_by_crypto_address_and_api_key() {
+    // CryptoAddress / ApiKey are unique by construction — no hash-shape gate
+    // needed, unlike Credential/Password.
+    let a = ent(EntityKind::Email, "a@x.com", 0.6);
+    let b = ent(EntityKind::Email, "b@x.com", 0.6);
+    let wallet = secret_for_emails(
+        EntityKind::CryptoAddress,
+        "1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa",
+        &[&a.value, &b.value],
+    );
+    assert_eq!(
+        derive_shared_secret(&[wallet, a.clone(), b.clone()], "s").len(),
+        1
+    );
+
+    let key = secret_for_emails(
+        EntityKind::ApiKey,
+        "sk_live_abcdef123456",
+        &[&a.value, &b.value],
+    );
+    assert_eq!(derive_shared_secret(&[key, a, b], "s").len(), 1);
+}
+
+#[test]
+fn shared_secret_ignores_a_secret_seen_against_only_one_identity() {
+    let a = ent(EntityKind::Email, "solo@x.com", 0.6);
+    let single = secret_for_emails(EntityKind::CryptoAddress, "1A1zP1eP5QGefi2xx", &[&a.value]);
+    assert!(
+        derive_shared_secret(&[single, a], "s").is_empty(),
+        "one identity is not a cross-account link"
+    );
+}
+
+#[test]
+fn shared_secret_links_two_distinct_usernames() {
+    // Mirrors AU-047's username-keyed test: a username-only breach footprint
+    // (no email) links its accounts the same way an email-keyed one does.
+    let user1 = ent(EntityKind::Username, "alice_dev", 0.6);
+    let user2 = ent(EntityKind::Username, "alice.dev.two", 0.6);
+    let key = secret_for_usernames(
+        EntityKind::ApiKey,
+        "sk_live_ghijkl789012",
+        &[&user1.value, &user2.value],
+    );
+    assert_eq!(
+        derive_shared_secret(&[key, user1, user2], "s").len(),
+        1,
+        "two distinct usernames sharing a unique secret must link"
+    );
+}
+
+#[test]
+fn shared_secret_resists_a_single_record_email_username_self_link() {
+    // An email and its OWN matching username from ONE record fold to the
+    // same canonical handle ("alice") — must not manufacture a 2-account
+    // link, mirroring AU-047's identical single-record guard.
+    use crate::core::entity::Evidence;
+    let email = ent(EntityKind::Email, "alice@x.com", 0.6);
+    let username = ent(EntityKind::Username, "alice", 0.6);
+    let mut secret = Entity::new(
+        EntityKind::CryptoAddress,
+        "1A1zP1eP5QGefi2yy",
+        0.6,
+        "rel-scan",
+    );
+    secret.add_evidence(
+        Evidence::new("import:dossier", "breach entry")
+            .with_attr("email", "alice@x.com")
+            .with_attr("username", "alice"),
+    );
+    assert!(
+        derive_shared_secret(&[secret, email, username], "s").is_empty(),
+        "an email and its OWN matching username from one record must not self-link"
     );
 }

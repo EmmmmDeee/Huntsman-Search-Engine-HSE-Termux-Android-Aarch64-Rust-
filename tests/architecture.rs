@@ -247,6 +247,20 @@ fn core_does_not_import_util_directly() {
                 && !line.contains("util::hashcat::is_common_password")
                 && !line.contains("util::hashcat::digests_of")
                 && !line.contains("util::hashcat::is_common_collision")
+                // Pure, dependency-free identity-linking predicates (no state,
+                // no I/O), same leaf category as `hashcat`/`bsb`/`domains`:
+                // whether a credential value is a SALTED hash, and the
+                // separator-insensitive canonical handle form. Used by
+                // `core::correlator::rules` (AU-047's `Secret::classify` /
+                // handle grouping) AND `core::relation::builders`
+                // (`derive_shared_secret`, PROBLEM_TREE C1's "controller
+                // behind reused secrets" facet) so the correlation finding
+                // and the graph edge can never classify a secret or fold a
+                // handle differently — the same `util::domains::
+                // is_proxy_registrant` sharing pattern as `derive_co_ownership`
+                // / AU-109/AU-110.
+                && !line.contains("util::secret_link::is_salted_hash")
+                && !line.contains("util::secret_link::canonical_handle")
         })
         .collect();
     assert!(

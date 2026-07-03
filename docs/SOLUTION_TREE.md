@@ -318,37 +318,48 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (deterministic shortest typed paths between identity entities, order-independence
   proptested) now backs **both** AU-060 transitive identity closure (refactored to
   delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
-  that renders the shortest typed thread between identities as text. *Remaining:*
-  first-class timeline output + further AU-0xx rule-gap fill + the "controller
-  behind reused secrets" link facet (reconciled from `PROBLEM_TREE` C1,
-  2026-07-03 — this tree's copy of the remaining list had silently dropped it;
-  see the scoping note below).
-  *Scoping note (2026-07-03, investigated not built — see the hard
-  constraint against sprawling a commit):* the correlator's AU-047/AU-106
-  already compute "this secret ties ≥2 accounts to one controller"
-  (`core::correlator::rules::breach`) but only as prose inside a
-  `Correlation` — never as a `Relation` edge, so `identity_paths`/
-  `resolve_identity_clusters`/`connection_brokers` (the primitives backing
-  CONNECTIONS/RESOLVED IDENTITIES/CONNECTION BROKERS) can't see it. A correct
-  `derive_shared_secret` in `core::relation::builders` must NOT duplicate
-  AU-047's precision-critical classification (entropy scoring +
-  common-password denylist for a reused plaintext password — false positives
-  here are the worst error class this tool can make); this codebase's own
-  established pattern for exactly this situation is a shared `util::`
-  predicate consumed by both sides, not a `relation`→`correlator` import (see
-  `util::domains::is_proxy_registrant`/`registrable_domain`, shared today by
-  `derive_co_ownership` and AU-109/AU-110). Concretely: move the two small,
-  stable, already-unit-tested leaf predicates `is_salted_hash`
-  (`correlator/rules/breach.rs`) and `canonical_handle`
-  (`correlator/rules/mod.rs`) into a new pure `util` module; migrate their
-  existing tests with them; have `derive_shared_secret` link only the
-  globally-unique-by-construction secret kinds (`CryptoAddress`, `ApiKey`,
-  salted-hash `Credential`/`Password`) — the reused-plaintext-password leg
-  stays correlator-only, explicitly out of scope for the graph edge, since
-  duplicating its entropy/denylist gates would be the exact kind of
-  precision-critical logic split this project's doctrine warns against.
-  Left as a clearly-scoped future increment rather than force-fit into one
-  commit alongside everything else this cycle found.
+  that renders the shortest typed thread between identities as text.
+  *Delivered (2026-07-03): the "controller behind reused secrets" link
+  facet, executing the design scoped two cycles ago.* New
+  `RelationKind::SharesController` + `derive_shared_secret` in
+  `core::relation::builders`, wired into `derive_all`/`derive_all_within`
+  unconditionally every scan. Mirrors AU-047's own `emails`/`usernames`/
+  `handles` grouping exactly (identical ≥2-distinct-canonical-handle gate
+  and single-record email+username self-link exclusion), so the edge can
+  never implicate an entity the correlation finding wouldn't — but stays
+  DELIBERATELY NARROWER: only the three secret kinds unique BY
+  CONSTRUCTION (`CryptoAddress`, `ApiKey`, salted-hash `Credential`/
+  `Password`) are graphed; a reused plaintext password stays
+  correlator-only (its entropy/common-password precision gates are exactly
+  the kind of logic this tool's doctrine says must stay single-sourced,
+  never duplicated or split). Executed the scoped design precisely: the two
+  small, stable, already-unit-tested leaf predicates `is_salted_hash`
+  (was `correlator/rules/breach.rs`) and `canonical_handle` (was
+  `correlator/rules/mod.rs`) moved verbatim into new pure `util::
+  secret_link`, allowlisted in `tests/architecture.rs`'s
+  `core_does_not_import_util_directly` guard exactly like the
+  `util::domains::is_proxy_registrant` precedent it mirrors; both
+  `correlator::rules` (via re-export, so every descendant module reaching
+  it through `use super::*` needed zero changes) and the new relation
+  builder now consume the SAME definitions — zero duplicated logic, zero
+  behaviour change to AU-047/AU-106 (every existing test passes unchanged).
+  Two downstream `RelationKind` consumers needed a new arm:
+  `core::network::{group_for,label_for}` (both exhaustive matches — the
+  compiler caught them) group `SharesController` with `AliasOf`/`SameAs`
+  ("Aliases — the same persona", the correct semantic bucket), and
+  `core::engine::history::is_identity_relation` now includes it so the
+  edge participates in cross-scan relation recall like every other
+  identity-bearing kind. **S→P proof:** 7 new tests on
+  `derive_shared_secret` (salted-hash link, unsalted-digest precision gate,
+  plaintext-password scope exclusion, CryptoAddress/ApiKey linking,
+  single-identity no-link, username-keyed accounts, single-record
+  email+username self-link resistance) + 4 tests on the moved predicates.
+  Live-verified: a real `hse scan` end-to-end run completes and renders the
+  full dossier unchanged, proving the new pass degrades cleanly to zero
+  edges when (as in a domain scan) no admissible secret is present. Gate
+  green: fmt/clippy `--all-targets`/doc clean, 4281 lib tests (+9, net of
+  2 removed exact-duplicate tests left behind by the predicate move).
+  *Remaining:* first-class timeline output + further AU-0xx rule-gap fill.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -661,11 +672,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `identity_paths` transitive closure + CONNECTIONS dossier section,
   orthogonal-pathway corroboration, backward/forward cross-scan gap-fill,
   `resolve_identity_clusters` + RESOLVED IDENTITIES, active in-scan gap-fill
-  — cycle 40's own log calls it "SOL-CORR's full arc… delivered"). *Remaining:*
-  first-class timeline output (widen beyond the shipped footprint timeline);
-  further AU-0xx rule-gap fill; **the "controller behind reused secrets" link
-  facet** (this bullet was missing from this tree even though `PROBLEM_TREE`
-  C1 has named it since import — reconciled below at SOL-CORR).
+  — cycle 40's own log calls it "SOL-CORR's full arc… delivered"). **The
+  "controller behind reused secrets" link facet delivered 2026-07-03**
+  (`RelationKind::SharesController` + `derive_shared_secret` — see
+  SOL-CORR above for the full delivery note). *Remaining:* first-class
+  timeline output (widen beyond the shipped footprint timeline); further
+  AU-0xx rule-gap fill.
 - **C2/C6/C7** — capability nodes; solutions sketched, genuinely none started
   (gated on the §3.F enablers landing first, by design — confirmed against
   `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/`SOL-FORENSIC`, all still `[ ]`).
@@ -763,7 +775,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: transitive closure/CONNECTIONS/RESOLVED IDENTITIES/gap-fill/`SharesController` link facet all shipped across cycles 26–40 + 2026-07-03; first-class timeline + further AU-0xx rule-gap fill remaining — NOT gated on §3.F, corrected 2026-07-03); C2/C6/C7 genuinely open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -2697,3 +2709,55 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   of re-deriving the investigation. Reconciled both trees' Remaining lists
   and §4a's C1 status in place. No code, test, or behaviour change. **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **SOL-CORR: executed the "controller behind reused
+  secrets" design scoped two cycles ago — C1's last named gap delivered.**
+  Step 1: no in-progress node from the prior cycle, but the immediately
+  preceding cycle had explicitly recorded this as "a future cycle can
+  execute it directly" with a complete design already investigated against
+  the live code — the highest-leverage available pick, not a fresh
+  discovery. New `RelationKind::SharesController` + `derive_shared_secret`
+  (`core::relation::builders`), wired unconditionally into
+  `derive_all`/`derive_all_within`. Mirrors AU-047's own `emails`/
+  `usernames`/`handles` grouping construction exactly (same
+  ≥2-distinct-canonical-handle firing gate, same single-record
+  email+username self-link exclusion) so the graph edge can never
+  implicate an entity the correlation finding wouldn't — while staying
+  DELIBERATELY NARROWER than AU-047, which also links on a reused
+  plaintext password: that leg needs entropy scoring + a common-password
+  denylist to stay precise, and this builder does not duplicate it (only
+  `CryptoAddress`/`ApiKey`/salted-hash `Credential`/`Password` — unique by
+  construction, no precision gate needed — are graphed). Executed the
+  scoped `util`-shared-predicate design precisely: `is_salted_hash`
+  (was `correlator/rules/breach.rs`) and `canonical_handle` (was
+  `correlator/rules/mod.rs`) moved verbatim into new pure
+  `util::secret_link`, allowlisted in `core_does_not_import_util_directly`
+  exactly like the `util::domains::is_proxy_registrant` precedent it
+  mirrors; `correlator::rules::mod.rs` now re-exports `canonical_handle`
+  from there, so every descendant rule module reaching it via `use
+  super::*` needed zero call-site changes. Two downstream `RelationKind`
+  consumers needed a new arm — the compiler caught both exhaustive matches
+  in `core::network::{group_for,label_for}` (grouped with `AliasOf`/
+  `SameAs`, "Aliases — the same persona," the correct semantic bucket for
+  "same person, two accounts") — plus `core::engine::history::
+  is_identity_relation` (added deliberately, not compiler-forced: this
+  edge is exactly the human-network bridge that predicate selects for, so
+  omitting it would have silently excluded the new edge from cross-scan
+  relation recall). **S→P proof:** 7 new tests on `derive_shared_secret`
+  (salted-hash link — mirrors AU-047's own fixture; unsalted-digest
+  precision gate; plaintext-password scope exclusion, proving the
+  deliberate boundary; CryptoAddress/ApiKey linking; single-identity
+  no-link; username-keyed accounts; single-record self-link resistance) +
+  4 tests on the moved predicates (2 kept from the original locations
+  verbatim, 2 new). Zero behaviour change to AU-047/AU-106: every existing
+  correlator test passes unchanged, and the moved predicates are the exact
+  original implementations, only relocated. Live-verified: a real `hse
+  scan` end-to-end run (mixed free module set against a real domain)
+  completes and renders the full dossier unchanged — `derive_shared_secret`
+  runs every scan and correctly degrades to zero edges when no admissible
+  secret is present (a domain scan surfaces no breach credentials), proving
+  the wiring doesn't regress the common case. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4281 lib tests (+9 net: 7 relation tests + 4
+  predicate tests − 2 exact-duplicate tests removed from the move), 0
+  failures. **Paired:** `PROBLEM_TREE` C1 (unchanged `[~]` — timeline/
+  rule-gap-fill remain) + §4/§4a/§8 — same commit.

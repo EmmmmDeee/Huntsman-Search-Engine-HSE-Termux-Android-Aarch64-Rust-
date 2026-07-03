@@ -767,9 +767,45 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   one finder, so the rule and the rendered chain can never drift), and a new
   **CONNECTIONS** dossier section renders the shortest typed thread tying each
   identity back through the graph — the graph-free link-analysis conclusion, with
-  each chain's weakest-edge confidence. *Remaining:* (c) first-class timeline
-  output (footprint timeline shipped; widen), (d) further AU-0xx rule-gap fill,
-  and the "controller behind reused secrets" link facet.
+  each chain's weakest-edge confidence.
+  ✅ **The "controller behind reused secrets" link facet delivered
+  (2026-07-03).** AU-047/AU-106 (`core::correlator::rules::breach`) already
+  detected "one reused secret ties ≥2 accounts to one controller," but only
+  as `Correlation` description text — never a graph edge, so
+  CONNECTIONS/RESOLVED IDENTITIES/CONNECTION BROKERS couldn't see it. New
+  `RelationKind::SharesController` + `core::relation::builders::
+  derive_shared_secret` close that: two identity entities (Email/Username)
+  named in the evidence of ONE globally-unique-by-construction secret — a
+  crypto wallet address, a leaked API key, or a **salted** password hash —
+  now get a graph edge, wired into `derive_all`/`derive_all_within`
+  unconditionally every scan. Mirrors AU-047's own `emails`/`usernames`/
+  `handles` grouping exactly (same ≥2-distinct-canonical-handle gate, same
+  single-record email+username self-link exclusion), so the edge can never
+  implicate an entity the correlation finding wouldn't. Deliberately
+  narrower than AU-047: a reused **plaintext password** is NOT graphed here
+  — that leg needs entropy scoring + a common-password denylist to stay
+  precise, and duplicating or splitting that precision-critical logic
+  across two call sites is exactly what this evidentiary tool's doctrine
+  forbids (a false "same controller" link is worse than a missing one).
+  The two small, stable leaf predicates both sides need (`is_salted_hash`,
+  `canonical_handle`) moved to a new pure `util::secret_link` — single-
+  sourced, mirroring the existing `util::domains::is_proxy_registrant`
+  precedent shared by `derive_co_ownership` and AU-109/AU-110 — so the
+  finding and the edge can never classify a secret or fold a handle
+  differently. Zero behaviour change to AU-047/AU-106 themselves (all
+  existing tests pass unchanged; the moved predicates are the exact
+  original implementations, only relocated). 7 new tests on
+  `derive_shared_secret` (salted-hash link; unsalted-digest precision gate;
+  plaintext-password scope exclusion; CryptoAddress/ApiKey linking;
+  single-identity no-link; username-keyed accounts; single-record
+  email+username self-link resistance) + 4 moved/new tests on the shared
+  predicates. Live-verified: a real `hse scan` end-to-end run (rust-lang.org,
+  mixed module set) completes and renders the full dossier unchanged —
+  `derive_shared_secret` runs unconditionally every scan and degrades
+  cleanly to zero edges when no admissible secret is present, exactly as
+  intended (a domain scan surfaces no breach credentials). *Remaining:*
+  (c) first-class timeline output (footprint timeline shipped; widen), (d)
+  further AU-0xx rule-gap fill.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -3452,3 +3488,44 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   SOL-CORR node for a future cycle to execute directly, rather than forced
   into this commit. No code, test, or behaviour change. **Paired:**
   `SOLUTION_TREE` SOL-CORR + §4a + §5 — same commit.
+
+- **2026-07-03** — **C1's "controller behind reused secrets" link facet
+  delivered — the design scoped last cycle, executed.** Step 1: the prior
+  cycle left no in-progress node but had recorded a complete, code-verified
+  design for exactly this increment with the explicit note "a future cycle
+  can execute it directly" — the clear highest-leverage pick. New
+  `RelationKind::SharesController` + `core::relation::builders::
+  derive_shared_secret`, wired unconditionally into
+  `derive_all`/`derive_all_within`. AU-047/AU-106
+  (`core::correlator::rules::breach`) already detected "one reused secret
+  ties ≥2 accounts to one controller" but only as `Correlation` prose;
+  `derive_shared_secret` mirrors AU-047's own grouping construction exactly
+  (identical ≥2-distinct-canonical-handle gate, identical single-record
+  email+username self-link exclusion) so the new graph edge can never
+  implicate an entity the correlation finding wouldn't. Deliberately
+  narrower than AU-047 by design (scoped last cycle, held to this cycle):
+  only `CryptoAddress`/`ApiKey`/salted-hash `Credential`/`Password` — unique
+  by construction — are graphed; the reused-plaintext-password leg stays
+  correlator-only, since duplicating its entropy/common-password precision
+  gates across two call sites is exactly the split this evidentiary tool's
+  doctrine forbids. Executed the scoped design precisely: `is_salted_hash`
+  and `canonical_handle` moved verbatim into new pure `util::secret_link`
+  (allowlisted in `tests/architecture.rs`'s `core_does_not_import_util_
+  directly` guard, mirroring the `util::domains::is_proxy_registrant`
+  precedent), single-sourced for both `core::correlator` and
+  `core::relation`. Two downstream `RelationKind` consumers needed
+  updating: the compiler caught two exhaustive matches in
+  `core::network::{group_for,label_for}` (grouped with `AliasOf`/`SameAs`);
+  `core::engine::history::is_identity_relation` was deliberately extended
+  too, so the edge participates in cross-scan relation recall like every
+  other identity-bearing kind. **S→P proof:** 7 new tests on
+  `derive_shared_secret`, 4 on the moved predicates; zero behaviour change
+  to AU-047/AU-106 (every existing test passes unchanged — the moved
+  predicates are the exact original code, only relocated). Live-verified: a
+  real end-to-end `hse scan` completes and renders the full dossier
+  unchanged, with `derive_shared_secret` correctly degrading to zero edges
+  when no admissible secret is present. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4281 lib tests (+9 net), 0 failures. C1's
+  "Remaining" list now carries only (c) first-class timeline output and (d)
+  further AU-0xx rule-gap fill. **Paired:** `SOLUTION_TREE` SOL-CORR + §4/
+  §4a + §5 — same commit.

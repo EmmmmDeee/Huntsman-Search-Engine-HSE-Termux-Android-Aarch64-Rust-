@@ -11,6 +11,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **A reused secret (crypto wallet, leaked API key, or salted password hash)
+  across two accounts now produces a graph edge, not just a correlation
+  finding (`PROBLEM_TREE` C1, "controller behind reused secrets").** AU-047/
+  AU-106 already detected "one reused secret ties ≥2 accounts to one
+  controller," but only as `Correlation` description text — invisible to the
+  dossier's CONNECTIONS, RESOLVED IDENTITIES, and CONNECTION BROKERS
+  sections, which are all built on the relation graph. New `RelationKind::
+  SharesController` + `derive_shared_secret` mirror AU-047's own account-
+  grouping exactly, so the edge can never implicate an account the
+  correlation finding wouldn't. Deliberately narrower than AU-047 by design:
+  a reused *plaintext* password is not graphed — that leg needs entropy
+  scoring and a common-password denylist to stay precise, kept
+  single-sourced in the correlator rather than duplicated.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

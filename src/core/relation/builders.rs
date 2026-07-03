@@ -1259,6 +1259,117 @@ pub fn derive_shared_selector(entities: &[Entity], scan_id: &str) -> Vec<Relatio
     )
 }
 
+/// Derive `SharesController` edges: two distinct identity entities (Email /
+/// Username) that both appear in the evidence of ONE globally-unique-by-
+/// construction secret — a crypto wallet address, a leaked API key, or a
+/// SALTED password hash — share one controller (PROBLEM_TREE C1's
+/// "controller behind reused secrets" facet).
+///
+/// The relation-graph counterpart of the correlator's AU-047/AU-106
+/// (`core::correlator::rules::breach::rule_au_047_reused_secret_identity`),
+/// which already computes this exact signal but only as `Correlation`
+/// description text — never as a graph edge, so `identity_paths` /
+/// `resolve_identity_clusters` / `connection_brokers` (the primitives
+/// behind the dossier's CONNECTIONS / RESOLVED IDENTITIES / CONNECTION
+/// BROKERS sections) can't see it. This builder mirrors AU-047's own
+/// grouping logic (the `emails`/`usernames`/`handles` construction is
+/// deliberately the same shape) so the edge can never implicate an entity
+/// the correlation finding wouldn't — but is DELIBERATELY NARROWER: AU-047
+/// also links on a reused HIGH-ENTROPY PLAINTEXT PASSWORD, which needs
+/// entropy scoring plus a common-password denylist to stay precise (a false
+/// "same controller" link is the worst error class this evidentiary tool
+/// can make). That logic stays single-sourced in the correlator rather than
+/// duplicated or split across `core::relation`/`core::correlator` — only
+/// the three kinds that are unique BY CONSTRUCTION (no precision gate
+/// needed) are graphed here. [`crate::util::secret_link::is_salted_hash`]
+/// and [`crate::util::secret_link::canonical_handle`] are the single
+/// source shared with AU-047 for exactly this reason.
+///
+/// Pure, deterministic (sorted, deduped via [`emit_pairwise`]).
+pub fn derive_shared_secret(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use crate::util::secret_link::canonical_handle;
+    use crate::util::secret_link::is_salted_hash;
+    use std::collections::BTreeSet;
+
+    struct IdRef<'a> {
+        entity: &'a Entity,
+        is_email: bool,
+    }
+    let identities: Vec<IdRef> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
+        .map(|e| IdRef {
+            entity: e,
+            is_email: e.kind == EntityKind::Email,
+        })
+        .collect();
+
+    let mut groups: Vec<Vec<&Entity>> = Vec::new();
+    for secret in entities {
+        let admissible = match secret.kind {
+            EntityKind::CryptoAddress | EntityKind::ApiKey => true,
+            EntityKind::Credential | EntityKind::Password => is_salted_hash(&secret.value),
+            _ => false,
+        };
+        if !admissible {
+            continue;
+        }
+
+        // The distinct accounts this secret's evidence names — same
+        // construction as AU-047's own `emails`/`usernames` sets, so entity
+        // matching below can never disagree with the correlation finding.
+        let emails: BTreeSet<String> = secret
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("email"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| v.contains('@'))
+            .collect();
+        let usernames: BTreeSet<String> = secret
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("username"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect();
+
+        // Folded to distinct CONTROLLER HANDLES — the ≥2-separate-accounts
+        // firing gate, identical to AU-047's: an email and its matching
+        // username from ONE record collapse to one handle and can't
+        // self-fire.
+        let handles: BTreeSet<String> = emails
+            .iter()
+            .map(|e| e.split('@').next().unwrap_or(e))
+            .chain(usernames.iter().map(String::as_str))
+            .map(canonical_handle)
+            .filter(|h| !h.is_empty())
+            .collect();
+        if handles.len() < 2 {
+            continue;
+        }
+
+        let members: Vec<&Entity> = identities
+            .iter()
+            .filter(|id| {
+                let value_lc = id.entity.value.trim().to_lowercase();
+                if id.is_email {
+                    emails.contains(&value_lc)
+                } else {
+                    usernames.contains(&value_lc)
+                }
+            })
+            .map(|id| id.entity)
+            .collect();
+        if members.len() >= 2 {
+            groups.push(members);
+        }
+    }
+
+    emit_pairwise(groups, RelationKind::SharesController, scan_id, |a, b| {
+        a.confidence.min(b.confidence)
+    })
+}
+
 /// Derive `SameAs` edges between distinct entities the canonical resolver proves are
 /// the SAME real-world identity wearing two contexts — the reflexive self-pairing
 /// pivot ([`crate::core::resolve`]).
@@ -1881,6 +1992,12 @@ pub fn derive_all_within(
     // reverse-WHOIS / fingerprint pivot, domain-agnostic across every scan.
     out.extend(derive_shared_selector(entities, scan_id));
     budget_spent!(out, "shared_selector");
+    // Shared-secret controller: a globally-unique-by-construction secret (crypto
+    // wallet, leaked API key, salted password hash) observed against ≥2 distinct
+    // accounts — the relation-graph counterpart of AU-047/AU-106's reused-secret
+    // finding (PROBLEM_TREE C1's "controller behind reused secrets" facet).
+    out.extend(derive_shared_secret(entities, scan_id));
+    budget_spent!(out, "shared_secret");
     // Canonical identities: collapse contextual VARIANTS of one entity (Gmail dot/+tag,
     // phone formats, name reorderings) into SameAs edges via the canonical resolver —
     // the reflexive self-pairing that makes a seed and its variants one traversable node.
