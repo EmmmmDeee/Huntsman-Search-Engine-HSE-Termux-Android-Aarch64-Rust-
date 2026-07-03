@@ -24,6 +24,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   change.
 
 ### Added
+- **New correlator rule AU-115 (Darknet/Tor-venue exposure) — Tor OSINT
+  coverage, delivered from a direct request to add Tor-network search,
+  safety-scoped before writing any code.** A general `.onion` crawler with
+  a guaranteed CSAM exclusion was not built — that guarantee cannot be
+  reliably delivered without hash-database access this project has no
+  path to, and free/scrapable alternatives (Ahmia, darksearch.io) were
+  checked and ruled out (`robots.txt`-disallowed and dead, respectively).
+  Instead, widened the already-integrated `intelx` module: it already
+  indexes a `darknet.tor` bucket, but hits there previously fell through
+  to a generic, correlator-invisible tag. New `tags::DARKNET_EXPOSED`
+  marks them specifically; the new rule fires at High severity (an
+  active, adversary-controlled venue, the same tier as the existing
+  stealer-log-presence rule). HSE never fetches or renders the underlying
+  `.onion` pages — only IntelX's own already-filtered result metadata,
+  identical to every other `intelx` finding.
 - **New correlator rule AU-114 (No security-header hardening) —
   `PROBLEM_TREE` C1, "further AU-0xx rule-gap fill".** `web_crawler` tags a
   domain `missing-security-headers` when even one of six checked headers

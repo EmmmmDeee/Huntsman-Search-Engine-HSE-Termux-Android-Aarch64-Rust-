@@ -478,10 +478,43 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   checked headers as of this scan) while AU-008 correctly stayed silent;
   the full dossier rendered without error. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4299 lib tests (+5), 0 failures.
+  *Delivered (2026-07-03): AU-115, Darknet/Tor-venue exposure — a direct
+  user request for Tor-network search, safety-scoped before any code was
+  written, not the dead-tag audit.* The literal request (a Google-like
+  crawler across darknet markets/topics, with a "never retrieve CSAM"
+  guarantee) was declined as asked: reliable CSAM filtering needs
+  NCMEC/Thorn/IWF hash-database access this project can't obtain, and a
+  keyword/heuristic filter would be false assurance — the same
+  fabricated-safety failure class this project's evidentiary doctrine
+  forbids for findings. Checked and ruled out free alternatives too:
+  `curl`-confirmed live that Ahmia's `robots.txt` blocks `/search/` and
+  any `?`-query URL with no documented bot API; `darksearch.io` no
+  longer resolves. Built the safe version using the already-integrated
+  `intelx` module instead: extracted its previously-untested inline
+  family-tagging match into a pure `tag_by_source_family` helper; new
+  `tags::DARKNET_EXPOSED` marks a hit in IntelX's `darknet.tor` bucket
+  (previously only the correlator-invisible generic
+  `intelx-source:darknet` marker); new `rule_au_115_darknet_venue_
+  exposure` fires on it, `High` severity (matching AU-009's tier). HSE
+  never fetches/renders the underlying `.onion` pages — only IntelX's
+  own already-filtered bucket metadata, identical to every other
+  `intelx` finding; safety comes from never touching raw onion content,
+  not from after-the-fact filtering. Confirmed non-overlap with
+  AU-001/AU-111/AU-043. **S→P proof:** 7 new tests (3 on the extracted
+  helper, 4 on the rule, incl. a cross-entity-kind proof and an
+  AU-111/AU-043 disjoint-fixture proof). All four architecture guards
+  pass with 113 rules registered (`AU-001`–`AU-115`). Live-verified: a
+  real `hse scan` completes and renders the full dossier without error
+  (no live IntelX key in this environment, so AU-115 stays silent as
+  expected). Gate green: fmt/clippy `--all-targets`/doc clean, 4306 lib
+  tests (+7), 0 failures.
   *Remaining (deliberately open-ended, like the audit cadence itself):*
   further AU-0xx rule-gap fill — the dead-tag-audit method has now closed
   4 gaps across 3 cycles and remains a reusable technique for a future
-  pass once more modules/tags accumulate.
+  pass once more modules/tags accumulate. A real, scoped future option
+  for broader Tor/darknet coverage is logged in §4a: BYO-key modules for
+  dedicated dark-web-monitoring vendors (Flashpoint, DarkOwl, Recorded
+  Future, Webz.io, KELA), same safe selector-based-query pattern.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -836,9 +869,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   exposure tags as legitimate findings), then the real blocker
   (precision: the raw tag fires on any 1-of-6 headers missing) was solved
   by requiring the crawl evidence to show zero present headers, not by
-  declaring the candidate out of scope. *Remaining:* further AU-0xx
-  rule-gap fill only — the dead-tag-audit method has now closed 4 gaps
-  across 3 cycles.
+  declaring the candidate out of scope.
+  **AU-115 delivered (2026-07-03), same day:** a direct user request for
+  Tor-network search, safety-scoped and built as `tags::DARKNET_EXPOSED`
+  + a correlator rule over IntelX's existing `darknet.tor` bucket — see
+  SOL-CORR above for the full note, including why a raw `.onion`
+  crawler was declined (unsolvable CSAM-filtering guarantee) and why the
+  free-scraping alternatives (Ahmia, darksearch.io) were ruled out.
+  *Remaining:* further AU-0xx rule-gap fill (dead-tag-audit method, 4
+  gaps closed across 3 cycles) — **plus a new, real, scoped item:**
+  BYO-key modules for dedicated dark-web-monitoring vendors (Flashpoint,
+  DarkOwl, Recorded Future, Webz.io, KELA) to widen Tor/darknet coverage
+  beyond IntelX's own bucket, using the identical safe selector-based
+  pattern (vendor's own crawler + moderation; HSE never fetches raw
+  onion content). Not built this pass — needs either a live key for one
+  candidate vendor to verify its real response shape, or public API docs
+  clear enough to build against without one (this pass's research found
+  neither for the free options it checked).
 - **C2/C6/C7** — capability nodes; solutions sketched, genuinely none started
   (gated on the §3.F enablers landing first, by design — confirmed against
   `SOL-PERF-PUBLISH`/`SOL-OFFENSIVE`/`SOL-FORENSIC`, all still `[ ]`).
@@ -3176,3 +3223,50 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   rendered without error. Gate green: fmt/clippy `--all-targets`/doc
   clean, 4299 lib tests (+5), 0 failures. **Paired:** `PROBLEM_TREE` C1 +
   §8 — same commit.
+
+- **2026-07-03** — **SOL-CORR: AU-115, Darknet/Tor-venue exposure —
+  delivered from a direct user request for Tor-network search,
+  safety-scoped before writing any code.** The literal request (a
+  Google-like crawler across darknet markets/topics, with a "never
+  retrieve CSAM" guarantee) was declined as stated: reliable CSAM
+  filtering needs NCMEC/Thorn/IWF hash-database access this project has
+  no path to, and a heuristic filter would be false assurance — the same
+  fabricated-safety-guarantee failure mode this project's evidentiary
+  doctrine forbids for findings. A "market search" crawler is also
+  functionally closer to a darknet-marketplace search engine than to
+  this codebase's OSINT posture. Checked free alternatives and ruled
+  them out with live evidence, not assumption: `curl`-confirmed Ahmia's
+  `robots.txt` disallows `/search/` and any `?`-query URL, with no
+  documented bot-permitted API; `darksearch.io`'s domain no longer
+  resolves (DNS failure). Built the safe capability instead, using the
+  already-integrated, already-vetted `intelx` module: extracted the
+  previously-untested inline family-tagging match in `process()` into a
+  pure `tag_by_source_family` helper; new `tags::DARKNET_EXPOSED` marks a
+  hit in IntelX's `darknet.tor` bucket (previously only a generic,
+  correlator-invisible `intelx-source:darknet` marker, unlike `leaks`/
+  `pastes` which already had dedicated tags); new
+  `rule_au_115_darknet_venue_exposure` fires on it, `High` severity
+  (matching AU-009's stealer-log tier — an active adversary-controlled
+  venue, short of AU-037's `Critical` since no first-class secret is
+  recovered). HSE never fetches or renders the underlying `.onion` pages
+  IntelX indexed — only its own already-filtered bucket/media/date
+  metadata, identical to every other `intelx` finding; the safety
+  property is "never touch raw onion content," not filtering after the
+  fact. Confirmed non-overlap with AU-001/AU-111/AU-043. **S→P proof:**
+  7 new tests — 3 on the extracted helper (darknet hits get the
+  dedicated tag without implying `BREACH`/`PASTE_EXPOSED`; leaks/pastes
+  families still tag correctly; unknown families fall back to the
+  generic marker), 4 on the rule (fires on the tag; silent without it;
+  fires on any `intelx`-taggable entity kind, not just `Email`; a direct
+  AU-111/AU-043 disjoint-fixture proof). All four architecture guards
+  pass with 113 rules registered (`AU-001`–`AU-115`, `AU-065`/`AU-066`
+  still engine-emitted). Live-verified: a real end-to-end `hse scan`
+  completes and renders the full dossier without error (no live IntelX
+  key in this environment, so AU-115 correctly stays silent — its
+  correctness rests on the direct unit tests). Logged a real, scoped
+  future option in §4a: BYO-key modules for dedicated dark-web-monitoring
+  vendors (Flashpoint, DarkOwl, Recorded Future, Webz.io, KELA), same
+  safe selector-based pattern, gated on either a live key or clearer
+  public docs than this pass found. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4306 lib tests (+7), 0 failures. **Paired:**
+  `PROBLEM_TREE` C1 + §8 — same commit.

@@ -15,6 +15,12 @@ pub const PASTE_EXPOSED: &str = "paste-exposed";
 pub const PASSWORD_AT_RISK: &str = "password-at-risk";
 pub const MULTI_DEVICE: &str = "multi-device";
 pub const MISSING_SECURITY_HEADERS: &str = "missing-security-headers";
+/// An identifier found circulating in `intelx`'s `darknet.tor` bucket —
+/// active Tor-hidden-service forum/market data, not a public/clearweb leak.
+/// Distinct from [`BREACH`]/[`PASTE_EXPOSED`]: the venue itself is the
+/// signal (adversary-controlled distribution channel), independent of
+/// whether the record also happens to expose a password.
+pub const DARKNET_EXPOSED: &str = "darknet-exposed";
 
 // Geolocation
 pub const GEOINT: &str = "geoint";

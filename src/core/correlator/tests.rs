@@ -2689,6 +2689,76 @@ fn au_113_is_distinct_from_au_009_single_device_stealer_log() {
 }
 
 #[test]
+fn au_115_fires_on_darknet_exposed_tag() {
+    // The exact shape intelx tags: an identifier whose record landed in the
+    // darknet.tor bucket family (PROBLEM_TREE C1 "(d)" rule-gap fill).
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Email,
+            "alice@example.com",
+            "intelx",
+            &[crate::core::tags::DARKNET_EXPOSED],
+        ),
+        mk_tagged(EntityKind::Email, "bob@example.com", "intelx", &[]),
+    ];
+    let out = rule_au_115_darknet_venue_exposure(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-115");
+    assert_eq!(out[0].severity, Severity::High);
+    assert_eq!(out[0].entity_uids.len(), 1, "only the flagged identifier");
+}
+
+#[test]
+fn au_115_does_not_fire_without_the_tag() {
+    let ents = vec![mk_tagged(
+        EntityKind::Email,
+        "bob@example.com",
+        "intelx",
+        &[],
+    )];
+    assert!(rule_au_115_darknet_venue_exposure(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_115_fires_on_any_entity_kind_intelx_can_tag() {
+    // intelx re-emits the scanned target itself (not a child entity), so a
+    // darknet hit can land on Email, Username, Domain, Url, IpAddress, Cidr,
+    // MacAddress, or CryptoAddress — AU-115 must not restrict to one kind.
+    let username = mk_tagged(
+        EntityKind::Username,
+        "alice123",
+        "intelx",
+        &[crate::core::tags::DARKNET_EXPOSED],
+    );
+    assert_eq!(
+        rule_au_115_darknet_venue_exposure(&[username], "scan", 0).len(),
+        1
+    );
+}
+
+#[test]
+fn au_115_is_distinct_from_au_111_password_at_risk_and_au_043_paste_exposure() {
+    // A darknet-only hit (no PASSWORD_AT_RISK data-class flag, no psbdmp
+    // paste URL) fires AU-115 alone — proving the venue signal is captured
+    // independently of the other breach-adjacent rules.
+    let darknet_only = mk_tagged(
+        EntityKind::Email,
+        "alice@example.com",
+        "intelx",
+        &[crate::core::tags::DARKNET_EXPOSED],
+    );
+    assert!(
+        rule_au_111_password_at_risk_exposure(std::slice::from_ref(&darknet_only), "scan", 0)
+            .is_empty()
+    );
+    assert!(rule_au_043_paste_exposure(std::slice::from_ref(&darknet_only), "scan", 0).is_empty());
+    assert_eq!(
+        rule_au_115_darknet_venue_exposure(&[darknet_only], "scan", 0).len(),
+        1
+    );
+}
+
+#[test]
 fn shared_tracking_id_fires_only_across_multiple_sites() {
     // A TrackingId carrying source_domain evidence for two distinct sites is the
     // affiliate signal: same analytics id ⇒ common ownership.

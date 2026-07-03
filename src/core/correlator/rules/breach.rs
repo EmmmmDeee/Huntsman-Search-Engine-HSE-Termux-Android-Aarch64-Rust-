@@ -1205,6 +1205,56 @@ pub(in crate::core::correlator) fn rule_au_113_multi_device_stealer_compromise(
     )]
 }
 
+/// AU-115 — Darknet/Tor-venue exposure.
+///
+/// Fires when an identifier is tagged [`crate::core::tags::DARKNET_EXPOSED`]
+/// — `intelx` sets this when a record for the identifier lands in its
+/// `darknet.tor` bucket family (`tag_by_source_family`,
+/// [`crate::modules::intelx`]): the record was indexed from an active
+/// Tor-hidden-service forum or market, not a public/clearweb leak site.
+/// HSE never fetches or renders the underlying `.onion` page itself — the
+/// tag is derived entirely from IntelX's own already-filtered bucket
+/// metadata, the same selector-search pattern every other `intelx` finding
+/// uses.
+///
+/// Distinct from [`rule_au_001_multi_breach`] (AU-001, cross-source
+/// corroboration count), [`rule_au_111_password_at_risk_exposure`] (AU-111,
+/// a data-class flag on any bucket), and [`rule_au_043_paste_exposure`]
+/// (AU-043, `psbdmp` public pastes specifically): none of those rules read
+/// the darknet-venue bucket, and an identifier can land in `darknet.tor`
+/// without any of their triggering conditions holding (e.g. a single-source
+/// darknet forum mention with no password data-class flag and no paste
+/// hit). `High` — the venue itself is the signal (an active,
+/// adversary-controlled distribution channel), the same tier as AU-009's
+/// stealer-log presence; short of AU-037's `Critical` since no first-class
+/// secret entity is recovered here either.
+pub(in crate::core::correlator) fn rule_au_115_darknet_venue_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let uids: Vec<String> = entities
+        .iter()
+        .filter(|e| e.has_tag(crate::core::tags::DARKNET_EXPOSED))
+        .map(|e| e.uid.clone())
+        .collect();
+    if uids.is_empty() {
+        return Vec::new();
+    }
+    vec![Correlation::new(
+        "AU-115",
+        "Darknet/Tor-venue exposure",
+        Severity::High,
+        format!(
+            "{} identifier(s) found circulating on active Tor-hidden-service forums/markets",
+            uids.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-082 — API key exposed via two independent source families.
 ///
 /// AU-021 fires whenever a single `ApiKey` entity is present; this rule

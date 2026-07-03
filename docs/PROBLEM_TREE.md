@@ -973,6 +973,54 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   silent (no exposure tag present); the full dossier rendered without
   error. (d) remains genuinely open-ended, as before — the dead-tag-
   audit technique has now closed 4 gaps across 3 cycles.
+  ✅ **Tor/darknet OSINT coverage widened (2026-07-03): AU-115,
+  Darknet/Tor-venue exposure — a directed request, not the dead-tag
+  audit, safety-scoped before any code was written.** A user request to
+  "search TOR networks" (universal query, market/topic search) was
+  assessed against this tool's evidentiary/no-fabrication doctrine and
+  scoped down deliberately: a general `.onion` crawler with a "never
+  retrieve CSAM" guarantee is not something this project can deliver —
+  reliable CSAM filtering requires NCMEC/Thorn/IWF hash-database access
+  this tool has no path to, and a keyword/heuristic filter would be
+  unreliable false assurance, exactly the "fabricated safety" failure
+  mode the evidentiary doctrine forbids elsewhere. Free/scrapable onion
+  search engines were checked and ruled out too: Ahmia's `robots.txt`
+  explicitly disallows `/search/` and any `?`-query URL (confirmed live),
+  and it has no documented bot-permitted API; `darksearch.io` no longer
+  resolves. **What was built instead, using the already-integrated,
+  already-vetted `intelx` module (paid; `HUNTSMAN_INTELX_KEY`):** IntelX's
+  own crawler already indexes a `darknet.tor` bucket — active
+  Tor-hidden-service forum/market data — but a hit there previously fell
+  through to the generic `intelx-source:darknet` marker no correlator
+  rule read (unlike the `leaks`/`pastes` families, which already got
+  dedicated `tags::` constants). New `tags::DARKNET_EXPOSED` + the
+  extracted, now-unit-tested pure helper `tag_by_source_family`
+  (`crate::modules::intelx`, refactored out of an untested inline match
+  in `process()`) apply it; new `rule_au_115_darknet_venue_exposure`
+  fires on the tag, `High` severity (an active adversary-controlled
+  venue is the signal, same tier as AU-009's stealer-log presence; short
+  of AU-037's `Critical` since no first-class secret is recovered).
+  **HSE never fetches or renders the underlying `.onion` pages** —
+  only IntelX's own already-filtered bucket/media/date metadata, the
+  identical selector-search pattern every other `intelx` finding already
+  uses; the safety property comes from never touching raw onion content
+  at all, not from filtering it after the fact. Confirmed non-overlap
+  with AU-001/AU-111/AU-043 (none read the darknet-venue bucket). **S→P
+  proof:** 7 new tests (3 on the extracted `tag_by_source_family` helper;
+  4 on the rule, incl. a cross-entity-kind proof and an AU-111/AU-043
+  disjoint-fixture proof). All four correlator architecture guards pass
+  with 113 rules registered (`AU-001`–`AU-115`). Live-verified: a real
+  `hse scan` completes and renders the full dossier without error (no
+  live IntelX key in this environment, so AU-115 correctly stays silent
+  — its correctness rests on the direct unit tests, same as every other
+  pure tag-filter rule). **Deliberately NOT built, logged as a real,
+  scoped future option in `SOLUTION_TREE` §4a:** BYO-key integrations
+  with dedicated dark-web-monitoring vendors (Flashpoint, DarkOwl,
+  Recorded Future, Webz.io, KELA) for broader selector-based darknet
+  coverage beyond IntelX's own bucket — same safe pattern (vetted
+  vendor's own crawler + moderation, HSE only ever queries by selector),
+  gated on either a live key to verify a vendor's real response shape or
+  materially better public API docs than this pass found.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -3993,3 +4041,53 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   3 cycles. Gate green: fmt/clippy `--all-targets`/doc clean, 4299 lib
   tests (+5), 0 failures. **Paired:** `SOLUTION_TREE` SOL-CORR + §4a +
   §5 — same commit.
+
+- **2026-07-03** — **New correlator rule AU-115 — Darknet/Tor-venue
+  exposure, delivered from a direct user request to add Tor-network
+  search, safety-scoped before writing any code.** The literal request
+  (a "search TOR like Google" crawler covering "particular markets and
+  topics," with a stated goal of never retrieving CSAM) was assessed and
+  declined as stated: reliable CSAM filtering needs NCMEC/Thorn/IWF
+  hash-database access this project has no path to, and any
+  heuristic/keyword filter would be unreliable false assurance — the
+  same "fabricated safety guarantee" failure class this project's own
+  evidentiary doctrine forbids for findings. A "market search" crawler
+  is also functionally closer to a darknet-marketplace search engine
+  than to the rest of this codebase's OSINT posture. Checked and ruled
+  out the free/scrapable alternative too: `curl`-verified live that
+  Ahmia's `robots.txt` disallows `/search/` and any `?`-query URL, and
+  its GitHub repo documents no bot-permitted API; `darksearch.io`'s
+  domain no longer resolves. Built the safe, real capability instead,
+  using the already-integrated `intelx` module (IntelX indexes a
+  `darknet.tor` bucket via its own crawler): extracted the previously
+  untested inline family-tagging match in `intelx::process()` into a
+  pure, now-unit-tested `tag_by_source_family` helper; added new
+  `tags::DARKNET_EXPOSED`, applied when a hit lands in the `darknet`
+  bucket family (previously only the generic, correlator-invisible
+  `intelx-source:darknet` marker); new `rule_au_115_darknet_venue_
+  exposure` fires on it, `High` severity (matching AU-009's tier — an
+  active adversary-controlled venue, short of AU-037's `Critical` since
+  no first-class secret is recovered). HSE never fetches or renders the
+  underlying `.onion` pages IntelX indexed — only their already-filtered
+  bucket/media/date metadata, identical to every other `intelx` finding;
+  the safety property is "never touch raw onion content," not
+  after-the-fact filtering. Confirmed non-overlap with AU-001/AU-111/
+  AU-043 (none read the darknet-venue bucket). **S→P proof:** 7 new
+  tests — 3 on the extracted helper (darknet hits get the dedicated tag
+  without also implying `BREACH`/`PASTE_EXPOSED`; leaks/pastes families
+  still tag correctly; unknown families still fall back to the generic
+  marker), 4 on the rule (fires on the tag; silent without it; fires on
+  any entity kind IntelX can tag, not just Email; a direct AU-111/AU-043
+  disjoint-fixture proof). All four correlator architecture guards pass
+  with 113 rules registered (`AU-001`–`AU-115`, `AU-065`/`AU-066` still
+  reserved). Live-verified: a real end-to-end `hse scan` completes and
+  renders the full dossier without error (no live IntelX key in this
+  environment, so AU-115 stays silent as expected — correctness rests on
+  the direct unit tests, same as AU-111/AU-112/AU-113/AU-114). Logged a
+  real, scoped future option in `SOLUTION_TREE` §4a: BYO-key modules for
+  dedicated dark-web-monitoring vendors (Flashpoint, DarkOwl, Recorded
+  Future, Webz.io, KELA), same safe selector-based pattern, gated on
+  either a live key or better public API docs than this pass found.
+  Gate green: fmt/clippy `--all-targets`/doc clean, 4306 lib tests (+7),
+  0 failures. **Paired:** `SOLUTION_TREE` SOL-CORR + §4a + §5 — same
+  commit.

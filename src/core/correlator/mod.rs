@@ -413,6 +413,10 @@ const RULES: &[RuleFn] = &[
     // 1-of-6 headers absent, a near-universal condition unfit for AU-008's
     // EXPOSURE_TAGS list).
     rule_au_114_no_security_header_hardening,
+    // AU-115: an identifier tagged DARKNET_EXPOSED (intelx: a record landed
+    // in the darknet.tor bucket family) — an active Tor-forum/market venue
+    // signal none of the existing breach rules read.
+    rule_au_115_darknet_venue_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

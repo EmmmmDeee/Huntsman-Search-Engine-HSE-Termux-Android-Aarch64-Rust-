@@ -130,6 +130,42 @@ fn bucket_family_collapses_dotted_names() {
 }
 
 #[test]
+fn tag_by_source_family_marks_darknet_hits_distinctly() {
+    use crate::core::entity::{Entity, EntityKind};
+    let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.86, "scan");
+    let families: std::collections::BTreeSet<String> = ["darknet".to_string()].into();
+    tag_by_source_family(&mut e, &families);
+    assert!(e.has_tag(tags::DARKNET_EXPOSED));
+    assert!(e.has_tag("intelx-source:darknet"));
+    // A darknet-only hit must NOT also imply the leaks/pastes tags — the
+    // venue signal (adversary-controlled distribution channel) is distinct
+    // from the leaks family's password-exposure implication.
+    assert!(!e.has_tag(tags::BREACH));
+    assert!(!e.has_tag(tags::PASTE_EXPOSED));
+}
+
+#[test]
+fn tag_by_source_family_still_tags_leaks_and_pastes() {
+    use crate::core::entity::{Entity, EntityKind};
+    let mut leak = Entity::new(EntityKind::Email, "a@b.com", 0.86, "scan");
+    tag_by_source_family(&mut leak, &["leaks".to_string()].into());
+    assert!(leak.has_tag(tags::BREACH));
+    assert!(leak.has_tag(tags::PASSWORD_AT_RISK));
+
+    let mut paste = Entity::new(EntityKind::Email, "c@d.com", 0.86, "scan");
+    tag_by_source_family(&mut paste, &["pastes".to_string()].into());
+    assert!(paste.has_tag(tags::PASTE_EXPOSED));
+}
+
+#[test]
+fn tag_by_source_family_falls_back_to_a_generic_marker_for_unknown_families() {
+    use crate::core::entity::{Entity, EntityKind};
+    let mut e = Entity::new(EntityKind::Email, "e@f.com", 0.86, "scan");
+    tag_by_source_family(&mut e, &["indicators".to_string()].into());
+    assert!(e.has_tag("intelx-source:indicators"));
+}
+
+#[test]
 fn result_resp_terminal_status_parsing() {
     let running: ResultResp = serde_json::from_str(r#"{"status":1,"records":[]}"#).unwrap();
     assert_eq!(running.status, Some(1)); // must NOT be treated as terminal

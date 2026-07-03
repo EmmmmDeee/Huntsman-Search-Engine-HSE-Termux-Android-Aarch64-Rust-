@@ -31,7 +31,12 @@
 //! IntelX returns matched items and references to source materials. We surface
 //! the record count + per-bucket breakdown + media-type breakdown; per project
 //! invariant we do NOT pull the raw document bodies (those frequently contain
-//! credentials).
+//! credentials). We never fetch or render the underlying `.onion` pages IntelX's
+//! own crawler indexed — only the metadata (bucket/media/date) its API returns
+//! for a matched record. A hit in the `darknet.tor` bucket specifically is
+//! tagged [`crate::core::tags::DARKNET_EXPOSED`] (`tag_by_source_family`), so a
+//! correlator rule can distinguish "circulating on an active Tor
+//! forum/market" from a generic public leak.
 //!
 //! Selector coverage: IntelX auto-classifies the search term against its
 //! `SelectorType` table, so this module forwards every target kind IntelX has a
@@ -52,7 +57,7 @@ use serde::Deserialize;
 use serde_json::json;
 
 use crate::core::{
-    entity::Evidence,
+    entity::{Entity, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
@@ -142,6 +147,34 @@ pub(crate) fn media_label(code: i32) -> Option<&'static str> {
 /// e.g. `leaks.public.general` -> "leaks", `darknet.tor` -> "darknet".
 pub(crate) fn bucket_family(bucket: &str) -> &str {
     bucket.split('.').next().unwrap_or(bucket)
+}
+
+/// Tag `entity` by its coarse source families so downstream correlation can
+/// group on breach/leak/darknet/paste exposure. **Pure** (no I/O) — separated
+/// from [`IntelX::process`] so the mapping is unit-testable without a live key.
+///
+/// `darknet` (IntelX's `darknet.tor` bucket — active Tor-hidden-service
+/// forum/market data, confirmed via the bucket-family doc note above) gets
+/// its own [`tags::DARKNET_EXPOSED`] in addition to the generic
+/// `intelx-source:darknet` marker, mirroring how `leaks`/`pastes` already get
+/// dedicated `tags::` constants a correlator rule can match on precisely,
+/// rather than only the generic per-family marker no rule reads.
+pub(crate) fn tag_by_source_family(
+    entity: &mut Entity,
+    family_tags: &std::collections::BTreeSet<String>,
+) {
+    family_tags.iter().for_each(|fam| match fam.as_str() {
+        "leaks" => {
+            entity.tag(tags::BREACH);
+            entity.tag(tags::PASSWORD_AT_RISK);
+        }
+        "pastes" => entity.tag(tags::PASTE_EXPOSED),
+        "darknet" => {
+            entity.tag(tags::DARKNET_EXPOSED);
+            entity.tag(format!("intelx-source:{fam}"));
+        }
+        other => entity.tag(format!("intelx-source:{other}")),
+    });
 }
 
 /// The Intelligence X selector a target kind maps to, or `None` for a kind
@@ -380,16 +413,7 @@ impl Module for IntelX {
             }
         }
 
-        // Tag by coarse source family so downstream correlation can group on
-        // breach/leak/darknet/paste exposure.
-        family_tags.iter().for_each(|fam| match fam.as_str() {
-            "leaks" => {
-                entity.tag(tags::BREACH);
-                entity.tag(tags::PASSWORD_AT_RISK);
-            }
-            "pastes" => entity.tag(tags::PASTE_EXPOSED),
-            other => entity.tag(format!("intelx-source:{other}")),
-        });
+        tag_by_source_family(&mut entity, &family_tags);
 
         // Top buckets by frequency (source breakdown), deterministic ordering.
         let mut top_buckets: Vec<(String, u32)> = bucket_counts.into_iter().collect();
