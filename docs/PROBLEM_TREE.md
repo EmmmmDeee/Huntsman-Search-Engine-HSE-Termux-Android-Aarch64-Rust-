@@ -5104,3 +5104,36 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   decision logic (the SeekNow `postal` field is existing data; no new
   collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
   **Paired:** `SOLUTION_TREE` C5 (SOL-GEOINT) + §5 — same commit.
+
+- **2026-07-02** — **README's correlator-rule count had drifted ~49% low
+  (74 / "AU-001 through AU-086") against the real 110 / AU-112 — corrected and
+  guarded, same class as the F.2 gazetteer stale-count fix.** From the same
+  discovery pass (a hand-maintained-count-drift finding). Verified the real
+  figures directly: `RULES` holds 97 entity rules and `RELATION_RULES` 13
+  relation rules (110 total) in `core/correlator/mod.rs`, and the highest id
+  referenced anywhere in the correlator is AU-112 — not the README's stated 74 /
+  AU-086. The adjacent "3,100+ tests" line was likewise badly stale (the suite is
+  past 4,300 lib tests alone), though as a `+` lower bound it was not strictly
+  false. Corrected both README figures (74→110, AU-086→AU-112, 3,100+→4,300+) and
+  — the substantive part — added a CI guard,
+  `readme_correlator_rule_count_matches_the_registry`, a `core::correlator` unit
+  test (it must live there: `RULES`/`RELATION_RULES` are private to the module,
+  invisible to the integration `tests/architecture.rs` where the module-count
+  guard lives). It parses the README's "N correlator rules" figure and asserts it
+  equals `RULES.len() + RELATION_RULES.len()`, so a future rule addition that
+  skips the README fails CI — mirroring the existing
+  `readme_module_overview_count_matches_registry` protection. Verified as a
+  genuine guard (not a vacuous pass): temporarily setting the README to 99 made
+  it fail with "README says 99 … registry dispatches 110"; restored to 110, green.
+  **Deliberately deferred** (not force-fit into this commit): the README's
+  Module-Overview "(all 159)" and "API-Free — 92" section counts are also drifted,
+  but resolving them rests on an unsettled highlights-vs-complete question — the
+  free-highlights list enumerates 93 module names while the guarded headline says
+  128 free, so it is unclear whether "92" is an off-by-one caption typo or the
+  list is an intended subset; left for a cycle that can settle the intent rather
+  than guess (mirroring the earlier "phone area codes ≈65" deferral). Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test`
+  (4334 lib tests, +1 guard; full suite green). Docs + test only, no runtime
+  behaviour change, so no CLI surface to exercise; no identity/PII, architecture-
+  guard, or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

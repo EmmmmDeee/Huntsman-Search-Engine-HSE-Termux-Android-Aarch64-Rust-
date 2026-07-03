@@ -747,6 +747,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   tool (human or Claude). Deterministic; the byte-reproducibility guarantee holds.
 
 ### Changed
+- **README's correlator-rule and test counts corrected to match the code.** The
+  Architecture summary claimed "74 correlator rules (AU-001 through AU-086)" and
+  "3,100+ tests"; the live dispatch tables hold 110 rules (through AU-112) and
+  the suite is well past 4,300. Both figures are now current, and a new CI guard
+  (`readme_correlator_rule_count_matches_the_registry`) pins the README's rule
+  count to `RULES.len() + RELATION_RULES.len()` so adding a rule without updating
+  the README fails the build — the same drift protection the module count has.
 - **AU government-register result caps raised so no genuine API result is
   omitted.** Several AU open-data modules silently dropped real records beyond a
   small rank: QLD unclaimed-money (`MAX_RECORDS` 20), ASIC persons/banned (`5`),

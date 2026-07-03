@@ -3861,3 +3861,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   full suite green); `hse selftest` 9/9 per `CONVENTIONS.md` §9. No identity/PII
   decision logic, no architecture-guard or `unsafe` impact. Paired: `PROBLEM_TREE`
   C5 + §8 — same commit.
+
+- **2026-07-02** — **README correlator-rule count corrected (74→110, AU-086→
+  AU-112) and drift-guarded; test count refreshed (3,100+→4,300+).** From the
+  same discovery pass (hand-maintained-count-drift). The real dispatch tables
+  hold 97 entity `RULES` + 13 `RELATION_RULES` = 110, highest id AU-112 — the
+  README's "74 / AU-001 through AU-086" was ~49% low, a material understatement
+  of the correlation engine that is a headline differentiator vs SpiderFoot/
+  Maltego. Beyond correcting the numbers, added a CI guard
+  `readme_correlator_rule_count_matches_the_registry` (a `core::correlator` unit
+  test, since `RULES`/`RELATION_RULES` are private to the module — the
+  integration `tests/architecture.rs` can't see them) that pins the README figure
+  to `RULES.len() + RELATION_RULES.len()`, so a new rule that skips the README
+  fails CI, mirroring the existing module-count guard. Proven to actually guard:
+  a temporary README edit to 99 made it fail with a precise message; restored,
+  green. The Module-Overview "(all 159)"/"API-Free — 92" section counts are also
+  drifted but deferred — resolving them needs the unsettled highlights-vs-complete
+  intent (the free-highlights list shows 93 names against a guarded headline of
+  128 free), not a guess. Gate green (fmt/clippy/doc/`cargo test`, 4334 lib tests
+  +1 guard). Docs + test only, no runtime behaviour change. Paired: `PROBLEM_TREE`
+  §8 — same commit.

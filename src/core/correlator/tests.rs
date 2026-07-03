@@ -7489,3 +7489,37 @@ fn au112_malformed_or_mixed_family_never_panics_or_false_fires() {
         "malformed / cross-family inputs must produce no firing"
     );
 }
+
+#[test]
+fn readme_correlator_rule_count_matches_the_registry() {
+    // The README's headline "N correlator rules" is hand-maintained and had
+    // drifted badly (it read 74 / "AU-001 through AU-086" against a real total of
+    // 110 / AU-112). Pin it to the live dispatch tables — `RULES` (entity rules)
+    // plus `RELATION_RULES` (graph-aware rules) — so adding a rule without
+    // updating the README fails CI, the same guard the module count already has.
+    // Lives here (a `core::correlator` unit test) because both tables are private
+    // to this module; the integration `tests/architecture.rs` can't see them.
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist at the crate root");
+    let n = RULES.len() + RELATION_RULES.len();
+    let idx = readme
+        .find("correlator rules")
+        .expect("README must state the correlator rule count as 'N correlator rules'");
+    // The integer immediately preceding "correlator rules" (commas stripped).
+    let stated: usize = readme[..idx]
+        .trim_end()
+        .rsplit(|c: char| !c.is_ascii_digit() && c != ',')
+        .next()
+        .unwrap_or_default()
+        .replace(',', "")
+        .parse()
+        .expect("a numeric rule count must immediately precede 'correlator rules' in README");
+    assert_eq!(
+        stated,
+        n,
+        "README says {stated} correlator rules but the registry dispatches {n} \
+         (RULES {} + RELATION_RULES {}); update the count in README.md",
+        RULES.len(),
+        RELATION_RULES.len()
+    );
+}
