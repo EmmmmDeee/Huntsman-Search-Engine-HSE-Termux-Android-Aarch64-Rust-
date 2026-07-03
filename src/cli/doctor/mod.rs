@@ -85,10 +85,7 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
 
     let loaded = keys::load();
-    let huntsman_keys: Vec<_> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .collect();
+    let huntsman_keys = sorted_huntsman_keys(&loaded);
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
     for k in &huntsman_keys {
         println!("  - {k}");
@@ -147,6 +144,25 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
+/// output — `loaded` is a `HashMap`, so an unsorted iteration would print a
+/// different order on every invocation against the identical environment
+/// (`docs/CONVENTIONS.md` §5: "no HashMap-iteration-order leaks into output"),
+/// exactly the class of bug `rank_unset_keys` just below already guards
+/// against for the unset-keys listing.
+///
+/// Pure over the loaded map so it is unit-testable without touching the real
+/// environment.
+fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> Vec<&str> {
+    let mut keys: Vec<&str> = loaded
+        .keys()
+        .filter(|k| k.starts_with("HUNTSMAN_"))
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
 }
 
 /// Rank every unset `KNOWN_KEYS` env var by acquisition ROI, highest first.

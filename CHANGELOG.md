@@ -419,6 +419,10 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`hse doctor`'s loaded-keys listing now prints in a stable order.** The
+  "HUNTSMAN_* keys loaded" list was read straight off an internal hash map with
+  no sort, so it could print in a different order on separate runs against the
+  identical environment. It now always prints alphabetically.
 - **`pypi_user`/`rubygems_user` no longer understate a prolific maintainer's
   package/gem count.** Both modules cap their sample of packages/gems at 30 for
   the entity list, but were also using that capped sample's length for the

@@ -4041,3 +4041,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (fmt/clippy/doc/`cargo test`, 4342 lib tests +2; all 25 existing tests in both
   modules still pass); `hse selftest` 9/9. No identity/PII, architecture-guard,
   or `unsafe` impact. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-03** — **`hse doctor`'s "HUNTSMAN_* keys loaded" listing fixed for
+  determinism (`CONVENTIONS.md` §5) — was printed unsorted straight from a
+  `HashMap`.** From the same discovery pass as the pypi_user/rubygems_user fix
+  (determinism angle, named explicitly in this loop's own doctrine). Its
+  sibling function `rank_unset_keys`, 60 lines below in the same file, already
+  had the correct sort-for-stability pattern, making this a clear oversight.
+  Extracted a pure `sorted_huntsman_keys` helper mirroring that pattern.
+  Regression test builds the identical key set via two different `HashMap`
+  insertion orders and asserts both sort identically — red/green-verified via a
+  scoped `sed` removal of the sort call (failed on the first run). Gate green
+  (fmt/clippy/doc/`cargo test`, 4343 lib tests +1); exercised the real `hse
+  doctor` command directly (now prints alphabetically); `hse selftest` 9/9. No
+  identity/PII, architecture-guard, or `unsafe` impact. Paired: `PROBLEM_TREE`
+  §8 — same commit.

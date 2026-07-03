@@ -2,6 +2,32 @@ use super::*;
     use crate::util::key_roi::KeyRoi;
 
     #[test]
+    fn loaded_huntsman_keys_are_sorted_regardless_of_insertion_order() {
+        // `loaded` is a HashMap, so an unsorted read would print the keys in a
+        // different order on every `hse doctor` invocation against the
+        // identical environment — the same determinism bug class
+        // `rank_unset_keys` already guards against for the unset-keys listing.
+        // Build the map via two different insertion orders and assert both
+        // produce the identical sorted output.
+        let mut a = std::collections::HashMap::new();
+        a.insert("HUNTSMAN_WIGLE_TOKEN".to_string(), "x".to_string());
+        a.insert("HUNTSMAN_HIBP_KEY".to_string(), "x".to_string());
+        a.insert("HUNTSMAN_ONYPHE_KEY".to_string(), "x".to_string());
+        // A non-HUNTSMAN_ key must be filtered out regardless of ordering.
+        a.insert("HOME".to_string(), "/root".to_string());
+
+        let mut b = std::collections::HashMap::new();
+        b.insert("HUNTSMAN_ONYPHE_KEY".to_string(), "x".to_string());
+        b.insert("HOME".to_string(), "/root".to_string());
+        b.insert("HUNTSMAN_HIBP_KEY".to_string(), "x".to_string());
+        b.insert("HUNTSMAN_WIGLE_TOKEN".to_string(), "x".to_string());
+
+        let expected = vec!["HUNTSMAN_HIBP_KEY", "HUNTSMAN_ONYPHE_KEY", "HUNTSMAN_WIGLE_TOKEN"];
+        assert_eq!(sorted_huntsman_keys(&a), expected);
+        assert_eq!(sorted_huntsman_keys(&b), expected);
+    }
+
+    #[test]
     fn unset_keys_rank_multiplier_first_then_name() {
         // Nothing configured → every KNOWN_KEY is unset and ranked.
         let ranked = rank_unset_keys(|_| false);

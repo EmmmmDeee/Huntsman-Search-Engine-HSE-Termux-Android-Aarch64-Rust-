@@ -5442,3 +5442,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `CONVENTIONS.md` §9. No identity/PII decision logic (existing provider data,
   no new collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-03** — **`hse doctor`'s "HUNTSMAN_* keys loaded" listing violated
+  `CONVENTIONS.md` §5's determinism requirement — printed straight from a
+  `HashMap`, unsorted, so the same command against the identical environment
+  could print the keys in a different order on separate invocations.** Found by
+  the same fresh 5-angle discovery pass that surfaced the pypi_user/rubygems_user
+  fabricated-count fix (determinism angle, specifically named in this loop's own
+  operating doctrine — "no HashMap-iteration-order leaks into output"). Verified
+  directly: `cmd_doctor` (`cli/doctor/mod.rs`) collected `keys::load()`'s
+  `HashMap<String, String>` keys into a `Vec` with no `.sort()` before printing
+  — and its OWN sibling function `rank_unset_keys`, 60 lines below in the same
+  file, already carries the correct pattern with an explicit rationale ("Ties
+  within a tier sort by name for stable, run-to-run-identical output"), making
+  this look like a genuine oversight rather than a considered exception, not a
+  speculative concern. Fixed by extracting a pure `sorted_huntsman_keys(loaded:
+  &HashMap<String, String>) -> Vec<&str>` helper (mirroring `rank_unset_keys`'s
+  own pure/testable shape) that filters + sorts before `cmd_doctor` prints.
+  Regression test `loaded_huntsman_keys_are_sorted_regardless_of_insertion_order`
+  builds the identical key set via two different `HashMap` insertion orders and
+  asserts both produce the SAME sorted output (also proving a non-`HUNTSMAN_`
+  key like `HOME` is correctly filtered regardless of ordering) — red/green-
+  verified via a scoped `sed`-based removal of just the `.sort_unstable()` call
+  (failed on the very first run, confirming the bug was live, not merely
+  theoretical; restored and re-confirmed green). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4343 lib
+  tests, +1; full suite green). Behaviour-touching (CLI print ordering), so
+  exercised the real command directly per `CONVENTIONS.md` §9 — `hse doctor`
+  now prints its 6 loaded keys in stable alphabetical order — plus `hse
+  selftest` 9/9 (161 modules, dispatch graph intact). No identity/PII decision
+  logic, no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
