@@ -838,7 +838,38 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   network-egress limits reaching their third-party APIs, not a defect in
   this change, so the fixture-level proofs (built from each module's own
   verified real evidence shape) carry the correctness burden here.
-  *Remaining:* (d) further AU-0xx rule-gap fill.
+  ✅ **(d) One AU-0xx rule-gap closed (2026-07-03): AU-111, Password-at-risk
+  exposure.** A dead-tag audit (the same class of fix already applied to
+  `core::tags` constants — "wire 7 dead core::tags constants to their real
+  call sites") found `tags::PASSWORD_AT_RISK` applied by three independent
+  breach modules (`hibp`, `xposed_or_not`, `intelx`) to an `Email` entity
+  whenever the breach dataset's own metadata says a password was among the
+  exposed data classes — but read by **zero** correlator rules. Distinct
+  from AU-037 (`rule_au_037_credential_exposure`), which fires only when a
+  first-class `Password`/`Credential` **entity** exists: none of the three
+  tagging modules ever construct one, so a subject whose email appears in a
+  password-exposing breach with no harvested credential value was invisible
+  to every existing rule — confirmed non-overlapping, not a duplicate.
+  New `rule_au_111_password_at_risk_exposure` (`Medium` — a catalogue-level
+  exposure signal, not a recovered secret), copy-shaped from AU-043's
+  identical tag-filter pattern. 3 new tests (fires on the tag; silent
+  without it; proves AU-037/AU-111 fire on genuinely disjoint fixtures).
+  Architecture guards (`correlation_rule_ids_match_their_function_number`,
+  `every_defined_correlation_rule_is_dispatched`,
+  `every_dispatched_correlation_rule_has_a_firing_test`,
+  `no_two_correlation_rule_functions_share_a_number`) all pass unchanged.
+  Live-verified: a real `hse scan` completes and renders the full dossier
+  (all 111 rules evaluate without error); the new rule itself is pure/
+  offline (a tag filter, no network dependency), so its correctness rests on
+  the direct unit tests, not a live network fetch. *(d) stays genuinely
+  open-ended* — like the audit cadence itself, "further rule-gap fill" has
+  no natural end state. The same audit surfaced one more real but weaker
+  candidate, deliberately not built this cycle: `tags::HIGH_EXPOSURE`
+  (`hibp`, `xposed_or_not` — ≥3 verified breaches / a >1M-pwn domain), also
+  unread by any rule, but the signal is already indirectly visible via
+  existing breach-count-gated severity logic (e.g. AU-009/AU-082's
+  source-family counts), so it needs a closer non-duplication check before
+  it's built — logged, not force-fit into this commit.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -3608,3 +3639,49 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the correctness burden. Gate green: fmt/clippy `--all-targets`/doc clean,
   4284 lib tests (+3), 0 failures. **Paired:** `SOLUTION_TREE` SOL-CORR +
   §4/§8 — same commit.
+
+- **2026-07-03** — **New correlator rule AU-111 — Password-at-risk
+  exposure — closes one instance of C1's open-ended "(d) further AU-0xx
+  rule-gap fill."** Step 1: with C1's timeline item closed last cycle, (d)
+  remained the sole open item on the in-progress node — genuinely
+  open-ended, so this cycle ran a fresh, code-grounded discovery pass
+  rather than guessing at a rule to build: an audit of every tag applied by
+  `src/modules/` cross-checked against every correlator rule in
+  `src/core/correlator/` for tags that are populated but never read —
+  the same "dead constant" class this codebase has fixed before for
+  `core::tags` (7 dead constants wired to their real call sites in an
+  earlier cycle; `COARSE`/`MALICIOUS` wired in another). Found
+  `tags::PASSWORD_AT_RISK`, applied by `hibp`/`xposed_or_not`/`intelx` (3
+  independent modules, verified via direct source read, not trusted from
+  the audit) to an `Email` entity when the breach dataset's own metadata
+  says a password was among the exposed data classes — read by zero
+  correlator rules. Verified non-overlap with the nearest existing rule,
+  AU-037 (`rule_au_037_credential_exposure`): AU-037 requires a first-class
+  `Password`/`Credential` entity, which none of the three tagging modules
+  ever construct (confirmed via `grep EntityKind::Password|Credential` on
+  all three — empty), so this is a genuinely uncovered evidence shape, not
+  a duplicate finding under a new name. New
+  `rule_au_111_password_at_risk_exposure`, copy-shaped from AU-043's
+  identical tag-filter pattern (`Severity::Medium`, matching AU-043's
+  "exposure signal, not a recovered secret" tier — AU-037 stays `Critical`
+  for the case where the actual secret is in hand). **S→P proof:** 3 new
+  tests — fires on the tag; silent without it; and a direct proof that
+  AU-037 and AU-111 fire on disjoint fixtures (the same entity fires AU-111
+  but not AU-037 when it carries the tag with no secret entity), pinning
+  the non-overlap claim as a regression guard, not just a one-time check.
+  All four correlator architecture guards
+  (`correlation_rule_ids_match_their_function_number`,
+  `every_defined_correlation_rule_is_dispatched`,
+  `every_dispatched_correlation_rule_has_a_firing_test`,
+  `no_two_correlation_rule_functions_share_a_number`) pass with the new
+  rule registered. Live-verified: a real end-to-end `hse scan` completes
+  and renders the full dossier — all 111 rules evaluate without error; the
+  rule itself is pure/offline (a tag filter over already-collected
+  entities, no network call), so its correctness rests on the direct unit
+  tests. **(d) deliberately left open** — like this project's own audit
+  cadence, "further rule-gap fill" has no natural end state; one more real
+  but weaker candidate (`tags::HIGH_EXPOSURE`) was found and explicitly
+  NOT built this cycle (needs a closer non-duplication check against the
+  existing breach-count-gated severity logic before it's safe to ship).
+  Gate green: fmt/clippy `--all-targets`/doc clean, 4287 lib tests (+3), 0
+  failures. **Paired:** `SOLUTION_TREE` SOL-CORR + §8 — same commit.

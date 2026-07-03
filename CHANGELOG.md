@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New correlator rule AU-111 (Password-at-risk exposure) — `PROBLEM_TREE`
+  C1, "further AU-0xx rule-gap fill".** `hibp`, `xposed_or_not`, and
+  `intelx` each independently tag an email `password-at-risk` when the
+  breach dataset's own metadata says a password was among the exposed data
+  classes — but no rule read it. Distinct from the existing credential-
+  exposure rule, which requires a first-class recovered `Password`/
+  `Credential` value: none of the three tagging modules ever produce one,
+  so a subject whose email surfaced in a password-exposing breach with no
+  harvested secret was invisible to correlation entirely. Medium severity —
+  a catalogue-level exposure signal, not a recovered secret.
 - **A reused secret (crypto wallet, leaked API key, or salted password hash)
   across two accounts now produces a graph edge, not just a correlation
   finding (`PROBLEM_TREE` C1, "controller behind reused secrets").** AU-047/

@@ -392,6 +392,11 @@ const RULES: &[RuleFn] = &[
     // AU-108: the subject's breach-listed accounts across >=2 platforms — a stated
     // cross-platform footprint from the `platform:handle` breach Usernames.
     rule_au_108_breach_social_footprint,
+    // AU-111: an identifier tagged PASSWORD_AT_RISK (hibp/xposed_or_not/intelx
+    // breach-dataset metadata saying a password was among the exposed data
+    // classes) — distinct from AU-037, which needs a first-class Password/
+    // Credential entity none of these three modules ever construct.
+    rule_au_111_password_at_risk_exposure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

@@ -2409,6 +2409,52 @@ fn au_043_fires_on_paste_exposure() {
 }
 
 #[test]
+fn au_111_fires_on_password_at_risk_tag() {
+    // The exact shape hibp/xposed_or_not/intelx tag: an Email entity flagged
+    // PASSWORD_AT_RISK, with no first-class Password/Credential entity —
+    // AU-037 cannot see this (PROBLEM_TREE C1 "(d)" rule-gap fill).
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Email,
+            "alice@example.com",
+            "hibp",
+            &[crate::core::tags::PASSWORD_AT_RISK],
+        ),
+        mk_tagged(EntityKind::Email, "bob@example.com", "hibp", &[]),
+    ];
+    let out = rule_au_111_password_at_risk_exposure(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-111");
+    assert_eq!(out[0].entity_uids.len(), 1, "only the flagged email");
+    assert!(out[0].description.contains("1 identifier"));
+}
+
+#[test]
+fn au_111_does_not_fire_without_the_tag() {
+    let ents = vec![mk_tagged(EntityKind::Email, "bob@example.com", "hibp", &[])];
+    assert!(rule_au_111_password_at_risk_exposure(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_111_is_distinct_from_au_037_credential_exposure() {
+    // AU-037 needs a first-class Password/Credential entity; AU-111 needs
+    // only the catalogue-level PASSWORD_AT_RISK tag. An email carrying the
+    // tag but no secret entity fires AU-111, never AU-037 — proving the two
+    // rules cover genuinely non-overlapping evidence shapes.
+    let ents = vec![mk_tagged(
+        EntityKind::Email,
+        "alice@example.com",
+        "xposed_or_not",
+        &[crate::core::tags::PASSWORD_AT_RISK],
+    )];
+    assert!(rule_au_037_credential_exposure(&ents, "scan", 0).is_empty());
+    assert_eq!(
+        rule_au_111_password_at_risk_exposure(&ents, "scan", 0).len(),
+        1
+    );
+}
+
+#[test]
 fn shared_tracking_id_fires_only_across_multiple_sites() {
     // A TrackingId carrying source_domain evidence for two distinct sites is the
     // affiliate signal: same analytics id ⇒ common ownership.

@@ -1063,6 +1063,47 @@ pub(in crate::core::correlator) fn rule_au_043_paste_exposure(
     )]
 }
 
+/// AU-111 — Password-at-risk exposure.
+///
+/// Fires when a breach/leak intelligence module (`hibp`, `xposed_or_not`,
+/// `intelx`) tags an identifier `PASSWORD_AT_RISK` — the breach *dataset's
+/// own metadata* says a password was among the data classes it exposed
+/// (hibp: a breach's `data_classes` mentions "password"; `xposed_or_not`: a
+/// non-"none" `password_risk` field; `intelx`: a "leaks"-family bucket).
+/// Distinct from [`rule_au_037_credential_exposure`] (AU-037), which fires
+/// only when a first-class `Password`/`Credential` **entity** exists — none
+/// of these three modules ever construct one (they tag the *email*, never
+/// promoting a secret value), so a subject whose email appears in a
+/// password-exposing breach with no harvested credential value was
+/// invisible to every existing rule. `Medium` — a catalogue-level exposure
+/// signal, not a recovered secret (AU-037 stays `Critical` for that).
+pub(in crate::core::correlator) fn rule_au_111_password_at_risk_exposure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let uids: Vec<String> = entities
+        .iter()
+        .filter(|e| e.has_tag(crate::core::tags::PASSWORD_AT_RISK))
+        .map(|e| e.uid.clone())
+        .collect();
+    if uids.is_empty() {
+        return Vec::new();
+    }
+    vec![Correlation::new(
+        "AU-111",
+        "Password-at-risk exposure",
+        Severity::Medium,
+        format!(
+            "{} identifier(s) appear in breach data flagged as exposing a password",
+            uids.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-082 — API key exposed via two independent source families.
 ///
 /// AU-021 fires whenever a single `ApiKey` entity is present; this rule
