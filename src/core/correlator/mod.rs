@@ -397,6 +397,11 @@ const RULES: &[RuleFn] = &[
     // classes) — distinct from AU-037, which needs a first-class Password/
     // Credential entity none of these three modules ever construct.
     rule_au_111_password_at_risk_exposure,
+    // AU-112: an identifier tagged HIGH_EXPOSURE (hibp: >=3 verified breaches
+    // or a domain with >1M pwns; xposed_or_not: >=5 breaches) — a provider-
+    // judged severe-exposure threshold, distinct from AU-001's cross-source
+    // corroboration axis; no rule read the underlying count before this.
+    rule_au_112_high_exposure_footprint,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

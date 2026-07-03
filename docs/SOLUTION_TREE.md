@@ -400,12 +400,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   non-overlap as a regression guard. All four correlator architecture
   guards pass with the rule registered. Live-verified: a real `hse scan`
   completes with all 111 rules evaluating without error; the rule itself is
-  pure/offline, so correctness rests on the direct unit tests. *Remaining
-  (deliberately open-ended, like the audit cadence itself):* further AU-0xx
-  rule-gap fill — one more real but weaker candidate, `tags::HIGH_EXPOSURE`,
-  found and explicitly not built (needs a closer non-duplication check
-  against existing breach-count-gated severity logic first). Gate green:
+  pure/offline, so correctness rests on the direct unit tests. Gate green:
   4287 lib tests (+3).
+  *Delivered same day: AU-112, High-exposure breach footprint.* Directly
+  re-checked the prior cycle's own deferred caveat on `tags::HIGH_EXPOSURE`
+  ("already indirectly visible via existing breach-count-gated severity
+  logic e.g. AU-009/AU-082") rather than trusting it — `grep`-confirmed
+  AU-009 fires only on `stealer-log`, AU-082 only on API-key dual-source
+  evidence, and zero correlator hits for `verified_count`/`breach_count`/
+  `pwn_count`. The caveat was wrong; the gap is genuine. New
+  `rule_au_112_high_exposure_footprint`, copy-shaped from AU-111, fires on
+  `HIGH_EXPOSURE` (`hibp`: email `verified_count >= 3` or domain
+  `total_pwns > 1_000_000`; `xposed_or_not`: `count >= 5`). Confirmed
+  distinct from AU-001 (counts DISTINCT SOURCE MODULES corroborating one
+  email — cross-tool agreement, not a single source's own breach volume).
+  `High` — between AU-037's `Critical` and AU-111's `Medium`. 3 new tests
+  including a direct AU-001/AU-112 disjoint-fixture proof. All four
+  architecture guards pass with 112 rules registered. Live-verified: a
+  real `hse scan` completes with 112 rules evaluating without error. Gate
+  green: 4290 lib tests (+3). *Remaining (deliberately open-ended, like the
+  audit cadence itself):* further AU-0xx rule-gap fill — no further
+  candidate identified this pass; the dead-tag-audit method has now closed
+  2 gaps and is a reusable technique for a future cycle.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -695,19 +711,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 *(T2.14 fully closed, 2026-07-03 — both halves shipped; off §4a and §4b.)*
 - **README.md rule-count drift (new, 2026-07-03 S→P find):** "74 correlator
   rules (AU-001 through AU-086, with some IDs reserved for engine-emitted
-  cross-scan findings…)" is badly stale — 111 rules are registered as of
-  AU-111. Not just a number swap: the ID range and the category-list prose
+  cross-scan findings…)" is badly stale — 112 rules are registered as of
+  AU-112. Not just a number swap: the ID range and the category-list prose
   both need a fresh read against the live rule set. Found incidentally
   while shipping AU-111; deliberately not fixed in that commit (unrelated
   scope, much larger than one rule). No solution node yet.
-- **`tags::HIGH_EXPOSURE`** (new, 2026-07-03 S→P find, same audit as
-  AU-111): applied by `hibp`/`xposed_or_not` (≥3 verified breaches, or a
-  domain with >1M pwns) but read by zero correlator rules — the same class
-  of gap AU-111 just closed. Weaker candidate than `PASSWORD_AT_RISK` was:
-  the signal is already indirectly visible via existing breach-count-gated
-  severity logic (e.g. AU-009/AU-082's source-family counts), so it needs a
-  closer non-duplication check before a rule is safe to build. No solution
-  node yet.
+- ~~**`tags::HIGH_EXPOSURE`** (found 2026-07-03, same audit as AU-111).~~
+  **Delivered same day as AU-112.** The deferred non-duplication check was
+  done directly (not trusted from the original hedge): AU-009/AU-082
+  `grep`-confirmed to fire on unrelated evidence, zero correlator hits for
+  the underlying breach-count attributes — the caveat didn't hold, the gap
+  was genuine. `rule_au_112_high_exposure_footprint` shipped, confirmed
+  distinct from AU-001's cross-source-corroboration axis. Off the open
+  queue.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -2919,3 +2935,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `--all-targets`/doc clean, 4287 lib tests (+3), 0
   failures. **Paired:** `PROBLEM_TREE` C1 (unchanged `[~]`) + §8 — same
   commit.
+
+- **2026-07-03** — **SOL-CORR: AU-112 closes the `tags::HIGH_EXPOSURE`
+  candidate this same session deliberately deferred.** Step 1: C1 was
+  still the only in-progress node, and its own last log entry left an
+  explicit, scoped next step — verify the "already indirectly visible via
+  AU-009/AU-082" caveat before building anything. Did that check directly
+  rather than re-trusting the prior cycle's own hedge: `grep`-confirmed
+  AU-009 (`rule_au_009_stealer_log`) fires only on the `stealer-log` tag,
+  AU-082 (`rule_au_082_api_key_dual_pathway`) fires only on API-key
+  dual-source evidence, and a repo-wide search for `verified_count`/
+  `breach_count`/`pwn_count` inside `core::correlator` returns zero
+  matches. The caveat did not hold up under direct verification — this is
+  a genuine gap, the same class as AU-111. New
+  `rule_au_112_high_exposure_footprint` fires on `tags::HIGH_EXPOSURE`
+  (verified per-producer via direct source read: `hibp` tags an email at
+  `verified_count >= 3`, a domain at `total_pwns > 1_000_000`;
+  `xposed_or_not` at `count >= 5`), copy-shaped from AU-111's tag-filter
+  pattern. Confirmed non-overlap with AU-001
+  (`rule_au_001_multi_breach`, which counts DISTINCT SOURCE MODULES
+  corroborating one email — cross-tool agreement, not a single source's
+  own verified-breach volume). `High` severity — between AU-037's
+  `Critical` (a recovered secret in hand) and AU-111's `Medium` (no
+  volume threshold). **S→P proof:** 3 new tests, including a direct
+  AU-001/AU-112 disjoint-fixture proof pinning the non-overlap as a
+  permanent regression guard, not a one-time audit conclusion. All four
+  correlator architecture guards pass with 112 rules registered.
+  Live-verified: a real end-to-end `hse scan` completes and renders the
+  full dossier without error. §4a's `HIGH_EXPOSURE` bullet closed;
+  README.md's stale rule-count note updated 111→112 (still deliberately
+  not fixed — unrelated, larger-scope drift). (d) remains genuinely open —
+  no further candidate found this pass; the dead-tag-audit method has now
+  closed 2 real gaps in one session and is a reusable technique for a
+  future cycle once more modules/tags accumulate. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4290 lib tests (+3), 0 failures. **Paired:**
+  `PROBLEM_TREE` C1 (unchanged `[~]`) + §4a/§8 — same commit.

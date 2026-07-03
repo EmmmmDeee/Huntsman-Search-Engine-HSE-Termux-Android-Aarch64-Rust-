@@ -2455,6 +2455,53 @@ fn au_111_is_distinct_from_au_037_credential_exposure() {
 }
 
 #[test]
+fn au_112_fires_on_high_exposure_tag() {
+    // The exact shape hibp/xposed_or_not tag: an identifier flagged
+    // HIGH_EXPOSURE by the provider's own verified-breach-count threshold
+    // (PROBLEM_TREE C1 "(d)" rule-gap fill, second instance).
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Email,
+            "alice@example.com",
+            "hibp",
+            &[crate::core::tags::HIGH_EXPOSURE],
+        ),
+        mk_tagged(EntityKind::Email, "bob@example.com", "hibp", &[]),
+    ];
+    let out = rule_au_112_high_exposure_footprint(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].rule_id, "AU-112");
+    assert_eq!(out[0].entity_uids.len(), 1, "only the flagged identifier");
+    assert!(out[0].description.contains("1 identifier"));
+}
+
+#[test]
+fn au_112_does_not_fire_without_the_tag() {
+    let ents = vec![mk_tagged(EntityKind::Email, "bob@example.com", "hibp", &[])];
+    assert!(rule_au_112_high_exposure_footprint(&ents, "scan", 0).is_empty());
+}
+
+#[test]
+fn au_112_is_distinct_from_au_001_multi_source_corroboration() {
+    // AU-001 fires on cross-SOURCE corroboration (>=2 distinct breach-
+    // checking modules independently confirm one email) — a different axis
+    // from AU-112's single-source verified-breach COUNT. An email seen by
+    // ONE source (hibp) but flagged HIGH_EXPOSURE fires AU-112, never
+    // AU-001 — proving the two rules cover genuinely disjoint evidence.
+    let ents = vec![mk_tagged(
+        EntityKind::Email,
+        "alice@example.com",
+        "hibp",
+        &[crate::core::tags::HIGH_EXPOSURE],
+    )];
+    assert!(rule_au_001_multi_breach(&ents, "scan", 0).is_empty());
+    assert_eq!(
+        rule_au_112_high_exposure_footprint(&ents, "scan", 0).len(),
+        1
+    );
+}
+
+#[test]
 fn shared_tracking_id_fires_only_across_multiple_sites() {
     // A TrackingId carrying source_domain evidence for two distinct sites is the
     // affiliate signal: same analytics id ⇒ common ownership.

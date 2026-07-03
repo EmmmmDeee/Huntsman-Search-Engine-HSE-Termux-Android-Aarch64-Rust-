@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New correlator rule AU-112 (High-exposure breach footprint) —
+  `PROBLEM_TREE` C1, "further AU-0xx rule-gap fill".** `hibp` and
+  `xposed_or_not` each independently tag an identifier `high-exposure` when
+  their own severity threshold is crossed (`hibp`: ≥3 independently
+  verified breaches, or a domain with over 1,000,000 pwned accounts;
+  `xposed_or_not`: ≥5 breaches) — but no rule read it. Distinct from the
+  existing multi-source breach-corroboration rule, which counts distinct
+  breach-checking *tools* agreeing on one email, not a single tool's own
+  verified-breach volume. High severity — one tier below a recovered
+  secret, one above a catalogue-level exposure flag.
 - **New correlator rule AU-111 (Password-at-risk exposure) — `PROBLEM_TREE`
   C1, "further AU-0xx rule-gap fill".** `hibp`, `xposed_or_not`, and
   `intelx` each independently tag an email `password-at-risk` when the

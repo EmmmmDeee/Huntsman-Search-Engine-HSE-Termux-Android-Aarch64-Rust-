@@ -1104,6 +1104,55 @@ pub(in crate::core::correlator) fn rule_au_111_password_at_risk_exposure(
     )]
 }
 
+/// AU-112 — High-exposure breach footprint.
+///
+/// Fires when an identifier is tagged `HIGH_EXPOSURE` — the breach/leak
+/// intelligence module itself judged the exposure severe, by its own
+/// threshold: `hibp` tags an email when `verified_count >= 3` (three or
+/// more INDEPENDENTLY VERIFIED, not user-submitted, breaches) and tags a
+/// domain when its breach history totals `> 1_000_000` pwned accounts;
+/// `xposed_or_not` tags an identifier at `count >= 5` breaches. Distinct
+/// from [`rule_au_001_multi_breach`] (AU-001), which counts DISTINCT
+/// SOURCE MODULES corroborating one email (cross-tool agreement) — a
+/// different axis from a single source's own verified-breach *count*: an
+/// email seen by `hibp` alone with 5 verified breaches never fires AU-001
+/// (only one source), and an email seen by two sources with one breach
+/// each fires AU-001 but carries no `HIGH_EXPOSURE` tag. No rule reads the
+/// underlying `verified_count`/`breach_count`/`pwn_count` evidence
+/// attributes either (verified: zero matches for any of the three in
+/// `core::correlator`), so this provider-judged severity signal was wholly
+/// uncorrelated. `High` — one tier below AU-037's `Critical` (a recovered
+/// secret in hand) and above AU-111's `Medium` (catalogue metadata with no
+/// count threshold): a provider explicitly judging "this is severe" by its
+/// own volume threshold is a stronger signal than a single flagged
+/// data-class, but still short of a directly recoverable secret.
+pub(in crate::core::correlator) fn rule_au_112_high_exposure_footprint(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let uids: Vec<String> = entities
+        .iter()
+        .filter(|e| e.has_tag(crate::core::tags::HIGH_EXPOSURE))
+        .map(|e| e.uid.clone())
+        .collect();
+    if uids.is_empty() {
+        return Vec::new();
+    }
+    vec![Correlation::new(
+        "AU-112",
+        "High-exposure breach footprint",
+        Severity::High,
+        format!(
+            "{} identifier(s) flagged high-exposure by breach intelligence (heavy verified-breach history)",
+            uids.len()
+        ),
+        uids,
+        scan_id,
+        ts,
+    )]
+}
+
 /// AU-082 — API key exposed via two independent source families.
 ///
 /// AU-021 fires whenever a single `ApiKey` entity is present; this rule
