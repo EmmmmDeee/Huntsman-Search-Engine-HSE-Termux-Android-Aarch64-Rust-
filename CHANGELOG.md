@@ -26,6 +26,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
   responses, fixture the one path that's actually inspected) intended to
   repeat across the ~333 remaining `username_search` sites and the other
   scraper modules T2.7 covers, one source at a time.
+- **`username_search`'s Archive of Our Own check now has a real golden-fixture
+  regression test too (`PROBLEM_TREE` T2.7, second site).** `account_exists`
+  was already extracted and already universal, so this is a second fixture +
+  2 tests. Live-verified the identical drift already found for Lobste.rs: a
+  fabricated handle 404s cleanly against AO3's own
+  `StatusAndNotBody(200, "not be found")` table entry, made harmless by the
+  same status-mismatch short-circuit. The found case is verified against
+  AO3's own `orphan_account` system account (used when authors anonymize
+  their works — a platform feature account, not a private individual),
+  captured real and committed truncated to the `<head>` plus profile-header
+  block only, to keep mature-content work-listing tags out of the fixture.
+  The live end-to-end `hse` binary check was inconclusive this cycle:
+  archiveofourown.org rate-limited this session's egress IP partway through
+  verification (reproduced with `curl` using the module's own headers/
+  timeout) — external throttling, not a code defect, and itself a live
+  example of the gap the still-open per-source health-signal leg of T2.7
+  is meant to close.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

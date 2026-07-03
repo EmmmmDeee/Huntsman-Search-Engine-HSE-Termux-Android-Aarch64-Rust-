@@ -398,8 +398,44 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `hse scan -k username -v pushcx` correctly emits `https://lobste.rs/u/pushcx`.
   4 more synthetic `account_exists` unit tests cover the general
   `StatusEq`/`StatusAndBody`/`StatusAndNotBody`/no-body-read cases. 6 new tests
-  total. *Remaining (large, tracked as future increments, not this one):* the
-  same extract-and-fixture treatment for the other ~333 `username_search`
+  total.
+  ◑ **Second golden fixture landed (2026-07-03): Archive of Our Own (AO3).**
+  Same pattern, second site. Live-verified: a FABRICATED nonexistent handle
+  returns a clean HTTP 404 (no body read) — the identical drift already found
+  for Lobste.rs, where the table's `Detect::StatusAndNotBody(200, "not be
+  found")` entry assumes an HTTP-200 "soft 404" the site no longer sends, made
+  harmless by the same status-mismatch short-circuit. AO3's own built-in
+  `orphan_account` system account (used when authors anonymize their works —
+  a platform feature account, not any private individual's identity) verified
+  the FOUND case: HTTP 200, no `"not be found"` marker. Committed the real
+  captured response as `username_search/testdata/ao3_user_found.html`,
+  truncated to the `<head>` plus the profile-header block (11 KB of an
+  original 293 KB) so the fixture carries no mature-content work-listing
+  tags — still a genuine contiguous prefix of the real response, not a
+  fabrication. Two more golden-fixture tests (`ao3_real_found_page_…`,
+  `ao3_real_not_found_status_…`) run the fixture and the live-verified 404
+  through the actual registered `SITES` entry. Re-proved discrimination for
+  both sites together: inverted `StatusAndNotBody` again, confirmed the
+  Lobste.rs AND the new AO3 fixture test both failed as expected, reverted.
+  8 `username_search` golden/synthetic tests total now.
+  **Live end-to-end note (evidence, not fabricated success):** the
+  `hse scan -k username -v orphan_account` binary run did *not* surface the
+  AO3 hit — reproduced with bare `curl` using the module's exact UA/Accept
+  headers and its 4.5 s per-site timeout: the identical request that
+  succeeded minutes earlier during fixture capture now hangs to a full
+  timeout (`curl` exit 28) from this session's egress IP. This is upstream
+  rate-limiting/throttling by archiveofourown.org, not a defect in
+  `account_exists` or the table entry — and it is itself a live instance of
+  exactly the "enumeration tools get silently throttled" failure mode T2.7's
+  problem statement names, underscoring why the per-source **health signal**
+  leg (still `[ ]`, not started) matters: today a throttled AO3 probe is
+  indistinguishable from a genuine absence in the scan's diagnostics. The
+  offline fixture tests (the actual regression-proofing artifact, not the
+  live sanity check) pass and were proven discriminating; no further live
+  requests were made against AO3 this cycle to avoid compounding the
+  rate-limit.
+  *Remaining (large, tracked as future increments, not this one):* the
+  same extract-and-fixture treatment for the other ~332 `username_search`
   sites and the other four named modules; the `bstr`/`aho-corasick` parser
   rewrite (F.1); the per-source health signal (`hse doctor` + SPA).
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
@@ -3593,3 +3629,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `search_engines`, the F.1 `bstr` rewrite, and the per-source health signal.
   **Paired:** `SOLUTION_TREE` new node SOL-GOLDEN-FIXTURE (§2) + §3/§4/§5 —
   same commit.
+
+- **2026-07-03** — **T2.7 stays `[~]`: second golden fixture (Archive of Our
+  Own).** `account_exists` was already extracted and already universal for
+  every `SITES` entry (confirmed by re-reading `process()`), so this
+  increment needed only a second site's fixtures + tests, per the documented
+  "one source at a time" plan. Live-verified AO3's `Detect::StatusAndNotBody`
+  rule the same way as Lobste.rs: a fabricated handle 404s cleanly (the
+  identical drift — the table's 200+`"not be found"`-marker assumption is
+  stale, made harmless by the existing status-mismatch short-circuit); AO3's
+  own `orphan_account` system account (a platform feature account, not a
+  private individual) verified the found case at HTTP 200 with no marker.
+  Committed the captured found-page response truncated to `<head>` + the
+  profile-header block (11 KB of 293 KB — a genuine prefix, not a
+  fabrication) to keep mature-content work-listing tags out of the fixture.
+  2 new golden-fixture tests against the real `SITES` entry; re-proved
+  discrimination for both sites' fixture tests together (inverted, confirmed
+  both failed, reverted). 8 `username_search` golden/synthetic tests total.
+  **Live end-to-end check was inconclusive, reported honestly rather than
+  fabricated:** the real `hse scan` binary did not surface the AO3 hit;
+  reproduced with `curl` using the module's own headers/timeout and found
+  archiveofourown.org now hangs the identical request to a full timeout from
+  this session's egress IP — upstream rate-limiting encountered mid-cycle,
+  not a code defect, and itself live evidence for why the per-source health
+  signal leg (still `[ ]`) is needed (a throttled probe and a genuine miss
+  currently look identical in the scan's diagnostics). Gate green: 4291 lib
+  tests (+2), fmt/clippy `--all-targets`/doc clean. **Remaining still large
+  and explicitly deferred:** ~332 more `username_search` sites,
+  `au_people`/`au_electoral`/`au_property`/`search_engines`, the F.1 `bstr`
+  rewrite, and the per-source health signal. **Paired:** `SOLUTION_TREE`
+  SOL-GOLDEN-FIXTURE (§2/§3/§4/§5) — same commit.

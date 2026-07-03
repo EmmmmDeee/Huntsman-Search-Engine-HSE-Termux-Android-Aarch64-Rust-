@@ -587,8 +587,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   reverted); verified end-to-end against the real binary
   (`hse scan -k username -v pushcx` / a fabricated handle both resolve
   correctly). 6 new tests. *Closes:* the first concrete slice of **T2.7**.
+  **Second instance landed 2026-07-03 (Archive of Our Own):** `account_exists`
+  was already universal (no further extraction needed), so this increment is
+  fixtures + tests only, same pattern. Live-verified the identical drift on
+  AO3's `StatusAndNotBody(200, "not be found")` rule (fabricated handle 404s
+  cleanly, short-circuit still makes it harmless); AO3's own `orphan_account`
+  system account (a platform feature account, not a private individual)
+  verified the found case. Committed the captured response truncated to
+  `<head>` + the profile-header block (11 KB of 293 KB — a genuine prefix,
+  not a fabrication, trimmed only to keep mature-content work-listing tags
+  out of the fixture) as `username_search/testdata/ao3_user_found.html`; 2
+  golden-fixture tests against the live `SITES` entry; re-proved
+  discrimination for both sites' tests together. 8 `username_search`
+  golden/synthetic tests total now. **Live end-to-end binary check was
+  inconclusive this cycle, reported as such rather than assumed:**
+  archiveofourown.org rate-limited this session's egress IP mid-cycle (a
+  `curl` repro with the module's own headers/timeout hung to a full timeout
+  on a request that had succeeded minutes earlier during fixture capture) —
+  external throttling, not a code defect, and itself a live instance of the
+  exact failure mode SOL-HEALTH-SIGNAL below exists to surface.
   *Remaining (large, explicit follow-on, not this increment):* the same
-  treatment for the other ~333 `username_search` sites and the four other
+  treatment for the other ~332 `username_search` sites and the four other
   named modules (`au_people`, `au_electoral`, `au_property`,
   `search_engines`) — each needs its own live-verified fixture(s), picked
   one source at a time.
@@ -766,12 +785,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clone` over a filesystem path. Off the open queue — see SOL-UPDATE above.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
-- **SOL-GOLDEN-FIXTURE** (T2.7) — first instance landed 2026-07-04:
-  `username_search`'s Lobste.rs check now has a pure, testable
-  `account_exists` + a real captured golden fixture. *Remaining:* the same
-  extract-and-fixture treatment for ~333 more `username_search` sites plus
-  `au_people`/`au_electoral`/`au_property`/`search_engines` — pick one
-  source at a time in future increments, each independently live-verified.
+- **SOL-GOLDEN-FIXTURE** (T2.7) — two instances landed: Lobste.rs
+  (2026-07-04), Archive of Our Own (2026-07-03). `username_search`'s
+  `account_exists` is a pure, testable function used by every site; each
+  instance now adds only a real captured golden fixture + 2 tests.
+  *Remaining:* the same extract-and-fixture treatment for ~332 more
+  `username_search` sites plus `au_people`/`au_electoral`/`au_property`/
+  `search_engines` — pick one source at a time in future increments, each
+  independently live-verified.
 - **SOL-HINT-NOISE** (T2.14) — ✅ **delivered, off this queue (2026-07-03).**
   Both legs shipped: the scan-level "60s + zero-yield module" hint
   (event-sourced, caller-side, no cost-tier gate) and the per-module hint
@@ -814,9 +835,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.7 `[~]`** (SOL-GOLDEN-FIXTURE first instance 2026-07-04 —
-  `username_search`'s Lobste.rs check; health-signal leg still open;
-  ~333 more sites + 4 other modules remaining); T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
+  **T2.7 `[~]`** (SOL-GOLDEN-FIXTURE, two instances — Lobste.rs 2026-07-04,
+  Archive of Our Own 2026-07-03; health-signal leg still open;
+  ~332 more sites + 4 other modules remaining); T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
   LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
   budget-reset-zeroing note remains, and no further action is planned on it);
   **T2.13 `[x]`** ✅ (SOL-ROI-HINT); **T2.14 `[x]`** ✅ (SOL-HINT-NOISE, both
@@ -2829,3 +2850,45 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   this increment:* the same treatment for ~333 more `username_search`
   sites and the four other named T2.7 modules, one source at a time.
   **Paired:** `PROBLEM_TREE` T2.7 `[ ]`→`[~]` + §8 — same commit.
+
+- **2026-07-03** — **SOL-GOLDEN-FIXTURE's second instance: Archive of Our
+  Own.** Continuing the active `[~]` node per the documented "one source at
+  a time" plan. Re-read `process()` first and confirmed `account_exists` is
+  already the universal decision point for every `SITES` entry — no further
+  extraction needed, so this increment is fixtures + tests only, exactly as
+  the prior entry's remaining-work note anticipated. Live-verified AO3's own
+  `StatusAndNotBody(200, "not be found")` rule the same way as Lobste.rs: a
+  fabricated handle 404s cleanly today — the identical stale-assumption
+  drift, made harmless by the same existing short-circuit. For the found
+  case, deliberately chose AO3's built-in `orphan_account` system account
+  (used when authors anonymize/orphan their works — a platform feature
+  account, not any private individual's identity) over a random real
+  pseudonym, continuing the PII-avoidance discipline applied when Lobste.rs's
+  `pushcx` was chosen. Captured the real response (HTTP 200, no marker,
+  293 KB) and committed it truncated to the `<head>` plus the profile-header
+  block only (11 KB) — a genuine contiguous prefix of the real response, not
+  a fabrication, trimmed solely to keep the mature-content work-listing tags
+  the rest of the page carries out of the repository. 2 golden-fixture tests
+  run the fixture and the live-verified 404 through the actual registered
+  `SITES` entry. Re-proved discrimination for both sites' golden tests
+  together: inverted `StatusAndNotBody` again, confirmed the Lobste.rs AND
+  the new AO3 fixture test both failed as expected, reverted. 8
+  `username_search` golden/synthetic tests total now. **Live end-to-end
+  check against the real binary was inconclusive, and is reported as such
+  rather than fabricated as a pass:** `hse scan -k username -v
+  orphan_account` did not surface the AO3 hit; reproducing with bare `curl`
+  using the module's exact UA/Accept headers and 4.5 s per-site timeout
+  showed the identical request — which had succeeded minutes earlier during
+  fixture capture — now hanging to a full timeout from this session's egress
+  IP. Read as upstream rate-limiting by archiveofourown.org triggered by the
+  cycle's own repeated verification requests, not a defect in
+  `account_exists` or the table entry; made no further live requests against
+  AO3 this cycle to avoid compounding it. This miss is itself a live
+  instance of exactly the failure mode SOL-HEALTH-SIGNAL (T2.7's still-`[ ]`
+  third leg) exists to surface — today a throttled probe and a genuine
+  absence are indistinguishable in the scan's diagnostics. Gate green: 4291
+  lib tests (+2), fmt/clippy `--all-targets`/doc clean. *Remaining,
+  explicitly not this increment:* the same treatment for ~332 more
+  `username_search` sites and the four other named T2.7 modules, one source
+  at a time; the per-source health signal. **Paired:** `PROBLEM_TREE` T2.7
+  (stays `[~]`) + §8 — same commit.

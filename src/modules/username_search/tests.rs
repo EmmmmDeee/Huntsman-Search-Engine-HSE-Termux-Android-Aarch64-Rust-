@@ -260,3 +260,45 @@ use super::*;
         let site = lobsters_site();
         assert!(!account_exists(&site.detect, 404, None));
     }
+
+    // ── Real golden-fixture regression (T2.7): a live-captured Archive of Our
+    // Own response, run through the SAME `Detect` rule the live `SITES` table
+    // registers for it — not a hand-rolled synthetic.
+
+    const AO3_FOUND_FIXTURE: &str = include_str!("testdata/ao3_user_found.html");
+
+    fn ao3_site() -> &'static sites::Site {
+        SITES
+            .iter()
+            .find(|s| s.name == "Archive of Our Own")
+            .expect("Archive of Our Own must remain registered in SITES")
+    }
+
+    /// Captured 2026-07-03 from `https://archiveofourown.org/users/orphan_account`
+    /// (AO3's own built-in system account used when authors anonymize/orphan
+    /// their works — not any private individual's identity) — HTTP 200, no
+    /// "not be found" marker anywhere in the body. Truncated to the `<head>`
+    /// plus the profile header block; the real response continues into a
+    /// listing of orphaned works, which is dropped here so this fixture
+    /// doesn't carry mature-content tags into the repository.
+    #[test]
+    fn ao3_real_found_page_is_classified_as_found() {
+        let site = ao3_site();
+        assert!(
+            !AO3_FOUND_FIXTURE.contains("not be found"),
+            "fixture sanity: the captured page must not contain the not-found marker"
+        );
+        assert!(account_exists(&site.detect, 200, Some(AO3_FOUND_FIXTURE)));
+    }
+
+    /// Captured 2026-07-03: `https://archiveofourown.org/users/<a fabricated
+    /// nonexistent handle>` returns a clean HTTP 404 for an absent account —
+    /// not the HTTP 200 + "not be found" body the site's own `Detect` rule
+    /// was written to expect. The status mismatch alone must still correctly
+    /// resolve to "not found", matching the same drift pattern already found
+    /// for Lobste.rs.
+    #[test]
+    fn ao3_real_not_found_status_is_classified_as_not_found() {
+        let site = ao3_site();
+        assert!(!account_exists(&site.detect, 404, None));
+    }
