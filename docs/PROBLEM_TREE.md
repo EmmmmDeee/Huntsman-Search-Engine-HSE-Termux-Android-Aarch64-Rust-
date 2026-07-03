@@ -5268,3 +5268,52 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   dispatch graph intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-
   guard, or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+
+- **2026-07-02** — **Diagnostics: `CurlClient::exec`'s promised stderr snippet on
+  a curl failure could never actually appear — `-s` alone suppresses curl's OWN
+  error text, not just its progress meter.** Surfaced by a second operator-
+  supplied real debug bundle (`username = mriconic`): its SELF-AUDIT again showed
+  `[LOW] module-errors` with the SAME bare shape as the prior bundle's — `[seek_now]
+  curl exited 6` — zero detail beyond the exit code, on BOTH separate real scans.
+  `CurlClient::exec`'s own doc comment (`curl_client/mod.rs:174-177`) explicitly
+  promises "curl's own exit code... plus a trimmed stderr snippet... so transient
+  upstream failures are diagnosable from the logs," implemented by reading
+  `output.stderr` and appending it to the error when non-empty. But the curl
+  invocation passed only `-s` (`--silent`) — which, per curl's own semantics,
+  suppresses BOTH the progress meter AND curl's error messages — never `-S`
+  (`--show-error`), the flag that re-enables just the error text while `-s` keeps
+  hiding the progress meter. So `output.stderr` was unconditionally empty on
+  every failure, and the code always fell through to the bare `"curl exited
+  {code}"` branch — the promised diagnosability never worked, on ANY of the
+  provider's failures (see_know, oathnet), across at least two independent real
+  scans. Empirically verified the exact mechanism directly with the sandbox's own
+  curl binary before touching code: `-s` alone against a failing target produces
+  zero stderr output; `-s -S` against the identical target produces a full
+  diagnostic message. Fixed: added `-S` alongside the existing `-s` in
+  `CurlClient::exec`'s arg list. The pre-existing test
+  `curl_failure_reports_exit_code_not_opaque_message` was extended with a new
+  assertion that the message now contains a `:`-delimited snippet (not just the
+  bare exit code) — genuinely red/green-verified by reverting only the `mod.rs`
+  arg change via `git stash` and re-running: the new assertion failed exactly as
+  expected (stderr still empty), then passed again once the fix was restored. In
+  the process, discovered and fixed a SECOND, latent test bug the fix exposed:
+  the same test's pre-existing `!err.contains("curl failed")` guard (meant to
+  rule out a historical bare opaque message) started false-failing once real curl
+  diagnostic text began flowing through, because curl's OWN prose for a TLS/cert
+  failure literally contains the English phrase "curl failed to verify the
+  legitimacy of the server" — a coincidental substring collision. Removed that
+  now-redundant, now-fragile guard (the positive `contains("curl exited")` check
+  already proves the historical opaque form is gone, since `detail` is always
+  built via `format!("curl exited {code}"...)`, never the old bare string).
+  Deliberately did NOT touch the separate free-function `curl::curl_exec` path
+  (`util/curl.rs`) — it never reads `output.stderr` at all (returns `None` on any
+  failure by design, a different silent-miss shape for modules like
+  `social_probe`/`search_engines` that treat a fetch miss as expected), so `-S`
+  would be a no-op there; this fix is scoped to the ONE path that actually
+  surfaces a diagnostic string. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` (4337 lib tests — existing
+  test extended, not added; full suite green). Behaviour-touching only in the
+  sense that error MESSAGE CONTENT changes on a curl failure (module success-path
+  output is unaffected), so also `hse selftest` 9/9 (161 modules, dispatch graph
+  intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
+  `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 — same commit.

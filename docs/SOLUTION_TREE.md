@@ -3951,3 +3951,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   rejection), not code bugs, and left as-is. Gate green (fmt/clippy/doc/`cargo
   test`, 4337 lib tests +1); `hse selftest` 9/9. No identity/PII, architecture-
   guard, or `unsafe` impact. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-02** — **Diagnostics: `CurlClient::exec` never actually surfaced the
+  stderr snippet its own doc comment promised — missing `-S`.** A second
+  operator-supplied real debug bundle showed the SAME bare `[seek_now] curl
+  exited 6` — zero detail — as the prior bundle, across two independent scans.
+  `-s` alone suppresses BOTH curl's progress meter AND its error text (verified
+  directly against the sandbox's real curl binary: `-s` → empty stderr, `-s -S` →
+  full diagnostic message on the identical failing target), so `output.stderr`
+  was unconditionally empty and the code always fell to the bare `"curl exited
+  {code}"` form — the promised diagnosability never worked on any curl failure
+  in `see_know` or `oathnet`. Fixed: added `-S` alongside `-s`. Extended the
+  existing failure-path test with an assertion that a `:`-delimited snippet now
+  appears; genuinely red/green-verified via a scoped `git stash` revert of just
+  the arg change. Also fixed a second, latent bug the real diagnostic text
+  exposed: the same test's `!err.contains("curl failed")` guard (meant to rule
+  out a historical opaque message) false-failed once real curl prose flowed
+  through, because curl's own TLS-failure text happens to contain the phrase
+  "curl failed to verify..." — removed the now-redundant, now-fragile guard (the
+  positive exit-code check already proves the old form is gone). Deliberately
+  scoped to `CurlClient::exec` only — the separate free-function `curl::curl_exec`
+  never reads stderr (returns `None` on any failure by design, for
+  social_probe/search_engines-style expected misses), so `-S` would be a no-op
+  there. Gate green (fmt/clippy/doc/`cargo test`, 4337 lib tests, existing test
+  extended); `hse selftest` 9/9. No identity/PII, architecture-guard, or `unsafe`
+  impact. Paired: `PROBLEM_TREE` §8 — same commit.

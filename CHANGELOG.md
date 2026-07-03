@@ -419,6 +419,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Curl failures in the paid-API client (`see_know`, `oathnet`) now report why
+  they failed, not just an exit code.** The shared curl subprocess was invoked
+  with `-s` (silent) but not `-S` (show-error), so curl's own error text was
+  suppressed along with its progress meter — every failure surfaced as a bare
+  "curl exited N" with no further detail, even though the code already had
+  logic to append curl's diagnostic message when present. That message can now
+  actually appear, so a DNS failure, TLS error, or connection refusal is
+  distinguishable in the logs instead of an opaque exit code.
 - **An unreachable domain no longer counts as a module error for `fediverse`
   and `nostr` probes.** Both modules probe a discovered email's domain for a
   federation endpoint (WebFinger / NIP-05) that most mail domains don't run. A

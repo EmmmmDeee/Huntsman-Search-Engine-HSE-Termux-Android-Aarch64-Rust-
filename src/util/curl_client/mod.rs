@@ -138,7 +138,14 @@ impl CurlClient {
         let auth_header = self.auth.header_line(key);
 
         let mut cmd = Command::new("curl");
-        cmd.args(["-s", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
+        // `-s` (silent) suppresses BOTH the progress meter and curl's own error
+        // messages, so `output.stderr` below was always empty on failure — every
+        // "curl exited N" error this module ever surfaced carried no snippet,
+        // despite the doc comment on this method promising one. `-S`
+        // (`--show-error`) re-enables just the error output while `-s` still
+        // hides the progress meter, so a real failure (DNS, TLS, connect) now
+        // actually explains itself instead of a bare exit code.
+        cmd.args(["-s", "-S", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
         // Protocol/redirect/size hardening, single-sourced so this keyed-API
         // path and the free-function curl path can never drift apart.
         //

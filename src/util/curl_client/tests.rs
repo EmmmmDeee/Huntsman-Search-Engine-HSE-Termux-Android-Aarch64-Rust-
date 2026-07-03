@@ -36,9 +36,29 @@ use super::*;
             err.contains("curl exited"),
             "error must surface curl's exit code, got: {err}"
         );
+        // The message is always built as `format!("curl exited {code}", ...)` —
+        // never the historical bare opaque "curl failed" string — so the
+        // positive check above already proves the old opaque form is gone. A
+        // separate `!err.contains("curl failed")` guard is not just redundant
+        // here but actively wrong: curl's OWN diagnostic prose for some failure
+        // classes (e.g. a TLS/cert mismatch) literally contains the English
+        // phrase "curl failed to verify the legitimacy of the server", which
+        // would false-fail a substring guard the moment real curl output
+        // started flowing through (see the `-S` fix below).
+        //
+        // `-s` (silent) alone suppresses curl's own error text too, not just its
+        // progress meter — so without `-S` (`--show-error`), `output.stderr` was
+        // always empty and this branched to the bare "curl exited {code}" form,
+        // with NO snippet, on every real failure (exactly what every "[seek_now]
+        // curl exited 6" / "[oathnet] curl exited 7" log line in the field ever
+        // showed — no detail to diagnose from). With `-S` present, curl DOES
+        // print a message on this failure (verified directly: an unroutable/
+        // rejected TLS target reliably produces stderr text describing why), so
+        // the detail format's `: {snippet}` suffix must now be present.
         assert!(
-            !err.contains("curl failed"),
-            "opaque message must be gone: {err}"
+            err.contains("curl exited") && err.contains(':'),
+            "curl's own error text must appear as a snippet after the exit code \
+             (requires `-S`/`--show-error` alongside `-s`), got: {err}"
         );
     }
 
