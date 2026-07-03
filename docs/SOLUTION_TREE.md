@@ -3838,3 +3838,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   §9. No identity/PII logic; removes shared mutable state rather than adding
   any, so no architecture-guard or `unsafe` impact. Paired: `PROBLEM_TREE` T2.11
   + §8 — same commit.
+
+- **2026-07-02** — **C5 (SOL-GEOINT): AU-091/AU-093 AU-locality correlation now
+  sees SeekNow's self-reported postcode — producer-side evidence-attribute
+  alias, same class as AU-105/AU-011/ip_whois_geo.** From the same discovery
+  pass. The rule reads a postcode from `POSTCODE_KEYS`, but SeekNow's
+  `record_evidence` folds the provider's raw `postal` field verbatim — a key the
+  list never contains — so a confirmed Person's genuine AU postcode was invisible
+  to AU-091/AU-093. Fixed at the PRODUCER (see_know), not by widening the shared
+  consumer key list: `postal` is also stamped by the IP-geo modules
+  (`ip_geo`/`ipinfo`/`ip_whois_geo`) on network-derived `Coordinates`, so adding
+  it to `POSTCODE_KEYS` would let a datacentre's geolocated ZIP masquerade as
+  self-reported breach PII in AU-091's evidentiary framing — the same
+  false-corroboration risk the C5 censys/onyphe exclusion reasoned about.
+  `record_evidence` now additively stamps a canonical `postcode` from a record's
+  own `postal` (raw `postal` retained), skipped when the record already carries a
+  canonical `postcode` (a real value is never overridden) — mirroring the
+  `dbname` alias exactly. Regression test
+  `record_evidence_stamps_canonical_postcode_for_au091` (sibling of the AU-105
+  `dbname` test) covers both the alias and the no-override guard, red against the
+  unfixed producer. Gate green (fmt/clippy/doc/`cargo test`, 4333 lib tests +1;
+  full suite green); `hse selftest` 9/9 per `CONVENTIONS.md` §9. No identity/PII
+  decision logic, no architecture-guard or `unsafe` impact. Paired: `PROBLEM_TREE`
+  C5 + §8 — same commit.

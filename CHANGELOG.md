@@ -419,6 +419,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **SeekNow breach records now contribute their postcode to Australian
+  residential-locality correlation (AU-091/AU-093).** SeekNow labels a
+  subject's self-reported postcode `postal`, a field name the locality rules
+  never read, so a confirmed person's postcode was silently dropped from the
+  geo correlation. The module now also stamps the postcode under the canonical
+  key the rules read, recovering the locality signal. The rules' key list was
+  deliberately left unchanged so network-geolocation postcodes (which other
+  modules stamp under the same `postal` name) can't masquerade as a subject's
+  self-reported address.
 - **A scan's OathNet search session can no longer be clobbered by another scan
   running concurrently under `hse serve`.** OathNet lets a target's breach and
   stealer queries share a single paid lookup via a search session, but the

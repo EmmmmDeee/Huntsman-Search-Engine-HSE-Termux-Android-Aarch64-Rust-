@@ -504,6 +504,80 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn record_evidence_stamps_canonical_postcode_for_au091() {
+        use serde_json::json;
+        // AU-091/AU-093 (AU residential locality) read a subject's postcode from
+        // the canonical `postcode` key. SeekNow labels it `postal`, which the rule
+        // never inspects (widening its shared POSTCODE_KEYS is unsafe — the IP-geo
+        // modules also stamp `postal`, a network-derived class). The breach
+        // record's self-reported postcode must be aliased to `postcode` at the
+        // producer, leaving the raw `postal` intact.
+        let item = json!({
+            "dbname": "TestBreach",
+            "email": "victim@example.com",
+            "postal": "4000",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim@example.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        let ev = &result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "victim@example.com")
+            .expect("the subject email entity")
+            .evidence[0];
+        assert_eq!(
+            ev.attributes.get("postcode").map(String::as_str),
+            Some("4000"),
+            "the self-reported postcode must be on the canonical `postcode` attr AU-091 reads"
+        );
+        assert_eq!(
+            ev.attributes.get("postal").map(String::as_str),
+            Some("4000"),
+            "the raw `postal` attribute is retained for existing consumers"
+        );
+
+        // A record that already carries a canonical `postcode` must keep it — the
+        // `postal`-derived alias never overrides a real value.
+        let item2 = json!({
+            "dbname": "TestBreach",
+            "email": "victim@example.com",
+            "postcode": "2000",
+            "postal": "4000",
+        });
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_entities(
+            &item2,
+            "victim@example.com",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen2,
+            &mut result2,
+        );
+        let ev2 = &result2
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == "victim@example.com")
+            .expect("the subject email entity")
+            .evidence[0];
+        assert_eq!(
+            ev2.attributes.get("postcode").map(String::as_str),
+            Some("2000"),
+            "a real `postcode` must not be overridden by the `postal` alias"
+        );
+    }
+
+    #[test]
     fn extract_rich_detail_surfaces_the_whole_record() {
         use serde_json::json;
         // A fat record with the long tail SeekNow returns: composed name, org,

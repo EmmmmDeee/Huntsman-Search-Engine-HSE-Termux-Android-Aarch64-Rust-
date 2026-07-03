@@ -5067,3 +5067,40 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   weakening of any architecture guard or `#![forbid(unsafe_code)]` — this
   removes shared mutable state rather than adding any. **Paired:**
   `SOLUTION_TREE` SOL-ISOLATE + §5 — same commit.
+
+- **2026-07-02** — **AU-091/AU-093 (AU residential locality) were blind to
+  SeekNow's self-reported postcode — evidence-attribute-consistency, same class
+  as AU-105/AU-011/ip_whois_geo.** From the same discovery pass. AU-091
+  (`rule_au_091_au_postcode_locality`) and its AU-093 sibling mine a subject's
+  postcode from evidence attributes matching `POSTCODE_KEYS` (`postcode`/
+  `post_code`/`postal_code`/`postalcode`/`postcode_au`/`pcode` —
+  `rules/breach_pii.rs:521`), but SeekNow's `record_evidence`
+  (`see_know/extract/mod.rs`) folds the provider's raw `postal` field verbatim,
+  a key that list never contains, so a confirmed Person's genuine
+  self-reported AU postcode never reached either rule. **Fixed at the
+  producer, NOT the consumer:** `postal` is deliberately kept OUT of
+  `POSTCODE_KEYS` because the IP-geolocation modules (`ip_geo`/`ipinfo`/
+  `ip_whois_geo`) independently stamp their own `postal` attribute on
+  network-derived `Coordinates` entities — a different evidentiary class scanned
+  by the same shared confirmed-entity set — so widening the shared consumer list
+  would let a datacentre's geolocated ZIP masquerade as the subject's
+  self-reported breach-record postcode in AU-091's "breach record source(s)"
+  framing (the exact corroboration-fabrication risk the C5 sweep's
+  censys/onyphe exclusion already reasoned about). Instead, `record_evidence`
+  now additively stamps a canonical `postcode` attribute from a record's own
+  `postal` field (the raw `postal` retained for existing consumers), skipped
+  when the record already carries a canonical `postcode` so a real value is
+  never overridden — mirroring the `dbname` producer-side alias exactly.
+  Verified every link against the real code before editing (rule key list,
+  producer fold, the IP-geo `postal` collision, the reachable Person-evidence
+  path). Regression test `record_evidence_stamps_canonical_postcode_for_au091`
+  (sibling of `record_evidence_stamps_canonical_dbname_for_au105`) asserts a
+  `postal`-only record yields a `postcode` attr AND that a record already
+  carrying `postcode` keeps its own value — red against the unfixed producer.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4333 lib tests, +1; full suite green). Behaviour-touching
+  (module emits one new evidence attribute), so also `hse selftest` 9/9 (161
+  modules, dispatch graph intact) per `CONVENTIONS.md` §9. No identity/PII
+  decision logic (the SeekNow `postal` field is existing data; no new
+  collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` C5 (SOL-GEOINT) + §5 — same commit.

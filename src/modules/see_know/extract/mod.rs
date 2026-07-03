@@ -119,7 +119,7 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
     let Some(obj) = item.as_object() else {
         return ev;
     };
-    obj.iter().fold(ev, |ev, (k, v)| {
+    let ev = obj.iter().fold(ev, |ev, (k, v)| {
         let val = match v {
             Value::Null => return ev,
             Value::String(s) => s.clone(),
@@ -135,7 +135,28 @@ fn record_evidence(item: &Value, dbname: &str, endpoint: &str, key_fp: &str) -> 
             k.as_str()
         };
         ev.with_attr(key, val)
-    })
+    });
+    // SeekNow labels the subject's self-reported postcode `postal`, but the
+    // AU-locality correlator (AU-091/AU-093, `rules/breach_pii.rs`) reads the
+    // canonical `postcode` key. Stamp it additively (the raw `postal` is left
+    // untouched for existing consumers) so a breach record's OWN postcode reaches
+    // the rule — a producer-side alias exactly like the `dbname` fix above.
+    // Deliberately NOT done by widening the rule's shared `POSTCODE_KEYS`:
+    // `postal` is also stamped by the IP-geo modules (`ip_geo`/`ipinfo`/
+    // `ip_whois_geo`) on network-derived `Coordinates`, a different evidentiary
+    // class that must not masquerade as self-reported breach PII. Skipped when
+    // the record already carries `postcode`, so a real value is never overridden.
+    if !obj.contains_key("postcode") {
+        let postal = match obj.get("postal") {
+            Some(Value::String(s)) => s.clone(),
+            Some(Value::Null) | None => String::new(),
+            Some(other) => other.to_string(),
+        };
+        if !postal.is_empty() {
+            return ev.with_attr("postcode", postal);
+        }
+    }
+    ev
 }
 
 /// Normalized identity-demographic tags (`dob:` / `gender:` / `age:`) for the
