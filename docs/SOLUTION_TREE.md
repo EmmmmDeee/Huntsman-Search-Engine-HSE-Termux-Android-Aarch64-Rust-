@@ -561,11 +561,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   count. Predates this repo's single root commit (`770df4c9`), so — unlike
   most corrections this session — no specific delivery cycle can be
   attributed; it simply was never reconciled into this note.
-  *Remaining (real):* `changelog_lines`/`commits_behind` have no test
-  exercising the actual `git` subprocess calls (a real local git-repo-pair
-  fixture, `tempfile` already a dev-dep, would close it) — left as a
-  separate, smaller follow-on.
-  **(cycle 22)**
+  *Remaining (real), closed 2026-07-03:* `changelog_lines`/`commits_behind`
+  had no test exercising the actual `git` subprocess calls. ✅ **Closed:**
+  two new tests in `cli/update.rs` drive both functions against a REAL local
+  git repository pair — a "remote" repo and a real `git clone` of it, wired
+  together over a filesystem path (no network, no mocked git behaviour):
+  `commits_behind_and_changelog_lines_report_real_remote_commits` commits 2
+  more times to the "remote" post-clone and asserts `commits_behind` returns
+  `Some(2)` and `changelog_lines` returns the 2 subjects newest-first;
+  `commits_behind_is_zero_and_changelog_is_empty_when_up_to_date` covers the
+  no-new-commits case. Read the implementation closely first (§3's "treat
+  every proposed root cause as a hypothesis" applies to "is this actually
+  broken?" too) — `HEAD..@{u}` / `rev-list --count` / `git log --oneline`
+  were already correct; no behavioural bug was hiding here. Sanity-checked
+  the fixture's own discriminating power before committing: inverting the
+  `rev-list` range to `@{u}..HEAD` made the first test fail exactly as
+  expected, confirming it isn't vacuously green.
+  **(cycle 22; test-coverage close 2026-07-03)**
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -685,12 +697,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   import, not an incremental change), so — unlike the AU-084 correction
   above — no earlier delivery date or authoring cycle can be attributed from
   `git log` here; it simply predates this repo's history and was never
-  reconciled into this note. **Residual, real gap:** `changelog_lines` and
-  `commits_behind` are both untested — no fixture exercises the actual `git`
-  subprocess calls (unlike most of this codebase's I/O-adjacent logic). A
-  real local git-repo-pair fixture (`tempfile`, already a dev-dep) would
-  close it; left as a separate, smaller follow-on rather than bolted onto
-  this doc correction.
+  reconciled into this note. **Residual, real gap — closed 2026-07-03:**
+  `changelog_lines`/`commits_behind` were both untested; a real local
+  git-repo-pair fixture (`tempfile`) now drives both against an actual `git
+  clone` over a filesystem path. Off the open queue — see SOL-UPDATE above.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-HINT-NOISE** (T2.14) — ✅ **delivered, off this queue (2026-07-03).**
@@ -2642,3 +2652,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   reachable at all for the first time. Gate green: 4278 lib tests (+9),
   fmt/clippy `--all-targets`/doc clean. **Paired:** `PROBLEM_TREE` new T2.15
   + §8 — same commit.
+
+- **2026-07-03** — **SOL-UPDATE's last documented residual closed: real
+  git-repo-pair tests for `commits_behind`/`changelog_lines`.** With the
+  T2.13/T2.14/T2.15 dead-code family fully exhausted (re-checked this cycle:
+  no other consumer of the "entities-derived, module-yield" data shape
+  carries the same bug) and every other open/gap-analysis item genuinely
+  blocked, gated by design, or needing substantial new-source integration
+  work (re-verified, not assumed — spot-checked C3's GNAF claim and C4's
+  passive-DNS claim directly against the source, neither is stale), this
+  cycle picked the one item §4a/SOL-UPDATE explicitly flagged as a ready,
+  self-contained "smaller follow-on": `cli/update.rs`'s two real `git`
+  subprocess wrappers had zero test coverage. Two new tests
+  (`commits_behind_and_changelog_lines_report_real_remote_commits`,
+  `commits_behind_is_zero_and_changelog_is_empty_when_up_to_date`) drive
+  both functions against an ACTUAL local git repository pair — a "remote"
+  repo and a real `git clone` of it over a filesystem path, no network, no
+  mocked git behaviour — via new `run_git`/`commit` test helpers using
+  per-command `GIT_AUTHOR_*`/`GIT_COMMITTER_*` env vars so the fixture
+  doesn't depend on the environment's global git config. Read the
+  implementation closely before writing the tests (treating "is this
+  actually broken?" as its own hypothesis to verify, the same discipline
+  applied to every other finding this session) — `HEAD..@{u}` /
+  `rev-list --count` / `git log --oneline` were already correct, so this
+  closes a genuine test-coverage gap, not a bug. Proved the fixture itself
+  is discriminating, not vacuously green: temporarily inverted the
+  `rev-list` range to `@{u}..HEAD` and confirmed the first test fails
+  exactly as expected, then reverted. Also verified against the real `hse`
+  binary: `HUNTSMAN_INSTALL_DIR=<repo> hse update --check` against this
+  actual repository correctly printed "Already up to date." Gate green:
+  4280 lib tests (+2), fmt/clippy `--all-targets`/doc clean. **Paired:**
+  `PROBLEM_TREE` §8 — same commit (SOL-UPDATE was an S→P delivery with no
+  dedicated T-numbered node; this closes its own documented residual).

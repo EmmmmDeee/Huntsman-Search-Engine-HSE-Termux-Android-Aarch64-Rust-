@@ -392,6 +392,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   against the real running binary: a bounded live scan against a real domain
   left one module at zero entities, and the on-disk ledger correctly gained
   a `zero_yield_rate: 1.0` entry for it post-fix (no entry at all, pre-fix).
+
+### Added
+- **Real git-repo-pair tests for `hse update --check`'s `commits_behind`/
+  `changelog_lines`.** These shell out to real `git fetch` / `rev-list
+  --count HEAD..@{u}` / `log --oneline HEAD..@{u}` and previously had no
+  test coverage. Two new tests drive both against an actual local git
+  repository pair (a "remote" repo and a real `git clone` of it over a
+  filesystem path) — no network access, no mocked git behaviour. The
+  implementation was already correct; this closes a coverage gap rather
+  than fixing a bug.
+
+### Fixed
 - **AU-059's headline location fix gave a single disagreeing sighting undue
   leverage over the majority (`PROBLEM_TREE` C5).** `au059_synergy_fix` — the
   function behind the dossier's "Best location estimate" line — averaged all

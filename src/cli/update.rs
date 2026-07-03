@@ -468,4 +468,96 @@ mod tests {
             "cache files live under ~/.cache when HOME is set"
         );
     }
+
+    // ── commits_behind / changelog_lines — real local git-repo-pair fixture ──
+    //
+    // Both shell out to real `git` subprocess calls (`fetch`, `rev-list --count`,
+    // `log --oneline`) against `@{u}`, previously untested (SOLUTION_TREE
+    // SOL-UPDATE residual, flagged 2026-07-01: "no fixture exercises the actual
+    // `git` subprocess calls"). Exercised against two REAL local git repositories
+    // (a "remote" and a clone of it) connected over a filesystem path — no
+    // network access, no mocked git behaviour, just `git` doing exactly what it
+    // does for a real GitHub clone. `tempfile` (already a dev-dep) owns cleanup.
+
+    /// Run a git subcommand in `cwd` with a fixed, hermetic author/committer
+    /// identity (a fresh CI/container `$HOME` may have no `user.name`/
+    /// `user.email` configured, which would otherwise fail every commit) and
+    /// output suppressed. Panics with the command + directory on failure, so a
+    /// broken fixture fails loudly at the setup step, not as a confusing
+    /// assertion mismatch three lines later.
+    fn run_git(cwd: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "hse-test")
+            .env("GIT_AUTHOR_EMAIL", "hse-test@invalid")
+            .env("GIT_COMMITTER_NAME", "hse-test")
+            .env("GIT_COMMITTER_EMAIL", "hse-test@invalid")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .unwrap_or_else(|e| panic!("failed to launch `git {args:?}` in {cwd:?}: {e}"));
+        assert!(status.success(), "`git {args:?}` failed in {cwd:?}");
+    }
+
+    /// Write a one-line file and commit it with `message` as both the file's
+    /// content and the commit subject, so a later assertion on `--oneline`
+    /// output can match the message directly.
+    fn commit(repo: &Path, message: &str) {
+        std::fs::write(repo.join("content.txt"), message).expect("write fixture file");
+        run_git(repo, &["add", "."]);
+        run_git(repo, &["commit", "-q", "-m", message]);
+    }
+
+    #[test]
+    fn commits_behind_and_changelog_lines_report_real_remote_commits() {
+        let remote = tempfile::tempdir().expect("create remote tempdir");
+        run_git(remote.path(), &["init", "-q", "-b", "main"]);
+        commit(remote.path(), "initial commit");
+
+        let local = tempfile::tempdir().expect("create local tempdir");
+        let remote_path = remote.path().to_str().expect("remote path is utf8");
+        let local_path = local.path().to_str().expect("local path is utf8");
+        run_git(remote.path(), &["clone", "-q", remote_path, local_path]);
+
+        // Two more commits land on the "remote" after the clone — exactly the
+        // shape of an operator running `hse update --check` after upstream
+        // `main` has moved on.
+        commit(remote.path(), "second commit");
+        commit(remote.path(), "third commit");
+
+        assert_eq!(
+            commits_behind(local.path()),
+            Some(2),
+            "local clone should be exactly 2 commits behind the remote"
+        );
+
+        let lines = changelog_lines(local.path());
+        assert_eq!(lines.len(), 2, "one line per commit behind: {lines:?}");
+        // `git log --oneline` lists newest first.
+        assert!(
+            lines[0].contains("third commit"),
+            "newest commit first: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("second commit"),
+            "oldest of the two behind commits last: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn commits_behind_is_zero_and_changelog_is_empty_when_up_to_date() {
+        let remote = tempfile::tempdir().expect("create remote tempdir");
+        run_git(remote.path(), &["init", "-q", "-b", "main"]);
+        commit(remote.path(), "only commit");
+
+        let local = tempfile::tempdir().expect("create local tempdir");
+        let remote_path = remote.path().to_str().expect("remote path is utf8");
+        let local_path = local.path().to_str().expect("local path is utf8");
+        run_git(remote.path(), &["clone", "-q", remote_path, local_path]);
+
+        // Nothing new landed on the remote since the clone.
+        assert_eq!(commits_behind(local.path()), Some(0));
+        assert!(changelog_lines(local.path()).is_empty());
+    }
 }

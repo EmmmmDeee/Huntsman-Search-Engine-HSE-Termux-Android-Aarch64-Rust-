@@ -3441,3 +3441,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `--adaptive` threshold is reachable at all). Gate green: 4278 lib tests
   (+9), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
   new node SOL-ADAPTIVE-LEDGER (§2) + §3/§4/§5 — same commit.
+
+- **2026-07-03** — **SOL-UPDATE's last documented residual closed:
+  `cli/update.rs`'s real `git` subprocess wrappers get real test coverage.**
+  With the T2.13/T2.14/T2.15 discovery thread re-checked and confirmed
+  exhausted (no other consumer of the same data shape carries the bug), and
+  T2.7 / C1–C7 re-verified as still genuinely blocked or gated-by-design
+  (not stale — spot-checked C3's GNAF/AusPost and C4's passive-DNS claims
+  directly against the source), this cycle closed the one item explicitly
+  flagged as a ready, self-contained follow-on: `commits_behind` and
+  `changelog_lines` (`git fetch` / `rev-list --count HEAD..@{u}` / `log
+  --oneline HEAD..@{u}`, driving `hse update --check`) had zero test
+  coverage. Two new tests drive both against a REAL local git repository
+  pair — a "remote" and a real `git clone` of it over a filesystem path, no
+  network, no mocked git behaviour. Verified the implementation was
+  actually correct before writing the tests (not assumed) — this closes a
+  test-coverage gap, not a bug — and separately proved the new tests are
+  discriminating: temporarily inverting the `rev-list` range made the test
+  fail exactly as expected, then reverted. Also verified against the real
+  `hse` binary: `HUNTSMAN_INSTALL_DIR=<repo> hse update --check` against
+  this actual repository printed "Already up to date." Gate green: 4280 lib
+  tests (+2), fmt/clippy `--all-targets`/doc clean. **Paired:**
+  `SOLUTION_TREE` SOL-UPDATE + §4/§5 — same commit (SOL-UPDATE has no
+  dedicated T-numbered node — it was delivered S→P in cycle 22 — so this
+  entry is the problem-side pairing for that node's own residual).
