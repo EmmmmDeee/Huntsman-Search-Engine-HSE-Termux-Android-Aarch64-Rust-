@@ -419,6 +419,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **An unreachable domain no longer counts as a module error for `fediverse`
+  and `nostr` probes.** Both modules probe a discovered email's domain for a
+  federation endpoint (WebFinger / NIP-05) that most mail domains don't run. A
+  domain returning `404` was already treated as a clean "no account here" miss,
+  but a domain that was simply unreachable (no server, DNS/connection failure)
+  was reported as a module error — inflating a scan's error count and the debug
+  bundle's coverage-loss warning for an entirely expected outcome. Such a probe
+  failure is now treated as the same clean miss as a `404`.
 - **`psbdmp` now surfaces the provider's total paste-hit count when it exceeds
   the distinct pastes returned.** The paste-dump search reports its own total
   tally alongside the paste list; the module surfaced only the deduplicated

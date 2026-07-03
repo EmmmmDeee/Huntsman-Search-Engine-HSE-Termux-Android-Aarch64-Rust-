@@ -5225,3 +5225,46 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
   `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE)
   + §5 — same commit.
+
+- **2026-07-02** — **Robustness (same class as cycle 57's `see_know` non-JSON
+  fix): `fediverse`/`nostr` reported an UNREACHABLE probe domain as a
+  `module_error`, when it is a clean miss.** Surfaced by an operator-supplied real
+  debug bundle (a `full_name = Matthew Diegmann` self-test scan): its SELF-AUDIT
+  raised a MEDIUM "16 module errors across 6 modules" finding, and 4 of those were
+  `fediverse ×2` / `nostr ×2` — all of the shape `transport error (… url
+  (https://onet.eu/.well-known/webfinger?…)) and curl fallback failed`. Both
+  modules probe an ARBITRARY caller-supplied mail domain (discovered emails'
+  domains) for a federation/discovery endpoint it almost never runs — WebFinger
+  and NIP-05. Their own doc comments already frame the overwhelming outcome as
+  "a guaranteed 404 → clean miss," and they used `fetch_json_or_404`, which maps
+  404→`Ok(None)` but propagates a TRANSPORT failure (DNS/connection/TLS/timeout,
+  curl-fallback failure) as `Err`. For a speculative probe, "the domain serves no
+  such document" and "the domain is unreachable" are the SAME negative answer
+  ("no account here") — so an unreachable domain became a false `module_error`,
+  inflating the scan's error count and tripping the audit's "errors silently
+  shrink coverage" warning for a non-event (no coverage was lost — the domain
+  genuinely doesn't federate). Fixed with a new shared, self-documenting
+  `util::http::fetch_json_probe` helper that folds BOTH a 404 and any transport
+  failure into a clean-miss `None` (returning `Option<T>`, not `Result`, since a
+  failed speculative probe is not an error a caller can act on; the failure is
+  logged at `debug` so it stays traceable in the verbose log ring). `fediverse`
+  and `nostr` — deliberately-parallel modules (nostr's own doc notes "the
+  fediverse module applies the identical guard") — both now call it, so a future
+  federation probe has one honest primitive to reach for. Deliberately NOT applied
+  to modules' OWN known APIs, where a transport error IS actionable (a real
+  outage/rate-limit worth surfacing) — the helper's doc says so explicitly. The
+  other 12 errors in the bundle were left as-is: they are genuine upstream
+  conditions, not code bugs — `netlas ×3` (invalid API key), `see_know ×3` (curl
+  exit 6 = DNS failure), `crtsh ×3` (502/connection to a flaky CT log), and
+  `hudsonrock ×3` ("Email is required" from an API-side email-format rejection,
+  a distinct question not force-fit into this cycle). Regression test
+  `fetch_json_probe_treats_an_unreachable_domain_as_a_clean_miss` drives the
+  helper against an RFC 6761 `.invalid` domain (guaranteed resolution failure,
+  no network dependence) and asserts `None` — red against the old `?`-propagating
+  path, which returned `Err`. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` (4337 lib tests, +1; full
+  suite green). Behaviour-touching (nostr/fediverse now emit clean misses, not
+  errors, on unreachable probe domains), so also `hse selftest` 9/9 (161 modules,
+  dispatch graph intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-
+  guard, or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

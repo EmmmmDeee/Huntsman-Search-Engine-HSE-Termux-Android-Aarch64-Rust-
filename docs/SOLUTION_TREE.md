@@ -3931,3 +3931,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green (fmt/clippy/doc/`cargo test`, 4336 lib tests +1); `hse selftest` 9/9.
   No identity/PII, architecture-guard, or `unsafe` impact. Paired: `PROBLEM_TREE`
   C6 + §8 — same commit.
+
+- **2026-07-02** — **Robustness: `fediverse`/`nostr` no longer report an
+  unreachable well-known probe domain as a `module_error` — new shared
+  `fetch_json_probe` helper.** From an operator-supplied real debug bundle whose
+  SELF-AUDIT flagged 16 module errors; 4 (`fediverse ×2`/`nostr ×2`) were transport
+  failures probing a discovered email's domain (`onet.eu`) for WebFinger/NIP-05.
+  Both modules probe an arbitrary mail domain that almost never federates, so
+  their doc comments already treat a 404 as a clean miss — but `fetch_json_or_404`
+  propagated a transport failure (unreachable host) as `Err`, a false module error
+  that inflated the audit and its "coverage shrank" warning for a non-event. Same
+  class as cycle 57's `see_know` non-JSON-body fix. New `util::http::fetch_json_probe`
+  folds both a 404 and any transport failure into a clean-miss `None` (returns
+  `Option<T>`, logs the failure at `debug`); `fediverse`/`nostr` both use it. NOT
+  applied to modules' own known APIs, where a transport error is genuinely
+  actionable. Regression test drives the helper against an RFC 6761 `.invalid`
+  domain → `None`, red against the old `?`-propagating path. The bundle's other 12
+  errors were genuine upstream conditions (bad key / DNS / 502 / API-side email
+  rejection), not code bugs, and left as-is. Gate green (fmt/clippy/doc/`cargo
+  test`, 4337 lib tests +1); `hse selftest` 9/9. No identity/PII, architecture-
+  guard, or `unsafe` impact. Paired: `PROBLEM_TREE` §8 — same commit.
