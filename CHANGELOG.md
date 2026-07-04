@@ -343,6 +343,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **No-fabrication gates on three breach/stealer pools — no more phantom
+  subject-exposure claims.** Three paid/free intelligence sources minted
+  subject-attributed findings without proving the record identified the subject:
+  (1) **DeHashed** pushed a 0.88 `breach` "breach-presence headline" onto the
+  engine's pre-seeded subject anchor from *any* non-empty response, so a broad
+  `name:` query — which returns same-name STRANGERS — merged a false breach hit;
+  the headline is now gated (mirroring `oathnet_pro::breach_parent_entity`): the
+  loose `name` selector requires ≥1 row that actually matches the subject and
+  counts only those rows, while the identity-exact selectors
+  (`email`/`username`/`phone`/`ip`/`domain`) keep the server total. (2) **IntelX**
+  runs `username`/`full_name` as an *unscoped text search* (a hit means a document
+  merely contains the term), yet tagged the subject `breach` + `password-at-risk`
+  whenever a `leaks` bucket appeared — fabricating a credential-exposure claim
+  from a stranger's paste; text searches now withhold the strong exposure tags
+  (emitting neutral `intelx-source:*` provenance instead), ride at lead confidence
+  (0.55 vs 0.86), and carry an `intelx-text-match` marker. (3) **HudsonRock**
+  admitted any dotted string as a victim-device IP (`!ip.contains('.')`), so a
+  stealer log's LAN address (RFC1918/loopback/CGNAT) became a `geolocation-lead`
+  fed to GEOINT; each candidate is now gated on `is_public_ip` (parses v4 **and**
+  v6, rejects private/reserved), matching the gate `dehashed` already applies.
 - **Serve-layer hardening — CSRF on every mutating endpoint, loopback-only debug
   logs, and a real autonomous-sweep de-dup.** (1) **CSRF:** every bodyless
   state-changing `POST` (`/update/trigger` — a binary self-update + `exec()` —

@@ -3501,3 +3501,32 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `/logs` test injects a loopback peer and asserts a LAN peer is 403. Gate green:
   fmt/clippy/doc clean, 90 API tests + full suite 0 failures. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Comprehensive audit cycle 3/N: no-fabrication gates on three
+  breach/stealer pools (HIGH — subject-attributed exposure claims).** The breach
+  audit found three sources minting subject-attributed findings without proving
+  the record identified the subject — the exact false-positive class the
+  `TargetMatch` quarantine and `oathnet_pro`'s `breach_parent_entity` gate already
+  guard against elsewhere. **(1) DeHashed** (`build_breach_entity`): pushed a 0.88
+  `breach` headline onto the engine's pre-seeded subject anchor from *any*
+  non-empty response, so a broad `name:` query (which returns same-name STRANGERS)
+  merged a false breach hit + aggregate. Now returns `Option`: the loose `name`
+  selector requires ≥1 target-matching row and counts/aggregates over those rows
+  only; the identity-exact selectors (`email`/`username`/`phone`/`ip`/`domain`)
+  match `value` exactly so the server `total` stays honest (incl. a count-only
+  response). **(2) IntelX**: `username`/`full_name` run as an *unscoped text
+  search* (a hit = a document merely contains the term), yet a `leaks` bucket
+  stamped `breach` + `password-at-risk` on the subject anchor — a fabricated
+  credential-exposure claim from a stranger's paste. New pure `exposure_tags(is_text_search, families)`
+  withholds the strong exposure tags for text searches (neutral `intelx-source:*`
+  only), and the entity rides at 0.55 (vs 0.86) with an `intelx-text-match` marker
+  + "unvalidated text match" evidence note. **(3) HudsonRock**: admitted any dotted
+  string as a victim IP (`!ip.contains('.')`), so a stealer log's LAN address
+  (RFC1918/loopback/CGNAT) — or a non-IP like `unknown.host` — became a
+  `geolocation-lead` fed to GEOINT (and every IPv6 was wrongly dropped). Extracted
+  pure `victim_ip_entities` gating each candidate on `is_public_ip` (parses v4 +
+  v6, rejects private/reserved), mirroring the gate `dehashed`'s record IPs use.
+  Test delta: `name_headline_is_gated_on_a_real_subject_match`,
+  `text_search_withholds_the_strong_exposure_tags`,
+  `victim_ips_only_admit_routable_public_addresses` — each fail-before/pass-after.
+  Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

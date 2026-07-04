@@ -15,6 +15,11 @@ fn entry(db: Value) -> Value {
     json!({ "database_name": db })
 }
 
+/// A record carrying a `name` (for target-match gating) and a `database_name`.
+fn entry_named(name: &str, db: Value) -> Value {
+    json!({ "name": name, "database_name": db })
+}
+
 fn attr<'a>(e: &'a Entity, k: &str) -> Option<&'a str> {
     e.evidence[0].attributes.get(k).map(String::as_str)
 }
@@ -99,7 +104,8 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
         900,
         Some("498"),
         "s",
-    );
+    )
+    .expect("exact `email` selector with a positive total emits a headline");
     assert_eq!(e.kind, EntityKind::Email);
     assert!(e.has_tag(tags::BREACH) && e.has_tag("dehashed"));
     assert!((e.confidence - 0.88).abs() < 1e-9);
@@ -115,12 +121,73 @@ fn aggregates_hits_top_databases_and_balance_from_v2_arrays() {
 
 #[test]
 fn count_only_response_omits_optional_aggregates() {
-    let e = build_breach_entity(EntityKind::Domain, "x.com", "domain", &[], 42, None, "s");
+    // `domain` is identity-exact, so a count-only response (server total, no rows)
+    // is a genuine signal for that exact value and still emits the headline.
+    let e = build_breach_entity(EntityKind::Domain, "x.com", "domain", &[], 42, None, "s")
+        .expect("exact `domain` selector with a positive count emits a headline");
     assert!(e.has_tag(tags::BREACH));
     assert_eq!(attr(&e, "hits"), Some("42"));
     assert_eq!(attr(&e, "returned"), Some("0"));
     assert_eq!(attr(&e, "top_databases"), None);
     assert_eq!(attr(&e, "credit_balance"), None);
+}
+
+#[test]
+fn name_headline_is_gated_on_a_real_subject_match() {
+    // A broad `name:` search returns same-name STRANGERS. The 0.88 breach-presence
+    // headline merges onto the engine's pre-seeded subject anchor, so it must NOT
+    // be minted off a page that contains no record actually matching the subject
+    // — nor off a bare count with no rows to verify (`oathnet_pro`'s gate). The
+    // per-record `extract_records` still quarantines the strangers separately.
+    let strangers = [
+        entry_named("John Smith", json!("Collection#1")),
+        entry_named("John A. Smith", json!("LinkedIn")),
+    ];
+    // Server reports a large count, but not one returned row is the subject.
+    assert!(
+        build_breach_entity(
+            EntityKind::Person,
+            "Jane Doe",
+            "name",
+            &strangers,
+            500,
+            None,
+            "s",
+        )
+        .is_none(),
+        "a name page of strangers must not mint a subject breach headline"
+    );
+    // Count-only name response (no rows to verify) is unattributable → None.
+    assert!(
+        build_breach_entity(EntityKind::Person, "Jane Doe", "name", &[], 500, None, "s").is_none(),
+        "a bare `name:` count with no rows must not mint a headline"
+    );
+
+    // When the subject DOES appear, the headline is emitted and counts only the
+    // matching rows — not the strangers, not the inflated server total.
+    let mixed = [
+        entry_named("Jane Doe", json!("Collection#1")),
+        entry_named("John Smith", json!("LinkedIn")),
+        entry_named("Jane Doe", json!("Collection#1")),
+    ];
+    let e = build_breach_entity(
+        EntityKind::Person,
+        "Jane Doe",
+        "name",
+        &mixed,
+        500,
+        None,
+        "s",
+    )
+    .expect("a matching subject row emits the headline");
+    assert_eq!(
+        attr(&e, "hits"),
+        Some("2"),
+        "counts matching rows, not total"
+    );
+    assert_eq!(attr(&e, "returned"), Some("3"));
+    // Aggregates fold over the matching rows only (both from Collection#1).
+    assert_eq!(attr(&e, "top_databases"), Some("Collection#1×2"));
 }
 
 #[test]

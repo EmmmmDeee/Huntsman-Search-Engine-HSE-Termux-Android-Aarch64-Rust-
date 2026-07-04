@@ -148,6 +148,55 @@ use super::*;
         assert!((compute_confidence(&[]) - BASE_CONFIDENCE).abs() < 1e-9);
     }
 
+    #[test]
+    fn victim_ips_only_admit_routable_public_addresses() {
+        use crate::core::entity::EntityKind;
+        use crate::core::tags;
+
+        fn stealer_with_ip(ip: Option<&str>) -> Stealer {
+            Stealer {
+                computer_name: None,
+                operating_system: None,
+                date_compromised: None,
+                date_uploaded: None,
+                stealer_family: None,
+                ip: ip.map(String::from),
+                malware_path: None,
+                credentials: vec![],
+            }
+        }
+
+        let stealers = [
+            stealer_with_ip(Some("8.8.8.8")),        // public v4 → kept
+            stealer_with_ip(Some("10.0.0.5")),       // RFC1918 → dropped
+            stealer_with_ip(Some("192.168.1.20")),   // RFC1918 → dropped
+            stealer_with_ip(Some("127.0.0.1")),      // loopback → dropped
+            stealer_with_ip(Some("100.64.1.1")),     // CGNAT → dropped
+            stealer_with_ip(Some("unknown.host")),   // non-IP (has a dot) → dropped
+            stealer_with_ip(Some("  1.1.1.1  ")),    // public, whitespace-wrapped → kept, trimmed
+            stealer_with_ip(Some("8.8.8.8")),        // duplicate of the first → deduped
+            stealer_with_ip(Some("2606:4700:4700::1111")), // public v6 → kept
+            stealer_with_ip(Some("fd00::1")),        // ULA (private v6) → dropped
+            stealer_with_ip(None),                   // absent → skipped
+        ];
+
+        let ips = victim_ip_entities(&stealers, "s");
+        let values: Vec<&str> = ips.iter().map(|e| e.value.as_str()).collect();
+        assert_eq!(
+            values,
+            vec!["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111"],
+            "only routable public IPs survive, trimmed and deduplicated"
+        );
+        // Every emitted IP is a geolocation lead — precisely why a private/reserved
+        // address must never be admitted (it would fabricate a nowhere location).
+        assert!(
+            ips.iter().all(|e| e.kind == EntityKind::IpAddress
+                && e.has_tag(tags::GEOLOCATION_LEAD)
+                && e.has_tag(tags::STEALER_LOG)),
+            "each victim IP is a stealer-log geolocation lead"
+        );
+    }
+
     // ── URL-encoding / @ preservation ────────────────────────────────────────
 
     #[test]

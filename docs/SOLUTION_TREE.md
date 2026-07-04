@@ -2627,3 +2627,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   target identity, not the unique-per-call scan id). Web layer otherwise
   re-verified sound (SQLi/XSS/panics/determinism all clean). Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-NOFAB extended: three more breach/stealer pools now prove
+  the subject before asserting exposure.** The doctrine "a finding must identify the
+  subject before it rides at full confidence" (already enforced by the shared
+  `util::target_match::TargetMatch` quarantine and `oathnet_pro`'s
+  `breach_parent_entity` zero-match gate) was missing from three pools. **DeHashed**
+  now mirrors `breach_parent_entity` exactly — `build_breach_entity` returns
+  `Option`, gating the loose `name:` headline on a real per-row match and keeping
+  the identity-exact selectors' server total; **IntelX** got a new pure
+  `exposure_tags` that withholds `breach`/`password-at-risk`/`paste-exposed` for the
+  unscoped `text` searches (username/full-name) that can't validate the match,
+  emitting neutral provenance and a lead-tier 0.55 entity instead; **HudsonRock**
+  got a pure `victim_ip_entities` gating each victim IP on `is_public_ip` (the same
+  gate `dehashed`'s record IPs use) so a LAN/reserved address never becomes a GEOINT
+  `geolocation-lead`. Each fix is a *pure, unit-tested* helper (not buried in a
+  network path), so the gate is provable fail-before/pass-after. Precision over
+  coverage: a phantom breach headline, a stranger's paste tagged as the subject's
+  leaked password, or a nowhere-geolocating private IP are exactly the fabricated
+  findings an evidentiary product must never emit. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

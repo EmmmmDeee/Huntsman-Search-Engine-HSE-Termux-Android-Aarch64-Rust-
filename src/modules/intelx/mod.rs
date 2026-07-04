@@ -144,6 +144,38 @@ pub(crate) fn bucket_family(bucket: &str) -> &str {
     bucket.split('.').next().unwrap_or(bucket)
 }
 
+/// The tags a set of bucket source-families warrants for a search, given whether
+/// the search ran as an **unscoped text query**. **Pure**, deterministic (input
+/// is an ordered `BTreeSet`).
+///
+/// No-fabrication gate. IntelX's structured selectors (`email`/`domain`/`ip`/…)
+/// are matched against the EXACT value, so a `leaks`/`pastes` hit genuinely
+/// exposes the subject and earns the strong exposure tags. But `username` and
+/// `full_name` have no selector — they run as a general TEXT search, where a hit
+/// means a document merely *contains* the term (a same-name/same-handle
+/// stranger's paste matches too). Stamping `breach` + `password-at-risk` on the
+/// subject's anchor off such a match fabricates a credential-exposure claim, so
+/// for a text search every family collapses to a neutral `intelx-source:<family>`
+/// provenance tag instead — the record count and buckets are still surfaced, the
+/// unverifiable exposure assertion is not.
+pub(crate) fn exposure_tags(
+    is_text_search: bool,
+    families: &std::collections::BTreeSet<String>,
+) -> Vec<String> {
+    let mut out = Vec::new();
+    for fam in families {
+        match fam.as_str() {
+            "leaks" if !is_text_search => {
+                out.push(tags::BREACH.to_string());
+                out.push(tags::PASSWORD_AT_RISK.to_string());
+            }
+            "pastes" if !is_text_search => out.push(tags::PASTE_EXPOSED.to_string()),
+            other => out.push(format!("intelx-source:{other}")),
+        }
+    }
+    out
+}
+
 /// The Intelligence X selector a target kind maps to, or `None` for a kind
 /// IntelX has no selector for. **Single source of truth** for this module's
 /// coverage: [`IntelX::accepts`] is `intelx_selector(kind).is_some()`, so the
@@ -356,9 +388,19 @@ impl Module for IntelX {
             return Ok(ModuleResult::new());
         }
 
-        let mut entity = target.to_entity(0.86, &ctx.scan_id);
+        // A `username`/`full_name` runs as an unscoped TEXT search: a hit means a
+        // document merely CONTAINS the term, not that it identifies the subject.
+        // Such a match is weaker evidence than a structured-selector hit, so it
+        // rides at lead strength and withholds the exposure tags (see
+        // `exposure_tags`) rather than asserting a breach at full confidence.
+        let is_text_search = intelx_selector(target.kind) == Some("text");
+        let confidence = if is_text_search { 0.55 } else { 0.86 };
+        let mut entity = target.to_entity(confidence, &ctx.scan_id);
         entity.tag("intelx");
         entity.tag(tags::EXTERNAL);
+        if is_text_search {
+            entity.tag("intelx-text-match");
+        }
 
         // Source breakdown comes from BUCKETS (the "where"), preferring the
         // human-readable bucket name when present.
@@ -381,15 +423,11 @@ impl Module for IntelX {
         }
 
         // Tag by coarse source family so downstream correlation can group on
-        // breach/leak/darknet/paste exposure.
-        family_tags.iter().for_each(|fam| match fam.as_str() {
-            "leaks" => {
-                entity.tag(tags::BREACH);
-                entity.tag(tags::PASSWORD_AT_RISK);
-            }
-            "pastes" => entity.tag(tags::PASTE_EXPOSED),
-            other => entity.tag(format!("intelx-source:{other}")),
-        });
+        // breach/leak/darknet/paste exposure — but a text search never earns the
+        // strong exposure tags (see `exposure_tags`), only neutral provenance.
+        for t in exposure_tags(is_text_search, &family_tags) {
+            entity.tag(t);
+        }
 
         // Top buckets by frequency (source breakdown), deterministic ordering.
         let mut top_buckets: Vec<(String, u32)> = bucket_counts.into_iter().collect();
@@ -416,9 +454,17 @@ impl Module for IntelX {
 
         let latest = all_records.iter().filter_map(|r| r.date.as_deref()).max();
 
+        let match_kind = if is_text_search {
+            " (unvalidated text match)"
+        } else {
+            ""
+        };
         let mut ev = Evidence::new(
             SRC,
-            format!("IntelX: {} record(s) for {value}", all_records.len()),
+            format!(
+                "IntelX: {} record(s) for {value}{match_kind}",
+                all_records.len()
+            ),
         )
         .with_attr("records", all_records.len().to_string())
         .with_attr("search_id", search_id);

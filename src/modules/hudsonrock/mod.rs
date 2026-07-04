@@ -231,18 +231,39 @@ impl Module for HudsonRock {
 
         let mut result = ModuleResult::new();
         result.push(entity);
+        result.extend(victim_ip_entities(&data.stealers, &ctx.scan_id));
 
-        let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
-        result.extend(data.stealers.iter().filter_map(|stealer| {
-            let ip = stealer.ip.as_deref()?;
-            if ip.is_empty() || !ip.contains('.') || !seen_ips.insert(ip.to_string()) {
+        Ok(result)
+    }
+}
+
+/// Build the deduplicated victim-device IP pivots from a stealer list. **Pure**
+/// (no network/IO).
+///
+/// No-fabrication gate. Every emitted IP is tagged [`crate::core::tags::GEOLOCATION_LEAD`]
+/// and fed to the GEOINT fusion, so it MUST be a routable public address. A
+/// stealer log's `ip` field routinely carries the victim's LAN address (RFC1918
+/// `10.x`/`192.168.x`, loopback, link-local, CGNAT `100.64.x`) or a non-IP
+/// string — the prior `!ip.contains('.')` check admitted all of these (any
+/// dotted string passed, and every IPv6 address was wrongly rejected).
+/// Geolocating a private/reserved IP fabricates a position that maps nowhere, so
+/// [`crate::util::preflight::is_public_ip`] now gates each candidate: it parses
+/// the value as an `IpAddr` (v4 **and** v6) and rejects the private/reserved
+/// ranges, mirroring the same gate `dehashed` applies to breach-record IPs.
+fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
+    let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
+    stealers
+        .iter()
+        .filter_map(|stealer| {
+            let ip = stealer.ip.as_deref()?.trim();
+            if !crate::util::preflight::is_public_ip(ip) || !seen_ips.insert(ip.to_string()) {
                 return None;
             }
             let mut e = Entity::new(
                 crate::core::entity::EntityKind::IpAddress,
                 ip,
                 0.70,
-                &ctx.scan_id,
+                scan_id,
             );
             e.tag(tags::STEALER_LOG);
             e.tag("hudsonrock");
@@ -252,10 +273,8 @@ impl Module for HudsonRock {
                 "Victim device IP from stealer log".to_string(),
             ));
             Some(e)
-        }));
-
-        Ok(result)
-    }
+        })
+        .collect()
 }
 
 fn compute_confidence(stealers: &[Stealer]) -> f64 {
