@@ -2729,3 +2729,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   end-to-end runs are a first-class part of validation** — upstream drift is only
   ever visible against the real service. All three re-verified live. Gate green.
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **Tree reconciliation: `PROBLEM_TREE` §7 S2 marker `[ ]`→`[x]`.**
+  SOL-SSRF-WHOIS has been `[x]` here (and §4a has excluded S2) since its 2026-06-17
+  delivery, but the paired `PROBLEM_TREE` S2 node kept its stale `[ ]` — a P1 HIGH
+  reading as open work when its fix (`client::resolve_public_whois`, pinned public
+  `:43` resolution + the `blocks_ssrf_and_non_whois_referrals` test) is present and
+  passing. Verified the fix in code (not by trusting the node's own "✅ Fixed"
+  claim), incl. the IPv4-mapped-IPv6 bypass case (`is_private_addr` canonicalises
+  first). No code change — this cycle only reconciles the marker so the trees agree
+  on what's done. Paired: `PROBLEM_TREE` §8 — same commit.

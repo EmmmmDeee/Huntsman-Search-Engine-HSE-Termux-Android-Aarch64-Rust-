@@ -980,7 +980,7 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `SEEKNOW_SUPERSEDED_KEY*` slot (single source of truth in `constants.rs`), so the
   embedded set self-heals to whatever is currently live. Any free-tier-vs-paid split
   is likewise the operator's prerogative, not a tracked action.
-- **S2 · `[ ]` P1 (HIGH) — whois-referral SSRF (raw TCP/43 bypasses SsrfResolver).**
+- **S2 · `[x]` P1 (HIGH) — whois-referral SSRF (raw TCP/43 bypasses SsrfResolver).**
   `modules/whois/{mod.rs:97-104, client.rs:38-53}` follows the referral server taken
   **verbatim** from the (attacker-influenceable) WHOIS response —
   `TcpStream::connect(format!("{server}:43"))` or an embedded `host:port` — with
@@ -3672,3 +3672,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   local 400 server proving the split). All three re-verified LIVE against the real
   endpoints. Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Stale-marker correction: §7 S2 (P1 HIGH whois-referral SSRF)
+  was fixed + tested but still shown `[ ]`.** The huntsman-cycle reads the trees to
+  pick the highest-priority open work, so a P1 node marked open when its fix has
+  shipped mis-directs the loop into re-investigating a done item. Verified the fix
+  is genuinely present and complete — not merely claimed: `modules/whois/client.rs::resolve_public_whois`
+  parses `host:port` (incl. `[v6]:port`), refuses any non-43 port and
+  `is_local_domain` hosts, resolves to the first `!is_private_addr` address and
+  returns a concrete `SocketAddr` that **pins** the dial; `mod.rs:284` routes the
+  attacker-influenceable `refer:`/`whois:` referral through it while the trusted
+  IANA bootstrap keeps its constant. Confirmed robust against the subtle bypass
+  too: `is_private_addr` runs `to_canonical()` first (so `[::ffff:127.0.0.1]:43`
+  collapses to loopback and is refused) plus an `embedded_ipv4` NAT64/6to4 check.
+  The regression test `blocks_ssrf_and_non_whois_referrals` passes (loopback /
+  link-local metadata / RFC1918 / v6-loopback / non-43 port / local-domain all
+  refused; a public `:43` referral allowed and pinned). `SOLUTION_TREE`
+  SOL-SSRF-WHOIS and §4a already recorded the delivery (2026-06-17); only this
+  `PROBLEM_TREE` marker had drifted. Flipped `[ ]`→`[x]`; no code change.
+  **Paired:** `SOLUTION_TREE` §5 (already `[x]`) — this commit records the
+  reconciliation.
