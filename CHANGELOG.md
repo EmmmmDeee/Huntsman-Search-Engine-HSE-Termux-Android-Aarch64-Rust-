@@ -343,6 +343,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`to_e164_au` no longer fabricates an Australian number from a foreign one written in
+  the `61…` international form.** The AU-local branch already rejected a leading-zero number
+  whose trunk digit isn't a real ACMA lead (2/3/4/5/7/8), but the equivalent `61`+9-digit
+  branch only checked for a leading zero — so a foreign national number with an invalid AU
+  lead (e.g. a French mobile written `61612345678`) was re-typed as `+61612345678`. Both
+  branches now apply the same trunk-digit gate. Regression test
+  `bare_61_prefix_requires_a_real_au_trunk_digit`.
 - **Email addresses with a `%` in the local part are no longer truncated.** The two
   non-regex email byte-scanners (`page_emails` and the web crawler's) stopped scanning the
   local part at a `%`, even though the canonical email regex includes it — so

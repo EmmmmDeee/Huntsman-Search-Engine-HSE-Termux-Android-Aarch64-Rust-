@@ -2927,3 +2927,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `page_emails_keeps_a_percent_in_the_local_part`,
   `email_extraction_keeps_a_percent_in_the_local_part`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-E164-61TRUNK: `to_e164_au`'s bare-`61` branch applies the same
+  ACMA trunk-digit gate as its AU-local sibling.** The local branch requires a real AU
+  lead (2/3/4/5/7/8) to stop a foreign 10-digit number being re-typed as `+61…`, but the
+  `61`+9-digit branch only excluded a leading `0`, so a foreign national number with lead
+  1/6/9 (a French mobile `0612345678` → `61612345678`) was fabricated into a `+61` number.
+  Applied the same trunk-digit gate to the `61` branch, single-sourcing the AU-lead rule.
+  Test: `bare_61_prefix_requires_a_real_au_trunk_digit`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

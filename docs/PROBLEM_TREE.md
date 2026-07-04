@@ -3990,3 +3990,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `email_extraction_keeps_a_percent_in_the_local_part` (each asserts the full
   `%`-mailbox survives and cross-checks `EMAIL_RE`). Gate green: fmt/clippy/doc clean,
   full suite 0 failures (4553). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Precision: `to_e164_au`'s bare-`61` branch fabricated an AU number
+  from a foreign one — missing the ACMA trunk-digit gate its sibling has.**
+  Workflow-confirmed. `core::validation::to_e164_au` has two AU-inference branches: the
+  AU-local (`0` + 9 digits) branch requires a real ACMA national-significant-number lead
+  (`matches!(compact[1], 2|3|4|5|7|8)`) — added earlier precisely to stop a foreign
+  10-digit local number being re-typed as `+61…` — but the AU-international-without-`+`
+  (`61` + 9 digits) branch gated only on `!nat.starts_with('0')`, so a foreign national
+  number whose lead is `1`/`6`/`9` (e.g. a French mobile `0612345678` written as
+  `61612345678`) was fabricated into `+61612345678`, a non-existent AU number (and its
+  derived mobile/fixed-line/jurisdiction classification). Fixed by applying the SAME
+  trunk-digit gate to the `61` branch (`matches!(nat[0], 2|3|4|5|7|8)`), single-sourcing
+  the AU-lead rule across both inference paths. Test delta:
+  `bare_61_prefix_requires_a_real_au_trunk_digit` (leads 1/6/9 rejected; 2/3/4/5/7/8
+  still canonicalise); the existing `61412345678` international-form test still passes.
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4554). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
