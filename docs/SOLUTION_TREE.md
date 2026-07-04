@@ -2957,3 +2957,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `build_practitioner_entities_emits_every_parsed_row_not_just_20`. Directly serves the
   operator's re-issued full-fidelity directive. Gate green. Paired: `PROBLEM_TREE` §8 —
   same commit.
+- **2026-07-04** — **SOL-FIDELITY-NETLAS: netlas emits every unique SAN domain and
+  extracted email.** The pure `build_entities` aggregated+deduped all cert SAN domains
+  and all cert/http/whois emails, then cut them with a bare `.take(20)` / `.take(10)` —
+  no constant, comment, log, or count attribute — silently dropping the module's own
+  headline BFS pivots (a multi-SAN cert lists 50-100+ domains; a busy host exposes many
+  contacts). The BFS frontier budget is the engine's, not this leaf module's, so the
+  caps had no resource justification. Removed both. Test:
+  `build_entities_emits_every_unique_san_domain_and_email`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

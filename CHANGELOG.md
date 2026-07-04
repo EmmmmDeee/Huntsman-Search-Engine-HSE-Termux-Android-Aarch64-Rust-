@@ -343,6 +343,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Netlas now surfaces every SSL SAN domain and extracted contact email, not just the
+  first 20/10.** The module aggregated and de-duplicated all certificate SAN domains and
+  all cert/HTTP/WHOIS emails, then silently emitted only the first 20 domains and first 10
+  emails — dropping the module's headline expansion pivots for a multi-SAN certificate or a
+  host with many contacts. Both caps are removed; every unique record is emitted (BFS
+  breadth is bounded by the engine, not this module). Regression test
+  `build_entities_emits_every_unique_san_domain_and_email`.
 - **The ACMA Radiocommunications Register and AHPRA practitioner-register scrapers now
   return every matching record, not just the first 20.** Both parsed the full result
   table but then emitted only the first 20 rows — a silent client-side cap with no

@@ -479,10 +479,14 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         }
     }
 
-    // SSL/TLS SAN domains → Domain entities for BFS.
+    // SSL/TLS SAN domains → Domain entities for BFS. Emit EVERY unique SAN domain:
+    // a multi-SAN / wildcard / shared-hosting certificate lists 50-100+ domains, and
+    // the BFS frontier budget is owned by the engine/scan orchestrator (max depth /
+    // frontier cap), not this leaf module — so a silent `.take(20)` here would drop
+    // real expansion pivots the host's certificate genuinely exposes.
     all_cert_domains.sort();
     all_cert_domains.dedup();
-    for dom in all_cert_domains.iter().take(20) {
+    for dom in &all_cert_domains {
         let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
         if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
             let mut de = Entity::new(EntityKind::Domain, dom, 0.70, scan_id);
@@ -496,10 +500,13 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         }
     }
 
-    // Extracted emails → Email entities for BFS.
+    // Extracted emails → Email entities for BFS. Emit EVERY unique email: per the
+    // module docstring these are its "key differentiator … direct BFS pivot to breach
+    // stack", so a silent `.take(10)` drops real breach-stack pivots a cert/WHOIS
+    // record exposes (registrant/admin/tech/abuse contacts on a busy host).
     all_emails.sort();
     all_emails.dedup();
-    for email in all_emails.iter().take(10) {
+    for email in &all_emails {
         let email = email.to_lowercase();
         if crate::util::extract::looks_like_email(&email) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.65, scan_id);

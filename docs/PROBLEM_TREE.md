@@ -4047,3 +4047,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   full-fidelity directive (no silent truncation/omission of results). Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4557). **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-04** — **Full-fidelity: `netlas` silently capped SSL SAN domains at 20 and
+  extracted emails at 10 — its headline BFS pivots.** Fidelity-audit-workflow-confirmed.
+  In the pure `build_entities`, `all_cert_domains` and `all_emails` are aggregated
+  across every response item (cert subject email, cert emails, http emails, whois net
+  emails; cert SAN domains), sort+deduped, then emitted through a bare
+  `.iter().take(20)` (line 485) / `.iter().take(10)` (line 502) — no named constant, no
+  comment, no log, no `domain_count`/`email_count` attribute. A multi-SAN / wildcard /
+  shared-hosting certificate lists 50–100+ SAN domains and a busy host exposes >10
+  distinct registrant/admin/tech/abuse contacts, so unique Domain pivots past #20 and
+  Email pivots past #10 — the module's own documented "key differentiator … direct BFS
+  pivot to breach stack" — were silently discarded. The BFS frontier budget is owned by
+  the engine/scan orchestrator, not this leaf module, so the caps had no resource
+  justification. Removed both (emit every unique deduped record). Test delta:
+  `build_entities_emits_every_unique_san_domain_and_email` (25 SAN domains + 12 emails →
+  25 `ssl-san` Domain + 12 `ssl-extracted` Email entities; fail-before: 20 + 10). This
+  is distinct from the earlier Netlas JARM-determinism fix. Gate green: fmt/clippy/doc
+  clean, full suite 0 failures (4558). **Paired:** `SOLUTION_TREE` §5 — same commit.
