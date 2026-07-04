@@ -3794,3 +3794,32 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   global scalar (fail-before) and strictly east under the per-point bonus
   (pass-after). Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **GEOINT precision (H5 doctrine): `coord_state` and AU-099 let
+  infrastructure coordinates vote the subject's location — the two geo rules that
+  never adopted the `is_infrastructure_geo` guard.** Surfaced by an
+  adversarially-verified precision-discovery workflow (8 subsystem finders → refute-by-
+  default verification; 14 confirmed defects, this the top-ranked). `coord_state`
+  (`rules/geo/mod.rs`) and `rule_au_099_coordinate_reverse_geocode` gated only on
+  `kind == Coordinates && confidence ≥ 0.50` — **no `is_infrastructure_geo`** — while
+  every sibling location rule applies it (AU-018 `profile.rs:30`, AU-030
+  `chain.rs:302`, AU-052/053/059 via `person_anchored_coords` `location/mod.rs:149`),
+  and the file's own H5 test section is titled "infrastructure geo must not vote the
+  subject's location." So a bare `ip_geo` coordinate (the datacentre behind the
+  subject's domain — confidence 0.60, tagged `au-state:NSW`, no anchoring source)
+  asserted `NSW` through `coord_state`, which feeds **AU-056** (jurisdiction
+  cross-check), **AU-085** (phone-region), **AU-092** (breach-footprint) and **AU-098**
+  (residency consensus): a Sydney server IP would manufacture a false AU-056
+  "jurisdiction conflict" against the subject's real QLD address, and AU-099 would
+  announce the datacentre as "the subject's coordinate fix." Fix: add the one guard
+  every sibling already uses to both — `coord_state` returns `None` and AU-099 skips
+  the entity when `is_infrastructure_geo(e)`. Test delta:
+  `coord_state_excludes_bare_ip_geo_infrastructure_coordinate` and
+  `au099_reverse_geocode_excludes_infrastructure_coordinates` (each: bare `ip_geo`
+  coord → excluded, `exif_geo` control at the same point → included). Same-commit
+  fixture reconciliation: 7 existing AU-056/085/092/098/099 tests built coordinates
+  from a placeholder/non-anchoring source (`geo_normalize`, or no evidence) for what
+  are real subject fixes — updated to carry a genuine anchoring source (`exif_geo` /
+  `search_engines`), which a real subject coordinate always has, so only pure infra
+  (ip_geo-only) coordinates are newly excluded. Gate green: fmt/clippy/doc clean, full
+  suite 0 failures (4543). **Paired:** `SOLUTION_TREE` §5 — same commit. Remaining 13
+  workflow-confirmed defects queued (task list + `gap_register`) for subsequent cycles.

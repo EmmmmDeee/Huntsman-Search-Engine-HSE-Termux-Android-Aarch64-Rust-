@@ -2910,7 +2910,8 @@ fn au092_breach_state_agrees_with_geocoded_footprint() {
     // Breach says QLD; an independent Brisbane coordinate also resolves to QLD.
     let mut p = Entity::new(EntityKind::Person, "Cindy Haynes", 0.9, "s");
     p.add_evidence(Evidence::new("oathnet_pro", "breach").with_attr("state", "QLD"));
-    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s"); // Brisbane
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s"); // Brisbane
+    coord.add_evidence(Evidence::new("geocode", "geocoded subject fix")); // person-anchored, not infra
     let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, coord], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-092");
@@ -2924,7 +2925,8 @@ fn au092_breach_postcode_conflicts_with_footprint() {
     // Breach postcode 3000 (VIC) vs a Brisbane (QLD) coordinate → conflict.
     let mut p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     p.add_evidence(Evidence::new("see_know", "breach").with_attr("postcode", "3000"));
-    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+    coord.add_evidence(Evidence::new("geocode", "geocoded subject fix")); // person-anchored, not infra
     let r = super::rules::rule_au_092_breach_locality_footprint_crosscheck(&[p, coord], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].severity, super::Severity::Medium);
@@ -3041,7 +3043,8 @@ fn au093_dedups_same_address_across_sources() {
 #[test]
 fn au098_three_classes_agree_is_high_consensus() {
     // Brisbane coordinate (QLD) + a QLD address + a breach state=QLD → 3 classes.
-    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored, not infra
     let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
     let mut person = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     person.add_evidence(Evidence::new("see_know", "breach").with_attr("state", "Queensland"));
@@ -3063,7 +3066,8 @@ fn au098_three_classes_agree_is_high_consensus() {
 #[test]
 fn au098_two_classes_medium_and_surfaces_dissent() {
     // A QLD coordinate + a QLD phone (07) agree; a lone VIC address dissents.
-    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored, not infra
     let phone = Entity::new(EntityKind::Phone, "+61731234567", 0.7, "s"); // 07 → QLD
     let addr = Entity::new(EntityKind::Address, "Melbourne VIC 3000", 0.7, "s");
     let r = super::rules::rule_au_098_residency_consensus(&[coord, phone, addr], "s", 0);
@@ -3079,7 +3083,8 @@ fn au098_two_classes_medium_and_surfaces_dissent() {
 #[test]
 fn au098_single_class_does_not_fire() {
     // Only a coordinate — one class — is the single-signal rules' job, not AU-098.
-    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored: a real 1-class case
     assert!(super::rules::rule_au_098_residency_consensus(&[coord], "s", 0).is_empty());
 }
 
@@ -3087,7 +3092,8 @@ fn au098_single_class_does_not_fire() {
 fn au098_appends_australian_isp_network_corroboration() {
     // Coordinate + address agree on QLD (2 classes); an IP on Telstra adds a
     // domestic-connection corroboration to the verdict.
-    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored, not infra
     let addr = Entity::new(EntityKind::Address, "Spring Hill QLD 4000", 0.7, "s");
     let mut ip = Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.8, "s");
     ip.add_evidence(Evidence::new("ip_geo", "geo").with_attr("isp", "Telstra"));
@@ -3821,7 +3827,8 @@ fn location_corroboration_ignores_ip_geo_without_a_login_lead() {
 #[test]
 fn au099_reverse_geocodes_coordinate_to_locality() {
     // A Brisbane fix → "Brisbane, QLD" with a small distance.
-    let coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    let mut coord = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.7, "s");
+    coord.add_evidence(Evidence::new("exif_geo", "photo GPS")); // person-anchored, not infra
     let r = super::rules::rule_au_099_coordinate_reverse_geocode(&[coord], "s", 0);
     assert_eq!(r.len(), 1);
     assert_eq!(r[0].rule_id, "AU-099");
@@ -5261,14 +5268,16 @@ fn au_056_corroborates_when_coord_and_address_agree_on_state() {
 fn au_056_derives_coord_state_from_latlong_without_a_tag() {
     use super::rules::rule_au_056_jurisdiction_cross_check;
 
-    // Regression from a live scan: a Brisbane coordinate produced by
-    // geo_normalize/search_engines carries NO au-state tag, yet the rule must
-    // still derive QLD from the lat/long and corroborate the QLD address.
+    // Regression from a live scan: a Brisbane coordinate person-anchored via a
+    // search-engine snippet carries NO au-state tag, yet the rule must still
+    // derive QLD from the lat/long and corroborate the QLD address. `search_engines`
+    // is an anchoring geo source, so the coordinate is a real subject fix (not
+    // infrastructure geo excluded by `coord_state`).
     let ents = vec![
         mk_tagged(
             EntityKind::Coordinates,
             "-27.4698,153.0251",
-            "geo_normalize",
+            "search_engines",
             &["geoint"], // deliberately no au-state: tag
         ),
         mk_tagged(EntityKind::Address, "Brisbane, QLD", "search_engines", &[]),
@@ -5359,12 +5368,14 @@ fn au_085_corroborates_against_a_tagless_coordinate_state() {
 
     // A QLD landline (07) and a Brisbane coordinate with NO au-state tag — the
     // state is still derived from the lat/long, so the cross-check fires.
+    // `search_engines` is an anchoring geo source, so the coordinate is a real
+    // subject fix (not infrastructure geo excluded by `coord_state`).
     let ents = vec![
         mk_tagged(EntityKind::Phone, "(07) 3000 1234", "import", &[]),
         mk_tagged(
             EntityKind::Coordinates,
             "-27.4698,153.0251",
-            "geo_normalize",
+            "search_engines",
             &["geoint"],
         ),
     ];

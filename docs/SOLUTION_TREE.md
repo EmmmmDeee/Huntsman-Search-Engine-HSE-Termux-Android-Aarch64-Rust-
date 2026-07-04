@@ -2808,3 +2808,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   differing only in the eastern point's class span, byte-identical under the old
   global scalar and strictly divergent under the per-point bonus. Gate green.
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-GEOINT-INFRAGUARD (H5): `coord_state` + AU-099 now apply
+  the `is_infrastructure_geo` guard every sibling location rule uses.** An
+  adversarially-verified precision-discovery workflow (8 finders, refute-by-default
+  verification, 14 confirmed defects) top-ranked this: the two geo rules that vote
+  the subject's location — `coord_state` (feeds AU-056/085/092/098) and
+  `rule_au_099_coordinate_reverse_geocode` — gated only on `kind == Coordinates &&
+  confidence ≥ 0.50`, omitting the infrastructure-geo exclusion that AU-018/026/030
+  and AU-052/053/059 all apply and that the file's own H5 doctrine section mandates.
+  A bare `ip_geo` datacentre coordinate therefore voted the subject's jurisdiction
+  (a false AU-056 conflict against a real interstate address) and was announced by
+  AU-099 as the subject's own fix. Added the one guard to both. Seven existing
+  AU-056/085/092/098/099 fixtures that used a placeholder non-anchoring source for a
+  real subject coordinate were reconciled in the same commit to carry a genuine
+  anchoring source, so only pure infrastructure coordinates are newly excluded.
+  Tests: `coord_state_excludes_bare_ip_geo_infrastructure_coordinate`,
+  `au099_reverse_geocode_excludes_infrastructure_coordinates`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

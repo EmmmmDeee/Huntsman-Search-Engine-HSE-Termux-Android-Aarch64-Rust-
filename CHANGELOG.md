@@ -343,6 +343,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Infrastructure coordinates can no longer vote the subject's location or jurisdiction
+  (`coord_state`, AU-099).** The subject's AU-state resolver `coord_state` (which feeds the
+  AU-056/085/092/098 jurisdiction and residency rules) and the AU-099 reverse-geocoder
+  admitted *any* confirmed coordinate, including bare IP-geo/hosting fixes that locate a
+  datacentre or domain owner rather than the person — while every sibling location rule
+  (AU-018/026/030, AU-052/053/059) already excludes them via `is_infrastructure_geo`, and
+  the module's own doctrine section requires it. So a Sydney-datacentre server IP behind the
+  subject's domain would assert NSW and manufacture a false "jurisdiction conflict" against
+  the subject's real interstate address, and AU-099 would announce the datacentre as the
+  subject's own GPS fix. Both rules now apply the `is_infrastructure_geo` guard. Regression
+  tests `coord_state_excludes_bare_ip_geo_infrastructure_coordinate` and
+  `au099_reverse_geocode_excludes_infrastructure_coordinates`.
 - **The "best AU location" estimate now weights a coordinate by its own cross-class
   corroboration (AU-059).** The cross-seed geo-synergy fix — the source of the
   dossier's headline location estimate and the API's `best_location` fields — boosted
