@@ -56,8 +56,16 @@ fn default_seed_from_env() -> Option<(crate::core::scan::TargetKind, String)> {
 /// the operator never has to choose a seed. Falls back to `HUNTSMAN_DEFAULT_SEED`
 /// when the base is empty, and returns a clear 422 (not an error) only when there
 /// is genuinely nothing to investigate yet. The response names the seed it chose.
-pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn scan_auto(
+    State(s): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
     use std::collections::HashSet;
+
+    // Cross-site guard: this body-less POST is a CORS simple request.
+    if let Some(rejection) = super::super::handlers::csrf_reject(&headers) {
+        return rejection;
+    }
 
     // Assemble the candidate pool from recent scans (everything the platform has
     // discovered) — entities AND relations — and rank it by RESOLVED IDENTITY: the
@@ -255,9 +263,15 @@ pub async fn scan_auto_plan(
 /// investigate yet.
 pub async fn scan_auto_sweep(
     State(s): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     use std::collections::HashSet;
+
+    // Cross-site guard: this body-less POST is a CORS simple request.
+    if let Some(rejection) = super::super::handlers::csrf_reject(&headers) {
+        return rejection;
+    }
 
     let breadth = params
         .get("breadth")
@@ -665,8 +679,14 @@ pub(crate) fn radar_scan_spec(seed: Option<&str>) -> (Target, crate::core::scan:
 /// real target.
 pub async fn radar_sweep(
     State(s): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
+    // Cross-site guard: a bare `POST /radar` is a CORS simple request, so without
+    // this any page the operator has open could trigger the device sensor sweep.
+    if let Some(rejection) = super::super::handlers::csrf_reject(&headers) {
+        return rejection;
+    }
     // Armed by default: hitting this endpoint IS the deliberate activation. The
     // `feature.live_radar` toggle is a kill-switch — it only refuses here if the
     // operator has explicitly switched the radar OFF. (Seed scans can never run the
@@ -713,7 +733,15 @@ pub async fn radar_sweep(
 /// opt-in is required. `allow_live_sensors` is set here (server-side); the
 /// `feature.live_radar` toggle is a kill-switch that only refuses if explicitly
 /// switched off. An ordinary scan can neither reach nor accidentally start it.
-pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+pub async fn radar_live(
+    State(s): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> impl IntoResponse {
+    // Cross-site guard: a bare `POST /radar/live` is a CORS simple request, so
+    // without this any page the operator has open could start a continuous sweep.
+    if let Some(rejection) = super::super::handlers::csrf_reject(&headers) {
+        return rejection;
+    }
     if !crate::util::settings::live_radar_enabled() {
         return (
             StatusCode::FORBIDDEN,

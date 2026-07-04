@@ -82,7 +82,15 @@ fn reject_non_loopback(peer: &SocketAddr) -> Option<(StatusCode, Json<serde_json
 pub(crate) async fn post_trigger(
     State(state): State<Arc<AppState>>,
     ConnectInfo(peer): ConnectInfo<SocketAddr>,
+    headers: axum::http::HeaderMap,
 ) -> impl IntoResponse {
+    // Cross-site guard: this body-less POST is a CORS simple request, so the
+    // loopback check alone (a drive-by page connects from 127.0.0.1 too) does not
+    // stop it forcing a binary rebuild + process restart. Require X-HSE-CSRF,
+    // which a cross-origin caller cannot set without a preflight that fails.
+    if let Some(rejection) = super::handlers::csrf_reject(&headers) {
+        return rejection;
+    }
     if let Some(rejection) = reject_non_loopback(&peer) {
         return rejection.into_response();
     }
@@ -165,5 +173,23 @@ mod tests {
             let peer = SocketAddr::new(ip, 8080);
             assert!(reject_non_loopback(&peer).is_none(), "{ip} must be allowed");
         }
+    }
+
+    #[test]
+    fn trigger_requires_the_csrf_header() {
+        use axum::http::HeaderMap;
+        // The loopback check is not enough: a drive-by page connects from
+        // 127.0.0.1 too, and a body-less POST is a CORS simple request. The
+        // X-HSE-CSRF guard (absent from the CORS allow-headers) is what blocks it.
+        assert!(
+            crate::api::handlers::csrf_reject(&HeaderMap::new()).is_some(),
+            "a trigger POST without X-HSE-CSRF must be rejected"
+        );
+        let mut with_token = HeaderMap::new();
+        with_token.insert("x-hse-csrf", "1".parse().unwrap());
+        assert!(
+            crate::api::handlers::csrf_reject(&with_token).is_none(),
+            "the same-origin SPA's X-HSE-CSRF request is allowed"
+        );
     }
 }

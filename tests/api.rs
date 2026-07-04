@@ -159,6 +159,18 @@ fn post_json(uri: &str, body: &str) -> Request<Body> {
         .unwrap()
 }
 
+/// Shorthand: a body-less POST carrying the `X-HSE-CSRF` header the same-origin
+/// SPA sends on every mutating request (the cross-site guard). A cross-origin
+/// page cannot set this header without a preflight that the CORS layer fails.
+fn post_csrf(uri: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("x-hse-csrf", "1")
+        .body(Body::empty())
+        .unwrap()
+}
+
 /// Shorthand: build a DELETE request.
 fn delete(uri: &str) -> Request<Body> {
     Request::builder()
@@ -479,7 +491,7 @@ async fn radar_sweep_activates_with_zero_input_by_default() {
     // `allow_live_sensors` set — is covered by the
     // `radar_scan_spec_activates_only_the_live_sensors` unit test.
     let app = test_app("radar");
-    let resp = app.oneshot(post_json("/api/v1/radar", "")).await.unwrap();
+    let resp = app.oneshot(post_csrf("/api/v1/radar")).await.unwrap();
     assert_eq!(
         resp.status(),
         http::StatusCode::ACCEPTED,
@@ -493,10 +505,7 @@ async fn continuous_radar_activates_with_zero_input_by_default() {
     // no target, no seed, no interval — a bare POST is the entire request — and
     // starts a live session by default (armed, no prior opt-in).
     let app = test_app("radar_live");
-    let resp = app
-        .oneshot(post_json("/api/v1/radar/live", ""))
-        .await
-        .unwrap();
+    let resp = app.oneshot(post_csrf("/api/v1/radar/live")).await.unwrap();
     assert_eq!(
         resp.status(),
         http::StatusCode::ACCEPTED,
@@ -511,6 +520,29 @@ async fn continuous_radar_activates_with_zero_input_by_default() {
 }
 
 #[tokio::test]
+async fn mutating_endpoints_reject_a_request_without_the_csrf_header() {
+    // Every body-less state-changing endpoint is a CORS *simple request* (sent
+    // with no preflight), so it MUST require the `X-HSE-CSRF` header — which a
+    // cross-origin page cannot set without a preflight the CORS layer fails.
+    // Otherwise a drive-by site the operator has open could queue a scan or
+    // trigger the device's live sensor sweep. Missing header → 403.
+    let app = test_app("csrf_guard");
+    for uri in [
+        "/api/v1/radar",
+        "/api/v1/radar/live",
+        "/api/v1/scan/auto",
+        "/api/v1/scan/auto/sweep?breadth=3",
+    ] {
+        let resp = app.clone().oneshot(post_json(uri, "")).await.unwrap();
+        assert_eq!(
+            resp.status(),
+            http::StatusCode::FORBIDDEN,
+            "{uri} must reject a cross-site request missing X-HSE-CSRF"
+        );
+    }
+}
+
+#[tokio::test]
 async fn autonomous_scan_requires_no_input() {
     // `POST /api/v1/scan/auto` takes NO body, NO seed — the platform selects its
     // own target by ranking what it already knows. On a fresh store it either
@@ -518,10 +550,7 @@ async fn autonomous_scan_requires_no_input() {
     // default, cleanly declines with a 422 + guidance — never a 500. Either way the
     // response is tagged the autonomous mode.
     let app = test_app("auto");
-    let resp = app
-        .oneshot(post_json("/api/v1/scan/auto", ""))
-        .await
-        .unwrap();
+    let resp = app.oneshot(post_csrf("/api/v1/scan/auto")).await.unwrap();
     let status = resp.status();
     assert!(
         status == http::StatusCode::ACCEPTED || status == http::StatusCode::UNPROCESSABLE_ENTITY,
@@ -586,7 +615,7 @@ async fn autonomous_sweep_dispatches_without_input() {
     // 500; either way the response is tagged the autonomous mode and is well-formed.
     let app = test_app("auto_sweep");
     let resp = app
-        .oneshot(post_json("/api/v1/scan/auto/sweep?breadth=3", ""))
+        .oneshot(post_csrf("/api/v1/scan/auto/sweep?breadth=3"))
         .await
         .unwrap();
     let status = resp.status();

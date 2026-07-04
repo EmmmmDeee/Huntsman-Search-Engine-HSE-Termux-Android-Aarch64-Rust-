@@ -77,6 +77,28 @@ pub(crate) fn forbidden(msg: impl Into<String>) -> axum::response::Response {
     (StatusCode::FORBIDDEN, Json(json!({ "error": msg.into() }))).into_response()
 }
 
+/// Cross-site (CSRF) guard for a state-changing endpoint: require the
+/// `X-HSE-CSRF` header, returning `Some(403)` when it is absent and `None` to
+/// proceed. One definition so every mutating handler enforces it identically.
+///
+/// A body-less (or `text/plain`) POST is a CORS **simple request**: the browser
+/// sends it with NO preflight, so a same-machine loopback check does not stop a
+/// drive-by page the operator has open from firing it (the browser connects from
+/// `127.0.0.1` too). `X-HSE-CSRF` is deliberately absent from the CORS
+/// allow-headers set, so a cross-origin caller cannot add it without a preflight
+/// that then fails; the same-origin SPA always sends it. The header's mere
+/// presence is the token — it cannot be forged cross-origin — so its value is
+/// irrelevant.
+pub(crate) fn csrf_reject(headers: &axum::http::HeaderMap) -> Option<axum::response::Response> {
+    if headers.contains_key("x-hse-csrf") {
+        None
+    } else {
+        Some(forbidden(
+            "missing X-HSE-CSRF header (cross-site request blocked)",
+        ))
+    }
+}
+
 /// The canonical list envelope every list endpoint returns:
 /// `{ "<key>": [items…], "count": <n> }`. One shape so the SPA and CLI parse
 /// every collection response (entities, relations, correlations, …) identically.
