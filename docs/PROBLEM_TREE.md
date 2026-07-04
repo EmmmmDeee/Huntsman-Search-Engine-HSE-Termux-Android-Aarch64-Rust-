@@ -4064,3 +4064,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   25 `ssl-san` Domain + 12 `ssl-extracted` Email entities; fail-before: 20 + 10). This
   is distinct from the earlier Netlas JARM-determinism fix. Gate green: fmt/clippy/doc
   clean, full suite 0 failures (4558). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Full-fidelity: the `niamonx` ULP infostealer `login` was dropped
+  entirely on Username/IpAddress scans.** Fidelity-audit-workflow-confirmed. In
+  `emit_ulp`, a stealer-log record's `login` (the compromised account for a captured
+  URL·LOGIN·PASS triple) was promoted to a pivot only when `useful = matches!(target_kind,
+  Email | Domain)` — so on a `Username` scan (query `jsmith`, login `jsmith@gmail.com`)
+  or an `IpAddress` scan (every account exfiltrated from the victim host) the login was
+  not emitted as a pivot AND not stamped on the per-record evidence (which carried only
+  `host`/`url`): the datum vanished. The `differs = !login.eq_ignore_ascii_case(query)`
+  guard already suppresses the redundant query-equal value, so the target-kind gate was
+  pure loss of genuinely-new identities. Fix: always stamp `login` on the record evidence
+  (full fidelity, every kind), and promote it to a first-class `Email`/`Username` pivot
+  on every target kind when it differs (removed the `useful` gate and the now-unused
+  `target_kind` param). Test delta: `ulp_recovers_the_login_on_username_and_ip_scans` (a
+  differing login on both a Username and an IpAddress scan → an `Email` pivot AND a
+  `login` evidence attribute; fail-before: neither); the existing Email-scan pivot test
+  still passes. Gate green: fmt/clippy/doc clean, full suite 0 failures (4559).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

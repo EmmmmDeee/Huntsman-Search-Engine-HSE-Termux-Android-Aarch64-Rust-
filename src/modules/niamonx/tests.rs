@@ -107,19 +107,61 @@ fn ulp_emits_stealer_tag_and_pivots() {
     let target = Target::new(TargetKind::Email, "victim@example.com");
     let mut entity = target.to_entity(0.80, "s");
     let mut result = ModuleResult::new();
-    emit_ulp(
-        resp,
-        TargetKind::Email,
-        &mut entity,
-        &mut result,
-        "victim@example.com",
-        "s",
-    );
+    emit_ulp(resp, &mut entity, &mut result, "victim@example.com", "s");
     assert!(entity.has_tag("stealer-log"));
     assert!(entity.has_tag("infostealer"));
-    // login differs from query and target is Email → pivot emitted
+    // login differs from query → pivot emitted
     assert_eq!(result.entities.len(), 1);
     assert_eq!(result.entities[0].kind, EntityKind::Email);
+}
+
+#[test]
+fn ulp_recovers_the_login_on_username_and_ip_scans() {
+    // Full-fidelity: a stealer-log login that differs from the query is a genuinely
+    // new identity (a username scan's login `jsmith@gmail.com`, an IP scan's
+    // compromised account). It was silently dropped on Username/IpAddress scans
+    // (the old Email/Domain-only gate) — neither a pivot nor stamped on evidence.
+    for (kind, query) in [
+        (TargetKind::Username, "jsmith"),
+        (TargetKind::IpAddress, "203.0.113.10"),
+    ] {
+        let resp = UlpResponse {
+            success: true,
+            data: Some(UlpData {
+                error: None,
+                stats: Some(UlpStats {
+                    total: 1,
+                    unique_hosts: 1,
+                    with_password: 1,
+                }),
+                records: Some(vec![UlpRecord {
+                    url: Some("https://mail.example.com/login".to_string()),
+                    host: Some("mail.example.com".to_string()),
+                    login: Some("jsmith@gmail.com".to_string()),
+                }]),
+            }),
+        };
+        let target = Target::new(kind, query);
+        let mut entity = target.to_entity(0.80, "s");
+        let mut result = ModuleResult::new();
+        emit_ulp(resp, &mut entity, &mut result, query, "s");
+        // The differing login is now promoted to a first-class Email pivot…
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "jsmith@gmail.com"),
+            "the ULP login must surface as a pivot on a {kind:?} scan"
+        );
+        // …and is preserved on the record evidence regardless (full fidelity).
+        assert!(
+            entity
+                .evidence
+                .iter()
+                .any(|ev| ev.attributes.get("login").map(String::as_str) == Some("jsmith@gmail.com")),
+            "the ULP login must be stamped on the record evidence on a {kind:?} scan"
+        );
+    }
 }
 
 #[test]

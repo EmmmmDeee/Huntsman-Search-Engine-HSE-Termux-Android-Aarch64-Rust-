@@ -343,6 +343,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Infostealer (ULP) logins are now recovered on username and IP-address scans, not only
+  email/domain scans.** A stealer-log record's captured login (the compromised account for
+  a URL) was promoted to a pivot entity only when the scan target was an email or domain —
+  so a username scan (whose login is the email the handle maps to) or an IP scan (whose
+  logins are the accounts compromised on that victim host) silently discarded it, storing
+  not even an evidence trace. The login is now always stamped on the record evidence and
+  promoted to a pivot on every target kind when it differs from the query. Regression test
+  `ulp_recovers_the_login_on_username_and_ip_scans`.
 - **Netlas now surfaces every SSL SAN domain and extracted contact email, not just the
   first 20/10.** The module aggregated and de-duplicated all certificate SAN domains and
   all cert/HTTP/WHOIS emails, then silently emitted only the first 20 domains and first 10

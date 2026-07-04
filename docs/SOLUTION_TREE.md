@@ -2966,3 +2966,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   caps had no resource justification. Removed both. Test:
   `build_entities_emits_every_unique_san_domain_and_email`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-ULPLOGIN: the niamonx ULP login is recovered on every
+  target kind.** `emit_ulp` promoted the stealer-log `login` to a pivot only for
+  Email/Domain targets and never stamped it on evidence, so on Username/IpAddress scans a
+  genuinely-new identity (a username's mapped email, a victim host's compromised accounts)
+  was dropped entirely. The `differs` guard already suppresses the redundant query value,
+  so the target-kind gate was pure loss. Now always stamp `login` on the record evidence
+  and promote it to a pivot on every kind when it differs (removed the `useful` gate + the
+  now-unused `target_kind` param). Test: `ulp_recovers_the_login_on_username_and_ip_scans`.
+  Gate green. Paired: `PROBLEM_TREE` §8 — same commit.

@@ -253,14 +253,7 @@ impl Module for NiamonX {
             Err(e) => warn!(error = %e, "niamonx pbs_v2 failed"),
         }
         match r3 {
-            Ok(r) => emit_ulp(
-                r,
-                target.kind,
-                &mut entity,
-                &mut result,
-                query,
-                &ctx.scan_id,
-            ),
+            Ok(r) => emit_ulp(r, &mut entity, &mut result, query, &ctx.scan_id),
             Err(e) => warn!(error = %e, "niamonx ulp failed"),
         }
 
@@ -572,7 +565,6 @@ fn emit_pbs_v2(
 
 fn emit_ulp(
     resp: UlpResponse,
-    target_kind: TargetKind,
     entity: &mut Entity,
     result: &mut ModuleResult,
     query: &str,
@@ -611,27 +603,35 @@ fn emit_ulp(
         let url = record.url.as_deref().unwrap_or(host);
 
         entity.tag(format!("niamonx:ulp:{}", slugify(host)));
-        entity.add_evidence(
-            Evidence::new(SRC, format!("Stealer log hit: {url}"))
-                .with_attr("host", host)
-                .with_attr("url", url),
-        );
-
-        // Promote login to pivot only when it adds information.
+        let mut ev = Evidence::new(SRC, format!("Stealer log hit: {url}"))
+            .with_attr("host", host)
+            .with_attr("url", url);
+        // Always preserve the captured login on the record evidence (full fidelity),
+        // on EVERY target kind — the previous target-kind gate dropped it entirely on
+        // Username/IpAddress scans, losing the compromised account for that host.
         if let Some(login) = &record.login {
-            let differs = !login.eq_ignore_ascii_case(query);
-            let useful = matches!(target_kind, TargetKind::Email | TargetKind::Domain);
-            if differs && useful {
-                let kind = if login.contains('@') {
-                    EntityKind::Email
-                } else {
-                    EntityKind::Username
-                };
-                let mut pivot = Entity::new(kind, login, 0.70, scan_id);
-                pivot.tag(SRC);
-                pivot.tag("ulp-pivot");
-                result.push(pivot);
-            }
+            ev = ev.with_attr("login", login);
+        }
+        entity.add_evidence(ev);
+
+        // Promote the login to a first-class pivot when it ADDS information (differs
+        // from the query value) — on every target kind. The old Email/Domain-only
+        // gate silently dropped a genuinely-new identity that a Username scan surfaces
+        // (login `jsmith@gmail.com` for query `jsmith`) or an IpAddress scan surfaces
+        // (each compromised account exfiltrated from the victim host). `differs`
+        // already suppresses the redundant query-equal login.
+        if let Some(login) = &record.login
+            && !login.eq_ignore_ascii_case(query)
+        {
+            let kind = if login.contains('@') {
+                EntityKind::Email
+            } else {
+                EntityKind::Username
+            };
+            let mut pivot = Entity::new(kind, login, 0.70, scan_id);
+            pivot.tag(SRC);
+            pivot.tag("ulp-pivot");
+            result.push(pivot);
         }
     }
 }
