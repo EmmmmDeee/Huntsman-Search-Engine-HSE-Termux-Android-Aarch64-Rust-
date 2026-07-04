@@ -102,6 +102,46 @@ use super::*;
     }
 
     #[test]
+    fn gexf_drops_relation_edges_referencing_a_filtered_out_node() {
+        use crate::core::relation::{Relation, RelationKind};
+        // A caller (the candidate-quarantining exports) passes a CONFIRMED entity
+        // subset as the node set but the FULL relation set. A relation whose
+        // endpoint is a filtered-out node must NOT produce an `<edge>` — that would
+        // reference an undeclared node id, which is structurally-invalid GEXF.
+        let subject = Entity::new(EntityKind::Domain, "example.com", 0.9, "s");
+        let child = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
+        let candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, "s");
+        let good = Relation::new(
+            child.uid.clone(),
+            subject.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let dangling = Relation::new(
+            child.uid.clone(),
+            candidate.uid.clone(), // endpoint absent from the node set below
+            RelationKind::DerivedFrom,
+            0.7,
+            "s",
+        );
+        // Node set omits the candidate; relation set includes the dangling edge.
+        let xml = entities_to_gexf(&[subject, child.clone()], &[good, dangling], "s");
+
+        // The in-set relation edge is still emitted…
+        assert!(
+            xml.contains(r#"label="subdomain_of""#),
+            "the in-set relation edge must survive: {xml}"
+        );
+        // …but no edge references the filtered-out candidate node.
+        let cand_id = &candidate.uid[..12];
+        assert!(
+            !xml.contains(&format!(r#"target="{cand_id}""#)),
+            "an edge must not reference a node absent from <nodes>: {xml}"
+        );
+    }
+
+    #[test]
     fn gexf_escapes_the_kind_attribute_and_the_scan_id() {
         // An `Other(<custom>)` kind is data-derived and can carry XML metachars;
         // unescaped, it would break the node's `kind` attvalue and thus the whole

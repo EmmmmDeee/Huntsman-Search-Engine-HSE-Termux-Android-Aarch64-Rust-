@@ -3823,3 +3823,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (ip_geo-only) coordinates are newly excluded. Gate green: fmt/clippy/doc clean, full
   suite 0 failures (4543). **Paired:** `SOLUTION_TREE` §5 — same commit. Remaining 13
   workflow-confirmed defects queued (task list + `gap_register`) for subsequent cycles.
+- **2026-07-04** — **Export integrity: the `/graph.gexf` API export leaked
+  quarantined `candidate` breach-victims as nodes, and every GEXF caller could emit
+  dangling edges (two coupled workflow-confirmed defects, fixed as one).** The web
+  GEXF endpoint (`api::scan_export::scan_export_gexf`) passed
+  `store.entities_for_scan(id)` **unfiltered** to `entities_to_gexf`, so every
+  quarantined `candidate` (a non-subject breach co-occurrence "stranger") became a
+  labelled node — leaking a foreign breach-victim list under the subject's scan,
+  which the CSV (`scan_entities_csv`), `report.json`, and CLI (`render_gexf`) exports
+  all strip by default. But naively filtering candidates would have hit the second
+  defect: `render_gexf` **already** dropped candidate *nodes* yet passed the *full*
+  relation set, so any relation to a filtered candidate emitted an `<edge>`
+  referencing an undeclared node id — structurally-invalid GEXF Gephi rejects. Fixed
+  both at the right layers: (1) `entities_to_gexf` now builds the present-node-id set
+  and emits a relation edge only when **both** endpoints are declared nodes — making
+  "every edge references a declared node" a serializer invariant, so no caller
+  (CLI or API) can produce a dangling edge regardless of the subset it passes; (2)
+  `scan_export_gexf` filters `candidate` rows by default with a `?include_candidates=1`
+  opt-in, matching the CSV endpoint's contract. Test delta:
+  `gexf_drops_relation_edges_referencing_a_filtered_out_node` (a relation to a
+  filtered node emits no dangling edge) and
+  `scan_gexf_quarantines_candidate_nodes_by_default` (candidate absent by default,
+  present with the opt-in). The GEXF golden byte-stable test is unaffected (its
+  fixture has no absent-endpoint edges). Gate green: fmt/clippy/doc clean, full suite
+  0 failures (4545). **Paired:** `SOLUTION_TREE` §5 — same commit.

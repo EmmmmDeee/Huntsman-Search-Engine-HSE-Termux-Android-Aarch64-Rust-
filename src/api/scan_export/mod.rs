@@ -315,13 +315,14 @@ pub(crate) fn extract_au_location_fix(
 pub async fn scan_export_gexf(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let (entities, relations) = match tokio::task::spawn_blocking(move || {
+    let (mut entities, relations) = match tokio::task::spawn_blocking(move || {
         Ok::<_, crate::core::error::Error>((
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
@@ -333,6 +334,14 @@ pub async fn scan_export_gexf(
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
+    // Quarantine candidates by default (opt in with `?include_candidates=1`) —
+    // matches `scan_entities_csv`, `report.json`, and the CLI `render_gexf`, so
+    // the graph export can't leak a foreign breach-victim list under the subject's
+    // scan. The relation set stays full; `entities_to_gexf` drops any edge whose
+    // endpoint is no longer a node, so filtering here cannot leave a dangling edge.
+    if !wants_candidates(&params) {
+        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
 }

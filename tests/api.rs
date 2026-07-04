@@ -1346,6 +1346,66 @@ async fn scan_entities_csv_returns_csv_content_type() {
     );
 }
 
+// ── GEXF export ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_gexf_quarantines_candidate_nodes_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("gexf_candidate");
+    let sid = "s-gexf-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    // A confirmed subject entity plus a quarantined candidate breach-victim.
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+
+    // Default: the quarantined candidate must NOT leak as a node — matching CSV,
+    // report.json, and the CLI GEXF export.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/graph.gexf")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("subject@real.example"),
+        "the confirmed subject node must be present: {body}"
+    );
+    assert!(
+        !body.contains("stranger@breach.example"),
+        "a quarantined candidate breach-victim must not leak into the graph export: {body}"
+    );
+
+    // Opt-in: `?include_candidates=1` returns the full set (parity with CSV).
+    let resp2 = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/graph.gexf?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+    let bytes2 = axum::body::to_bytes(resp2.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body2 = String::from_utf8_lossy(&bytes2);
+    assert!(
+        body2.contains("stranger@breach.example"),
+        "include_candidates=1 must return the candidate node: {body2}"
+    );
+}
+
 // ── JSON report ─────────────────────────────────────────────────────────
 
 #[tokio::test]

@@ -343,6 +343,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The GEXF graph export no longer leaks quarantined candidate breach-victims, and no
+  GEXF export can emit dangling edges.** The `/graph.gexf` API endpoint passed every
+  entity — including quarantined `candidate` breach co-occurrence "strangers" — to the
+  serializer, leaking a foreign breach-victim list under the subject's scan, while the
+  CSV, `report.json`, and CLI GEXF exports all strip candidates by default. The API
+  export now filters them by default (opt in with `?include_candidates=1`, matching the
+  CSV endpoint). Separately, the GEXF serializer now emits a relation edge only when both
+  of its endpoints are present as nodes, so a caller that passes a filtered entity subset
+  (which the candidate-stripping exports do) can no longer produce an `<edge>` that
+  references an undeclared node — previously the CLI GEXF export did exactly that,
+  yielding structurally-invalid GEXF. Regression tests
+  `gexf_drops_relation_edges_referencing_a_filtered_out_node` and
+  `scan_gexf_quarantines_candidate_nodes_by_default`.
 - **Infrastructure coordinates can no longer vote the subject's location or jurisdiction
   (`coord_state`, AU-099).** The subject's AU-state resolver `coord_state` (which feeds the
   AU-056/085/092/098 jurisdiction and residency rules) and the AU-099 reverse-geocoder

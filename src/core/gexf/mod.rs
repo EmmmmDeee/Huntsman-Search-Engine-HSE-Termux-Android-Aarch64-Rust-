@@ -55,10 +55,24 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
     //   2. Shared-evidence co-occurrence edges, labelled by the shared sources.
     // Edge ids are assigned sequentially: relation edges first, then the
     // co-occurrence edges continue the same counter.
+    //
+    // A relation edge is emitted only when BOTH its endpoints are among the nodes
+    // written above. A caller that passes a filtered entity subset (e.g. the
+    // exports that drop quarantined `candidate` rows) but the full relation set
+    // would otherwise emit an `<edge>` referencing an undeclared node id —
+    // structurally-invalid GEXF that Gephi rejects. Enforcing it here makes
+    // "every edge references a declared node" an invariant of the serializer, so
+    // no caller can produce a dangling edge regardless of which subset it passes.
+    // (Co-occurrence edges are built only from `entities`, so they are always
+    // in-set by construction.)
+    let node_ids: std::collections::HashSet<&str> =
+        entities.iter().map(|e| short_uid(&e.uid)).collect();
     let _ = writeln!(xml, r#"    <edges>"#);
     let mut edge_id = 0u64;
     for r in relations {
-        write_relation_edge(&mut xml, r, &mut edge_id);
+        if node_ids.contains(short_uid(&r.from_uid)) && node_ids.contains(short_uid(&r.to_uid)) {
+            write_relation_edge(&mut xml, r, &mut edge_id);
+        }
     }
     write_shared_evidence_edges(&mut xml, entities, &mut edge_id);
     let _ = writeln!(xml, r#"    </edges>"#);

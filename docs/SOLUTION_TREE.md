@@ -2825,3 +2825,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Tests: `coord_state_excludes_bare_ip_geo_infrastructure_coordinate`,
   `au099_reverse_geocode_excludes_infrastructure_coordinates`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-GEXF-CANDIDATE-INTEGRITY: the GEXF export no longer leaks
+  candidate PII (API) or emits dangling edges (any caller).** Two coupled
+  workflow-confirmed defects fixed as one. The web `/graph.gexf` handler passed the
+  full entity set unfiltered, leaking quarantined `candidate` breach-victims as nodes
+  — unlike the CSV/report/CLI exports that strip them by default. And `render_gexf`
+  dropped candidate NODES but passed the full RELATION set, so a relation to a
+  filtered node produced an `<edge>` referencing an undeclared node (invalid GEXF).
+  Filtering candidates in the API path without addressing the second bug would have
+  reproduced it there, so both were fixed at their correct layers: `entities_to_gexf`
+  now emits a relation edge only when both endpoints are declared nodes (a serializer
+  invariant that protects every caller), and `scan_export_gexf` filters candidates by
+  default with a `?include_candidates=1` opt-in matching the CSV endpoint. The GEXF
+  golden byte-stable test is unaffected. Tests:
+  `gexf_drops_relation_edges_referencing_a_filtered_out_node`,
+  `scan_gexf_quarantines_candidate_nodes_by_default`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.
