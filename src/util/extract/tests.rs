@@ -169,6 +169,27 @@ use super::*;
     }
 
     #[test]
+    fn macs_does_not_carve_a_48bit_mac_out_of_a_longer_eui64_run() {
+        // The regex's word boundary treats the separator after the 6th octet as a
+        // boundary, so an 8-octet EUI-64 must NOT yield a spurious 48-bit MAC from
+        // its first (or middle) six octets — in either colon or hyphen form.
+        assert!(
+            macs("id aa:bb:cc:dd:ee:ff:00:11 end").is_empty(),
+            "no 48-bit MAC may be carved from an 8-octet colon run"
+        );
+        assert!(
+            macs("A4-B1-C2-00-11-22-33-44").is_empty(),
+            "no 48-bit MAC may be carved from an 8-octet hyphen run"
+        );
+        // A genuine standalone MAC flanked by non-separator punctuation still
+        // extracts — the fragment guard must not over-reject.
+        assert_eq!(
+            macs("(aa:bb:cc:dd:ee:ff)"),
+            vec!["aa:bb:cc:dd:ee:ff".to_string()]
+        );
+    }
+
+    #[test]
     fn labeled_ssids_extracts_named_networks_only() {
         let text = "SSID: Smith Home 5G\nWiFi Name = OfficeNet\nWireless Network: null\nrandom line";
         let got = labeled_ssids(text);

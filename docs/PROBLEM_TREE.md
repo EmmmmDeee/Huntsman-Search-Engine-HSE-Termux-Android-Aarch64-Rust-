@@ -3335,3 +3335,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (each asserts the FP is gone and a real address in the same text still
   extracts). Gate green: fmt/clippy/doc clean, full suite 0 failures.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Parse precision cont'd: `extract::macs` carved a spurious
+  48-bit MAC out of a longer EUI-64/hex run** (same `util::extract` FP-at-source
+  audit as the email fix). `MAC_RE` is `\b`-anchored, but the separator after the
+  6th octet satisfies the trailing `\b`, so an 8-octet identifier
+  `aa:bb:cc:dd:ee:ff:00:11` (and the hyphen form) yielded a bogus
+  `aa:bb:cc:dd:ee:ff` — a fabricated `MacAddress`/BSSID that `mylnikov`/`wigle`
+  would then *geolocate* as a real router, injecting a phantom location signal.
+  Rust's regex has no look-around, so the fix post-filters in `macs`: a match
+  flanked by `<sep><hex>` (another octet immediately before — `2 hex + sep` — or
+  after — `sep + hex`) is a fragment of a longer identifier and is dropped;
+  bytes are ASCII so the edge indexing is boundary-safe. A genuine standalone MAC
+  still extracts, including when wrapped in non-separator punctuation
+  (`(aa:bb:cc:dd:ee:ff)`), and the existing space/`\n`-delimited fixtures are
+  unaffected. Test delta: `macs_does_not_carve_a_48bit_mac_out_of_a_longer_eui64
+  _run` pins both an 8-octet colon and hyphen run to empty *and* the
+  punctuation-wrapped true positive (fail-before/pass-after). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

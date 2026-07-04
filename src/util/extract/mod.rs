@@ -145,9 +145,27 @@ fn iban_mod97_valid(iban: &str) -> bool {
 /// [`crate::modules::mylnikov`] / `wigle`.
 #[must_use]
 pub fn macs(text: &str) -> Vec<String> {
+    let bytes = text.as_bytes();
+    let is_sep = |b: u8| b == b':' || b == b'-';
+    let is_hex = |b: u8| b.is_ascii_hexdigit();
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for m in MAC_RE.find_iter(text) {
+        // Reject a 6-octet window carved out of a LONGER colon/hyphen hex run
+        // (an EUI-64 / longer identifier). The regex's `\b` treats the separator
+        // after the 6th octet as a word boundary, so `aa:bb:cc:dd:ee:ff:00:11`
+        // yields a spurious 48-bit `aa:bb:cc:dd:ee:ff`. A genuine standalone MAC
+        // is never flanked by `<sep><hex><hex>`: another octet immediately after
+        // (sep + 2 hex) or before (2 hex + sep) means this is a fragment of a
+        // longer identifier, not an address. (MAC/EUI bytes are ASCII, so byte
+        // indexing at the match edges is boundary-safe.)
+        let (s, e) = (m.start(), m.end());
+        let octet_after = e + 1 < bytes.len() && is_sep(bytes[e]) && is_hex(bytes[e + 1]);
+        let octet_before =
+            s >= 3 && is_sep(bytes[s - 1]) && is_hex(bytes[s - 2]) && is_hex(bytes[s - 3]);
+        if octet_after || octet_before {
+            continue;
+        }
         let hex: String = m
             .as_str()
             .chars()

@@ -343,6 +343,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`extract::macs` carved a spurious 48-bit MAC out of a longer EUI-64 / hex
+  run.** The MAC regex is word-boundary-anchored, but the separator after the
+  6th octet satisfies the boundary, so an 8-octet identifier like
+  `aa:bb:cc:dd:ee:ff:00:11` (or the hyphen form) yielded a bogus
+  `aa:bb:cc:dd:ee:ff` — a fabricated MAC entity that would then be geolocated
+  as if it were a real router BSSID. `macs` now rejects a match flanked by
+  `<sep><hex>` on either side (another octet before or after), so a genuine
+  standalone MAC still extracts (including when wrapped in non-separator
+  punctuation) while a fragment of a longer identifier does not.
 - **Two non-regex email-admission paths admitted addresses the canonical
   free-text matcher rejects — false positives at the source.** `EMAIL_RE`
   requires a real TLD (`…\.[A-Za-z]{2,}`), but the provider-field gate

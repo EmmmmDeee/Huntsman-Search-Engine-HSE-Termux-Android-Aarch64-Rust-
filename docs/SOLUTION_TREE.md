@@ -2541,3 +2541,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   tightening (no real address has a non-alphabetic TLD, so zero false negatives),
   with fail-before/pass-after tests on both paths. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-BOUNDARY at the MAC extractor: a fragment guard around a
+  boundary-limited regex.** `MAC_RE`'s `\b` anchoring can't tell a standalone MAC
+  from the first six octets of a longer EUI-64 run (the separator satisfies the
+  boundary), and Rust's regex engine has no look-around to express "not followed
+  by another octet." The doctrine's answer when a finite-automaton match is
+  necessarily approximate is a cheap deterministic post-filter at the byte level:
+  `macs` now drops any match flanked by `<sep><hex>`, which is exactly the
+  longer-run signal. Pure, allocation-free, boundary-safe (ASCII edges), and it
+  only ever *removes* a fabricated MAC (a phantom BSSID `mylnikov`/`wigle` would
+  otherwise geolocate) — never a real one. Fail-before/pass-after test on both
+  colon and hyphen 8-octet runs plus a punctuation-wrapped true positive. Gate
+  green. Paired: `PROBLEM_TREE` §8 — same commit.
