@@ -154,6 +154,28 @@ fn archive_key(name: &str, target: &Target) -> String {
     format!("{}:{}:{}", name, target.kind.canonical_str(), normalised)
 }
 
+/// Re-stamp cache-replayed entities with the CURRENT scan's id.
+///
+/// Archived entities carry the `scan_id` of the scan that first produced and
+/// archived them. On a cache hit they are replayed into a *different* scan, but
+/// their per-scan observation is keyed by `entity.scan_id`
+/// (`entity_observations(entity_uid, scan_id)`, written `INSERT OR IGNORE`).
+/// Left unstamped, that write collides with the archiving scan's existing row
+/// and is silently ignored, so the cache-served finding records no observation
+/// under the current scan and drops out of its dossier / export / correlator
+/// input — even though it is still tallied in `ScanComplete.entity_count`.
+/// Re-stamping attributes each replayed entity to the current scan so the
+/// observation is written and the finding stays queryable. The archive copy is
+/// owned (freshly deserialised per lookup) and the `scan_id` is not part of the
+/// UID, so this neither mutates the stored archive nor changes entity identity /
+/// merge behaviour.
+fn restamp_cached(mut cached: Vec<Entity>, scan_id: &str) -> Vec<Entity> {
+    for e in &mut cached {
+        e.scan_id = scan_id.to_string();
+    }
+    cached
+}
+
 /// Distinct *corroborating* evidence-source count for the entity a `target`
 /// resolves to (0 if it isn't in the working set yet). Drives the high-value-API
 /// gate: a discovered entity must reach real cross-correlation, not just a bumped
@@ -694,7 +716,9 @@ impl super::ScanEngine {
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
-                let mr = ModuleResult { entities: cached };
+                let mr = ModuleResult {
+                    entities: restamp_cached(cached, cx.scan_id),
+                };
                 self.finalise_module_result(
                     cx,
                     name,
@@ -831,7 +855,9 @@ impl super::ScanEngine {
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
-                let mr = ModuleResult { entities: cached };
+                let mr = ModuleResult {
+                    entities: restamp_cached(cached, cx.scan_id),
+                };
                 self.finalise_module_result(
                     cx,
                     name,
@@ -950,7 +976,9 @@ impl super::ScanEngine {
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
-                let mr = ModuleResult { entities: cached };
+                let mr = ModuleResult {
+                    entities: restamp_cached(cached, cx.scan_id),
+                };
                 self.finalise_module_result(
                     cx,
                     name,

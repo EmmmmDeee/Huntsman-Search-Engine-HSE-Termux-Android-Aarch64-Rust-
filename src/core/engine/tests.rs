@@ -1957,6 +1957,131 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
     );
 }
 
+/// A module with a non-zero inter-scan cache TTL that emits ONE distinctive
+/// finding unique to it — the cache-exclusive entity whose per-scan attribution
+/// the replay path must get right.
+struct CachedProbeModule;
+
+#[async_trait::async_trait]
+impl Module for CachedProbeModule {
+    fn name(&self) -> &'static str {
+        "cached_probe"
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    fn cache_ttl_secs(&self) -> u64 {
+        3_600
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(
+            EntityKind::Username,
+            "cacheexclusivefinding",
+            0.9,
+            &ctx.scan_id,
+        );
+        e.add_evidence(Evidence::new("cached_probe", "synthetic cached finding"));
+        let mut r = crate::core::module::ModuleResult::new();
+        r.push(e);
+        Ok(r)
+    }
+}
+
+/// Regression: a cache-served module result must be attributed to the CURRENT
+/// scan, not the scan that first archived it. The archived entities carry the
+/// archiving scan's `scan_id`, and the per-scan observation is keyed by
+/// `entity_observations(entity_uid, scan_id)` under `INSERT OR IGNORE`. Before
+/// the fix the replay left the old `scan_id` in place, so the observation write
+/// collided with the archiving scan's existing row and was ignored — the
+/// cache-served finding silently vanished from the new scan's durable dossier
+/// even though `ScanComplete.entity_count` still counted it. Uses a REAL `Store`
+/// because the in-memory double no-ops the archive, so the cache can't hit there.
+#[tokio::test]
+async fn cache_replayed_entity_is_attributed_to_the_current_scan() {
+    use crate::storage::Store;
+
+    let path = format!(
+        "{}/.hse-cache-attr-{}.db",
+        std::env::temp_dir().to_string_lossy(),
+        std::process::id()
+    );
+    let cleanup = |p: &str| {
+        let _ = std::fs::remove_file(p);
+        let _ = std::fs::remove_file(format!("{p}-wal"));
+        let _ = std::fs::remove_file(format!("{p}-shm"));
+    };
+    cleanup(&path);
+    let store: Arc<dyn StoragePort> = Arc::new(Store::open(&path).unwrap());
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(
+        vec![Arc::new(CachedProbeModule) as Arc<dyn Module>],
+        store.clone(),
+        bus.clone(),
+    );
+    let target = Target::new(TargetKind::Username, "cache-attr-seed");
+    // Single round, sequential — deterministic and enough to exercise the replay.
+    // `regional_search: false` so the run does not flip the process-global
+    // `search_engines::REGIONAL_SEARCH` (engine sets it from this flag at scan
+    // start and never resets it), which would otherwise leak into the pure
+    // `build_queries` tests running in parallel (the T2.11 global-state class).
+    let opts = ScanOptions {
+        depth: 0,
+        max_concurrent: 0,
+        regional_search: false,
+        ..Default::default()
+    };
+    let mk_ctx = |sid: &str| ModuleContext {
+        scan_id: sid.to_string(),
+        bus: bus.clone(),
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+    };
+
+    const FINDING: &str = "cacheexclusivefinding";
+
+    // Scan 1 — runs the module live, archives its result, persists under scan-1.
+    let scan1 = Scan::new("cache-attr-1", target.clone()).with_options(opts.clone());
+    engine
+        .run(scan1, target.clone(), mk_ctx("cache-attr-1"))
+        .await
+        .expect("scan 1 runs");
+    assert!(
+        store
+            .entities_for_scan("cache-attr-1")
+            .unwrap()
+            .iter()
+            .any(|e| e.value == FINDING),
+        "sanity: the live finding is recorded under scan 1"
+    );
+
+    // Scan 2 — same target within TTL → cache hit → replay of the archived entity.
+    let scan2 = Scan::new("cache-attr-2", target.clone()).with_options(opts.clone());
+    engine
+        .run(scan2, target.clone(), mk_ctx("cache-attr-2"))
+        .await
+        .expect("scan 2 runs");
+
+    let s2 = store.entities_for_scan("cache-attr-2").unwrap();
+    assert!(
+        s2.iter().any(|e| e.value == FINDING),
+        "cache-replayed finding must be attributed to scan 2, but it is missing \
+         from scan 2's durable results — the replay kept the archiving scan's id"
+    );
+
+    cleanup(&path);
+}
+
 #[test]
 fn rank_enrichment_leverage_orders_join_keys_by_cross_scan_degree() {
     use crate::core::entity::{Entity, EntityKind};
