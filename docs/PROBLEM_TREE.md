@@ -4154,3 +4154,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Credential uids; fail-before: 10) plus a mixed valid/malformed/null case. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4563). **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-04** — **Full-fidelity: `github_user` capped the subject's own commit-author
+  emails at `.take(10)`.** Sibling of the SSH-keys cap, in the same module's `fetch_events`.
+  The subject's public push events embed the `git` author email of each commit — one of the
+  most reliable real-email→handle links in OSINT — and the module deduped them then emitted
+  via `.take(10)`. My prior-cycle note had deferred this as a "false-attribution control,"
+  but re-reading the code that was wrong: the comment says the cap is merely "to keep a busy
+  account bounded," and it does NOT discriminate co-author addresses from the subject's (it
+  applies identically to emails 1–10), so it is a silent resource bound, not a precision
+  gate. It also has no real resource justification — the endpoint is already bounded to 30
+  events (`per_page=30`), so the distinct-email set is naturally small. Result: distinct,
+  real, subject-published addresses 11+ were silently dropped. Fix: moved the `GhEvent`/
+  `GhPayload`/`GhCommit`/`GhCommitAuthor` structs to module scope and extracted a pure
+  `commit_email_entities(events, scan_id, login)` that emits every DISTINCT usable address
+  (dedup by normalised value; GitHub noreply/placeholder forms still dropped by
+  `usable_commit_email` → absence by omission, never a placeholder; first-seen order over
+  the newest-first event stream is deterministic). The evidence label ("Email from
+  @{login}'s public commit author field") keeps provenance honest — it does not claim the
+  address IS the subject — so surfacing every one adds fidelity without over-attributing.
+  Any genuine co-author-attribution concern is a separate precision question (it would need
+  an author-matches-login filter, which `.take(10)` never provided) and is not conflated
+  here. Test delta: `commit_email_entities_emits_every_distinct_email_not_a_capped_ten` (15
+  events, 15 distinct emails → 15 pivots in deterministic order; fail-before: 10) plus a
+  dedup + placeholder-drop case. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4564). **Paired:** `SOLUTION_TREE` §5 — same commit.

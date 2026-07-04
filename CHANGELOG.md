@@ -343,6 +343,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **GitHub user lookups now emit every distinct commit-author email from the subject's
+  public push events, not just the first 10.** Each address published in the subject's own
+  commit author fields is a high-value real-email pivot, but the module deduplicated them
+  and then kept only the first 10 — a cap the code comment admitted was merely "to keep a
+  busy account bounded," even though the events endpoint is already limited to 30 events.
+  Every distinct usable address is now emitted (GitHub's privacy/noreply placeholders are
+  still dropped, never replaced with a placeholder; duplicates still collapse to one).
+  Regression test `commit_email_entities_emits_every_distinct_email_not_a_capped_ten`.
 - **GitHub user lookups now emit every one of the subject's published SSH public keys as a
   correlatable artifact, not just the first 10.** Each key was fingerprinted into a
   `Credential` entity so that the same public key found on two accounts merges into one

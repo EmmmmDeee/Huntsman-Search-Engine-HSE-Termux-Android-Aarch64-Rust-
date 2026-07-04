@@ -248,6 +248,77 @@ pub(super) async fn fetch_gist_content(
     }
 }
 
+/// One entry of GitHub's `/users/{login}/events/public` feed. Kept at module
+/// scope (not nested inside `fetch_events`) so the commit-author-email
+/// extraction can be unit-tested without a live HTTP round-trip.
+#[derive(serde::Deserialize)]
+pub(super) struct GhEvent {
+    #[serde(default)]
+    pub(super) created_at: Option<String>,
+    #[serde(default, rename = "type")]
+    pub(super) event_type: Option<String>,
+    #[serde(default)]
+    pub(super) payload: Option<GhPayload>,
+}
+#[derive(serde::Deserialize)]
+pub(super) struct GhPayload {
+    #[serde(default)]
+    pub(super) commits: Vec<GhCommit>,
+}
+#[derive(serde::Deserialize)]
+pub(super) struct GhCommit {
+    #[serde(default)]
+    pub(super) author: Option<GhCommitAuthor>,
+}
+#[derive(serde::Deserialize)]
+pub(super) struct GhCommitAuthor {
+    #[serde(default)]
+    pub(super) email: Option<String>,
+}
+
+/// Every DISTINCT usable commit-author email the subject's public push events
+/// published, each emitted as a `commit-email` `Email` pivot. A user's own
+/// public push events embed the `git` author email of each commit — one of the
+/// most reliable real-email → handle links in OSINT. GitHub's privacy
+/// `…@users.noreply.github.com` / `noreply@github.com` placeholders carry no
+/// identity and are dropped by `usable_commit_email`.
+///
+/// Dedup is by normalised value; output order is first-seen over the event
+/// stream (GitHub returns it newest-first, so the ordering is deterministic for
+/// a given response). No cap: the events endpoint is already bounded to 30
+/// events, so the distinct-email set is naturally small, and every distinct
+/// real address is an independent pivot — silently dropping addresses 11+ (the
+/// old `.take(10)`, a bound "to keep a busy account bounded") would discard
+/// real handle→email evidence with no signal any were lost. The evidence label
+/// states the address came from the subject's commit *author field* — honest
+/// provenance, not a claim the address IS the subject.
+pub(super) fn commit_email_entities(events: &[GhEvent], scan_id: &str, login: &str) -> Vec<Entity> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    events
+        .iter()
+        .filter_map(|event| event.payload.as_ref())
+        .flat_map(|payload| payload.commits.iter())
+        .filter_map(|commit| commit.author.as_ref()?.email.as_deref())
+        .filter_map(usable_commit_email)
+        .filter(|email| seen.insert(email.clone()))
+        .map(|email| {
+            let mut e = Entity::new(EntityKind::Email, &email, 0.82, scan_id);
+            e.tag("github");
+            e.tag("commit-email");
+            e.tag("public-profile");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Email from @{login}'s public commit author field"),
+                )
+                .with_attr("github_login", login)
+                .with_attr("source", "commit_author"),
+            );
+            e
+        })
+        .collect()
+}
+
 pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
     let url = format!("https://api.github.com/users/{login}/events/public?per_page=30");
     let resp = match ctx
@@ -263,31 +334,6 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
     };
     if !resp.status().is_success() {
         return;
-    }
-
-    #[derive(serde::Deserialize)]
-    struct GhEvent {
-        #[serde(default)]
-        created_at: Option<String>,
-        #[serde(default, rename = "type")]
-        event_type: Option<String>,
-        #[serde(default)]
-        payload: Option<GhPayload>,
-    }
-    #[derive(serde::Deserialize)]
-    struct GhPayload {
-        #[serde(default)]
-        commits: Vec<GhCommit>,
-    }
-    #[derive(serde::Deserialize)]
-    struct GhCommit {
-        #[serde(default)]
-        author: Option<GhCommitAuthor>,
-    }
-    #[derive(serde::Deserialize)]
-    struct GhCommitAuthor {
-        #[serde(default)]
-        email: Option<String>,
     }
 
     let events: Vec<GhEvent> = match crate::util::http::json_scanned(resp, SRC).await {
@@ -345,36 +391,7 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
         first.add_evidence(ev);
     }
 
-    // Commit-author email leak: a user's PUBLIC push events embed the email
-    // configured in `git`'s author field for each commit. This is a
-    // high-value, operator-published handle→email link — one of the most
-    // reliable real-email discoveries in OSINT. GitHub's own privacy
-    // `…@users.noreply.github.com` placeholders carry no identity, so they're
-    // excluded. Dedup by value; cap to keep a busy account bounded.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    result.extend(
-        events
-            .iter()
-            .filter_map(|event| event.payload.as_ref())
-            .flat_map(|payload| payload.commits.iter())
-            .filter_map(|commit| commit.author.as_ref()?.email.as_deref())
-            .filter_map(usable_commit_email)
-            .filter(|email| seen.insert(email.clone()))
-            .take(10)
-            .map(|email| {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.82, &ctx.scan_id);
-                e.tag("github");
-                e.tag("commit-email");
-                e.tag("public-profile");
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Email from @{login}'s public commit author field"),
-                    )
-                    .with_attr("github_login", login)
-                    .with_attr("source", "commit_author"),
-                );
-                e
-            }),
-    );
+    // Emit EVERY distinct usable commit-author email (see `commit_email_entities`
+    // — no cap; deduped, placeholder-filtered).
+    result.extend(commit_email_entities(&events, &ctx.scan_id, login));
 }

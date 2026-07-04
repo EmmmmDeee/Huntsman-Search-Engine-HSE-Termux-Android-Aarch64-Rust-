@@ -1,5 +1,5 @@
 use super::GithubUser;
-use super::fetch::{SshKey, ssh_key_entities};
+use super::fetch::{GhEvent, SshKey, commit_email_entities, ssh_key_entities};
 use super::helpers::{ssh_fingerprint, top_event_types, usable_commit_email};
 use super::types::GhUser;
 use crate::core::{
@@ -101,6 +101,53 @@ fn ssh_key_entities_emits_every_key_not_a_capped_ten() {
         },
     ];
     assert_eq!(ssh_key_entities(&mixed, "scan-ssh", "octocat").len(), 1);
+}
+
+#[test]
+fn commit_email_entities_emits_every_distinct_email_not_a_capped_ten() {
+    // Fidelity: every DISTINCT usable commit-author email in the subject's own
+    // public push events is an independent handle→email pivot. The previous
+    // `.take(10)` (a bound "to keep a busy account bounded") silently dropped
+    // distinct real addresses 11+. Seed 15 events each carrying one commit with
+    // a distinct author email and require all 15 Email pivots.
+    let events_json = (0..15)
+        .map(|i| {
+            format!(
+                r#"{{"type":"PushEvent","payload":{{"commits":[{{"author":{{"email":"dev{i:02}@example.com"}}}}]}}}}"#
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let events: Vec<GhEvent> = serde_json::from_str(&format!("[{events_json}]")).unwrap();
+    let out = commit_email_entities(&events, "scan-ce", "octocat");
+    assert_eq!(
+        out.len(),
+        15,
+        "every distinct commit-author email must surface, not a capped ten"
+    );
+    assert!(out.iter().all(|e| e.kind == EntityKind::Email));
+    assert!(
+        out.iter()
+            .all(|e| e.tags.iter().any(|t| t == "commit-email"))
+    );
+    // Deterministic first-seen order over the (newest-first) event stream.
+    assert_eq!(out[0].value, "dev00@example.com");
+    assert_eq!(out[14].value, "dev14@example.com");
+
+    // Duplicates collapse to one; GitHub noreply/placeholder addresses are
+    // dropped (never emitted as a placeholder) — absence by omission.
+    let dupe_json = r#"[
+        {"type":"PushEvent","payload":{"commits":[
+            {"author":{"email":"real@personal.dev"}},
+            {"author":{"email":"REAL@personal.dev"}},
+            {"author":{"email":"12345+ghost@users.noreply.github.com"}},
+            {"author":{"email":"noreply@github.com"}}
+        ]}}
+    ]"#;
+    let events: Vec<GhEvent> = serde_json::from_str(dupe_json).unwrap();
+    let out = commit_email_entities(&events, "scan-ce", "octocat");
+    assert_eq!(out.len(), 1);
+    assert_eq!(out[0].value, "real@personal.dev");
 }
 
 #[test]

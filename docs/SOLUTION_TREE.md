@@ -3009,3 +3009,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `ssh_key_count` is untouched. Test: `ssh_key_entities_emits_every_key_not_a_capped_ten`
   (15 keys → 15 distinct Credential uids; fail-before: 10). Gate green (4563). Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-COMMITEMAIL: `github_user` emits every distinct
+  commit-author email, not a capped 10.** Sibling of SOL-FIDELITY-SSHKEYS in the same
+  module. `fetch_events` deduped the commit-author emails from the subject's public push
+  events then emitted `.take(10)` — a silent bound the comment admits is only "to keep a
+  busy account bounded," with no resource justification (the endpoint is already capped to
+  30 events) and no co-author discrimination (so not a precision gate, contra my prior-cycle
+  deferral). Moved the `GhEvent` struct family to module scope and extracted a pure
+  `commit_email_entities()` that emits every distinct usable address (noreply/placeholder
+  forms still dropped by `usable_commit_email`; first-seen order over the newest-first
+  stream is deterministic). Provenance-honest evidence ("from @login's commit author field")
+  means full emission adds fidelity without over-attributing; any true co-author concern is
+  a separate author-matches-login precision filter, not this cap. Test:
+  `commit_email_entities_emits_every_distinct_email_not_a_capped_ten` (15 events → 15 pivots;
+  fail-before: 10). Gate green (4564). Paired: `PROBLEM_TREE` §8 — same commit.
