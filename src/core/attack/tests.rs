@@ -63,6 +63,11 @@ use super::*;
             technique("T1595.002").map(|t| t.name),
             Some("Vulnerability Scanning")
         );
+        // Wordlist Scanning — dictionary subdomain brute-force (dns_intel).
+        assert_eq!(
+            technique("T1595.003").map(|t| t.name),
+            Some("Wordlist Scanning")
+        );
     }
 
     #[test]

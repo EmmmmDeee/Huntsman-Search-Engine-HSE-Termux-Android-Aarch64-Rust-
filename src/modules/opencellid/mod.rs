@@ -116,7 +116,13 @@ impl Module for OpenCellId {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1591.001", "T1596", "T1596.001"]
+        // Querying the OpenCelliD crowdsourced cell-tower database to place towers
+        // (and thus the subject) is Search Open Technical Databases (T1596) →
+        // Determine Physical Locations (T1591.001). It is NOT DNS/Passive DNS
+        // (T1596.001, dropped): OpenCelliD is a radio/geolocation database, and
+        // this module makes no DNS query. There is no cell-database sub-technique,
+        // so the honest mapping stops at the T1596 parent.
+        &["T1591.001", "T1596"]
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

@@ -437,9 +437,25 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     assert_eq!(techniques("cert_intel"), vec!["T1596.003"]);
     assert_eq!(techniques("whois"), vec!["T1596.002"]); // WHOIS
     assert_eq!(techniques("rdap_domain"), vec!["T1596.002"]);
-    assert_eq!(techniques("dns_intel"), vec!["T1590.002"]); // DNS
+    // dns_intel resolves live records (DNS, T1590.002) AND brute-forces
+    // subdomains from a common-name wordlist (Active Scanning: Wordlist Scanning,
+    // T1595.003) — two techniques for its two behaviours, not just passive DNS.
+    assert_eq!(techniques("dns_intel"), vec!["T1590.002", "T1595.003"]);
+    assert!(
+        techniques("dns_intel").contains(&"T1595.003"),
+        "dns_intel's dictionary subdomain brute-force is Wordlist Scanning"
+    );
     assert_eq!(techniques("securitytrails"), vec!["T1596.001"]); // Passive DNS
     assert_eq!(techniques("hackertarget"), vec!["T1590.002", "T1596.001"]);
+    // opencellid searches a cell-tower geolocation DATABASE (Search Open Technical
+    // Databases → Physical Locations); it makes no DNS query, so it must NOT claim
+    // DNS/Passive DNS (T1596.001) — there is no cell-database sub-technique, so the
+    // honest mapping stops at the T1596 parent.
+    assert_eq!(techniques("opencellid"), vec!["T1591.001", "T1596"]);
+    assert!(
+        !techniques("opencellid").contains(&"T1596.001"),
+        "opencellid queries a cell-tower database, not DNS"
+    );
     // Active vulnerability probe (dangling-CNAME takeover) → Active Scanning:
     // Vulnerability Scanning (T1595.002), NOT the passive Domain Properties the
     // DnsRecon default would inherit. It touches the target to prove an

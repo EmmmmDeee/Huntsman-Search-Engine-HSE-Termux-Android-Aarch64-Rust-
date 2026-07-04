@@ -23,14 +23,20 @@ fn accepts_coordinates_and_device_id() {
 }
 
 #[test]
-fn attack_techniques_include_geo_and_open_db() {
+fn attack_techniques_are_geo_and_open_db_but_not_dns() {
     let t = OpenCellId.attack_techniques();
     assert!(t.contains(&"T1591.001"), "must include physical location");
     assert!(
         t.contains(&"T1596"),
         "must include open technical databases"
     );
-    assert!(t.contains(&"T1596.001"), "must include OSINT sub-technique");
+    // It queries a cell-tower geolocation database, not DNS — so it must NOT
+    // claim DNS/Passive DNS (T1596.001). There is no cell-database sub-technique,
+    // so the honest mapping stops at the T1596 parent.
+    assert!(
+        !t.contains(&"T1596.001"),
+        "OpenCelliD makes no DNS query; T1596.001 would be a mis-attribution"
+    );
 }
 
 #[test]

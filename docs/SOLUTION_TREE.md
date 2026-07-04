@@ -2591,3 +2591,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   contention, expressed in one place. Validated by an eight-thread vault property
   test alongside `atomic_file`'s existing one. Gate green. Paired: `PROBLEM_TREE`
   §8 — same commit.
+- **2026-07-04** — **SOL-ATTACK-INLINE broadened: full-registry mapping audit,
+  catalogue gap closed.** Continuing the operator-endorsed "MITRE inline on the
+  data" model (the separate report stays retired), audited all 160 modules'
+  technique mappings and closed the two real gaps: added the missing **T1595.003
+  Wordlist Scanning** technique (which `dns_intel`'s dictionary subdomain
+  brute-force performs) to the catalogue and mapped it, and removed `opencellid`'s
+  incorrect DNS/Passive-DNS tag (it queries a cell-tower database). Because the
+  inline per-finding tag *is* the deliverable, the precision of the module→technique
+  map is the precision of the product; guard-pinning both corrections keeps them
+  from regressing to the category default. This is P→S/S→P alternation on the
+  taxonomy itself — the mapping now matches what every module actually does, and
+  the catalogue-drift guard proves no technique is dead or out-of-register. Gate
+  green. Paired: `PROBLEM_TREE` §8 — same commit.

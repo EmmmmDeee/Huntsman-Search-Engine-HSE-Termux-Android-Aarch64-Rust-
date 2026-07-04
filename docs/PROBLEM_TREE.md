@@ -3427,3 +3427,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   key-vault round-trip/append/validation tests exercise the new path unchanged.
   Gate green: fmt/clippy/doc clean, lib + integration 0 failures. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **MITRE mapping precision (operator-directed): a full-registry
+  ATT&CK audit of all 160 modules, two genuine mis-mappings fixed.** Extracted
+  every module's category + `attack_techniques()` and reviewed each against what
+  the code actually collects; the layer is mostly precise (108 overrides already
+  guard-pinned), and this pass corrects the two that were not. **(1) `dns_intel`**
+  mapped only to DNS (T1590.002), but its `brute::brute_subdomains` iterates a
+  146-label common-name dictionary resolving each candidate — active infrastructure
+  probing from a wordlist, i.e. Active Scanning: **Wordlist Scanning (T1595.003)**,
+  a technique the module performs but the catalogue lacked. Added T1595.003 to
+  `RECONNAISSANCE` (after T1595.002, id-sorted) and mapped dns_intel to
+  `["T1590.002", "T1595.003"]`. **(2) `opencellid`** claimed **DNS/Passive DNS
+  (T1596.001)** despite querying the OpenCelliD *cell-tower* database with no DNS
+  call anywhere in `process` — a wrong sub-technique. Dropped it, leaving the
+  honest `["T1591.001", "T1596"]` (there is no cell-database sub-technique, so it
+  stops at the T1596 parent). Both keep MITRE *inline on the data* (the settled
+  cycle-49/52 doctrine) — no separate report. The bar for change was "the module
+  demonstrably performs / does not perform the technique," so debatable
+  conventions (the Infrastructure family's loose `T1591.002` ISP-as-business-
+  relationship tag) were left untouched. Test delta: the precise-override guard
+  now pins `dns_intel → [T1590.002, T1595.003]` and `opencellid → [T1591.001,
+  T1596]` (each with a `contains`/`!contains` cross-check), and
+  `active_scanning_family_is_catalogued` pins T1595.003; the
+  `every_module_maps_to_valid_attack_reconnaissance_techniques` catalogue-drift
+  guard confirms T1595.003 is now catalogued and referenced (not dead). Gate
+  green: fmt/clippy/doc clean, lib + integration 0 failures incl. all ATT&CK
+  guards. **Paired:** `SOLUTION_TREE` §5 — same commit.

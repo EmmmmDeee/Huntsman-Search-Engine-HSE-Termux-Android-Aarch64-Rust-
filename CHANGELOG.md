@@ -343,6 +343,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **MITRE ATT&CK mapping precision — two modules' inline technique tags
+  sharpened.** `dns_intel` resolves live DNS records (T1590.002) but *also*
+  actively brute-forces subdomains against a 146-label dictionary, which is
+  Active Scanning: **Wordlist Scanning (T1595.003)** — a technique the module
+  performed but never declared, now added to the catalogue and mapped.
+  `opencellid` queries a cell-tower geolocation database and makes no DNS query,
+  yet claimed **DNS/Passive DNS (T1596.001)**; that mis-attribution is dropped,
+  leaving the honest Search Open Technical Databases (T1596) → Physical Locations
+  (T1591.001). Sharpens the per-finding `attack:` provenance both modules stamp.
 - **Durable, concurrency-safe writes for the API-key vault; the shared atomic
   writer now commits the rename to disk.** Two robustness gaps: (1)
   `atomic_file::write` fsynced the temp file's data but never the parent
