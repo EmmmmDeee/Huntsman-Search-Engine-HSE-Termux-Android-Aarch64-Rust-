@@ -165,6 +165,10 @@ pub(super) const SEEKNOW_SUPERSEDED_KEY_2: &str =
 /// enterprise key above.
 pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
     "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
+/// Shodan API key, `oss` (free) plan. Live-verified: `api-info` returns
+/// `"plan":"oss"`, and the paid `/shodan/host/{ip}` lookup (not just the
+/// always-free InternetDB path) returns real host data with this key.
+pub const SHODAN_DEFAULT_KEY: &str = "ODpm5rYfPmn8VzwlK6RrQf7ITjClVLpX";
 
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.
@@ -175,6 +179,7 @@ pub(super) const HARDCODED: &[(&str, &str)] = &[
     ("HUNTSMAN_WIGLE_USER", WIGLE_DEFAULT_USER),
     ("HUNTSMAN_WIGLE_TOKEN", WIGLE_DEFAULT_TOKEN),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_DEFAULT_KEY),
+    ("HUNTSMAN_SHODAN_KEY", SHODAN_DEFAULT_KEY),
 ];
 
 /// Embedded defaults that have been ROTATED. If the env file still carries an

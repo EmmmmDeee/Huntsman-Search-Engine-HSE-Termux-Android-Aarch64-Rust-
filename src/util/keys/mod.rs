@@ -11,8 +11,8 @@ mod tests;
 
 pub use constants::{
     DEFAULT_SEED_ENV, HIBP_DEFAULT_KEY, KNOWN_KEYS, OATHNET_DEFAULT_KEY, SEEKNOW_DEFAULT_KEY,
-    SEEKNOW_SUPERSEDED_KEY, WIGLE_DEFAULT_TOKEN, WIGLE_DEFAULT_USER, own_api_keys,
-    resolve_or_default, signup_hint, wigle_credentials,
+    SEEKNOW_SUPERSEDED_KEY, SHODAN_DEFAULT_KEY, WIGLE_DEFAULT_TOKEN, WIGLE_DEFAULT_USER,
+    own_api_keys, resolve_or_default, signup_hint, wigle_credentials,
 };
 pub use io::{
     default_seed, env_path, load, load_from_file_only, populate_and_load, write_keys, write_keys_at,

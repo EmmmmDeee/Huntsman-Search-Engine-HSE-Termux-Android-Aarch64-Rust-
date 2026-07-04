@@ -9,6 +9,9 @@
 //! service-scan data, org/ISP/ASN/OS, and PTR hostnames.
 //!
 //! Both paths run for every IP address target; entities are merged.
+//!
+//! Key: hardcoded (`oss`/free plan) for zero-config, overridden by
+//! `HUNTSMAN_SHODAN_KEY`. Single source of truth: `util::keys`.
 
 #[cfg(test)]
 mod tests;
@@ -27,6 +30,14 @@ use crate::util::http::RequestBuilderExt;
 use crate::util::http::urlencode;
 
 pub(super) const KEY_ENV: &str = "HUNTSMAN_SHODAN_KEY";
+// Embedded fallback: single source of truth lives in `util::keys`.
+const HARDCODED_KEY: &str = crate::util::keys::SHODAN_DEFAULT_KEY;
+
+/// Resolve the Shodan API key: the operator's own key when configured,
+/// otherwise the embedded `oss`-plan default. Mirrors `hibp::resolve_key`.
+pub(super) fn resolve_key(ctx_key: Option<&str>) -> &str {
+    crate::util::keys::resolve_or_default(ctx_key, HARDCODED_KEY)
+}
 
 // ── Paid API response ────────────────────────────────────────────────
 
@@ -134,13 +145,15 @@ impl Module for Shodan {
 
         let mut result = ModuleResult::new();
 
-        if let Some(key) = ctx.key_opt(KEY_ENV) {
-            // Paid API returns a strict superset (org, ISP, ASN, OS,
-            // country + everything InternetDB has). Skip free path.
-            self.query_paid(ip, key, ctx, &mut result).await?;
-        } else {
-            self.query_internetdb(ip, ctx, &mut result).await;
-        }
+        // `resolve_key` always yields a real key (the operator's own, else
+        // the embedded `oss`-plan default), so the paid path always runs
+        // now. Its schema is NOT a strict superset of InternetDB's — paid
+        // carries org/ISP/ASN/OS/country InternetDB lacks, but InternetDB
+        // carries CPEs/tags paid lacks — so both run and merge, matching
+        // this module's header doc.
+        let key = resolve_key(ctx.key_opt(KEY_ENV));
+        self.query_paid(ip, key, ctx, &mut result).await?;
+        self.query_internetdb(ip, ctx, &mut result).await;
 
         Ok(result)
     }
