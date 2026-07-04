@@ -43,3 +43,17 @@ use super::*;
         names.dedup();
         assert_eq!(names.len(), orig_len, "service names must be unique");
     }
+
+    #[test]
+    fn see_know_validation_probe_uses_x_api_key_not_bearer() {
+        // The see-know.eu server REJECTS `Authorization: Bearer` with "Missing API
+        // key. Use X-API-Key" (see see_know/client.rs, AuthScheme::XApiKey). The
+        // key-validation probe reads this ServiceDef, so it must send the same
+        // header the real client does — otherwise a VALID see_know key is probed
+        // with the wrong header, 401s, and is mis-reported as invalid.
+        let def = find_service("see_know").expect("see_know service def present");
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "X-API-Key"),
+            other => panic!("see_know must authenticate with X-API-Key, got {other:?}"),
+        }
+    }
