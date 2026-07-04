@@ -736,6 +736,21 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "reddit_user emits no Person entity; must not claim Employee Names"
     );
 
+    // username_search: enumerates handle PRESENCE across 300+ sites, emitting a
+    // profile Url + the confirmed Username and never a real-name Person — so the
+    // Social default's T1589.003 (Employee Names) is over-claimed, the same fix
+    // as hacker_news / reddit_user. It has no bio-email path, so T1593.001
+    // (Social Media search) is its single precise technique.
+    assert_eq!(
+        techniques("username_search"),
+        vec!["T1593.001"],
+        "username_search → Social Media search only (handle presence, no Person)"
+    );
+    assert!(
+        !techniques("username_search").contains(&"T1589.003"),
+        "username_search resolves no name; must not claim Employee Names"
+    );
+
     // epieos: People default drops over-claimed T1591.004 (no roles); adds
     // T1589.002 for the email seed and T1591.001 for location Address.
     assert_eq!(

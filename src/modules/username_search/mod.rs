@@ -113,6 +113,18 @@ impl Module for UsernameSearch {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default is T1593.001 (Social Media) + T1589.003 (Employee
+        // Names), but this module only ENUMERATES handle presence across 300+
+        // sites: it emits a profile `Url` and the confirmed `Username` (see
+        // `produces`) and never resolves a real-name `Person`, so T1589.003 is
+        // over-claimed — the same correction already applied to hacker_news /
+        // lobsters / nostr / reddit_user. Unlike those it has no bio-email path
+        // (no `Email` in `produces`), so T1593.001 (searching open websites for
+        // the account) is the single precise technique.
+        &["T1593.001"]
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let username = target.value.trim();
         if username.is_empty() || username.len() > 64 {

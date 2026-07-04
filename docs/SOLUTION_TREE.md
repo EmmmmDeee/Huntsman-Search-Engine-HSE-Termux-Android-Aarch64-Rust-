@@ -2773,3 +2773,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   "one gate, no drift" discipline as the original single-sourcing. Test:
   `email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts`. Gate
   green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-MITRE-USERNAMESEARCH: `username_search` no longer
+  over-claims ATT&CK T1589.003 (Employee Names).** Per-finding `attack:<ID>` tags
+  are HSE's only MITRE surface, so the module→technique map's precision is the
+  product's ATT&CK fidelity. The guard-encoded convention is exact — a module
+  claims T1589.003 iff it emits a real-name `Person` — and the prior override pass
+  dropped it from github_user/hacker_news/lobsters/nostr/reddit_user for that
+  reason, but missed `username_search`, which enumerates handle presence across
+  300+ sites and emits only `Url` + `Username` (never a `Person`). It inherited
+  the raw `Social` default `["T1593.001", "T1589.003"]`, so every finding falsely
+  claimed HSE had gathered the subject's name. Added the precise override
+  `["T1593.001"]` (Social Media search only — no bio-email path, unlike
+  reddit_user) and pinned it in the `attack_overrides_..._precisely` guard,
+  forbidding a regression to the default. Five further un-overridden name-less
+  Social modules (discord_snowflake, fediverse, gaming_profile, streaming_probe,
+  structured_id) are noted as a discrete follow-up — each emits no `Person` but
+  carries its own technique nuance, so each needs an individual judgement rather
+  than a blanket sweep. Test: `attack_overrides_attribute_collection_modules_precisely`
+  extended. Gate green. Paired: `PROBLEM_TREE` §8 — same commit.

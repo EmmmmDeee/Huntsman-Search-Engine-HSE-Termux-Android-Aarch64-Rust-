@@ -343,6 +343,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`username_search` no longer over-claims MITRE ATT&CK T1589.003 (Employee Names)
+  on its findings.** Every admitted entity is stamped with its producing module's
+  ATT&CK Reconnaissance techniques as inline `attack:<ID>` tags, so the map's
+  precision is the product's ATT&CK fidelity. The established convention is that a
+  module claims T1589.003 (Employee Names) only if it emits a real-name `Person`
+  entity — github_user, hacker_news, lobsters, nostr and reddit_user were all
+  overridden to drop it for exactly this reason. `username_search` enumerates handle
+  presence across 300+ sites and emits only `Url` and `Username`, never a `Person`,
+  but was missed in that pass and inherited the raw `Social` default
+  `["T1593.001", "T1589.003"]` — so every finding falsely claimed a name had been
+  gathered. It now declares the precise `["T1593.001"]` (Social Media search only),
+  pinned by the `attack_overrides_attribute_collection_modules_precisely` guard.
 - **The web crawler no longer mines IP-literal / numeric-TLD / 1-char-TLD hosts as
   bogus email addresses.** `util::extract::host_has_alpha_tld` is the single-sourced
   definition of a valid email domain (≥1 dot, no empty label, a final label of ≥2

@@ -3741,3 +3741,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fails against the old `len > 3` gate, passes against the fix. Gate green:
   fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-04** — **MITRE precision (T2.19, new): `username_search` over-claimed
+  ATT&CK T1589.003 (Employee Names) on every finding — the one presence
+  enumerator the override pass missed.** Each admitted entity is stamped with its
+  producing module's `attack:<ID>` techniques (`engine::dispatch`), so a per-finding
+  `attack:` tag IS HSE's MITRE surface — the map's precision is the product's ATT&CK
+  fidelity. The codebase's guard-encoded convention is exact: a module claims
+  T1589.003 **iff it emits a real-name `Person`** (keybase/gravatar/DeHashed/IntelX
+  keep it *because* they do; github_user/hacker_news/lobsters/nostr/reddit_user were
+  overridden to DROP it as "over-claimed — no Person entity"). `username_search`
+  ENUMERATES handle presence across 300+ sites and emits only `Url` + `Username`
+  (`produces() = [Url, Username]`, zero `EntityKind::Person` in the module) — yet it
+  had no override and inherited the raw `Social` default `["T1593.001", "T1589.003"]`,
+  so every profile URL / username it emitted carried a false `attack:T1589.003`
+  (Employee Names) claiming HSE gathered a person's name when it only confirmed a
+  handle exists. It was simply skipped when its twins were corrected. Added the
+  precise override `["T1593.001"]` (Social Media search only — no bio-email path, so
+  no T1589.002 like reddit_user) with the guard assertion pinning it and forbidding a
+  regression to T1589.003. Test delta: `attack_overrides_attribute_collection_modules_precisely`
+  extended (assert_eq `username_search` → `["T1593.001"]` + `!contains("T1589.003")`);
+  fails against the inherited default, passes against the override.
+  **Follow-up noted, not swept (split-don't-sprawl):** five further un-overridden
+  name-less `Social` modules — `discord_snowflake`, `fediverse`, `gaming_profile`,
+  `streaming_probe`, `structured_id` — likely warrant the same audit (each emits no
+  `Person`), but each has its own technique nuance (fediverse emits `Email`,
+  structured_id a `MacAddress`) so each needs an individual judgement, not a blanket
+  drop; left as a discrete follow-up rather than expanding this cycle. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
