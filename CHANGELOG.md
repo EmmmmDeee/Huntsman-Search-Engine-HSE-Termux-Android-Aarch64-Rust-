@@ -11,6 +11,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Dossier reinstates the scan-level "slow scan had a zero-yield module" tuning
+  hint (`PROBLEM_TREE` T2.14, first slice).** `hse scan --output dossier` again
+  prints, under OPTIMIZATION HINTS, `scan exceeded 60s with N zero-yield
+  module(s) — consider tightening module_timeout_ms` when a scan ran longer than
+  60 s and at least one module finished having found nothing. T2.13 had removed
+  this hint (and a per-module one) as unreachable dead code because it had been
+  keyed on `util::diagnostics::analyse`'s emitted-entity list, where a
+  zero-yield module is simply absent; the reinstated version reads the scan's own
+  `ModuleDone` events at the caller layer (which has `StoragePort` access `util`
+  may not depend on), exactly mirroring the T2.13 ROI-hint fix. The per-module
+  zero-yield hint stays deferred (it needs a noise decision — a real scan can
+  leave dozens of modules legitimately at zero for a given target kind).
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

@@ -471,7 +471,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -480,8 +480,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   given target kind (normal, not noteworthy), so a naive per-module
   reinstatement would flood the hints list with the opposite of signal.
   Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count.
+  ◑ **Scan-level slice delivered (2026-07-04).** The exact SOL-ROI-HINT
+  pattern: a pure caller-layer `slow_scan_zero_yield_hint(wall_ms, events)` in
+  `cli/scan/dossier.rs` emits `scan exceeded 60s with N zero-yield module(s) —
+  consider tightening module_timeout_ms` when wall-time > 60 s and ≥ 1
+  `ModuleDone { found: 0 }` event exists; `print_diagnostics` appends it to the
+  OPTIMIZATION HINTS block, reusing the `events` already fetched for the ROI
+  hint. Counts all zero-yield modules regardless of cost (wall-time, not spend).
+  4 unit tests (positives red-against-stub then green; fast-scan + all-yielded
+  negatives). *Closes:* the scan-level half of **T2.14**. *Remaining `[~]`:* the
+  per-module hint, still gated on the noise decision above. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -557,7 +566,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -2496,3 +2505,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   have no test against real `git` subprocess behaviour (`tempfile` is already
   a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
   bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-04** — **SOL-HINT-NOISE `[ ]`→`[~]`: the scan-level 60s zero-yield
+  optimization hint is reinstated (T2.14 first slice).** Highest-priority
+  actionable open node this cycle: T0/T1 done; F.1 `bstr` blocked on a natural
+  consumer that doesn't exist (forcing one = speculation); F.3 `cargo-fuzz` is a
+  CI-lane infra change unverifiable in the on-device gate; T2.7 (P2) needs a live
+  third-party fetch or a fabricated fixture (both forbidden); so T2.14 (P3), cut
+  by the sizing rule to its scan-level half. Delivered exactly per SOL-ROI-HINT:
+  pure caller-layer `slow_scan_zero_yield_hint(wall_ms, events)` in
+  `cli/scan/dossier.rs`, appended to the dossier's OPTIMIZATION HINTS block,
+  reusing the `events` already fetched for the ROI hint. Failing-first proven
+  (positive tests red against a `None` stub, green against the real logic; two
+  negative tests hold in both). The per-module hint stays deferred — it needs the
+  documented noise decision, not just wiring. Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4270 lib tests (+4), all integration suites. Paired:
+  `PROBLEM_TREE` T2.14 `[ ]`→`[~]` + §8 — same commit.

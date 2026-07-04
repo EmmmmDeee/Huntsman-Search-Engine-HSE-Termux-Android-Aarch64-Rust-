@@ -650,7 +650,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -670,6 +670,17 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+  ◑ **Scan-level 60s hint slice delivered (SOL-HINT-SLOW-SCAN, this cycle).**
+  Took option (b): a pure caller-layer helper `slow_scan_zero_yield_hint(wall_ms,
+  events)` in `cli/scan/dossier.rs` (beside `zero_yield_keyed_or_paid_modules`)
+  returns `scan exceeded 60s with N zero-yield module(s) — consider tightening
+  module_timeout_ms` when the scan ran > 60 s and ≥1 `ModuleDone { found: 0 }`
+  event exists; `print_diagnostics` appends it to the OPTIMIZATION HINTS block,
+  reusing the `events` already fetched for the ROI hint. Counts every zero-yield
+  module regardless of cost tier (this hint is about wall-time, not spend). 4
+  unit tests (positive proven red against a `None` stub first, then green).
+  **Remaining (`[~]`):** the **per-module** zero-yield hint — deferred per the
+  sizing rule because it still needs the noise decision above, not just wiring.
 
 ---
 
@@ -3266,3 +3277,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `tempfile` (already a dev-dep) would support a local-repo-pair fixture,
   left as its own smaller follow-on. **Paired:** `SOLUTION_TREE` SOL-UPDATE +
   §4a + §5 — same commit.
+
+- **2026-07-04** — **T2.14 first slice: the scan-level 60s zero-yield
+  optimization hint is reinstated (`[ ]`→`[~]`).** T2.13 had removed two dead
+  `analyse()` hints (keyed on an emitted-entity list a zero-yield module is
+  never in) and opened T2.14 to restore them with a real design. This cycle
+  landed the half T2.14 called "a straightforward reinstatement": a pure
+  caller-layer helper `slow_scan_zero_yield_hint(wall_ms, events)` in
+  `cli/scan/dossier.rs` returns `scan exceeded 60s with N zero-yield module(s) —
+  consider tightening module_timeout_ms` when the scan ran > 60 s and ≥ 1
+  `ModuleDone { found: 0 }` event exists; `print_diagnostics` appends it to the
+  OPTIMIZATION HINTS block, reusing the `events` already fetched for the ROI
+  hint (option (b), mirroring T2.13's `zero_yield_keyed_or_paid_modules`
+  exactly). Failing-first proven: the two positive tests fail (`None`) against a
+  stub body, pass against the real logic; two negative tests (fast scan / no
+  zero-yield module) hold in both. **Per-module hint deferred** (still `[~]`) —
+  it needs the noise decision, not just wiring, so it was NOT force-fit this
+  cycle (sizing rule). Gate green: fmt/clippy `--all-targets`/doc clean, 4270
+  lib tests (+4), all integration suites pass. **Paired:** `SOLUTION_TREE`
+  SOL-HINT-NOISE `[ ]`→`[~]` + §5 — same commit.

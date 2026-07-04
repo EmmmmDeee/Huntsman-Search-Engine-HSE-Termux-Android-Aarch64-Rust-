@@ -460,6 +460,32 @@ fn zero_yield_keyed_or_paid_modules(
     names
 }
 
+/// The scan-level "slow scan with a zero-yield module" optimization hint,
+/// reinstated at the caller layer (`PROBLEM_TREE` T2.14) because — exactly like
+/// the ROI hint above — it needs the scan's own `ModuleDone` events, which
+/// [`crate::util::diagnostics::analyse`] cannot reach (`util` may not depend on
+/// `core::port`). Returns the hint when the scan ran longer than 60 s AND at
+/// least one module finished having found nothing (a candidate to time out
+/// sooner via `module_timeout_ms`); `None` otherwise. Pure and deterministic,
+/// so it is testable without a live scan.
+fn slow_scan_zero_yield_hint(wall_ms: u64, events: &[crate::core::event::Event]) -> Option<String> {
+    use crate::core::event::EventKind;
+    if wall_ms <= 60_000 {
+        return None;
+    }
+    let zero_yield = events
+        .iter()
+        .filter(|ev| matches!(&ev.kind, EventKind::ModuleDone { found: 0, .. }))
+        .count();
+    if zero_yield == 0 {
+        return None;
+    }
+    Some(format!(
+        "scan exceeded 60s with {zero_yield} zero-yield module(s) — consider tightening \
+         module_timeout_ms"
+    ))
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -656,6 +682,13 @@ fn print_diagnostics(
     for hint in &diag.optimization_hints {
         println!("  • {hint}");
     }
+    // Scan-level "slow scan had a zero-yield module" tuning hint, reinstated at
+    // this caller layer (PROBLEM_TREE T2.14) — it reads the scan's own
+    // `ModuleDone` events (already fetched above for the ROI hint), which
+    // `util::diagnostics::analyse` cannot reach.
+    if let Some(hint) = slow_scan_zero_yield_hint(diag.wall_time_ms, &events) {
+        println!("  • {hint}");
+    }
     println!();
 
     println!("━━━ END OF DOSSIER ━━━");
@@ -663,10 +696,71 @@ fn print_diagnostics(
 
 #[cfg(test)]
 mod tests {
-    use super::zero_yield_keyed_or_paid_modules;
+    use super::{slow_scan_zero_yield_hint, zero_yield_keyed_or_paid_modules};
     use crate::core::event::{Event, EventKind};
     use crate::core::module::ModuleCost;
     use std::collections::HashMap;
+
+    fn module_done(module: &str, found: usize) -> Event {
+        Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: module.into(),
+                found,
+            },
+        )
+    }
+
+    /// The reinstated (T2.14) scan-level hint: a scan that ran > 60 s and had at
+    /// least one module finish with zero yield gets the tuning hint, counting
+    /// every zero-yield module regardless of cost tier (this is about wall-time,
+    /// not spend — unlike the ROI hint).
+    #[test]
+    fn slow_scan_with_a_zero_yield_module_gets_the_hint() {
+        let events = vec![module_done("shodan", 0), module_done("hunter_io", 3)];
+        assert_eq!(
+            slow_scan_zero_yield_hint(60_001, &events),
+            Some(
+                "scan exceeded 60s with 1 zero-yield module(s) — consider tightening \
+                 module_timeout_ms"
+                    .to_string()
+            )
+        );
+    }
+
+    /// A scan at or under 60 s is not slow — no hint even with zero-yield modules.
+    #[test]
+    fn a_fast_scan_gets_no_hint() {
+        let events = vec![module_done("shodan", 0)];
+        assert_eq!(slow_scan_zero_yield_hint(60_000, &events), None);
+    }
+
+    /// A slow scan where every module found something has nothing to tune away.
+    #[test]
+    fn a_slow_scan_with_no_zero_yield_module_gets_no_hint() {
+        let events = vec![module_done("shodan", 2), module_done("hunter_io", 5)];
+        assert_eq!(slow_scan_zero_yield_hint(120_000, &events), None);
+    }
+
+    /// The count reflects every zero-yield module (free ones included — this hint
+    /// is about wall-time, not paid spend), so a 3-zero-yield slow scan says 3.
+    #[test]
+    fn the_hint_counts_all_zero_yield_modules() {
+        let events = vec![
+            module_done("shodan", 0),
+            module_done("search_engines", 0),
+            module_done("hunter_io", 0),
+            module_done("crtsh", 7),
+        ];
+        assert_eq!(
+            slow_scan_zero_yield_hint(75_000, &events),
+            Some(
+                "scan exceeded 60s with 3 zero-yield module(s) — consider tightening \
+                 module_timeout_ms"
+                    .to_string()
+            )
+        );
+    }
 
     fn costs() -> HashMap<String, ModuleCost> {
         [
