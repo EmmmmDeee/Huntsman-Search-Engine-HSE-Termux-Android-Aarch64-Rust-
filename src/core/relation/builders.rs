@@ -1896,7 +1896,38 @@ pub fn derive_all_within(
     budget_spent!(out, "coreferences");
     // Declared associations LAST so a `(from, kind, to)` edge a surname guess or a
     // co-residence inference already emitted is re-emitted here at full (declared)
-    // confidence — the later, higher-trust edge wins on idempotent upsert.
+    // confidence.
     out.extend(derive_declared_associations(entities, scan_id));
+    // Collapse duplicate edges to their MAX confidence. Several builders emit the
+    // same `(from, kind, to)` pair — hence the same `Relation::id`, which EXCLUDES
+    // confidence — weakest-first (surname kinship ×0.5 → co-residence ×0.8 →
+    // declared full trust). Persistence upserts `ON CONFLICT(id) DO NOTHING`
+    // (first-write-wins), so without this the WEAKEST edge would persist and the
+    // stronger ones silently drop — the inverse of the "later, higher-trust edge
+    // wins" intent the emit order assumes. That would record high-value identity
+    // links at surname-guess confidence and can flip downstream confidence-floor
+    // gating (resolve_identity_clusters / connection_brokers). Collapsing here makes
+    // the intent hold regardless of emit order or the persistence conflict policy.
+    collapse_to_max_confidence(out)
+}
+
+/// Collapse duplicate edges (same [`Relation::id`] — same `from`/`kind`/`to`/`scan`,
+/// which EXCLUDES confidence) to the single edge with the greatest confidence.
+/// First-occurrence order of distinct ids is preserved and an equal-confidence tie
+/// keeps the earliest edge, so the result is deterministic — the `HashMap` is a
+/// membership index only; output order comes from the input, not its iteration.
+pub(super) fn collapse_to_max_confidence(relations: Vec<Relation>) -> Vec<Relation> {
+    let mut idx: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut out: Vec<Relation> = Vec::with_capacity(relations.len());
+    for r in relations {
+        if let Some(&i) = idx.get(&r.id) {
+            if r.confidence > out[i].confidence {
+                out[i] = r;
+            }
+        } else {
+            idx.insert(r.id.clone(), out.len());
+            out.push(r);
+        }
+    }
     out
 }
