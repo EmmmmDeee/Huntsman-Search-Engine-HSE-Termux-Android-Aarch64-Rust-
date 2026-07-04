@@ -60,6 +60,30 @@ pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
     Some(result)
 }
 
+/// Pure: given which half of a paired Basic-auth credential `key` represents
+/// (`env_var`, compared against the pair's `username_env`/`password_env`),
+/// combine it with the other half's already-resolved `other_value` into a
+/// `user:pass` string for `curl -u`. Split out from
+/// [`validate_against_endpoint`] so the ordering logic is testable without a
+/// network call.
+pub(crate) fn combine_basic_auth_pair(
+    env_var: &str,
+    username_env: &str,
+    password_env: &str,
+    key: &str,
+    other_value: &str,
+) -> String {
+    if env_var == password_env {
+        format!("{other_value}:{key}")
+    } else {
+        debug_assert_eq!(
+            env_var, username_env,
+            "ServiceDef.env_var not in its own pair"
+        );
+        format!("{key}:{other_value}")
+    }
+}
+
 async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
     let timeout_ms = 10_000u64;
     let secs = (timeout_ms / 1000).to_string();
@@ -95,9 +119,35 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
         KeyPlacement::BasicAuth => {
             cmd.args(["-u", key, "--", sdef.test_url]);
         }
+        KeyPlacement::BasicAuthPair {
+            username_env,
+            password_env,
+        } => {
+            let other_env = if sdef.env_var == username_env {
+                password_env
+            } else {
+                username_env
+            };
+            // The other half of the pair must come from the CURRENT key
+            // store (env file + process env), not the pool — a paired
+            // credential's two halves are validated independently (one per
+            // `ServiceDef`) but only ever authenticate together.
+            let keys = crate::util::keys::load();
+            let Some(other_value) = keys.get(other_env).filter(|v| !v.is_empty()) else {
+                // Can't probe one half of a pair without the other configured.
+                return false;
+            };
+            let userpass =
+                combine_basic_auth_pair(sdef.env_var, username_env, password_env, key, other_value);
+            cmd.args(["-u", &userpass, "--", sdef.test_url]);
+        }
         KeyPlacement::BearerAuth => {
             let h = format!("Authorization: bearer {key}");
             cmd.args(["-H", &h, "--", sdef.test_url]);
+        }
+        KeyPlacement::UrlTemplate => {
+            let url = sdef.test_url.replace("{key}", key);
+            cmd.args(["--", &url]);
         }
     }
 

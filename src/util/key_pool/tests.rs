@@ -673,3 +673,72 @@ fn key_tier_as_str_matches_snake_case_serde_wire_form() {
         assert_eq!(wire, serde_json::Value::String(want.to_string()));
     }
 }
+
+#[test]
+fn basic_auth_pair_puts_username_before_password() {
+    // Validating the username half: `key` is the username, `other_value` is
+    // the already-resolved password.
+    assert_eq!(
+        validation::combine_basic_auth_pair(
+            "HUNTSMAN_WIGLE_USER",
+            "HUNTSMAN_WIGLE_USER",
+            "HUNTSMAN_WIGLE_TOKEN",
+            "AID_the_user",
+            "the_token",
+        ),
+        "AID_the_user:the_token"
+    );
+}
+
+#[test]
+fn basic_auth_pair_puts_password_after_username() {
+    // Validating the password half: `key` is the password, `other_value` is
+    // the already-resolved username. Order must not flip.
+    assert_eq!(
+        validation::combine_basic_auth_pair(
+            "HUNTSMAN_WIGLE_TOKEN",
+            "HUNTSMAN_WIGLE_USER",
+            "HUNTSMAN_WIGLE_TOKEN",
+            "the_token",
+            "AID_the_user",
+        ),
+        "AID_the_user:the_token"
+    );
+}
+
+#[test]
+fn basic_auth_pair_matches_real_censys_service_defs() {
+    // Tie the helper to the actual registered pair (not just made-up
+    // literals) so a future edit to the Censys `ServiceDef`s that breaks the
+    // pairing fails this test too.
+    let id_def = find_service("censys").unwrap();
+    let secret_def = find_service("censys_secret").unwrap();
+    let KeyPlacement::BasicAuthPair {
+        username_env,
+        password_env,
+    } = id_def.key_header.clone()
+    else {
+        panic!("censys must use BasicAuthPair");
+    };
+    assert_eq!(id_def.key_header, secret_def.key_header);
+    assert_eq!(
+        validation::combine_basic_auth_pair(
+            id_def.env_var,
+            username_env,
+            password_env,
+            "id-value",
+            "secret-value"
+        ),
+        "id-value:secret-value"
+    );
+    assert_eq!(
+        validation::combine_basic_auth_pair(
+            secret_def.env_var,
+            username_env,
+            password_env,
+            "secret-value",
+            "id-value"
+        ),
+        "id-value:secret-value"
+    );
+}
