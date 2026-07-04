@@ -34,9 +34,22 @@ pub fn reverse_country_iso(lat: f64, lon: f64) -> Option<&'static str> {
         // EU west
         ("FR", 41.3, 51.1, -5.2, 9.6),
         ("ES", 35.2, 43.8, -9.4, 4.4),
+        // PT's box lies almost entirely inside ES's (declared above): every point
+        // with lon ≥ -9.4 — Lisbon/Porto/Faro and all of mainland Portugal bar the
+        // westernmost coastal sliver — matches ES first and returns "ES". Kept
+        // shadowed by DESIGN, exactly like the LU/UA cases below: declaring PT ahead
+        // of ES would re-tag western-Spanish border localities (Badajoz, Mérida,
+        // Huelva) as PT, trading one coarse-box error for another. A precise split
+        // needs polygon data; a caller wanting Portugal resolved falls through the
+        // `None` path to an HTTP reverse-geocode. Pinned by the shadow test.
         ("PT", 36.9, 42.2, -9.6, -6.2),
         ("DE", 47.3, 55.1, 5.9, 15.0),
         ("NL", 50.7, 53.6, 3.3, 7.3),
+        // BE's box sits inside FR's (declared above) and NL's, so Brussels resolves
+        // to "FR" and Antwerp to "NL". Shadowed by DESIGN, like LU/UA: declaring BE
+        // first would mis-tag French Nord (Lille) and Dutch Limburg (Maastricht) as
+        // BE — a wash, not a win. Separating them needs polygon data; Belgium
+        // resolves via the `None` → HTTP fallback. Pinned by the shadow test.
         ("BE", 49.5, 51.6, 2.5, 6.4),
         // LU's box lies entirely within FR's (declared earlier) and also clips
         // BE/DE border slivers, so as a coarse rectangle it is shadowed and never

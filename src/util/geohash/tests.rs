@@ -215,6 +215,23 @@ fn reverse_country_iso_resolves_boxes_contained_in_larger_neighbours() {
     assert_eq!(reverse_country_iso(-6.2088, 106.8456), Some("ID")); // Jakarta
 }
 
+#[test]
+fn reverse_country_iso_pt_be_stay_shadowed_by_container_by_design() {
+    // PT ⊂ ES and BE ⊂ FR/NL, so — exactly like LU/UA — these stay shadowed by
+    // DESIGN: the earlier-declared container wins and a precise result needs the
+    // None→HTTP fallback (declaring them first would mis-tag the container's own
+    // border cities, per the box comments). This pins the ACCEPTED coarse-box
+    // behaviour so a naive "fix" that reorders regresses HERE and forces a read of
+    // the comments rather than silently mis-attributing Spanish/French/Dutch cities.
+    assert_eq!(reverse_country_iso(38.72, -9.14), Some("ES")); // Lisbon → ES (shadowed)
+    assert_eq!(reverse_country_iso(50.85, 4.35), Some("FR")); // Brussels → FR (shadowed)
+    assert_eq!(reverse_country_iso(51.22, 4.40), Some("NL")); // Antwerp → NL (shadowed)
+    // The containers still resolve their OWN cities correctly (not swallowed).
+    assert_eq!(reverse_country_iso(40.42, -3.70), Some("ES")); // Madrid
+    assert_eq!(reverse_country_iso(48.85, 2.35), Some("FR")); // Paris
+    assert_eq!(reverse_country_iso(52.37, 4.90), Some("NL")); // Amsterdam
+}
+
 // ── Property tests (proptest) ──────────────────────────────────────────────
 mod prop {
     use proptest::prelude::*;
