@@ -180,10 +180,13 @@ impl Group {
         let mut person_uids: Vec<String> = self.persons.values().cloned().collect();
         person_uids.sort_unstable();
         uids.extend(person_uids);
-        // `handle_set` already holds the handle uids in sorted order, so reuse it
-        // directly rather than cloning `handles` and re-sorting — the emitted
-        // (sorted, bounded-to-8) order is identical to the old clone+sort path.
-        uids.extend(self.handle_set.iter().take(8).cloned());
+        // Emit EVERY reachable email/phone handle uid, not a bounded subset: these
+        // are the correlation's `entity_uids` (the actual linkage the finding
+        // asserts, not a display string), so a silent `.take(8)` dropped handles 9+
+        // of a large household / shared-line cluster from the finding with no count
+        // surfaced. `handle_set` is a BTreeSet, so the uids are already sorted (the
+        // sibling AU-051 applies no handle cap either).
+        uids.extend(self.handle_set.iter().cloned());
         uids
     }
 }

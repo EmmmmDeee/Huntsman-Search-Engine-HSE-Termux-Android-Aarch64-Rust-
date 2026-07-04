@@ -343,6 +343,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Shared-address and shared-phone associations (AU-049/AU-050) now reference every
+  reachable email/phone handle, not just the first 8.** The correlation's linked-entity
+  list capped the reachable handles at 8, so a large household or share-house with more
+  than 8 associated email/phone identifiers at one residence or line dropped the rest from
+  the finding with no indication. Every reachable handle is now referenced. Regression test
+  `au049_references_every_reachable_handle_not_a_capped_eight`.
 - **SEON now surfaces every distinct self-reported name, not just the first platform's.**
   When SEON reports a person's display name across several identity platforms (e.g. a
   nickname on one, a fuller legal name on another), the module emitted only the first and

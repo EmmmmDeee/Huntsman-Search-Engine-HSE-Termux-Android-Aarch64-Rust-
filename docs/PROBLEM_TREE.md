@@ -4116,3 +4116,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tagged both platforms, the space-less handle excluded; fail-before: one Person); the
   existing single-name Person test still passes. Gate green: fmt/clippy/doc clean, full
   suite 0 failures (4561). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Full-fidelity: AU-049 / AU-050 capped the reachable email/phone
+  handles in their `entity_uids` at 8.** Fidelity-audit-workflow-confirmed (LOW). The
+  shared-address (AU-049) and shared-phone (AU-050) association rules build the
+  correlation's `entity_uids` in `Group::firing_uids()`, which did
+  `uids.extend(self.handle_set.iter().take(8).cloned())` — a silent cap on the ACTUAL
+  linkage the finding asserts (not a display string), so a household / share-house with
+  more than 8 associated email/phone handles at one residence or on one line had handles
+  9+ dropped from the finding, with no count surfaced. The comment showed the `.take(8)`
+  was a bound a refactor merely preserved, not a deliberate DoS cap (unlike AU-037, which
+  documents its truncate caps AND prints the full totals; the sibling AU-051 applies no
+  handle cap at all). Fix: emit every reachable handle uid (`handle_set` is a `BTreeSet`,
+  so they stay sorted/deterministic). Test delta:
+  `au049_references_every_reachable_handle_not_a_capped_eight` (two persons + 10 emails at
+  one residence → all 10 handle uids referenced; fail-before: 8). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4562). **Paired:** `SOLUTION_TREE` §5 —
+  same commit. **This closes the fidelity-audit arc**: all 7 distinct confirmed
+  silent-fidelity violations (register scrapers, netlas SAN/emails, niamonx ULP login,
+  entities_filtered LIMIT, SEON names, AU-049/050 handles) are fixed.

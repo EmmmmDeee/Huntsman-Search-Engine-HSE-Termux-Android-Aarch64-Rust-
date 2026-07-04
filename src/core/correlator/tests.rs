@@ -4618,6 +4618,42 @@ fn au049_references_address_node_and_reachable_handles() {
 }
 
 #[test]
+fn au049_references_every_reachable_handle_not_a_capped_eight() {
+    // Full-fidelity: a large household / share-house can have more than 8 associated
+    // email/phone handles at one residence; the correlation's entity_uids (the actual
+    // linkage it asserts) must reference EVERY reachable handle, not a silent
+    // bounded-8 subset. Fail-before: capped at 8.
+    let addr = "123 Main St, Springfield";
+    let mut ents = vec![
+        person_at("Jordan Meyers", addr),
+        person_at("Dana Meyers", addr),
+        Entity::new(EntityKind::Address, addr, 0.58, "s"),
+    ];
+    let mut handle_uids: Vec<String> = Vec::new();
+    for i in 0..10 {
+        let mut email = Entity::new(
+            EntityKind::Email,
+            format!("user{i:02}@example.com"),
+            0.72,
+            "s",
+        );
+        email.add_evidence(Evidence::new("import:dossier", "e").with_attr("address", addr));
+        handle_uids.push(email.uid.clone());
+        ents.push(email);
+    }
+    let hits = super::rules::rule_au_049_shared_address_association(&ents, "s", 0);
+    assert_eq!(hits.len(), 1);
+    let referenced = handle_uids
+        .iter()
+        .filter(|u| hits[0].entity_uids.contains(u))
+        .count();
+    assert_eq!(
+        referenced, 10,
+        "every reachable handle must be referenced, not capped at 8; got {referenced}"
+    );
+}
+
+#[test]
 fn au050_shared_phone_links_two_people_and_rejects_placeholders() {
     // Formatting variants of the same line collapse to one association.
     let ents = vec![

@@ -2991,3 +2991,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   reporting platforms; identical names dedup to one Person carrying every platform tag.
   Test: `email_emits_a_person_for_each_distinct_reported_name`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-HANDLES: AU-049/AU-050 reference every reachable handle,
+  not a capped 8.** `Group::firing_uids()` did `handle_set.iter().take(8)`, silently
+  dropping email/phone handle uids 9+ from the correlation's `entity_uids` on a large
+  household/shared-line cluster — a bound a refactor preserved, not a deliberate cap (the
+  sibling AU-051 has none). Emit every handle uid (BTreeSet keeps them sorted). Test:
+  `au049_references_every_reachable_handle_not_a_capped_eight`. Closes the fidelity-audit
+  arc (7 confirmed violations fixed). Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
