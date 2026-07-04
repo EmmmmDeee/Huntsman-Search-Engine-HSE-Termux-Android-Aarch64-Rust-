@@ -318,6 +318,19 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
         if g.persons.len() < 2 {
             continue;
         }
+        // A shared business/service line — freephone (`1800`), local-rate
+        // (`13`/`1300`) or premium (`190x`) — is an organisational desk that many
+        // unrelated people legitimately reach (a company's booking/support/office
+        // number). Two persons sharing one is NOT evidence they are associates, so
+        // it must not fire an "associate cluster; a direct pivot to reach the
+        // subject" link. Only a personal line (a mobile or a geographic fixed line)
+        // ties specific people together. Non-AU numbers stay grouped (the AU
+        // classifier returns `None`), unchanged from before.
+        if crate::util::address_au::au_phone_line_type(&phone)
+            .is_some_and(|(t, _)| t.is_business_service())
+        {
+            continue;
+        }
         let mut names: Vec<&str> = g.persons.keys().map(String::as_str).collect();
         names.sort_unstable();
         out.push(Correlation::new(

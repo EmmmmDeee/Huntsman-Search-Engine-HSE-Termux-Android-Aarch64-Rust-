@@ -10,7 +10,17 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
     let mut emails: Vec<&Entity> = Vec::new();
     let mut addresses: Vec<&Entity> = Vec::new();
     for e in entities {
-        if e.kind == EntityKind::Email && e.confidence >= 0.60 {
+        // A role/provider mailbox (abuse@/noreply@/postmaster@/registrar@ …) is a
+        // shared organisational desk, never the subject's personal identity — so
+        // co-locating it with an address forges a false identity↔location linkage.
+        // This is the exact exclusion AU-001/AU-045 (breach) and AU-002 (identity
+        // cluster) already apply; a WHOIS/RDAP registrant emitter surfaced e.g.
+        // `abuse@godaddy.com` at admit-confidence and it must not link a person to
+        // a place here either.
+        if e.kind == EntityKind::Email
+            && e.confidence >= 0.60
+            && !crate::core::validation::is_role_mailbox(&e.value)
+        {
             emails.push(e);
         } else if matches!(e.kind, EntityKind::Address | EntityKind::Coordinates)
             && e.confidence >= 0.50

@@ -343,8 +343,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
-- **`subdomain_takeover`'s MITRE ATT&CK technique was mislabelled as passive
-  collection.** The module actively resolves a subdomain's dangling CNAME and
+- **Two correlation rules forged false identity links from selectors that are
+  not a person's identity.** Both admitted a non-personal selector into a rule
+  that treats its members as tied to the subject, manufacturing false positives
+  — the class of error this evidentiary engine ranks above missing coverage.
+  - **AU-018 (email ↔ physical-location linkage) admitted role mailboxes.** A
+    role/provider mailbox (`abuse@`, `noreply@`, `registrar@`, …) is a shared
+    organisational desk surfaced through WHOIS/RDAP, never the subject — yet
+    AU-018 co-located it with the subject's address as an "identity-location
+    linkage," the same false positive AU-001/AU-045 were already patched for
+    (`abuse@godaddy.com`). It now applies the existing
+    `core::validation::is_role_mailbox` gate, exactly as AU-001/AU-045/AU-002 do.
+  - **AU-050 (shared-phone associate cluster) fired on business/service lines.**
+    A shared freephone/local-rate/premium line (`1800`/`13`/`1300`/`190x`) is a
+    company desk many unrelated people legitimately reach — grouping two of them
+    as "associates; a direct pivot to reach the subject" is a false link. It now
+    skips a group whose number classifies as `AuLineType::is_business_service`
+    (reusing the existing `au_phone_line_type`); a personal mobile/geographic
+    line still links people, and non-AU numbers are unaffected. The module actively resolves a subdomain's dangling CNAME and
   HTTP-probes the target to prove a cloud resource is unclaimed/claimable — an
   exploitable misconfiguration it reports as a `vulnerable` Domain — yet it
   mapped to the passive `T1590.001` *Domain Properties* the DnsRecon category

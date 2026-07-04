@@ -4272,6 +4272,46 @@ fn au018_includes_full_member_set_so_finalize_supersedes_live() {
 }
 
 #[test]
+fn au018_excludes_role_mailboxes_from_the_identity_location_link() {
+    use super::rules::rule_au_018_email_address_colocation;
+    // A role/provider mailbox (a shared registrar/abuse desk) is not the
+    // subject's identity, so co-locating it with the subject's address forges a
+    // false identity↔location linkage — the same false positive AU-001 was
+    // patched for (`abuse@godaddy.com`). AU-018 must exclude it, exactly as
+    // AU-001/AU-045/AU-002 already do.
+    let mut addr = Entity::new(EntityKind::Address, "Booroobin, QLD", 0.80, "s");
+    addr.tag("geoint");
+
+    // Role mailbox alone with the address must NOT fire — even at high confidence.
+    let role = Entity::new(EntityKind::Email, "abuse@godaddy.com", 0.90, "s");
+    let only_role = vec![role, addr.clone()];
+    let out = rule_au_018_email_address_colocation(&only_role, "s", 0);
+    assert!(
+        out.is_empty(),
+        "a role mailbox must not co-locate to a person's address: {out:?}"
+    );
+
+    // A genuine personal email in the same scene still fires (no false negative).
+    let person = Entity::new(EntityKind::Email, "haigen.bamford@gmail.com", 0.90, "s");
+    let with_person = vec![
+        person,
+        Entity::new(EntityKind::Email, "abuse@godaddy.com", 0.90, "s"),
+        addr,
+    ];
+    let out = rule_au_018_email_address_colocation(&with_person, "s", 0);
+    assert_eq!(out.len(), 1, "the personal email still links: {out:?}");
+    assert_eq!(out[0].rule_id, "AU-018");
+    // The role mailbox is excluded from the member set, so exactly 1 email + 1
+    // address are linked, not 2 emails.
+    assert_eq!(
+        out[0].entity_uids.len(),
+        2,
+        "only the personal email + the address, role mailbox dropped: {:?}",
+        out[0].entity_uids
+    );
+}
+
+#[test]
 fn au027_chains_only_the_dominant_coherent_location() {
     use super::rules::rule_au_027_address_coordinates_chain;
     // Regression from a deep "Haigen Bamford" scan: a Brisbane subject also
@@ -4493,6 +4533,38 @@ fn au050_shared_phone_links_two_people_and_rejects_placeholders() {
         person_with_phone("Casey Lin", "+00000000000"),
     ];
     assert!(super::rules::rule_au_050_shared_phone_association(&placeholder, "s", 0).is_empty());
+}
+
+#[test]
+fn au050_excludes_shared_business_and_service_lines() {
+    // A shared AU business/service line — freephone (1800) or local-rate
+    // (13/1300) — is an organisational desk many unrelated people legitimately
+    // reach, not evidence they are associates. It must NOT fire AU-050.
+    for service in ["1800 123 456", "1300 975 707"] {
+        let ents = vec![
+            person_with_phone("Jordan Meyers", service),
+            person_with_phone("Casey Lin", service),
+        ];
+        let hits = super::rules::rule_au_050_shared_phone_association(&ents, "s", 0);
+        assert!(
+            hits.is_empty(),
+            "shared business/service line {service} must not link unrelated people: {hits:?}"
+        );
+    }
+
+    // A shared PERSONAL line (a mobile) still links the two people — no false
+    // negative — even across formatting variants that collapse to one key.
+    let mobile = vec![
+        person_with_phone("Jordan Meyers", "0412 345 678"),
+        person_with_phone("Casey Lin", "(0412) 345-678"),
+    ];
+    let hits = super::rules::rule_au_050_shared_phone_association(&mobile, "s", 0);
+    assert_eq!(
+        hits.len(),
+        1,
+        "a shared personal mobile still links: {hits:?}"
+    );
+    assert_eq!(hits[0].rule_id, "AU-050");
 }
 
 #[test]

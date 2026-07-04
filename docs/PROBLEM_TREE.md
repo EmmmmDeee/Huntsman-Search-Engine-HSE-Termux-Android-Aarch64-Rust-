@@ -3290,3 +3290,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the catalogue lacked it). Gate green: fmt/clippy/doc clean, lib + integration
   tests 0 failures, arch guards incl. ATT&CK mapping + catalogue drift.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Correlator precision: two rules forged false identity links
+  from non-personal selectors** (found by a grounded false-positive audit of the
+  association/co-location rule family; both confirmed against current code, both
+  the exact FP class this evidentiary engine ranks above missing coverage).
+  **(1) AU-018** (`geo/profile.rs:3`, email↔location) gated the email side only
+  on `kind == Email && confidence >= 0.60`, so a role/provider mailbox
+  (`abuse@godaddy.com` from a WHOIS/RDAP registrant emitter) co-located with the
+  subject's address as an "identity-location linkage" — the same FP AU-001/AU-045
+  were patched for. Now applies the existing `core::validation::is_role_mailbox`
+  gate (single-sourced with AU-001/AU-045/AU-002, no new vocabulary). **(2)
+  AU-050** (`assoc.rs:283`, shared-phone associate cluster) grouped persons by
+  `normalise_phone` digits with no line-type check — a shared `1800`/`13`/`1300`/
+  `190x` business/service line (which `normalise_phone` happily keys, being a
+  >=8-digit non-uniform run) linked unrelated people as "associates; a direct
+  pivot to reach the subject." Now skips a group whose key classifies as
+  `AuLineType::is_business_service` via the existing `au_phone_line_type`; a
+  personal mobile/geographic line still links, non-AU numbers are unchanged (the
+  AU classifier returns `None`), so no false negatives. Test delta:
+  `au018_excludes_role_mailboxes_from_the_identity_location_link` and
+  `au050_excludes_shared_business_and_service_lines` (each asserts the FP is gone
+  *and* the true-positive still fires — fail-before/pass-after). Gate green:
+  fmt/clippy/doc clean, 406 correlator lib tests + 30 arch guards, 0 failures.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

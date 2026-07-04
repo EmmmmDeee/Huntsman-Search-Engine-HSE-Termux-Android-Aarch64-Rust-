@@ -2511,3 +2511,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Guard-pinned both directions. This is P→S alternation on a real, code-grounded
   precision gap — not a coverage-report rebuild (that solution stays retired).
   Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FP-GATE extended: two more non-identity selectors
+  excluded from association/linkage rules.** The doctrine's standing solution to
+  the correlator's dominant risk is a *precision gate at admission* — never let a
+  selector that isn't the subject's identity forge a link (the `is_role_mailbox`,
+  `is_proxy_registrant`, salted-hash/entropy, and crowd-cap gates already in the
+  tree). A grounded false-positive audit of the association family found two rules
+  missing a gate they should have inherited: **AU-018** (email↔location) didn't
+  apply `is_role_mailbox` (which AU-001/AU-045/AU-002 already do), and **AU-050**
+  (shared-phone associates) didn't check line type, so a shared `1800`/`1300`/`13`/
+  `190x` business desk clustered strangers. Both fixed by *reusing existing
+  vocabulary* (`core::validation::is_role_mailbox`; `util::address_au::
+  au_phone_line_type` + `AuLineType::is_business_service`) — single-sourced, no new
+  predicates, each with a fail-before/pass-after test that also pins the
+  true-positive survives. S→P alternation: closes two concrete FP leaves under the
+  same-selector-hygiene theme without touching any rule's real signal. Gate green.
+  Paired: `PROBLEM_TREE` §8 — same commit.
