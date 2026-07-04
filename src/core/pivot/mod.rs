@@ -169,6 +169,25 @@ pub fn bridges(entities: &[Entity], relations: &[Relation]) -> Vec<BridgeEdge> {
         .collect()
 }
 
+/// The number of the relationship graph's **cut vertices** (articulation points):
+/// nodes whose removal fragments the graph. The node-count complement to
+/// [`bridges`], counted over the WHOLE graph.
+///
+/// [`detect`] carries a per-node [`is_cut_vertex`](PivotNode::is_cut_vertex) flag,
+/// but it `truncate`s its result to the top [`PIVOT_CAP`] pivots by score — so
+/// counting cut vertices off `detect`'s output undercounts them on any graph with
+/// more than `PIVOT_CAP` pivots (e.g. a large scan whose 30th-ranked node is still
+/// a single point of failure). This counts them all, mirroring `bridges`.
+///
+/// Pure, deterministic, read-only over `(entities, relations)`, one O(V+E) pass of
+/// the shared [`Graph`] primitive's cut analysis.
+#[must_use]
+pub fn cut_vertex_count(entities: &[Entity], relations: &[Relation]) -> usize {
+    let g = Graph::build(entities, relations);
+    let (cut_vertices, _bridges) = g.cut_vertices_and_bridges();
+    cut_vertices.len()
+}
+
 /// Brandes' exact betweenness centrality for an unweighted UNDIRECTED graph, normalised
 /// to `[0, 1]` by the maximum possible value `(n-1)(n-2)/2`. Deterministic (the
 /// [`Graph`] sorts each node's neighbours). O(V·E) time, O(V) working space per source —
