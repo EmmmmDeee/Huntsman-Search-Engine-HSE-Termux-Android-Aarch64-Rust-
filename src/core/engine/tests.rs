@@ -2172,7 +2172,7 @@ async fn cache_replayed_entity_is_attributed_to_the_current_scan() {
 
     // Scan 2 — same target within TTL → cache hit → replay of the archived entity.
     let scan2 = Scan::new("cache-attr-2", target.clone()).with_options(opts.clone());
-    engine
+    let scan2_done = engine
         .run(scan2, target.clone(), mk_ctx("cache-attr-2"))
         .await
         .expect("scan 2 runs");
@@ -2182,6 +2182,18 @@ async fn cache_replayed_entity_is_attributed_to_the_current_scan() {
         s2.iter().any(|e| e.value == FINDING),
         "cache-replayed finding must be attributed to scan 2, but it is missing \
          from scan 2's durable results — the replay kept the archiving scan's id"
+    );
+
+    // Accounting: the single module was SERVED FROM CACHE on scan 2, so it counts
+    // in `modules_cached` and NOT in `modules_run` (no provider execution) — the
+    // `ModuleStats.cached` "not counted in run" contract.
+    assert_eq!(
+        scan2_done.modules_cached, 1,
+        "the cache hit is tallied as cached"
+    );
+    assert_eq!(
+        scan2_done.modules_run, 0,
+        "a cache replay must not be double-counted as a provider execution"
     );
 
     cleanup(&path);

@@ -407,8 +407,15 @@ impl super::ScanEngine {
         result: TimeoutResult,
         state: &mut DispatchState,
         attack_techniques: &'static [&'static str],
+        // Whether this finalisation is a REAL provider execution (`true`) or an
+        // inter-scan cache replay (`false`). A cache hit is tallied only in
+        // `stats.cached`; counting it in `run` too would make `modules_run`
+        // over-report actual provider executions by the number of cache hits.
+        counts_as_run: bool,
     ) {
-        state.stats.run += 1;
+        if counts_as_run {
+            state.stats.run += 1;
+        }
         match result {
             Err(_) => {
                 state.stats.timed_out += 1;
@@ -725,6 +732,7 @@ impl super::ScanEngine {
                     Ok(Ok(mr)),
                     state,
                     module.attack_techniques(),
+                    false, // cache replay — tallied in `cached`, not `run`
                 );
                 super::hot_inject_keys(&mut ctx.keys);
                 if ctx.cancel.is_cancelled() {
@@ -770,7 +778,7 @@ impl super::ScanEngine {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
 
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), true);
 
             super::hot_inject_keys(&mut ctx.keys);
 
@@ -864,6 +872,7 @@ impl super::ScanEngine {
                     Ok(Ok(mr)),
                     state,
                     module.attack_techniques(),
+                    false, // cache replay — tallied in `cached`, not `run`
                 );
                 super::hot_inject_keys(&mut ctx.keys);
                 continue;
@@ -895,7 +904,7 @@ impl super::ScanEngine {
             {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), true);
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
@@ -985,6 +994,7 @@ impl super::ScanEngine {
                     Ok(Ok(mr)),
                     state,
                     module.attack_techniques(),
+                    false, // cache replay — tallied in `cached`, not `run`
                 );
                 continue;
             }
@@ -1120,6 +1130,7 @@ impl super::ScanEngine {
             outcome.result,
             state,
             outcome.attack_techniques,
+            true, // real provider execution
         );
     }
 }
