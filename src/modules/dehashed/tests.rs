@@ -263,6 +263,54 @@ fn v2_record_surfaces_identity_and_hash_for_entity_linking() {
 }
 
 #[test]
+fn email_in_the_password_slot_is_recovered_as_an_email_lead() {
+    // Stealer/breach dumps frequently mis-store an email in the `password` field.
+    // Minting it as a Password would forge a reused-secret link; DeHashed used to
+    // silently DROP it (only the Secret arm existed). It must instead recover it
+    // into the email pipeline, as oathnet_pro / see_know already do.
+    let raw = r#"{
+        "success": true,
+        "total": 1,
+        "entries": [
+            {
+                "id": "1",
+                "email": ["a@b.com"],
+                "password": ["leaked@corp.com"],
+                "database_name": ["Collection#1"]
+            }
+        ]
+    }"#;
+    let r: DehashedResp = serde_json::from_str(raw).unwrap();
+    let entries = r.entries.unwrap();
+    let mut seen = HashSet::new();
+    let mut result = ModuleResult::new();
+    extract_records(
+        &entries,
+        "a@b.com",
+        "dehashed:t",
+        "s",
+        &mut seen,
+        &mut result,
+    );
+
+    // Recovered as an Email lead, NOT minted as a Password.
+    assert!(
+        has(&result, EntityKind::Email, "leaked@corp.com"),
+        "an email in the password slot must be recovered as an Email lead"
+    );
+    assert!(
+        !has(&result, EntityKind::Password, "leaked@corp.com"),
+        "an email in the password slot must NOT be minted as a Password"
+    );
+    let recovered = result
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email && e.value == "leaked@corp.com")
+        .unwrap();
+    assert!(recovered.has_tag("recovered-from-password"));
+}
+
+#[test]
 fn non_target_stranger_record_is_quarantined_not_dropped() {
     // A broad `name` search returns a same-name stranger whose identifiers are NOT
     // the subject. Their entities (incl. the hash) must be RETAINED — the

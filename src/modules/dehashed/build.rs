@@ -392,18 +392,35 @@ pub(super) fn extract_records(
         }
         for pw in field_strings(item, "password") {
             let p = pw.trim();
-            if matches!(
-                crate::util::extract::classify_credential_field(p),
-                crate::util::extract::CredentialField::Secret
-            ) && p.chars().count() >= 4
-                && seen.insert(format!("@pw:{}", p.to_lowercase()))
-            {
-                push_breach_entity(
-                    result,
-                    Entity::new(EntityKind::Password, p, 0.60, scan_id),
-                    &ev,
-                    &["plaintext-password"],
-                );
+            match crate::util::extract::classify_credential_field(p) {
+                // A capture sentinel ([fail], UPGRADE_TO_SEE…) is not a secret — drop it.
+                crate::util::extract::CredentialField::Sentinel => {}
+                // An email mis-stored in the password slot is a lead, not a secret:
+                // minting it as a Password would forge a reused-secret link across every
+                // row with the same quirk. Recover it into the email pipeline at modest
+                // confidence — the same recovery oathnet_pro / see_know already do, so
+                // the three breach parsers don't drift on this quirk.
+                crate::util::extract::CredentialField::Email => {
+                    let lower = p.to_lowercase();
+                    if seen.insert(format!("@pw-email:{lower}")) {
+                        push_breach_entity(
+                            result,
+                            Entity::new(EntityKind::Email, p, 0.45, scan_id),
+                            &ev,
+                            &["recovered-from-password"],
+                        );
+                    }
+                }
+                crate::util::extract::CredentialField::Secret => {
+                    if p.chars().count() >= 4 && seen.insert(format!("@pw:{}", p.to_lowercase())) {
+                        push_breach_entity(
+                            result,
+                            Entity::new(EntityKind::Password, p, 0.60, scan_id),
+                            &ev,
+                            &["plaintext-password"],
+                        );
+                    }
+                }
             }
         }
 

@@ -343,6 +343,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **DeHashed now recovers an email mis-stored in the password field instead of dropping it.**
+  When a breach record puts an email in the `password` slot (a common quirk), DeHashed
+  previously minted nothing — while the oathnet_pro and see_know breach parsers both recover
+  it as an email lead. DeHashed now does the same (emitting it as an `Email` tagged
+  `recovered-from-password` rather than as a password, which would forge a reused-secret
+  link). Regression test `email_in_the_password_slot_is_recovered_as_an_email_lead`.
 - **`to_e164_au` no longer fabricates an Australian number from a foreign one written in
   the `61…` international form.** The AU-local branch already rejected a leading-zero number
   whose trunk digit isn't a real ACMA lead (2/3/4/5/7/8), but the equivalent `61`+9-digit

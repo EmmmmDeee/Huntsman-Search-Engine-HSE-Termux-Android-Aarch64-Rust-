@@ -2935,3 +2935,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Applied the same trunk-digit gate to the `61` branch, single-sourcing the AU-lead rule.
   Test: `bare_61_prefix_requires_a_real_au_trunk_digit`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-DEHASHED-PWEMAIL: DeHashed recovers an email mis-stored in the
+  password slot instead of dropping it.** The password loop only had a `Secret` arm, so
+  a value the shared classifier flags as `CredentialField::Email` (a common breach quirk)
+  minted nothing — while `oathnet_pro` and `see_know` both recover it as an `Email` at
+  0.45 tagged `recovered-from-password` (minting it as a Password would forge a
+  reused-secret link). Converted the loop to the same three-arm match (Sentinel / Email /
+  Secret), single-sourcing the policy across the three breach parsers. Test:
+  `email_in_the_password_slot_is_recovered_as_an_email_lead`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

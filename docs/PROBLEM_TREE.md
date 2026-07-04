@@ -4006,3 +4006,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   still canonicalise); the existing `61412345678` international-form test still passes.
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4554). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Dropped-field: DeHashed silently discarded an email mis-stored in
+  the `password` slot — its two stealer/breach siblings recover it.** Workflow-confirmed.
+  `dehashed::build`'s password loop guarded on `matches!(classify_credential_field(p),
+  CredentialField::Secret)` only — no `Email` arm — so when the shared classifier
+  (`util::extract::classify_credential_field`, which returns `Email` for a value that
+  `looks_like_email`) flagged an email in the password field (a common stealer/breach
+  quirk), DeHashed minted NOTHING: the lead was dropped. Both siblings recover it —
+  `oathnet_pro::breach` and `see_know::extract` mint it as an `Email` at 0.45 tagged
+  `recovered-from-password` (minting it as a `Password` would forge a reused-secret link
+  across every row with the same quirk). Converted the DeHashed loop to the same
+  three-arm `match` (Sentinel drop / Email recover / Secret mint), single-sourcing the
+  policy so the three breach parsers don't drift on this field. Test delta:
+  `email_in_the_password_slot_is_recovered_as_an_email_lead` (an email in `password` →
+  an `Email` tagged `recovered-from-password`, NOT a `Password`); the existing
+  plaintext-password test still passes. Gate green: fmt/clippy/doc clean, full suite 0
+  failures (4555). **Paired:** `SOLUTION_TREE` §5 — same commit. **This closes the last
+  actioned item of the 14 workflow-confirmed defects** (the remaining ones were fixed in
+  the preceding cycles this arc); AU-059's class-diversity and the four geo/export/MITRE
+  higher-leverage items shipped earlier.
