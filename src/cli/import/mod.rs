@@ -352,19 +352,25 @@ async fn persist_import(
     store.upsert_scan(&scan)?;
     store.upsert_entities_batch(entities)?;
 
-    let mut relations = 0usize;
-    for r in &crate::core::relation::derive_all(entities, sid) {
-        if store.upsert_relation(r).is_ok() {
-            relations += 1;
+    // Device-safety bound (shared with the web upload path via
+    // `import_should_enrich`): skip the O(n²) relation + correlation enrichment on
+    // a pathologically large import. The entities are already persisted above, so
+    // nothing is lost and it can be correlated on demand later; otherwise
+    // `hse import <hugefile>` would lock a 2-core Termux phone for minutes.
+    let (mut relations, mut correlations) = (0usize, 0usize);
+    if crate::core::relation::import_should_enrich(entities.len()) {
+        for r in &crate::core::relation::derive_all(entities, sid) {
+            if store.upsert_relation(r).is_ok() {
+                relations += 1;
+            }
         }
-    }
 
-    let mut correlations = 0usize;
-    let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
-    if let Ok(hits) = correlator.run(sid) {
-        for c in &hits {
-            if store.upsert_correlation(c).is_ok() {
-                correlations += 1;
+        let correlator = crate::core::correlator::Correlator::new(Arc::clone(&store));
+        if let Ok(hits) = correlator.run(sid) {
+            for c in &hits {
+                if store.upsert_correlation(c).is_ok() {
+                    correlations += 1;
+                }
             }
         }
     }

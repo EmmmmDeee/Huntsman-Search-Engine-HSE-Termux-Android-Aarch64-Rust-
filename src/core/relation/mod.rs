@@ -58,3 +58,20 @@ pub use graph::{
     sorted_confined_adjacency, strongest_path, strongest_path_in, undirected_adjacency,
 };
 pub use types::{Relation, RelationKind};
+
+/// Device-safety bound shared by BOTH import paths — the CLI `hse import` and the
+/// web `POST /scans/import` upload. Above this many entities, the post-import
+/// enrichment ([`derive_all`] — pairwise within same-key buckets — plus the
+/// correlator) degrades to a multi-minute O(n²) pass that would lock a 2-core
+/// Termux phone. Single-sourced here so the two paths can't drift.
+pub const IMPORT_ENRICH_MAX_ENTITIES: usize = 5_000;
+
+/// Whether a freshly-imported entity set is small enough to run the O(n²)
+/// post-import relation + correlation enrichment inline. Both import paths gate
+/// on this identical predicate; above the bound the enrichment is skipped and the
+/// entities — already persisted — can be correlated on demand via a later rerun,
+/// so nothing is lost. Pure, so the boundary is unit-tested directly.
+#[must_use]
+pub fn import_should_enrich(entity_count: usize) -> bool {
+    entity_count <= IMPORT_ENRICH_MAX_ENTITIES
+}

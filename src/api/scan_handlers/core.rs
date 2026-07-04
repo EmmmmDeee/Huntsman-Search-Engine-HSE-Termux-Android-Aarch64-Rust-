@@ -538,8 +538,8 @@ pub async fn scan_import(
     // is met unconditionally below; only the best-effort enrichment is bounded,
     // so a huge upload always COMPLETES. A realistic dossier (well under the cap)
     // still gets full relations + correlations; a larger one stores every entity
-    // and can be correlated on demand via `/scans/{id}/rerun`.
-    const IMPORT_ENRICH_MAX_ENTITIES: usize = 5_000;
+    // and can be correlated on demand via `/scans/{id}/rerun`. The bound is
+    // shared with the CLI import path via `core::relation::import_should_enrich`.
 
     // Persist scan, entities, relations, and correlations on a blocking thread
     // so SQLite commits don't stall the 2-worker async reactor.
@@ -551,7 +551,7 @@ pub async fn scan_import(
             store.upsert_entities_batch(&entities)?;
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
-            if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
+            if !crate::core::relation::import_should_enrich(entities.len()) {
                 return Ok((0usize, 0usize));
             }
             let mut relations = 0usize;

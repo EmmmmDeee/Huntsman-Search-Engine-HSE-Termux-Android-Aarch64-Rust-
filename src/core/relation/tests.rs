@@ -1,6 +1,18 @@
 use super::*;
 
 #[test]
+fn import_enrichment_gate_bounds_at_the_shared_cap() {
+    // Both import paths (CLI `hse import`, web upload) gate the O(n²) post-import
+    // enrichment on this one predicate, so the device-safety bound can't drift.
+    // Enrich at or below the cap; skip strictly above it.
+    assert!(import_should_enrich(0));
+    assert!(import_should_enrich(1));
+    assert!(import_should_enrich(IMPORT_ENRICH_MAX_ENTITIES));
+    assert!(!import_should_enrich(IMPORT_ENRICH_MAX_ENTITIES + 1));
+    assert!(!import_should_enrich(usize::MAX));
+}
+
+#[test]
 fn relation_kind_as_str_matches_serde() {
     // CONVENTIONS.md §3: the type owns its canonical string and a test
     // pins it to the serde wire form so the two can't drift. as_str is the
