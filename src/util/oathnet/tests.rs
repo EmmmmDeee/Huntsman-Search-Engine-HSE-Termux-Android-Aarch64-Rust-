@@ -96,6 +96,46 @@ use super::*;
     }
 
     #[test]
+    fn top_dbnames_is_deterministic_on_count_ties() {
+        // Equal-count db names must resolve by name ascending — not by the source
+        // HashMap's randomised iteration order — so the persisted `top_dbnames`
+        // attribute is byte-reproducible and `take(n)` on a boundary tie is stable.
+        // `top` appears twice; `alpha`/`mid`/`zeta` once each. Re-seed repeatedly.
+        let mk = || {
+            vec![
+                json!({"dbname": "zeta"}),
+                json!({"dbname": "top"}),
+                json!({"dbname": "alpha"}),
+                json!({"dbname": "top"}),
+                json!({"dbname": "mid"}),
+            ]
+        };
+        for _ in 0..16 {
+            // `top` (2) first, then the count-1 tie in name order → boundary is exact.
+            assert_eq!(top_dbnames(&mk(), 3), vec!["top", "alpha", "mid"]);
+        }
+    }
+
+    #[test]
+    fn session_init_body_escapes_every_value_via_serde() {
+        // The hand-rolled quote-only escaping produced INVALID JSON for a value
+        // with a backslash and mis-decoded literal `\n`/`\t`; serde escapes
+        // correctly, so the body always parses back to the exact query value.
+        for value in [
+            "plain",
+            r#"has"quote"#,
+            r#"back\slash"#,
+            "tab\tand\nnewline",
+            "a\\\"b",
+        ] {
+            let body = session_init_body(value);
+            let parsed: serde_json::Value =
+                serde_json::from_str(&body).expect("session-init body must be valid JSON");
+            assert_eq!(parsed["query"], value, "query round-trips exactly for {value:?}");
+        }
+    }
+
+    #[test]
     fn top_dbnames_skips_items_without_dbname() {
         let items = vec![json!({"other": "val"}), json!({"dbname": "x"})];
         let top = top_dbnames(&items, 10);
