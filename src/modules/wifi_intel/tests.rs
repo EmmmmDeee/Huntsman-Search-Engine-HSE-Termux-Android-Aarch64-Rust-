@@ -164,3 +164,38 @@ fn detail_resp_handles_failure() {
     let r: types::DetailResp = serde_json::from_str(json).unwrap();
     assert_eq!(r.success, Some(false));
 }
+
+/// wifi_intel must surface the located AP's STREET-LEVEL address from a WiGLE
+/// detail record (road + housenumber), not just city/region/country.
+#[test]
+fn detail_address_leads_with_street_when_present() {
+    let detail: types::DetailNetwork = serde_json::from_value(serde_json::json!({
+        "housenumber": "2771",
+        "road": "Stillwell Avenue",
+        "city": "New York",
+        "region": "NY",
+        "country": "US",
+        "postalcode": "11224",
+    }))
+    .unwrap();
+    assert_eq!(
+        detail_address(&detail).as_deref(),
+        Some("2771 Stillwell Avenue, New York, NY, US 11224"),
+    );
+}
+
+/// Without a street, the address is the prior city/region/country + postcode.
+#[test]
+fn detail_address_falls_back_to_locality() {
+    let detail: types::DetailNetwork = serde_json::from_value(serde_json::json!({
+        "city": "New York",
+        "region": "NY",
+        "country": "US",
+        "postalcode": "11224",
+    }))
+    .unwrap();
+    assert_eq!(
+        detail_address(&detail).as_deref(),
+        Some("New York, NY, US 11224"),
+    );
+}

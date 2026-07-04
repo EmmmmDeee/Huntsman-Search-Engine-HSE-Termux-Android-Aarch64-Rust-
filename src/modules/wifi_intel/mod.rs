@@ -207,27 +207,16 @@ impl Module for WifiIntel {
                 e.add_evidence(ev);
                 result.push(e);
 
-                // Also emit an Address entity if we have city + country
-                let addr_parts: Vec<&str> = [
-                    detail.city.as_deref(),
-                    detail.region.as_deref(),
-                    detail.country.as_deref(),
-                ]
-                .iter()
-                .filter_map(|p| *p)
-                .filter(|p| !p.is_empty())
-                .collect();
-
-                if addr_parts.len() >= 2 {
-                    let mut addr_str = addr_parts.join(", ");
-                    if let Some(p) = detail.postalcode.as_deref()
-                        && !p.is_empty()
-                    {
-                        addr_str = format!("{addr_str} {p}");
-                    }
+                // Also emit an Address entity — street-level when the detail
+                // record carries the AP's road/housenumber, else locality.
+                if let Some(addr_str) = detail_address(&detail) {
+                    let street_level = detail.housenumber.is_some() || detail.road.is_some();
                     let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.60, &ctx.scan_id);
                     addr.tag("geoint");
                     addr.tag("bssid-derived");
+                    if street_level {
+                        addr.tag("street-level");
+                    }
                     addr.add_evidence(
                         Evidence::new(SOURCE, format!("Address from BSSID {} location", ap.bssid))
                             .with_attr("bssid", &ap.bssid),
@@ -239,6 +228,49 @@ impl Module for WifiIntel {
 
         Ok(result)
     }
+}
+
+/// Compose the most precise address a WiGLE detail record supports for a located
+/// AP: the street (`"<housenumber> <road>"`) leading, then city/region/country,
+/// with the postcode appended. Returns `None` when too little locality is
+/// present (fewer than two components and no street). Pure, so it is unit-testable.
+fn detail_address(detail: &types::DetailNetwork) -> Option<String> {
+    let clean = |o: &Option<String>| {
+        o.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+
+    // Street: "<housenumber> <road>" when both present, else the road alone.
+    let street = match (clean(&detail.housenumber), clean(&detail.road)) {
+        (Some(num), Some(road)) => Some(format!("{num} {road}")),
+        (None, Some(road)) => Some(road),
+        _ => None,
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(street) = &street {
+        parts.push(street.clone());
+    }
+    parts.extend(
+        [
+            clean(&detail.city),
+            clean(&detail.region),
+            clean(&detail.country),
+        ]
+        .into_iter()
+        .flatten(),
+    );
+    // A street is itself a precise locator; otherwise require ≥2 locality parts.
+    if parts.is_empty() || (street.is_none() && parts.len() < 2) {
+        return None;
+    }
+    let mut addr = parts.join(", ");
+    if let Some(p) = clean(&detail.postalcode) {
+        addr = format!("{addr} {p}");
+    }
+    Some(addr)
 }
 
 // ── Standalone AP parser (used by tests, mirrors old wifi_scan logic) ──

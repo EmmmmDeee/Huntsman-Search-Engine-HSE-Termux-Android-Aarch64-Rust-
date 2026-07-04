@@ -39,6 +39,12 @@ pub(super) struct DetailNetwork {
     pub(super) country: Option<String>,
     #[serde(default)]
     pub(super) postalcode: Option<String>,
+    // Street-level components WiGLE's detail response carries for a located AP —
+    // the precise physical address, previously dropped in favour of city/region.
+    #[serde(default)]
+    pub(super) road: Option<String>,
+    #[serde(default)]
+    pub(super) housenumber: Option<String>,
     #[serde(default)]
     pub(super) lastupdt: Option<String>,
     #[serde(default)]
