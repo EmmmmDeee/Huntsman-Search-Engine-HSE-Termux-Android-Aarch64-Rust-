@@ -43,3 +43,28 @@ use super::*;
         names.dedup();
         assert_eq!(names.len(), orig_len, "service names must be unique");
     }
+
+    /// HIBP's validity probe must hit the genuinely auth-gated
+    /// `subscription/status` endpoint. Live control tests proved the two prior
+    /// choices could NOT reject an invalid key: `/api/v3/breaches` is public
+    /// (200 with no key), and the `breachedaccount/…hibp-integration-tests.com`
+    /// test account returns a fixed 200 for ANY well-formed key header (a
+    /// garbage key passes). Only `subscription/status` returns 401 for an
+    /// invalid key, so pin it here — a revert to either dead-end endpoint would
+    /// silently re-break `hse keys validate hibp`.
+    #[test]
+    fn hibp_validity_probe_uses_the_auth_gated_subscription_endpoint() {
+        let hibp = find_service("hibp").expect("hibp is a registered service");
+        assert_eq!(
+            hibp.test_url,
+            "https://haveibeenpwned.com/api/v3/subscription/status"
+        );
+        assert!(
+            !hibp.test_url.contains("breachedaccount"),
+            "the test-account endpoint 200s for any key — not a validity probe"
+        );
+        assert!(
+            !hibp.test_url.ends_with("/breaches"),
+            "the public catalogue endpoint needs no key at all"
+        );
+    }

@@ -160,14 +160,20 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         name: "hibp",
         env_var: "HUNTSMAN_HIBP_KEY",
         category: "breach",
-        // NOTE: `/api/v3/breaches` (the whole-catalogue listing) is PUBLIC —
-        // it returns 200 with no `hibp-api-key` at all, so it never actually
-        // exercised the key. `breachedaccount` requires the key (401 without
-        // it); the value below is HIBP's own documented test account
-        // (https://haveibeenpwned.com/API/v3#TestingIntegration), which
-        // always returns a fixed `[{"Name":"Adobe"}]` — stable expected
-        // output regardless of the operator's own breach data.
-        test_url: "https://haveibeenpwned.com/api/v3/breachedaccount/account-exists@hibp-integration-tests.com",
+        // Endpoint history — both prior choices were wrong as a *validity*
+        // probe, confirmed with live control tests (real key vs. garbage key):
+        //   * `/api/v3/breaches` (catalogue listing) is PUBLIC → 200 with no
+        //     key at all, so it never exercised the key.
+        //   * `/api/v3/breachedaccount/account-exists@hibp-integration-tests.com`
+        //     is HIBP's documented *test account*: the server special-cases it
+        //     and returns a fixed `[{"Name":"Adobe"}]` 200 for ANY well-formed
+        //     `hibp-api-key` header — a garbage key passes too, so it can't
+        //     reject an invalid key either.
+        // `/api/v3/subscription/status` is the genuine auth gate: a valid key
+        // → 200 (subscription JSON), an invalid key → 401 "invalid
+        // hibp-api-key" (both live-verified), so the status-code check here
+        // now actually distinguishes a working key from a broken one.
+        test_url: "https://haveibeenpwned.com/api/v3/subscription/status",
         key_header: KeyPlacement::Header("hibp-api-key"),
         rate_limit_reset_secs: 6,
     },
