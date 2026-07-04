@@ -32,6 +32,26 @@ fn analyse_ranks_modules_by_yield() {
 }
 
 #[test]
+fn entities_emitted_counts_entities_not_evidence_records() {
+    // Regression: entities_emitted was incremented once per EVIDENCE record, so it
+    // tracked evidence_count and over-counted any entity carrying multiple
+    // same-source evidence records. One entity with two evidence records from the
+    // same source is ONE entity from that source, but TWO evidence records — and
+    // the inflated count fed the persisted total_entities / --adaptive routing.
+    let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.8, "test-scan-id");
+    e.add_evidence(Evidence::new("modX", "first observation"));
+    e.add_evidence(Evidence::new("modX", "second observation"));
+    let d = analyse("sid", "email", "x@y.com", 100, &[e]);
+    let m = d
+        .modules_by_yield
+        .iter()
+        .find(|m| m.name == "modX")
+        .expect("modX module present");
+    assert_eq!(m.entities_emitted, 1, "one entity, not one-per-evidence");
+    assert_eq!(m.evidence_count, 2, "two distinct evidence records");
+}
+
+#[test]
 fn analyse_output_is_byte_reproducible() {
     // Charter (reproducibility): the analysis of a fixed entity set must be
     // byte-identical across runs. Sources of HashMap-iteration randomness —
