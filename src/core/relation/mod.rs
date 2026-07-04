@@ -52,9 +52,10 @@ pub use builders::{
     derive_structural,
 };
 pub use graph::{
-    Adjacency, ConnectionBroker, ConnectionTemplate, IdentityClusterResult, IdentityPath, PathStep,
-    connection_brokers, connection_templates, disjoint_pathways, disjoint_pathways_in,
-    identity_paths, identity_uids, is_identity_kind, reachable_count, resolve_identity_clusters,
-    sorted_confined_adjacency, strongest_path, strongest_path_in, undirected_adjacency,
+    Adjacency, ConnectionBroker, ConnectionTemplate, IDENTITY_PAIR_PROBE_CAP,
+    IdentityClusterResult, IdentityPath, PathStep, connection_brokers, connection_templates,
+    disjoint_pathways, disjoint_pathways_in, identity_paths, identity_uids, is_identity_kind,
+    reachable_count, resolve_identity_clusters, sorted_confined_adjacency, strongest_path,
+    strongest_path_in, undirected_adjacency,
 };
 pub use types::{Relation, RelationKind};

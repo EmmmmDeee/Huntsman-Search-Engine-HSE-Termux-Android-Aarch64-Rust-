@@ -2698,3 +2698,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hostile upstream. Gate green. Paired: `PROBLEM_TREE` §8 — same commit. This
   concludes the comprehensive-audit backlog (7 cycles, 12 repairs); remaining
   register items are LOW-priority / deliberately deferred.
+- **2026-07-04** — **SOL-PAIRSWEEP-CAP: the finalise pairwise-pathway sweeps are
+  bounded, found by real live testing.** End-to-end validation with a real seed of
+  every target kind proved the engine robust (all 19 kinds run, zero panics, every
+  error environmental) but exposed one real flaw: a `full_name` scan's finalise ran
+  135–185 s because AU-062 (`multipath_corroborated_links`) and AU-063
+  (`single_route_identity_links`) each swept `O(identities²)` pairs through
+  `disjoint_pathways_in`, ~45 s apiece on the hundreds of name-permutation
+  identities a broad name scan derives. A single shared `IDENTITY_PAIR_PROBE_CAP`
+  (in `core::relation::graph`, the home of the pairwise primitive) now bounds both:
+  a deterministic sorted-prefix cap that preserves byte-identical output while
+  cutting the combined phase 48 s → 8 s (measured on the real scan). The bound lives
+  in ONE place so the two sweeps that share the primitive can never disagree —
+  the same single-sourcing discipline (`one finder, no drift`) the rules already
+  follow for their detectors. Testable `*_capped` seams on both. Gate green.
+  Paired: `PROBLEM_TREE` §8 — same commit.

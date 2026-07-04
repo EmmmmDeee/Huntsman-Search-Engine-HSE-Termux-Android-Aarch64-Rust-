@@ -268,6 +268,23 @@ pub fn identity_paths(
     out
 }
 
+/// Deterministic ceiling on the number of identity PAIRS a pairwise-pathway sweep
+/// (AU-062 multipath / AU-063 single-route) may probe with [`disjoint_pathways_in`].
+///
+/// Each per-pair search is already hop/path-bounded, but the pair COUNT is
+/// `O(identities²)` and was uncapped: a broad `full_name` scan derives HUNDREDS of
+/// name-permutation identity entities, and a real name scan measured ~80 000 pairs
+/// taking **tens of seconds each** in `promote_multipath_corroborated` and
+/// `single_route_identity_links` — the dominant cost of a rich scan's finalise.
+/// [`identity_uids`] is sorted, so stopping at this cap yields a **deterministic
+/// prefix** (byte-identical output preserved, unlike a wall-clock time budget).
+/// Both sweeps feed best-effort *enhancement* signals (corroboration boosts / the
+/// gap lead), so a bounded subset degrades gracefully. Single-sourced here so the
+/// two sweeps that share the `O(n²)` primitive can never drift on the bound. Sized
+/// so a typical multi-source scan (≲110 identities → ≲6 000 pairs) is examined in
+/// FULL; only permutation-heavy name scans reach the cap.
+pub const IDENTITY_PAIR_PROBE_CAP: usize = 6_000;
+
 /// Up to `max_paths` **edge-disjoint** shortest pathways between two confirmed
 /// nodes, each at most `max_hops` long. Found greedily — shortest path, then its
 /// traversed adjacencies are removed and the search repeats — so every returned

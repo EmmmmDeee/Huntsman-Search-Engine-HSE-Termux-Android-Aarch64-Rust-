@@ -3619,3 +3619,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   same commit. **This closes the comprehensive 6-subsystem audit's actioned
   backlog** (web/API, export, engine, storage, HTTP, module parsers) — 12 shipped
   repairs across 7 cycles; the remaining register items are LOW/defer-noted.
+- **2026-07-04** — **Live end-to-end validation (T2.15, new): finalise stalled on
+  a rich `full_name` scan — the two `O(identities²)` pairwise-pathway sweeps are now
+  bounded.** Real-seed live testing of every target kind (self-test subject *Haigen
+  Bamford* for identity kinds; public infrastructure for the rest — 8.8.8.8,
+  github.com, AS15169, the BTC genesis address, …) found ALL 19 kinds run without a
+  single panic and every module error was environmental (blocked cloud IP / no
+  residential exit), but the `name` scan took **135–185 s at depth 0** and, on a
+  cold/richer run, exceeded a 150 s external timeout. Instrumented phase timing
+  isolated it precisely: two finalise passes each iterate every identity pair
+  calling `disjoint_pathways_in` (depth-5, 4-path) — **AU-062**
+  `multipath_corroborated_links` and **AU-063** `single_route_identity_links`. A
+  broad name scan derives ~400 name-permutation identity entities → ~80 000 pairs →
+  each sweep ~45 s (the enumeration `connection_templates` was only 207 ms; the
+  pairwise sweeps were the cost). Both now share ONE deterministic
+  `IDENTITY_PAIR_PROBE_CAP = 6 000` (in `core::relation::graph`, single-sourced so
+  the two sweeps can't drift): `identity_uids` is sorted, so the cap is a
+  deterministic prefix — byte-identical output preserved, NOT a wall-clock budget —
+  and the signals are best-effort enhancement whose output was already capped, so a
+  bounded subset degrades gracefully. **Measured before/after (real name scan):
+  combined pathway phase 48 s → 8 s**; now bounded regardless of identity count; a
+  typical ≲110-identity scan is still examined in full. Test delta:
+  `single_route_links_are_pair_probe_capped_deterministically` +
+  `multipath_links_are_pair_probe_capped_deterministically` (each via a testable
+  `*_capped(…, max_pair_probes)` seam: cap 0 → empty, cap 1 → ≤1, deterministic
+  prefix). Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

@@ -343,6 +343,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Finalise no longer stalls on a rich name scan — the two `O(identities²)`
+  pairwise-pathway sweeps are now bounded.** Live end-to-end testing (a real
+  `full_name` seed) surfaced a scan taking 135–185 s and, on a cold/richer run,
+  exceeding a 150 s external timeout. Phase timing pinned it to two finalise
+  passes that each iterate every identity pair calling `disjoint_pathways_in`
+  (depth-5, 4-path search): **AU-062** multipath corroboration
+  (`multipath_corroborated_links`) and **AU-063** single-route gap detection
+  (`single_route_identity_links`). A broad name scan derives HUNDREDS of
+  name-permutation identity entities (~400 → ~80 000 pairs), so the sweeps ran
+  ~45 s **each**. Both now share one deterministic `IDENTITY_PAIR_PROBE_CAP`
+  (6 000 pairs): because `identity_uids` is sorted, the cap yields a deterministic
+  prefix (byte-identical output preserved, unlike a wall-clock budget), and the
+  signals are best-effort enhancement (corroboration boosts / the gap lead) whose
+  output was already capped, so a bounded subset degrades gracefully. Measured:
+  the combined pathway phase dropped **48 s → 8 s**, and it is now bounded
+  regardless of identity count. A typical multi-source scan (≲110 identities) is
+  still examined in full.
 - **HTTP response-snippet buffers now bound peak memory against a single
   oversized chunk.** `error_snippet` and `read_body_capped` extended their buffer
   by the WHOLE streamed chunk and truncated *afterwards*, so a hostile upstream
