@@ -503,11 +503,16 @@ pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
             domain_end -= 1;
         }
         let domain = &body[i + 1..domain_end];
-        // `domain.len() > 3` cheaply rejects a too-short TLD (`x@y.z`); the
-        // `<= 254` cap is the RFC 5321 address-length ceiling (the validator caps
-        // the local part but not the whole address). All chars here are ASCII, so
+        // Require the same alphabetic-TLD validity the canonical `EMAIL_RE` and its
+        // sibling byte-scanner `util::extract::page_emails` enforce, single-sourced
+        // through `host_has_alpha_tld`, so this third page byte-scanner cannot be more
+        // permissive than they are: it rejects an IP-literal host (`admin@10.0.0.1`),
+        // a numeric pseudo-TLD (`user@host.123`) and a 1-char TLD (`user@host.c`) that
+        // the old `contains('.') && len > 3` gate admitted as bogus `Email` entities.
+        // The `<= 254` cap is the RFC 5321 address-length ceiling (the syntax validator
+        // caps the local part but not the whole address). All chars here are ASCII, so
         // the lowercased length equals `domain_end - local_start`.
-        if domain.contains('.') && domain.len() > 3 && domain_end - local_start <= 254 {
+        if crate::util::extract::host_has_alpha_tld(domain) && domain_end - local_start <= 254 {
             let lower = body[local_start..domain_end].to_lowercase();
             // Share the canonical email-syntax definition (one '@', sane local,
             // no edge/consecutive dots) instead of the old ad-hoc local-non-empty

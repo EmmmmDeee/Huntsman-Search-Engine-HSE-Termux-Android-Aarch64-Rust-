@@ -351,14 +351,15 @@ pub fn looks_like_email(s: &str) -> bool {
 /// True if `host` ends in a valid alphabetic TLD: at least one dot, no empty
 /// label (so no leading/trailing dot and no `..`), and a final label of ≥2 ASCII
 /// letters. This is exactly the domain validity the canonical [`EMAIL_RE`]
-/// (`…\.[A-Za-z]{2,}`) enforces, single-sourced here so the two **non-regex**
-/// admission paths — [`looks_like_email`] (the provider-field gate) and
-/// [`page_emails`] (the HTML byte-scanner) — cannot be more permissive than the
-/// free-text scanner and admit an address the scanner would reject. Without it an
-/// IP-literal host (`admin@10.0.0.1`), a numeric pseudo-TLD (`user@host.123`) or a
-/// double-dot host (`x@sub..example.com`) minted a bogus `Email` entity that then
-/// poisoned correlation. Pure.
-fn host_has_alpha_tld(host: &str) -> bool {
+/// (`…\.[A-Za-z]{2,}`) enforces, single-sourced here so the **non-regex**
+/// admission paths — [`looks_like_email`] (the provider-field gate), [`page_emails`]
+/// (the `util` HTML byte-scanner), and the `web_crawler` module's own page byte-scanner
+/// (`crawl_util::extract_emails`) — cannot be more permissive than the free-text
+/// scanner and admit an address the scanner would reject. Without it an IP-literal
+/// host (`admin@10.0.0.1`), a numeric pseudo-TLD (`user@host.123`), a 1-char TLD
+/// (`user@host.c`) or a double-dot host (`x@sub..example.com`) minted a bogus `Email`
+/// entity that then poisoned correlation. Pure.
+pub fn host_has_alpha_tld(host: &str) -> bool {
     if !host.contains('.') || host.split('.').any(str::is_empty) {
         return false;
     }

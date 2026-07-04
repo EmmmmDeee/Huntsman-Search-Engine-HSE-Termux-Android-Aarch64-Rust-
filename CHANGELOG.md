@@ -343,6 +343,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The web crawler no longer mines IP-literal / numeric-TLD / 1-char-TLD hosts as
+  bogus email addresses.** `util::extract::host_has_alpha_tld` is the single-sourced
+  definition of a valid email domain (≥1 dot, no empty label, a final label of ≥2
+  ASCII letters), shared by the provider-field gate `looks_like_email` and the HTML
+  byte-scanner `page_emails` so neither can admit an address the canonical `EMAIL_RE`
+  would reject. A third copy of the byte-scan logic — `web_crawler`'s page email
+  extractor — was overlooked and still used a weak `contains('.') && len > 3` gate
+  (with a syntax check that validates dot placement but not the TLD), so
+  `admin@10.0.0.1`, `user@host.123` and `user@host.c` each minted a bogus `Email`
+  entity that then poisoned correlation (name/handle permutations, co-location and
+  credential-reuse rules, the exposure index). `host_has_alpha_tld` is now public and
+  the crawler routes through it, so all three admission paths share one gate.
+  Regression test `email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts`.
 - **A common full name is no longer asserted as a confirmed identity merge (AU-081).**
   The free offline identity-bridge rule `AU-081` links two independently-sourced
   `Person` records that normalise to the same canonical name — but emitted

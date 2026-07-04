@@ -138,6 +138,27 @@ use super::*;
     }
 
     #[test]
+    fn email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts() {
+        // This module's page byte-scanner is a third copy of the same email-mining
+        // logic as `util::extract::page_emails`; it must not be more permissive.
+        // The old `contains('.') && len > 3` gate admitted an IP-literal host, a
+        // numeric pseudo-TLD and a 1-char TLD as bogus `Email` entities that would
+        // then poison correlation. Routing it through the canonical
+        // `host_has_alpha_tld` (which requires a final label of ≥2 ASCII letters)
+        // rejects all three, while a genuine address alongside them still surfaces.
+        let mut emails = HashSet::new();
+        extract_emails(
+            "junk admin@10.0.0.1 and user@host.123 and short@host.c \
+             but real ops@acme.com",
+            &mut emails,
+        );
+        assert!(emails.contains("ops@acme.com"), "got {emails:?}");
+        assert!(!emails.contains("admin@10.0.0.1"), "IP-literal host leaked");
+        assert!(!emails.contains("user@host.123"), "numeric TLD leaked");
+        assert!(!emails.contains("short@host.c"), "1-char TLD leaked");
+    }
+
+    #[test]
     fn email_extraction_filters_modern_asset_extensions_but_not_gtlds() {
         let mut emails = HashSet::new();
         extract_emails(

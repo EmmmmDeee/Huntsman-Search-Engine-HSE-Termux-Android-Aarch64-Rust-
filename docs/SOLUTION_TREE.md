@@ -2756,3 +2756,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   established pattern — no new vocabulary, no drift. Test:
   `au081_common_name_is_a_medium_lead_not_a_high_assert`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-EMAIL-TLD-3RDCOPY: the `web_crawler` page email
+  byte-scanner now shares the canonical alpha-TLD gate.** `host_has_alpha_tld`
+  was single-sourced (2026-07-04) so the non-regex email admission paths could
+  not out-admit `EMAIL_RE`, but a third copy of the byte-scan logic —
+  `web_crawler::crawl_util::extract_emails` — was overlooked and still used the
+  weak `contains('.') && len > 3` heuristic, admitting IP-literal
+  (`admin@10.0.0.1`), numeric-TLD (`user@host.123`) and 1-char-TLD
+  (`user@host.c`) hosts as bogus `Email` entities. Made `host_has_alpha_tld`
+  `pub` (module→util is a permitted dependency) and routed the crawler scanner
+  through it, keeping its existing `validate_email_syntax` dot-artifact check so
+  the combined gate is the strictest of the three; the helper's docstring now
+  enumerates all three consumers. A garbage email at the parse layer compounds
+  through every downstream correlation (permutations, co-location/reuse rules,
+  the exposure index), so closing the last permissive copy is the same
+  "one gate, no drift" discipline as the original single-sourcing. Test:
+  `email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts`. Gate
+  green. Paired: `PROBLEM_TREE` §8 — same commit.

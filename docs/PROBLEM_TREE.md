@@ -3717,3 +3717,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `au081_…_fires_on_cross_source_same_name` already asserts the distinctive-name
   High path and still passes. Gate green: fmt/clippy/doc clean, full suite 0
   failures. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Precision (T2.18, new): a third page email byte-scanner
+  (`web_crawler`) still admitted IP-literal / numeric / 1-char-TLD hosts the
+  canonical gate rejects.** `util::extract::host_has_alpha_tld` was introduced
+  (gap_register 2026-07-04) as the single source of email-domain validity
+  precisely so the two **non-regex** admission paths — `looks_like_email` (the
+  provider-field gate) and `page_emails` (the `util` HTML byte-scanner) — could
+  never out-admit the free-text `EMAIL_RE`. But a THIRD copy of the same
+  byte-scan logic, `web_crawler::crawl_util::extract_emails`, was missed: it
+  still gated on the old `domain.contains('.') && domain.len() > 3` heuristic
+  (plus `validate_email_syntax`, which checks dot artifacts but **not** the TLD),
+  so `admin@10.0.0.1` (IP literal), `user@host.123` (numeric TLD) and
+  `user@host.c` (1-char TLD) each minted a bogus `Email` entity that then seeds
+  permutations and fires co-location/reuse rules — a parse-layer false positive
+  that compounds downstream, the class the doctrine says to kill at the source.
+  Fix: made `host_has_alpha_tld` `pub` (module layer may use `util`) and routed
+  `extract_emails` through it, dropping the weak inline gate; the docstring now
+  names all three paths it single-sources. `validate_email_syntax` stays, so the
+  combined gate (alpha-TLD **and** no dot artifacts) is the strictest of the
+  three. Test delta:
+  `email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts` (all three
+  junk hosts rejected, a real `ops@acme.com` alongside them still surfaces);
+  fails against the old `len > 3` gate, passes against the fix. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
