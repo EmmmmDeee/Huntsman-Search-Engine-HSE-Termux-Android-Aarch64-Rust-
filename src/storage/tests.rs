@@ -751,6 +751,37 @@ fn entities_filtered_by_kind() {
 }
 
 #[test]
+fn entities_filtered_returns_the_complete_result_not_a_capped_500() {
+    // Full-fidelity: a breach-heavy scan's filtered result can exceed 500 entities;
+    // the filtered query must return the COMPLETE deterministically-ordered set — it
+    // is a SUBSET of the canonical `entities_for_scan`, which is itself unbounded.
+    // Fail-before: a hardcoded `LIMIT 500` silently dropped the lowest-confidence
+    // matches past rank 500 with no total/flag/pagination.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "big-scan");
+    for i in 0..600 {
+        let conf = 0.30 + (i % 50) as f64 / 100.0; // varied, exercises the ordering
+        let e = Entity::new(
+            EntityKind::Email,
+            format!("user{i:04}@example.com"),
+            conf,
+            "big-scan",
+        );
+        store.upsert_entity(&e).unwrap();
+    }
+    let results = store
+        .entities_filtered("big-scan", Some("email"), None, None)
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        600,
+        "the filtered query must return every matching entity, not a capped 500"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn entities_filtered_by_kind_and_min_confidence() {
     let path = tmp_db();
     let store = Store::open(&path).unwrap();

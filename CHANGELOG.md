@@ -343,6 +343,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The entity filter/browse query now returns every matching entity, not a silent cap of
+  500.** `GET /scans/{id}/entities/filter` applied a hardcoded `LIMIT 500` with no
+  pagination, total, or truncation flag, so a scan whose filtered result exceeded 500
+  entities silently hid the lowest-confidence matches — even though the facet counts beside
+  the list reported the true larger number, and the unfiltered entity endpoint returns the
+  complete set unbounded. The cap is removed; the result is fully ordered and complete.
+  Regression test `entities_filtered_returns_the_complete_result_not_a_capped_500`.
 - **Infostealer (ULP) logins are now recovered on username and IP-address scans, not only
   email/domain scans.** A stealer-log record's captured login (the compromised account for
   a URL) was promoted to a pivot entity only when the scan target was an email or domain —

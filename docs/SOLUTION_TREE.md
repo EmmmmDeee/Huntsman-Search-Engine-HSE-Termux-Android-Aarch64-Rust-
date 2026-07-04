@@ -2975,3 +2975,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   and promote it to a pivot on every kind when it differs (removed the `useful` gate + the
   now-unused `target_kind` param). Test: `ulp_recovers_the_login_on_username_and_ip_scans`.
   Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-FILTERLIMIT: `entities_filtered` returns the complete
+  result, not a capped 500.** The filtered-entity storage query hardcoded `LIMIT 500` with
+  no pagination/total/flag, silently dropping the lowest-confidence matches past rank 500
+  — while the canonical `entities_for_scan` it subsets is unbounded and the facets endpoint
+  reported the true larger count (an observable inconsistency). Removed the LIMIT; the
+  `confidence DESC, uid ASC` order is already total/deterministic. Test:
+  `entities_filtered_returns_the_complete_result_not_a_capped_500`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

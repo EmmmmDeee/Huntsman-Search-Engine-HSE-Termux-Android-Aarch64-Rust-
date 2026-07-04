@@ -346,7 +346,14 @@ impl super::Store {
             sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
             let _ = next_param;
         }
-        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC LIMIT 500");
+        // No LIMIT: the filtered set is a SUBSET of the canonical `entities_for_scan`
+        // (line ~210), which is itself unbounded — so the filtered query has no memory
+        // justification for a cap, and a silent `LIMIT 500` dropped the lowest-confidence
+        // matches past rank 500 with no total/flag/pagination (the facets endpoint still
+        // reported the true larger count, an observable inconsistency). `confidence DESC,
+        // uid ASC` is already a total deterministic order (uid tie-break), so the full
+        // result is deterministic.
+        sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC");
 
         let raw: Vec<String> = {
             let conn = self.conn.lock();

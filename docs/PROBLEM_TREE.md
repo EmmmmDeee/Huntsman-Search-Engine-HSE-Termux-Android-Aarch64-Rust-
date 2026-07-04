@@ -4081,3 +4081,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `login` evidence attribute; fail-before: neither); the existing Email-scan pivot test
   still passes. Gate green: fmt/clippy/doc clean, full suite 0 failures (4559).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Full-fidelity: `entities_filtered()` silently capped every filtered
+  browse query at 500 rows.** Fidelity-audit-workflow-confirmed. The
+  `GET /scans/{id}/entities/filter` storage query (`storage::entities::entities_filtered`,
+  line 349) appended a hardcoded `ORDER BY e.confidence DESC, e.uid ASC LIMIT 500`, while
+  the handler exposes only `kind`/`q`/`min_confidence` and returns via `ok_list` with NO
+  `limit`/`offset`/`total`/`has_more` — so on a breach-heavy scan whose filtered result
+  exceeds 500 entities (routine for `kind=email` or a broad `q` over hundreds of rows) the
+  lowest-confidence matches past rank 500 vanished from the browse view, with zero client
+  signal, while the sibling `/entities/facets` still reported the true larger per-kind
+  count (an observable inconsistency). The filtered set is a SUBSET of the canonical
+  `entities_for_scan` (which backs `/entities`, CSV, `report.json`, GEXF) and is itself
+  UNBOUNDED — so the 500 cap had no memory justification. `confidence DESC, uid ASC` is a
+  total deterministic order (uid tie-break), so removing the LIMIT yields the complete
+  deterministic result. Test delta:
+  `entities_filtered_returns_the_complete_result_not_a_capped_500` (seed 600 email
+  entities → 600 returned; fail-before: 500). Gate green: fmt/clippy/doc clean, full suite
+  0 failures (4560). **Paired:** `SOLUTION_TREE` §5 — same commit.
