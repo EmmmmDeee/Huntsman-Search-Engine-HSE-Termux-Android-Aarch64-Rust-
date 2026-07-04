@@ -2521,3 +2521,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   documented noise decision, not just wiring. Gate green: fmt/clippy
   `--all-targets`/doc clean, 4270 lib tests (+4), all integration suites. Paired:
   `PROBLEM_TREE` T2.14 `[ ]`→`[~]` + §8 — same commit.
+
+- **2026-07-04** — **Regression fix (no node): Shodan free-fallback resilience
+  restored.** The API-key overhaul (this session's directive) caught a
+  regression from embedding the default Shodan key (`58fa45a62`):
+  `modules::shodan::process` propagated a paid host-lookup error with `?` before
+  the free InternetDB path, so a 401/403/429 on the shared `oss` key skipped the
+  keyless fallback. Solution: run InternetDB first + unconditionally, route the
+  paid outcome through a pure `finalize` helper that tolerates a paid error.
+  Selected as the highest-priority *verified defect* (deterministic-cycle Step 3
+  item 2) over any open tree node. Network-free failing-first unit test on the
+  extracted policy (edition-2024 `forbid(unsafe_code)` precludes an
+  `env::set_var` base-url override for a loopback test, so the pure-helper idiom
+  is the proportionate seam). Gate green, 4272 lib tests (+1). Paired:
+  `PROBLEM_TREE` §8 + `gap_register` + `CHANGELOG` — same commit.

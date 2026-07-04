@@ -3296,3 +3296,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   cycle (sizing rule). Gate green: fmt/clippy `--all-targets`/doc clean, 4270
   lib tests (+4), all integration suites pass. **Paired:** `SOLUTION_TREE`
   SOL-HINT-NOISE `[ ]`→`[~]` + §5 — same commit.
+
+- **2026-07-04** — **Verified regression fixed: Shodan's paid-path error
+  suppressed the free InternetDB fallback.** Not a tree node — a self-contained
+  regression from commit `58fa45a62` (embedding the default Shodan key), caught
+  by the API-key overhaul. `modules::shodan::process` ran
+  `self.query_paid(ip, key, ctx, &mut result).await?` **before**
+  `self.query_internetdb(...)`, so a paid-path error (401/403/429 on the shared
+  `oss` key) propagated via `?` and skipped the free InternetDB path the
+  module's own doc-comment designates as the fallback. The free path now runs
+  first and unconditionally; the paid outcome is routed through a new pure
+  `finalize(paid, result) -> Result<ModuleResult>` that swallows a paid error
+  (already recorded upstream by `keyed_ok_or_404`) instead of aborting the
+  module. Failing-first proven by running: the regression test
+  `paid_error_retains_free_internetdb_results` `.expect`-panics against the
+  pre-fix propagating body and passes against the swallow body — a pure,
+  network-free test on the extracted policy (the codebase's helper-extraction
+  idiom, since edition-2024 `#![forbid(unsafe_code)]` rules out an
+  `env::set_var` base-url override in-test). Gate green: fmt/clippy
+  `--all-targets`/doc clean, 4272 lib tests (+1), all integration suites.
+  **Paired:** `SOLUTION_TREE` §5 + `gap_register` + `CHANGELOG` — same commit.

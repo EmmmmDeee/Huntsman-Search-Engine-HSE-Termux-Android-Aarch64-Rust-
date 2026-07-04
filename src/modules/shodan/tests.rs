@@ -54,3 +54,28 @@ fn target_entity_builds_ip_entity() {
     assert_eq!(e.value, "8.8.8.8");
     assert!((e.confidence - 0.90).abs() < 1e-9);
 }
+
+/// A paid host-lookup error (e.g. a 401/403/429 on the shared `oss` key) must
+/// NOT discard the free InternetDB data already gathered — `process` runs the
+/// free path first and routes the paid outcome through `finalize`, which keeps
+/// the result. Regression guard for the `?`-on-paid-before-free bug: the free
+/// InternetDB fallback used to be skipped whenever the paid path errored.
+#[test]
+fn paid_error_retains_free_internetdb_results() {
+    let mut result = ModuleResult::new();
+    result.push(Entity::new(EntityKind::IpAddress, "8.8.8.8", 0.92, "scan"));
+    let out = finalize(
+        Err(crate::core::error::Error::module(
+            "shodan",
+            "429 rate limited",
+        )),
+        result,
+    )
+    .expect("a paid-path error must not fail the module when free data exists");
+    assert_eq!(
+        out.len(),
+        1,
+        "InternetDB data must survive a paid-path error"
+    );
+    assert_eq!(out.entities[0].value, "8.8.8.8");
+}

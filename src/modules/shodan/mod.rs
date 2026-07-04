@@ -145,18 +145,36 @@ impl Module for Shodan {
 
         let mut result = ModuleResult::new();
 
-        // `resolve_key` always yields a real key (the operator's own, else
-        // the embedded `oss`-plan default), so the paid path always runs
-        // now. Its schema is NOT a strict superset of InternetDB's — paid
-        // carries org/ISP/ASN/OS/country InternetDB lacks, but InternetDB
-        // carries CPEs/tags paid lacks — so both run and merge, matching
-        // this module's header doc.
+        // `resolve_key` always yields a real key (the operator's own, else the
+        // embedded `oss`-plan default). Free InternetDB runs FIRST and
+        // unconditionally: it carries CPEs/tags the paid path lacks, and it is
+        // the fallback when the shared `oss` key is rate-limited or exhausted.
+        // The paid host lookup then augments with org/ISP/ASN/OS/country; its
+        // outcome is routed through `finalize` so a key error (401/403/429) —
+        // already recorded upstream by `keyed_ok_or_404` — does NOT discard the
+        // InternetDB data already gathered.
         let key = resolve_key(ctx.key_opt(KEY_ENV));
-        self.query_paid(ip, key, ctx, &mut result).await?;
         self.query_internetdb(ip, ctx, &mut result).await;
-
-        Ok(result)
+        let paid = self.query_paid(ip, key, ctx, &mut result).await;
+        finalize(paid, result)
     }
+}
+
+/// Combine the best-effort paid host-lookup outcome with the already-gathered
+/// (free InternetDB) `result`. The paid path is best-effort: a key error
+/// (401/403/429) is recorded upstream by `keyed_ok_or_404`, and must NOT
+/// discard the free data already collected — so it is swallowed here rather
+/// than aborting the whole module. Pure, so the "free data survives a paid
+/// failure" invariant is unit-testable without a network round-trip.
+fn finalize(paid: Result<()>, result: ModuleResult) -> Result<ModuleResult> {
+    if let Err(e) = paid {
+        tracing::debug!(
+            target: "huntsman::shodan",
+            error = %e,
+            "shodan paid host lookup failed; free InternetDB data retained"
+        );
+    }
+    Ok(result)
 }
 
 impl Shodan {

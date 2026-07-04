@@ -355,6 +355,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Shodan: a paid host-lookup error no longer discards the free InternetDB
+  data.** A regression from embedding the default Shodan key (commit
+  `58fa45a62`): `process` ran `query_paid(...).await?` *before* the free
+  `query_internetdb` path, so a key error on the shared `oss`-plan key
+  (401/403/429 — e.g. a shared rate limit) propagated and skipped the free
+  fallback that used to always run. The free InternetDB path now runs first and
+  unconditionally, and the paid outcome is routed through a pure `finalize`
+  helper that tolerates a paid error (already recorded upstream by
+  `keyed_ok_or_404`) instead of aborting the module. Regression test
+  `paid_error_retains_free_internetdb_results`.
 - **The dossier's "ROI" wasted-spend hint could never fire, on any scan
   (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
   "N keyed/paid module(s) yielded nothing — consider --exclude …" when a
