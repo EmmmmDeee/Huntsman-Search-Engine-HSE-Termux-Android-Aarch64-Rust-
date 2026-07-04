@@ -2983,3 +2983,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `confidence DESC, uid ASC` order is already total/deterministic. Test:
   `entities_filtered_returns_the_complete_result_not_a_capped_500`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-SEONNAMES: SEON emits a Person for each distinct
+  reported name.** `build_email_entities` minted one Person from the first platform with a
+  valid name (a `find_map`), silently dropping the distinct name variants other identity
+  platforms reported (a nickname on one, a full legal name on another). Now emits one
+  Person per DISTINCT name (deterministic BTreeMap by lowercased value), tagged with all
+  reporting platforms; identical names dedup to one Person carrying every platform tag.
+  Test: `email_emits_a_person_for_each_distinct_reported_name`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

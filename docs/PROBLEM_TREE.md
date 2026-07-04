@@ -4098,3 +4098,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `entities_filtered_returns_the_complete_result_not_a_capped_500` (seed 600 email
   entities → 600 returned; fail-before: 500). Gate green: fmt/clippy/doc clean, full suite
   0 failures (4560). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Full-fidelity: SEON emitted only the FIRST per-platform display
+  name; distinct name variants from other platforms were dropped.**
+  Fidelity-audit-workflow-confirmed. `seon::entity_builders::build_email_entities`
+  deserializes `AccountPresence.name` for every registered platform (facebook, twitter,
+  linkedin, github — the `PERSON_PLATFORMS`) but minted a single `Person` via a
+  `find_map` (line 116) that returned the FIRST platform whose name is non-empty, ≥3
+  chars, and contains a space. So when SEON reports different self-reported name variants
+  across platforms (facebook `Jon Smith`, linkedin `Jonathan A. Smith`, google `J Smith`),
+  only the first surfaced — the fuller/alternate legal-name variants, genuine identity
+  data, were silently discarded and never stamped on evidence. Fix: emit one `Person` per
+  DISTINCT name (keyed by lowercased value in a deterministic `BTreeMap`), tagged with
+  ALL platforms that reported it, evidence listing them; the same name on several
+  platforms dedups to one Person carrying every platform tag. Test delta:
+  `email_emits_a_person_for_each_distinct_reported_name` (facebook+twitter `Jon Smith`,
+  linkedin `Jonathan A. Smith`, github `jsmith` → two distinct `Person`s, the shared name
+  tagged both platforms, the space-less handle excluded; fail-before: one Person); the
+  existing single-name Person test still passes. Gate green: fmt/clippy/doc clean, full
+  suite 0 failures (4561). **Paired:** `SOLUTION_TREE` §5 — same commit.

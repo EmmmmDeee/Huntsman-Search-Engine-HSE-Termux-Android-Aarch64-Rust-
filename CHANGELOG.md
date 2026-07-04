@@ -343,6 +343,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **SEON now surfaces every distinct self-reported name, not just the first platform's.**
+  When SEON reports a person's display name across several identity platforms (e.g. a
+  nickname on one, a fuller legal name on another), the module emitted only the first and
+  silently dropped the rest. It now emits one Person entity per distinct name, tagged with
+  every platform that reported it (identical names dedup to one). Regression test
+  `email_emits_a_person_for_each_distinct_reported_name`.
 - **The entity filter/browse query now returns every matching entity, not a silent cap of
   500.** `GET /scans/{id}/entities/filter` applied a hardcoded `LIMIT 500` with no
   pagination, total, or truncation flag, so a scan whose filtered result exceeded 500

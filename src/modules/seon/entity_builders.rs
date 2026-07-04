@@ -112,18 +112,35 @@ pub(super) fn build_email_entities(
     entity.add_evidence(ev);
     out.push(entity);
 
-    // One Person from the best-named identity platform.
-    if let Some((platform, name)) = registered.iter().find_map(|(plat, p)| {
-        nonempty(&p.name)
-            .filter(|n| PERSON_PLATFORMS.contains(plat) && n.len() >= 3 && n.contains(' '))
-            .map(|n| (*plat, n))
-    }) {
-        let mut pe = Entity::new(EntityKind::Person, name, 0.65, scan_id);
+    // One Person per DISTINCT self-reported name across the identity platforms.
+    // A display name on each platform is genuine identity data, and different
+    // platforms routinely report different variants (a nickname on facebook, a full
+    // legal name on linkedin, an initialled form on google) — emitting only the
+    // first silently dropped the rest. Distinct names → distinct Person entities;
+    // the SAME name on several platforms → one Person tagged with all of them.
+    // Keyed by lowercased name in a BTreeMap for a deterministic, deduped result.
+    let mut names_by_key: std::collections::BTreeMap<String, (&str, Vec<&str>)> =
+        std::collections::BTreeMap::new();
+    for (platform, p) in &registered {
+        if !PERSON_PLATFORMS.contains(platform) {
+            continue;
+        }
+        if let Some(name) = nonempty(&p.name).filter(|n| n.len() >= 3 && n.contains(' ')) {
+            let entry = names_by_key
+                .entry(name.to_lowercase())
+                .or_insert((name, Vec::new()));
+            entry.1.push(*platform);
+        }
+    }
+    for (name, platforms) in names_by_key.values() {
+        let mut pe = Entity::new(EntityKind::Person, *name, 0.65, scan_id);
         pe.tag("seon");
-        pe.tag(format!("platform:{platform}"));
+        for platform in platforms {
+            pe.tag(format!("platform:{platform}"));
+        }
         pe.add_evidence(Evidence::new(
             SRC,
-            format!("Name from {platform} via SEON for {email}"),
+            format!("Name from {} via SEON for {email}", platforms.join(", ")),
         ));
         out.push(pe);
     }

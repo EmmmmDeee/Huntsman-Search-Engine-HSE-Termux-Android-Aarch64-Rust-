@@ -109,6 +109,38 @@ fn email_emits_url_entities_for_each_profile_link() {
 }
 
 #[test]
+fn email_emits_a_person_for_each_distinct_reported_name() {
+    // Full-fidelity: identity platforms routinely report different name variants;
+    // every DISTINCT self-reported name must surface as a Person — the old
+    // find_map emitted only the first, silently dropping the rest. The SAME name on
+    // two platforms dedups to one Person tagged with both.
+    let es = email(
+        r#"{"data":{
+            "domain_details":{"domain":"acme.com","registered":true,"custom":true,"free":false},
+            "account_details":{
+                "facebook":{"registered":true,"name":"Jon Smith"},
+                "linkedin":{"registered":true,"name":"Jonathan A. Smith"},
+                "twitter":{"registered":true,"name":"Jon Smith"},
+                "github":{"registered":true,"name":"jsmith"}
+            }}}"#,
+    );
+    let people: Vec<&crate::core::entity::Entity> =
+        es.iter().filter(|e| e.kind == EntityKind::Person).collect();
+    let names: Vec<&str> = people.iter().map(|e| e.value.as_str()).collect();
+    // Both DISTINCT names surface; the space-less github handle "jsmith" does not.
+    assert!(names.contains(&"Jon Smith"), "got {names:?}");
+    assert!(names.contains(&"Jonathan A. Smith"), "got {names:?}");
+    assert_eq!(
+        people.len(),
+        2,
+        "one Person per distinct name (github 'jsmith' has no space): {names:?}"
+    );
+    // The name reported by two platforms carries both platform tags.
+    let jon = people.iter().find(|e| e.value == "Jon Smith").unwrap();
+    assert!(jon.has_tag("platform:facebook") && jon.has_tag("platform:twitter"));
+}
+
+#[test]
 fn email_high_score_is_flagged_high_risk() {
     let es = email(r#"{"data":{"score":92.0}}"#);
     assert!(es[0].has_tag("high-risk"));
