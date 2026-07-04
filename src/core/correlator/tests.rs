@@ -7248,6 +7248,57 @@ fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
 }
 
 #[test]
+fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // Two independently-sourced "John Smith" records — a breach dump and a
+    // proxycurl profile. The rule cannot tell whether these are one person or
+    // two unrelated strangers who happen to share the single most common
+    // full-name shape in the anglophone world. Asserting High "same
+    // individual" there is a confident false merge; it must be a Medium lead
+    // to VERIFY instead. ("smith" is in COMMON_SURNAMES.)
+    let mut breach_p = Entity::new(EntityKind::Person, "John Smith", 0.8, "s");
+    breach_p.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social_p = Entity::new(EntityKind::Person, "Smith John", 0.75, "s");
+    social_p.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&[breach_p, social_p], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "AU-081 must still fire on a shared canonical name — the discount \
+         changes severity, not whether the lead surfaces"
+    );
+    assert_eq!(
+        r[0].severity,
+        super::Severity::Medium,
+        "a common full name is a high-volume coincidence — must be a Medium \
+         lead, not a High identity assertion"
+    );
+    assert!(
+        r[0].description.contains("VERIFY"),
+        "a common-name match must be phrased as a lead to verify, not a merge: {}",
+        r[0].description
+    );
+
+    // Control: a DISTINCTIVE full name (no common token) stays a High
+    // identity bridge — the discount must not blunt genuine matches.
+    let mut breach_d = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    breach_d.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let mut social_d = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    social_d.add_evidence(Evidence::new("proxycurl", "LinkedIn profile".to_string()));
+    let rd = rule_au_081_canonical_person_name_match(&[breach_d, social_d], "s", 0);
+    assert!(!rd.is_empty(), "AU-081 must fire on the distinctive name");
+    assert_eq!(
+        rd[0].severity,
+        super::Severity::High,
+        "a distinctive full name must remain a High identity bridge"
+    );
+    assert!(
+        rd[0].description.contains("same individual"),
+        "a distinctive-name match keeps the confident 'same individual' wording: {}",
+        rd[0].description
+    );
+}
+
+#[test]
 fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
     use super::rules::rule_au_082_api_key_dual_pathway;
     use crate::core::entity::{Entity, EntityKind, Evidence};

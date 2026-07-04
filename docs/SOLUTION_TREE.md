@@ -2738,3 +2738,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   claim), incl. the IPv4-mapped-IPv6 bypass case (`is_private_addr` canonicalises
   first). No code change — this cycle only reconciles the marker so the trees agree
   on what's done. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-CORR-NAMEDISCOUNT: AU-081 canonical-name match now
+  discounts common names, mirroring the kin rules.** The free offline
+  identity-bridge rule merged two independently-sourced `Person` records that
+  normalise to one canonical name at `Severity::High` "same individual"
+  unconditionally — the one identity rule with no commonness discount, so two
+  unrelated "John Smith"s (breach + proxycurl, different families → past the
+  independence gate) fused into one asserted person, cross-contaminating two
+  strangers' evidence. The single highest-volume false-merge vector in person
+  OSINT, and the exact failure the AU-051/AU-061/`derive_kinship` discount
+  already guards against for shared surnames. Applied the same `is_common`
+  discount at AU-081's emit site: a canonical name containing a common family
+  token drops to `Severity::Medium` "a lead to VERIFY, not a confirmed merge";
+  a distinctive name keeps its High "same individual" bridge. The overclaiming
+  docstring (which falsely credited the token-count floor with excluding common
+  first names) was corrected to describe the real gate. One place, mirroring an
+  established pattern — no new vocabulary, no drift. Test:
+  `au081_common_name_is_a_medium_lead_not_a_high_assert`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

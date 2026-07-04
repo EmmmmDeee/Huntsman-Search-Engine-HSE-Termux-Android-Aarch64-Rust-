@@ -3691,3 +3691,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `PROBLEM_TREE` marker had drifted. Flipped `[ ]`→`[x]`; no code change.
   **Paired:** `SOLUTION_TREE` §5 (already `[x]`) — this commit records the
   reconciliation.
+- **2026-07-04** — **Precision (T2.17, new): AU-081 asserted High "same
+  individual" on a common full name — a confident false merge.**
+  `rule_au_081_canonical_person_name_match` bridges two independently-sourced
+  `Person` records that normalise to one canonical name, and emitted
+  `Severity::High` "independently-sourced records for the same individual"
+  **unconditionally** — no commonness discount, unlike every other identity/kin
+  rule (AU-051, AU-061, `derive_kinship`, `derive_regional_kinship`, leads,
+  `engine::passes`) which discounts a common surname because many unrelated
+  people share it. So two strangers who each surface as "John Smith" (a breach
+  dump + a proxycurl profile — different source families, so the independence
+  gate passes) were merged at High into one asserted identity, mis-attributing
+  each stranger's evidence to the other — the single worst outcome for an
+  evidentiary tool, and the highest-volume false-merge vector in person OSINT.
+  The docstring compounded it, claiming the token-count floor "excludes a
+  known-common first name like John" when the floor only rejects <2-token names
+  (so "John Smith", two common tokens, sailed through). Fix mirrors the AU-051
+  discount at the emit site: `is_common` over the canonical name's tokens →
+  common ⇒ `Severity::Medium` "a COMMON name many unrelated people share — a
+  lead to VERIFY, not a confirmed merge"; distinctive ⇒ `Severity::High` "same
+  individual" as before. Docstring corrected to describe the real gate. Test
+  delta: `au081_common_name_is_a_medium_lead_not_a_high_assert` (two "John
+  Smith"/"Smith John" from breach vs proxycurl → Medium + "VERIFY"; control
+  "Haigen Bamford"/"Bamford Haigen" → High + "same individual"); the existing
+  `au081_…_fires_on_cross_source_same_name` already asserts the distinctive-name
+  High path and still passes. Gate green: fmt/clippy/doc clean, full suite 0
+  failures. **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -1283,8 +1283,19 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
 /// Gates: both entities must have ≥ 2 non-trivial (len ≥ 2) name tokens
 /// after normalisation, and must come from at least one source family the
 /// other does not share (independence requirement).  Single-token names
-/// (initials only, or a known-common first name like "John") are too
-/// ambiguous to link — excluded by the token-count floor.
+/// (initials only) are too ambiguous to link — excluded by the token-count
+/// floor.
+///
+/// Commonness discount (mirrors AU-051 / AU-061 / `derive_kinship`): a full
+/// name containing a *common* family name ("John Smith", "David Jones") is a
+/// high-volume coincidence — many unrelated people share it, so an
+/// independent match is a lead to VERIFY, not a confirmed merge. Such matches
+/// fire at [`Severity::Medium`]; a match on a *distinctive* name (no common
+/// token) stays [`Severity::High`], the confident identity bridge it has
+/// always been. Conflating two real strangers who happen to share "John
+/// Smith" mis-attributes evidence between them — the worst outcome for an
+/// evidentiary tool, so the discount is applied here exactly as the kin rules
+/// apply it to shared-surname pivots.
 pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
     entities: &[Entity],
     scan_id: &str,
@@ -1371,14 +1382,38 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
 
             let mut uids = vec![e1.uid.clone(), e2.uid.clone()];
             uids.sort_unstable();
+
+            // A common family name inflates full-name coincidence (many
+            // unrelated "John Smith"s share it), so an independent match is a
+            // lead to VERIFY — not a confirmed merge. Mirror the AU-051 /
+            // AU-061 / kinship commonness discount: distinctive names stay a
+            // High identity bridge, common ones drop to a Medium lead. The
+            // canonical name is already lowercased and space-joined, so its
+            // tokens feed `is_common` directly.
+            let common = persons[i]
+                .0
+                .split(' ')
+                .any(crate::util::surnames::is_common);
+            let (severity, tail) = if common {
+                (
+                    Severity::Medium,
+                    "a COMMON name many unrelated people share — a lead to VERIFY, \
+                     not a confirmed merge",
+                )
+            } else {
+                (
+                    Severity::High,
+                    "independently-sourced records for the same individual \
+                     (free, offline identity bridge)",
+                )
+            };
             out.push(Correlation {
                 rule_id: "AU-081".into(),
                 rule_name: "Canonical person name match".into(),
-                severity: Severity::High,
+                severity,
                 description: format!(
                     "Person records '{}' (via {src1_label}) and '{}' (via {src2_label}) \
-                     normalise to the same canonical name — independently-sourced records \
-                     for the same individual (free, offline identity bridge)",
+                     normalise to the same canonical name — {tail}",
                     e1.value, e2.value,
                 ),
                 entity_uids: uids,

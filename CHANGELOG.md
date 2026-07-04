@@ -343,6 +343,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A common full name is no longer asserted as a confirmed identity merge (AU-081).**
+  The free offline identity-bridge rule `AU-081` links two independently-sourced
+  `Person` records that normalise to the same canonical name — but emitted
+  `Severity::High` "records for the same individual" *unconditionally*, the one
+  identity rule with no common-name discount. So two unrelated "John Smith"s (say
+  a breach dump and a proxycurl profile — different source families, so the
+  independence gate is satisfied) fused into a single asserted person,
+  cross-attributing each stranger's evidence to the other: the highest-volume
+  false-merge vector in person OSINT and the worst outcome for an evidentiary
+  tool. It now applies the same `is_common` discount the kin rules already use
+  (AU-051/AU-061/`derive_kinship`): a canonical name containing a common family
+  token drops to `Severity::Medium` "a COMMON name many unrelated people share —
+  a lead to VERIFY, not a confirmed merge", while a distinctive name keeps its
+  High "same individual" bridge. The rule's docstring, which had falsely claimed
+  the token-count floor excluded common first names, was corrected. Regression
+  test `au081_common_name_is_a_medium_lead_not_a_high_assert`.
 - **Three modules restored — two broken outright by upstream API drift, one
   spuriously tripping its breaker — all found by real live testing.** Driving a
   real seed of every target kind end-to-end surfaced three live faults no unit
