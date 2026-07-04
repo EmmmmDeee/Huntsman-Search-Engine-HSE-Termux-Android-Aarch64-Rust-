@@ -4134,3 +4134,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   same commit. **This closes the fidelity-audit arc**: all 7 distinct confirmed
   silent-fidelity violations (register scrapers, netlas SAN/emails, niamonx ULP login,
   entities_filtered LIMIT, SEON names, AU-049/050 handles) are fixed.
+- **2026-07-04** — **Full-fidelity: `github_user` capped the subject's own SSH public-key
+  Credential entities at `.take(10)`.** Found by a direct post-audit grep sweep of the
+  remaining `.take(N)` sites (not the 5-finder workflow, which did not reach it). The
+  `fetch_ssh_keys` module read all of GitHub's `/users/{login}/keys` (the subject's own
+  published keys — no false-attribution risk) but the emit loop did
+  `result.extend(keys.iter().take(10).filter_map(...))`, silently dropping keys 11+ so they
+  never became fingerprinted `Credential` artifacts. Each SSH public key is an independent
+  AU-048 cross-account cryptographic pivot (the same key on two accounts proves one
+  private-key holder), so the cap discarded exactly the strongest cross-account evidence the
+  module exists to surface; a developer commonly registers more than ten keys. The sibling
+  display evidence already surfaces the true `ssh_key_count` and a five-key sample (a
+  JUSTIFIED, count-carrying sample — left intact), so only the correlatable-artifact path
+  was lossy. Fix: extracted the `SshKey` row struct to module scope and a pure
+  `ssh_key_entities(keys, scan_id, login)` that emits every parsed key (malformed/empty
+  bodies still dropped by `ssh_fingerprint`, represented by omission, never a placeholder);
+  `fetch_ssh_keys` now calls it. Test delta:
+  `ssh_key_entities_emits_every_key_not_a_capped_ten` (15 distinct keys → 15 distinct
+  Credential uids; fail-before: 10) plus a mixed valid/malformed/null case. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4563). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

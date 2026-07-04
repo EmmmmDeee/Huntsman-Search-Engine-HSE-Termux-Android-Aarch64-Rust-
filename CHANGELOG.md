@@ -343,6 +343,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **GitHub user lookups now emit every one of the subject's published SSH public keys as a
+  correlatable artifact, not just the first 10.** Each key was fingerprinted into a
+  `Credential` entity so that the same public key found on two accounts merges into one
+  artifact carrying both logins — the strongest cross-account link there is — but the emit
+  loop stopped at 10, silently dropping the keys of anyone who has registered more. Every
+  published key is now emitted (malformed key bodies are still skipped, never replaced with
+  a placeholder); the human-readable evidence's true key count and sample are unchanged.
+  Regression test `ssh_key_entities_emits_every_key_not_a_capped_ten`.
 - **Shared-address and shared-phone associations (AU-049/AU-050) now reference every
   reachable email/phone handle, not just the first 8.** The correlation's linked-entity
   list capped the reachable handles at 8, so a large household or share-house with more

@@ -2998,3 +2998,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sibling AU-051 has none). Emit every handle uid (BTreeSet keeps them sorted). Test:
   `au049_references_every_reachable_handle_not_a_capped_eight`. Closes the fidelity-audit
   arc (7 confirmed violations fixed). Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-SSHKEYS: `github_user` emits every published SSH public
+  key, not a capped 10.** A direct post-audit grep sweep of the surviving `.take(N)` sites
+  found `fetch_ssh_keys` emitting the subject's own SSH public keys as fingerprinted
+  `Credential` artifacts through `keys.iter().take(10)` — silently dropping keys 11+, each of
+  which is an independent AU-048 cross-account cryptographic pivot (the module's strongest
+  link). Extracted the `SshKey` row to module scope and a pure `ssh_key_entities()` that
+  emits every parsed key (malformed bodies still dropped by fingerprinting → represented by
+  omission, not a placeholder); the display evidence's JUSTIFIED five-key sample with true
+  `ssh_key_count` is untouched. Test: `ssh_key_entities_emits_every_key_not_a_capped_ten`
+  (15 keys → 15 distinct Credential uids; fail-before: 10). Gate green (4563). Paired:
+  `PROBLEM_TREE` §8 — same commit.

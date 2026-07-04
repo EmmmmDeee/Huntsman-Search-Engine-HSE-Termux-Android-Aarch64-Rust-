@@ -8,6 +8,53 @@ use super::helpers::{ssh_fingerprint, top_event_types, usable_commit_email};
 
 const SRC: &str = "github_user";
 
+/// One row of GitHub's `/users/{login}/keys` response — the subject's own
+/// published SSH public keys. Kept at module scope (not nested inside the
+/// fetch fn) so the entity-building logic can be unit-tested without a live
+/// HTTP round-trip.
+#[derive(serde::Deserialize)]
+pub(super) struct SshKey {
+    #[serde(default)]
+    pub(super) id: Option<u64>,
+    #[serde(default)]
+    pub(super) key: Option<String>,
+}
+
+/// Turn every one of the subject's published SSH public keys into a
+/// fingerprinted, CORRELATABLE `Credential` artifact. A public key published
+/// on two accounts proves the same person holds the private key — the
+/// strongest cross-account link there is. The artifact value is `ssh:<fp>` (a
+/// hash of algo+base64, comment dropped), so two accounts sharing a key
+/// produce the SAME uid and the engine merges them into one artifact carrying
+/// both logins — which AU-048 then links.
+///
+/// Every parsed key is emitted, with no cap: these are all the *subject's own*
+/// keys (no false-attribution risk), a developer commonly registers more than
+/// a handful, and each key is an independent cryptographic pivot, so silently
+/// dropping keys 11+ would discard real cross-account evidence.
+pub(super) fn ssh_key_entities(keys: &[SshKey], scan_id: &str, login: &str) -> Vec<Entity> {
+    keys.iter()
+        .filter_map(|key| {
+            let fp = key.key.as_deref().and_then(ssh_fingerprint)?;
+            let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, scan_id);
+            e.tag("ssh-key");
+            e.tag("public-key");
+            e.tag("github");
+            let algo = key
+                .key
+                .as_deref()
+                .and_then(|k| k.split_whitespace().next())
+                .unwrap_or("ssh");
+            e.add_evidence(
+                Evidence::new(SRC, format!("SSH public key published by @{login}"))
+                    .with_attr("github_login", login)
+                    .with_attr("key_type", algo),
+            );
+            Some(e)
+        })
+        .collect()
+}
+
 pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
     let url = format!("https://api.github.com/users/{login}/keys");
     let resp = match ctx
@@ -23,14 +70,6 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
     };
     if !resp.status().is_success() {
         return;
-    }
-
-    #[derive(serde::Deserialize)]
-    struct SshKey {
-        #[serde(default)]
-        id: Option<u64>,
-        #[serde(default)]
-        key: Option<String>,
     }
 
     let keys: Vec<SshKey> = match crate::util::http::json_scanned(resp, SRC).await {
@@ -62,30 +101,9 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
         );
     }
 
-    // Emit each SSH public key as a fingerprinted, CORRELATABLE artifact. A
-    // public key published on two accounts proves the same person holds the
-    // private key — the strongest cross-account link there is. The artifact
-    // value is `ssh:<fp>` (a hash of algo+base64, comment dropped), so two
-    // accounts sharing a key produce the SAME uid and the engine merges them
-    // into one artifact carrying both logins — which AU-048 then links.
-    result.extend(keys.iter().take(10).filter_map(|key| {
-        let fp = key.key.as_deref().and_then(ssh_fingerprint)?;
-        let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, &ctx.scan_id);
-        e.tag("ssh-key");
-        e.tag("public-key");
-        e.tag("github");
-        let algo = key
-            .key
-            .as_deref()
-            .and_then(|k| k.split_whitespace().next())
-            .unwrap_or("ssh");
-        e.add_evidence(
-            Evidence::new(SRC, format!("SSH public key published by @{login}"))
-                .with_attr("github_login", login)
-                .with_attr("key_type", algo),
-        );
-        Some(e)
-    }));
+    // Emit EVERY published key as a correlatable Credential artifact (see
+    // `ssh_key_entities` — no cap; all keys are the subject's own).
+    result.extend(ssh_key_entities(&keys, &ctx.scan_id, login));
 }
 
 pub(super) async fn fetch_orgs(

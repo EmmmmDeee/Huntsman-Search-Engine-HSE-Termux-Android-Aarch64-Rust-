@@ -1,7 +1,9 @@
 use super::GithubUser;
+use super::fetch::{SshKey, ssh_key_entities};
 use super::helpers::{ssh_fingerprint, top_event_types, usable_commit_email};
 use super::types::GhUser;
 use crate::core::{
+    entity::EntityKind,
     module::Module,
     scan::{Target, TargetKind},
 };
@@ -52,6 +54,53 @@ fn top_event_types_is_deterministic_on_ties() {
         top_event_types(std::collections::HashMap::new(), 3),
         Vec::<String>::new()
     );
+}
+
+#[test]
+fn ssh_key_entities_emits_every_key_not_a_capped_ten() {
+    // Fidelity: a developer's own published SSH public keys are each an
+    // independent cross-account cryptographic pivot (AU-048). Every one must
+    // become a Credential artifact — the previous `.take(10)` silently dropped
+    // keys 11+ and lost those pivots. Seed 15 distinct keys and require 15
+    // Credential entities, each carrying a distinct `ssh:` fingerprint.
+    let keys: Vec<SshKey> = (0..15)
+        .map(|i| SshKey {
+            id: Some(i),
+            key: Some(format!(
+                "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAExampleKeyMaterialNumber{i:02}"
+            )),
+        })
+        .collect();
+    let out = ssh_key_entities(&keys, "scan-ssh", "octocat");
+    assert_eq!(
+        out.len(),
+        15,
+        "every distinct key must yield a Credential entity, not a capped ten"
+    );
+    assert!(out.iter().all(|e| e.kind == EntityKind::Credential));
+    assert!(out.iter().all(|e| e.value.starts_with("ssh:")));
+    // 15 distinct key bodies → 15 distinct fingerprints (no collision/collapse).
+    let uids: std::collections::BTreeSet<_> = out.iter().map(|e| e.value.clone()).collect();
+    assert_eq!(uids.len(), 15, "distinct keys must not collapse to one uid");
+
+    // A malformed / empty key body is dropped (no algo+blob), not emitted as a
+    // placeholder — absence is represented by omission of that one artifact,
+    // while every valid key still surfaces.
+    let mixed = vec![
+        SshKey {
+            id: Some(1),
+            key: Some("ssh-rsa AAAAB3ValidLongKeyBodyMaterialXX".to_string()),
+        },
+        SshKey {
+            id: Some(2),
+            key: Some("malformed".to_string()),
+        },
+        SshKey {
+            id: Some(3),
+            key: None,
+        },
+    ];
+    assert_eq!(ssh_key_entities(&mixed, "scan-ssh", "octocat").len(), 1);
 }
 
 #[test]
