@@ -3475,3 +3475,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   _newest` (timing-independent: asserts the expiry + cap, not which rows survive).
   Gate green: fmt/clippy/doc clean, 81 storage tests + full suite 0 failures.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Comprehensive audit cycle 2/N: serve-layer security
+  hardening (HIGH — CSRF) + two smaller serve fixes.** The web-audit found the
+  layer otherwise strong (no SQLi, XSS, panics, determinism holes; DNS-rebind
+  Host-allowlist correct) but with a genuine **CSRF** gap: every *bodyless*
+  state-changing `POST` is a CORS simple request (no preflight), and only
+  `scans/import` carried the `X-HSE-CSRF` guard — so a page in the operator's
+  browser could cross-site drive `/update/trigger` (binary self-update +
+  `exec()`), `/radar` + `/radar/live` (activate the phone's WiFi/BT/cell/GPS
+  sensors — a privacy action), and `/scan/auto[/sweep]` (quota burn), plus
+  `/scans/{id}/cancel|rerun`. The Host-allowlist only defeats DNS rebinding and
+  CORS only blocks *reading* the response, not the side effect. Fixed with an
+  `enforce_csrf` middleware on the whole `/api` router requiring `X-HSE-CSRF` on
+  every mutating method (the one header a cross-site simple request can't set
+  without triggering the preflight strict CORS rejects); the SPA gained a global
+  `fetch` wrapper injecting it on all mutating calls, and the API test helpers +
+  inline mutating requests send it. Two smaller items in the same cycle:
+  `GET /api/v1/logs` (the TRACE ring buffer — scan targets + PII) lacked the
+  `is_loopback()` gate its peer operator endpoints carry (added, so a LAN bind
+  no longer streams it), and `scan_auto_sweep` de-duped targets on the per-call
+  *unique* `scan_id` (a silent no-op) — now keys on `(kind, value)`. Test delta:
+  `bodyless_mutating_post_requires_csrf_header` (a bodyless POST is 403 without
+  the header, reaches the handler with it) + the existing
+  `scan_import_requires_csrf_header` now also exercises the middleware; the
+  `/logs` test injects a loopback peer and asserts a LAN peer is 403. Gate green:
+  fmt/clippy/doc clean, 90 API tests + full suite 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

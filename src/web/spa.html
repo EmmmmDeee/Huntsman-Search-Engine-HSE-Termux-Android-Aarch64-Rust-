@@ -418,6 +418,24 @@
 
 <script>
 "use strict";
+/* CSRF: the API rejects any state-changing request (POST/PUT/DELETE/PATCH) that
+ * lacks the X-HSE-CSRF header — a custom header a cross-site page can't set on a
+ * CORS simple request without triggering a preflight the API's strict CORS
+ * rejects. We're same-origin, so inject it transparently on every mutating fetch
+ * (rather than threading it through each call site). Handles both plain-object
+ * and Headers-instance init.headers. */
+(function(){
+  var _fetch = window.fetch;
+  window.fetch = function(input, init){
+    init = init || {};
+    var m = (init.method || (input && typeof input !== 'string' && input.method) || 'GET').toUpperCase();
+    if (m === 'POST' || m === 'PUT' || m === 'DELETE' || m === 'PATCH') {
+      if (init.headers instanceof Headers) { init.headers.set('X-HSE-CSRF', '1'); }
+      else { init.headers = Object.assign({}, init.headers, {'X-HSE-CSRF': '1'}); }
+    }
+    return _fetch.call(this, input, init);
+  };
+})();
 /* ════════════════════════════════════════════════════════════════════════
  * Huntsman Search Engine — SPA logic.
  *

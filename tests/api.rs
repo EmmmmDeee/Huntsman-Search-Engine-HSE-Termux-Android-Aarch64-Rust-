@@ -149,21 +149,25 @@ fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
-/// Shorthand: build a POST request with a JSON body.
+/// Shorthand: build a POST request with a JSON body. Carries the `X-HSE-CSRF`
+/// header the API's CSRF guard requires on every mutating request (the SPA
+/// injects it transparently; tests/clients send it explicitly).
 fn post_json(uri: &str, body: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
-/// Shorthand: build a DELETE request.
+/// Shorthand: build a DELETE request (with the required CSRF header).
 fn delete(uri: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")
         .uri(uri)
+        .header("x-hse-csrf", "1")
         .body(Body::empty())
         .unwrap()
 }
@@ -1180,6 +1184,7 @@ async fn settings_keys_put_forbidden_without_flag() {
         .method("PUT")
         .uri("/api/v1/settings/keys")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(body))
         .unwrap();
 
@@ -1256,6 +1261,7 @@ async fn settings_toggles_put_rejects_non_loopback_peer() {
         .method("PUT")
         .uri("/api/v1/settings/toggles")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(r#"{"key":"engine.google","enabled":false}"#))
         .unwrap();
     let addr: SocketAddr = "192.168.1.50:5555".parse().unwrap();
@@ -1275,6 +1281,7 @@ async fn settings_toggles_put_rejects_unknown_key() {
         .method("PUT")
         .uri("/api/v1/settings/toggles")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(
             r#"{"key":"module.not_a_real_module","enabled":false}"#,
         ))
@@ -2081,9 +2088,15 @@ async fn selftest_endpoint_returns_structured_report() {
 #[tokio::test]
 async fn logs_endpoint_serves_downloadable_text_attachment() {
     // GET /api/v1/logs streams the verbose debug-log ring buffer as a
-    // downloadable text file (the Settings "Download debug log" button).
+    // downloadable text file (the Settings "Download debug log" button). The
+    // endpoint is loopback-only (TRACE logs hold scan PII), so inject a loopback
+    // peer via request extensions the way the key-pool test does.
     let app = test_app("logs-ep");
-    let resp = app.oneshot(get("/api/v1/logs")).await.unwrap();
+    let loopback: std::net::SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/logs");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
     let ct = resp
         .headers()
@@ -2109,6 +2122,19 @@ async fn logs_endpoint_serves_downloadable_text_attachment() {
     assert!(
         String::from_utf8_lossy(&bytes).contains("Huntsman Search Engine"),
         "dump carries its header"
+    );
+
+    // A NON-loopback peer must be refused — the TRACE ring buffer holds scan PII
+    // and must not stream to a LAN peer under a non-loopback bind.
+    let app = test_app("logs-ep2");
+    let lan: std::net::SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/logs");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::FORBIDDEN,
+        "debug logs must be loopback-only"
     );
 }
 
@@ -2140,6 +2166,7 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
         .method("POST")
         .uri("/api/v1/keys/pool/revoke")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(r#"{"service":"shodan","id":"deadbeef"}"#))
         .unwrap();
     post.extensions_mut()
@@ -2163,6 +2190,7 @@ async fn keys_pool_rotate_is_write_gated() {
         .method("POST")
         .uri("/api/v1/keys/pool/rotate")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(
             r#"{"service":"shodan","id":"deadbeef","new":"NEW-VAL"}"#,
         ))
@@ -2594,5 +2622,41 @@ async fn scan_import_requires_csrf_header() {
         resp.status(),
         403,
         "with X-HSE-CSRF the import is not CSRF-blocked"
+    );
+}
+
+#[tokio::test]
+async fn bodyless_mutating_post_requires_csrf_header() {
+    // The vulnerability the CSRF middleware closes: a BODYLESS mutating POST is a
+    // CORS simple request (no preflight), so a cross-site page could previously
+    // drive /scan/auto, /radar, /update/trigger and the scan controls without the
+    // header — only /scans/import checked. The guard now rejects ANY mutating
+    // request lacking X-HSE-CSRF, before the handler runs (no side effect). Using
+    // a cancel of a non-existent scan keeps the with-header case side-effect-free.
+    let app = test_app("csrf_bodyless");
+    let uri = "/api/v1/scans/does-not-exist/cancel";
+    let no_hdr = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(no_hdr).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "a bodyless mutating POST without X-HSE-CSRF must be blocked"
+    );
+
+    let with_hdr = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("x-hse-csrf", "1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(with_hdr).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        403,
+        "with X-HSE-CSRF the request reaches the handler (404 for the missing scan)"
     );
 }

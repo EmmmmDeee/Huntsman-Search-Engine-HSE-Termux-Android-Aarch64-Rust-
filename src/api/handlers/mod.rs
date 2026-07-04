@@ -307,7 +307,21 @@ pub async fn selftest_run() -> impl IntoResponse {
 /// `GET /api/v1/logs` — download the in-memory verbose debug-log ring buffer as
 /// a text attachment. The buffer captures the project's default TRACE-level
 /// logs for the life of the process (bounded; see `util::log_capture`).
-pub async fn logs_download() -> impl IntoResponse {
+///
+/// **Loopback-only.** The ring buffer holds TRACE-level logs — scan targets and
+/// discovered PII — the same operator-data class the key-pool and settings
+/// endpoints already restrict. Under a LAN bind it must not stream to arbitrary
+/// peers, so it carries the identical `peer.ip().is_loopback()` gate they do.
+pub async fn logs_download(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "debug logs are loopback-only" })),
+        )
+            .into_response();
+    }
     let body = crate::util::log_capture::dump();
     let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
     (
@@ -323,6 +337,7 @@ pub async fn logs_download() -> impl IntoResponse {
         ],
         body,
     )
+        .into_response()
 }
 
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {

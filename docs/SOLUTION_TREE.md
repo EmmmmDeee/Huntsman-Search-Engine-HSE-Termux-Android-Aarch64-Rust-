@@ -2614,3 +2614,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   best-effort so the cap can never cost correctness, only a re-query. Determinism/
   crash-safety of the storage layer were re-verified sound in the same pass. Gate
   green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-CSRF universalised: one guard covers every mutating
+  endpoint, not just import.** The serve layer already had the right primitive
+  (`scans/import`'s `X-HSE-CSRF` requirement — the header a cross-site simple
+  request can't set without a preflight the strict CORS rejects) but applied it to
+  a single handler. Lifted it into an `enforce_csrf` middleware on the whole `/api`
+  router so the control is uniform and future-proof (a new mutating handler is
+  covered automatically), with a global SPA `fetch` wrapper so same-origin calls
+  keep working transparently. This is defence-by-construction: the guard can't be
+  forgotten. Same cycle also gated the debug-log endpoint to loopback (matching its
+  peer operator endpoints) and made the autonomous-sweep de-dup actually de-dup (on
+  target identity, not the unique-per-call scan id). Web layer otherwise
+  re-verified sound (SQLi/XSS/panics/determinism all clean). Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

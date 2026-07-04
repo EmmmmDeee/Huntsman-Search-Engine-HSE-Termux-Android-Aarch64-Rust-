@@ -290,8 +290,12 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
 
     // /api — outer layer catches `/api/v2/...` / `/api/typo` /
     // anything under /api but outside /v1, again returning JSON 404
-    // rather than SPA HTML.
-    let api = Router::new().nest("/v1", api_v1).fallback(api_not_found);
+    // rather than SPA HTML. The CSRF guard wraps every `/api` request so a
+    // cross-site simple-request POST to any mutating endpoint is rejected.
+    let api = Router::new()
+        .nest("/v1", api_v1)
+        .fallback(api_not_found)
+        .layer(axum::middleware::from_fn(enforce_csrf));
 
     let app = Router::new()
         .nest("/api", api)
@@ -390,6 +394,39 @@ async fn enforce_host_allowlist(
     } else {
         next.run(req).await
     }
+}
+
+/// CSRF guard on every state-changing API request.
+///
+/// A cross-site page can issue a CORS *simple request* (a bodyless or
+/// `text/plain` `POST`) to `http://127.0.0.1:8080/...` with **no preflight**; the
+/// Host-allowlist only defeats DNS rebinding (an attacker *domain*), and CORS
+/// only blocks *reading* the response, not the state-changing side effect. The
+/// one thing a cross-site page cannot do is set a **custom request header** on a
+/// simple request without turning it into a *preflighted* request — which the
+/// strict CORS layer then rejects. So requiring `X-HSE-CSRF` on every mutating
+/// method is the control that blocks the drive-by-POST class: a malicious page
+/// forcing `/update/trigger`'s binary self-update + `exec()`, activating the
+/// phone's `radar` sensor sweep, or dispatching quota-burning `scan/auto` runs.
+/// `scans/import` already required this header; this closes the same gap on every
+/// other mutating endpoint uniformly (and future ones automatically). GET/HEAD
+/// and the `OPTIONS` preflight pass through untouched; the same-origin SPA injects
+/// the header on every mutating `fetch`, and a CLI/API client sends
+/// `-H 'X-HSE-CSRF: 1'`.
+async fn enforce_csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mutating = matches!(
+        *req.method(),
+        Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+    );
+    if mutating && !req.headers().contains_key("x-hse-csrf") {
+        return (
+            StatusCode::FORBIDDEN,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"missing X-HSE-CSRF header (cross-site request blocked)"}"#,
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 /// Content-Security-Policy for the embedded SPA.

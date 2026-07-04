@@ -11,7 +11,7 @@ use tracing::info;
 use super::super::handlers::{bad_request, internal_error, not_found, ok_list, spawn_scan};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
-use crate::core::scan::{Scan, ScanRequest, Target};
+use crate::core::scan::{Scan, ScanRequest, Target, TargetKind};
 
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
@@ -313,17 +313,21 @@ pub async fn scan_auto_sweep(
             .into_response();
     }
 
-    // Dispatch each planned target as an ordinary comprehensive scan, de-duplicating
-    // by derived scan id so two queue entries that resolve to the same scan don't
-    // double-spawn (idempotent like rerun).
+    // Dispatch each planned target as an ordinary comprehensive scan,
+    // de-duplicating by TARGET IDENTITY so two queue entries for the same
+    // `(kind, value)` don't double-spawn (idempotent like rerun). NOTE: dedup must
+    // key on the target, NOT the derived `scan_id` — `scan_id` mixes a monotonic
+    // counter + sub-second nanos and is unique per call, so keying on it made the
+    // de-dup a silent no-op (two identical queue entries would both dispatch).
     let mut dispatched = Vec::with_capacity(plan.queue.len());
-    let mut spawned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut spawned: std::collections::HashSet<(TargetKind, String)> =
+        std::collections::HashSet::new();
     for t in &plan.queue {
-        let target = Target::new(t.kind, t.value.clone());
-        let sid = scan_id(t.kind.canonical_str(), &t.value);
-        if !spawned.insert(sid.clone()) {
+        if !spawned.insert((t.kind, t.value.clone())) {
             continue;
         }
+        let target = Target::new(t.kind, t.value.clone());
+        let sid = scan_id(t.kind.canonical_str(), &t.value);
         let scan = Scan::new(sid.clone(), target.clone())
             .with_options(crate::core::scan::default_scan_options());
         if let Err(e) = s.store.upsert_scan(&scan) {

@@ -343,6 +343,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Serve-layer hardening — CSRF on every mutating endpoint, loopback-only debug
+  logs, and a real autonomous-sweep de-dup.** (1) **CSRF:** every bodyless
+  state-changing `POST` (`/update/trigger` — a binary self-update + `exec()` —
+  `/scan/auto`, `/scan/auto/sweep`, `/scans/{id}/cancel|rerun`, `/radar`,
+  `/radar/live`) was a CORS *simple request* with no preflight and no CSRF guard,
+  so a page open in the same browser could drive them cross-site (`scans/import`
+  already required the header, but nothing else did). A middleware now requires
+  `X-HSE-CSRF` on every mutating method across `/api`; the SPA injects it
+  transparently via a global `fetch` wrapper, and CLI/API clients send
+  `-H 'X-HSE-CSRF: 1'`. (2) **Debug logs:** `GET /api/v1/logs` streams the
+  TRACE-level ring buffer (scan targets + discovered PII) and lacked the
+  `is_loopback()` gate the key-pool/settings endpoints carry — added, so a LAN
+  bind no longer exposes it. (3) `scan_auto_sweep`'s target de-dup keyed on the
+  per-call-unique `scan_id` (a silent no-op) — now de-dups on the `(kind, value)`
+  target identity.
 - **`raw_archive` inter-scan cache grew without bound — added pruning.** The
   cache ignored expired rows on lookup but never *deleted* them, and had no row
   cap, so scanning many distinct `(module, target)` pairs over time grew the
