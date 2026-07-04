@@ -343,6 +343,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`raw_archive` inter-scan cache grew without bound — added pruning.** The
+  cache ignored expired rows on lookup but never *deleted* them, and had no row
+  cap, so scanning many distinct `(module, target)` pairs over time grew the
+  table (and the DB/WAL) unbounded on a low-disk device — the very failure the
+  `events` table already prevents via `prune_events`. A new `prune_raw_archive`
+  deletes past-TTL rows and caps the newest `RAW_ARCHIVE_MAX_ROWS` (20 000),
+  called at startup and each scan boundary alongside the events prune. The cache
+  is best-effort, so evicting a still-fresh row only costs a re-query. (Also
+  corrected the `low_confidence_evidence` doc, which claimed a `confidence`/
+  `observed_at` index that deliberately does not exist.)
 - **MITRE ATT&CK mapping precision — two modules' inline technique tags
   sharpened.** `dns_intel` resolves live DNS records (T1590.002) but *also*
   actively brute-forces subdomains against a 146-label dictionary, which is

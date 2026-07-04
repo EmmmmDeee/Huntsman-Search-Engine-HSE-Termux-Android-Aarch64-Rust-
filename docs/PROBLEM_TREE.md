@@ -3453,3 +3453,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   guard confirms T1595.003 is now catalogued and referenced (not dead). Gate
   green: fmt/clippy/doc clean, lib + integration 0 failures incl. all ATT&CK
   guards. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Comprehensive audit (operator: "critically analyse and repair
+  every element"): 6-subsystem parallel read-only audit, repairs shipping as
+  gated cycles.** Fanned out auditors over web/API, export/serialization, engine/
+  dispatch, storage/DB, HTTP/networking, and 10 complex module parsers; each
+  verified findings against live code. Most subsystems are sound (no SQL
+  injection, XSS, data races, determinism holes in export, or reachable parse
+  panics). ~20 genuine defects surfaced, tracked and repaired in priority order.
+  **Cycle 1 — storage resource-bounding.** The `raw_archive` inter-scan cache
+  (`storage/archive.rs`) deleted nothing: expired rows were ignored on lookup but
+  never removed, and there was no row cap — so a long-lived process scanning many
+  distinct `(module, target)` pairs grew the table + DB/WAL without bound on a
+  low-disk phone, the exact class `events`/`prune_events` guards. Added
+  `Store::prune_raw_archive` (+ `StoragePort` default no-op) deleting past-TTL
+  rows then capping to the newest `RAW_ARCHIVE_MAX_ROWS = 20 000`, wired at both
+  `prune_events` call sites (startup `cli/mod.rs`, scan boundary `engine/mod.rs`).
+  Also corrected the `low_confidence_evidence` doc, which asserted a `confidence`/
+  `observed_at` index that deliberately does not exist (the method has no
+  production caller, so an index would only tax every upsert — the honest fix is
+  the doc, not a speculative index). Test `prune_deletes_expired_rows_and_caps_to
+  _newest` (timing-independent: asserts the expiry + cap, not which rows survive).
+  Gate green: fmt/clippy/doc clean, 81 storage tests + full suite 0 failures.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

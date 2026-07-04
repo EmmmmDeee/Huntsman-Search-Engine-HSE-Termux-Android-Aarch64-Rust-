@@ -28,6 +28,35 @@ impl Store {
         Ok(())
     }
 
+    /// Bound the `raw_archive` cache: delete every row past its per-entry TTL,
+    /// then cap the table to the newest `max_rows` by insertion time. Expired
+    /// rows are already ignored on lookup but were never deleted — over weeks of
+    /// scanning distinct `(module, target)` pairs the table (and the DB/WAL) grew
+    /// without bound on a low-disk device, the same way the `events` table would
+    /// without [`Store::prune_events`]. The cache is best-effort, so evicting a
+    /// still-fresh row past the cap only costs a re-query, never correctness.
+    /// Returns the number of rows deleted. Called at each scan boundary + startup.
+    pub fn prune_raw_archive(&self, max_rows: usize) -> Result<usize> {
+        let conn = self.conn.lock();
+        let expired = conn.execute(
+            "DELETE FROM raw_archive WHERE archived_at + ttl_secs <= unixepoch()",
+            [],
+        )?;
+        // Keep the newest `max_rows` (by insertion time, id as a stable tie-break)
+        // and drop the rest — a bounded LRU-by-archival backstop for the case where
+        // many entries are still within TTL.
+        let excess = conn.execute(
+            "DELETE FROM raw_archive WHERE id NOT IN \
+             (SELECT id FROM raw_archive ORDER BY archived_at DESC, id DESC LIMIT ?1)",
+            params![max_rows as i64],
+        )?;
+        let total = expired + excess;
+        if total > 0 {
+            tracing::info!("pruned {total} raw_archive rows ({expired} expired, {excess} excess)");
+        }
+        Ok(total)
+    }
+
     /// Return archived entities for `key` if the entry exists and has not
     /// exceeded its TTL (`archived_at + ttl_secs > unixepoch()`). Returns
     /// `None` on a cache miss or expired entry so the caller falls through

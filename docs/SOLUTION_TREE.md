@@ -2604,3 +2604,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   taxonomy itself — the mapping now matches what every module actually does, and
   the catalogue-drift guard proves no technique is dead or out-of-register. Gate
   green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-AUDIT-CADENCE at scale + bound-everything applied to the
+  cache.** A 6-subsystem parallel audit ("repair every element") confirmed the
+  architecture is largely sound and surfaced ~20 real defects, now being repaired
+  as gated cycles. First: the "bound everything, cap+chunk" doctrine had one
+  unbounded store — `raw_archive` — which grew forever (expired rows ignored, not
+  deleted; no cap). Closed with `prune_raw_archive` mirroring the `events` prune
+  it should always have paralleled, at the same lifecycle points. The cache stays
+  best-effort so the cap can never cost correctness, only a re-query. Determinism/
+  crash-safety of the storage layer were re-verified sound in the same pass. Gate
+  green. Paired: `PROBLEM_TREE` §8 — same commit.

@@ -33,6 +33,14 @@ use crate::core::{
 pub const EVENTS_RETENTION_SECS: u64 = 7 * 86_400; // 7 days
 pub const EVENTS_MAX_ROWS: usize = 100_000;
 
+/// Row cap for the `raw_archive` inter-scan cache, pruned at the same lifecycle
+/// points as [`EVENTS_MAX_ROWS`]. Expired rows (past their per-entry TTL) are
+/// always deleted; this additionally caps the newest retained rows so scanning
+/// many distinct `(module, target)` pairs can't grow the table (and the DB/WAL)
+/// without bound on a low-disk device. The cache is best-effort, so evicting a
+/// still-fresh row only costs a re-query, never correctness.
+pub const RAW_ARCHIVE_MAX_ROWS: usize = 20_000;
+
 pub trait StoragePort: Send + Sync {
     // ── Scans ──────────────────────────────────────────────────────────────
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
@@ -130,6 +138,16 @@ pub trait StoragePort: Send + Sync {
     /// long-lived `serve`/`live`/`radar` process can't grow the table
     /// unbounded (it was previously pruned only at startup).
     fn prune_events(&self, _max_age_secs: u64, _max_rows: usize) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Bound the `raw_archive` inter-scan cache: delete rows past their per-entry
+    /// TTL, then cap the table to the newest `max_rows`. Returns the number
+    /// pruned. Default no-op for non-`Store` ports; the real impl lives on
+    /// `Store`. Called at the same lifecycle points as [`Self::prune_events`] so a
+    /// long-lived `serve`/`live`/`radar` process scanning many distinct targets
+    /// can't grow the cache (and the DB/WAL) without bound.
+    fn prune_raw_archive(&self, _max_rows: usize) -> Result<usize> {
         Ok(0)
     }
 }

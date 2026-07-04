@@ -925,6 +925,11 @@ impl ScanEngine {
             ) {
                 warn!(scan_id = %scan.id, error = %e, "events prune deferred");
             }
+            // Same bound for the inter-scan cache — a long-lived process scanning
+            // many distinct targets would otherwise grow `raw_archive` unbounded.
+            if let Err(e) = store.prune_raw_archive(crate::core::port::RAW_ARCHIVE_MAX_ROWS) {
+                warn!(scan_id = %scan.id, error = %e, "raw_archive prune deferred");
+            }
 
             emitter.emit(
                 &scan.id,

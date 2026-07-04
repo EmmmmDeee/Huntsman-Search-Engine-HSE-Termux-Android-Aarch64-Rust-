@@ -35,8 +35,10 @@ impl super::Store {
     /// Every stored entity whose confidence is below `threshold` and that was
     /// observed within the last `since_seconds` — the weak findings an analyst
     /// should review before they are trusted as evidence (pass
-    /// [`Self::DEFAULT_LOW_CONFIDENCE_THRESHOLD`] for the 0.3 default). The indexed
-    /// `confidence` / `observed_at` columns drive the scan; each module is then
+    /// [`Self::DEFAULT_LOW_CONFIDENCE_THRESHOLD`] for the 0.3 default). Scans on
+    /// `confidence` / `observed_at` (there is deliberately **no** dedicated index:
+    /// this is an on-demand triage helper over the retained set, not a hot path,
+    /// so an extra index would only tax every entity upsert); each module is then
     /// resolved from the entity's evidence sources. Ordered weakest-first for triage.
     pub fn low_confidence_evidence(
         &self,
