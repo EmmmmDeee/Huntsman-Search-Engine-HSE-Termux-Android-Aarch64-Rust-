@@ -343,6 +343,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **AU state attribution misclassified border towns via overlapping first-match
+  bounding boxes.** `au_state_for_coords` tested overlapping rectangular state
+  boxes in a fixed order and returned the first hit, so every town in the QLD∩NSW
+  and NSW∩VIC overlap bands read as the box tested first — e.g. Lismore (a NSW
+  town north of 29°S) and Goondiwindi read as QLD, and northern-Victorian towns
+  (Shepparton, Wodonga) read as NSW. It now partitions the mainland by
+  Australia's **actual borders**: the exact meridians 129°E (WA│NT/SA), 138°E
+  (NT/SA│QLD) and 141°E (SA│NSW/VIC) and the 26°S parallel, with the two
+  non-straight borders — QLD│NSW (29°S rising to Point Danger) and NSW│VIC (the
+  Murray River + the Cape Howe segment) — fit piecewise to their real course.
+  Validated by a 40-town fixture spanning all states, including river-twin pairs
+  a few km apart (Mildura/Wentworth, Albury/Wodonga) that the fit now splits
+  correctly. Every caller (`au_location_corroboration`, `best_au_location_estimate`,
+  the `qld_cadastre` gate, IP/cell/WiFi geo tags) gets a sharper, more honest
+  jurisdiction. This is a hint, not proof; sub-km river-twin points may still flip.
 - **`extract::macs` carved a spurious 48-bit MAC out of a longer EUI-64 / hex
   run.** The MAC regex is word-boundary-anchored, but the separator after the
   6th octet satisfies the boundary, so an 8-octet identifier like

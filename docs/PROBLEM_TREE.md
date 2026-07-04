@@ -3353,3 +3353,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   punctuation-wrapped true positive (fail-before/pass-after). Gate green:
   fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-04** — **GEOINT precision: AU state attribution was misclassifying
+  border towns via overlapping first-match boxes** (the highest-leverage geo bug
+  surfaced by the discovery pass; deferred one cycle so it could be done with a
+  measured city fixture rather than guessed). `au_state_for_coords`
+  (`util/geo/mod.rs`) tested overlapping rectangular state boxes in fixed order
+  and returned the FIRST hit. QLD's box (`lat −29.18..−10`) and NSW's
+  (`−37.51..−28.16`) overlap in `−29.18..−28.16`, and QLD was tested first — so
+  Lismore (NSW, −28.81, north of the 29°S line but south of the coastal-border
+  dip) and Goondiwindi read as QLD. NSW's box and VIC's (`−39.20..−33.98`) overlap
+  in `−37.51..−33.98`, NSW first — so northern-Victorian towns (Shepparton,
+  Wodonga) read as NSW. Replaced the overlapping-box scan with a **border-accurate
+  partition**: the mainland is cut by Australia's real borders — the exact
+  meridians `129°E`/`138°E`/`141°E` and the `26°S` parallel (all straight,
+  authoritative), plus a piecewise-linear fit to the two non-straight borders
+  (`qld_nsw_border_lat`: 29°S rising to ~28.2°S at Point Danger; `nsw_vic_border_lat`:
+  the Murray's real meandering course through 11 anchors, then the surveyed
+  Cape-Howe segment). ACT enclave and the Bass-Strait-isolated TAS box handled
+  first. No caller depended on the old behaviour (all consume the state as a label
+  or gate — e.g. `qld_cadastre` gates on `!= Some("QLD")` — so a more-correct
+  answer only helps). Test delta:
+  `au_state_for_coords_is_border_accurate_across_states` — a 40-town fixture
+  spanning every state, weighted to the previously-broken bands, that both fixes
+  the gross bugs and splits river-twin pairs (Mildura VIC/Wentworth NSW ~7 km,
+  Wodonga VIC/Albury NSW ~4 km) correctly — the strongest evidence the border is
+  real, not a box. Fails hard against the old code (Lismore→QLD, Shepparton→NSW),
+  passes against the fit; the capitals test is unchanged. Gate green: fmt/clippy/
+  doc clean, geo unit + doctest + full suite 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

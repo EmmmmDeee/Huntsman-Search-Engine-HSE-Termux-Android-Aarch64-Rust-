@@ -135,11 +135,20 @@ pub fn is_in_australia(lat: f64, lon: f64) -> bool {
 /// AU-focused scan can sharpen "somewhere in Australia" to a jurisdiction and
 /// cross-check it against state-derived signals (postcodes, addresses).
 ///
-/// These are rectangular approximations, not polygons, so points near a shared
-/// border can be misattributed and the boxes overlap. The ACT (a small enclave
-/// inside NSW) is therefore tested first so it isn't swallowed by the NSW box;
-/// the remaining states are mostly disjoint in longitude/latitude. This is a
-/// hint to prioritise on-region leads, never proof of jurisdiction.
+/// Rather than the old overlapping-bounding-box scan (which returned the *first*
+/// box a point fell in, and so misattributed every town in the NSW∩VIC and
+/// QLD∩NSW overlap bands — e.g. Lismore, a NSW town north of 29°S, read as QLD),
+/// the mainland is partitioned by Australia's **actual borders**, most of which
+/// are exact lines: the meridians `129°E` (WA│NT/SA), `138°E` (NT/SA│QLD) and
+/// `141°E` (SA│NSW/VIC), and the `26°S` parallel (NT│SA, QLD│SA). The two
+/// non-straight borders are approximated by a piecewise-linear fit to their real
+/// course: the QLD│NSW line (29°S for its straight western reach, rising toward
+/// `28.2°S` at Point Danger on the coast) and the NSW│VIC line (the meandering
+/// Murray River, then the straight SE segment to Cape Howe). Points on a
+/// river-twin border (Albury/Wodonga, Echuca/Moama — a few km apart across the
+/// water) sit within the fit's residual and may still flip; this is a jurisdiction
+/// *hint* to prioritise on-region leads, not proof. Tasmania is an island south of
+/// Bass Strait (disjoint box); the ACT enclave is tested before NSW.
 ///
 /// ```
 /// use huntsman_search_engine::util::geo::au_state_for_coords;
@@ -147,6 +156,8 @@ pub fn is_in_australia(lat: f64, lon: f64) -> bool {
 /// assert_eq!(au_state_for_coords(-27.4766, 153.0166), Some("QLD")); // Brisbane
 /// assert_eq!(au_state_for_coords(-31.9523, 115.8613), Some("WA"));  // Perth
 /// assert_eq!(au_state_for_coords(-35.2809, 149.1300), Some("ACT")); // Canberra
+/// assert_eq!(au_state_for_coords(-28.8103, 153.2830), Some("NSW")); // Lismore (was QLD)
+/// assert_eq!(au_state_for_coords(-36.3805, 145.3980), Some("VIC")); // Shepparton (was NSW)
 /// assert_eq!(au_state_for_coords(40.7128, -74.0060), None);         // New York
 /// ```
 #[must_use]
@@ -154,24 +165,87 @@ pub fn au_state_for_coords(lat: f64, lon: f64) -> Option<&'static str> {
     if !is_in_australia(lat, lon) {
         return None;
     }
-    // (state, lat_min, lat_max, lon_min, lon_max). ACT first: it sits inside the
-    // NSW box, so a NSW-first scan would never reach it.
-    const BOXES: &[(&str, f64, f64, f64, f64)] = &[
-        ("ACT", -35.92, -35.12, 148.76, 149.40),
-        ("QLD", -29.18, -10.0, 138.0, 153.55),
-        ("NSW", -37.51, -28.16, 140.99, 153.64),
-        ("VIC", -39.20, -33.98, 140.96, 150.04),
-        ("TAS", -43.65, -39.20, 143.82, 148.50),
-        ("SA", -38.07, -26.0, 129.0, 141.0),
-        ("NT", -26.0, -10.96, 129.0, 138.0),
-        ("WA", -35.14, -13.69, 112.92, 129.0),
-    ];
-    for &(state, lat_min, lat_max, lon_min, lon_max) in BOXES {
-        if (lat_min..=lat_max).contains(&lat) && (lon_min..=lon_max).contains(&lon) {
-            return Some(state);
+    // ACT — a ~2 400 km² enclave wholly inside NSW; test first so the NSW arm
+    // below doesn't swallow Canberra. (Jervis Bay Territory, ACT-administered but
+    // on the NSW coast ~150 km away, is deliberately left reading NSW.)
+    if (-35.92..=-35.12).contains(&lat) && (148.72..=149.40).contains(&lon) {
+        return Some("ACT");
+    }
+    // Tasmania — south of Bass Strait, disjoint from the mainland partition.
+    if lat <= -39.6 && (143.5..=148.6).contains(&lon) {
+        return Some("TAS");
+    }
+    // West of 129°E: the entire WA eastern border is that exact meridian.
+    if lon < 129.0 {
+        return Some("WA");
+    }
+    // 129–138°E: the NT│SA border is the 26°S parallel.
+    if lon < 138.0 {
+        return Some(if lat > -26.0 { "NT" } else { "SA" });
+    }
+    // 138–141°E: the QLD│SA border is the 26°S parallel (Poeppel→Cameron Corner).
+    if lon < 141.0 {
+        return Some(if lat > -26.0 { "QLD" } else { "SA" });
+    }
+    // East of 141°E: the QLD / NSW / VIC trio, all west-bounded by that meridian.
+    // North of the QLD│NSW line ⇒ QLD.
+    if lat > qld_nsw_border_lat(lon) {
+        return Some("QLD");
+    }
+    // Otherwise NSW unless south of the Murray / Cape-Howe line ⇒ VIC.
+    Some(if lat < nsw_vic_border_lat(lon) {
+        "VIC"
+    } else {
+        "NSW"
+    })
+}
+
+/// Piecewise-linear interpolation of a border *latitude* at longitude `lon` over
+/// ascending-longitude `anchors` (`(lon, lat)`), clamped to the end anchors
+/// outside their range. The anchors trace a real Australian state border, so this
+/// is a measured fit, not a guess. Pure; `anchors` is a non-empty compile-time
+/// constant sorted by longitude.
+fn border_lat(lon: f64, anchors: &[(f64, f64)]) -> f64 {
+    if lon <= anchors[0].0 {
+        return anchors[0].1;
+    }
+    for w in anchors.windows(2) {
+        let ((l0, a0), (l1, a1)) = (w[0], w[1]);
+        if lon <= l1 {
+            return a0 + (lon - l0) / (l1 - l0) * (a1 - a0);
         }
     }
-    None
+    anchors[anchors.len() - 1].1
+}
+
+/// Latitude of the QLD│NSW border at longitude `lon` (north of it is QLD). The
+/// border is the 29°S parallel for its straight western ~85%, then follows the
+/// Dumaresq/Macintyre rivers and the McPherson Range up to Point Danger (~28.2°S)
+/// on the east coast.
+fn qld_nsw_border_lat(lon: f64) -> f64 {
+    const B: &[(f64, f64)] = &[(141.0, -29.0), (151.5, -29.0), (153.55, -28.2)];
+    border_lat(lon, B)
+}
+
+/// Latitude of the NSW│VIC border at longitude `lon` (south of it is VIC). The
+/// anchors follow the Murray River's real (meandering) course west→east, then the
+/// straight surveyed segment from the Murray's source to Cape Howe; east of Cape
+/// Howe the coast is entirely NSW, so the border drops below every AU latitude.
+fn nsw_vic_border_lat(lon: f64) -> f64 {
+    const B: &[(f64, f64)] = &[
+        (141.0, -34.05),  // Murray at the SA border (Chowilla)
+        (142.2, -34.15),  // Wentworth (NSW) / Mildura (VIC)
+        (143.55, -35.34), // Swan Hill
+        (144.75, -36.05), // Echuca / Moama
+        (145.65, -35.92), // Cobram — the river bends back north
+        (146.0, -36.01),  // Yarrawonga
+        (146.92, -36.10), // Albury (NSW) / Wodonga (VIC)
+        (147.9, -36.05),  // Corryong reach
+        (148.2, -36.5),   // Murray source (Forest Hill)
+        (149.97, -37.5),  // Cape Howe (the SE corner)
+        (150.1, -39.0),   // east of Cape Howe ⇒ NSW coast only
+    ];
+    border_lat(lon, B)
 }
 
 /// Curated reverse-geocoding anchors: the Australian capitals and major regional

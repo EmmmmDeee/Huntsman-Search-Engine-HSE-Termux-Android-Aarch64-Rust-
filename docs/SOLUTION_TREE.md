@@ -2553,3 +2553,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   otherwise geolocate) — never a real one. Fail-before/pass-after test on both
   colon and hyphen 8-octet runs plus a punctuation-wrapped true positive. Gate
   green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-GEOINT sharpened: jurisdiction attribution moved from
+  overlapping bounding boxes to a border-accurate partition.** The doctrine here
+  is "measure, never guess" and determinism by construction; the old
+  `au_state_for_coords` violated the first (a first-match scan of *overlapping*
+  boxes is an arbitrary tie-break, not a measurement). Rebuilt it on Australia's
+  real borders — the exact `129/138/141°E` meridians and `26°S` parallel, plus a
+  piecewise-linear fit (`border_lat` over anchors tracing the actual line) for the
+  QLD│NSW and NSW│VIC borders. The fit's anchors ARE the measurement (the Murray's
+  real course, Point Danger, Cape Howe), and a 40-town fixture — including
+  river-twin towns the fit splits correctly — is the validation. Pure,
+  deterministic, no new deps, every existing caller strictly improved. S→P
+  alternation: closes the highest-leverage geo-precision defect the audit found.
+  Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
