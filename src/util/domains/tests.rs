@@ -73,6 +73,18 @@ use super::*;
         assert!(!is_app_package_id("com.au"));
         // A 3+-label host that does NOT lead with a generic TLD is a domain.
         assert!(!is_app_package_id("api.stripe.com"));
+        // Regression: `app.` and `dev.` are common real subdomain prefixes, NOT
+        // reverse-DNS package leads. They were misclassified as packages and the
+        // valid Domain silently dropped; both must now survive as domains.
+        assert!(!is_app_package_id("app.example.com"));
+        assert!(!is_app_package_id("dev.portal.com"));
+        assert!(!is_app_package_id("dev.azure.com"));
+        assert!(!is_app_package_id("app.slack.com"));
+        assert!(looks_like_domain("app.example.com"));
+        assert!(looks_like_domain("dev.portal.com"));
+        // The genuinely-generic leads still gate reverse-DNS packages.
+        assert!(is_app_package_id("io.metamask.MetaMask"));
+        assert!(is_app_package_id("net.whatsapp.WhatsApp"));
     }
 
     #[test]
