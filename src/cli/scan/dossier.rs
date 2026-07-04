@@ -19,6 +19,57 @@ pub(super) struct DossierArgs<'a> {
     pub(super) store: &'a dyn crate::core::port::StoragePort,
 }
 
+/// Curated display order for the dossier's entity-kind sections. Kinds not listed
+/// here are still rendered — appended after, in deterministic key order, by
+/// [`order_dossier_kinds`] — so no finding is ever dropped from the dossier.
+const DOSSIER_KIND_ORDER: &[&str] = &[
+    "person",
+    "email",
+    "phone",
+    "username",
+    "credential",
+    "api_key",
+    "password",
+    "address",
+    "coordinates",
+    "organisation",
+    "abn_acn",
+    "asn",
+    "domain",
+    "ip_address",
+    "url",
+    "mac_address",
+    "device_id",
+    "cidr",
+    "ssid",
+    "tracking_id",
+    "crypto_address",
+];
+
+/// The order to render the dossier's entity-kind sections in: the curated
+/// [`DOSSIER_KIND_ORDER`] (those present) first, then EVERY other present kind —
+/// a rarer `EntityKind` or an `other:<custom>` — in deterministic (sorted-key)
+/// order. The dossier previously iterated a fixed allowlist and silently dropped
+/// any unlisted kind (`cidr`, `ssid`, `tracking_id`, `crypto_address`, every
+/// `other:*`); this guarantees it is a COMPLETE view of the working set. Pure.
+fn order_dossier_kinds<'a>(
+    by_kind: &'a std::collections::BTreeMap<String, Vec<&Entity>>,
+) -> Vec<&'a str> {
+    let mut ordered: Vec<&str> = DOSSIER_KIND_ORDER
+        .iter()
+        .copied()
+        .filter(|k| by_kind.contains_key(*k))
+        .collect();
+    // Catch-all: every present kind not in the curated list, in BTreeMap key
+    // order (deterministic), so nothing is dropped and the output is stable.
+    for k in by_kind.keys() {
+        if !DOSSIER_KIND_ORDER.contains(&k.as_str()) {
+            ordered.push(k.as_str());
+        }
+    }
+    ordered
+}
+
 pub(super) fn print_dossier(args: DossierArgs<'_>) {
     let DossierArgs {
         scan,
@@ -83,31 +134,13 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         by_kind.entry(e.kind.to_string()).or_default().push(e);
     }
 
-    let kind_order = [
-        "person",
-        "email",
-        "phone",
-        "username",
-        "credential",
-        "api_key",
-        "password",
-        "address",
-        "coordinates",
-        "organisation",
-        "abn_acn",
-        "asn",
-        "domain",
-        "ip_address",
-        "url",
-        "mac_address",
-        "device_id",
-    ];
-
-    for kind_name in &kind_order {
-        let Some(group) = by_kind.get(*kind_name) else {
-            continue;
-        };
-        let header = match *kind_name {
+    // Render the curated kinds first, then EVERY remaining present kind (a rarer
+    // `EntityKind` or an `other:<custom>`) — see [`order_dossier_kinds`]. The
+    // previous fixed allowlist silently DROPPED any kind not listed, hiding real,
+    // collected intel from the operator's dossier.
+    for kind_name in order_dossier_kinds(&by_kind) {
+        let group = &by_kind[kind_name];
+        let header = match kind_name {
             "person" => "PERSONS",
             "email" => "EMAIL ADDRESSES",
             "phone" => "PHONE NUMBERS",
@@ -124,6 +157,11 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
             "url" => "URLS / PROFILES",
             "mac_address" => "MAC ADDRESSES (network devices)",
             "device_id" => "DEVICE IDENTIFIERS",
+            "asn" => "ASN (autonomous systems)",
+            "cidr" => "CIDR RANGES (network blocks)",
+            "ssid" => "WIFI NETWORKS (SSIDs)",
+            "tracking_id" => "TRACKING IDENTIFIERS",
+            "crypto_address" => "CRYPTOCURRENCY ADDRESSES",
             other => other,
         };
 
@@ -663,10 +701,71 @@ fn print_diagnostics(
 
 #[cfg(test)]
 mod tests {
-    use super::zero_yield_keyed_or_paid_modules;
+    use super::{DOSSIER_KIND_ORDER, order_dossier_kinds, zero_yield_keyed_or_paid_modules};
+    use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
     use crate::core::module::ModuleCost;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn dossier_renders_every_present_kind_never_dropping_one() {
+        // Regression: the dossier used to iterate a fixed allowlist and silently
+        // drop any kind not in it — `cidr`, `ssid`, `tracking_id`,
+        // `crypto_address`, and every `other:<custom>` vanished from the operator's
+        // output. `order_dossier_kinds` must surface EVERY present kind.
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.9, "s");
+        let ents = [
+            mk(EntityKind::Email, "a@b.com"),
+            mk(EntityKind::CryptoAddress, "bc1qexample"),
+            mk(EntityKind::Ssid, "HOME-WIFI"),
+            mk(EntityKind::TrackingId, "UA-12345-6"),
+            mk(EntityKind::Cidr, "10.0.0.0/8"),
+            mk(EntityKind::Other("passport".to_string()), "X1234567"),
+            mk(EntityKind::Person, "Jane Doe"),
+        ];
+        let mut by_kind: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
+        for e in &ents {
+            by_kind.entry(e.kind.to_string()).or_default().push(e);
+        }
+
+        let ordered = order_dossier_kinds(&by_kind);
+
+        // Every present kind appears exactly once — none dropped.
+        assert_eq!(
+            ordered.len(),
+            by_kind.len(),
+            "the ordering must cover every present kind, ordered was {ordered:?}"
+        );
+        for k in by_kind.keys() {
+            assert!(
+                ordered.contains(&k.as_str()),
+                "kind {k:?} was dropped from the dossier ordering {ordered:?}"
+            );
+        }
+        // The previously-dropped kinds are specifically present.
+        for dropped in [
+            "crypto_address",
+            "ssid",
+            "tracking_id",
+            "cidr",
+            "other:passport",
+        ] {
+            assert!(
+                ordered.contains(&dropped),
+                "the formerly-dropped kind {dropped} must now render"
+            );
+        }
+
+        // Curated kinds keep their relative order (person before email), and the
+        // uncurated `other:*` kind is appended AFTER all curated ones.
+        let pos = |k: &str| ordered.iter().position(|x| *x == k).unwrap();
+        assert!(pos("person") < pos("email"));
+        assert!(pos("crypto_address") < pos("other:passport"));
+        assert!(
+            DOSSIER_KIND_ORDER.contains(&"crypto_address"),
+            "crypto_address must be in the curated order, not just the catch-all"
+        );
+    }
 
     fn costs() -> HashMap<String, ModuleCost> {
         [

@@ -102,6 +102,31 @@ use super::*;
     }
 
     #[test]
+    fn gexf_escapes_the_kind_attribute_and_the_scan_id() {
+        // An `Other(<custom>)` kind is data-derived and can carry XML metachars;
+        // unescaped, it would break the node's `kind` attvalue and thus the whole
+        // document in Gephi. The scan id likewise sits in `<description>` text.
+        // Both are now escaped (the node label, tags, and edge labels already were).
+        let e = Entity::new(EntityKind::Other("a<b>&\"c".to_string()), "v", 0.9, "s");
+        let xml = entities_to_gexf(&[e], &[], "sc<a>n&\"1");
+
+        assert!(
+            xml.contains(r#"<attvalue for="0" value="other:a&lt;b&gt;&amp;&quot;c"/>"#),
+            "the kind attvalue must be XML-escaped, got:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"<description>Scan sc&lt;a&gt;n&amp;&quot;1</description>"#),
+            "the scan id in <description> must be XML-escaped, got:\n{xml}"
+        );
+        // Defence-in-depth: no raw metachar from our injected data reaches an
+        // attribute or text node (which would make the .gexf unparseable).
+        assert!(
+            !xml.contains(r#"value="other:a<b>"#) && !xml.contains(r#"Scan sc<a>n"#),
+            "raw metachars must never leak into the kind attribute or description"
+        );
+    }
+
+    #[test]
     fn xml_escape_special_chars() {
         assert_eq!(
             xml_escape("a<b>c&d\"e'f"),

@@ -77,7 +77,13 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(xml, r#"<gexf xmlns="http://gexf.net/1.3" version="1.3">"#);
     let _ = writeln!(xml, r#"  <meta>"#);
     let _ = writeln!(xml, r#"    <creator>Huntsman Search Engine</creator>"#);
-    let _ = writeln!(xml, r#"    <description>Scan {scan_id}</description>"#);
+    // `scan_id` is XML *text* content here: escape it so a metachar (`<`/`&`)
+    // can't break the whole document (defence-in-depth — scan ids are UUIDs today).
+    let _ = writeln!(
+        xml,
+        r#"    <description>Scan {}</description>"#,
+        xml_escape(scan_id)
+    );
     let _ = writeln!(xml, r#"  </meta>"#);
     let _ = writeln!(xml, r#"  <graph defaultedgetype="directed" mode="static">"#);
 
@@ -129,7 +135,14 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         short_uid(&e.uid)
     );
     let _ = writeln!(xml, r#"        <attvalues>"#);
-    let _ = writeln!(xml, r#"          <attvalue for="0" value="{}"/>"#, e.kind);
+    // The `kind` attvalue must be escaped: `EntityKind::Other(s)` renders as
+    // `other:<s>` where `s` is data-derived and can carry `<`/`&`/`"`, which
+    // would otherwise break this attribute (and the whole node) in Gephi.
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="0" value="{}"/>"#,
+        xml_escape(&e.kind.to_string())
+    );
     let _ = writeln!(
         xml,
         r#"          <attvalue for="1" value="{:.3}"/>"#,

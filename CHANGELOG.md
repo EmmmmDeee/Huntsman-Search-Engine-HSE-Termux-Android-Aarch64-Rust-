@@ -343,6 +343,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Export completeness — the dossier no longer silently drops entire entity
+  kinds, and GEXF escapes two more injection points.** (1) The `--output dossier`
+  renderer iterated a FIXED kind allowlist, so any entity whose kind wasn't listed
+  — `cidr`, `ssid`, `tracking_id`, `crypto_address`, and every `other:<custom>` —
+  never appeared in the operator's dossier, hiding real collected intel (a leaked
+  crypto wallet, a captured SSID, a tracking pixel id). A pure `order_dossier_kinds`
+  now renders the curated kinds first and then **every** remaining present kind in
+  deterministic order, so the dossier is a complete view of the working set;
+  headers were added for the four newly-surfaced kinds. (2) GEXF wrote the node
+  `kind` attvalue and the `<description>` scan id UNESCAPED — an `Other(<custom>)`
+  kind carrying `<`/`&`/`"` (data-derived) would break the whole `.gexf` in Gephi;
+  both now pass through `xml_escape` (the node label, tags, and edge labels already
+  did). The golden byte-stable test confirms no change for metachar-free output.
 - **Engine finalise/dispatch robustness — a panicking correlation rule can no
   longer abort a scan, and a cache replay no longer feeds the circuit breaker.**
   (1) The authoritative finalise-time correlation pass ran `Correlator::run`

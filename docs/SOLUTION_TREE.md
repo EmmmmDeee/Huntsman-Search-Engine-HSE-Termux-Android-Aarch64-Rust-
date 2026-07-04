@@ -2661,3 +2661,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Both are backed by *testable seams* — a panicking closure and a direct
   `finalise_module_result` drive — so the regression is provable, not just
   asserted in prose. Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-EXPORT-COMPLETE: the operator-facing exports no longer
+  omit data or corrupt on a metachar.** Two export fixes. **Dossier completeness:**
+  the human-readable `--output dossier` iterated a fixed kind allowlist and dropped
+  every unlisted kind (`cidr`/`ssid`/`tracking_id`/`crypto_address` + all
+  `other:*`), so a leaked crypto wallet or captured SSID never reached the analyst.
+  A pure `order_dossier_kinds` renders the curated kinds first then a
+  deterministic catch-all over the rest — the same "no silent drop" discipline the
+  JSON/CSV/GEXF exports already have, brought to the dossier. **GEXF robustness:**
+  the node `kind` attvalue and the `<description>` scan id were the last two
+  unescaped sinks in an otherwise-escaped serializer; an `Other(<custom>)` kind
+  with `<`/`&`/`"` would make the whole `.gexf` unparseable in Gephi. Routed both
+  through `xml_escape`. Both fixes have pure/golden-backed tests
+  (`order_dossier_kinds` unit test; the GEXF golden byte-stable test proves
+  metachar-free output is untouched). Gate green. Paired: `PROBLEM_TREE` §8 —
+  same commit.

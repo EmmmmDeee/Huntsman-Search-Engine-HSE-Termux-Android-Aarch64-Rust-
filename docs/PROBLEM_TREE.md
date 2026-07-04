@@ -3557,3 +3557,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   it) — both fail-before/pass-after against pure/testable seams. Gate green:
   fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-04** — **Comprehensive audit cycle 5/N: export completeness — the
+  dossier silently dropped whole entity kinds, and GEXF left two injection points
+  unescaped.** **(1)** `cli/scan/dossier.rs::print_dossier` iterated a FIXED
+  `kind_order` allowlist and `continue`d past anything absent from it — so an
+  entity whose kind wasn't listed NEVER printed. Four real `EntityKind`s
+  (`cidr`, `ssid`, `tracking_id`, `crypto_address`) and every `other:<custom>` were
+  omitted, hiding collected intel (a leaked crypto wallet, a captured Wi-Fi SSID, a
+  tracking-pixel id) from the operator's primary human-readable output. Extracted a
+  pure `order_dossier_kinds(by_kind)` that renders the curated kinds first, then
+  EVERY remaining present kind in deterministic (BTreeMap key) order — nothing is
+  dropped; added the four missing headers. **(2)** `core/gexf/mod.rs` wrote the node
+  `kind` attvalue (`write_node`) and the `<description>` scan id (`write_preamble`)
+  UNESCAPED, while the node label, tags, and edge labels were all already escaped.
+  An `Other(<custom>)` kind is data-derived and can carry `<`/`&`/`"`, which would
+  break that attribute and thus the whole `.gexf` in Gephi; both now pass through
+  `xml_escape`. Test delta: `dossier_renders_every_present_kind_never_dropping_one`
+  (every present kind — incl. `other:passport` — appears, curated order preserved)
+  and `gexf_escapes_the_kind_attribute_and_the_scan_id`; the existing GEXF golden
+  byte-stable test confirms metachar-free output is unchanged. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
