@@ -343,6 +343,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The "best AU location" estimate now weights a coordinate by its own cross-class
+  corroboration (AU-059).** The cross-seed geo-synergy fix — the source of the
+  dossier's headline location estimate and the API's `best_location` fields — boosted
+  each point's weight by a class-diversity bonus computed from the scan-wide distinct
+  class count, applied identically to every point. A weighted geometric median is
+  invariant to scaling all weights by one constant, so the bonus was a silent no-op:
+  a coordinate corroborated by three independent collection methods was weighted
+  exactly like a lone single-source point, contrary to the rule's stated intent. The
+  bonus is now derived per point from that entity's own distinct orthogonal geo source
+  classes, so better-corroborated coordinates genuinely pull the estimate toward them.
+  Regression test `au059_class_diversity_bonus_is_per_point_not_a_global_no_op`.
 - **`username_search` no longer over-claims MITRE ATT&CK T1589.003 (Employee Names)
   on its findings.** Every admitted entity is stamped with its producing module's
   ATT&CK Reconnaissance techniques as inline `attack:<ID>` tags, so the map's

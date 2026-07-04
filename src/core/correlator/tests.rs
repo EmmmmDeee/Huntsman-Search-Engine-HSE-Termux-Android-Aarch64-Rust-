@@ -6301,6 +6301,76 @@ fn au059_synergy_fix_resists_a_single_high_confidence_outlier() {
     );
 }
 
+#[test]
+fn au059_class_diversity_bonus_is_per_point_not_a_global_no_op() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+
+    // A coordinate corroborated across MORE orthogonal source classes is
+    // stronger location evidence and must pull the synthesised fix
+    // proportionally more. The class-diversity bonus used to be derived from the
+    // scan-wide class count and applied to every point identically — a global
+    // rescaling the weighted geometric median is invariant to, so it moved the
+    // fix not at all. It is now per-point.
+    //
+    // This test isolates that: two scans differ ONLY in the class SPAN of the
+    // eastern (Sydney) coordinate `A`, holding its source COUNT (2) — and hence
+    // its `c_effective` — and every other point fixed. Under the old global
+    // scalar the two fixes are byte-identical (the bonus can't move a weighted
+    // median and A's weight is unchanged); under the per-point bonus the
+    // multi-class scan must pull the fix east toward A.
+    let mk = |lat: f64, lon: f64, sources: &[&str], state: &str| {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            0.80,
+            "s",
+        );
+        e.tag(format!("au-state:{state}"));
+        e.tag("country:AU");
+        for s in sources {
+            e.add_evidence(Evidence::new(*s, "fixture"));
+        }
+        e
+    };
+
+    // B (Darwin) and C (Perth) are fixed single-class points. With A (Sydney)
+    // they form a genuine triangle (all interior angles < 120°), so the
+    // geometric median is an interior Fermat point that responds continuously to
+    // each vertex's weight — not a near-collinear set that pins the median to the
+    // middle vertex regardless of weight.
+    let b = mk(-12.4634, 130.8456, &["geocode"], "NT"); // Darwin — Geocode
+    let c = mk(-31.9505, 115.8605, &["mylnikov"], "WA"); // Perth — WifiSensor
+
+    // Three-class A: Registry + WifiSensor + PhotoGps → per-point count 3 → 1.20×.
+    let a_multi = mk(
+        -33.8688,
+        151.2093,
+        &["abn_lookup", "wigle", "exif_geo"],
+        "NSW",
+    );
+    // One-class A: abn_lookup + opencorporates + acnc_charities → all Registry →
+    // per-point count 1 → 1.00×. Same source COUNT (3) ⇒ identical c_effective.
+    let a_mono = mk(
+        -33.8688,
+        151.2093,
+        &["abn_lookup", "opencorporates", "acnc_charities"],
+        "NSW",
+    );
+
+    let multi = au059_synergy_fix(&[a_multi, b.clone(), c.clone()])
+        .expect("4 orthogonal AU classes converge");
+    let mono = au059_synergy_fix(&[a_mono, b, c]).expect("3 orthogonal AU classes converge");
+
+    assert!(
+        multi.lon > mono.lon + 1e-4,
+        "the per-point class-diversity bonus must pull the fix east toward the \
+         multi-class Sydney coordinate: multi-class lon={:.5} must exceed \
+         single-class lon={:.5} (they would be equal under the old global scalar)",
+        multi.lon,
+        mono.lon
+    );
+}
+
 // ── T1.3: firing assertions for the 12 previously-unasserted rules ────────────
 // (PROBLEM_TREE §3.1 T1.3 — these rules were dispatched but no test proved they
 // actually produce a correlation; a silently-dead rule would pass CI.)

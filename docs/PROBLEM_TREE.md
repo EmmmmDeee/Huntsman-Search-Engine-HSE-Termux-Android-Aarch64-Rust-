@@ -3769,3 +3769,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   drop; left as a discrete follow-up rather than expanding this cycle. Gate green:
   fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+- **2026-07-04** — **GEOINT precision (C5): AU-059's class-diversity weight was a
+  global scalar — a mathematical no-op — so the "best AU location" fix ignored
+  per-point corroboration.** `au059_synergy_fix` (the source of the dossier's
+  headline "best location estimate" and the API's `best_location` fields) computed
+  `class_bonus = 1.0 + (classes.len() - 1) * 0.10` from the SCAN-WIDE distinct-class
+  count and multiplied *every* point's weight by that same constant. A weighted
+  geometric median (and the centroid fallback) is invariant to scaling all weights
+  by one positive constant, so the bonus moved the fix **not at all** — yet its own
+  comment claimed "a point corroborated across more orthogonal classes pulls
+  proportionally more." The intended behaviour is real and desirable: a coordinate
+  confirmed by several independent collection methods (a registry address *and* a
+  photo GPS *and* a wifi sighting at one spot) should outweigh a single-class
+  sighting. Fix: derive the bonus **per point** from *that entity's own* distinct
+  anchoring geo classes (`corroborating_sources` → `geo_source_class`), so points
+  with more orthogonal corroboration genuinely pull the median toward them; the
+  comment now states why a global bonus would be a silent no-op. Deterministic
+  (HashSet-len is order-independent); the existing outlier-robustness test still
+  passes (its points are single-class, bonus 1.0 throughout). Test delta:
+  `au059_class_diversity_bonus_is_per_point_not_a_global_no_op` — two scans differing
+  ONLY in the eastern point's class SPAN (3 classes vs 1), holding its source count
+  (hence `c_effective`) and every other point fixed; asserts the multi-class scan
+  pulls the fix east, which is byte-identical to the single-class scan under the old
+  global scalar (fail-before) and strictly east under the per-point bonus
+  (pass-after). Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

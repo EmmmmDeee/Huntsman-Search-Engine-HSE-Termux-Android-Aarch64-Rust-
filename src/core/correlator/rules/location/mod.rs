@@ -580,15 +580,30 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     // Confidence-weighted geometric median (Weiszfeld) — outlier-robust, unlike
     // a plain centroid: a single disagreeing sighting pulls a centroid toward it
     // proportionally to its weight, but pulls the median only as far as the
-    // majority of *other* sightings allow. Each weight is boosted by class
-    // diversity so a point corroborated across more orthogonal classes pulls
-    // proportionally more. Falls back to the weighted centroid on the rare
+    // majority of *other* sightings allow. Each point's weight is boosted by
+    // *its own* class diversity so a coordinate corroborated across more
+    // orthogonal source classes pulls proportionally more than a single-class
+    // sighting. This MUST be per-point: a bonus derived from the scan-wide class
+    // count would scale every weight by the same constant, and the weighted
+    // median/centroid is invariant to a global positive rescaling — so a global
+    // bonus is a silent no-op. Falls back to the weighted centroid on the rare
     // non-convergent/degenerate input (same fallback `LocationFix` and
     // `cluster_coordinates` use — PROBLEM_TREE C5).
-    let class_bonus = 1.0 + (classes.len() as f64 - 1.0) * 0.10;
+    let point_class_count = |e: &Entity| -> usize {
+        e.corroborating_sources()
+            .into_iter()
+            .filter(|s| is_anchoring_geo_source(s))
+            .map(geo_source_class)
+            .collect::<std::collections::HashSet<GeoSourceClass>>()
+            .len()
+            .max(1)
+    };
     let weighted: Vec<((f64, f64), f64)> = parsed
         .iter()
-        .map(|(e, ll)| (*ll, e.c_effective() * class_bonus))
+        .map(|(e, ll)| {
+            let class_bonus = 1.0 + (point_class_count(e) as f64 - 1.0) * 0.10;
+            (*ll, e.c_effective() * class_bonus)
+        })
         .collect();
     let (lat, lon) = crate::util::geometry::weighted_geometric_median(&weighted)
         .or_else(|| crate::util::geometry::weighted_centroid(&weighted))?;

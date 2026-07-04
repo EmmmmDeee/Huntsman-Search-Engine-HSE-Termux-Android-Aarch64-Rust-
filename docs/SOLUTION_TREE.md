@@ -2791,3 +2791,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   carries its own technique nuance, so each needs an individual judgement rather
   than a blanket sweep. Test: `attack_overrides_attribute_collection_modules_precisely`
   extended. Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-GEOINT-PERPOINTCLASS (C5): AU-059's class-diversity
+  weight is now per-point, not a global no-op.** `au059_synergy_fix` — the source
+  of the dossier's headline "best AU location" and the API's `best_location`
+  fields — boosted each coordinate's weight by a `class_bonus` derived from the
+  scan-wide distinct-class count, applied identically to every point. A weighted
+  geometric median is invariant to scaling all weights by one positive constant,
+  so the bonus moved the fix not at all, despite its comment promising "a point
+  corroborated across more orthogonal classes pulls proportionally more." The
+  bonus is now computed per point from that entity's OWN distinct anchoring geo
+  classes (`corroborating_sources` → `geo_source_class`), so a coordinate
+  confirmed by several independent collection methods genuinely outweighs a
+  single-class sighting and pulls the median toward it. Deterministic; the
+  existing outlier-robustness test (single-class points) is unaffected. Test:
+  `au059_class_diversity_bonus_is_per_point_not_a_global_no_op` — two scans
+  differing only in the eastern point's class span, byte-identical under the old
+  global scalar and strictly divergent under the per-point bonus. Gate green.
+  Paired: `PROBLEM_TREE` §8 — same commit.
