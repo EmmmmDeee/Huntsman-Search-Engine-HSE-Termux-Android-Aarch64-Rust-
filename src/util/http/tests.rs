@@ -1,6 +1,7 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, is_keyed_error_status, key_tail, keyed_ok_or_404, retry_after_secs,
+    JSON_BODY_CAP, fetch_json_or_404, fetch_json_or_absent, is_keyed_error_status, key_tail,
+    keyed_ok_or_404, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -166,6 +167,54 @@ async fn traced_client_sends_x_huntsman_trace_header() {
     assert!(
         req.contains("x-huntsman-trace: scan-abc123"),
         "trace header missing; raw request was:\n{req}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // A one-shot local server that answers with HTTP 400 + a Bluesky-shaped body.
+    async fn serve_one_400() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = br#"{"error":"InvalidRequest","message":"Profile not found"}"#;
+            let head = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    let client = build_client();
+
+    // fetch_json_or_absent: a 400 "not found" is a clean negative (Ok(None)) — a
+    // non-existent Bluesky handle no longer trips the module breaker.
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
+    let addr = serve_one_400().await;
+    let absent: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_absent(&client, "test_absent", &format!("http://{addr}/")).await;
+    assert!(
+        matches!(absent, Ok(None)),
+        "400 must map to Ok(None) for fetch_json_or_absent, got {absent:?}"
+    );
+
+    // fetch_json_or_404: a 400 is NOT a 404, so it stays a visible module error.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let addr = serve_one_400().await;
+    let errored: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&client, "test_404", &format!("http://{addr}/")).await;
+    assert!(
+        errored.is_err(),
+        "400 must remain an error for the 404-only helper, got {errored:?}"
     );
 }
 

@@ -343,6 +343,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Three modules restored — two broken outright by upstream API drift, one
+  spuriously tripping its breaker — all found by real live testing.** Driving a
+  real seed of every target kind end-to-end surfaced three live faults no unit
+  test could catch: **(1) HudsonRock** stealer-login lookup — Cavalier renamed its
+  query parameter from `username` to `email`, so every login request returned
+  HTTP 400 `"Email is required"`; the module (a free, keyless stealer source) was
+  completely dead. Now uses `email=` (verified live: a known-infected address
+  returns its stealer records). **(2) StackOverflow user search** — the hard-coded
+  `filter=!9Z(-x.hbL` is now rejected with HTTP 400 `"Invalid filter specified"`,
+  breaking every lookup; dropped it, since the API's default filter already returns
+  every field the module reads (verified live). **(3) Bluesky user** — a
+  non-existent handle answers with HTTP 400 `"Profile not found"` (not 404), which
+  propagated as a module error and, after a few misses in a name scan's handle
+  fan-out, tripped the engine's per-module breaker and suppressed Bluesky for the
+  *real* handles too. Added `util::http::fetch_json_or_absent` (treats 400 **and**
+  404 as the clean "no such resource" negative; 429/5xx still surface) and routed
+  Bluesky through it. Each fix has a regression test (a testable URL/​fetch seam),
+  and all three were re-verified live against the real endpoints.
 - **Finalise no longer stalls on a rich name scan — the two `O(identities²)`
   pairwise-pathway sweeps are now bounded.** Live end-to-end testing (a real
   `full_name` seed) surfaced a scan taking 135–185 s and, on a cold/richer run,

@@ -200,20 +200,21 @@ use super::*;
     // ── URL-encoding / @ preservation ────────────────────────────────────────
 
     #[test]
-    fn at_sign_preserved_in_encoded_url() {
-        // urlencode() uses form_urlencoded which encodes '@' as '%40'.
-        // HudsonRock's search-by-login validates '@' presence in the raw query
-        // string BEFORE URL-decoding, so '%40' triggers "Email is required".
-        // The fix reverses the substitution: replace("%40", "@").
-        let encoded = crate::util::http::urlencode("dns@cloudflare.com").replace("%40", "@");
+    fn search_by_login_uses_the_email_query_parameter() {
+        // Regression for the upstream API drift live testing caught: Cavalier's
+        // search-by-login is keyed by `email=`, not `username=` (a `username=`
+        // request 400s with "Email is required", silently breaking every lookup).
+        let url = super::search_by_login_url("dns@cloudflare.com");
         assert!(
-            encoded.contains('@'),
-            "encoded URL must preserve the literal '@': {encoded}"
+            url.contains("search-by-login?email="),
+            "login lookup must use the `email` query parameter, got: {url}"
         );
         assert!(
-            !encoded.contains("%40"),
-            "encoded URL must not contain '%40': {encoded}"
+            !url.contains("username="),
+            "the stale `username` parameter must not reappear: {url}"
         );
+        // Standard form-encoding is fine on the `email=` endpoint (`@`→`%40`).
+        assert!(url.contains("dns%40cloudflare.com"), "url: {url}");
     }
 
     #[tokio::test]

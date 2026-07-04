@@ -29,6 +29,24 @@ use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "stackoverflow_user";
 
+/// Build the Stack Exchange `users?inname=` search URL for `handle`.
+///
+/// No custom `filter` is sent: the previously hard-coded `filter=!9Z(-x.hbL` is
+/// now rejected by the API with HTTP 400 `"Invalid filter specified"`, which live
+/// end-to-end testing (a real username seed) caught — it had silently broken
+/// EVERY Stack Overflow lookup. The API's default filter already returns every
+/// field this module reads (`display_name`, `location`, `website_url`, `link`,
+/// `reputation`, `creation_date`), verified live, so omitting the parameter is
+/// both correct and drift-proof (a custom encoded filter can be invalidated by an
+/// API revision; the default cannot). Usernames may contain spaces, so the query
+/// is URL-encoded.
+fn users_by_name_url(handle: &str) -> String {
+    format!(
+        "https://api.stackexchange.com/2.3/users?inname={}&site=stackoverflow",
+        crate::util::http::urlencode(handle)
+    )
+}
+
 pub struct StackoverflowUser;
 
 #[derive(Deserialize)]
@@ -106,11 +124,7 @@ impl Module for StackoverflowUser {
             return Ok(ModuleResult::new());
         }
 
-        // Stack Exchange usernames can contain spaces; URL-encode for the query.
-        let url = format!(
-            "https://api.stackexchange.com/2.3/users?inname={}&site=stackoverflow&filter=!9Z(-x.hbL",
-            crate::util::http::urlencode(handle)
-        );
+        let url = users_by_name_url(handle);
         let resp: Option<SoResp> = fetch_json_or_404(&ctx.http, SRC, &url).await?;
         let items = match resp {
             Some(r) => r.items,
@@ -264,6 +278,23 @@ pub(super) fn build_entities(user: SoUser, scan_id: &str) -> Vec<Entity> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn users_url_omits_the_invalid_custom_filter() {
+        // Regression for the API drift live testing caught: the old hard-coded
+        // `filter=!9Z(-x.hbL` now 400s ("Invalid filter specified"), breaking every
+        // lookup. The default filter returns all needed fields, so no filter is sent.
+        let url = users_by_name_url("jon skeet");
+        assert!(
+            !url.contains("filter="),
+            "no custom filter — the default returns every field we read: {url}"
+        );
+        // Spaces are form-encoded (`+`); the point is the query is present + escaped.
+        assert!(
+            url.contains("inname=jon+skeet") && url.contains("site=stackoverflow"),
+            "url: {url}"
+        );
+    }
 
     fn make_user(
         display_name: &str,

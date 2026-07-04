@@ -202,7 +202,7 @@ pub async fn fetch_json<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<T> {
-    match fetch_json_inner(client, module, url, false).await? {
+    match fetch_json_inner(client, module, url, &[]).await? {
         Some(data) => Ok(data),
         None => Err(Error::module(
             module,
@@ -224,7 +224,28 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<Option<T>> {
-    fetch_json_inner(client, module, url, true).await
+    fetch_json_inner(client, module, url, &[404]).await
+}
+
+/// Like [`fetch_json_or_404`] but treats **both** `400 Bad Request` and
+/// `404 Not Found` as the clean "no such resource" signal (`Ok(None)`).
+///
+/// Some APIs return `400` — not `404` — for a lookup whose subject simply does
+/// not exist: Bluesky's XRPC `getProfile` answers a non-existent handle with
+/// `400 {"error":"InvalidRequest","message":"Profile not found"}`. Under
+/// [`fetch_json_or_404`] that propagates as an `Error::module`, which the engine's
+/// per-module circuit breaker counts as a soft failure — so a name scan probing a
+/// handful of non-existent handles trips the breaker and suppresses the source for
+/// every REMAINING (possibly real) handle in the scan. Mapping `400` to a clean
+/// negative for these endpoints keeps a "not found" from masquerading as an
+/// outage. `429`/`5xx` still surface as errors (they must stay visible + trip the
+/// breaker). Live end-to-end testing (a username seed) caught this.
+pub async fn fetch_json_or_absent<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Result<Option<T>> {
+    fetch_json_inner(client, module, url, &[400, 404]).await
 }
 
 /// Per-host circuit-breaker pre-check shared by the JSON fetch helpers: returns the
@@ -275,7 +296,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
     client: &reqwest::Client,
     module: &'static str,
     url: &str,
-    map_404_to_none: bool,
+    absent_statuses: &[u16],
 ) -> Result<Option<T>> {
     // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
     // repeatedly so a dead/flaky endpoint stops burning budget on every fan-out target. A
@@ -286,7 +307,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
         Ok(resp) => {
             let status = resp.status();
             record_breaker_outcome(host.as_deref(), status);
-            if map_404_to_none && status.as_u16() == 404 {
+            if absent_statuses.contains(&status.as_u16()) {
                 return Ok(None);
             }
             if !status.is_success() {

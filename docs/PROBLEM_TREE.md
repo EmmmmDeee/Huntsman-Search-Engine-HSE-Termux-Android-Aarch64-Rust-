@@ -3645,3 +3645,30 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `*_capped(…, max_pair_probes)` seam: cap 0 → empty, cap 1 → ≤1, deterministic
   prefix). Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Live validation (T2.16, new): three modules restored — two
+  dead from upstream API drift, one tripping its own breaker.** Driving a REAL seed
+  of every kind end-to-end (the definitive test — no unit test exercises a live
+  upstream) caught three module faults invisible to the suite. **(1) HudsonRock**
+  `search-by-login`: Cavalier renamed its query param `username`→`email`, so every
+  request 400'd `"Email is required"` — the free keyless stealer source was fully
+  dead. Extracted testable `search_by_login_url` using `email=` (curl-confirmed a
+  known-infected address returns 5 stealer records; the old `%40`→`@` dance is
+  obsolete on the `email=` endpoint). **(2) StackOverflow** `users?inname=`: the
+  hard-coded `filter=!9Z(-x.hbL` now 400s `"Invalid filter specified"` — every
+  lookup broken. Extracted `users_by_name_url` dropping the filter (the API default
+  already returns `display_name`/`location`/`website_url`/`link`/`reputation`/
+  `creation_date`, verified live — and a default filter can't be invalidated by an
+  API revision the way a custom encoded one can). **(3) Bluesky** `getProfile`:
+  a non-existent handle answers `400 {"message":"Profile not found"}` (not 404),
+  which `fetch_json_or_404` propagates as a module error — and the engine's
+  per-module breaker counts it a soft failure, so a name scan's handle fan-out
+  trips the breaker after 3 misses and suppresses Bluesky for the REAL handles too.
+  Added `util::http::fetch_json_or_absent` (generalised `fetch_json_inner`'s
+  `map_404_to_none: bool` → `absent_statuses: &[u16]`; treats 400 **and** 404 as
+  the clean negative, 429/5xx still errors) and routed Bluesky through it. Test
+  delta: `search_by_login_uses_the_email_query_parameter`,
+  `users_url_omits_the_invalid_custom_filter`, and
+  `fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors` (a one-shot
+  local 400 server proving the split). All three re-verified LIVE against the real
+  endpoints. Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

@@ -30,7 +30,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json_or_404;
+use crate::util::http::fetch_json_or_absent;
 
 const SRC: &str = "bluesky_user";
 const API: &str = "https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile";
@@ -109,11 +109,15 @@ impl Module for BlueskyUser {
         let url1 = format!("{API}?actor={}", crate::util::http::urlencode(&bsky_handle));
         let url2 = format!("{API}?actor={}", crate::util::http::urlencode(handle));
 
-        let profile: Option<BskyProfile> = fetch_json_or_404(&ctx.http, SRC, &url1).await?;
+        // `fetch_json_or_absent`: Bluesky answers a non-existent handle with HTTP
+        // 400 "Profile not found" (not 404), so treat 400 as a clean negative —
+        // otherwise a name scan probing several non-existent handles would trip the
+        // engine breaker and suppress Bluesky for the real handles too.
+        let profile: Option<BskyProfile> = fetch_json_or_absent(&ctx.http, SRC, &url1).await?;
         let profile = if profile.is_some() {
             profile
         } else {
-            fetch_json_or_404(&ctx.http, SRC, &url2).await?
+            fetch_json_or_absent(&ctx.http, SRC, &url2).await?
         };
 
         let Some(profile) = profile else {

@@ -2713,3 +2713,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the same single-sourcing discipline (`one finder, no drift`) the rules already
   follow for their detectors. Testable `*_capped` seams on both. Gate green.
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-LIVE-MODULES: three modules restored by real live testing.**
+  End-to-end validation with real seeds is the only test that exercises a live
+  upstream, and it caught three faults the whole unit suite missed: **HudsonRock**
+  (param `username`→`email` drift, source fully dead → 400 "Email is required"),
+  **StackOverflow** (hard-coded `filter=` now invalid → 400, every lookup broken),
+  and **Bluesky** (a not-found handle returns 400, not 404, so the module errored
+  and tripped its own engine breaker, suppressing the source for real handles). The
+  first two are one-line URL corrections behind new testable helpers
+  (`search_by_login_url`, `users_by_name_url`) that pin OUR contract so a future
+  refactor can't silently reintroduce the stale param/filter; the third generalised
+  `fetch_json_inner` to an `absent_statuses` set and added
+  `fetch_json_or_absent` (400+404 → clean negative), a reusable primitive for the
+  several APIs that signal "not found" with a 400. The lesson logged: **live
+  end-to-end runs are a first-class part of validation** — upstream drift is only
+  ever visible against the real service. All three re-verified live. Gate green.
+  Paired: `PROBLEM_TREE` §8 — same commit.

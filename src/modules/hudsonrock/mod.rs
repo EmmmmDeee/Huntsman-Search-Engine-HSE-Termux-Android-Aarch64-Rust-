@@ -133,14 +133,7 @@ impl Module for HudsonRock {
                 if !target.value.contains('@') {
                     return Ok(ModuleResult::new());
                 }
-                // HudsonRock's search-by-login validates `@` presence in the
-                // raw query string BEFORE URL-decoding, so `dns%40cloudflare.com`
-                // fails its check with "Email is required". Preserve the literal
-                // `@` by reversing form-urlencoding's `%40` substitution.
-                let encoded = urlencode(&target.value).replace("%40", "@");
-                format!(
-                    "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={encoded}"
-                )
+                search_by_login_url(&target.value)
             }
             TargetKind::Domain => {
                 // A reverse-DNS Android/iOS app package (`com.facebook.katana`)
@@ -275,6 +268,21 @@ fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
             Some(e)
         })
         .collect()
+}
+
+/// Build the Cavalier `search-by-login` URL for `email`.
+///
+/// The endpoint is keyed by the **`email`** query parameter. It was previously
+/// `username`, and the upstream drift silently broke every login lookup: a
+/// `username=…` request now returns HTTP 400 `{"error":"Email is required"}`
+/// regardless of the value. Live end-to-end testing (a real email seed) caught
+/// this. The `email=` endpoint URL-decodes normally, so a standard form-encoded
+/// value works (no `%40`→`@` dance is needed, unlike the old `username=` path).
+fn search_by_login_url(email: &str) -> String {
+    format!(
+        "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?email={}",
+        urlencode(email)
+    )
 }
 
 fn compute_confidence(stealers: &[Stealer]) -> f64 {
