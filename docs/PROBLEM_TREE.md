@@ -4025,3 +4025,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   actioned item of the 14 workflow-confirmed defects** (the remaining ones were fixed in
   the preceding cycles this arc); AU-059's class-diversity and the four geo/export/MITRE
   higher-leverage items shipped earlier.
+- **2026-07-04** — **Full-fidelity (new arc, T2.19): the AU register scrapers `acma_rrl`
+  and `ahpra` silently truncated results at 20 rows.** Surfaced by an
+  adversarially-verified **fidelity-audit workflow** (5 finders for silent-truncation /
+  dropped-field / downsample / placeholder / lossy-transform; 8 confirmed violations,
+  these two the top-ranked). Both scrapers parse the full result table into an
+  unbounded `Vec` (`parse_acma_html` / `parse_ahpra_html`) and then emit only
+  `licences.iter().take(20)` / `practitioners.iter().take(20)` — a bare, undocumented,
+  unlogged client-side cut with no server-side page-size parameter, so a large
+  multi-licence org / 10 km coordinate-radius RRL search or a common-surname AHPRA
+  search (Smith/Nguyen/Lee) silently drops every `Organisation`/`Person` beyond the
+  20th (each carrying its licence/registration number and source). The only legitimate
+  bound — `read_body_capped(resp, 512 KB)` — already limits parsed size; the `.take(20)`
+  was pure loss with no memory/DoS rationale (unlike `austlii`'s `MAX_DOCS`, which is
+  server-matched **and** surfaced). Fix extracts the emit into pure
+  `build_licensee_entities` / `build_practitioner_entities` that emit EVERY parsed row,
+  and `process` now `result.extend(...)`s them. Test delta:
+  `build_licensee_entities_emits_every_parsed_row_not_just_20` and
+  `build_practitioner_entities_emits_every_parsed_row_not_just_20` (25 rows in → 25
+  entities out, the 25th present). Directly honours the operator's re-issued
+  full-fidelity directive (no silent truncation/omission of results). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4557). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

@@ -343,6 +343,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The ACMA Radiocommunications Register and AHPRA practitioner-register scrapers now
+  return every matching record, not just the first 20.** Both parsed the full result
+  table but then emitted only the first 20 rows — a silent client-side cap with no
+  server-side page limit and no operator signal — so a large multi-licence organisation,
+  a coordinate-radius licence search, or a common-surname health-practitioner search
+  silently dropped every result beyond the 20th. They now emit every parsed row (the
+  response body is already size-bounded upstream). Regression tests
+  `build_licensee_entities_emits_every_parsed_row_not_just_20` and
+  `build_practitioner_entities_emits_every_parsed_row_not_just_20`.
 - **DeHashed now recovers an email mis-stored in the password field instead of dropping it.**
   When a breach record puts an email in the `password` slot (a common quirk), DeHashed
   previously minted nothing — while the oathnet_pro and see_know breach parsers both recover

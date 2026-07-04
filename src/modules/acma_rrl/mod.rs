@@ -71,6 +71,37 @@ pub(super) fn parse_acma_html(html: &str) -> Vec<(String, String, String)> {
     results
 }
 
+/// One `Organisation` entity per parsed licensee — EVERY row, no cap. The HTML
+/// body is already size-bounded by `read_body_capped` (the real resource limit)
+/// and the ACMA request sends no server-side page-size, so capping here would
+/// silently drop licensees 21..N of a large multi-licence org or a
+/// coordinate-radius search. Pure and testable.
+pub(super) fn build_licensee_entities(
+    licences: &[(String, String, String)],
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut out = Vec::with_capacity(licences.len());
+    for (name, lic_no, service) in licences {
+        let mut org = Entity::new(EntityKind::Organisation, name, 0.65, scan_id);
+        org.tag("acma");
+        org.tag("radiocommunications-licensee");
+        if !service.is_empty() {
+            org.tag(format!(
+                "service:{}",
+                service.to_lowercase().replace(' ', "-")
+            ));
+        }
+        org.add_evidence(
+            Evidence::new(SRC, format!("ACMA RRL licence {lic_no} held by {name}"))
+                .with_attr("licence_number", lic_no)
+                .with_attr("service_type", service)
+                .with_attr("source", "acma.gov.au"),
+        );
+        out.push(org);
+    }
+    out
+}
+
 /// Pull the licensee's ABN out of the RRL detail HTML, if present.
 ///
 /// Finds the `ABN:</…>` label cell, takes the digits from the following table
@@ -190,26 +221,7 @@ impl Module for AcmaRrl {
 
         let licences = parse_acma_html(&html);
         let mut result = ModuleResult::new();
-
-        for (name, lic_no, service) in licences.iter().take(20) {
-            let mut org = Entity::new(EntityKind::Organisation, name, 0.65, &ctx.scan_id);
-            org.tag("acma");
-            org.tag("radiocommunications-licensee");
-            if !service.is_empty() {
-                org.tag(format!(
-                    "service:{}",
-                    service.to_lowercase().replace(' ', "-")
-                ));
-            }
-            org.add_evidence(
-                Evidence::new(SRC, format!("ACMA RRL licence {lic_no} held by {name}"))
-                    .with_attr("licence_number", lic_no)
-                    .with_attr("service_type", service)
-                    .with_attr("source", "acma.gov.au"),
-            );
-
-            result.push(org);
-        }
+        result.extend(build_licensee_entities(&licences, &ctx.scan_id));
 
         // The RRL page carries at most ONE ABN (a single page-level field), so it
         // must be extracted and emitted exactly once — not re-extracted inside the

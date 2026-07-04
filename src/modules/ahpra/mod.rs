@@ -155,26 +155,38 @@ impl Module for Ahpra {
 
         let practitioners = parse_ahpra_html(&html);
         let mut result = ModuleResult::new();
-
-        for (name, profession, reg_no) in practitioners.iter().take(20) {
-            let mut person = Entity::new(EntityKind::Person, name, 0.70, &ctx.scan_id);
-            person.tag("ahpra");
-            person.tag("health-practitioner");
-            if !profession.is_empty() {
-                person.tag(format!(
-                    "profession:{}",
-                    profession.to_lowercase().replace(' ', "-")
-                ));
-            }
-            person.add_evidence(
-                Evidence::new(SRC, format!("AHPRA registered practitioner: {name}"))
-                    .with_attr("profession", profession)
-                    .with_attr("registration_number", reg_no)
-                    .with_attr("source", "ahpra.gov.au"),
-            );
-            result.push(person);
-        }
+        result.extend(build_practitioner_entities(&practitioners, &ctx.scan_id));
 
         Ok(result)
     }
+}
+
+/// One `Person` entity per parsed practitioner — EVERY row, no cap. The HTML body
+/// is already size-bounded by `read_body_capped` (the real resource limit), so
+/// capping here would silently drop practitioners 21..N of a common-surname
+/// register search (Smith/Nguyen/Lee return many). Pure and testable.
+pub(super) fn build_practitioner_entities(
+    practitioners: &[(String, String, String)],
+    scan_id: &str,
+) -> Vec<Entity> {
+    let mut out = Vec::with_capacity(practitioners.len());
+    for (name, profession, reg_no) in practitioners {
+        let mut person = Entity::new(EntityKind::Person, name, 0.70, scan_id);
+        person.tag("ahpra");
+        person.tag("health-practitioner");
+        if !profession.is_empty() {
+            person.tag(format!(
+                "profession:{}",
+                profession.to_lowercase().replace(' ', "-")
+            ));
+        }
+        person.add_evidence(
+            Evidence::new(SRC, format!("AHPRA registered practitioner: {name}"))
+                .with_attr("profession", profession)
+                .with_attr("registration_number", reg_no)
+                .with_attr("source", "ahpra.gov.au"),
+        );
+        out.push(person);
+    }
+    out
 }

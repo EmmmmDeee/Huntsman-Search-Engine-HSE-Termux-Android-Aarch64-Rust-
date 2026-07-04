@@ -2944,3 +2944,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Secret), single-sourcing the policy across the three breach parsers. Test:
   `email_in_the_password_slot_is_recovered_as_an_email_lead`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-REGISTERS: acma_rrl + ahpra emit every parsed row, not
+  the first 20.** A fidelity-audit workflow (silent-truncation / dropped-field finders,
+  adversarially verified; 8 confirmed violations) top-ranked the two AU register
+  scrapers: both parse the full result table into an unbounded Vec then emit only
+  `.iter().take(20)` — a bare, unlogged client-side cut with no server-side page param,
+  silently dropping licensees/practitioners 21..N (each carrying its licence/registration
+  number). The real bound (`read_body_capped` 512 KB) already limits parsed size. Fix
+  extracts the emit into pure `build_licensee_entities` / `build_practitioner_entities`
+  that emit EVERY row; `process` extends the result with them. Tests:
+  `build_licensee_entities_emits_every_parsed_row_not_just_20`,
+  `build_practitioner_entities_emits_every_parsed_row_not_just_20`. Directly serves the
+  operator's re-issued full-fidelity directive. Gate green. Paired: `PROBLEM_TREE` §8 —
+  same commit.

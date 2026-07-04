@@ -1,8 +1,33 @@
-use super::{Ahpra, parse_ahpra_html};
+use super::{Ahpra, build_practitioner_entities, parse_ahpra_html};
 use crate::core::{
+    entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
 };
+
+#[test]
+fn build_practitioner_entities_emits_every_parsed_row_not_just_20() {
+    // Full-fidelity: a common-surname register search (Smith/Nguyen/Lee) returns
+    // many practitioners; every parsed row must become a Person entity (the HTML
+    // body is already size-bounded upstream). Fail-before: capped at 20.
+    let rows: Vec<(String, String, String)> = (0..25)
+        .map(|i| {
+            (
+                format!("Jane Smith {i:02}"),
+                "Medical Practitioner".to_string(),
+                format!("MED{i:07}"),
+            )
+        })
+        .collect();
+    let out = build_practitioner_entities(&rows, "s");
+    assert_eq!(
+        out.len(),
+        25,
+        "every parsed practitioner must be emitted, not capped at 20"
+    );
+    assert!(out.iter().all(|e| e.kind == EntityKind::Person));
+    assert!(out.iter().any(|e| e.value == "Jane Smith 24"));
+}
 
 #[test]
 fn metadata() {
