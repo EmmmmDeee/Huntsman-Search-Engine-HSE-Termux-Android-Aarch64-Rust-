@@ -343,6 +343,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Cross-platform identity resolution (AU-046) no longer fuses unrelated strangers into
+  an alias's identity.** The rule collected every platform-sourced email/name in the whole
+  scan and attributed all of them, at High severity, to every alias — so a co-author's
+  email from a different platform account, a second alias's identifiers, or a `noreply@`
+  role mailbox were mis-merged into a person's resolved identity. It now resolves an alias
+  only to identifiers its own account(s) published (those sharing a corroborating source
+  with the alias) and excludes role mailboxes, matching the linkage the rule's
+  documentation already described. Regression test
+  `au046_resolves_only_the_alias_own_account_identifiers`.
 - **`streaming_probe` no longer fabricates a high-confidence cam/adult identity from an
   unverified HTTP 200.** The webcam / fan-subscription / adult-video prober stamped a
   flat 0.92 confidence on every hit and asserted a sensitive identity (`cam-identity-exposed`,

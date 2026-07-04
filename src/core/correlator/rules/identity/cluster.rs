@@ -149,14 +149,19 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
 ///
 /// Distinct from AU-045 (which only confirms the handle exists across families)
 /// and AU-002 (which needs email+username+phone all present): AU-046 is the
-/// *handle → identity* edge, drawn only from identifiers a platform account
-/// itself published, so it can't fuse unrelated breach-dump strangers.
+/// *handle → identity* edge, drawn only from identifiers **the alias's own
+/// account(s) published** — an identifier is resolved to a given alias only when
+/// it shares ≥1 concrete corroborating source with that alias (the same platform
+/// module that confirmed the handle also surfaced the identifier). This scopes
+/// each resolution to the alias's own accounts, so a co-author's email, another
+/// alias's identifiers, or an unrelated breach-dump stranger can't be fused in;
+/// role mailboxes are excluded as well.
 pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolution(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashSet};
     // Platform-account provider families — the ones where a confirmed handle is
     // an account a person controls (not infra/breach corpora).
     let is_platform = |f: &str| matches!(f, "code" | "forum" | "social" | "presence");
@@ -184,28 +189,56 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
         return Vec::new();
     }
 
-    // Real-world identifiers the platform accounts themselves exposed.
-    let resolved: Vec<&Entity> = entities
+    // Candidate real-world identifiers: an Email or Person a platform-family
+    // source exposed. Each is paired with its concrete corroborating-source set so
+    // it can be tied back to a SPECIFIC alias below. Role mailboxes (`noreply@`,
+    // `abuse@`, …) are never a person's real-world identifier and are excluded,
+    // mirroring the AU-045 gate — a registrant/support desk exposed by a platform
+    // must not be fused into someone's identity.
+    let platform_identifiers: Vec<(&Entity, HashSet<&str>)> = entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Person))
         .filter(|e| {
-            e.corroborating_sources()
+            e.kind != EntityKind::Email || !crate::core::validation::is_role_mailbox(&e.value)
+        })
+        .filter_map(|e| {
+            let srcs: HashSet<&str> = e.corroborating_sources();
+            let platform_sourced = srcs
                 .iter()
-                .any(|s| matches!(source_family(s), "code" | "forum" | "social"))
+                .any(|s| matches!(source_family(s), "code" | "forum" | "social"));
+            platform_sourced.then_some((e, srcs))
         })
         .collect();
-    if resolved.is_empty() {
+    if platform_identifiers.is_empty() {
         return Vec::new();
     }
 
-    let resolved_uids: Vec<String> = resolved.iter().map(|e| e.uid.clone()).collect();
     aliases
         .iter()
-        .map(|(alias, fams)| {
+        .filter_map(|(alias, fams)| {
+            // Only identifiers the ALIAS's OWN account(s) published: they share ≥1
+            // concrete corroborating SOURCE with the alias (the same platform module
+            // that confirmed the handle also surfaced the identifier). The previous
+            // form fused EVERY platform-sourced Email/Person in the whole scan into
+            // every alias — a co-author's email, another alias's identifiers, or a
+            // stranger from a different platform account were all mis-attributed as
+            // this person's identity. Requiring a shared source scopes the resolution
+            // to the alias's own accounts, which is what the docstring already claims.
+            let alias_srcs: HashSet<&str> = alias.corroborating_sources();
+            let mut resolved_uids: Vec<String> = platform_identifiers
+                .iter()
+                .filter(|(_, srcs)| !alias_srcs.is_disjoint(srcs))
+                .map(|(e, _)| e.uid.clone())
+                .collect();
+            if resolved_uids.is_empty() {
+                return None;
+            }
+            resolved_uids.sort_unstable();
+            let resolved_count = resolved_uids.len();
             let fam_list: Vec<&str> = fams.iter().copied().collect();
             let mut uids = vec![alias.uid.clone()];
-            uids.extend(resolved_uids.iter().cloned());
-            Correlation {
+            uids.extend(resolved_uids);
+            Some(Correlation {
                 rule_id: "AU-046".into(),
                 rule_name: "Cross-platform identity resolution".into(),
                 severity: Severity::High,
@@ -214,13 +247,13 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
                     alias.value,
                     fam_list.len(),
                     fam_list.join(", "),
-                    resolved.len()
+                    resolved_count
                 ),
                 entity_uids: uids,
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
-            }
+            })
         })
         .collect()
 }

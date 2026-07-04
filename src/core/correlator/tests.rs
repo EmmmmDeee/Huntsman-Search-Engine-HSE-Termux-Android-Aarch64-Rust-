@@ -3960,6 +3960,53 @@ fn au045_046_reject_junk_and_role_handles_as_identity_anchors() {
 }
 
 #[test]
+fn au046_resolves_only_the_alias_own_account_identifiers() {
+    // AU-046 used to fuse EVERY platform-sourced Email/Person in the whole scan
+    // into every alias, even a stranger from a different platform account or a
+    // role mailbox. It must resolve only identifiers the alias's OWN account(s)
+    // published — those sharing a concrete corroborating source with the alias.
+    let mut alias = Entity::new(EntityKind::Username, "kylo4kylo", 0.6, "scan");
+    for s in ["github_user", "reddit_user"] {
+        alias.add_evidence(Evidence::new(s, "confirmed account"));
+    }
+    // The alias's OWN github account published this email → shares github_user.
+    let mut own = Entity::new(EntityKind::Email, "kylo@real.example", 0.7, "scan");
+    own.add_evidence(Evidence::new("github_user", "profile email"));
+    // A co-author's email from a DIFFERENT platform account the alias does not
+    // share (gitlab, code family) → must NOT be fused into the alias's identity.
+    let mut stranger = Entity::new(EntityKind::Email, "coauthor@other.example", 0.7, "scan");
+    stranger.add_evidence(Evidence::new("gitlab_user", "co-maintainer email"));
+    // A role mailbox published even by the alias's own account is a support/registrar
+    // desk, never the person's real-world identifier.
+    let mut role = Entity::new(EntityKind::Email, "noreply@github.com", 0.7, "scan");
+    role.add_evidence(Evidence::new("github_user", "profile email"));
+
+    let hits = super::rules::rule_au_046_cross_platform_identity_resolution(
+        &[alias.clone(), own.clone(), stranger.clone(), role.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(hits.len(), 1, "the alias resolves via its own account");
+    assert!(
+        hits[0].entity_uids.contains(&own.uid),
+        "the alias's own-account email must resolve"
+    );
+    assert!(
+        !hits[0].entity_uids.contains(&stranger.uid),
+        "a stranger from an unshared platform account must not be fused"
+    );
+    assert!(
+        !hits[0].entity_uids.contains(&role.uid),
+        "a role mailbox must not be treated as a real-world identifier"
+    );
+    assert!(
+        hits[0].description.contains("1 real-world identifier"),
+        "only the one own-account identifier is counted: {}",
+        hits[0].description
+    );
+}
+
+#[test]
 fn au047_links_identities_by_a_reused_unique_secret_only() {
     // The account-linking rule, and its precision gate. A salted hash carried against
     // two emails links them (same controller); an UNSALTED digest must NOT —

@@ -3873,3 +3873,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   cam hit → 0.74 + weak-detection + NO `cam-identity-exposed`; a body-verified hit →
   0.92 + verified-detection + the exposure tag). Gate green: fmt/clippy/doc clean,
   full suite 0 failures (4547). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **False-merge precision: AU-046 fused EVERY platform-sourced
+  identifier in the scan into every alias — the worst class, a wrong identity
+  resolution.** Workflow-confirmed. `rule_au_046_cross_platform_identity_resolution`
+  builds a single scan-wide `resolved` set — every `Email`/`Person` with a
+  code/forum/social corroborating source — and attributed **all** of it, at
+  `Severity::High`, to **every** alias, with (a) no tie between an identifier and the
+  alias's actual account and (b) no role-mailbox gate. So a co-author's email surfaced
+  from a different platform account, another alias's identifiers, or a `noreply@`
+  support desk were all fused into a person's "resolves to N real-world identifiers"
+  finding — the exact "unrelated strangers" fusion the docstring claimed it "can't"
+  do. Fix scopes each resolution to the alias's OWN account(s): an identifier resolves
+  to a given alias only when it shares ≥1 concrete corroborating **source** with that
+  alias (the same platform module that confirmed the handle also surfaced the
+  identifier), and role mailboxes are excluded (`core::validation::is_role_mailbox`,
+  the AU-045 gate). `resolved` is now computed per-alias, not scan-wide, so cross-alias
+  contamination is impossible; an alias with no own-account identifier no longer fires.
+  Docstring corrected to describe the real (shared-source) linkage. Test delta:
+  `au046_resolves_only_the_alias_own_account_identifiers` — an own-account email
+  (shared source) resolves; a stranger from an unshared platform account and a
+  `noreply@` role mailbox are both excluded; description counts exactly one identifier.
+  The two existing AU-046 tests (whose emails share the alias's source) still pass. Gate
+  green: fmt/clippy/doc clean, full suite 0 failures (4548). **Paired:** `SOLUTION_TREE`
+  §5 — same commit.

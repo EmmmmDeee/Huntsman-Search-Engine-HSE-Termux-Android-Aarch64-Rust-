@@ -2857,3 +2857,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `detection_strength_tiers_status_only_below_body_verified`,
   `build_entities_tiers_confidence_and_gates_exposure_on_verified`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-AU046-OWNACCOUNT: AU-046 resolves an alias only to its own
+  account's identifiers, not every platform-sourced Email/Person in the scan.** The
+  cross-platform identity-resolution rule built one scan-wide `resolved` set and
+  attributed all of it, at High, to every alias — fusing a co-author's email, another
+  alias's identifiers, or a role mailbox into a person's identity (a false merge, the
+  worst class), despite the docstring claiming it couldn't. Now each identifier
+  resolves to a given alias only when it shares ≥1 concrete corroborating SOURCE with
+  that alias (the alias's own account surfaced it), and role mailboxes are excluded via
+  `core::validation::is_role_mailbox` (the AU-045 gate). `resolved` is per-alias, so
+  cross-alias contamination is impossible and an alias with no own-account identifier
+  no longer fires. Docstring corrected. Test:
+  `au046_resolves_only_the_alias_own_account_identifiers` (own-account email resolves;
+  an unshared-source stranger and a `noreply@` role mailbox excluded). Gate green.
+  Paired: `PROBLEM_TREE` §8 — same commit.
