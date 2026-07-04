@@ -243,22 +243,11 @@ impl TargetKind {
                 return Self::AbnAcn;
             }
         }
-        // 8. Phone — '+' country code or a punctuated digit run, no letters.
-        if is_phone_shaped(v) {
-            return Self::Phone;
-        }
-        // 9. Domain — no whitespace/'@', a dot, valid labels, alpha TLD.
-        if is_domain_shaped(v) {
-            return Self::Domain;
-        }
-        // 9b. Cryptocurrency wallet address (bc1…/0x…/base58). Checked after the
-        // dotted/numeric shapes (which it never matches) but before the free-text
-        // fallback, so a pasted `1A1z…`/`bc1q…`/`0x…` is recognised rather than
-        // mis-bucketed as a Username.
-        if crate::core::crypto::classify_crypto_address(v).is_some() {
-            return Self::CryptoAddress;
-        }
-        // 9c. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
+        // 8. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 dash segments, MCC in
+        //    200-999). Checked BEFORE the phone shape: a tower id like
+        //    `505-1-2001-12345` is 7–15 digits with '-' punctuation and no '+', so
+        //    `is_phone_shaped` would otherwise claim it — the same precedence
+        //    principle that puts MAC/CIDR ahead of their looser overlapping shapes.
         {
             let parts: Vec<&str> = v.split('-').collect();
             if parts.len() == 4
@@ -272,7 +261,22 @@ impl TargetKind {
                 return Self::DeviceId;
             }
         }
-        // 9d. Tracking ID — Google Analytics (UA-XXXXXXX-X / G-XXXXXXXXXX),
+        // 9. Phone — '+' country code or a punctuated digit run, no letters.
+        if is_phone_shaped(v) {
+            return Self::Phone;
+        }
+        // 10. Domain — no whitespace/'@', a dot, valid labels, alpha TLD.
+        if is_domain_shaped(v) {
+            return Self::Domain;
+        }
+        // 9b. Cryptocurrency wallet address (bc1…/0x…/base58). Checked after the
+        // dotted/numeric shapes (which it never matches) but before the free-text
+        // fallback, so a pasted `1A1z…`/`bc1q…`/`0x…` is recognised rather than
+        // mis-bucketed as a Username.
+        if crate::core::crypto::classify_crypto_address(v).is_some() {
+            return Self::CryptoAddress;
+        }
+        // 9c. Tracking ID — Google Analytics (UA-XXXXXXX-X / G-XXXXXXXXXX),
         //     Google Tag Manager (GTM-XXXXXXX), Google Ads (AW-XXXXXXXXX).
         //     Must be checked before the general Username fallback.
         if is_tracking_id_shaped(v) {

@@ -693,6 +693,16 @@ fn detect_disambiguates_overlapping_shapes() {
     // a phone, but a normal international number still is.
     assert_ne!(TargetKind::detect("+123+4567"), TargetKind::Phone);
     assert_eq!(TargetKind::detect("+61400123456"), TargetKind::Phone);
+    // A cell-tower id (mcc-mnc-lac-cid) is 7–15 digits with '-' punctuation, so it
+    // overlaps the phone shape — the more specific 4-segment / MCC-200-999 form is
+    // checked first and wins (a real AU tower: MCC 505, MNC 1, LAC 2001, CID 12345).
+    assert_eq!(
+        TargetKind::detect("505-1-2001-12345"),
+        TargetKind::DeviceId,
+        "a cell-tower id must be a DeviceId, not a Phone"
+    );
+    // A genuinely dash-punctuated phone (not 4 all-numeric segments) stays a Phone.
+    assert_eq!(TargetKind::detect("07-3000-1234"), TargetKind::Phone);
 }
 
 #[test]
