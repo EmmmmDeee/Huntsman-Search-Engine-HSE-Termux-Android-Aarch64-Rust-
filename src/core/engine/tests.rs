@@ -1957,6 +1957,59 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
     );
 }
 
+/// A `candidate`-quarantined namesake that several breach sources corroborate
+/// must NOT be admitted as a subject identity: `demote_to_candidate` caps its
+/// confidence at 0.25, but `c_effective` re-lifts it past `VERIFIED_MIN` on
+/// multi-source agreement, and — before the `!has_tag(CANDIDATE)` guard — the
+/// subject-identity allowlist keyed off raw `c_effective`, so a different
+/// "John Smith" leaked across four breaches would have whitelisted his whole
+/// cluster through the wrong-identity pivot gate.
+#[test]
+fn quarantined_namesake_is_not_admitted_as_a_subject_identity() {
+    use crate::core::entity::{Classification, Entity, EntityKind, Evidence};
+
+    // A stranger email demoted to candidate by the target-match gate, then
+    // corroborated by four independent breach sources (as a namesake row that
+    // recurs across dumps would be).
+    let mut namesake = Entity::new(EntityKind::Email, "jsmith@acme.example", 0.7, "s");
+    namesake.demote_to_candidate();
+    for src in ["oathnet_pro", "see_know", "dehashed", "hibp"] {
+        namesake.add_evidence(Evidence::new(src, "breach row"));
+    }
+
+    // The re-lift is real: multi-source agreement pushes c_effective to Verified
+    // even though the demotion capped confidence at the candidate floor.
+    assert!(
+        namesake.c_effective() >= Classification::VERIFIED_MIN,
+        "precondition: corroboration re-lifts the demoted namesake to Verified \
+         c_effective ({}) — the exact re-lift the guard must resist",
+        namesake.c_effective()
+    );
+    assert!(namesake.has_tag(crate::core::tags::CANDIDATE));
+
+    // The fix: a quarantined entity is never a subject identity, however much it
+    // is corroborated.
+    assert!(
+        !qualifies_as_subject_identity(&namesake),
+        "a candidate-quarantined namesake must not seed the subject-identity allowlist"
+    );
+
+    // Control: the SAME corroborated email WITHOUT the quarantine tag is a
+    // legitimate subject identity — the guard demotes only the quarantined case.
+    let mut confirmed = Entity::new(EntityKind::Email, "subject@acme.example", 0.7, "s");
+    for src in ["oathnet_pro", "see_know", "dehashed", "hibp"] {
+        confirmed.add_evidence(Evidence::new(src, "breach row"));
+    }
+    assert!(
+        qualifies_as_subject_identity(&confirmed),
+        "a corroborated, non-quarantined identity email IS a subject identity"
+    );
+
+    // A non-identity kind (Coordinates) never qualifies regardless of confidence.
+    let coord = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.99, "s");
+    assert!(!qualifies_as_subject_identity(&coord));
+}
+
 /// A module with a non-zero inter-scan cache TTL that emits ONE distinctive
 /// finding unique to it — the cache-exclusive entity whose per-scan attribution
 /// the replay path must get right.

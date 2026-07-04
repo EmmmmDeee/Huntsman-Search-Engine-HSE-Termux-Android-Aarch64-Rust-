@@ -178,6 +178,30 @@ impl EventEmitter {
     }
 }
 
+/// Whether `e` may seed the **subject-identity allowlist** the wrong-identity
+/// pivot gate ([`crate::core::scan::is_wrong_identity_pivot`]) matches expansion
+/// candidates against: an identity-kind entity (Username / Person / Email)
+/// confirmed to the Verified tier and NOT quarantined.
+///
+/// The `!has_tag(CANDIDATE)` guard is the fix for a real contamination:
+/// [`crate::core::entity::Entity::demote_to_candidate`] caps a stranger's
+/// *confidence* at `CANDIDATE_CONF` (0.25), but `c_effective` re-lifts it above
+/// [`crate::core::entity::Classification::VERIFIED_MIN`] once several breach
+/// sources corroborate the same namesake row — so without it a quarantined
+/// namesake (a different "John Smith") would be admitted as a subject identity
+/// and then whitelist its whole cluster through the pivot gate. Mirrors the
+/// identical `!has_tag(CANDIDATE)` guard [`crate::core::exposure`] already
+/// applies to its own `c_effective` gate, so the quarantine is honoured
+/// consistently across every confidence-gated consumer.
+fn qualifies_as_subject_identity(e: &crate::core::entity::Entity) -> bool {
+    use crate::core::entity::{Classification, EntityKind};
+    matches!(
+        e.kind,
+        EntityKind::Username | EntityKind::Person | EntityKind::Email
+    ) && !e.has_tag(crate::core::tags::CANDIDATE)
+        && e.c_effective() >= Classification::VERIFIED_MIN
+}
+
 impl ScanEngine {
     pub fn new(
         mut modules: Vec<Arc<dyn Module>>,
@@ -1458,15 +1482,12 @@ impl ScanEngine {
                 Vec::new()
             } else {
                 std::iter::once(seed.value.clone())
-                    .chain(entity_map.values().filter_map(|e| {
-                        use crate::core::entity::{Classification, EntityKind};
-                        let is_identity = matches!(
-                            e.kind,
-                            EntityKind::Username | EntityKind::Person | EntityKind::Email
-                        );
-                        (is_identity && e.c_effective() >= Classification::VERIFIED_MIN)
-                            .then(|| e.value.clone())
-                    }))
+                    .chain(
+                        entity_map
+                            .values()
+                            .filter(|&e| qualifies_as_subject_identity(e))
+                            .map(|e| e.value.clone()),
+                    )
                     .collect()
             };
 
