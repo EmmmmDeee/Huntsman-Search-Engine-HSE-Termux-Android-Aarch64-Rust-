@@ -397,15 +397,16 @@ async fn session_loop(
             bus: inner.bus.clone(),
             http: http.clone(),
             keys: loaded_keys.clone(),
-            // Plumb the SAME live-session cancel handle into the engine
-            // so `DELETE /api/v1/live/{id}` aborts the in-flight
-            // iteration at the next module boundary (the iteration's
-            // scan completes with `ScanStatus::Aborted` and partial
-            // entities are preserved exactly as for one-shot scans).
-            // Without this share-rather-than-replace, stop() only
-            // affected the outer loop and the iteration had to run to
-            // its full expansion depth before stopping.
-            cancel: cancel.clone(),
+            // A per-iteration CHILD of the live-session cancel handle. An operator
+            // stop (`DELETE /api/v1/live/{id}`) cancels the PARENT and still aborts
+            // the in-flight iteration at the next module boundary (the iteration's
+            // scan completes `ScanStatus::Aborted`, partial entities preserved).
+            // But the engine's per-iteration wall-time watchdog cancels only this
+            // CHILD — so a single sweep that overruns `max_wall_time_secs` (routine
+            // at depth on a flaky mobile link) aborts just that iteration instead
+            // of tripping the shared session handle and permanently ending the
+            // whole continuous session.
+            cancel: cancel.child(),
             proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
