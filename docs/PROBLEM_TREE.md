@@ -3313,3 +3313,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   *and* the true-positive still fires — fail-before/pass-after). Gate green:
   fmt/clippy/doc clean, 406 correlator lib tests + 30 arch guards, 0 failures.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Parse precision at the source: the two non-regex email
+  admission paths were more permissive than the canonical `EMAIL_RE`** (found by
+  a grounded false-positive audit of `util::extract`; the validator layer is
+  otherwise excellent — ABN mod-89, ACN complement, the AU phone trunk guard all
+  verified correct). `EMAIL_RE` (`extract/mod.rs:26`) requires a real TLD
+  (`…\.[A-Za-z]{2,}`), but `looks_like_email` (the provider-`email`-field gate)
+  only tested `host.contains('.')` and `page_emails` (the HTML byte-scanner) only
+  `contains('.') && len > 3`. So `admin@10.0.0.1` (IP literal), `user@host.123`
+  (numeric pseudo-TLD), `user@host.c` (1-char TLD) and `x@sub..example.com`
+  (double-dot host) all minted a bogus `Email` entity — a false positive at the
+  parse layer, which then compounds through every downstream correlation. Both
+  paths now share one `host_has_alpha_tld` helper enforcing exactly the regex's
+  domain validity (≥1 dot, no empty label, final label ≥2 ASCII letters), so a
+  gate can never out-admit the scanner it is supposed to mirror. No valid address
+  is newly rejected (every real address has an alphabetic TLD; the existing
+  gmail/yahoo/`onet.eu` fixtures still pass). Test delta: the
+  `looks_like_email_rejects_provider_field_junk` junk list gains the four invalid
+  shapes (+ an `EMAIL_RE`-agreement cross-check), and
+  `page_emails_rejects_ip_literal_and_numeric_tld_domains` pins the scanner path
+  (each asserts the FP is gone and a real address in the same text still
+  extracts). Gate green: fmt/clippy/doc clean, full suite 0 failures.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -98,9 +98,39 @@ use super::*;
             "user@localhost", // host has no dot
             "a b@c.com",      // embedded whitespace
             "",
+            // Domains the canonical EMAIL_RE (…\.[A-Za-z]{2,}) rejects but the
+            // field gate used to admit — an IP literal, a numeric pseudo-TLD, a
+            // one-char TLD, and a double-dot host — each of which minted a bogus
+            // Email entity that then poisoned correlation.
+            "admin@10.0.0.1",
+            "user@host.123",
+            "user@host.c",
+            "x@sub..example.com",
+            "user@.example.com",
         ] {
             assert!(!looks_like_email(junk), "{junk:?} must be rejected");
         }
+        // Consistency with the free-text scanner on the cases EMAIL_RE also
+        // rejects (no `\.[A-Za-z]{2,}` TLD): the field gate is never *more*
+        // permissive than the scanner. (The `..` case is one where the gate is
+        // deliberately *stricter* than the substring-matching EMAIL_RE, which is
+        // correct for an admission gate, so it is not asserted here.)
+        for e in ["admin@10.0.0.1", "user@host.123"] {
+            assert!(!EMAIL_RE.is_match(e), "EMAIL_RE agrees {e} is not an address");
+        }
+    }
+
+    #[test]
+    fn page_emails_rejects_ip_literal_and_numeric_tld_domains() {
+        // The HTML byte-scanner shared the field gate's blind spot: it carved a
+        // pseudo-address out of an IP literal or a numeric-TLD host. A valid
+        // address in the same text still extracts (no false negative).
+        assert!(page_emails("contact admin@10.0.0.1 now").is_empty());
+        assert!(page_emails("see user@host.123 here").is_empty());
+        assert_eq!(
+            page_emails("but real jane.doe@example.com posted"),
+            ["jane.doe@example.com"]
+        );
     }
 
     #[test]

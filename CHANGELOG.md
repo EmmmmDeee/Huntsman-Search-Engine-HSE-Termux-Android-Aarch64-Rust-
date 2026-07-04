@@ -343,8 +343,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
-- **Two correlation rules forged false identity links from selectors that are
-  not a person's identity.** Both admitted a non-personal selector into a rule
+- **Two non-regex email-admission paths admitted addresses the canonical
+  free-text matcher rejects — false positives at the source.** `EMAIL_RE`
+  requires a real TLD (`…\.[A-Za-z]{2,}`), but the provider-field gate
+  `looks_like_email` only checked `host.contains('.')` and the HTML byte-scanner
+  `page_emails` only checked `contains('.') && len > 3`, so `admin@10.0.0.1`
+  (IP literal), `user@host.123` (numeric pseudo-TLD), `user@host.c` (one-char
+  TLD) and `x@sub..example.com` (double-dot host) each minted a bogus `Email`
+  entity that then poisoned correlation. Both paths now share a single
+  `host_has_alpha_tld` helper enforcing exactly the regex's domain validity
+  (≥1 dot, no empty label, a final label of ≥2 ASCII letters), so a gate can
+  never be more permissive than the scanner. No valid address is newly rejected
+  (every real address has an alphabetic TLD). Both admitted a non-personal selector into a rule
   that treats its members as tied to the subject, manufacturing false positives
   — the class of error this evidentiary engine ranks above missing coverage.
   - **AU-018 (email ↔ physical-location linkage) admitted role mailboxes.** A

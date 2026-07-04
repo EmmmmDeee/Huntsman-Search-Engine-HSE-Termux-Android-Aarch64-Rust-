@@ -194,14 +194,29 @@ pub fn macs(text: &str) -> Vec<String> {
 pub fn looks_like_email(s: &str) -> bool {
     match s.split_once('@') {
         Some((local, host)) => {
-            !local.is_empty()
-                && host.contains('.')
-                && !host.starts_with('.')
-                && !host.ends_with('.')
-                && !s.contains(char::is_whitespace)
+            !local.is_empty() && !s.contains(char::is_whitespace) && host_has_alpha_tld(host)
         }
         None => false,
     }
+}
+
+/// True if `host` ends in a valid alphabetic TLD: at least one dot, no empty
+/// label (so no leading/trailing dot and no `..`), and a final label of ≥2 ASCII
+/// letters. This is exactly the domain validity the canonical [`EMAIL_RE`]
+/// (`…\.[A-Za-z]{2,}`) enforces, single-sourced here so the two **non-regex**
+/// admission paths — [`looks_like_email`] (the provider-field gate) and
+/// [`page_emails`] (the HTML byte-scanner) — cannot be more permissive than the
+/// free-text scanner and admit an address the scanner would reject. Without it an
+/// IP-literal host (`admin@10.0.0.1`), a numeric pseudo-TLD (`user@host.123`) or a
+/// double-dot host (`x@sub..example.com`) minted a bogus `Email` entity that then
+/// poisoned correlation. Pure.
+fn host_has_alpha_tld(host: &str) -> bool {
+    if !host.contains('.') || host.split('.').any(str::is_empty) {
+        return false;
+    }
+    host.rsplit('.')
+        .next()
+        .is_some_and(|tld| tld.len() >= 2 && tld.bytes().all(|b| b.is_ascii_alphabetic()))
 }
 
 /// What a breach/stealer **credential field** (`password`, `pass`,
@@ -339,8 +354,11 @@ pub fn page_emails(text: &str) -> Vec<String> {
         }
         let domain = &text[i + 1..domain_end];
         if local_start < i
-            && domain.contains('.')
-            && domain.len() > 3
+            // Same alphabetic-TLD validity the free-text `EMAIL_RE` enforces, so
+            // the scanner can't carve an IP-literal (`@10.0.0.1`) or numeric-TLD
+            // (`@host.123`) pseudo-address out of a page body. Subsumes the old
+            // `contains('.') && len > 3` gate.
+            && host_has_alpha_tld(domain)
             && domain_end - local_start <= 254
         {
             let email = text[local_start..domain_end].to_lowercase();

@@ -2527,3 +2527,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   true-positive survives. S→P alternation: closes two concrete FP leaves under the
   same-selector-hygiene theme without touching any rule's real signal. Gate green.
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-BOUNDARY reinforced at the email admission layer:
+  single-sourced the domain-validity check across all three paths.** The doctrine
+  holds that a datum is validated once, at admission, by one shared predicate
+  (SOL-F1 / normalisation-defines-identity). `util::extract` had three email
+  acceptors that had drifted apart: the free-text `EMAIL_RE` (strict, real TLD),
+  the field gate `looks_like_email` (only `contains('.')`), and the HTML scanner
+  `page_emails` (only `contains('.') && len>3`) — so the two non-regex gates
+  admitted IP-literal / numeric-TLD / double-dot hosts the scanner rejects.
+  Factored the regex's own domain rule into one `host_has_alpha_tld` helper and
+  routed both non-regex gates through it — the vocabulary is now single-sourced
+  and the gates provably cannot out-admit the scanner. Sound and strictly
+  tightening (no real address has a non-alphabetic TLD, so zero false negatives),
+  with fail-before/pass-after tests on both paths. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.
