@@ -343,8 +343,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
-- **The dossier's "ROI" wasted-spend hint could never fire, on any scan
-  (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
+- **`subdomain_takeover`'s MITRE ATT&CK technique was mislabelled as passive
+  collection.** The module actively resolves a subdomain's dangling CNAME and
+  HTTP-probes the target to prove a cloud resource is unclaimed/claimable — an
+  exploitable misconfiguration it reports as a `vulnerable` Domain — yet it
+  mapped to the passive `T1590.001` *Domain Properties* the DnsRecon category
+  default inherits, mis-describing every finding's inline `attack:` provenance
+  tag. It now maps to a new catalogue entry **`T1595.002` Active Scanning:
+  Vulnerability Scanning** (the technique it actually performs), mirroring
+  `portscan`, the other active scanner that overrides its passive category
+  default. Sharpens the per-finding ATT&CK labelling that is the engine's only
+  MITRE surface; the `attack_overrides_attribute_collection_modules_precisely`
+  architecture guard now pins the corrected mapping, and a catalogue test pins
+  the new technique. No scan/engine behaviour changed. `hse scan --output dossier` is supposed to warn
   "N keyed/paid module(s) yielded nothing — consider --exclude …" when a
   budgeted API call returned nothing, but the check filtered a diagnostics
   list that only ever contains modules which emitted at least one entity — a

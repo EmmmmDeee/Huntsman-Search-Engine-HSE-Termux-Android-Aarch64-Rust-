@@ -440,7 +440,16 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     assert_eq!(techniques("dns_intel"), vec!["T1590.002"]); // DNS
     assert_eq!(techniques("securitytrails"), vec!["T1596.001"]); // Passive DNS
     assert_eq!(techniques("hackertarget"), vec!["T1590.002", "T1596.001"]);
-    assert_eq!(techniques("subdomain_takeover"), vec!["T1590.001"]); // Domain Properties
+    // Active vulnerability probe (dangling-CNAME takeover) → Active Scanning:
+    // Vulnerability Scanning (T1595.002), NOT the passive Domain Properties the
+    // DnsRecon default would inherit. It touches the target to prove an
+    // exploitable misconfiguration, exactly the case the override exists for.
+    assert_eq!(techniques("subdomain_takeover"), vec!["T1595.002"]);
+    assert!(
+        !techniques("subdomain_takeover").contains(&"T1590.001"),
+        "subdomain_takeover actively scans for a takeover vulnerability, it does \
+         not passively gather domain properties"
+    );
     // WAF/CDN fingerprinting → Network Security Appliances + CDNs (not the Web default).
     assert_eq!(techniques("waf_detect"), vec!["T1590.006", "T1596.004"]);
 

@@ -3266,3 +3266,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `tempfile` (already a dev-dep) would support a local-repo-pair fixture,
   left as its own smaller follow-on. **Paired:** `SOLUTION_TREE` SOL-UPDATE +
   §4a + §5 — same commit.
+- **2026-07-04** — **MITRE mapping precision: `subdomain_takeover` was labelled
+  passive when it actively scans for a vulnerability.** Grounded audit of the
+  active-collection modules' ATT&CK overrides (the operator-endorsed inline
+  per-finding `attack:<ID>` tags are HSE's only MITRE surface — cycles 49/52 —
+  so a wrong mapping mis-labels every finding it produces). `subdomain_takeover`
+  resolves a dangling CNAME and HTTP-fingerprints the target to prove a cloud
+  resource is claimable — an exploitable misconfiguration it emits as a
+  `vulnerable` `Domain` (`build_entities`, `mod.rs:47-50`) — but mapped to the
+  passive `T1590.001` *Domain Properties* the `DnsRecon` default inherits. That
+  is Active Scanning, not passive metadata gathering. Added the missing
+  catalogue entry **`T1595.002` Vulnerability Scanning** (`core::attack`,
+  between `T1595.001` and `T1596`, keeping the id-sorted invariant) and remapped
+  the module to it — mirroring `portscan`, the existing active-scanner override.
+  `T1590.001` stays live (`typosquat` + the `DnsRecon` default still reference
+  it), so nothing is orphaned. The audit confirmed the other active modules are
+  already precise (`dns_axfr`→`T1590.002`, which ATT&CK itself lists zone
+  transfers under; `waf_detect`→`T1590.006`+`T1596.004`; `api_key_probe`→
+  `T1589.001`; `portscan`→`T1595`+`T1595.001`) — one genuine mislabel, not a
+  sweep. Test delta: guard `attack_overrides_attribute_collection_modules_
+  precisely` now pins `["T1595.002"]` (fails against the old `["T1590.001"]`),
+  plus `active_scanning_family_is_catalogued` pins the new technique (fails when
+  the catalogue lacked it). Gate green: fmt/clippy/doc clean, lib + integration
+  tests 0 failures, arch guards incl. ATT&CK mapping + catalogue drift.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

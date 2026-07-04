@@ -88,8 +88,15 @@ impl Module for SubdomainTakeover {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Subdomain/domain-property inspection — ATT&CK Domain Properties (T1590.001).
-        &["T1590.001"]
+        // This module actively resolves a subdomain's CNAME and HTTP-probes the
+        // target to prove a cloud resource is unclaimed/claimable — an exploitable
+        // dangling-DNS misconfiguration it reports as a `vulnerable` Domain. That
+        // is ATT&CK Active Scanning: Vulnerability Scanning (T1595.002) — scanning
+        // a target for an exploitable condition — NOT the passive Domain
+        // Properties (T1590.001) the DnsRecon category default would inherit
+        // (which merely gathers domain metadata). Mirrors `portscan`, the other
+        // active scanner that overrides its passive category default.
+        &["T1595.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

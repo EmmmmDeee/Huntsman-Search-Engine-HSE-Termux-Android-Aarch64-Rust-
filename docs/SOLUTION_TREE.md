@@ -2496,3 +2496,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   have no test against real `git` subprocess behaviour (`tempfile` is already
   a dev-dep for a local-repo-pair fixture) — noted as its own follow-on, not
   bolted onto this doc correction. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-ATTACK-INLINE sharpened: one genuine mislabel fixed in
+  the per-finding ATT&CK layer.** The settled MITRE solution here is *inline on
+  the data* (per-finding `attack:<ID>` tags; the separate coverage/Navigator
+  surface was deliberately removed, cycles 49/52), so the precision of that
+  layer *is* the deliverable — a wrong module→technique mapping mis-labels every
+  finding it emits. Audited the active-collection modules against their ATT&CK
+  overrides and found exactly one real defect: `subdomain_takeover` (an active
+  dangling-CNAME vulnerability probe that emits a `vulnerable` `Domain`) mapped
+  to passive `T1590.001` *Domain Properties*. Added `T1595.002` *Vulnerability
+  Scanning* to the `core::attack` catalogue and remapped the module, mirroring
+  the `portscan` active-scanner precedent; verified the other active modules
+  (`dns_axfr`, `waf_detect`, `api_key_probe`, `portscan`) are already precise.
+  Guard-pinned both directions. This is P→S alternation on a real, code-grounded
+  precision gap — not a coverage-report rebuild (that solution stays retired).
+  Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
