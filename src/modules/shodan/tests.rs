@@ -79,3 +79,46 @@ fn paid_error_retains_free_internetdb_results() {
     );
     assert_eq!(out.entities[0].value, "8.8.8.8");
 }
+
+/// The paid Shodan host response carries the host's PRECISE latitude/longitude
+/// and city (e.g. 38.0088,-122.1175 "Mountain View"). Those must be surfaced —
+/// a precise `Coordinates` entity at the real lat/lon, not just the country
+/// centroid — so the paid key delivers city-level geolocation, its key value
+/// over the free InternetDB path.
+#[test]
+fn geo_entities_emit_precise_coordinates_when_present() {
+    let body: HostResp = serde_json::from_value(serde_json::json!({
+        "latitude": 38.0088,
+        "longitude": -122.1175,
+        "city": "Mountain View",
+        "region_code": "CA",
+        "country_name": "United States",
+        "country_code": "US",
+    }))
+    .unwrap();
+
+    let ents = geo_entities(&body, "8.8.8.8", "scan");
+    let coord = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Coordinates)
+        .expect("a coordinates entity must be emitted");
+    // Parse rather than string-compare: `Entity::new` canonicalises the coord
+    // string (e.g. to 6 decimals). The point is that it is the PRECISE host
+    // fix, not the coarse country centroid.
+    let (lat, lon) =
+        crate::util::geohash::parse_coords(&coord.value).expect("coordinates must parse");
+    assert!(
+        (lat - 38.0088).abs() < 1e-3 && (lon - (-122.1175)).abs() < 1e-3,
+        "must be the precise host lat/lon, got: {}",
+        coord.value
+    );
+    let addr = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .expect("an address entity must be emitted");
+    assert!(
+        addr.value.contains("Mountain View"),
+        "address must be qualified with the city, got: {}",
+        addr.value
+    );
+}

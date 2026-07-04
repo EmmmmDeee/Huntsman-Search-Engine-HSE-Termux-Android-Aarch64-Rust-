@@ -1632,6 +1632,10 @@ fn coarse_ip_geo_providers_use_the_provider_coord_gate() {
         "ipquery",
         "ip_whois_geo",
         "wigle",
+        // shodan's paid host lookup emits the host's precise IP-geolocation
+        // coordinates, so it too must route them through the provider-coord
+        // plausibility gate (via `coarse_provider_coords`).
+        "shodan",
     ];
     let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("src/modules");
     let mut offenders = Vec::new();

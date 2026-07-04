@@ -13,9 +13,6 @@
 //! Key: hardcoded (`oss`/free plan) for zero-config, overridden by
 //! `HUNTSMAN_SHODAN_KEY`. Single source of truth: `util::keys`.
 
-#[cfg(test)]
-mod tests;
-
 use async_trait::async_trait;
 use serde::Deserialize;
 
@@ -63,6 +60,16 @@ pub(super) struct HostResp {
     pub(super) country_code: Option<String>,
     #[serde(default)]
     pub(super) os: Option<String>,
+    // Precise host geolocation the paid API returns (city/datacenter level) —
+    // far sharper than the country-centroid the module used to fall back to.
+    #[serde(default)]
+    pub(super) latitude: Option<f64>,
+    #[serde(default)]
+    pub(super) longitude: Option<f64>,
+    #[serde(default)]
+    pub(super) city: Option<String>,
+    #[serde(default)]
+    pub(super) region_code: Option<String>,
 }
 
 // ── Free InternetDB response ─────────────────────────────────────────
@@ -351,7 +358,7 @@ impl Shodan {
             |ev, (key, v)| ev.with_attr(key, v),
         );
         if !body.ports.is_empty() {
-            let mut ports = body.ports;
+            let mut ports = body.ports.clone();
             ports.sort_unstable();
             ev = ev
                 .with_attr("port_count", ports.len().to_string())
@@ -384,10 +391,10 @@ impl Shodan {
         // Each PTR hostname becomes a Domain entity.
         result.extend(
             body.hostnames
-                .into_iter()
+                .iter()
                 .filter(|host| !host.is_empty())
                 .map(|host| {
-                    let mut d = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
+                    let mut d = Entity::new(EntityKind::Domain, host, 0.85, &ctx.scan_id);
                     d.tag("shodan");
                     d.tag(tags::PTR);
                     d.add_evidence(
@@ -431,30 +438,106 @@ impl Shodan {
             ae.add_evidence(Evidence::new(SRC, format!("ASN for {ip}")));
             result.push(ae);
         }
-        if let Some(country) = &body.country_name
-            && !country.is_empty()
-        {
-            if let Some((lat, lon)) = crate::util::city_coords::city_coords(country) {
-                let coord_val = format!("{lat:.4},{lon:.4}");
-                let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, &ctx.scan_id);
-                c.tag("shodan");
-                c.tag("addr-derived");
-                c.tag("geoint");
-                c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
-                result.push(c);
-            }
-            let mut addr = Entity::new(EntityKind::Address, country, 0.55, &ctx.scan_id);
-            addr.tag("shodan");
-            addr.tag("geoint");
-            addr.add_evidence(Evidence::new(SRC, format!("Country for {ip}")));
-            result.push(addr);
+        for e in geo_entities(&body, ip, &ctx.scan_id) {
+            result.push(e);
         }
 
         Ok(())
     }
 }
 
+/// Build the geolocation entities from a paid Shodan host response. Pure, so the
+/// precise-coordinate extraction is unit-testable without a network round-trip.
+///
+/// The paid API returns the host's precise `latitude`/`longitude` and `city` —
+/// far sharper than the country centroid this module previously fell back to.
+/// When precise coordinates are present they are emitted (gated through
+/// [`crate::util::geo::coarse_provider_coords`], the same plausibility gate the
+/// other IP-geo providers use); only when they are absent does it geocode the
+/// country name to a coarse centroid. The `Address` is qualified with city and
+/// region when the response carries them.
+fn geo_entities(body: &HostResp, ip: &str, scan_id: &str) -> Vec<Entity> {
+    let mut out = Vec::new();
+
+    let country = body
+        .country_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|c| !c.is_empty());
+
+    // Precise host geolocation from the paid response (city/datacenter level),
+    // gated through the shared provider-coord plausibility check the other
+    // IP-geo providers use. This is the key value the paid lookup adds over the
+    // free InternetDB path, so it is preferred; the country centroid below is
+    // only a fallback for when the response omits precise coordinates.
+    let precise = match (body.latitude, body.longitude) {
+        (Some(lat), Some(lon)) => crate::util::geo::coarse_provider_coords(lat, lon, 0.55, scan_id)
+            .map(|mut c| {
+                c.tag("shodan");
+                c.add_evidence(Evidence::new(
+                    SRC,
+                    format!("Shodan host geolocation for {ip}"),
+                ));
+                c
+            }),
+        _ => None,
+    };
+    let had_precise = precise.is_some();
+    if let Some(c) = precise {
+        out.push(c);
+    }
+
+    // Coarse country-centroid fallback — only when no precise fix was emitted.
+    if !had_precise
+        && let Some(country) = country
+        && let Some((lat, lon)) = crate::util::city_coords::city_coords(country)
+    {
+        let coord_val = format!("{lat:.4},{lon:.4}");
+        let mut c = Entity::new(EntityKind::Coordinates, &coord_val, 0.45, scan_id);
+        c.tag("shodan");
+        c.tag("addr-derived");
+        c.tag("geoint");
+        c.add_evidence(Evidence::new(SRC, format!("Geocode of country for {ip}")));
+        out.push(c);
+    }
+
+    // Address — qualified with city and region when the response carries them,
+    // otherwise just the country (the prior behaviour).
+    if let Some(country) = country {
+        let city = body
+            .city
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let region = body
+            .region_code
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty());
+        let addr_value = match (city, region) {
+            (Some(city), Some(region)) => format!("{city}, {region}, {country}"),
+            (Some(city), None) => format!("{city}, {country}"),
+            (None, Some(region)) => format!("{region}, {country}"),
+            (None, None) => country.to_string(),
+        };
+        let mut addr = Entity::new(EntityKind::Address, &addr_value, 0.55, scan_id);
+        addr.tag("shodan");
+        addr.tag("geoint");
+        addr.add_evidence(Evidence::new(SRC, format!("Location for {ip}")));
+        out.push(addr);
+    }
+
+    out
+}
+
 /// Helper to build an IP entity from a raw IP string.
 pub(super) fn target_entity(ip: &str, scan_id: &str) -> Entity {
     Entity::new(EntityKind::IpAddress, ip, 0.90, scan_id)
 }
+
+// Declared at the file's end (not the top) so the `coarse_ip_geo_providers_
+// use_the_provider_coord_gate` architecture guard — which truncates each source
+// file at its first `mod tests` marker — still sees the production
+// `coarse_provider_coords` gate call above.
+#[cfg(test)]
+mod tests;
