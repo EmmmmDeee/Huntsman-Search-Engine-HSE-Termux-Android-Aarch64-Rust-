@@ -19,6 +19,26 @@ fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status.as_u16() == 429
 }
 
+/// Append `chunk` to `buf` but never past `cap` total bytes, returning `true`
+/// once `buf` has reached `cap` (the caller should then stop reading).
+///
+/// The streaming body readers below must bound peak memory on a low-RAM Termux
+/// device against a hostile upstream. Extending `buf` by the WHOLE chunk and
+/// truncating afterwards (the previous shape) copies the entire chunk into RAM
+/// first — so a single multi-GB chunk blows the budget before the truncate ever
+/// runs. Copying only `cap - buf.len()` bytes makes the cap a real ceiling on
+/// `buf` regardless of any one chunk's size. Pure; unit-tested.
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
+    let remaining = cap.saturating_sub(buf.len());
+    if chunk.len() >= remaining {
+        buf.extend_from_slice(&chunk[..remaining]);
+        true
+    } else {
+        buf.extend_from_slice(chunk);
+        false
+    }
+}
+
 /// Read up to 200 characters of a non-success response body, trim, and
 /// return a single-line string safe to embed in an error message.
 ///
@@ -47,9 +67,7 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => {
-                buf.extend_from_slice(&bytes);
-                if buf.len() >= SNIPPET_BYTES_CAP {
-                    buf.truncate(SNIPPET_BYTES_CAP);
+                if append_capped(&mut buf, &bytes, SNIPPET_BYTES_CAP) {
                     break;
                 }
             }
@@ -88,9 +106,7 @@ pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<Str
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => {
-                buf.extend_from_slice(&bytes);
-                if buf.len() >= cap {
-                    buf.truncate(cap);
+                if append_capped(&mut buf, &bytes, cap) {
                     break;
                 }
             }
@@ -484,4 +500,49 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
         return Ok(None);
     };
     Ok(Some(decode_json_body(resp, module).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_capped;
+
+    #[test]
+    fn append_capped_bounds_a_single_oversized_chunk_to_the_cap() {
+        // The whole point of the fix: one hostile multi-MB chunk must NOT be fully
+        // copied into RAM before being truncated — only `cap` bytes are ever
+        // appended, and the caller is told to stop.
+        let mut buf: Vec<u8> = Vec::new();
+        let huge = vec![0xABu8; 1_000_000];
+        assert!(
+            append_capped(&mut buf, &huge, 8 * 1024),
+            "reaching the cap must signal the caller to stop"
+        );
+        assert_eq!(
+            buf.len(),
+            8 * 1024,
+            "buf must be bounded exactly to the cap"
+        );
+    }
+
+    #[test]
+    fn append_capped_accumulates_small_chunks_until_the_cap() {
+        let mut buf: Vec<u8> = Vec::new();
+        // Below the cap: fully appended, keep reading.
+        assert!(!append_capped(&mut buf, b"abc", 8));
+        assert_eq!(buf.len(), 3);
+        assert!(!append_capped(&mut buf, b"de", 8));
+        assert_eq!(buf.len(), 5);
+        // The chunk that reaches the cap is trimmed to the remaining space and
+        // signals stop; nothing past `cap` is retained.
+        assert!(append_capped(&mut buf, b"fghijkl", 8));
+        assert_eq!(buf, b"abcdefgh", "exactly `cap` bytes, in order");
+    }
+
+    #[test]
+    fn append_capped_is_a_noop_once_already_at_cap() {
+        // Defensive: `cap - buf.len()` must not underflow if buf is already full.
+        let mut buf: Vec<u8> = vec![1, 2, 3, 4];
+        assert!(append_capped(&mut buf, b"more", 4));
+        assert_eq!(buf, vec![1, 2, 3, 4], "nothing appended past a full buffer");
+    }
 }

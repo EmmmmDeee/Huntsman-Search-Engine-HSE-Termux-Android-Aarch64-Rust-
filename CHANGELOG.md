@@ -343,6 +343,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **HTTP response-snippet buffers now bound peak memory against a single
+  oversized chunk.** `error_snippet` and `read_body_capped` extended their buffer
+  by the WHOLE streamed chunk and truncated *afterwards*, so a hostile upstream
+  sending one multi-GB chunk was fully copied into RAM before the cap ever applied
+  — a memory-exhaustion risk on a low-RAM Termux device, worst under the
+  `username_search` 32-way probe fan-out. A shared `append_capped` helper now
+  copies at most `cap - buf.len()` bytes, so the buffer is a real ceiling
+  regardless of any one chunk's size.
 - **Determinism + concurrency correctness — Netlas emits a stable JARM, and the
   per-host circuit breaker admits exactly one recovery probe.** (1) Netlas
   accumulated a host's JARM fingerprints in a `HashSet` but surfaced only one via

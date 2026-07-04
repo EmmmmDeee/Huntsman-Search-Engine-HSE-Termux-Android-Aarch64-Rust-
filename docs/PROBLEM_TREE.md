@@ -3601,3 +3601,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   + the existing `after_cooldown_allows_once_and_goes_half_open` updated to assert
   the second concurrent caller is denied. Gate green: fmt/clippy/doc clean, full
   suite 0 failures. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Comprehensive audit cycle 7/N: HTTP response-snippet buffers
+  now bound peak memory against a single oversized chunk.** `util::http::fetch`'s
+  `error_snippet` and `read_body_capped` both `buf.extend_from_slice(&bytes)` the
+  WHOLE streamed chunk and then `buf.truncate(cap)` — so the cap only bounds `buf`
+  *after* a chunk is fully copied in. A hostile/misconfigured upstream returning
+  one multi-GB chunk (HTTP/1.1 chunked encoding permits arbitrary chunk sizes) is
+  copied entirely into RAM before the truncate runs, an OOM risk on a low-RAM
+  Termux device (worst under the `username_search` 32-way probe fan-out, where many
+  such reads run at once). Extracted a shared pure `append_capped(buf, chunk, cap)`
+  that copies at most `cap - buf.len()` bytes and returns whether the cap was
+  reached, so `buf` is a real ceiling regardless of any one chunk's size; both
+  readers now use it (single-sourcing the bound). Test delta: 3 unit tests on
+  `append_capped` (one oversized chunk bounded to the cap; small chunks accumulate
+  then trim exactly at the cap; no underflow when already full). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
+  same commit. **This closes the comprehensive 6-subsystem audit's actioned
+  backlog** (web/API, export, engine, storage, HTTP, module parsers) — 12 shipped
+  repairs across 7 cycles; the remaining register items are LOW/defer-noted.

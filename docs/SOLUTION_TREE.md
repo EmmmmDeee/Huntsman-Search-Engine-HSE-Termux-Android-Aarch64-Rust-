@@ -2688,3 +2688,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   re-used as a self-healing probe deadline so a lost outcome can't wedge the
   breaker. Both are pure, deterministic state machines with direct unit tests. Gate
   green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-SNIPPET-CAP: the response-snippet readers bound memory at
+  the chunk boundary, not after.** `error_snippet`/`read_body_capped` copied a
+  whole streamed chunk into the buffer and truncated afterwards, so a single huge
+  chunk defeated the cap before it applied. A shared pure `append_capped` copies
+  only the bytes that fit under the cap — the ceiling now holds for any chunk size,
+  and the logic is single-sourced (and unit-tested) rather than duplicated in two
+  readers. Small, defence-in-depth hardening of an on-device tool's exposure to a
+  hostile upstream. Gate green. Paired: `PROBLEM_TREE` §8 — same commit. This
+  concludes the comprehensive-audit backlog (7 cycles, 12 repairs); remaining
+  register items are LOW-priority / deliberately deferred.
