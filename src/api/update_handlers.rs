@@ -17,7 +17,7 @@ use axum::{
 use serde::Serialize;
 use serde_json::json;
 
-use crate::api::{AppState, UpdatePhase};
+use crate::api::{AppState, UpdateInfo, UpdatePhase};
 
 /// Response body for `GET /api/v1/update/status`.
 #[derive(Serialize)]
@@ -74,6 +74,25 @@ fn reject_non_loopback(peer: &SocketAddr) -> Option<(StatusCode, Json<serde_json
     }
 }
 
+/// Atomically claim the update slot. Returns `true` and transitions the phase to
+/// [`UpdatePhase::Applying`] when no update is already applying/restarting;
+/// returns `false` (leaving the phase untouched) otherwise. The check and the set
+/// happen under ONE lock, so two concurrent triggers can't both observe an idle
+/// phase and both start an update — the compare-and-set that closes the
+/// check-then-act race. An `Error`/`Idle`/`Checking` phase is claimable (a failed
+/// or never-run update can be retried).
+fn try_claim_update(update_info: &std::sync::Mutex<UpdateInfo>) -> bool {
+    let mut info = update_info
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if matches!(info.phase, UpdatePhase::Applying | UpdatePhase::Restarting) {
+        false
+    } else {
+        info.phase = UpdatePhase::Applying;
+        true
+    }
+}
+
 /// `POST /api/v1/update/trigger` — manually kick off an update.
 ///
 /// Returns 202 immediately and drives the update in a detached task.
@@ -94,24 +113,20 @@ pub(crate) async fn post_trigger(
     if let Some(rejection) = reject_non_loopback(&peer) {
         return rejection.into_response();
     }
-    // Reject if already applying or restarting.
-    {
-        let info = state
-            .update_info
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(info.phase, UpdatePhase::Applying | UpdatePhase::Restarting) {
-            return StatusCode::CONFLICT.into_response();
-        }
+    // Atomically claim the update slot: reject if one is already applying /
+    // restarting, otherwise transition to `Applying` under the SAME lock. Setting
+    // the phase here (not later in the spawned task) closes a check-then-act race
+    // where two concurrent loopback triggers both passed the check and both ran
+    // `apply_update` + `self_restart`.
+    if !try_claim_update(&state.update_info) {
+        return StatusCode::CONFLICT.into_response();
     }
 
-    // Spawn the update in a detached task — handler returns 202 immediately.
+    // Spawn the update in a detached task — handler returns 202 immediately. The
+    // phase is already `Applying` (claimed above).
     let update_info = Arc::clone(&state.update_info);
     let state_for_restart = Arc::clone(&state);
     tokio::spawn(async move {
-        if let Ok(mut info) = update_info.lock() {
-            info.phase = UpdatePhase::Applying;
-        }
         match crate::cli::update::apply_update(None).await {
             Ok(()) => {
                 if let Ok(mut info) = update_info.lock() {
@@ -191,5 +206,26 @@ mod tests {
             crate::api::handlers::csrf_reject(&with_token).is_none(),
             "the same-origin SPA's X-HSE-CSRF request is allowed"
         );
+    }
+
+    #[test]
+    fn try_claim_update_is_a_single_winner_compare_and_set() {
+        use super::{UpdateInfo, UpdatePhase, try_claim_update};
+        use std::sync::Mutex;
+
+        let info = Mutex::new(UpdateInfo::default()); // phase Idle
+        // First trigger claims the slot and transitions to Applying.
+        assert!(try_claim_update(&info), "the first trigger wins");
+        assert_eq!(info.lock().unwrap().phase, UpdatePhase::Applying);
+        // A second concurrent trigger is rejected while an update is in progress —
+        // it can't also run apply_update + self_restart.
+        assert!(
+            !try_claim_update(&info),
+            "a second trigger is rejected while applying"
+        );
+        // A failed update (Error) is retryable: the slot can be re-claimed.
+        info.lock().unwrap().phase = UpdatePhase::Error("boom".into());
+        assert!(try_claim_update(&info), "a failed update can be retried");
+        assert_eq!(info.lock().unwrap().phase, UpdatePhase::Applying);
     }
 }
