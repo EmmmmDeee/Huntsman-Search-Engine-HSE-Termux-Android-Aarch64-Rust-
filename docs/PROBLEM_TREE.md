@@ -3958,3 +3958,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `extract_entities_spiders_stealer_url_into_pivots` (a real `https://` surface) still
   passes. Gate green: fmt/clippy/doc clean, full suite 0 failures (4550). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Correctness: two cross-scan-history idempotency probes used an
+  unanchored substring match, silently dropping a genuine distinct link.** Two
+  workflow-confirmed instances of the same bug in `core::engine::history`.
+  `endpoint_has_cooccurrence` keyed idempotency on `ev.summary.contains(partner)` and
+  `endpoint_has_relation_recall` on `contains(kind) && contains(partner)` — bare
+  substrings — while the summaries they probe write the partner **backtick-delimited**
+  (`` Co-occurred with `{partner}` `` / `` … to `{partner}` ``) and the kind
+  **paren-delimited** (`(subdomain_of)`). So an entity already bridged to `` `alice2` ``
+  made the probe report it as **already linked** to a *new* partner `alice` (a
+  substring of `alice2`), so `link_cross_scan_cooccurrence` / `link_cross_scan_relations`
+  skipped attaching the genuine `alice` co-occurrence/recall evidence — a real
+  cross-investigation association lost whenever one partner's value is a substring of
+  another's (common with numbered handles, `bob`/`bob2`, or a kind that is a substring
+  of another). Fixed both to match the delimited token the summary actually writes
+  (`` `{partner}` ``; `({kind})`), so only the exact partner/kind matches. Test delta:
+  `idempotency_probes_match_the_delimited_partner_token_not_a_substring` (the recorded
+  `alice2`/`bob2` still match — idempotency preserved — but the substrings `alice`/`bob`
+  do not, so their links are no longer dropped); the existing idempotency tests still
+  pass. Gate green: fmt/clippy/doc clean, full suite 0 failures (4551). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

@@ -343,6 +343,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Cross-scan history links are no longer dropped when one partner's value is a substring
+  of another's.** The idempotency probes that decide whether an entity already carries a
+  co-occurrence or relation-recall link matched the partner (and relation kind) as a bare
+  substring of the stored summary, so an entity already linked to `alice2` was treated as
+  already linked to a new partner `alice`, and the genuine `alice` link was never attached.
+  The probes now match the delimited token the summary actually writes (the backtick-wrapped
+  partner and paren-wrapped kind), so only the exact partner/kind counts. Regression test
+  `idempotency_probes_match_the_delimited_partner_token_not_a_substring`.
 - **The SeekNow stealer parser no longer mints non-web URIs as URL entities.** It accepted
   any stealer `url` field of length ≥ 4 as a `Url`, while the equivalent oathnet_pro stealer
   parser requires an `http(s)` scheme and a dotted host — so a native-app URI or scheme-less

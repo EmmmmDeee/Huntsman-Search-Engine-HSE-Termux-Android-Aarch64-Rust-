@@ -2908,3 +2908,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   login for a native surface is still real). Test:
   `extract_entities_rejects_non_web_stealer_url_but_keeps_the_credential`. Gate green.
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-HISTORY-TOKENMATCH: the cross-scan-history idempotency probes
+  match the delimited partner token, not a bare substring.** `endpoint_has_cooccurrence`
+  and `endpoint_has_relation_recall` keyed idempotency on `summary.contains(partner)`
+  (and `contains(kind)`) — unanchored substrings — while the summaries write the partner
+  backtick-delimited and the kind paren-delimited. So an entity already linked to
+  `` `alice2` `` was reported as already carrying a NEW link to `alice` (a substring), so
+  the linker skipped attaching the genuine `alice` association — a real cross-scan link
+  silently lost whenever one partner/kind is a substring of another (numbered handles,
+  `bob`/`bob2`). Fixed both to match the delimited token (`` `{partner}` ``, `({kind})`).
+  Test: `idempotency_probes_match_the_delimited_partner_token_not_a_substring`. Gate
+  green. Paired: `PROBLEM_TREE` §8 — same commit.
