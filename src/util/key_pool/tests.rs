@@ -246,7 +246,10 @@ fn load_pool_from_backs_up_an_unreadable_file_instead_of_silently_dropping_it() 
 
     // (1) Missing file → empty pool, NO backup.
     assert_eq!(load_pool_from(&path).total_keys(), 0);
-    assert!(!bak.exists(), "a missing file is a fresh start, not a corruption backup");
+    assert!(
+        !bak.exists(),
+        "a missing file is a fresh start, not a corruption backup"
+    );
 
     // (2) Present but unreadable (invalid UTF-8) → empty pool, file preserved as .bak.
     std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01, 0x80]).unwrap();
@@ -255,7 +258,10 @@ fn load_pool_from_backs_up_an_unreadable_file_instead_of_silently_dropping_it() 
         !path.exists(),
         "the unreadable file is renamed aside, not left to be clobbered"
     );
-    assert!(bak.exists(), "the unreadable file is preserved as .json.bak");
+    assert!(
+        bak.exists(),
+        "the unreadable file is preserved as .json.bak"
+    );
 
     let _ = std::fs::remove_dir_all(&dir);
 }
