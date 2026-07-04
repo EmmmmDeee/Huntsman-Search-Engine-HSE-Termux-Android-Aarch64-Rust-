@@ -470,37 +470,67 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
     )]
 }
 
-/// AU-042 — two or more email addresses bound to the same PGP key (`pgp` module):
-/// strong same-owner evidence (the key holder asserted these are theirs).
-/// `High`. One grouped firing over all key-linked emails.
+/// AU-042 — two or more email addresses bound to the **same** PGP key (`pgp`
+/// module): strong same-owner evidence (the key holder asserted these are theirs).
+/// `High`. One firing PER KEY, over the emails that key binds.
+///
+/// Partitioned by the key fingerprint each `pgp-linked` email carries (the
+/// `key_fingerprint` evidence attribute the `pgp` module attaches): emails bound
+/// to DIFFERENT keys are separate assertions — possibly different people — so they
+/// must never be fused into one owner, and a key binding only ONE address is not
+/// multi-email evidence, so it does not fire (the rule's "two or more" contract).
+/// An email with no fingerprint can't be attributed to a key and is excluded.
 pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let linked: Vec<&Entity> = entities
+    use std::collections::{BTreeMap, BTreeSet};
+    // fingerprint -> (address -> emitting uid). BTreeMaps keep the output
+    // deterministic (fingerprint order, then address order) with no HashMap leak.
+    let mut by_key: BTreeMap<&str, BTreeMap<&str, String>> = BTreeMap::new();
+    for e in entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email && e.has_tag("pgp-linked"))
-        .collect();
-    if linked.is_empty() {
-        return Vec::new();
+    {
+        // An email merged from several keyserver hits can carry more than one
+        // fingerprint; it legitimately belongs to each key that bound it.
+        let fingerprints: BTreeSet<&str> = e
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("key_fingerprint").map(String::as_str))
+            .filter(|f| !f.is_empty())
+            .collect();
+        for fpr in fingerprints {
+            by_key
+                .entry(fpr)
+                .or_default()
+                .entry(e.value.as_str())
+                .or_insert_with(|| e.uid.clone());
+        }
     }
-    let mut addrs: Vec<&str> = linked.iter().map(|e| e.value.as_str()).collect();
-    addrs.sort_unstable();
-    let uids: Vec<String> = linked.iter().map(|e| e.uid.clone()).collect();
-    vec![Correlation::new(
-        "AU-042",
-        "PGP key binds multiple emails to one identity",
-        Severity::High,
-        format!(
-            "A PGP key links {} email address(es) to one owner: {}",
-            addrs.len(),
-            addrs.join(", ")
-        ),
-        uids,
-        scan_id,
-        ts,
-    )]
+
+    by_key
+        .into_iter()
+        .filter(|(_, addrs)| addrs.len() >= 2)
+        .map(|(fpr, addrs)| {
+            let addr_list: Vec<&str> = addrs.keys().copied().collect();
+            let uids: Vec<String> = addrs.values().cloned().collect();
+            Correlation::new(
+                "AU-042",
+                "PGP key binds multiple emails to one identity",
+                Severity::High,
+                format!(
+                    "PGP key {fpr} links {} email address(es) to one owner: {}",
+                    addr_list.len(),
+                    addr_list.join(", ")
+                ),
+                uids,
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
 }
 
 /// AU-044 — Shared web-analytics ID ⇒ common ownership. A Google Analytics /

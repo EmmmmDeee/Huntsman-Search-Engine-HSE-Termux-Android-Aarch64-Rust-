@@ -343,6 +343,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **PGP-key identity linkage (AU-042) no longer fuses two distinct keys' emails into one
+  owner, and no longer fires on a single address.** The rule collected every `pgp-linked`
+  email in the scan and asserted, at High severity, that all of them belong to one owner —
+  even when they were bound to different PGP keys (i.e. potentially different people) — and
+  fired even for a single email ("links 1 email address to one owner"). It now partitions
+  the emails by the key fingerprint each carries and emits one finding per key that binds
+  two or more addresses, so each finding reflects exactly what one key proves. Regression
+  tests `au042_does_not_fuse_emails_from_two_distinct_keys` and
+  `au042_does_not_fire_for_a_single_pgp_linked_email`.
 - **Cross-platform identity resolution (AU-046) no longer fuses unrelated strangers into
   an alias's identity.** The rule collected every platform-sourced email/name in the whole
   scan and attributed all of them, at High severity, to every alias — so a co-author's

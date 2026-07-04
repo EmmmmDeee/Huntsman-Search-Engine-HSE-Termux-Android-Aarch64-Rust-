@@ -2871,3 +2871,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `au046_resolves_only_the_alias_own_account_identifiers` (own-account email resolves;
   an unshared-source stranger and a `noreply@` role mailbox excluded). Gate green.
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-AU042-KEYPARTITION: AU-042 partitions pgp-linked emails by
+  key fingerprint and requires two per key.** The rule fused ALL `pgp-linked` emails
+  scan-wide into one High "one owner" finding and fired on a single address —
+  merging emails from two distinct PGP keys (two potentially-different people) and
+  emitting a degenerate one-address "identity link." The `pgp` module already stamps
+  each pgp-linked email with a `key_fingerprint` evidence attribute; the rule now
+  groups on it (deterministic BTreeMap fingerprint→address→uid), emits one finding
+  per key binding ≥2 distinct addresses, and names the fingerprint. An email carrying
+  several fingerprints belongs to each key; an email with none is excluded. Tests:
+  `au042_does_not_fuse_emails_from_two_distinct_keys`,
+  `au042_does_not_fire_for_a_single_pgp_linked_email`; the existing group test now
+  attaches the fingerprint a real hit carries. Gate green. Paired: `PROBLEM_TREE` §8 —
+  same commit.

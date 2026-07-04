@@ -2229,17 +2229,69 @@ fn au_041_fires_on_ens_handle() {
     assert!(rule_au_041_ens_identity(&[plain], "scan", 0).is_empty());
 }
 
+// A pgp-linked email carrying the `key_fingerprint` evidence attribute the real
+// `pgp` module attaches — the fingerprint AU-042 now partitions on.
+fn pgp_email(addr: &str, fpr: &str) -> Entity {
+    let mut e = Entity::new(EntityKind::Email, addr, 0.8, "scan");
+    e.tag("pgp-linked");
+    e.add_evidence(Evidence::new("pgp", "PGP keyserver User ID").with_attr("key_fingerprint", fpr));
+    e
+}
+
 #[test]
 fn au_042_groups_pgp_linked_emails() {
+    // Two emails bound to the SAME PGP key group into one same-owner finding.
     let ents = vec![
-        mk_tagged(EntityKind::Email, "alt@work.com", "pgp", &["pgp-linked"]),
-        mk_tagged(EntityKind::Email, "other@home.com", "pgp", &["pgp-linked"]),
+        pgp_email("alt@work.com", "AAAA1111BBBB2222"),
+        pgp_email("other@home.com", "AAAA1111BBBB2222"),
         mk_tagged(EntityKind::Email, "unrelated@x.com", "hibp", &[]),
     ];
     let out = rule_au_042_pgp_email_identity(&ents, "scan", 0);
-    assert_eq!(out.len(), 1, "one grouped firing");
-    assert_eq!(out[0].entity_uids.len(), 2, "only the pgp-linked emails");
+    assert_eq!(out.len(), 1, "one grouped firing for the shared key");
+    assert_eq!(
+        out[0].entity_uids.len(),
+        2,
+        "only the two same-key pgp-linked emails"
+    );
     assert_eq!(out[0].severity, Severity::High);
+    assert!(out[0].description.contains("AAAA1111BBBB2222"));
+}
+
+#[test]
+fn au042_does_not_fuse_emails_from_two_distinct_keys() {
+    // Key A binds two emails; key B binds two others — potentially two different
+    // people. They must NOT be fused into a single four-email "one owner"; each key
+    // fires its own finding over only its own emails.
+    let ents = vec![
+        pgp_email("a1@x.com", "KEYAAAA00000000"),
+        pgp_email("a2@x.com", "KEYAAAA00000000"),
+        pgp_email("b1@y.com", "KEYBBBB11111111"),
+        pgp_email("b2@y.com", "KEYBBBB11111111"),
+    ];
+    let out = rule_au_042_pgp_email_identity(&ents, "scan", 0);
+    assert_eq!(
+        out.len(),
+        2,
+        "one finding per key, not a single fused owner"
+    );
+    assert!(
+        out.iter().all(|c| c.entity_uids.len() == 2),
+        "each key binds exactly its own two emails, never all four"
+    );
+    let key_a = out
+        .iter()
+        .find(|c| c.description.contains("KEYAAAA00000000"))
+        .expect("a finding for key A");
+    assert!(
+        key_a.description.contains("a1@x.com") && key_a.description.contains("a2@x.com"),
+        "key A's finding lists its own two emails: {}",
+        key_a.description
+    );
+    assert!(
+        !key_a.description.contains("b1@y.com") && !key_a.description.contains("b2@y.com"),
+        "key A's finding must not carry key B's emails: {}",
+        key_a.description
+    );
 }
 
 #[test]
@@ -6562,13 +6614,17 @@ fn au041_fires_for_ens_tagged_username() {
 }
 
 #[test]
-fn au042_fires_for_pgp_linked_email() {
+fn au042_does_not_fire_for_a_single_pgp_linked_email() {
+    // A lone pgp-linked email is not multi-email same-owner evidence — a "links 1
+    // email to one owner" assertion is degenerate and must not fire (the rule's
+    // contract is "two or more addresses bound to the same key").
     let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.6, "s");
     e.tag("pgp-linked");
-    let r = rule_au_042_pgp_email_identity(&[e], "s", 0);
-    assert_eq!(r.len(), 1);
-    assert_eq!(r[0].rule_id, "AU-042");
-    assert_eq!(r[0].severity, Severity::High);
+    e.add_evidence(Evidence::new("pgp", "uid").with_attr("key_fingerprint", "DEADBEEF00000000"));
+    assert!(
+        rule_au_042_pgp_email_identity(&[e], "s", 0).is_empty(),
+        "one email bound to a key is not a multi-email identity link"
+    );
 }
 
 #[test]

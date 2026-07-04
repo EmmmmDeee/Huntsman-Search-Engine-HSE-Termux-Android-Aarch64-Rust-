@@ -3896,3 +3896,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   The two existing AU-046 tests (whose emails share the alias's source) still pass. Gate
   green: fmt/clippy/doc clean, full suite 0 failures (4548). **Paired:** `SOLUTION_TREE`
   §5 — same commit.
+- **2026-07-04** — **False-merge precision: AU-042 fused every `pgp-linked` email in
+  the scan into one owner — unpartitioned by key — and fired on a single address.**
+  Workflow-confirmed. `rule_au_042_pgp_email_identity` collected ALL `pgp-linked`
+  `Email` entities scan-wide and emitted **one** `High` "a PGP key links N emails to
+  one owner" over the whole set, firing whenever the set was non-empty. Two real
+  defects: (1) **no key-fingerprint partition** — emails bound to two *different* PGP
+  keys (two potentially-different people) were merged into a single asserted owner, a
+  false identity merge; (2) **fires on one email** — a lone `pgp-linked` address
+  produced a degenerate "links 1 email address to one owner" High assertion, though
+  the docstring's contract is "two or more." The `pgp` module already stamps each
+  `pgp-linked` email with a `key_fingerprint` evidence attribute, so the fix
+  partitions on it: group the emails by fingerprint (deterministic `BTreeMap`
+  fingerprint→address→uid), emit one finding PER KEY that binds **≥2 distinct
+  addresses**, and name the fingerprint in the description; an email carrying several
+  fingerprints belongs to each key it bound, and an email with no fingerprint is
+  excluded (unattributable). Test delta: `au042_does_not_fuse_emails_from_two_distinct_keys`
+  (key A binds two, key B binds two → two findings of two, never one of four),
+  `au042_does_not_fire_for_a_single_pgp_linked_email` (a lone bound address does not
+  fire), and the existing `au_042_groups_pgp_linked_emails` updated to attach the
+  `key_fingerprint` a real `pgp` hit always carries. Gate green: fmt/clippy/doc clean,
+  full suite 0 failures (4549). **Paired:** `SOLUTION_TREE` §5 — same commit.
