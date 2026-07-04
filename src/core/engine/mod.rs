@@ -1207,10 +1207,17 @@ impl ScanEngine {
         for e in &mut out {
             e.corroboration = 0;
         }
+        // Confidence desc, then uid asc as a total, deterministic tie-break: `out`
+        // comes from a HashMap (`merged.into_values()`, randomised order) and the
+        // stable sort would otherwise leave equal-confidence entities — hence WHICH
+        // survive the `truncate(MAX_ENTITIES)` boundary cut — in HashMap-iteration
+        // order, leaking non-determinism into the persisted working set. This is the
+        // same tie-break cmp_expansion_candidates / rank_enrichment_leverage use.
         out.sort_by(|a, b| {
             b.confidence
                 .partial_cmp(&a.confidence)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.uid.cmp(&b.uid))
         });
         out.truncate(MAX_ENTITIES);
         out
