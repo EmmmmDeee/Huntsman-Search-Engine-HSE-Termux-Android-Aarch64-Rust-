@@ -46,6 +46,16 @@ pub trait StoragePort: Send + Sync {
     /// an owned `Vec`) so the caller retains ownership and can fall back
     /// to per-entity `upsert_entity` if the batch rolls back.
     fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize>;
+    /// Idempotently refresh an ALREADY-PERSISTED entity's payload (data_json /
+    /// tags / evidence / confidence) WITHOUT summing corroboration — used by the
+    /// in-scan corroboration-boost re-persist, which attaches a tag + evidence to
+    /// the SAME entity and must not double-count its observation magnitude the way
+    /// `upsert_entity` (which accumulates, correct for cross-scan re-observation)
+    /// would. The default forwards to `upsert_entity`; the real stores override
+    /// with a MAX-not-SUM overwrite.
+    fn refresh_entity_payload(&self, entity: &Entity) -> Result<()> {
+        self.upsert_entity(entity)
+    }
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>>;
     fn entities_filtered(
         &self,

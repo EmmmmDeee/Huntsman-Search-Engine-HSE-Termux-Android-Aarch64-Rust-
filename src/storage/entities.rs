@@ -97,6 +97,42 @@ impl super::Store {
         Ok(())
     }
 
+    /// Idempotently refresh an ALREADY-PERSISTED entity's payload from `entity`
+    /// WITHOUT summing corroboration — the non-accumulating counterpart to
+    /// [`Self::upsert_entity`]. Overwrites `data_json` (so a new tag / evidence
+    /// record lands) and takes `MAX` of the stored and incoming
+    /// confidence / corroboration / observed_at.
+    ///
+    /// `upsert_entity` treats every re-persist as a fresh independent
+    /// observation and ACCUMULATES corroboration (correct for cross-scan
+    /// re-observation). The in-scan corroboration-boost passes re-persist the
+    /// SAME entity purely to attach a `multipath-corroborated` /
+    /// `cross-scan-corroborated` tag + evidence; routed through `upsert_entity`
+    /// that doubled the entity's observation magnitude. Precondition: `entity`
+    /// is the same-or-newer state already persisted this finalise (so the `MAX`
+    /// keeps its corroboration, never a stale lower value). A no-op if the uid
+    /// is absent (nothing to refresh; the boost is best-effort).
+    pub fn refresh_entity_payload(&self, entity: &Entity) -> Result<()> {
+        let conn = self.conn.lock();
+        let json = serde_json::to_string(entity)?;
+        conn.prepare_cached(
+            "UPDATE entities SET
+                confidence = MAX(confidence, ?2),
+                corroboration = MAX(corroboration, ?3),
+                observed_at = MAX(observed_at, ?4),
+                data_json = ?5
+             WHERE uid = ?1",
+        )?
+        .execute(params![
+            entity.uid,
+            entity.confidence,
+            entity.corroboration as i64,
+            entity.observed_at as i64,
+            json,
+        ])?;
+        Ok(())
+    }
+
     /// Persist a batch of entities under one transaction. On the happy path
     /// (every entity new or a clean merge) this collapses N per-entity
     /// commits into a single WAL fsync — a material win on low-power aarch64.

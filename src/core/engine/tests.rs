@@ -2010,6 +2010,58 @@ fn quarantined_namesake_is_not_admitted_as_a_subject_identity() {
     assert!(!qualifies_as_subject_identity(&coord));
 }
 
+/// The in-scan corroboration boost re-persists an already-stored entity only to
+/// attach a tag + evidence. It must NOT double-count the entity's corroboration
+/// (its observation magnitude) — `refresh_entity_payload` overwrites the payload
+/// taking MAX corroboration, unlike the summing `upsert_entity`.
+#[test]
+fn boost_re_persist_does_not_double_count_corroboration() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let mut e = Entity::new(EntityKind::Email, "boost@example.com", 0.7, "s");
+    e.corroboration = 3; // an in-memory-merged observation magnitude
+    e.add_evidence(Evidence::new("m1", "observed"));
+
+    // The boosted copy: the SAME entity plus the boost tag + evidence.
+    let mut boosted = e.clone();
+    boosted.tag("multipath-corroborated");
+    boosted.add_evidence(Evidence::new(
+        "multipath_corroboration",
+        "linked across pathways",
+    ));
+
+    // The fix: `refresh_entity_payload` attaches the boost WITHOUT re-summing.
+    let fixed = InMemoryStore::new();
+    fixed.upsert_entity(&e).unwrap();
+    fixed.refresh_entity_payload(&boosted).unwrap();
+    let stored = fixed.entities_for_scan("s").unwrap();
+    let got = stored
+        .iter()
+        .find(|x| x.value == "boost@example.com")
+        .unwrap();
+    assert_eq!(
+        got.corroboration, 3,
+        "the boost re-persist must not double-count corroboration"
+    );
+    assert!(
+        got.has_tag("multipath-corroborated"),
+        "the boost tag is still applied by the refresh"
+    );
+
+    // Contrast: routing the same re-persist through the SUMMING upsert path is
+    // exactly what double-counted (3 → 6) — the bug this fix removes.
+    let summing = InMemoryStore::new();
+    summing.upsert_entity(&e).unwrap();
+    summing.upsert_entity(&boosted).unwrap();
+    let s = summing.entities_for_scan("s").unwrap();
+    let g = s.iter().find(|x| x.value == "boost@example.com").unwrap();
+    assert_eq!(
+        g.corroboration, 6,
+        "the summing upsert is what double-counted"
+    );
+}
+
 /// A module with a non-zero inter-scan cache TTL that emits ONE distinctive
 /// finding unique to it — the cache-exclusive entity whose per-scan attribution
 /// the replay path must get right.

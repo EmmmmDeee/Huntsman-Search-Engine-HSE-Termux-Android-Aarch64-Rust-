@@ -896,28 +896,35 @@ impl ScanEngine {
                 }
                 boosted_any |= promote_cross_scan_corroborated(&mut entities, &xscan_boost) > 0;
                 if boosted_any {
-                    let boosted: Vec<Entity> = entities
-                        .iter_mut()
-                        .filter(|e| {
-                            e.has_tag("multipath-corroborated")
-                                || e.has_tag("cross-scan-corroborated")
-                        })
-                        .map(|e| {
-                            e.canonicalize_order();
-                            e.clone()
-                        })
-                        .collect();
-                    match store.upsert_entities_batch(&boosted) {
-                        Ok(n) => info!(
+                    // Idempotent payload refresh (NOT a summing upsert): each entity
+                    // was already persisted above with its corroboration; the boost
+                    // only attaches a tag + evidence, so routing this through
+                    // `upsert_entities_batch` would MERGE it into its own stored row
+                    // and double-count the entity's corroboration (observation
+                    // magnitude). `refresh_entity_payload` overwrites the payload
+                    // taking MAX corroboration instead.
+                    let mut boosted = 0usize;
+                    for e in entities.iter_mut().filter(|e| {
+                        e.has_tag("multipath-corroborated")
+                            || e.has_tag("cross-scan-corroborated")
+                    }) {
+                        e.canonicalize_order();
+                        match store.refresh_entity_payload(e) {
+                            Ok(()) => boosted += 1,
+                            Err(err) => warn!(
+                                scan_id = %scan.id,
+                                entity_uid = %e.uid,
+                                error = %err,
+                                "corroboration boost re-persist failed (non-fatal)"
+                            ),
+                        }
+                    }
+                    if boosted > 0 {
+                        info!(
                             scan_id = %scan.id,
-                            boosted = n,
+                            boosted,
                             "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
-                        ),
-                        Err(e) => warn!(
-                            scan_id = %scan.id,
-                            error = %e,
-                            "corroboration boost re-persist failed (non-fatal)"
-                        ),
+                        );
                     }
                 }
             }

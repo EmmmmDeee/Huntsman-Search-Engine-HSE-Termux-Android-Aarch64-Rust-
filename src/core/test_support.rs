@@ -99,6 +99,24 @@ impl StoragePort for InMemoryStore {
         Ok(entities.len())
     }
 
+    fn refresh_entity_payload(&self, entity: &Entity) -> Result<()> {
+        // Non-summing overwrite (mirrors the real store): replace the payload but
+        // take MAX corroboration so an idempotent boost re-persist of the SAME
+        // in-scan entity is not double-counted the way `upsert_entity` would.
+        let mut g = self.inner.lock();
+        match g.entities.get_mut(&entity.uid) {
+            Some(existing) => {
+                let corroboration = existing.corroboration.max(entity.corroboration);
+                *existing = entity.clone();
+                existing.corroboration = corroboration;
+            }
+            None => {
+                g.entities.insert(entity.uid.clone(), entity.clone());
+            }
+        }
+        Ok(())
+    }
+
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         // Mirror Store::entities_for_scan ordering (confidence desc) so the
         // in-memory port is deterministic across runs.

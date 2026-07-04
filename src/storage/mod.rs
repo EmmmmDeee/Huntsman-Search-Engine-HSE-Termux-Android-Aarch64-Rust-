@@ -701,6 +701,10 @@ impl crate::core::port::StoragePort for Store {
         Store::upsert_entities_batch(self, entities)
     }
 
+    fn refresh_entity_payload(&self, entity: &Entity) -> Result<()> {
+        Store::refresh_entity_payload(self, entity)
+    }
+
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         Store::entities_for_scan(self, scan_id)
     }
