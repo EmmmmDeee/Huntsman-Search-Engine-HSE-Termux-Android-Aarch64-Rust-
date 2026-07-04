@@ -343,6 +343,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`streaming_probe` no longer fabricates a high-confidence cam/adult identity from an
+  unverified HTTP 200.** The webcam / fan-subscription / adult-video prober stamped a
+  flat 0.92 confidence on every hit and asserted a sensitive identity (`cam-identity-exposed`,
+  `subscription-platform-found`, `adult-profile-found`) on the subject even when the
+  detection was a bare status-200 — which a soft-404, CloudFlare interstitial, or catch-all
+  route returns for any handle. It now tiers confidence by detection rigour (0.92 for a
+  body-verified hit, 0.74 for a status-only lead), tags each URL `verified-detection` or
+  `weak-detection`, and only asserts the sensitive category-exposure tags when a
+  body-verified hit backs them — mirroring the confidence tiering the sibling
+  `username_search` already applies. Regression tests
+  `detection_strength_tiers_status_only_below_body_verified` and
+  `build_entities_tiers_confidence_and_gates_exposure_on_verified`.
 - **The GEXF graph export no longer leaks quarantined candidate breach-victims, and no
   GEXF export can emit dangling edges.** The `/graph.gexf` API endpoint passed every
   entity — including quarantined `candidate` breach co-occurrence "strangers" — to the

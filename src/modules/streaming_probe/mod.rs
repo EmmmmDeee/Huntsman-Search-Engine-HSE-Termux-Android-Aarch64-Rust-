@@ -136,8 +136,13 @@ impl Module for StreamingProbe {
                 };
 
                 let status = resp.status().as_u16();
+                let (confidence, verified) = detection_strength(&site.detect);
                 match site.detect {
-                    Detect::StatusEq(want) if status == want => ProbeResult::Found(url),
+                    Detect::StatusEq(want) if status == want => ProbeResult::Found {
+                        url,
+                        confidence,
+                        verified,
+                    },
                     Detect::StatusEq(_) => ProbeResult::NotFound,
                     Detect::StatusAndNotBody(want, needle) => {
                         if status != want {
@@ -145,7 +150,11 @@ impl Module for StreamingProbe {
                         }
                         match crate::util::http::read_body_capped(resp, BODY_PROBE_CAP).await {
                             Some(body) if body.contains(needle) => ProbeResult::NotFound,
-                            Some(_) => ProbeResult::Found(url),
+                            Some(_) => ProbeResult::Found {
+                                url,
+                                confidence,
+                                verified,
+                            },
                             None => ProbeResult::Error,
                         }
                     }
@@ -155,121 +164,215 @@ impl Module for StreamingProbe {
         });
 
         let results: Vec<(&'static str, &'static str, ProbeResult)> = join_all(probes).await;
+        let results_len = results.len();
 
-        let mut module_result = ModuleResult::new();
-        let mut found_names: Vec<&str> = Vec::new();
-        let mut category_counts: std::collections::BTreeMap<&str, usize> =
-            std::collections::BTreeMap::new();
+        let mut hits: Vec<Hit> = Vec::new();
         let mut inconclusive_probes = 0usize;
         let mut definitive_absent = 0usize;
 
-        for (site_name, site_cat, outcome) in &results {
+        for (site_name, site_cat, outcome) in results {
             match outcome {
-                ProbeResult::Found(url) => {
-                    found_names.push(site_name);
-                    *category_counts.entry(site_cat).or_insert(0) += 1;
-
-                    let profile_tag = match *site_cat {
-                        "cam" => "cam-profile",
-                        "fans" => "fans-profile",
-                        "adult" => "adult-profile",
-                        _ => "streaming-profile",
-                    };
-
-                    let mut e = Entity::new(EntityKind::Url, url.as_str(), 0.92, &ctx.scan_id);
-                    e.tag(profile_tag);
-                    e.tag(format!("platform:{site_name}"));
-                    e.tag(format!("cat:{site_cat}"));
-                    e.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!("@{username} has a {site_cat} profile on {site_name}"),
-                        )
-                        .with_attr("platform", *site_name)
-                        .with_attr("category", *site_cat)
-                        .with_attr("username", username)
-                        .with_attr("url", url),
-                    );
-                    module_result.push(e);
-                }
+                ProbeResult::Found {
+                    url,
+                    confidence,
+                    verified,
+                } => hits.push(Hit {
+                    site_name,
+                    site_cat,
+                    url,
+                    confidence,
+                    verified,
+                }),
                 ProbeResult::NotFound => definitive_absent += 1,
                 ProbeResult::Error => inconclusive_probes += 1,
             }
         }
 
-        if found_names.is_empty() {
-            if inconclusive(found_names.len(), inconclusive_probes, results.len()) {
+        if hits.is_empty() {
+            if inconclusive(0, inconclusive_probes, results_len) {
                 return Err(Error::module(
                     SRC,
                     format!(
-                        "inconclusive: {inconclusive_probes}/{} platform probes were blocked or \
-                         unreachable — not a confirmed absence",
-                        results.len()
+                        "inconclusive: {inconclusive_probes}/{results_len} platform probes were \
+                         blocked or unreachable — not a confirmed absence"
                     ),
                 ));
             }
-            return Ok(module_result);
+            return Ok(ModuleResult::new());
         }
 
-        // Summary entity: one `Username` row in the SPA with exposure tags.
-        let mut summary = Entity::new(EntityKind::Username, username, 0.95, &ctx.scan_id);
-        summary.tag("streaming-identity");
-
-        category_counts
-            .keys()
-            .for_each(|cat| summary.tag(format!("cat:{cat}")));
-
-        let cam_count = category_counts.get("cam").copied().unwrap_or(0);
-        let fans_count = category_counts.get("fans").copied().unwrap_or(0);
-        let adult_count = category_counts.get("adult").copied().unwrap_or(0);
-
-        if cam_count > 0 {
-            summary.tag("cam-identity-exposed");
-        }
-        if fans_count > 0 {
-            summary.tag("subscription-platform-found");
-        }
-        if adult_count > 0 {
-            summary.tag("adult-profile-found");
-        }
-        if cam_count + fans_count + adult_count >= 3 {
-            summary.tag("high-streaming-exposure");
-        }
-
-        let cat_summary: Vec<String> = category_counts
-            .iter()
-            .map(|(c, n)| format!("{c}:{n}"))
-            .collect();
-
-        summary.add_evidence(
-            Evidence::new(
-                SRC,
-                format!(
-                    "@{username} found on {n} streaming/cam platform(s): {list}",
-                    n = found_names.len(),
-                    list = found_names.join(", ")
-                ),
-            )
-            .with_attr("platforms_count", found_names.len().to_string())
-            .with_attr("platforms", found_names.join(", "))
-            .with_attr("categories", cat_summary.join(", "))
-            .with_attr("cam_count", cam_count.to_string())
-            .with_attr("fans_count", fans_count.to_string())
-            .with_attr("adult_count", adult_count.to_string())
-            .with_attr("sites_probed", SITES.len().to_string())
-            .with_attr("sites_not_found", definitive_absent.to_string())
-            .with_attr("sites_inconclusive", inconclusive_probes.to_string()),
-        );
-        module_result.push(summary);
-
-        Ok(module_result)
+        Ok(build_entities(
+            username,
+            &ctx.scan_id,
+            &hits,
+            &ProbeTally {
+                definitive_absent,
+                inconclusive_probes,
+                sites_probed: SITES.len(),
+            },
+        ))
     }
 }
 
 enum ProbeResult {
-    Found(String),
+    Found {
+        url: String,
+        confidence: f64,
+        verified: bool,
+    },
     NotFound,
     Error,
+}
+
+/// A confirmed profile hit, carrying the confidence its detection method earns.
+struct Hit {
+    site_name: &'static str,
+    site_cat: &'static str,
+    url: String,
+    confidence: f64,
+    verified: bool,
+}
+
+/// Non-hit probe tallies, surfaced on the summary so an operator can see how much
+/// of the sweep was definitive vs blocked.
+struct ProbeTally {
+    definitive_absent: usize,
+    inconclusive_probes: usize,
+    sites_probed: usize,
+}
+
+/// Confidence + verified-flag a detection method earns, tiered by rigour — the
+/// same discipline [`crate::modules::username_search`]'s `detection_strength`
+/// applies. A body-verified hit (`StatusAndNotBody`: the profile page rendered and
+/// did NOT carry the platform's "not found" marker) is a real presence signal
+/// (0.92, verified). A bare status match (`StatusEq`: HEAD/GET returned 200) is
+/// weaker — a soft-404, a CloudFlare interstitial, or a catch-all route all answer
+/// 200 for any handle — so it rides as a status-only lead (0.74, unverified), not a
+/// confirmed hit. Emitting a flat 0.92 on a status-only cam/adult match fabricates a
+/// high-confidence, sensitive identity association from an unverified 200.
+fn detection_strength(detect: &Detect) -> (f64, bool) {
+    match detect {
+        Detect::StatusAndNotBody(..) => (0.92, true),
+        Detect::StatusEq(_) => (0.74, false),
+    }
+}
+
+/// Build the per-hit `Url` entities and the summary `Username` entity from the
+/// confirmed hits. Pure (no HTTP), so the confidence tiering and the
+/// verified-gated exposure tags are unit-testable. Returns an empty result when
+/// there are no hits.
+fn build_entities(username: &str, scan_id: &str, hits: &[Hit], tally: &ProbeTally) -> ModuleResult {
+    use std::collections::BTreeMap;
+    let mut module_result = ModuleResult::new();
+    if hits.is_empty() {
+        return module_result;
+    }
+
+    let mut found_names: Vec<&str> = Vec::new();
+    // category -> (total hits, body-verified hits)
+    let mut cat_counts: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
+    let mut verified_total = 0usize;
+    let mut weak_total = 0usize;
+
+    for h in hits {
+        found_names.push(h.site_name);
+        let entry = cat_counts.entry(h.site_cat).or_insert((0, 0));
+        entry.0 += 1;
+        if h.verified {
+            entry.1 += 1;
+            verified_total += 1;
+        } else {
+            weak_total += 1;
+        }
+
+        let profile_tag = match h.site_cat {
+            "cam" => "cam-profile",
+            "fans" => "fans-profile",
+            "adult" => "adult-profile",
+            _ => "streaming-profile",
+        };
+        let detection = if h.verified {
+            "body-verified"
+        } else {
+            "status-only"
+        };
+        let mut e = Entity::new(EntityKind::Url, h.url.as_str(), h.confidence, scan_id);
+        e.tag(profile_tag);
+        e.tag(format!("platform:{}", h.site_name));
+        e.tag(format!("cat:{}", h.site_cat));
+        // Provenance so the correlator / SPA can discount a status-only lead.
+        e.tag(if h.verified {
+            "verified-detection"
+        } else {
+            "weak-detection"
+        });
+        e.add_evidence(
+            Evidence::new(
+                SRC,
+                format!(
+                    "@{username} has a {} profile on {} ({detection})",
+                    h.site_cat, h.site_name
+                ),
+            )
+            .with_attr("platform", h.site_name)
+            .with_attr("category", h.site_cat)
+            .with_attr("username", username)
+            .with_attr("url", h.url.as_str())
+            .with_attr("detection", detection),
+        );
+        module_result.push(e);
+    }
+
+    let mut summary = Entity::new(EntityKind::Username, username, 0.95, scan_id);
+    summary.tag("streaming-identity");
+    cat_counts
+        .keys()
+        .for_each(|cat| summary.tag(format!("cat:{cat}")));
+
+    // Strong exposure claims require a BODY-VERIFIED hit in the category: a bare
+    // status-only 200 can be a soft-404 / interstitial, so asserting "identity
+    // exposed" from it would fabricate a sensitive claim about a real person.
+    // Weak-only categories still surface their (weak-tagged, 0.74) URLs — the lead
+    // is not lost, only its unearned high-confidence assertion.
+    let cat_verified = |c: &str| cat_counts.get(c).map_or(0, |(_, v)| *v);
+    if cat_verified("cam") > 0 {
+        summary.tag("cam-identity-exposed");
+    }
+    if cat_verified("fans") > 0 {
+        summary.tag("subscription-platform-found");
+    }
+    if cat_verified("adult") > 0 {
+        summary.tag("adult-profile-found");
+    }
+    if verified_total >= 3 {
+        summary.tag("high-streaming-exposure");
+    }
+
+    let cat_summary: Vec<String> = cat_counts
+        .iter()
+        .map(|(c, (n, v))| format!("{c}:{n}({v} verified)"))
+        .collect();
+
+    summary.add_evidence(
+        Evidence::new(
+            SRC,
+            format!(
+                "@{username} found on {n} streaming/cam platform(s): {list}",
+                n = found_names.len(),
+                list = found_names.join(", ")
+            ),
+        )
+        .with_attr("platforms_count", found_names.len().to_string())
+        .with_attr("platforms", found_names.join(", "))
+        .with_attr("categories", cat_summary.join(", "))
+        .with_attr("hits_verified", verified_total.to_string())
+        .with_attr("hits_status_only", weak_total.to_string())
+        .with_attr("sites_probed", tally.sites_probed.to_string())
+        .with_attr("sites_not_found", tally.definitive_absent.to_string())
+        .with_attr("sites_inconclusive", tally.inconclusive_probes.to_string()),
+    );
+    module_result.push(summary);
+    module_result
 }
 
 /// True when a zero-hit run is inconclusive (most probes were blocked) rather

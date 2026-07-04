@@ -3847,3 +3847,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   present with the opt-in). The GEXF golden byte-stable test is unaffected (its
   fixture has no absent-endpoint edges). Gate green: fmt/clippy/doc clean, full suite
   0 failures (4545). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **No-fabrication precision: `streaming_probe` stamped a flat 0.92
+  confidence and asserted a sensitive identity on every hit, including bare
+  status-only detections.** Workflow-confirmed defect. The module fans out HTTP
+  probes across ~43 cam / fan-subscription / adult-video platforms; 41 use
+  `Detect::StatusEq(200)` (a HEAD/GET 200 alone) and only 2 use
+  `Detect::StatusAndNotBody` (200 **and** the rendered body lacks the platform's
+  "not found" marker). Every `Found` minted a `Url` at a hard-coded **0.92** and any
+  cam/fans/adult hit stamped the summary `Username` with `cam-identity-exposed` /
+  `subscription-platform-found` / `adult-profile-found` — but a status-only 200 is
+  weak evidence: a soft-404, a CloudFlare interstitial, or a catch-all route all
+  answer 200 for any handle, so a single unverified probe **fabricated a
+  high-confidence, reputationally-sensitive "this person has a cam/adult identity"
+  claim** — the exact over-confidence bug the sibling `username_search` already fixed
+  with its `detection_strength` tiering. Fix mirrors the sibling: a new pure
+  `detection_strength(detect) → (f64, bool)` gives a body-verified hit `(0.92,
+  true)` and a status-only hit `(0.74, false)`; each `Url` now carries its tiered
+  confidence and a `verified-detection` / `weak-detection` provenance tag; the
+  strong exposure tags are gated on a **body-verified** hit in that category (a
+  status-only-only category still surfaces its weak-tagged 0.74 URL — the lead isn't
+  lost, only its unearned assertion); the summary records `hits_verified` /
+  `hits_status_only`. The emit logic was extracted into a pure, testable
+  `build_entities`. Test delta: `detection_strength_tiers_status_only_below_body_verified`
+  and `build_entities_tiers_confidence_and_gates_exposure_on_verified` (a status-only
+  cam hit → 0.74 + weak-detection + NO `cam-identity-exposed`; a body-verified hit →
+  0.92 + verified-detection + the exposure tag). Gate green: fmt/clippy/doc clean,
+  full suite 0 failures (4547). **Paired:** `SOLUTION_TREE` §5 — same commit.

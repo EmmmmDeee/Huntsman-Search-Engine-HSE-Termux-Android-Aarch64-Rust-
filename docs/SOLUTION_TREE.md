@@ -2841,3 +2841,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `gexf_drops_relation_edges_referencing_a_filtered_out_node`,
   `scan_gexf_quarantines_candidate_nodes_by_default`. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-STREAMPROBE-TIER: `streaming_probe` confidence is tiered by
+  detection rigour and its sensitive exposure claims are gated on verified hits.** The
+  cam/fans/adult platform prober stamped a flat 0.92 on every hit and asserted
+  `cam-identity-exposed` on any hit — but 41 of 43 platforms detect on a bare
+  status-200 (`Detect::StatusEq`), which a soft-404 / interstitial / catch-all route
+  fakes, so one unverified probe fabricated a high-confidence, reputationally-sensitive
+  identity claim. Mirrored the sibling `username_search` fix: a pure
+  `detection_strength` returns `(0.92, true)` for a body-verified hit and `(0.74,
+  false)` for a status-only one; each `Url` carries its tiered confidence plus a
+  `verified-detection` / `weak-detection` tag; the strong exposure tags fire only on a
+  body-verified hit in the category (weak-only categories still surface their 0.74
+  URLs); the summary records `hits_verified` / `hits_status_only`. Emit logic extracted
+  to a pure, testable `build_entities`. Tests:
+  `detection_strength_tiers_status_only_below_body_verified`,
+  `build_entities_tiers_confidence_and_gates_exposure_on_verified`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.
