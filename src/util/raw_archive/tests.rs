@@ -195,6 +195,38 @@ fn records_in_window_recovers_full_responses_and_filters_by_time() {
 }
 
 #[test]
+fn records_filtered_dir_matches_query_set_case_insensitively() {
+    // Regression: the filename pre-filter compared the archived query slug
+    // case-sensitively while the authoritative `_meta.query` check is
+    // case-insensitive (`to_lowercase`). `slug()` preserves case, so a mixed-case
+    // query (a name/username like `JaneSmith`) was skipped before its file was even
+    // opened and silently dropped from the dossier — though the authoritative
+    // check would have kept it.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("hse_case_{}_{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write_file(
+        &dir.join(build_filename("see-know", "search", "JaneSmith", 1000, 1)),
+        &build_body("see-know", "search", "JaneSmith", 1000, r#"{"hit":true}"#),
+    )
+    .unwrap();
+    // The caller passes the lower-cased query set (as the authoritative check
+    // itself requires); the mixed-case archived response must still be returned.
+    let mut want: std::collections::HashSet<String> = std::collections::HashSet::new();
+    want.insert("janesmith".to_string());
+    let got = records_filtered_dir(&dir, 900, 1100, Some(&want));
+    assert_eq!(
+        got.len(),
+        1,
+        "a mixed-case query's archived response must survive the pre-filter"
+    );
+    assert_eq!(got[0].query, "JaneSmith");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn write_file_persists_individual_named_response_on_disk() {
     // End-to-end on a temp dir (no process-env mutation): an individually
     // named file is written and reads back to the structured paid response.
