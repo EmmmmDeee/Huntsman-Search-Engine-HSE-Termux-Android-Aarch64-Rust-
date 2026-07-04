@@ -61,6 +61,39 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
 }
 
 #[test]
+fn build_entities_emits_a_deterministic_jarm_fingerprint() {
+    use crate::core::entity::EntityKind;
+    // A host can expose several JARM fingerprints (one per TLS service), but only
+    // one is surfaced as `jarm_fingerprint`. It must be chosen DETERMINISTICALLY
+    // (the lexicographically smallest), not by `HashSet` iteration order — which is
+    // randomised per process and would emit a different fingerprint between
+    // otherwise-identical runs, breaking byte-identical output. Items are supplied
+    // in non-sorted order to prove the choice is by value, not insertion.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [
+            { "data": { "ip": "203.0.113.10", "port": 443,  "jarm": "cccc3333" } },
+            { "data": { "ip": "203.0.113.10", "port": 8443, "jarm": "aaaa1111" } },
+            { "data": { "ip": "203.0.113.10", "port": 9443, "jarm": "bbbb2222" } },
+        ]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let ip = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("ip entity");
+    assert_eq!(
+        ip.evidence[0]
+            .attributes
+            .get("jarm_fingerprint")
+            .map(String::as_str),
+        Some("aaaa1111"),
+        "the smallest JARM fingerprint must be emitted, deterministically"
+    );
+}
+
+#[test]
 fn netlas_query_by_kind() {
     use super::netlas_query;
     use crate::core::scan::Target;

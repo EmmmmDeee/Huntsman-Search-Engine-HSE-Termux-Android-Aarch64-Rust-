@@ -2676,3 +2676,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`order_dossier_kinds` unit test; the GEXF golden byte-stable test proves
   metachar-free output is untouched). Gate green. Paired: `PROBLEM_TREE` §8 —
   same commit.
+- **2026-07-04** — **SOL-DETERMINISM + SOL-BREAKER-PROBE: a stable JARM and a
+  one-at-a-time recovery probe.** Two correctness fixes. **Determinism:** Netlas
+  chose the emitted JARM fingerprint from a `HashSet` (`.iter().next()`), whose
+  order is process-randomised — so identical inputs produced different output. A
+  `BTreeSet` makes the choice the smallest fingerprint, restoring byte-identical
+  output (the guarantee the whole export/dossier layer depends on). **Breaker
+  probe:** `util::circuit_breaker`'s `HalfOpen` admitted every concurrent caller,
+  turning the one intended recovery probe into a herd against a still-down host;
+  `HalfOpen` now admits exactly one probe and denies the rest, with `retry_at`
+  re-used as a self-healing probe deadline so a lost outcome can't wedge the
+  breaker. Both are pure, deterministic state machines with direct unit tests. Gate
+  green. Paired: `PROBLEM_TREE` §8 — same commit.

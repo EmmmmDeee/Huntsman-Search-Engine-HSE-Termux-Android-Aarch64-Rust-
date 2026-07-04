@@ -221,7 +221,13 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     let mut all_cert_domains: Vec<String> = Vec::new();
     let mut cert_orgs: Vec<String> = Vec::new();
     let mut port_list: Vec<String> = Vec::new();
-    let mut jarm_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // BTreeSet, not HashSet: a host can expose several JARM fingerprints (one per
+    // TLS service), but only ONE is emitted as `jarm_fingerprint`. `HashSet`
+    // iteration order is randomised per process, so `.iter().next()` picked a
+    // different fingerprint between otherwise-identical runs — breaking the
+    // byte-identical-output guarantee. Ordered set → the lexicographically
+    // smallest fingerprint, deterministically.
+    let mut jarm_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut cve_list: Vec<String> = Vec::new();
     let mut tech_list: Vec<String> = Vec::new();
     let mut isp_val: Option<String> = None;
@@ -359,6 +365,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
                 .join(","),
         );
     }
+    // Deterministic: the smallest fingerprint of the ordered set (see `jarm_seen`).
     if let Some(j) = jarm_seen.iter().next() {
         ev = ev.with_attr("jarm_fingerprint", j);
     }

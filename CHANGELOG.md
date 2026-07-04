@@ -343,6 +343,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Determinism + concurrency correctness — Netlas emits a stable JARM, and the
+  per-host circuit breaker admits exactly one recovery probe.** (1) Netlas
+  accumulated a host's JARM fingerprints in a `HashSet` but surfaced only one via
+  `jarm_seen.iter().next()` — and `HashSet` iteration order is randomised per
+  process, so a multi-JARM host emitted a *different* `jarm_fingerprint` between
+  otherwise-identical runs, breaking the byte-identical-output guarantee. Switched
+  to a `BTreeSet` so the lexicographically smallest fingerprint is chosen
+  deterministically. (2) `util::circuit_breaker`'s `HalfOpen` state returned `true`
+  for **every** caller, so once a host's cooldown elapsed, all concurrent requests
+  were admitted at once — a thundering herd on a host that is very likely still
+  down, instead of the single trial probe the design intends. `HalfOpen` now denies
+  concurrent callers (exactly one probe in flight); `retry_at` doubles as a probe
+  deadline so a probe whose outcome is never recorded self-heals into a fresh probe
+  one cooldown later rather than wedging the breaker.
 - **Export completeness — the dossier no longer silently drops entire entity
   kinds, and GEXF escapes two more injection points.** (1) The `--output dossier`
   renderer iterated a FIXED kind allowlist, so any entity whose kind wasn't listed

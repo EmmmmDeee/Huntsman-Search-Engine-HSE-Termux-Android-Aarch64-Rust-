@@ -3578,3 +3578,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   byte-stable test confirms metachar-free output is unchanged. Gate green:
   fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-04** — **Comprehensive audit cycle 6/N: determinism + concurrency
+  correctness — a stable Netlas JARM and a single-probe circuit breaker.** Two
+  independent defects. **(1) Determinism.** `modules/netlas::build_entities`
+  accumulated a host's JARM fingerprints in a `HashSet` and emitted ONE via
+  `jarm_seen.iter().next()`. `HashSet` iteration order is randomised per process
+  (SipHash with a random seed), so a host exposing several JARMs emitted a
+  *different* `jarm_fingerprint` between otherwise-identical runs — a byte-identical
+  -output violation (the same class the export layer guards against). Switched to
+  `BTreeSet`, so `.iter().next()` is the lexicographically smallest fingerprint,
+  deterministically. **(2) Concurrency.** `util::circuit_breaker::Breaker::allow`
+  matched `Closed | HalfOpen => true`, so once an open host's cooldown elapsed and
+  the first caller transitioned it to `HalfOpen`, EVERY concurrent caller in that
+  window also got `true` — a thundering herd on a host that is very likely still
+  down, defeating the single-trial-probe design. `HalfOpen` now returns `false`
+  for concurrent callers (exactly one probe in flight); `retry_at` doubles as the
+  probe deadline (set by a new `enter_half_open`), so a probe whose outcome is
+  never recorded (a dropped/cancelled request) self-heals into a fresh probe one
+  `COOLDOWN_SECS` later rather than wedging the breaker `HalfOpen` forever. Test
+  delta: `build_entities_emits_a_deterministic_jarm_fingerprint` (3 out-of-order
+  JARMs → the smallest); `half_open_admits_exactly_one_probe_and_self_heals_a_lost_outcome`
+  + the existing `after_cooldown_allows_once_and_goes_half_open` updated to assert
+  the second concurrent caller is denied. Gate green: fmt/clippy/doc clean, full
+  suite 0 failures. **Paired:** `SOLUTION_TREE` §5 — same commit.
