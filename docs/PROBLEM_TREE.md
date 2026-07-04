@@ -3530,3 +3530,30 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `victim_ips_only_admit_routable_public_addresses` — each fail-before/pass-after.
   Gate green: fmt/clippy/doc clean, full suite 0 failures. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Comprehensive audit cycle 4/N: engine finalise/dispatch
+  robustness — a panicking rule can't abort a scan; a cache replay can't reset the
+  breaker.** Two engine-layer robustness gaps in the same finalise/dispatch flow.
+  **(1)** The authoritative finalise-time correlation pass ran
+  `Correlator::new(store).run(&scan.id)` UNGUARDED. The live incremental pass
+  already wraps `correlate_entities` in `catch_unwind` (a rule panicking on
+  adversarial persisted data — a slice-index bug over a crafted entity — is
+  contained), but the finalise pass did not, so an identical panic there would
+  unwind the whole finalise block, losing the terminal `ScanComplete` event AND
+  the harvested API-key pool (the key-pool save + WAL checkpoint + events-prune all
+  run AFTER the correlator in `finalise_scan`). Extracted pure
+  `guarded_finalise_correlation(scan_id, run)` returning `Option` (`None` on
+  error/panic → caller skips emission but the scan finalises), closing the
+  asymmetry with the live pass. **(2)** `finalise_module_result` fed the circuit
+  breaker `record_success` on EVERY `Ok(Ok(_))`, including inter-scan cache
+  REPLAYS (which make no provider call). A replay clearing a soft-failure streak
+  the live calls legitimately earned this scan would mask a degrading provider (or
+  reset a soft-trip countdown), so a genuinely-failing source keeps getting
+  re-dispatched. Added a `from_cache` param: the 3 cache-hit call sites pass
+  `true` (skip the breaker success), the 3 real-dispatch sites pass `false`. A
+  replay is now neither success nor failure to the breaker. Test delta:
+  `finalise_correlation_pass_survives_a_panicking_rule` (a panicking closure is
+  caught, not unwound) and `cache_replay_does_not_feed_the_circuit_breaker_success_path`
+  (streak survives a replay → the 3rd real failure trips; a real dispatch clears
+  it) — both fail-before/pass-after against pure/testable seams. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

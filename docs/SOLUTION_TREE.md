@@ -2646,3 +2646,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   leaked password, or a nowhere-geolocating private IP are exactly the fabricated
   findings an evidentiary product must never emit. Gate green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-ENGINE-ROBUST: the finalise/dispatch flow now fails safe
+  in two more places.** Both fixes make a scan degrade gracefully rather than lose
+  work. **Panic containment parity:** the live incremental correlation pass already
+  guards `correlate_entities` with `catch_unwind`; the finalise-time `Correlator::run`
+  did not, so a rule panicking on crafted persisted data would unwind the whole
+  finalise block — losing `ScanComplete` and the harvested key pool. Lifted the
+  guard into a pure `guarded_finalise_correlation` returning `Option` (`None` on
+  error/panic → skip emission, still finalise). **Breaker honesty:** the circuit
+  breaker exists to stop re-dispatching a genuinely-failing provider; feeding it a
+  `record_success` for an inter-scan cache *replay* (no call was made) let a replay
+  clear a real failure streak and keep a dead source in rotation. A `from_cache`
+  flag now makes replays invisible to the breaker (neither success nor failure).
+  Both are backed by *testable seams* — a panicking closure and a direct
+  `finalise_module_result` drive — so the regression is provable, not just
+  asserted in prose. Gate green. Paired: `PROBLEM_TREE` §8 — same commit.

@@ -727,26 +727,30 @@ impl ScanEngine {
             // correlations not already streamed live during ingestion (deduped
             // via `emitted_corr`). The `CorrelationsDone` count is the
             // authoritative total for the scan.
-            match crate::core::correlator::Correlator::new(Arc::clone(&store)).run(&scan.id) {
-                Ok(firings) => {
-                    for c in &firings {
-                        if emitted_corr.insert(correlation_key(c)) {
-                            emitter.emit(
-                                &scan.id,
-                                EventKind::CorrelationFound {
-                                    correlation: c.clone(),
-                                },
-                            );
-                        }
+            // Guarded against a rule panicking on adversarial persisted data: a
+            // panic here would otherwise unwind the whole finalise block, losing
+            // the terminal `ScanComplete` event and the harvested key pool. A
+            // caught panic (or a returned error) degrades to "no finalise
+            // correlations," exactly as the live incremental pass does.
+            if let Some(firings) = guarded_finalise_correlation(&scan.id, || {
+                crate::core::correlator::Correlator::new(Arc::clone(&store)).run(&scan.id)
+            }) {
+                for c in &firings {
+                    if emitted_corr.insert(correlation_key(c)) {
+                        emitter.emit(
+                            &scan.id,
+                            EventKind::CorrelationFound {
+                                correlation: c.clone(),
+                            },
+                        );
                     }
-                    emitter.emit(
-                        &scan.id,
-                        EventKind::CorrelationsDone {
-                            count: firings.len(),
-                        },
-                    );
                 }
-                Err(e) => warn!(scan_id = %scan.id, error = %e, "correlator failed"),
+                emitter.emit(
+                    &scan.id,
+                    EventKind::CorrelationsDone {
+                        count: firings.len(),
+                    },
+                );
             }
 
             // ── Cross-scan pathway-template learning (C1 universal linking) ──
@@ -2380,6 +2384,41 @@ pub fn rank_identity_aware_targets<F: Fn(&str) -> usize>(
     });
     out.truncate(limit);
     out
+}
+
+/// Run the authoritative finalise-time correlation pass under a panic guard.
+///
+/// Returns `Some(firings)` on success (the caller emits `CorrelationFound` +
+/// `CorrelationsDone`), or `None` when the pass returned an error OR **panicked**
+/// — in which case the caller skips emission but `finalise_scan` still proceeds
+/// to `ScanComplete` and the key-pool restoration that follow.
+///
+/// The live incremental pass already wraps `correlate_entities` in `catch_unwind`
+/// (`correlate_incremental`), but the finalise pass ran `Correlator::run`
+/// unguarded: a rule panicking on adversarial persisted data (a slice-index bug
+/// over a crafted entity) would unwind the entire finalise block, losing the
+/// terminal `ScanComplete` event AND the API-key pool the scan harvested. This
+/// closes that asymmetry — a caught panic degrades to "no finalise correlations,"
+/// exactly as the live pass does. Pure control-flow wrapper; unit-tested with a
+/// deliberately panicking closure.
+fn guarded_finalise_correlation(
+    scan_id: &str,
+    run: impl FnOnce() -> crate::core::error::Result<Vec<crate::core::correlator::Correlation>>,
+) -> Option<Vec<crate::core::correlator::Correlation>> {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)) {
+        Ok(Ok(firings)) => Some(firings),
+        Ok(Err(e)) => {
+            warn!(scan_id, error = %e, "correlator failed");
+            None
+        }
+        Err(_) => {
+            warn!(
+                scan_id,
+                "finalise correlation pass panicked — scan still completes, finalise correlations skipped"
+            );
+            None
+        }
+    }
 }
 
 #[cfg(test)]

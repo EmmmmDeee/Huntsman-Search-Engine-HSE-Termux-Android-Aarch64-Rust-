@@ -378,13 +378,14 @@ impl super::ScanEngine {
     /// with the finding. Sourced from the dispatched `Module` object at the call
     /// site (never `crate::modules`, which `core` may not name), so the engine
     /// stays module-agnostic.
-    fn finalise_module_result(
+    pub(super) fn finalise_module_result(
         &self,
         cx: &DispatchCx,
         name: &'static str,
         result: TimeoutResult,
         state: &mut DispatchState,
         attack_techniques: &'static [&'static str],
+        from_cache: bool,
     ) {
         state.stats.run += 1;
         match result {
@@ -445,10 +446,17 @@ impl super::ScanEngine {
                 );
             }
             Ok(Ok(mut mr)) => {
-                // A completed dispatch (even an empty one) proves the provider is
+                // A completed *dispatch* (even an empty one) proves the provider is
                 // reachable — clear any failure streak so a recovered source is
-                // trusted again immediately.
-                super::circuit::record_success(name);
+                // trusted again immediately. A CACHE REPLAY, however, made no
+                // provider call: recording a success on it would clear a failure
+                // streak the live calls legitimately earned this scan (masking a
+                // degrading provider, or resetting a soft-trip countdown), so the
+                // breaker's success path is skipped for replays. A replay is
+                // neither success nor failure to the breaker — it is invisible.
+                if !from_cache {
+                    super::circuit::record_success(name);
+                }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
                     if let Some(min) = cx.opts.min_confidence
@@ -695,12 +703,15 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
+                // from_cache = true: a replay must not feed the circuit breaker's
+                // success path (no provider call was made).
                 self.finalise_module_result(
                     cx,
                     name,
                     Ok(Ok(mr)),
                     state,
                     module.attack_techniques(),
+                    true,
                 );
                 super::hot_inject_keys(&mut ctx.keys);
                 if ctx.cancel.is_cancelled() {
@@ -746,7 +757,7 @@ impl super::ScanEngine {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
 
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), false);
 
             super::hot_inject_keys(&mut ctx.keys);
 
@@ -832,12 +843,15 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
+                // from_cache = true: a replay must not feed the circuit breaker's
+                // success path (no provider call was made).
                 self.finalise_module_result(
                     cx,
                     name,
                     Ok(Ok(mr)),
                     state,
                     module.attack_techniques(),
+                    true,
                 );
                 super::hot_inject_keys(&mut ctx.keys);
                 continue;
@@ -869,7 +883,7 @@ impl super::ScanEngine {
             {
                 let _ = self.store.archive_module_result(key, ttl, &mr.entities);
             }
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), false);
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
@@ -951,12 +965,15 @@ impl super::ScanEngine {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
                 let mr = ModuleResult { entities: cached };
+                // from_cache = true: a replay must not feed the circuit breaker's
+                // success path (no provider call was made).
                 self.finalise_module_result(
                     cx,
                     name,
                     Ok(Ok(mr)),
                     state,
                     module.attack_techniques(),
+                    true,
                 );
                 continue;
             }
@@ -1086,12 +1103,16 @@ impl super::ScanEngine {
                 &mr.entities,
             );
         }
+        // A joined outcome is always a real spawned dispatch — the concurrent
+        // cache-hit path replays and finalises inline before ever spawning, so it
+        // never reaches here. from_cache = false.
         self.finalise_module_result(
             cx,
             outcome.name,
             outcome.result,
             state,
             outcome.attack_techniques,
+            false,
         );
     }
 }

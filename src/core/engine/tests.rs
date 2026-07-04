@@ -466,6 +466,44 @@ async fn module_panic_is_contained_as_error_not_process_abort() {
     }
 }
 
+#[test]
+fn finalise_correlation_pass_survives_a_panicking_rule() {
+    use crate::core::correlator::Correlation;
+
+    // Error-tree ECS-2: the finalise-time correlation pass must not be able to
+    // abort `finalise_scan`. A rule panicking on adversarial persisted data (a
+    // slice-index bug over a crafted entity) previously unwound the whole finalise
+    // block — losing the terminal `ScanComplete` event and the API-key pool the
+    // scan harvested. The guard degrades a caught panic to `None` (no finalise
+    // correlations), exactly as the live incremental pass does, so the scan still
+    // finalises.
+    let panicked = guarded_finalise_correlation("s", || panic!("kaboom in a correlation rule"));
+    assert!(
+        panicked.is_none(),
+        "a panicking finalise pass must be caught and degrade to no firings, not unwind"
+    );
+
+    // A returned error is likewise swallowed to `None` (unchanged behaviour).
+    let errored = guarded_finalise_correlation("s", || Err(Error::module("correlator", "boom")));
+    assert!(errored.is_none(), "a returned error yields no firings");
+
+    // The happy path passes the firings straight through for emission.
+    let ok = guarded_finalise_correlation("s", || {
+        Ok(vec![Correlation::new(
+            "AU-000",
+            "test correlation",
+            crate::core::correlator::Severity::Low,
+            "synthetic".to_string(),
+            vec!["uid-a".into(), "uid-b".into()],
+            "s",
+            0,
+        )])
+    })
+    .expect("a successful pass returns Some(firings)");
+    assert_eq!(ok.len(), 1);
+    assert_eq!(ok[0].rule_id, "AU-000");
+}
+
 #[tokio::test]
 async fn run_module_guarded_passes_success_and_error_through() {
     use crate::core::module::ModuleResult;
@@ -831,6 +869,81 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     assert!(
         module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
         "a recovered module must dispatch again"
+    );
+}
+
+#[tokio::test]
+async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
+    use crate::core::module::ModuleResult;
+    use crate::core::test_support::InMemoryStore;
+
+    // A cache REPLAY makes no provider call, so it must be invisible to the
+    // breaker: recording a success on it would clear a failure streak the live
+    // calls legitimately earned this scan, masking a degrading provider. Drive
+    // the real `finalise_module_result` with from_cache=true and prove the streak
+    // survives; contrast with a real dispatch (from_cache=false) that clears it.
+    // Unique module names keep this independent of the process-global breaker
+    // state the other tests touch.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+
+    let target = Target::new(TargetKind::Email, "seed@gmail.com");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "replay-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Email,
+    };
+    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+    };
+
+    // ── Replay path: the streak MUST survive ────────────────────────────────
+    let replayed = "test_replay_breaker_cached";
+    super::circuit::record_soft_failure(replayed);
+    super::circuit::record_soft_failure(replayed); // streak = 2 (threshold 3)
+    assert!(
+        !super::circuit::is_open(replayed),
+        "a streak of 2 must not have tripped yet"
+    );
+    engine.finalise_module_result(
+        &cx,
+        replayed,
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        true, // from_cache
+    );
+    super::circuit::record_soft_failure(replayed); // streak → 3 iff the replay left it
+    assert!(
+        super::circuit::is_open(replayed),
+        "a cache replay must NOT reset the streak — the 3rd real failure must trip the breaker"
+    );
+
+    // ── Real-dispatch path: the streak IS cleared (regression contrast) ──────
+    let dispatched_name = "test_replay_breaker_real";
+    super::circuit::record_soft_failure(dispatched_name);
+    super::circuit::record_soft_failure(dispatched_name); // streak = 2
+    engine.finalise_module_result(
+        &cx,
+        dispatched_name,
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        false, // real dispatch → record_success clears the streak
+    );
+    super::circuit::record_soft_failure(dispatched_name); // streak → 1 after a clear
+    assert!(
+        !super::circuit::is_open(dispatched_name),
+        "a real dispatch clears the streak, so a single later failure must not trip it"
     );
 }
 

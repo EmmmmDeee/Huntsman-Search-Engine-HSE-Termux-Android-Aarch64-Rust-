@@ -343,6 +343,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Engine finalise/dispatch robustness — a panicking correlation rule can no
+  longer abort a scan, and a cache replay no longer feeds the circuit breaker.**
+  (1) The authoritative finalise-time correlation pass ran `Correlator::run`
+  *unguarded*, so a rule panicking on adversarial persisted data (a slice-index
+  bug over a crafted entity) would unwind the whole finalise block — losing the
+  terminal `ScanComplete` event **and** the API-key pool the scan harvested. It
+  is now wrapped in `catch_unwind` (via `guarded_finalise_correlation`),
+  degrading a caught panic to "no finalise correlations," exactly as the live
+  incremental pass already does. (2) `finalise_module_result` recorded a
+  circuit-breaker success on every `Ok(Ok(_))` — including inter-scan cache
+  REPLAYS, which make no provider call. A replay spuriously clearing a failure
+  streak the live calls earned this scan would mask a degrading provider (or
+  reset a soft-trip countdown); replays now pass `from_cache = true` and skip the
+  breaker's success path — a replay is neither success nor failure to the breaker.
 - **No-fabrication gates on three breach/stealer pools — no more phantom
   subject-exposure claims.** Three paid/free intelligence sources minted
   subject-attributed findings without proving the record identified the subject:
