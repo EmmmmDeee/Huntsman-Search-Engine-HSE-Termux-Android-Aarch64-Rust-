@@ -28,7 +28,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::extract::URL_RE;
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "reddit_user";
@@ -179,7 +178,7 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             sr.title.as_deref().unwrap_or("")
         );
         // Extract ALL emails from the bio (not just the first).
-        for email in crate::util::extract::emails(&bio).into_iter().take(5) {
+        for email in crate::util::extract::emails(&bio) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.76, scan_id);
             e.tag("reddit");
             e.tag("public-profile");
@@ -190,12 +189,8 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             result.push(e);
         }
         // Extract ALL URLs from the bio; also emit the host as a Domain entity.
-        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in URL_RE.find_iter(&bio).take(5) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
-            if !seen_urls.insert(link.to_string()) {
-                continue;
-            }
+        for link in crate::util::extract::urls(&bio) {
+            let link = link.as_str();
             let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
             url_e.tag("reddit");
             url_e.tag("personal-site");

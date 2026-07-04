@@ -4178,3 +4178,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   events, 15 distinct emails → 15 pivots in deterministic order; fail-before: 10) plus a
   dedup + placeholder-drop case. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4564). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Full-fidelity: five social modules capped bio-extracted emails AND URLs
+  at `.take(5)` each.** `bluesky_user`, `reddit_user`, `mastodon_user`, `lobsters` and
+  `devto` each ran the identical copy-paste block: `extract::emails(bio).take(5)` and
+  `URL_RE.find_iter(bio).trim_end_matches(…).dedup.take(5)`, silently dropping distinct
+  emails/links 6+ from a profile bio (a link-tree-style bio genuinely lists many URLs). The
+  cap is a copy-paste artifact, not a principled bound: the SAME codebase extracts emails
+  from gist bodies and crawled pages *uncapped* (`github_user::fetch_gist_content`,
+  `web_crawler`), and `reddit_user`'s own comments say "extract ALL emails/URLs" directly
+  above the `.take(5)` that contradicts them. Since a bio is a small bounded field, the cap
+  protects nothing the field size doesn't already. Fix (single logical change, §3
+  single-sourcing): added a tested `util::extract::urls(text) -> Vec<String>` mirroring the
+  existing `emails()` (trailing-punct-trimmed via `URL_RE`'s documented over-match, deduped
+  on the trimmed value, first-occurrence order, **no cap**), then routed all five modules'
+  bio scanners through `emails()` + `urls()` uncapped — deleting the ten `.take(5)` sites
+  and the now-redundant per-module `seen_urls`/`trim_end_matches` loops (and three unused
+  `URL_RE` imports). Each module keeps its own skip-list/confidence/entity emission. Test
+  delta: `urls_extracts_all_distinct_trimmed_in_order_uncapped` (six distinct link-heavy-bio
+  URLs, trimmed + deduped, in order; fail-before: a capped five); all five modules' existing
+  tests still pass. Gate green: fmt/clippy/doc clean, full suite 0 failures (4565).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

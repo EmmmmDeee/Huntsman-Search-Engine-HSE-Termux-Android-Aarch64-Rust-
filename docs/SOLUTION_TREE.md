@@ -3023,3 +3023,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   a separate author-matches-login precision filter, not this cap. Test:
   `commit_email_entities_emits_every_distinct_email_not_a_capped_ten` (15 events → 15 pivots;
   fail-before: 10). Gate green (4564). Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-BIOLINKS: five social modules emit every bio email/URL, not
+  a capped 5, via a single-sourced `extract::urls()`.** `bluesky_user`, `reddit_user`,
+  `mastodon_user`, `lobsters`, `devto` each carried the identical `emails(bio).take(5)` +
+  `URL_RE.find_iter(bio)…dedup.take(5)` block, silently dropping bio emails/links 6+ — a
+  copy-paste artifact (the same codebase extracts gist/page emails uncapped, and reddit's own
+  comment says "extract ALL"). Added a tested `util::extract::urls()` mirroring `emails()`
+  (trim + dedup + first-occurrence order, no cap), routed all five modules through
+  `emails()`/`urls()` uncapped, and deleted the ten `.take(5)` sites plus redundant
+  per-module dedup loops and three unused `URL_RE` imports. Test:
+  `urls_extracts_all_distinct_trimmed_in_order_uncapped` (six distinct URLs → all six,
+  trimmed/deduped/ordered; fail-before: five). Gate green (4565). Paired: `PROBLEM_TREE` §8 —
+  same commit.

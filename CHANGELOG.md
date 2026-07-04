@@ -343,6 +343,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Bluesky, Reddit, Mastodon, Lobsters and Dev.to profile scans now surface every email
+  and link in a subject's bio, not just the first five of each.** All five modules ran the
+  same copy-pasted extraction that capped bio emails and URLs at five apiece — even though a
+  link-tree-style bio routinely lists more, and the same engine already extracts emails from
+  gist bodies and crawled pages without any cap. A shared, deduplicated URL extractor
+  (`extract::urls`, mirroring the existing email extractor) now backs all five, and every
+  distinct address and link is emitted (duplicates still collapse; ordering is
+  deterministic). Regression test `urls_extracts_all_distinct_trimmed_in_order_uncapped`.
 - **GitHub user lookups now emit every distinct commit-author email from the subject's
   public push events, not just the first 10.** Each address published in the subject's own
   commit author fields is a high-value real-email pivot, but the module deduplicated them

@@ -214,7 +214,7 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
 
     // Bio — extract emails and URLs.
     if let Some(bio) = profile.description.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(5) {
+        for email in crate::util::extract::emails(bio) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
             e.tag("bluesky");
             e.tag("public-profile");
@@ -224,12 +224,8 @@ pub(super) fn build_entities(profile: BskyProfile, scan_id: &str) -> Vec<Entity>
             );
             result.push(e);
         }
-        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in crate::util::extract::URL_RE.find_iter(bio).take(5) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
-            if !seen_urls.insert(link.to_string()) {
-                continue;
-            }
+        for link in crate::util::extract::urls(bio) {
+            let link = link.as_str();
             // Skip the bsky.app URL we already emitted.
             if link.contains("bsky.app") {
                 continue;

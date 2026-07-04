@@ -216,7 +216,7 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
     // Bio (HTML) — strip tags, then extract emails and URLs.
     if let Some(ref note_html) = acct.note {
         let note_text = crate::util::html::strip_html(note_html);
-        for email in crate::util::extract::emails(&note_text).into_iter().take(5) {
+        for email in crate::util::extract::emails(&note_text) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.68, scan_id);
             e.tag("mastodon");
             e.tag("public-profile");
@@ -229,12 +229,8 @@ pub(super) fn build_entities(acct: MastodonAccount, instance: &str, scan_id: &st
             );
             result.push(e);
         }
-        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in crate::util::extract::URL_RE.find_iter(&note_text).take(5) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
-            if !seen_urls.insert(link.to_string()) {
-                continue;
-            }
+        for link in crate::util::extract::urls(&note_text) {
+            let link = link.as_str();
             if link.contains(instance) {
                 continue;
             }

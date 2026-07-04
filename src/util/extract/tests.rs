@@ -42,6 +42,30 @@ use super::*;
     }
 
     #[test]
+    fn urls_extracts_all_distinct_trimmed_in_order_uncapped() {
+        // Full fidelity: every distinct URL in a link-heavy bio surfaces — no
+        // silent first-N cap — with trailing sentence punctuation trimmed,
+        // deduped on the trimmed value, first-occurrence order preserved.
+        let bio = "sites: https://a.example/, https://b.example/p. \
+                   also https://c.example), https://d.example \
+                   mirror https://e.example/x https://f.example/y \
+                   dup https://a.example/ again";
+        assert_eq!(
+            urls(bio),
+            vec![
+                "https://a.example/".to_string(),
+                "https://b.example/p".to_string(),
+                "https://c.example".to_string(),
+                "https://d.example".to_string(),
+                "https://e.example/x".to_string(),
+                "https://f.example/y".to_string(),
+            ],
+            "all six distinct URLs, trimmed and deduped, not a capped five"
+        );
+        assert!(urls("no links here").is_empty());
+    }
+
+    #[test]
     fn phones_extracts_e164() {
         assert_eq!(phones("+61412345678"), ["+61412345678"]);
         assert_eq!(phones("call +1 (555) 123-4567"), ["+15551234567"]);
