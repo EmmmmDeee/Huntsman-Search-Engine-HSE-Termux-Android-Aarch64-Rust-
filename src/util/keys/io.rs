@@ -2,7 +2,6 @@
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::fs;
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
 use crate::core::error::{Error, Result};
@@ -374,44 +373,16 @@ pub fn write_keys_at(
         body.push('\n');
     }
 
-    let tmp = path.with_extension("env.tmp");
-    // Mode-0600 file creation is Unix-specific (the `mode()` builder
-    // method is gated behind `OpenOptionsExt`). HSE is Termux/Android/
-    // Linux-only by design, but we still gate the import so any future
-    // cross-platform build of the crate produces a clean fallback that
-    // writes the file without the mode bit instead of failing to compile.
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::OpenOptionsExt;
-        let mut f = fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&tmp)
-            .map_err(|e| Error::Other(format!("open {}: {e}", tmp.display())))?;
-        f.write_all(body.as_bytes())
-            .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
-        // Flush kernel buffers to storage before the atomic rename so a
-        // power-cut between rename and writeback cannot produce a
-        // zero-length or partial ~/.huntsman.env (which would delete all keys).
-        f.sync_all()
-            .map_err(|e| Error::Other(format!("sync {}: {e}", tmp.display())))?;
-    }
-    #[cfg(not(unix))]
-    {
-        // On non-Unix the OS doesn't expose `mode()` via the standard
-        // builder; fall back to a plain write. Callers should still treat
-        // the resulting file as sensitive and apply ACLs separately.
-        fs::write(&tmp, body.as_bytes())
-            .map_err(|e| Error::Other(format!("write {}: {e}", tmp.display())))?;
-    }
-    fs::rename(&tmp, path).map_err(|e| {
-        Error::Other(format!(
-            "rename {} -> {}: {e}",
-            tmp.display(),
-            path.display()
-        ))
-    })?;
-    Ok(())
+    // Persist through the hardened shared atomic writer instead of a hand-rolled
+    // copy: it uses a UNIQUE temp (pid + a process-local counter), creates it mode
+    // 0600, fsyncs the file AND its parent directory, then renames. The
+    // uniqueness is the load-bearing fix — the previous fixed `path.with_extension
+    // ("env.tmp")` meant two concurrent writers to the same $HOME (two overlapping
+    // scans harvesting keys, or a `PUT` toggling a key mid-scan) both opened,
+    // truncated and interleaved into the *one* temp, then renamed a corrupt file
+    // over `~/.huntsman.env`, which the loader reads as empty and silently drops
+    // every key. Routing here also inherits the crash-durability (parent-dir
+    // fsync) and keeps this most-sensitive file's write logic single-sourced.
+    crate::util::atomic_file::write(path, body.as_bytes())
+        .map_err(|e| Error::Other(format!("write {}: {e}", path.display())))
 }

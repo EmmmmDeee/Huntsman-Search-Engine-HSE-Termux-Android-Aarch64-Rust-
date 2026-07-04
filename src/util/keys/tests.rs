@@ -397,3 +397,47 @@ fn default_seed_only_reads_the_seed_key() {
         [("HUNTSMAN_SHODAN_KEY".to_string(), "abc".to_string())].into();
     assert_eq!(pick_default_seed(None, &file), None);
 }
+
+#[test]
+fn concurrent_vault_writes_never_corrupt_or_strand() {
+    // The vault (`~/.huntsman.env`) is written from overlapping scans harvesting
+    // keys and from `PUT`s toggling keys mid-scan. The previous hand-rolled write
+    // used a FIXED temp (`path.with_extension("env.tmp")`), so two concurrent
+    // writers to one $HOME both opened, truncated and interleaved into the same
+    // temp and could rename a corrupt (or empty) file over the vault — which the
+    // loader reads as "no keys". Routing through the unique-temp atomic writer
+    // makes every write self-contained. Eight writers hammering one vault must
+    // always leave a readable file that still holds the key, and no temp
+    // straggler. (Mirrors `atomic_file`'s own concurrency property test.)
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(".huntsman.env");
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).unwrap();
+
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for j in 0..20u32 {
+                    let v = format!("k{i}_{j}");
+                    let _ =
+                        write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", v.as_str())]), &[]);
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let content = std::fs::read_to_string(&path).expect("vault still readable");
+    assert!(
+        content.contains("HUNTSMAN_OATHNET_KEY="),
+        "concurrent writes must never corrupt/empty the vault: {content:?}"
+    );
+    let strays = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+        .count();
+    assert_eq!(strays, 0, "no temp straggler after concurrent vault writes");
+}

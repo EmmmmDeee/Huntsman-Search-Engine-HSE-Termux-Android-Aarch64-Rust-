@@ -3401,3 +3401,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   unregistered-CC fallback still validate. Gate green: fmt/clippy/doc clean, lib +
   integration 0 failures (194 oathnet_pro tests unaffected by the delegation).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Robustness/reliability: durable + concurrency-safe atomic
+  writes (two gaps, one on the most sensitive file).** Found by the resource-bounds
+  audit; the storage layer is otherwise strong (uniformly capped body reads,
+  `catch_unwind` module containment, SSRF gates). **(1)** `util::atomic_file::write`
+  fsynced the temp file's *data* (`f.sync_all()`) but never the *parent directory*
+  after `std::fs::rename` — so the rename (the directory entry now pointing `path`
+  at the new inode) was not itself durable: a power-cut/OOM-kill right after rename
+  returned can, on ext4/f2fs, lose it and leave the OLD file. Added a best-effort
+  parent-directory fsync after every successful rename (unix; swallowed so it can
+  never fail an otherwise-good write). Benefits every persisted store (settings,
+  key_pool, dossiers). **(2)** The `~/.huntsman.env` **API-key vault**
+  (`util/keys/io.rs::write_keys_at`) was a hand-rolled copy of the atomic-write
+  dance with a **fixed** temp (`path.with_extension("env.tmp")`) — so two concurrent
+  writers to one `$HOME` (overlapping scans harvesting keys; a `PUT` toggling a key
+  mid-scan) both opened, truncated and interleaved into the *one* temp and could
+  rename a corrupt/empty file over the vault, which the loader reads as "no keys"
+  (silent total key loss). Routed it through `atomic_file::write` (unique pid+seq
+  temp → self-contained writes; also inherits gap-1's durability and single-sources
+  the logic; the now-dead `use std::io::Write` dropped). Layering holds (util→util).
+  Test delta: `concurrent_vault_writes_never_corrupt_or_strand` — eight threads
+  hammer one vault and assert it always stays a readable file holding the key, with
+  no temp straggler (mirrors `atomic_file`'s own concurrency property test; fails
+  against the fixed-temp code, passes against the shared writer). The existing
+  key-vault round-trip/append/validation tests exercise the new path unchanged.
+  Gate green: fmt/clippy/doc clean, lib + integration 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

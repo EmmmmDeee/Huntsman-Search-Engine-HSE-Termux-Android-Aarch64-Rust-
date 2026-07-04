@@ -343,8 +343,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
-- **IBAN validation ignored the country's registered length, and two copies of
-  it had drifted.** `extract::ibans` and the duplicated
+- **Durable, concurrency-safe writes for the API-key vault; the shared atomic
+  writer now commits the rename to disk.** Two robustness gaps: (1)
+  `atomic_file::write` fsynced the temp file's data but never the parent
+  directory, so on a power-cut/OOM-kill right after the rename returned, ext4/f2fs
+  (the Termux targets) could lose the rename and leave the old file — now the
+  parent directory is fsynced (best-effort) after every rename, committing it. (2)
+  The `~/.huntsman.env` API-key vault was written by a hand-rolled copy of the
+  atomic-write dance with a **fixed** temp name (`env.tmp`), so two concurrent
+  writers (overlapping scans harvesting keys, a `PUT` toggling a key mid-scan)
+  could truncate and interleave into the one temp and rename a corrupt file over
+  the vault — read by the loader as empty, silently dropping every key. The vault
+  now writes through the shared `atomic_file::write` (unique temp + 0600 + double
+  fsync + rename), fixing the corruption and single-sourcing the logic. A
+  concurrency property test hammers the vault from eight threads and asserts it is
+  never emptied/torn and leaves no straggler. `extract::ibans` and the duplicated
   `oathnet_pro::validate::iban_is_valid` both accepted any mod-97-valid string of
   length 15–34, regardless of the fixed per-country IBAN length ISO 13616 defines
   (`GB` 22, `DE` 22, `FR` 27, …) — so a right-checksum but wrong-length string

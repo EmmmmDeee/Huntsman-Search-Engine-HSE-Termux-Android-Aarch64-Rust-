@@ -2577,3 +2577,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   country code, its fixed length, and a passing checksum — expressed once. The
   unregistered-code fallback keeps the tightening zero-false-negative. Gate green.
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-BLOCKING/atomicity hardened: one durable, concurrency-safe
+  atomic writer, and every sensitive write routed through it.** The doctrine's
+  answer to torn/lost persisted state is a single hardened primitive
+  (`util::atomic_file`): unique temp + fsync + rename. Two follow-ons close here.
+  First, the primitive itself was missing the *parent-directory* fsync that makes
+  the rename (not just the data) crash-durable — added best-effort. Second, the
+  API-key vault had drifted into a hand-rolled fixed-temp copy that bypassed the
+  primitive entirely (concurrency-corruptible); routed it back through
+  `atomic_file::write`, so the most sensitive file gets uniqueness, mode 0600, the
+  double fsync and single-sourcing at once. This is determinism/robustness by
+  construction: a write either lands whole or not at all, under crash and under
+  contention, expressed in one place. Validated by an eight-thread vault property
+  test alongside `atomic_file`'s existing one. Gate green. Paired: `PROBLEM_TREE`
+  §8 — same commit.
