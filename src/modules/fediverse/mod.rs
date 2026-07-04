@@ -75,6 +75,16 @@ impl Module for Fediverse {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default carries T1589.003 (Employee Names), but this module
+        // searches the fediverse for a handle and emits a `Username`/`Url` plus any
+        // profile `Email` — never a real-name `Person` — so T1589.003 is
+        // over-claimed. The account search is T1593.001 (Social Media) and the
+        // profile email is T1589.002 (Email Addresses); same shape as nostr /
+        // hacker_news / reddit_user.
+        &["T1589.002", "T1593.001"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         8_000
     }

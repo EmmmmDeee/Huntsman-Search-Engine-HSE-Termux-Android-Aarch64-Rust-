@@ -751,6 +751,46 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "username_search resolves no name; must not claim Employee Names"
     );
 
+    // Name-less Social-category modules: they search a platform for a handle (or,
+    // for the offline decoders, derive account metadata from an ID) and emit only
+    // Username/Url/Email — never a real-name Person — so the Social default's
+    // T1589.003 (Employee Names) is over-claimed, the same fix as
+    // hacker_news / reddit_user / nostr / username_search.
+    for name in ["streaming_probe", "gaming_profile", "discord_snowflake"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1593.001"],
+            "{name} → Social Media only (no Person emitted)"
+        );
+        assert!(
+            !techniques(name).contains(&"T1589.003"),
+            "{name} emits no Person; must not claim Employee Names"
+        );
+    }
+    // fediverse also emits profile emails → T1589.002 (like nostr).
+    assert_eq!(
+        techniques("fediverse"),
+        vec!["T1589.002", "T1593.001"],
+        "fediverse → Email Addresses + Social Media (no Person)"
+    );
+    assert!(
+        !techniques("fediverse").contains(&"T1589.003"),
+        "fediverse emits no Person; must not claim Employee Names"
+    );
+    // structured_id is an OFFLINE structured-ID decoder, not a social search: its
+    // signal is the generating machine's MAC embedded in a UUIDv1 → host hardware
+    // (T1592.001), so it drops BOTH the inherited social-presence techniques.
+    assert_eq!(
+        techniques("structured_id"),
+        vec!["T1592.001"],
+        "structured_id → Host Hardware (UUIDv1 node MAC), not social media"
+    );
+    assert!(
+        !techniques("structured_id").contains(&"T1589.003")
+            && !techniques("structured_id").contains(&"T1593.001"),
+        "structured_id neither resolves a name nor searches social media"
+    );
+
     // epieos: People default drops over-claimed T1591.004 (no roles); adds
     // T1589.002 for the email seed and T1591.001 for location Address.
     assert_eq!(

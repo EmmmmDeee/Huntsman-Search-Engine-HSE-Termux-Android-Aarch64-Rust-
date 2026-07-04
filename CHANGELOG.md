@@ -343,6 +343,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Five more modules no longer over-claim MITRE ATT&CK T1589.003 (Employee Names).**
+  `streaming_probe`, `gaming_profile`, `discord_snowflake`, `structured_id`, and
+  `fediverse` inherited the Social category's default technique set including Employee
+  Names, but none emits a real-name Person entity, so every finding falsely claimed a
+  gathered name. Each now declares its real collection: the three handle/platform modules
+  map to `T1593.001` (Social Media); `fediverse` adds `T1589.002` (it emits profile
+  emails); and `structured_id` — an offline structured-ID decoder whose signal is the
+  generating machine's MAC address in a UUIDv1 — maps to `T1592.001` (Host Hardware),
+  dropping the social-search techniques entirely. Pinned by the
+  `attack_overrides_attribute_collection_modules_precisely` guard.
 - **PGP-key identity linkage (AU-042) no longer fuses two distinct keys' emails into one
   owner, and no longer fires on a single address.** The rule collected every `pgp-linked`
   email in the scan and asserted, at High severity, that all of them belong to one owner —

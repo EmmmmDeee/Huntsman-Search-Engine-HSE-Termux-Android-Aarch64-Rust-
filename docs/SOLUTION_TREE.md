@@ -2884,3 +2884,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `au042_does_not_fire_for_a_single_pgp_linked_email`; the existing group test now
   attaches the fingerprint a real hit carries. Gate green. Paired: `PROBLEM_TREE` §8 —
   same commit.
+- **2026-07-04** — **SOL-MITRE-SOCIAL5: the five name-less Social modules get precise
+  ATT&CK overrides instead of the inherited T1589.003 (Employee Names).** Closes the
+  follow-up from SOL-MITRE-USERNAMESEARCH. `streaming_probe`, `gaming_profile`,
+  `discord_snowflake`, `structured_id`, `fediverse` were all `ModuleCategory::Social`
+  with no override, inheriting `["T1593.001", "T1589.003"]`, but none emits a `Person`
+  — so every finding falsely claimed a gathered name. Mapped each to its real
+  collection: the three handle/platform modules → `["T1593.001"]`; `fediverse` →
+  `["T1589.002", "T1593.001"]` (profile emails, like nostr); `structured_id` →
+  `["T1592.001"]` (host Hardware — the UUIDv1 node MAC — it decodes IDs offline, it is
+  not a social search, so both social techniques drop). Pinned in the
+  `attack_overrides_..._precisely` guard. `username_variants` deliberately keeps
+  T1589.003 and is untouched. Gate green. Paired: `PROBLEM_TREE` §8 — same commit.

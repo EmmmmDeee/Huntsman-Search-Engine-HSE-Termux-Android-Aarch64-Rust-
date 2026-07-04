@@ -3917,3 +3917,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fire), and the existing `au_042_groups_pgp_linked_emails` updated to attach the
   `key_fingerprint` a real `pgp` hit always carries. Gate green: fmt/clippy/doc clean,
   full suite 0 failures (4549). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **MITRE precision: the five name-less `Social` modules over-claimed
+  ATT&CK T1589.003 (Employee Names) on every finding — the deferred follow-up from the
+  `username_search` fix, now closed.** Each admitted entity is stamped with its module's
+  `attack:<ID>` techniques, and the guard-encoded convention is that a module claims
+  T1589.003 iff it emits a real-name `Person`. `streaming_probe`, `gaming_profile`,
+  `discord_snowflake`, `structured_id`, and `fediverse` are all `ModuleCategory::Social`
+  with no override, so each inherited the default `["T1593.001", "T1589.003"]` — but
+  none emits a `Person` (their `produces()` are `Url`/`Username`/`Email`/`MacAddress`),
+  so every finding falsely claimed HSE gathered a person's name. Corrected each to its
+  real collection: the three platform/handle modules (`streaming_probe`,
+  `gaming_profile`, `discord_snowflake`) → `["T1593.001"]` (Social Media only);
+  `fediverse` → `["T1589.002", "T1593.001"]` (it also emits profile emails, like nostr);
+  and `structured_id` → `["T1592.001"]` (Gather Victim Host Information: Hardware) —
+  it's an OFFLINE structured-ID decoder whose signal is the generating machine's MAC
+  address in a UUIDv1, not a social search, so it drops BOTH inherited social techniques.
+  Test delta: `attack_overrides_attribute_collection_modules_precisely` extended with a
+  loop over the three `["T1593.001"]` modules plus explicit `fediverse` and
+  `structured_id` assertions, each also `!contains("T1589.003")` (and `structured_id`
+  `!contains("T1593.001")`). This closes the five-module follow-up noted in the
+  `username_search` cycle; `username_variants` deliberately keeps T1589.003 (a conscious
+  convention) and is untouched. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4549). **Paired:** `SOLUTION_TREE` §5 — same commit.

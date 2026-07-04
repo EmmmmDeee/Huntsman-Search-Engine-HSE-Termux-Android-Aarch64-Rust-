@@ -97,6 +97,15 @@ impl Module for StreamingProbe {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default is T1593.001 (Social Media) + T1589.003 (Employee Names),
+        // but this module only searches streaming/cam/adult PLATFORMS for a handle
+        // and emits a profile `Url` + the `Username` — it never resolves a real-name
+        // `Person`, so T1589.003 is over-claimed (same correction as hacker_news /
+        // reddit_user / username_search). Searching those platforms is T1593.001.
+        &["T1593.001"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // ceil(42 sites / 16 concurrent) × 4.5s/probe = 13.5s needed;
         // 30s envelope gives generous headroom for CloudFlare challenges,

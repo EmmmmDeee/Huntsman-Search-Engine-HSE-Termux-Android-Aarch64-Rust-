@@ -79,6 +79,14 @@ impl Module for DiscordSnowflake {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default carries T1589.003 (Employee Names), but this module
+        // derives a Discord account's creation date from its snowflake ID and emits
+        // only that `Username` — never a real-name `Person` — so T1589.003 is
+        // over-claimed. Discord account intelligence is T1593.001 (Social Media).
+        &["T1593.001"]
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let v = target.value.trim();
