@@ -343,6 +343,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **IBAN validation ignored the country's registered length, and two copies of
+  it had drifted.** `extract::ibans` and the duplicated
+  `oathnet_pro::validate::iban_is_valid` both accepted any mod-97-valid string of
+  length 15–34, regardless of the fixed per-country IBAN length ISO 13616 defines
+  (`GB` 22, `DE` 22, `FR` 27, …) — so a right-checksum but wrong-length string
+  (≈1 in 97 of any wrong-length run with a real country prefix) was minted as a
+  leaked bank account. A single `util::extract::iban_is_valid` now pins the
+  `CCkk` layout, the registered length (unregistered country codes fall back to
+  the 15–34 spec range, never a false negative), and the mod-97 checksum;
+  `oathnet_pro` delegates to it, removing the drifting duplicate. Financial-intel
+  findings are now genuine accounts, not checksum-lucky noise.
 - **AU state attribution misclassified border towns via overlapping first-match
   bounding boxes.** `au_state_for_coords` tested overlapping rectangular state
   boxes in a fixed order and returned the first hit, so every town in the QLD∩NSW

@@ -2566,3 +2566,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   deterministic, no new deps, every existing caller strictly improved. S→P
   alternation: closes the highest-leverage geo-precision defect the audit found.
   Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-F1/single-source applied to IBAN validation: one
+  validator, now length-accurate.** Two problems in one node — a precision gap
+  (neither IBAN validator enforced the ISO 13616 registered length, so a
+  checksum-lucky wrong-length string passed) and a drift risk (the logic was
+  duplicated in `util::extract` and `oathnet_pro`). Both close together:
+  `util::extract::iban_is_valid` becomes the single source (layout + registered
+  length + mod-97), and `oathnet_pro` delegates. This is normalisation-defines-
+  identity for a financial identifier — a valid IBAN is *exactly* a registered
+  country code, its fixed length, and a passing checksum — expressed once. The
+  unregistered-code fallback keeps the tightening zero-false-negative. Gate green.
+  Paired: `PROBLEM_TREE` §8 — same commit.

@@ -3381,3 +3381,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   passes against the fit; the capitals test is unchanged. Gate green: fmt/clippy/
   doc clean, geo unit + doctest + full suite 0 failures. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Parse precision + de-duplication: IBAN validation ignored the
+  ISO 13616 registered length, in two drifting copies.** `extract::ibans`/
+  `iban_mod97_valid` (`util/extract/mod.rs`) and the duplicated
+  `oathnet_pro::validate::iban_is_valid` both admitted any mod-97-valid string of
+  length `15..=34` regardless of the country's fixed IBAN length — so a
+  right-checksum wrong-length string (≈1/97 of a wrong-length run with a real
+  country prefix) minted a phantom leaked bank account. Fixed by single-sourcing:
+  a new `util::extract::iban_is_valid` pins the `CCkk` layout, the **registered
+  per-country length** (an `iban_country_length` table of the ~80 ISO 13616
+  countries; an unregistered code falls back to the `15..=34` spec range, so a
+  registry addition is never a false negative), and the mod-97 checksum;
+  `oathnet_pro` now delegates to it (drifting duplicate removed, mirroring its
+  existing `pub(super) use …::looks_like_email` pattern). Layering holds (modules →
+  util). Test delta: `iban_is_valid_enforces_registered_country_length` constructs
+  a mod-97-valid GB string of the wrong length (18 ≠ 22) via the ISO check-digit
+  formula and asserts the checksum passes (so the *length* gate is what rejects
+  it — the fail-before/pass-after) while a correctly-sized GB and an
+  unregistered-CC fallback still validate. Gate green: fmt/clippy/doc clean, lib +
+  integration 0 failures (194 oathnet_pro tests unaffected by the delegation).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

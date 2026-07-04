@@ -113,15 +113,145 @@ pub fn ibans(text: &str) -> Vec<String> {
             .filter(char::is_ascii_alphanumeric)
             .flat_map(char::to_uppercase)
             .collect();
-        if (15..=34).contains(&iban.len()) && iban_mod97_valid(&iban) && seen.insert(iban.clone()) {
+        if iban_is_valid(&iban) && seen.insert(iban.clone()) {
             out.push(iban);
         }
     }
     out
 }
 
+/// Full ISO 13616 IBAN validity for an already-normalised candidate (uppercase,
+/// no separators): the `CCkk` layout, the country's **registered length**, and
+/// the mod-97 checksum — the single source of truth both the free-text scanner
+/// ([`ibans`]) and the breach-field validator (`oathnet_pro`) share.
+///
+/// The registered-length gate is the precision the mod-97 check alone lacks: a
+/// country's IBAN length is fixed by ISO 13616 (`GB` 22, `DE` 22, `FR` 27, …), so
+/// a right-checksum but wrong-length string (which the old `len in 15..=34` range
+/// admitted — roughly 1 in 97 of any wrong-length run with a real country prefix)
+/// is not a genuine account. An **unregistered** country code falls back to the
+/// spec's `15..=34` range rather than rejecting outright, so a future registry
+/// addition is never a false negative. Pure.
+#[must_use]
+pub fn iban_is_valid(iban: &str) -> bool {
+    let b = iban.as_bytes();
+    // CCkk layout, then an all-alphanumeric BBAN.
+    if b.len() < 5
+        || !b[0].is_ascii_uppercase()
+        || !b[1].is_ascii_uppercase()
+        || !b[2].is_ascii_digit()
+        || !b[3].is_ascii_digit()
+        || !iban[4..]
+            .bytes()
+            .all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())
+    {
+        return false;
+    }
+    match iban_country_length(&iban[..2]) {
+        Some(len) if iban.len() != len => return false,
+        None if !(15..=34).contains(&iban.len()) => return false,
+        _ => {}
+    }
+    iban_mod97_valid(iban)
+}
+
+/// The registered total IBAN length for an ISO 13616 country code, or `None` for
+/// a code not in the registry (the caller then falls back to the spec range). The
+/// values are the published national IBAN lengths; a code absent here is treated
+/// leniently, never rejected, so the table can grow without risking a real
+/// account. Kept sorted by code for reviewability.
+fn iban_country_length(cc: &str) -> Option<usize> {
+    Some(match cc {
+        "AD" => 24,
+        "AE" => 23,
+        "AL" => 28,
+        "AT" => 20,
+        "AZ" => 28,
+        "BA" => 20,
+        "BE" => 16,
+        "BG" => 22,
+        "BH" => 22,
+        "BI" => 27,
+        "BR" => 29,
+        "BY" => 28,
+        "CH" => 21,
+        "CR" => 22,
+        "CY" => 28,
+        "CZ" => 24,
+        "DE" => 22,
+        "DK" => 18,
+        "DO" => 28,
+        "EE" => 20,
+        "EG" => 29,
+        "ES" => 24,
+        "FI" => 18,
+        "FO" => 18,
+        "FR" => 27,
+        "GB" => 22,
+        "GE" => 22,
+        "GI" => 23,
+        "GL" => 18,
+        "GR" => 27,
+        "GT" => 28,
+        "HR" => 21,
+        "HU" => 28,
+        "IE" => 22,
+        "IL" => 23,
+        "IQ" => 23,
+        "IS" => 26,
+        "IT" => 27,
+        "JO" => 30,
+        "KW" => 30,
+        "KZ" => 20,
+        "LB" => 28,
+        "LC" => 32,
+        "LI" => 21,
+        "LT" => 20,
+        "LU" => 20,
+        "LV" => 21,
+        "LY" => 25,
+        "MC" => 27,
+        "MD" => 24,
+        "ME" => 22,
+        "MK" => 19,
+        "MN" => 20,
+        "MR" => 27,
+        "MT" => 31,
+        "MU" => 30,
+        "NL" => 18,
+        "NO" => 15,
+        "PK" => 24,
+        "PL" => 28,
+        "PS" => 29,
+        "PT" => 25,
+        "QA" => 29,
+        "RO" => 24,
+        "RS" => 22,
+        "RU" => 33,
+        "SA" => 24,
+        "SC" => 31,
+        "SD" => 18,
+        "SE" => 24,
+        "SI" => 19,
+        "SK" => 24,
+        "SM" => 27,
+        "ST" => 25,
+        "SV" => 28,
+        "TL" => 23,
+        "TN" => 24,
+        "TR" => 26,
+        "UA" => 29,
+        "VA" => 22,
+        "VG" => 24,
+        "XK" => 20,
+        _ => return None,
+    })
+}
+
 /// ISO 13616 IBAN checksum: move the first four chars to the end, map letters
-/// `A`–`Z` to `10`–`35`, and require the resulting decimal `mod 97 == 1`.
+/// `A`–`Z` to `10`–`35`, and require the resulting decimal `mod 97 == 1`. Callers
+/// go through [`iban_is_valid`], which first pins the layout and registered
+/// length; this is the checksum step alone.
 fn iban_mod97_valid(iban: &str) -> bool {
     let rearranged = format!("{}{}", &iban[4..], &iban[..4]);
     let mut rem: u32 = 0;

@@ -210,3 +210,52 @@ use super::*;
         // Not IBAN-shaped.
         assert!(ibans("just some words and 12345 digits").is_empty());
     }
+
+    #[test]
+    fn iban_is_valid_enforces_registered_country_length() {
+        // Build an IBAN with correct mod-97 check digits for (country, bban) via
+        // the ISO 13616 "98 − mod97(bban+country+00)" construction, so we can
+        // isolate the LENGTH gate from the checksum gate.
+        fn make_iban(country: &str, bban: &str) -> String {
+            let rearranged = format!("{bban}{country}00");
+            let mut rem: u32 = 0;
+            for c in rearranged.chars() {
+                if let Some(d) = c.to_digit(10) {
+                    rem = (rem * 10 + d) % 97;
+                } else {
+                    rem = (rem * 100 + (c as u32 - 'A' as u32 + 10)) % 97;
+                }
+            }
+            let check = 98 - rem;
+            format!("{country}{check:02}{bban}")
+        }
+
+        // A correctly-sized GB IBAN (22 chars: GB + 2 check + 18 BBAN) is valid.
+        let good_gb = make_iban("GB", "WEST12345698765432");
+        assert_eq!(good_gb.len(), 22);
+        assert!(iban_is_valid(&good_gb));
+
+        // A GB-prefixed string with a SHORT (14-char) BBAN → 18 chars. It passes
+        // the mod-97 checksum by construction, so the old `len in 15..=34` gate
+        // accepted it — but GB IBANs are exactly 22, so it is not a real account
+        // and the registered-length gate now rejects it.
+        let short_gb = make_iban("GB", "WEST1234569876");
+        assert_eq!(short_gb.len(), 18);
+        assert!(
+            iban_mod97_valid(&short_gb),
+            "constructed to pass the checksum (the old gate would accept it)"
+        );
+        assert!(
+            !iban_is_valid(&short_gb),
+            "wrong length for GB (22) must be rejected: {short_gb}"
+        );
+        // …and end-to-end through the scanner.
+        assert!(ibans(&format!("pay {short_gb} now")).is_empty());
+
+        // An UNREGISTERED country code falls back to the 15..=34 spec range (never
+        // a false negative on a future registry addition): a 20-char ZZ IBAN with
+        // a valid checksum is still accepted.
+        let zz = make_iban("ZZ", "1234567890123456");
+        assert_eq!(zz.len(), 20);
+        assert!(iban_is_valid(&zz), "unknown CC falls back to the spec range");
+    }
