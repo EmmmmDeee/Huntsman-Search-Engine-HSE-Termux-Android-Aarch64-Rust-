@@ -440,8 +440,18 @@ pub(super) fn extract_entities(
     // infrastructure, not leaked PII — the same policy `extract_stealer_entities`
     // applies in oathnet_pro.
     if let Some(url) = val_str(item, "url").or_else(|| val_str(item, "url_str")) {
-        if url.len() >= 4 && seen.insert(format!("@url:{}", url.to_lowercase())) {
-            let mut e = Entity::new(EntityKind::Url, &url, 0.60, scan_id);
+        let u = url.trim();
+        // Mirror oathnet_pro's stealer Url gate: only a real web URL (an `http(s)`
+        // scheme AND a dotted host) is a captured login surface. The old bare
+        // `len >= 4` admitted native-app URIs (`app://…`), scheme-less junk, and
+        // capture sentinels the sibling parser rejects — minting bogus `Url` nodes
+        // that then misdirect crawl/DNS expansion. Single-sourced with
+        // `oathnet_pro::stealer` so the two stealer consumers can't drift.
+        if u.starts_with("http")
+            && u.contains('.')
+            && seen.insert(format!("@url:{}", u.to_lowercase()))
+        {
+            let mut e = Entity::new(EntityKind::Url, u, 0.60, scan_id);
             e.tag("see-know");
             e.tag("stealer");
             e.add_evidence(ev.clone());

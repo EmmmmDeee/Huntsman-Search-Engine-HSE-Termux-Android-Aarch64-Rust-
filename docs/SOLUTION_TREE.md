@@ -2896,3 +2896,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   not a social search, so both social techniques drop). Pinned in the
   `attack_overrides_..._precisely` guard. `username_variants` deliberately keeps
   T1589.003 and is untouched. Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-SEEKNOW-URLGATE: the SeekNow stealer URL admission gate now
+  matches its oathnet_pro twin.** `see_know::extract` minted the stealer `url`/`url_str`
+  field as a `Url` on a bare `len >= 4` — no scheme, no host — while the sibling
+  `oathnet_pro::stealer`, whose model see_know's own comment claims to mirror, gates the
+  identical field on `starts_with("http") && contains('.')`. So a native-app URI, a
+  scheme-less fragment, or a sentinel ≥4 chars became a bogus `Url` node (which then
+  misdirects crawl/DNS/cert expansion of a login surface) that oathnet_pro rejects.
+  Applied the twin's gate (trim + scheme + dotted host), single-sourcing the admission
+  rule; the paired `<username>@<url>` Credential stays ungated, as in oathnet_pro (a
+  login for a native surface is still real). Test:
+  `extract_entities_rejects_non_web_stealer_url_but_keeps_the_credential`. Gate green.
+  Paired: `PROBLEM_TREE` §8 — same commit.

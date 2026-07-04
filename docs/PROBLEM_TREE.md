@@ -3939,3 +3939,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `username_search` cycle; `username_variants` deliberately keeps T1589.003 (a conscious
   convention) and is untouched. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4549). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Parse-layer precision: the SeekNow stealer URL admission gate was
+  weaker than its oathnet_pro twin — a bare `len >= 4`.** Workflow-confirmed
+  single-source drift. `see_know::extract::extract_entities` mints the stealer `url` /
+  `url_str` field as a `Url` entity on `url.len() >= 4` alone — no scheme, no host —
+  while its sibling `oathnet_pro::stealer` (whose model the see_know comment claims to
+  mirror: "exactly OathNet's stealer model") gates the identical field on
+  `u.starts_with("http") && u.contains('.')`. So a native-app URI (`android://…`), a
+  scheme-less fragment, or a capture sentinel ≥4 chars became a bogus `Url` node in
+  see_know that oathnet_pro rejects — and a phantom `Url` misdirects the crawl / DNS /
+  cert expansion that follows a captured login surface. Fixed by mirroring the twin's
+  gate (trim, then `starts_with("http") && contains('.')`), single-sourcing the
+  admission rule so the two stealer consumers can't drift again; the paired
+  `<username>@<url>` `Credential` stays ungated (a login for a native-app surface is
+  still a real credential), exactly as oathnet_pro keeps it. Test delta:
+  `extract_entities_rejects_non_web_stealer_url_but_keeps_the_credential` (an
+  `android://…` url mints no `Url` but still yields the `Credential`); the existing
+  `extract_entities_spiders_stealer_url_into_pivots` (a real `https://` surface) still
+  passes. Gate green: fmt/clippy/doc clean, full suite 0 failures (4550). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

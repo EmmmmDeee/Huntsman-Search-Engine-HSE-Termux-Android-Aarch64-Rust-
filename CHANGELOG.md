@@ -343,6 +343,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The SeekNow stealer parser no longer mints non-web URIs as URL entities.** It accepted
+  any stealer `url` field of length ≥ 4 as a `Url`, while the equivalent oathnet_pro stealer
+  parser requires an `http(s)` scheme and a dotted host — so a native-app URI or scheme-less
+  fragment became a bogus URL node that then misdirected crawl/DNS/certificate expansion. It
+  now applies the same scheme+host gate as its sibling; the paired `username@url` credential
+  is still captured (a login for a native surface remains a real credential). Regression test
+  `extract_entities_rejects_non_web_stealer_url_but_keeps_the_credential`.
 - **Five more modules no longer over-claim MITRE ATT&CK T1589.003 (Employee Names).**
   `streaming_probe`, `gaming_profile`, `discord_snowflake`, `structured_id`, and
   `fediverse` inherited the Social category's default technique set including Employee

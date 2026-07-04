@@ -394,6 +394,41 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn extract_entities_rejects_non_web_stealer_url_but_keeps_the_credential() {
+        use serde_json::json;
+        // A stealer row whose `url` is a native-app URI, not a web login surface.
+        // It must NOT mint a `Url` entity (the sibling oathnet_pro parser rejects
+        // the same value with its scheme+dot gate) — but the login↔surface
+        // Credential is still captured (a login for a native surface is real).
+        let item = json!({
+            "dbname": "RedlineStealer",
+            "username": "victim_login",
+            "password": "hunter2",
+            "url": "android://com.example.app",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim_login",
+            "scan",
+            "stealer",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Url),
+            "a non-web (scheme-less/native-app) stealer URL must not mint a Url entity"
+        );
+        assert!(
+            result.entities.iter().any(|e| e.kind == EntityKind::Credential
+                && e.value == "victim_login@android://com.example.app"),
+            "the login↔surface Credential is still captured for a native-app surface"
+        );
+    }
+
+    #[test]
     fn extract_entities_enriches_a_breach_hash_with_offline_intelligence() {
         use serde_json::json;
         // A breach row carrying a leaked HASH (not a plaintext). The credential path
