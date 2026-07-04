@@ -2,7 +2,9 @@ use super::account::{
     ProfileUserResp, WigleAccountStatus, account_status, account_status_cache, is_unverified,
     status_from_profile,
 };
-use super::emit::{emit_bssid_entities, extract_bluetooth_intel, extract_cell_intel};
+use super::emit::{
+    emit_bssid_entities, extract_bluetooth_intel, extract_cell_intel, street_qualified_address,
+};
 use super::*;
 use crate::core::{
     entity::EntityKind,
@@ -27,6 +29,8 @@ fn wifi_ap_entities_emit_each_aps_own_observed_position() {
         region: None,
         country: None,
         postalcode: None,
+        road: None,
+        housenumber: None,
     };
     let results = vec![
         net("AA:BB:CC:DD:EE:01", Some((-27.4766, 153.0280))), // real position
@@ -190,6 +194,8 @@ fn extract_cell_intel_emits_dominant_carrier_as_organisation() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
             Network {
                 ssid: Some("Telstra".into()),
@@ -202,6 +208,8 @@ fn extract_cell_intel_emits_dominant_carrier_as_organisation() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
             Network {
                 ssid: Some("Vodafone".into()),
@@ -214,6 +222,8 @@ fn extract_cell_intel_emits_dominant_carrier_as_organisation() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
         ],
     };
@@ -249,6 +259,8 @@ fn extract_cell_intel_passes_non_generic_carrier_through() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
             Network {
                 ssid: Some("AcmeMobileOps".into()),
@@ -261,6 +273,8 @@ fn extract_cell_intel_passes_non_generic_carrier_through() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
         ],
     };
@@ -290,6 +304,8 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
             Network {
                 ssid: None,
@@ -302,6 +318,8 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
             Network {
                 ssid: None,
@@ -314,6 +332,8 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
                 region: None,
                 country: None,
                 postalcode: None,
+                road: None,
+                housenumber: None,
             },
         ],
     };
@@ -355,6 +375,8 @@ fn extract_bluetooth_intel_emits_at_most_three_mac_entities() {
             region: None,
             country: None,
             postalcode: None,
+            road: None,
+            housenumber: None,
         });
     }
     let resp = Resp {
@@ -389,6 +411,8 @@ fn extract_bluetooth_intel_skips_short_macs() {
             region: None,
             country: None,
             postalcode: None,
+            road: None,
+            housenumber: None,
         }],
     };
     let mut r = ModuleResult::new();
@@ -542,6 +566,8 @@ fn emit_bssid_entities_skips_when_no_location_data() {
         region: None,
         country: None,
         postalcode: None,
+        road: None,
+        housenumber: None,
     };
     let r = emit_bssid_entities("AA:BB:CC:DD:EE:FF", NetworkKind::Wifi, &[net], "test");
     assert!(r.entities.is_empty());
@@ -560,6 +586,8 @@ fn emit_bssid_entities_tags_cell_lookup_with_cell_located() {
         region: Some("QLD".into()),
         country: Some("AU".into()),
         postalcode: None,
+        road: None,
+        housenumber: None,
     };
     let r = emit_bssid_entities("310-410-12345", NetworkKind::Cell, &[net], "test");
     assert!(
@@ -587,6 +615,8 @@ fn emit_bssid_entities_tags_bluetooth_lookup_with_bluetooth_located() {
         region: Some("England".into()),
         country: Some("GB".into()),
         postalcode: None,
+        road: None,
+        housenumber: None,
     };
     let r = emit_bssid_entities("DD:EE:FF:00:11:22", NetworkKind::Bluetooth, &[net], "test");
     assert!(
@@ -621,4 +651,53 @@ fn is_generic_ssid_rejects_custom_names() {
     assert!(!is_generic_ssid("Smith-Family"));
     assert!(!is_generic_ssid("Bamford-Residence"));
     assert!(!is_generic_ssid(""));
+}
+
+/// A single-BSSID WiGLE detail lookup that resolves to a house number + road
+/// must surface the STREET-LEVEL address — the precise physical location the
+/// paid lookup provides — not just the coarse city/region/country locality.
+#[test]
+fn street_qualified_address_leads_with_house_number_and_road() {
+    let net: Network = serde_json::from_value(serde_json::json!({
+        "housenumber": "2771",
+        "road": "Stillwell Avenue",
+        "city": "New York",
+        "region": "NY",
+        "country": "US",
+    }))
+    .unwrap();
+    assert_eq!(
+        street_qualified_address(&net).as_deref(),
+        Some("2771 Stillwell Avenue, New York, NY, US"),
+    );
+}
+
+/// A road with no house number still leads the address with the street.
+#[test]
+fn street_qualified_address_uses_road_without_house_number() {
+    let net: Network = serde_json::from_value(serde_json::json!({
+        "road": "Stillwell Avenue",
+        "city": "New York",
+        "country": "US",
+    }))
+    .unwrap();
+    assert_eq!(
+        street_qualified_address(&net).as_deref(),
+        Some("Stillwell Avenue, New York, US"),
+    );
+}
+
+/// Without any street, the address is the prior city/region/country locality.
+#[test]
+fn street_qualified_address_falls_back_to_locality() {
+    let net: Network = serde_json::from_value(serde_json::json!({
+        "city": "New York",
+        "region": "NY",
+        "country": "US",
+    }))
+    .unwrap();
+    assert_eq!(
+        street_qualified_address(&net).as_deref(),
+        Some("New York, NY, US"),
+    );
 }

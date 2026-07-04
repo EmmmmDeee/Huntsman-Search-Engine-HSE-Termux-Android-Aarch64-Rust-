@@ -139,6 +139,43 @@ pub(super) fn extract_bluetooth_intel(
     }));
 }
 
+/// Compose the most precise postal address a WiGLE detail record supports for a
+/// located network: the street (`"<housenumber> <road>"`, the street-level
+/// precision a single-AP lookup resolves) leading, then city, region, country.
+/// Returns `None` when too little locality is present to be meaningful (fewer
+/// than two components and no street). Pure, so it is unit-testable.
+pub(super) fn street_qualified_address(net: &Network) -> Option<String> {
+    let clean = |o: &Option<String>| {
+        o.as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_owned)
+    };
+
+    // Street: "<housenumber> <road>" when both present, else the road alone.
+    let street = match (clean(&net.housenumber), clean(&net.road)) {
+        (Some(num), Some(road)) => Some(format!("{num} {road}")),
+        (None, Some(road)) => Some(road),
+        _ => None,
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(street) = &street {
+        parts.push(street.clone());
+    }
+    parts.extend(
+        [clean(&net.city), clean(&net.region), clean(&net.country)]
+            .into_iter()
+            .flatten(),
+    );
+    // A street is itself a precise locator worth emitting; otherwise require ≥2
+    // locality components (the prior threshold) so a bare "US" is not minted.
+    if parts.is_empty() || (street.is_none() && parts.len() < 2) {
+        return None;
+    }
+    Some(parts.join(", "))
+}
+
 /// Emit Address + Coordinates entities for a successful BSSID
 /// detail lookup. Tags include the observation type so downstream
 /// correlators can distinguish a WiFi-located MAC from a
@@ -164,20 +201,17 @@ pub(super) fn emit_bssid_entities(
     };
     let kind_label = kind.as_str();
 
-    let parts: Vec<&str> = [
-        net.city.as_deref(),
-        net.region.as_deref(),
-        net.country.as_deref(),
-    ]
-    .iter()
-    .filter_map(|p| *p)
-    .filter(|p| !p.is_empty())
-    .collect();
-    if parts.len() >= 2 {
-        let addr_str = parts.join(", ");
+    if let Some(addr_str) = street_qualified_address(net) {
+        let street_level = net.housenumber.is_some() || net.road.is_some();
         let mut addr = Entity::new(EntityKind::Address, &addr_str, 0.70, scan_id);
         addr.tag("wigle");
         addr.tag(observation_tag);
+        // A single-AP lookup that resolves to a house-number/road is a
+        // street-level physical fix — flag it so downstream geo convergence can
+        // prefer it over coarser city/country locality.
+        if street_level {
+            addr.tag("street-level");
+        }
         addr.add_evidence(
             Evidence::new(SRC, format!("WiGLE {kind_label} BSSID lookup for {bssid}"))
                 .with_attr("bssid", bssid)

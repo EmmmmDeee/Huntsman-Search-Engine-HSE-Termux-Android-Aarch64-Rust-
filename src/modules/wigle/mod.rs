@@ -74,6 +74,13 @@ struct Network {
     country: Option<String>,
     #[serde(default)]
     postalcode: Option<String>,
+    // Street-level components WiGLE's detail/search responses carry for a
+    // located access point — the precise physical address the module used to
+    // discard, keeping only the city/region/country.
+    #[serde(default)]
+    road: Option<String>,
+    #[serde(default)]
+    housenumber: Option<String>,
 }
 
 pub(super) const SRC: &str = "wigle";
