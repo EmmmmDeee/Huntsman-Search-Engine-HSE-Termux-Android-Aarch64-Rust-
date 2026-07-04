@@ -72,18 +72,77 @@ fn resp(json: serde_json::Value) -> NominatimResp {
 fn forward_geocode_shapes_confidence_by_au_relevance() {
     // An AU result is a strong on-region anchor; a foreign one is a demoted
     // candidate that won't be expanded or counted as confirmed.
-    let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", "scan");
+    // No boundingbox → the prior flat baseline confidence is preserved.
+    let au = build_forward_entity(-27.4766, 153.0166, "-27.476600,153.016600", None, "scan");
     assert!((au.confidence - 0.70).abs() < 1e-9);
     assert!(au.has_tag("au-relevant"));
     assert!(au.has_tag("au-state:QLD")); // Brisbane
     assert!(au.has_tag("geocoded"));
     assert!(!au.has_tag("candidate"));
 
-    let foreign = build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", "scan");
+    let foreign = build_forward_entity(51.5074, -0.1278, "51.507400,-0.127800", None, "scan");
     assert!((foreign.confidence - 0.40).abs() < 1e-9);
     assert!(foreign.has_tag("off-region"));
     assert!(foreign.has_tag("candidate"));
     assert!(!foreign.has_tag("au-relevant"));
+}
+
+/// A precise (small-boundingbox) AU match must outrank a coarse (city-sized)
+/// one: higher confidence and a finer `geo-precision:*` class, so a building-
+/// level pin is not treated the same as a whole-city centroid. This is the
+/// accuracy fix — a coarse match must not masquerade as a precise one.
+#[test]
+fn forward_geocode_confidence_scales_with_match_precision() {
+    // Brisbane (QLD). A ~30 m building bbox vs a ~40 km city bbox.
+    let precise = build_forward_entity(
+        -27.4766,
+        153.0166,
+        "-27.476600,153.016600",
+        Some(0.03),
+        "scan",
+    );
+    let coarse = build_forward_entity(
+        -27.4700,
+        153.0200,
+        "-27.470000,153.020000",
+        Some(20.0),
+        "scan",
+    );
+
+    assert!(
+        precise.confidence > coarse.confidence,
+        "a building-level match ({}) must beat a city-level one ({})",
+        precise.confidence,
+        coarse.confidence
+    );
+    assert!(
+        precise.confidence > 0.70,
+        "a precise AU pin exceeds the flat baseline, got {}",
+        precise.confidence
+    );
+    assert!(precise.has_tag("geo-precision:building"));
+    assert!(coarse.has_tag("geo-precision:locality"));
+    // Both are still on-region AU anchors.
+    assert!(precise.has_tag("au-relevant") && coarse.has_tag("au-relevant"));
+}
+
+/// The bbox uncertainty radius is half the corner-to-corner diagonal: a tight
+/// building box is sub-100 m; a city box is tens of km. Pure computation.
+#[test]
+fn bbox_precision_radius_reflects_match_extent() {
+    let sv = |v: &[f64]| v.iter().map(ToString::to_string).collect::<Vec<_>>();
+    // ~ a few metres of latitude/longitude around a point → well under 100 m.
+    let tight = bbox_precision_radius_km(&sv(&[-27.4767, -27.4765, 153.0165, 153.0167])).unwrap();
+    assert!(tight < 0.1, "tight box radius {tight} km should be < 100 m");
+    // ~ 0.4° box (~40+ km) → tens of km.
+    let wide = bbox_precision_radius_km(&sv(&[-27.7, -27.3, 152.8, 153.2])).unwrap();
+    assert!(
+        wide > 15.0,
+        "wide box radius {wide} km should be tens of km"
+    );
+    // Malformed boxes yield None.
+    assert!(bbox_precision_radius_km(&sv(&[-27.0, 153.0])).is_none());
+    assert!(bbox_precision_radius_km(&["x".into(), "y".into(), "z".into(), "w".into()]).is_none());
 }
 
 #[test]

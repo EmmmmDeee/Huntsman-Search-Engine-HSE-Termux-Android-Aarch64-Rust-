@@ -37,6 +37,11 @@ pub(super) struct NominatimResult {
     pub(super) display_name: Option<String>,
     #[serde(default, rename = "type")]
     pub(super) place_type: Option<String>,
+    // Nominatim's match extent `[south, north, west, east]` (strings) — the
+    // spatial size of what matched: metres for a building, tens of km for a
+    // whole city. Drives the precision radius + precision-scaled confidence.
+    #[serde(default)]
+    pub(super) boundingbox: Option<Vec<String>>,
 }
 
 // ── Nominatim response types (reverse) ──────────────────────────────
@@ -154,11 +159,20 @@ impl Geocode {
             && crate::util::geo::is_valid_coords(lat, lon)
         {
             let coords = format!("{lat:.6},{lon:.6}");
-            let mut e = build_forward_entity(lat, lon, &coords, &ctx.scan_id);
+            let precision_km = first
+                .boundingbox
+                .as_deref()
+                .and_then(bbox_precision_radius_km);
+            let mut e = build_forward_entity(lat, lon, &coords, precision_km, &ctx.scan_id);
             let mut ev = Evidence::new(SRC, format!("Geocoded \"{addr}\" \u{2192} {coords}"))
                 .with_attr("input_address", addr)
                 .with_attr("latitude", lat_str)
                 .with_attr("longitude", lon_str);
+            if let Some(r) = precision_km {
+                ev = ev
+                    .with_attr("precision_radius_km", format!("{r:.3}"))
+                    .with_attr("precision_class", precision_class(r));
+            }
             if let Some(dn) = &first.display_name {
                 ev = ev.with_attr("display_name", dn);
             }
@@ -209,11 +223,34 @@ impl Geocode {
 /// `candidate`) so it sits below the 0.50 expansion floor and is quarantined
 /// from confirmed correlations — an ambiguous address string can't drag an
 /// AU-focused scan off-region. Pure (no I/O); the caller attaches evidence.
-pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &str) -> Entity {
+pub(super) fn build_forward_entity(
+    lat: f64,
+    lon: f64,
+    coords: &str,
+    precision_km: Option<f64>,
+    scan_id: &str,
+) -> Entity {
     let in_au = crate::util::geo::is_in_australia(lat, lon);
-    let confidence = if in_au { 0.70 } else { 0.40 };
+    // Confidence: an on-region (AU) fix is an anchor, scaled by how precise the
+    // match is — a building-level pin is trusted more than a whole-city
+    // centroid, and a coarse match is capped so it can't masquerade as precise.
+    // With no boundingbox the prior flat baseline (0.70 AU / 0.40 abroad) holds.
+    // Off-region matches stay demoted candidates regardless of precision (an
+    // ambiguous address must not drag an AU-focused scan off-region).
+    let confidence = match (in_au, precision_km.map(precision_class)) {
+        (true, Some("building")) => 0.85,
+        (true, Some("street")) => 0.78,
+        (true, Some("suburb")) => 0.70,
+        (true, Some("locality")) => 0.60,
+        (true, Some(_)) => 0.52, // region-sized — a weak on-region anchor
+        (true, None) => 0.70,    // baseline, precision unknown
+        (false, _) => 0.40,
+    };
     let mut e = Entity::new(EntityKind::Coordinates, coords, confidence, scan_id);
     e.tag("geocoded");
+    if let Some(r) = precision_km {
+        e.tag(format!("geo-precision:{}", precision_class(r)));
+    }
     if in_au {
         e.tag("au-relevant");
         if let Some(state) = crate::util::geo::au_state_for_coords(lat, lon) {
@@ -224,6 +261,40 @@ pub(super) fn build_forward_entity(lat: f64, lon: f64, coords: &str, scan_id: &s
         e.tag("candidate");
     }
     e
+}
+
+/// Uncertainty radius (km) of a Nominatim match from its `boundingbox`
+/// `[south, north, west, east]` (strings) — half the corner-to-corner diagonal.
+/// A house-number match spans metres; a whole city spans tens of km. `None` when
+/// the box is missing, malformed, or out of range. Pure, so it is unit-testable.
+pub(super) fn bbox_precision_radius_km(bbox: &[String]) -> Option<f64> {
+    let [south, north, west, east] = bbox else {
+        return None;
+    };
+    let south: f64 = south.parse().ok()?;
+    let north: f64 = north.parse().ok()?;
+    let west: f64 = west.parse().ok()?;
+    let east: f64 = east.parse().ok()?;
+    if !crate::util::geo::is_valid_coords(south, west)
+        || !crate::util::geo::is_valid_coords(north, east)
+    {
+        return None;
+    }
+    let diagonal = crate::util::geohash::haversine_km(south, west, north, east);
+    Some(diagonal / 2.0)
+}
+
+/// Precision class of a match given its uncertainty radius (km). Ordered from a
+/// building-level pin outward to a whole region; used for the `geo-precision:*`
+/// tag and confidence shaping.
+pub(super) fn precision_class(radius_km: f64) -> &'static str {
+    match radius_km {
+        r if r <= 0.15 => "building",
+        r if r <= 1.0 => "street",
+        r if r <= 5.0 => "suburb",
+        r if r <= 25.0 => "locality",
+        _ => "region",
+    }
 }
 
 /// AU-relevance verdict for a reverse-geocoded coordinate, deciding how much an
