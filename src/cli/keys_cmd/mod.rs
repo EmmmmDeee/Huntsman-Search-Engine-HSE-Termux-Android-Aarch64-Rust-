@@ -286,7 +286,13 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
                             println!("INVALID");
                         }
                         None => {
-                            println!("UNKNOWN (no validator for service)");
+                            // Indeterminate: no validator for the service, or a
+                            // transient probe outcome (429 / 5xx / timeout /
+                            // connect failure). Leave the key's status unchanged
+                            // rather than poisoning a possibly-valid credential.
+                            println!(
+                                "UNVERIFIED (transient error or no validator — status unchanged)"
+                            );
                         }
                     }
                     validated += 1;
