@@ -3978,3 +3978,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   do not, so their links are no longer dropped); the existing idempotency tests still
   pass. Gate green: fmt/clippy/doc clean, full suite 0 failures (4551). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Parse-layer precision: the email byte-scanners' local-part class
+  omitted `%`, truncating a `%`-containing mailbox.** Workflow-confirmed single-source
+  drift. The canonical `EMAIL_RE` local class is `[A-Za-z0-9._%+-]` (includes `%`, and
+  a unit test pins `with%percent@example.com` as a match), but both non-regex
+  byte-scanners — `util::extract::is_email_local_byte` (used by `page_emails`) and its
+  twin `web_crawler::crawl_util::is_email_char` — stopped at `%`, so
+  `with%percent@example.com` was carved down to a fabricated `percent@example.com`.
+  Added `%` to both predicates so they match the canonical class. Test delta:
+  `page_emails_keeps_a_percent_in_the_local_part` and
+  `email_extraction_keeps_a_percent_in_the_local_part` (each asserts the full
+  `%`-mailbox survives and cross-checks `EMAIL_RE`). Gate green: fmt/clippy/doc clean,
+  full suite 0 failures (4553). **Paired:** `SOLUTION_TREE` §5 — same commit.

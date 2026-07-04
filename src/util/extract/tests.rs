@@ -67,6 +67,17 @@ use super::*;
     }
 
     #[test]
+    fn page_emails_keeps_a_percent_in_the_local_part() {
+        // `%` is in the canonical EMAIL_RE local class; the byte-scanner must not
+        // truncate the mailbox at it (fail-before: yielded `percent@example.com`).
+        assert!(EMAIL_RE.is_match("with%percent@example.com"));
+        assert_eq!(
+            page_emails("mail with%percent@example.com now"),
+            ["with%percent@example.com"]
+        );
+    }
+
+    #[test]
     fn page_emails_drops_script_url_fragments() {
         // URL fragments glued to `@` during HTML stripping are not mailboxes
         // (the real-scan bug `viewtopic.phprose.cl@onet.eu`); a clean address in

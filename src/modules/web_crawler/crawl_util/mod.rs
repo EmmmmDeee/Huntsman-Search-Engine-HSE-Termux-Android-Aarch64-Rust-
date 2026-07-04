@@ -529,7 +529,10 @@ pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
 }
 
 pub(super) fn is_email_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' || b == b'+'
+    // Match the canonical `EMAIL_RE` local class `[A-Za-z0-9._%+-]` (includes `%`) so
+    // this byte-scanner doesn't truncate a `%`-containing mailbox at the `%` — the
+    // same class its `util::extract::page_emails` twin uses.
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+' | b'%')
 }
 
 pub(super) fn is_domain_char(b: u8) -> bool {

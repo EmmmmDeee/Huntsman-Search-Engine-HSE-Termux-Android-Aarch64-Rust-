@@ -138,6 +138,18 @@ use super::*;
     }
 
     #[test]
+    fn email_extraction_keeps_a_percent_in_the_local_part() {
+        // `%` is in the canonical EMAIL_RE local class, so the byte-scanner must not
+        // truncate the mailbox at it (matching its util::extract::page_emails twin).
+        let mut emails = HashSet::new();
+        extract_emails("reach with%percent@example.com today", &mut emails);
+        assert!(
+            emails.contains("with%percent@example.com"),
+            "the %-containing mailbox must not be truncated: {emails:?}"
+        );
+    }
+
+    #[test]
     fn email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts() {
         // This module's page byte-scanner is a third copy of the same email-mining
         // logic as `util::extract::page_emails`; it must not be more permissive.

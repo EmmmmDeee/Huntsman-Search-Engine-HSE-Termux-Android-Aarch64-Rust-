@@ -463,7 +463,11 @@ const SCRIPT_EXTS: &[&str] = &[
 ];
 
 fn is_email_local_byte(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+')
+    // Match the canonical `EMAIL_RE` local class `[A-Za-z0-9._%+-]`, which includes
+    // `%` — omitting it truncated a `%`-containing mailbox at the `%`, carving a
+    // fabricated shorter address (`with%percent@x` → `percent@x`) the regex accepts
+    // whole.
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+' | b'%')
 }
 
 fn is_domain_byte(b: u8) -> bool {

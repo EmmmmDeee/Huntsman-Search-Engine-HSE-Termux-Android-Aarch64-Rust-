@@ -343,6 +343,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Email addresses with a `%` in the local part are no longer truncated.** The two
+  non-regex email byte-scanners (`page_emails` and the web crawler's) stopped scanning the
+  local part at a `%`, even though the canonical email regex includes it — so
+  `with%percent@example.com` was carved down to `percent@example.com`. Both now accept `%`,
+  matching the canonical local-part class. Regression tests
+  `page_emails_keeps_a_percent_in_the_local_part` and
+  `email_extraction_keeps_a_percent_in_the_local_part`.
 - **Cross-scan history links are no longer dropped when one partner's value is a substring
   of another's.** The idempotency probes that decide whether an entity already carries a
   co-occurrence or relation-recall link matched the partner (and relation kind) as a bare

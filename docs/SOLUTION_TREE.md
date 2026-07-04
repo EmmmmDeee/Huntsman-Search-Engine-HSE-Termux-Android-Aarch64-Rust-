@@ -2919,3 +2919,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `bob`/`bob2`). Fixed both to match the delimited token (`` `{partner}` ``, `({kind})`).
   Test: `idempotency_probes_match_the_delimited_partner_token_not_a_substring`. Gate
   green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-EMAIL-PERCENT: the email byte-scanners accept `%` in the local
+  part, matching `EMAIL_RE`.** `util::extract::is_email_local_byte` (used by
+  `page_emails`) and the `web_crawler::crawl_util::is_email_char` twin omitted `%`,
+  truncating a `%`-containing mailbox (`with%percent@x` → `percent@x`) the canonical
+  regex accepts whole. Added `%` to both. Tests:
+  `page_emails_keeps_a_percent_in_the_local_part`,
+  `email_extraction_keeps_a_percent_in_the_local_part`. Gate green. Paired:
+  `PROBLEM_TREE` §8 — same commit.
