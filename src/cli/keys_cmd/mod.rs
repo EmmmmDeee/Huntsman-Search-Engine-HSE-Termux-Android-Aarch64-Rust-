@@ -508,7 +508,6 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             validate,
             dry_run,
         } => {
-            use crate::modules::oathnet_pro::key_harvest::identify_api_key;
             let path = std::path::Path::new(&file);
             if !path.exists() {
                 return Err(Error::Other(format!("TSV file not found: {file}")));
@@ -516,63 +515,8 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
             let content = std::fs::read_to_string(path)
                 .map_err(|e| Error::Other(format!("read {file}: {e}")))?;
 
-            let mut stats: std::collections::BTreeMap<&str, usize> =
-                std::collections::BTreeMap::new();
-            let mut imported = 0usize;
-            let mut skipped_nonkey = 0usize;
-            let mut skipped_dup = 0usize;
             let pool_snapshot_before = pool.total_keys();
-
-            for (lineno, line) in content.lines().enumerate() {
-                if line.is_empty() {
-                    continue;
-                }
-                // Header: source_file\tfield\ttags\tvalue\turl_or_context
-                if lineno == 0
-                    && (line.starts_with("source_file\t") || line.starts_with("source\t"))
-                {
-                    continue;
-                }
-                let fields: Vec<&str> = line.split('\t').collect();
-                if fields.len() < 4 {
-                    continue;
-                }
-                let source = fields[0];
-                let field_name = fields[1];
-                let value = fields[3].trim();
-                if value.is_empty() {
-                    continue;
-                }
-                // Only import entries that classify as known API keys.
-                // Plaintext dashboard passwords are deliberately skipped —
-                // they're account credentials, not API keys, and using
-                // them would be account takeover rather than API use.
-                let Some((service, _)) = identify_api_key(value) else {
-                    skipped_nonkey += 1;
-                    continue;
-                };
-                if dry_run {
-                    println!(
-                        "would import: service={service:<18}  src={source:<32}  field={field_name}"
-                    );
-                    *stats.entry(service).or_insert(0) += 1;
-                    imported += 1;
-                    continue;
-                }
-                let mut entry = key_pool::KeyEntry::new(value);
-                entry.status = key_pool::KeyStatus::Untested;
-                entry.discovered_at = Some(crate::core::entity::unix_now());
-                entry.discovered_by = Some(format!("tsv_import:{source}"));
-                entry.notes = Some(format!(
-                    "Imported from TSV file: {file} (field={field_name})"
-                ));
-                if pool.add(service, entry) {
-                    imported += 1;
-                    *stats.entry(service).or_insert(0) += 1;
-                } else {
-                    skipped_dup += 1;
-                }
-            }
+            let summary = run_tsv_import(&content, &file, dry_run, &pool);
 
             if !dry_run {
                 key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
@@ -580,45 +524,51 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
 
             let added = pool.total_keys() as i64 - pool_snapshot_before as i64;
             println!(
-                "\nTSV import {}: {imported} key(s) recognised, {skipped_nonkey} non-key \
-                 values skipped (plaintext passwords / hashes / etc.), {skipped_dup} \
-                 duplicates, {added} net additions to pool.",
-                if dry_run { "DRY-RUN" } else { "complete" }
+                "\nTSV import {}: {} key(s) recognised, {} non-key values skipped (plaintext \
+                 passwords / hashes / etc.), {} non-poolable (no vendor identity — surfaced as \
+                 ApiKey entities elsewhere, not pooled), {} duplicates, {added} net additions \
+                 to pool.",
+                if dry_run { "DRY-RUN" } else { "complete" },
+                summary.imported,
+                summary.skipped_nonkey,
+                summary.skipped_nonpoolable,
+                summary.skipped_dup,
             );
-            if !stats.is_empty() {
+            if !summary.stats.is_empty() {
                 println!("\nBy service:");
-                for (svc, n) in &stats {
+                for (svc, n) in &summary.stats {
                     let roi = crate::util::key_roi::classify(svc);
                     println!("  {svc:<18}  {n:>4}  ({} tier)", roi.label());
                 }
             }
 
             if validate && !dry_run {
-                println!("\nValidating imported keys against live endpoints...");
-                let snap = pool.snapshot();
+                // Validate exactly the (service, value) pairs THIS run added —
+                // tracked explicitly in `summary.imported_this_run` — never
+                // the whole pool. The prior implementation matched entries by
+                // comparing the TSV row's own internal `source_file` column
+                // against the CLI's `file` argument, which are almost never
+                // equal, so its fallback clause silently widened to "every
+                // entry from any prior tsv_import run, ever" — re-testing
+                // historical keys against live endpoints on every subsequent
+                // import.
+                println!(
+                    "\nValidating {} key(s) imported by this run against live endpoints...",
+                    summary.imported_this_run.len()
+                );
                 let mut active = 0u32;
                 let mut invalid = 0u32;
-                for (svc, entries) in &snap.services {
-                    for entry in entries {
-                        if entry.discovered_by.as_deref() != Some(&format!("tsv_import:{file}"))
-                            && !entry
-                                .discovered_by
-                                .as_deref()
-                                .is_some_and(|s| s.starts_with("tsv_import:"))
-                        {
-                            continue;
+                for (svc, value) in &summary.imported_this_run {
+                    match key_pool::validate_key(svc, value).await {
+                        Some(true) => {
+                            pool.mark_validated(svc, value, true);
+                            active += 1;
                         }
-                        match key_pool::validate_key(svc, &entry.value).await {
-                            Some(true) => {
-                                pool.mark_validated(svc, &entry.value, true);
-                                active += 1;
-                            }
-                            Some(false) => {
-                                pool.mark_validated(svc, &entry.value, false);
-                                invalid += 1;
-                            }
-                            None => {}
+                        Some(false) => {
+                            pool.mark_validated(svc, value, false);
+                            invalid += 1;
                         }
+                        None => {}
                     }
                 }
                 key_pool::save_pool(&pool).map_err(|e| Error::Other(format!("save pool: {e}")))?;
@@ -633,6 +583,107 @@ pub(super) async fn cmd_keys(action: KeysAction) -> Result<()> {
 /// the byte-indexing panic on multi-byte UTF-8 values.
 fn char_prefix(s: &str, n: usize) -> String {
     s.chars().take(n).collect()
+}
+
+/// Outcome of one `run_tsv_import` pass, everything the caller's summary
+/// print + `--validate` step need.
+#[derive(Debug)]
+struct TsvImportSummary {
+    stats: std::collections::BTreeMap<&'static str, usize>,
+    imported: usize,
+    skipped_nonkey: usize,
+    skipped_nonpoolable: usize,
+    skipped_dup: usize,
+    /// (service, value) pairs actually added to the pool by THIS call —
+    /// tracked explicitly so `--validate` tests only what this invocation
+    /// imported, not every key any prior `import-tsv` run ever added.
+    imported_this_run: Vec<(&'static str, String)>,
+}
+
+/// Classify and import every TSV row's `value` column as an API key. No
+/// network I/O (that's the caller's separate `--validate` step) — takes
+/// `pool: &key_pool::KeyPool` directly so it is unit-testable against a
+/// fresh in-memory pool, not just the process-wide `global_pool()` singleton.
+fn run_tsv_import(
+    content: &str,
+    file: &str,
+    dry_run: bool,
+    pool: &crate::util::key_pool::KeyPool,
+) -> TsvImportSummary {
+    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_pool::{KeyEntry, KeyStatus};
+
+    let mut summary = TsvImportSummary {
+        stats: std::collections::BTreeMap::new(),
+        imported: 0,
+        skipped_nonkey: 0,
+        skipped_nonpoolable: 0,
+        skipped_dup: 0,
+        imported_this_run: Vec::new(),
+    };
+
+    for (lineno, line) in content.lines().enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        // Header: source_file\tfield\ttags\tvalue\turl_or_context
+        if lineno == 0 && (line.starts_with("source_file\t") || line.starts_with("source\t")) {
+            continue;
+        }
+        let fields: Vec<&str> = line.split('\t').collect();
+        if fields.len() < 4 {
+            continue;
+        }
+        let source = fields[0];
+        let field_name = fields[1];
+        let value = fields[3].trim();
+        if value.is_empty() {
+            continue;
+        }
+        // Only import entries that classify as known API keys. Plaintext
+        // dashboard passwords are deliberately skipped — they're account
+        // credentials, not API keys, and using them would be account
+        // takeover rather than API use.
+        let Some((service, _)) = identify_api_key(value) else {
+            summary.skipped_nonkey += 1;
+            continue;
+        };
+        // Some shape-classified services carry no vendor identity
+        // (`generic_hex`, `url_param_key`, …) and are never poolable —
+        // `pool.add` rejects them just like a genuine duplicate value would,
+        // so check up front (before the dry-run branch, so a dry run
+        // accurately previews what a real run would do) and tally the two
+        // cases separately instead of mislabelling every non-poolable
+        // rejection as a "duplicate" (the same distinction `KeysAction::Add`
+        // already makes explicit).
+        if !crate::util::service_defs::is_poolable_service(service) {
+            summary.skipped_nonpoolable += 1;
+            continue;
+        }
+        if dry_run {
+            println!("would import: service={service:<18}  src={source:<32}  field={field_name}");
+            *summary.stats.entry(service).or_insert(0) += 1;
+            summary.imported += 1;
+            continue;
+        }
+        let mut entry = KeyEntry::new(value);
+        entry.status = KeyStatus::Untested;
+        entry.discovered_at = Some(crate::core::entity::unix_now());
+        entry.discovered_by = Some(format!("tsv_import:{source}"));
+        entry.notes = Some(format!(
+            "Imported from TSV file: {file} (field={field_name})"
+        ));
+        let value_owned = value.to_string();
+        if pool.add(service, entry) {
+            summary.imported += 1;
+            *summary.stats.entry(service).or_insert(0) += 1;
+            summary.imported_this_run.push((service, value_owned));
+        } else {
+            summary.skipped_dup += 1;
+        }
+    }
+
+    summary
 }
 
 /// Format one retention-bank entry as a display row. OSINT-provider keys are
