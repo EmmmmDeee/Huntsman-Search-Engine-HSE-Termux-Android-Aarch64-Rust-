@@ -197,6 +197,28 @@ async fn import_extracts_wifi_bssid_as_geolocation_seed() {
 }
 
 #[tokio::test]
+async fn import_extracts_every_distinct_mac_address_uncapped() {
+    use crate::core::entity::EntityKind;
+    // 60 distinct BSSIDs — more than the old, arbitrary 50-per-import cap this
+    // guards against reintroducing. `push_macs` must emit every one:
+    // `crate::util::extract::macs` already dedupes, so the cap protected
+    // nothing real.
+    let mut body = String::from("URL: https://x.com/login\nUsername: victim\n");
+    for i in 0..60u32 {
+        body.push_str(&format!("Router BSSID: A4:B1:C2:00:11:{i:02X}\n"));
+    }
+    let (ents, _label) = entities_from_upload(&body, "s").await.unwrap();
+    let mac_count = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .count();
+    assert_eq!(
+        mac_count, 60,
+        "every distinct BSSID must be emitted, not capped at the old arbitrary 50"
+    );
+}
+
+#[tokio::test]
 async fn import_extracts_crypto_wallet_as_chain_seed() {
     use crate::core::entity::EntityKind;
     // The genesis Bitcoin address — checksum-valid, so it survives validation.
