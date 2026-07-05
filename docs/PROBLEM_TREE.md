@@ -1088,6 +1088,46 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   (Employee Names) and `T1591.001` (Determine Physical Locations). **P2** (a
   MITRE-provenance correctness gap on a minority of one module's emitted
   entity kinds, not a crash or PII leak).
+- **`[x]` T2.32 · `name_intel` had NO `attack_techniques()` override at all,
+  silently inheriting the People category default's over/under-claim
+  already fixed for `pgp`** — with `hse selftest`/`hse diagnostics` both
+  clean (9/9 self-test checks; doctor+selftest+engines all pass — the
+  search-engine CAPTCHA/throttle statuses are expected environment
+  limitations, not bugs), pivoted to a direct code-grounded discovery pass
+  on `name_intel`, one of the highest-yield/noisiest modules on a real
+  "Brett Lawnton" scan (NAMINT-style username/email/pivot permutation from
+  a `FullName` seed). Found the module never overrides `attack_techniques()`
+  at all, so it silently inherits the full `People` category default
+  (`T1589.003` Employee Names + `T1591.004` Identify Roles) — the EXACT
+  over/under-claim shape `pgp`'s own comment already documents and fixed:
+  "PGP key lookup surfaces the key owner's real name (T1589.003) and email
+  address (T1589.002) — but carries no role/organisational information, so
+  T1591.004 is over-claimed." `name_intel` emits the identical pair (a
+  subject-anchor `Person` plus derived speculative `Email` permutations)
+  with zero role/employer logic anywhere in the file (confirmed by full
+  read of `mod.rs` and `permute/mod.rs`) — so `T1591.004` is equally
+  over-claimed here, and `T1589.002` (Email Addresses) was never credited
+  at all. A separate investigation into `permute::parse`'s honorific-
+  handling for degenerate 2-token names ("Dr Ali", "John Jr") initially
+  looked like a fabrication bug (an honorific literally becoming the
+  parsed first/last name) but was REFUTED on closer reading: the existing
+  test `suffix_not_stripped_from_two_word_name` explicitly documents this
+  as deliberate "safety guard" behaviour (`p("John Jr")` → `last == "jr"`
+  is the pinned, intended contract, not an oversight) — logged here as a
+  refuted lead per this loop's verify-independently discipline, not pursued
+  as a fix. → **Solution:** declared the precise pair `["T1589.002",
+  "T1589.003"]`, identical to `pgp`'s already-established fix, dropping the
+  over-claimed `T1591.004` and adding the missing `T1589.002`. The
+  search-pivot `Url` entities earn no separate technique (they are
+  unexecuted, offline-constructed query links per the module's own "no
+  network calls" doc comment — mirroring `employer_pivot`'s precedent of
+  not crediting derived `Url` entities their own technique). Replaced the
+  pre-existing weak `attack_techniques_non_empty` test (which would pass
+  against the buggy inherited default too, since it only checked
+  non-emptiness) with a precise regression test matching this arc's
+  established convention. **P2** (a MITRE-provenance correctness gap
+  affecting a majority of one high-traffic module's emitted entity kinds,
+  not a crash or PII leak).
 
 ---
 
@@ -5276,3 +5316,38 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `huggingface_user`, `hexpm_user`) for future cycles. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4412 lib tests), architecture
   suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 44 (new T2.32): `name_intel` had NO
+  `attack_techniques()` override at all, silently inheriting the exact
+  over/under-claim `pgp` already fixed.** With the release binary confirmed
+  built, ran `hse selftest` (9/9 pass) and `hse diagnostics` (doctor +
+  selftest + engines all pass — search-engine CAPTCHA/throttle statuses are
+  expected environmental limitations, not bugs) — neither surfaced a gap,
+  so pivoted to a direct code-grounded discovery pass on `name_intel`, one
+  of the highest-yield/noisiest modules flagged in earlier "Brett Lawnton"
+  scan diagnostics (NAMINT-style username/email/pivot permutation from a
+  `FullName` seed). Found the module never overrides `attack_techniques()`,
+  so it silently inherits the full `People` category default (`T1589.003`
+  + `T1591.004`) — the identical shape `pgp`'s own comment already
+  documents: a Person + Email-producing module over-claiming Identify Roles
+  with zero role/organisational logic anywhere, while never crediting Email
+  Addresses. Confirmed by full read of `mod.rs` and `permute/mod.rs`: the
+  module emits a subject-anchor `Person` and derived speculative `Email`
+  permutations, with zero role/employer logic anywhere. A parallel
+  investigation into `permute::parse`'s honorific-handling for degenerate
+  2-token names ("Dr Ali", "John Jr") initially looked like a fabrication
+  bug (an honorific literally becoming the parsed first/last name) but was
+  REFUTED on closer reading: `suffix_not_stripped_from_two_word_name`
+  already pins this as deliberate "safety guard" behaviour, not an
+  oversight — logged as a refuted lead, not pursued. → **Solution:**
+  declared the precise pair `["T1589.002", "T1589.003"]`, identical to
+  `pgp`'s established fix. The search-pivot `Url` entities earn no separate
+  technique (unexecuted, offline-constructed links, mirroring
+  `employer_pivot`'s precedent). Replaced the pre-existing weak
+  `attack_techniques_non_empty` test (which would pass against the buggy
+  inherited default too) with
+  `attack_techniques_matches_produced_entity_kinds` — fail-before confirmed
+  (reverted `mod.rs` to pre-fix `HEAD`; panicked on the missing `T1589.002`
+  assertion). No `tests/architecture.rs` pinning assertion referenced
+  `name_intel`. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4412 lib tests — a 1-for-1 test replacement, not a net addition),
+  architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -364,6 +364,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`name_intel`'s ATT&CK mapping no longer silently inherits an incorrect
+  category default.** The module never overrode `attack_techniques()`,
+  so it inherited the full People-category pair — over-claiming "Identify
+  Roles" (this module has no role/organisational logic anywhere) while
+  never crediting "Email Addresses" for the speculative emails it derives
+  from a name. Now declares the same precise pair already used by `pgp`
+  for an identical Person+Email shape. Regression test
+  `attack_techniques_matches_produced_entity_kinds`.
 - **`sourceforge_user`'s ATT&CK mapping now covers every entity kind the
   module actually produces.** The fifth instance of the same
   under-declared-coverage gap: its override already correctly credited the

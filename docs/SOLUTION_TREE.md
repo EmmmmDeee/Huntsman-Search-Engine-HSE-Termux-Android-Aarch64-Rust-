@@ -805,6 +805,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fail-before confirmed. 5 modules remain on the scoped sweep list
   (`cpan_user`, `gitea_user`, `codeberg_user`, `huggingface_user`,
   `hexpm_user`) for future cycles.
+- **`[x]` SOL-NAMEINTEL-ATTACK-COMPLETE · `name_intel` never overrode
+  `attack_techniques()` at all, silently inheriting the exact People
+  category over/under-claim `pgp` already fixed** — the module emits a
+  subject `Person` and derived speculative `Email` permutations with zero
+  role/organisational logic anywhere, so the inherited default's
+  `T1591.004` (Identify Roles) was over-claimed and `T1589.002` (Email
+  Addresses) was never credited. *Closes:* new node **T2.32**. ✅ 1 test
+  (`attack_techniques_matches_produced_entity_kinds`, replacing a
+  pre-existing weak `is_empty()`-only test), fail-before confirmed. A
+  parallel investigation into `permute::parse`'s honorific handling for
+  2-token names ("Dr Ali", "John Jr") was REFUTED — `parse()`'s
+  documented, tested "safety guard" behaviour, not a fabrication bug.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -876,6 +888,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CODEWARS-ATTACK-COMPLETE | T2.29 | `[x]` |
 | SOL-MASTODON-ATTACK-COMPLETE | T2.30 | `[x]` |
 | SOL-SOURCEFORGE-ATTACK-COMPLETE | T2.31 | `[x]` |
+| SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 
 ---
 
@@ -1006,7 +1019,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-DOCKERHUB-ATTACK-COMPLETE, 2026-07-05); **T2.29 `[x]`** ✅
   (SOL-CODEWARS-ATTACK-COMPLETE, 2026-07-05); **T2.30 `[x]`** ✅
   (SOL-MASTODON-ATTACK-COMPLETE, 2026-07-05); **T2.31 `[x]`** ✅
-  (SOL-SOURCEFORGE-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
+  (SOL-SOURCEFORGE-ATTACK-COMPLETE, 2026-07-05); **T2.32 `[x]`** ✅
+  (SOL-NAMEINTEL-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3919,3 +3933,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `huggingface_user`, `hexpm_user`) for future cycles. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4412 lib tests), architecture
   suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 44: SOL-NAMEINTEL-ATTACK-COMPLETE — `name_intel`
+  had NO `attack_techniques()` override at all, silently inheriting the
+  exact over/under-claim `pgp` already fixed.** `hse selftest`/`hse
+  diagnostics` both ran clean, so pivoted to a direct code-grounded
+  discovery pass on `name_intel` — one of the highest-yield/noisiest
+  modules flagged in earlier "Brett Lawnton" scan diagnostics. Found the
+  module never overrides `attack_techniques()`, inheriting the full
+  `People` default (`T1589.003` + `T1591.004`) — the identical shape
+  `pgp`'s own comment documents: a Person + Email-producing module
+  over-claiming Identify Roles with zero role/organisational logic
+  anywhere, never crediting Email Addresses. Confirmed by full read of
+  `mod.rs`/`permute/mod.rs`. A parallel investigation into
+  `permute::parse`'s honorific-handling for degenerate 2-token names ("Dr
+  Ali", "John Jr") — which initially looked like a name-fabrication bug —
+  was REFUTED on closer reading: `suffix_not_stripped_from_two_word_name`
+  already pins this as deliberate, tested "safety guard" behaviour.
+  Declared the precise pair `["T1589.002", "T1589.003"]`, identical to
+  `pgp`'s established fix; the search-pivot `Url` entities earn no
+  separate technique (unexecuted offline links, mirroring
+  `employer_pivot`'s precedent). *Closes:* new node **T2.32**. Tests:
+  replaced the pre-existing weak `attack_techniques_non_empty` test (which
+  would have passed against the buggy inherited default too) with
+  `attack_techniques_matches_produced_entity_kinds` — fail-before confirmed
+  (reverted `mod.rs` to pre-fix `HEAD`; panicked on the missing
+  `T1589.002` assertion). No `tests/architecture.rs` pinning assertion
+  referenced `name_intel`. Gate green: fmt/clippy/doc clean, full suite 0
+  failures (4412 lib tests — a 1-for-1 test replacement, not a net
+  addition), architecture suite 30/30. Paired: `PROBLEM_TREE` §8 — same
+  commit.
