@@ -88,7 +88,7 @@ fn cmd_status() -> Result<()> {
 
     let by_mcc = cell_db::count_by_mcc(&conn).map_err(|e| Error::Other(e.to_string()))?;
     if !by_mcc.is_empty() {
-        println!("\nBy MCC (top 10):");
+        println!("\n{}", mcc_header_line(by_mcc.len()));
         for (mcc, count) in by_mcc.iter().take(10) {
             println!("  MCC {mcc}: {count} towers");
         }
@@ -125,6 +125,18 @@ fn format_age(secs: u64) -> String {
         format!("{}h ago", secs / 3600)
     } else {
         format!("{}d ago", secs / 86400)
+    }
+}
+
+/// The "By MCC" header line for `hse cells status`. States the true total MCC
+/// count whenever the printed breakdown is truncated to the top 10 by tower
+/// count, so "(top 10)" can never read as "there are only 10" when there are
+/// more — a plain "By MCC:" when the full list already fits.
+fn mcc_header_line(total_mcc_count: usize) -> String {
+    if total_mcc_count > 10 {
+        format!("By MCC (top 10 of {total_mcc_count}):")
+    } else {
+        "By MCC:".to_string()
     }
 }
 

@@ -1,6 +1,6 @@
 //! Unit tests for `hse cells` CSV parsing and country-code helpers.
 
-use super::{mcc_for_country, parse_csv_line};
+use super::{mcc_for_country, mcc_header_line, parse_csv_line};
 
 // ── parse_csv_line ──────────────────────────────────────────────────────────
 
@@ -88,4 +88,19 @@ fn mcc_for_country_maps_gb_and_uk_to_234() {
 #[test]
 fn mcc_for_country_maps_nz_to_530() {
     assert_eq!(mcc_for_country("NZ"), Some(530));
+}
+
+// ── mcc_header_line ─────────────────────────────────────────────────────────
+
+#[test]
+fn mcc_header_line_states_the_true_total_when_truncated() {
+    // The bug: "By MCC (top 10)" read as if there were only 10, when a global
+    // OpenCelliD import easily spans 100+ countries.
+    assert_eq!(mcc_header_line(37), "By MCC (top 10 of 37):");
+}
+
+#[test]
+fn mcc_header_line_is_plain_when_the_full_list_already_fits() {
+    assert_eq!(mcc_header_line(10), "By MCC:");
+    assert_eq!(mcc_header_line(1), "By MCC:");
 }
