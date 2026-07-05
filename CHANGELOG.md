@@ -364,6 +364,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`email_parse`'s derived `Username` entities are now emitted in a
+  deterministic order.** The set of candidate username spelling variants
+  (detagged, digit-stripped, collapsed, split, plus initial-blend forms for
+  a two-token local part) was deduplicated via a `HashSet` and iterated
+  straight into the emitted entity list with no sort step — the same
+  determinism-leak class already fixed for `reddit_user`, `hacker_news`, and
+  `web_crawler`. A project-wide sweep confirms this was the last remaining
+  instance. Regression test
+  `username_candidates_emerge_in_deterministic_sorted_order`.
 - **`web_crawler`'s Domain, Email, Tracking-ID, and Phone entities are now
   emitted in a deterministic order.** Five separate `HashSet`-backed
   aggregations (subdomains, external domains, emails, web-analytics tracking

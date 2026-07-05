@@ -721,6 +721,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`),
   fail-before confirmed (reverted to pre-fix `HEAD` with the new test
   present — failed on the unsorted external-domain/email order).
+- **`[x]` SOL-EMAIL-USERNAME-ORDER-DETERMINISM · `email_parse`'s derived
+  username candidates no longer leak `HashSet` iteration order — a
+  project-wide sweep confirms this bug class is now closed** — a background
+  agent, tasked with sweeping ALL of `src/modules/` for the same shape before
+  assuming three prior fixes had closed it, found a 4th instance:
+  `candidates: HashSet<String>` (up to ~10 derived username spelling
+  variants) walked straight into the emitted `Vec<Entity>` with no sort. The
+  same sweep confirmed every other direct-`HashSet`-iteration site in
+  `src/modules/**/*.rs` already sorts before use. *Closes:* new node
+  **T2.26**. ✅ 1 test
+  (`username_candidates_emerge_in_deterministic_sorted_order`), fail-before
+  confirmed (reverted to pre-fix `HEAD` with the new test present —
+  panicked on the unsorted order).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -786,6 +799,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-USERNAME-SLUG-GATE | T2.23 | `[x]` |
 | SOL-HN-DOMAIN-DETERMINISM | T2.24 | `[x]` |
 | SOL-WEB-CRAWLER-ORDER-DETERMINISM | T2.25 | `[x]` |
+| SOL-EMAIL-USERNAME-ORDER-DETERMINISM | T2.26 | `[x]` |
 
 ---
 
@@ -910,7 +924,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-GREYNOISE-KEYED, 2026-07-05); **T2.23 `[x]`** ✅
   (SOL-USERNAME-SLUG-GATE, 2026-07-05); **T2.24 `[x]`** ✅
   (SOL-HN-DOMAIN-DETERMINISM, 2026-07-05); **T2.25 `[x]`** ✅
-  (SOL-WEB-CRAWLER-ORDER-DETERMINISM, 2026-07-05); T2.7 open;
+  (SOL-WEB-CRAWLER-ORDER-DETERMINISM, 2026-07-05); **T2.26 `[x]`** ✅
+  (SOL-EMAIL-USERNAME-ORDER-DETERMINISM, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3629,3 +3644,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   flagged as `redundant_closure_for_method_calls`; corrected to
   `.map(ToString::to_string)`. Gate green: fmt/clippy/doc clean, full suite
   0 failures (4406 lib tests). Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 37: SOL-EMAIL-USERNAME-ORDER-DETERMINISM —
+  `email_parse`'s derived-username `HashSet` was a 4th instance of the same
+  determinism-leak bug class; a project-wide sweep confirms it is now
+  closed.** Rather than assume three prior fixes (`reddit_user`,
+  `hacker_news`, `web_crawler`) had already closed every instance,
+  dispatched a background agent to sweep the ENTIRE `src/modules/` tree for
+  the same shape before pivoting to a different bug category. Found
+  `email_parse::process`'s `candidates: HashSet<String>` — up to ~10 derived
+  username spelling variants (detagged, digit-stripped, separator-collapsed,
+  separator-split, plus five initial-blend forms for a two-token
+  `firstname.lastname`-shaped local part) — walked straight into
+  `result.extend(candidates.into_iter().map(...))` with no sort step, so the
+  module's own headline Username-derivation output could legally emit in a
+  different order run-to-run. The existing
+  `derives_multiple_username_candidates` test only asserted `.contains(...)`
+  membership, never order, so it never caught this. The same sweep
+  independently confirmed every other direct-`HashSet`-iteration site in
+  `src/modules/**/*.rs` is already safe — `hibp::mod.rs`'s
+  `all_data_classes` and `search_engines::build.rs`'s `engines_hit` both
+  already collect-then-sort before use — closing this bug class
+  project-wide (pending any future module introducing a fresh instance).
+  Applied the identical minimal in-place fix used for `web_crawler`: collect
+  `candidates` into a `Vec<String>`, `.sort_unstable()`, then map to
+  entities — no function extraction needed, since insertion order carried
+  no meaning here (a bag of derived spelling variants). *Closes:* new node
+  **T2.26**. Tests:
+  `username_candidates_emerge_in_deterministic_sorted_order` (a two-token
+  corporate local part exercising every derivation branch; asserts the
+  emitted usernames equal their own sorted form) — fail-before confirmed
+  (reverted `mod.rs` to pre-fix `HEAD` with the new test present; panicked
+  on the unsorted `HashSet` order). Gate green: fmt/clippy/doc clean, full
+  suite 0 failures (4407 lib tests). Paired: `PROBLEM_TREE` §8 — same
+  commit.

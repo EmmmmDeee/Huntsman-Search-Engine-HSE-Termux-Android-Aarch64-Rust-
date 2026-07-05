@@ -922,6 +922,31 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   then map to entities — at all five sites. **P2** (a determinism/
   reproducibility bug across the module's four dominant entity kinds, not a
   crash or PII leak).
+- **`[x]` T2.26 · `email_parse`'s derived-username `HashSet` leaked iteration
+  order into emitted `Username` entity order — the 4th instance of this bug
+  class found** — after T2.25 closed the identical shape in `web_crawler`,
+  dispatched a background agent to sweep the ENTIRE `src/modules/` tree for
+  any remaining `HashSet`-into-emission-order leaks before assuming the class
+  was closed. It found one more: `process()`'s `candidates: HashSet<String>`
+  accumulates up to ~10 derived username spelling variants (detagged,
+  digit-stripped, separator-collapsed, separator-split, and — for a
+  two-token local part — five initial-blend forms: `flast`, `firstl`,
+  `i.last`, `first_last`, `first-last`), then
+  `result.extend(candidates.into_iter().map(...))` walks that set straight
+  into the emitted `Vec<Entity>` with no sort step. The existing
+  `derives_multiple_username_candidates` test only asserted `.contains(...)`
+  membership, never order, so this never surfaced. The same sweep confirmed
+  every OTHER direct-`HashSet`-iteration site in `src/modules/**/*.rs` is
+  already safe — `hibp::mod.rs`'s `all_data_classes` and
+  `search_engines::build.rs`'s `engines_hit` both already collect-then-sort
+  before use — so this closes the bug class project-wide (pending any future
+  module introducing a fresh instance). → **Solution:** identical minimal
+  fix to `web_crawler`'s in-place pattern (no function extraction needed,
+  since insertion order carried no meaning here — it is a bag of derived
+  spelling variants): collect `candidates` into a `Vec<String>`,
+  `.sort_unstable()`, then map to entities. **P2** (a determinism/
+  reproducibility bug on the module's headline Username-derivation output,
+  not a crash or PII leak).
 
 ---
 
@@ -4914,3 +4939,31 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `.map(ToString::to_string)` before the gate passed. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4406 lib tests). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 37 (new T2.26): `email_parse`'s derived-username
+  `HashSet` was the 4th instance of the same determinism-leak bug class —
+  a project-wide sweep confirms it is now closed.** Rather than assume the
+  three prior fixes (`reddit_user`, `hacker_news`, `web_crawler`) had closed
+  every instance, dispatched a background agent to sweep the ENTIRE
+  `src/modules/` tree for the same shape before moving to a different
+  category. Found `email_parse::process`'s `candidates: HashSet<String>`
+  (up to ~10 derived username spelling variants — detagged, digit-stripped,
+  collapsed, split, plus five initial-blend forms for a two-token local
+  part) walked straight into `result.extend(candidates.into_iter().map(...))`
+  with no sort — the module's own headline Username-derivation output could
+  legally emit in a different order run-to-run. The existing
+  `derives_multiple_username_candidates` test only asserted membership
+  (`.contains(...)`), never order, so it never caught this. The same sweep
+  independently confirmed every other direct-`HashSet`-iteration site in
+  `src/modules/**/*.rs` is already safe (`hibp` and `search_engines::build`
+  both already sort before use) — closing this bug class project-wide.
+  → **Solution:** applied the identical minimal in-place fix used for
+  `web_crawler` (collect into `Vec<String>`, `.sort_unstable()`, then map to
+  entities — no function extraction needed since insertion order carried no
+  meaning here). Test delta:
+  `username_candidates_emerge_in_deterministic_sorted_order` (a two-token
+  corporate local part exercising every derivation branch, asserting the
+  emitted usernames equal their own sorted form) — fail-before confirmed
+  (reverted `mod.rs` to pre-fix `HEAD` with the new test present; panicked
+  on the unsorted `HashSet` order). Gate green: fmt/clippy/doc clean, full
+  suite 0 failures (4407 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
