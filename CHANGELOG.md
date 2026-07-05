@@ -343,6 +343,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The store's owner-only permission lockdown now logs, rather than silently
+  swallows, a failure.** `Store::open` restricts the database file (and its
+  WAL/SHM siblings) to owner-only (0600) since it holds PII and harvested
+  API keys, but discarded the result of that chmod with no diagnostic —
+  unlike a nearby best-effort step in the same function, which already logs
+  its failures. A failed chmod could silently leave the store at the
+  process umask, often world-readable, with no signal. It now logs a
+  warning naming the file. Regression test
+  `restrict_to_owner_only_logs_when_a_chmod_fails`.
 - **Storage reads now log a corrupted or schema-drifted row instead of silently
   dropping it.** Eight multi-row readers (`list_scans`, `correlations_for_scan`,
   `relations_for_scan`, `events_for_scan`, `entities_for_scan`,

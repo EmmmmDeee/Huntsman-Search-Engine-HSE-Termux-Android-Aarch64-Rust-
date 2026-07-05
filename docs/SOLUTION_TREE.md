@@ -218,6 +218,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `core::engine::tests`) proof for each helper that the drop is both kept AND
   logged, plus an end-to-end `list_scans` proof a corrupt sibling row still
   doesn't fail the read.
+- **`[x]` SOL-CHMOD-DIAG · The store's owner-only chmod now logs, not just
+  swallows, a failure** — `Store::open`'s 0600 restriction loop over the db
+  file and its `-wal`/`-shm` siblings discarded the `Result` via `let _ =
+  ...`, unlike the FTS-rebuild best-effort step in the same function, which
+  is explicitly best-effort AND never silent. Extracted a private
+  `restrict_to_owner_only(paths: &[String])` helper that logs a
+  `tracing::warn!` keyed by the failing path on each chmod failure; startup
+  is still never blocked by it. *Closes:* **T2.16** (new). ✅ 1 test
+  (`restrict_to_owner_only_logs_when_a_chmod_fails`, unix-only — a chmod on a
+  nonexistent path reliably fails without a read-only-filesystem fixture).
 - **`[-]` SOL-BUDGET · Atomic quota reservation (accepted-as-is)** —
   `QuotaBudget::try_increment` (CAS, saturating session rollback) replaces every
   racy `remaining()`-then-`increment()`. *Closes:* **T2.11** (oathnet — done;
@@ -563,6 +573,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-FINALISE-BLOCKING | T1.5 | `[x]` |
 | SOL-SCHEMA-VERSION | T2.10 | `[x]` |
 | SOL-STORAGE-DIAG | T2.15 | `[x]` |
+| SOL-CHMOD-DIAG | T2.16 | `[x]` |
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
@@ -699,9 +710,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); T2.7 open; T2.11 mostly done
-  (oathnet + found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET
-  all closed; only the accepted-`[-]` budget-reset-zeroing note remains, and no
+  **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
+  (SOL-CHMOD-DIAG, 2026-07-05); T2.7 open; T2.11 mostly done (oathnet +
+  found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
+  closed; only the accepted-`[-]` budget-reset-zeroing note remains, and no
   further action is planned on it); T2.14 open (deferred noise design).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
@@ -3075,3 +3087,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `collect_rows_drops_sql_errors_but_logs_the_failure`,
   `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`). Gate green (4385 lib
   tests). Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **SOL-CHMOD-DIAG: the store's owner-only chmod now logs, not just
+  swallows, a failure.** Second item from the same storage-layer discovery pass as
+  SOL-STORAGE-DIAG: `Store::open`'s 0600-restriction loop over the db file plus its
+  `-wal`/`-shm` siblings discarded the `Result` via `let _ = std::fs::set_permissions(...)`,
+  unlike the FTS-rebuild best-effort step in the same function (explicitly best-effort AND
+  never silent) and unlike SOL-STORAGE-DIAG's read-path fix just above. Since the store
+  holds PII and harvested third-party keys, a failed chmod silently left it at the process
+  umask (often 0644, world-readable) with zero signal. Extracted a private
+  `restrict_to_owner_only(paths: &[String])` helper that logs a `tracing::warn!` keyed by
+  the failing path on each failure; startup is still never blocked by a chmod failure, only
+  made loud. Test: `restrict_to_owner_only_logs_when_a_chmod_fails` (unix-only; a chmod on a
+  nonexistent path reliably fails without a read-only-filesystem fixture; fail-before: the
+  pre-fix `let _ = ...` produced no log at all). Gate green (4386 lib tests). **This closes
+  the storage-layer discovery-pass arc** (SOL-STORAGE-DIAG + SOL-CHMOD-DIAG); the pass's
+  remaining item (no migration-application mechanism behind `SCHEMA_VERSION`) is already
+  T2.10's own stated P3/advisory residual, not a new gap. Paired: `PROBLEM_TREE` §8 — same
+  commit.

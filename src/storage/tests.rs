@@ -48,6 +48,32 @@ fn open_restricts_the_db_file_to_owner_only() {
 }
 
 #[test]
+#[cfg(unix)]
+fn restrict_to_owner_only_logs_when_a_chmod_fails() {
+    // The chmod loop in `open` is best-effort (must not block startup on a
+    // transient/permission-denied failure) but must not be silent — the
+    // store holds PII + harvested keys, so a failed chmod leaving it at the
+    // process umask (often world-readable) deserves a trace. A chmod on a
+    // nonexistent path reliably fails without needing a read-only fixture.
+    let missing = format!(
+        "{}/.huntsman-missing-{}-{}.db",
+        std::env::temp_dir().to_string_lossy(),
+        std::process::id(),
+        line!()
+    );
+    let _ = std::fs::remove_file(&missing);
+    let (_, log) = capture_warn_logs(|| restrict_to_owner_only(std::slice::from_ref(&missing)));
+    assert!(
+        log.contains(&missing),
+        "the warning must name the failing path; got: {log:?}"
+    );
+    assert!(
+        log.contains("failed to restrict"),
+        "the warning must say why; got: {log:?}"
+    );
+}
+
+#[test]
 fn integrity_check_reports_ok_on_healthy_db() {
     // A fresh, written-to database must report exactly `["ok"]` — the
     // signal `hse doctor` relies on to distinguish a clean store from a

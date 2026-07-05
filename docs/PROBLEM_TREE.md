@@ -687,6 +687,19 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   the row; wired into all 8 call sites across `storage/mod.rs` and
   `storage/entities.rs`. The "one bad row must not fail the whole page"
   behaviour is unchanged — only the missing diagnostic is added. **P2**
+- **`[x]` T2.16 · Silent chmod failure on the store's PII-bearing files** —
+  `Store::open`'s owner-only (0600) restriction loop over the db file plus its
+  `-wal`/`-shm` siblings did `let _ = std::fs::set_permissions(&p,
+  owner_only.clone());`, discarding the `Result` with no `tracing::warn!` —
+  unlike the FTS-rebuild best-effort step ~30 lines earlier in the same
+  function, which is explicitly best-effort **and** never silent. Since the
+  store "holds PII + harvested third-party keys" per the code's own comment,
+  a failed chmod silently left the file at the process umask (often 0644,
+  world-readable) with zero operator signal. Found by the same storage-layer
+  discovery pass as T2.15. → **Solution:** extracted the loop into a private
+  `restrict_to_owner_only(paths)` helper that logs a `tracing::warn!` keyed
+  by the failing path before continuing — startup is still never blocked by a
+  chmod failure, only made loud. **P2**
 
 ---
 
@@ -4235,3 +4248,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`). Gate green: fmt/clippy/doc
   clean, full suite 0 failures (4385 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+- **2026-07-05** — **Executed T2.16.** Second item from the same storage-layer discovery
+  pass as T2.15: `Store::open`'s owner-only (0600) chmod loop over the db file and its
+  `-wal`/`-shm` siblings discarded the `Result` via `let _ = ...`, with no
+  `tracing::warn!` — unlike the FTS-rebuild best-effort step ~30 lines earlier in the same
+  function, which is explicitly best-effort AND never silent, and unlike T2.15's fix to the
+  read paths just above. Since the store holds PII and harvested third-party keys per its
+  own doc comment, a failed chmod silently left it at the process umask (often 0644,
+  world-readable) with zero signal. Fix: extracted the loop into a private
+  `restrict_to_owner_only(paths: &[String])` helper that logs a `tracing::warn!` keyed by
+  the failing path on each failure; startup is still never blocked by a chmod failure, only
+  made loud. Test delta: +1 (`restrict_to_owner_only_logs_when_a_chmod_fails`, unix-only —
+  chmod on a nonexistent path reliably fails without a read-only-filesystem fixture;
+  fail-before: the pre-fix `let _ = ...` produced no log at all). Gate green: fmt/clippy/doc
+  clean, full suite 0 failures (4386 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit. **This closes the storage-layer discovery-pass arc** (T2.15 + T2.16); the
+  remaining item from that pass (no actual migration-application mechanism behind
+  `SCHEMA_VERSION`) is already correctly captured as T2.10's own stated P3/advisory
+  residual — a version stamp + forward-compat warning were the delivered scope, and
+  there is no live non-additive migration to apply yet, so no new node is warranted.

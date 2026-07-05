@@ -166,6 +166,28 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
+/// Best-effort `chmod 0600` on each of the store's on-disk files. Failure must
+/// not block [`Store::open`] — a transient or permission-denied chmod is not
+/// fatal — but, mirroring the FTS-rebuild best-effort/never-silent pattern in
+/// `open`, must not be silent either: the store holds PII + harvested
+/// third-party keys, so a failed chmod left at the process umask (often
+/// 0644, world-readable) is a real, if lower-severity, exposure worth a
+/// trace to debug from.
+#[cfg(unix)]
+fn restrict_to_owner_only(paths: &[String]) {
+    use std::os::unix::fs::PermissionsExt;
+    let owner_only = std::fs::Permissions::from_mode(0o600);
+    for p in paths {
+        if let Err(e) = std::fs::set_permissions(p, owner_only.clone()) {
+            tracing::warn!(
+                path = %p,
+                error = %e,
+                "failed to restrict a store file to owner-only (0600) — it may be left world-readable at the process umask"
+            );
+        }
+    }
+}
+
 /// Collect a `query_map` iterator, logging (not silently dropping) any row
 /// that fails SQL-level extraction. In practice this means genuine DB
 /// corruption (a `NOT NULL TEXT` column somehow unreadable as a `String`) —
@@ -301,17 +323,11 @@ impl Store {
         // (no `storage → util` edge) (PROBLEM_TREE §7 S3). The `-wal`/`-shm` exist
         // by now (WAL mode + the schema write above created them).
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let owner_only = std::fs::Permissions::from_mode(0o600);
-            for p in [
-                path.to_string(),
-                format!("{path}-wal"),
-                format!("{path}-shm"),
-            ] {
-                let _ = std::fs::set_permissions(&p, owner_only.clone());
-            }
-        }
+        restrict_to_owner_only(&[
+            path.to_string(),
+            format!("{path}-wal"),
+            format!("{path}-shm"),
+        ]);
 
         Ok(Self {
             conn: Mutex::new(conn),
