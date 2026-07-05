@@ -153,3 +153,89 @@ fn reachable_count_spans_multiple_hops() {
     assert_eq!(net.direct_count, 1, "only Middle is a direct connection");
     assert_eq!(net.reachable_count, 2, "Middle and Far are both reachable");
 }
+
+/// The per-group item ranking must be a TOTAL order. Its keys are edge
+/// confidence, entity confidence, then `value` — but a bucket holds distinct-uid
+/// connections and two of different kinds can carry the SAME stored value, tying
+/// on all three. Without a final unique tie-break, their order — and so which
+/// survive `truncate(GROUP_CAP)` — falls to the `best` HashMap's iteration order.
+/// `uid` ascending pins it: same snapshot ⇒ same order, every run.
+#[test]
+fn synthesize_tie_breaks_equal_value_connections_by_uid() {
+    let mut subject = ent(EntityKind::Person, "Tie Subject", 0.9);
+    subject.tag("subject");
+
+    // Eleven identifiers, each IdentifiedBy the subject at the same edge and
+    // entity confidence, all keeping one stored value but each a different kind →
+    // distinct uid. They tie on every ranking key except uid. (Kinds whose
+    // constructor canonicalises the raw value — e.g. Phone strips non-digits to
+    // "" — are excluded so the value key genuinely ties and only uid decides.)
+    let kinds = [
+        EntityKind::Email,
+        EntityKind::Username,
+        EntityKind::Credential,
+        EntityKind::ApiKey,
+        EntityKind::Password,
+        EntityKind::IpAddress,
+        EntityKind::Domain,
+        EntityKind::Url,
+        EntityKind::Asn,
+        EntityKind::Address,
+        EntityKind::Organisation,
+    ];
+    let expected = kinds.len();
+    let mut entities = vec![subject.clone()];
+    let mut relations = Vec::new();
+    for k in kinds {
+        let e = ent(k, "sharedhandle", 0.7);
+        relations.push(rel(&subject, &e, RelationKind::IdentifiedBy, 0.7));
+        entities.push(e);
+    }
+
+    let ids = |net: &SubjectNetwork| -> Vec<String> {
+        net.groups
+            .iter()
+            .find(|g| g.key == "identifiers")
+            .expect("identifiers group")
+            .items
+            .iter()
+            .map(|c| c.uid.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let net = synthesize(&entities, &relations);
+    let identifiers = &net
+        .groups
+        .iter()
+        .find(|g| g.key == "identifiers")
+        .expect("identifiers group")
+        .items;
+    // Premise guard: every connection really does tie on the confidence and value
+    // keys, so uid is the ONLY discriminator and the assertions below are not
+    // vacuous. Catches a future kind whose constructor rewrites the raw value.
+    for c in identifiers {
+        assert_eq!(c.value, "sharedhandle", "fixture value must survive intact");
+        assert!((c.edge_confidence - 0.7).abs() < 1e-9);
+        assert!((c.entity_confidence - 0.7).abs() < 1e-9);
+    }
+
+    let first_ids = ids(&net);
+    assert_eq!(
+        first_ids.len(),
+        expected,
+        "every identifier is retained (well under GROUP_CAP)"
+    );
+    let mut sorted = first_ids.clone();
+    sorted.sort();
+    assert_eq!(
+        first_ids, sorted,
+        "equal-ranked connections order by uid, not HashMap iteration"
+    );
+    // Re-synthesis rebuilds the `best`/`buckets` HashMaps (fresh seed) yet must
+    // return the identical order.
+    assert_eq!(
+        first_ids,
+        ids(&synthesize(&entities, &relations)),
+        "the per-group order is deterministic across runs"
+    );
+}

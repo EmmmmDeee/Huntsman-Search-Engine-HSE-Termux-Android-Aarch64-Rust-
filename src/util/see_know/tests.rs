@@ -196,6 +196,26 @@ fn escape_json_handles_quotes_and_backslashes() {
 }
 
 #[test]
+fn escape_json_escapes_control_chars_into_valid_json() {
+    use super::endpoints::escape_json;
+    // Regression: the hand-rolled version escaped only `\` and `"`, so a query
+    // with a literal newline/tab produced INVALID JSON. Every value must now
+    // embed inside a `"…"` string that parses back to the exact original.
+    for raw in [
+        "line1\nline2",
+        "tab\there",
+        "carriage\rreturn",
+        "quote\"and\\back",
+        "null\u{0}byte",
+    ] {
+        let body = format!(r#"{{"query":"{}"}}"#, escape_json(raw));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("escaped body must be valid JSON");
+        assert_eq!(parsed["query"], raw, "round-trips exactly for {raw:?}");
+    }
+}
+
+#[test]
 fn typed_cache_key_disambiguates_query_type_from_auto_detect() {
     let auto = typed_cache_key("search", "alice", "");
     let typed = typed_cache_key("search", "alice", "email");

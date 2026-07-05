@@ -230,6 +230,12 @@ pub fn synthesize(entities: &[Entity], relations: &[Relation]) -> SubjectNetwork
                 .total_cmp(&a.edge_confidence)
                 .then_with(|| b.entity_confidence.total_cmp(&a.entity_confidence))
                 .then_with(|| a.value.cmp(&b.value))
+                // `value` alone is NOT a total key: a bucket holds distinct-uid
+                // connections and two of different kinds can share a stored value,
+                // tying on all three keys above. `uid` (unique) makes the order —
+                // and so which survive the `truncate(GROUP_CAP)` cut below —
+                // deterministic instead of leaking `best`'s HashMap order.
+                .then_with(|| a.uid.cmp(&b.uid))
         });
         let total = items.len();
         items.truncate(GROUP_CAP);

@@ -2998,3 +2998,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sibling AU-051 has none). Emit every handle uid (BTreeSet keeps them sorted). Test:
   `au049_references_every_reachable_handle_not_a_capped_eight`. Closes the fidelity-audit
   arc (7 confirmed violations fixed). Gate green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-SSHKEYS: `github_user` emits every published SSH public
+  key, not a capped 10.** A direct post-audit grep sweep of the surviving `.take(N)` sites
+  found `fetch_ssh_keys` emitting the subject's own SSH public keys as fingerprinted
+  `Credential` artifacts through `keys.iter().take(10)` — silently dropping keys 11+, each of
+  which is an independent AU-048 cross-account cryptographic pivot (the module's strongest
+  link). Extracted the `SshKey` row to module scope and a pure `ssh_key_entities()` that
+  emits every parsed key (malformed bodies still dropped by fingerprinting → represented by
+  omission, not a placeholder); the display evidence's JUSTIFIED five-key sample with true
+  `ssh_key_count` is untouched. Test: `ssh_key_entities_emits_every_key_not_a_capped_ten`
+  (15 keys → 15 distinct Credential uids; fail-before: 10). Gate green (4563). Paired:
+  `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-COMMITEMAIL: `github_user` emits every distinct
+  commit-author email, not a capped 10.** Sibling of SOL-FIDELITY-SSHKEYS in the same
+  module. `fetch_events` deduped the commit-author emails from the subject's public push
+  events then emitted `.take(10)` — a silent bound the comment admits is only "to keep a
+  busy account bounded," with no resource justification (the endpoint is already capped to
+  30 events) and no co-author discrimination (so not a precision gate, contra my prior-cycle
+  deferral). Moved the `GhEvent` struct family to module scope and extracted a pure
+  `commit_email_entities()` that emits every distinct usable address (noreply/placeholder
+  forms still dropped by `usable_commit_email`; first-seen order over the newest-first
+  stream is deterministic). Provenance-honest evidence ("from @login's commit author field")
+  means full emission adds fidelity without over-attributing; any true co-author concern is
+  a separate author-matches-login precision filter, not this cap. Test:
+  `commit_email_entities_emits_every_distinct_email_not_a_capped_ten` (15 events → 15 pivots;
+  fail-before: 10). Gate green (4564). Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-04** — **SOL-FIDELITY-BIOLINKS: five social modules emit every bio email/URL, not
+  a capped 5, via a single-sourced `extract::urls()`.** `bluesky_user`, `reddit_user`,
+  `mastodon_user`, `lobsters`, `devto` each carried the identical `emails(bio).take(5)` +
+  `URL_RE.find_iter(bio)…dedup.take(5)` block, silently dropping bio emails/links 6+ — a
+  copy-paste artifact (the same codebase extracts gist/page emails uncapped, and reddit's own
+  comment says "extract ALL"). Added a tested `util::extract::urls()` mirroring `emails()`
+  (trim + dedup + first-occurrence order, no cap), routed all five modules through
+  `emails()`/`urls()` uncapped, and deleted the ten `.take(5)` sites plus redundant
+  per-module dedup loops and three unused `URL_RE` imports. Test:
+  `urls_extracts_all_distinct_trimmed_in_order_uncapped` (six distinct URLs → all six,
+  trimmed/deduped/ordered; fail-before: five). Gate green (4565). Paired: `PROBLEM_TREE` §8 —
+  same commit.

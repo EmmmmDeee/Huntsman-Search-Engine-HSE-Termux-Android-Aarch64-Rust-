@@ -15,8 +15,13 @@ pub fn pool_path() -> PathBuf {
 }
 
 pub fn load_pool() -> KeyPool {
-    let path = pool_path();
-    match std::fs::read_to_string(&path) {
+    load_pool_from(&pool_path())
+}
+
+/// Env-free core of [`load_pool`] — load the pool from an explicit `path` so the
+/// read/parse error handling is unit-testable against a temp file.
+pub(super) fn load_pool_from(path: &std::path::Path) -> KeyPool {
+    match std::fs::read_to_string(path) {
         Ok(content) => match serde_json::from_str::<PoolData>(&content) {
             Ok(data) => KeyPool::from_data(data),
             Err(e) => {
@@ -24,13 +29,32 @@ pub fn load_pool() -> KeyPool {
                     "key pool at {} is corrupted ({e}); backing up and starting fresh",
                     path.display()
                 );
-                let backup = path.with_extension("json.bak");
-                let _ = std::fs::rename(&path, &backup);
-                KeyPool::new()
+                backup_and_fresh(path)
             }
         },
-        Err(_) => KeyPool::new(),
+        // A missing file is the legitimate first-run fresh start — quiet.
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => KeyPool::new(),
+        // The file EXISTS but could not be read: non-UTF-8 InvalidData corruption,
+        // PermissionDenied, or a transient IO error. Mirror the JSON-corruption
+        // branch — warn and preserve the file as `.json.bak` before starting fresh
+        // — so a real read failure is observable and the still-present on-disk keys
+        // are not silently dropped and then clobbered by the next atomic save.
+        Err(e) => {
+            tracing::warn!(
+                "key pool at {} could not be read ({e}); backing up and starting fresh",
+                path.display()
+            );
+            backup_and_fresh(path)
+        }
     }
+}
+
+/// Rename a present-but-unusable pool file aside to `.json.bak` and return a fresh
+/// empty pool. Best-effort: a failed rename still yields a working (empty) pool.
+fn backup_and_fresh(path: &std::path::Path) -> KeyPool {
+    let backup = path.with_extension("json.bak");
+    let _ = std::fs::rename(path, &backup);
+    KeyPool::new()
 }
 
 pub fn save_pool(pool: &KeyPool) -> std::io::Result<()> {

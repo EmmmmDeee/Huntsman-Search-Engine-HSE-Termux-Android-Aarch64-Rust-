@@ -302,7 +302,7 @@ pub(super) fn build_entities(user: GlUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio: extract emails.
     if let Some(bio) = user.bio.as_deref() {
-        for mut e in profile_kit::bio_emails(bio, 0.72, scan_id, 5) {
+        for mut e in profile_kit::bio_emails(bio, 0.72, scan_id) {
             e.tag("gitlab");
             e.tag("public-profile");
             e.add_evidence(

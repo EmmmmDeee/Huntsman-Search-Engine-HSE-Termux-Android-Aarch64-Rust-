@@ -5451,6 +5451,53 @@ fn au_056_flags_conflict_when_states_disagree() {
 }
 
 #[test]
+fn au_056_agreement_stays_medium_and_lists_the_split_side() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+
+    // Two coordinate fixes — one QLD, one NSW — but the address is QLD only. The
+    // classes AGREE on QLD (a shared state ⇒ corroboration), yet the coordinate
+    // side is internally split, so severity drops from High to Medium and the
+    // description enumerates each side. This exercises the split-agreement branch
+    // (the only path that emits the "(coordinates: …; addresses: …)" enumeration).
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4766,153.0166",
+            "geocode",
+            &["geoint", "au-state:QLD"],
+        ),
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-33.8688,151.2093",
+            "geocode",
+            &["geoint", "au-state:NSW"],
+        ),
+        mk_tagged(
+            EntityKind::Address,
+            "12 Mary Street, Brisbane City QLD 4000",
+            "see_know",
+            &[],
+        ),
+    ];
+    let out = rule_au_056_jurisdiction_cross_check(&ents, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].severity,
+        super::Severity::Medium,
+        "a split on one side downgrades corroboration to Medium"
+    );
+    assert!(out[0].rule_name.contains("corroborated"));
+    // BTreeSet ordering makes the enumeration deterministic and slash-joined.
+    assert!(
+        out[0]
+            .description
+            .contains("(coordinates: NSW/QLD; addresses: QLD)"),
+        "split side is enumerated: {}",
+        out[0].description
+    );
+}
+
+#[test]
 fn au_056_silent_without_both_signal_classes() {
     use super::rules::rule_au_056_jurisdiction_cross_check;
 
@@ -7464,6 +7511,25 @@ fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
     assert!(
         r3.is_empty(),
         "AU-081 must not fire for identical source sets"
+    );
+}
+
+#[test]
+fn au081_same_family_different_databases_is_not_independent() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // Two Person records with the SAME canonical name, from two DIFFERENT breach
+    // databases (`dehashed` and `leakcheck`). Their source strings differ, but
+    // `source_family` maps both to "breach" — so they are co-derived, not
+    // independent, and the family gate must suppress the match. (Guards the
+    // independence contract: distinct database names alone are not independence.)
+    let mut dehashed_p = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    dehashed_p.add_evidence(Evidence::new("dehashed", "Breach record".to_string()));
+    let mut leakcheck_p = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    leakcheck_p.add_evidence(Evidence::new("leakcheck", "Breach record".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&[dehashed_p, leakcheck_p], "s", 0);
+    assert!(
+        r.is_empty(),
+        "two databases of the same source family are not independent — must not fire"
     );
 }
 

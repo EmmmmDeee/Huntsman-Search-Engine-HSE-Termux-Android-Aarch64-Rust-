@@ -37,7 +37,6 @@ use crate::core::{
 use crate::util::http::{fetch_json_or_404, read_text, urlencode};
 
 const SRC: &str = "pypi_user";
-const MAX_PACKAGES: usize = 30;
 const XMLRPC_URL: &str = "https://pypi.org/pypi";
 
 pub struct PypiUser;
@@ -144,22 +143,22 @@ pub(super) fn build_entities(
     let mut u = Entity::new(EntityKind::Username, handle, 0.85, scan_id);
     u.tag("pypi");
     u.tag("public-profile");
-    let pkg_names: Vec<&str> = packages
-        .iter()
-        .take(MAX_PACKAGES)
-        .map(|(_, p)| p.as_str())
-        .collect();
-    let coverage = if pkg_names.is_empty() {
+    // Report the TRUE owned-package total in the coverage note: sampling the
+    // first few names for display is fine, but the count must be the real total
+    // (`packages.len()`) — a prior `pkg_names.take(30).len()` undercounted a
+    // prolific maintainer's package total.
+    let total_packages = packages.len();
+    let coverage = if total_packages == 0 {
         ev_base()
     } else {
-        let sample = pkg_names
+        let sample = packages
             .iter()
             .take(5)
-            .copied()
+            .map(|(_, p)| p.as_str())
             .collect::<Vec<_>>()
             .join(", ");
-        let summary = if pkg_names.len() > 5 {
-            format!("{sample}, … ({} packages)", pkg_names.len())
+        let summary = if total_packages > 5 {
+            format!("{sample}, … ({total_packages} packages)")
         } else {
             sample
         };

@@ -49,10 +49,11 @@ pub(super) fn push_stealer_entity(
 ///     `see_know` also uses, so both stealer consumers extract one identical
 ///     field set.
 ///
-/// A redacted `UPGRADE_TO_SEE` password is never emitted verbatim — only a
-/// first/last-character hint (taken char-wise so a multi-byte value can't
-/// panic the slice) and a `password_redacted` marker. Shared evidence carries
-/// the `api_key_origin` fingerprint for provenance.
+/// A captured password is preserved VERBATIM in the `password` evidence
+/// attribute — full-fidelity, authorised evidentiary data is never redacted,
+/// hinted, or hidden. A provider `UPGRADE_TO_SEE…` value is the raw paywall
+/// sentinel and is kept as-is (it is the datum the API returned). Shared evidence
+/// carries the `api_key_origin` fingerprint for provenance.
 pub(super) fn extract_stealer_entities(
     item: &Value,
     scan_id: &str,
@@ -70,18 +71,14 @@ pub(super) fn extract_stealer_entities(
     if let Some(lid) = val_str(item, "log_id").or_else(|| val_str(item, "log")) {
         ev = ev.with_attr("log_id", &lid);
     }
-    if let Some(pw) = val_str(item, "password") {
+    if let Some(pw) = val_str(item, "password").filter(|p| !p.is_empty()) {
+        // Full fidelity: the captured password is preserved VERBATIM — it is the
+        // operator's own authorised, paid-for evidentiary data, and the standing
+        // no-redaction / no-hiding contract forbids replacing it with a hint or
+        // marker. A provider `UPGRADE_TO_SEE…` value is the raw paywall sentinel
+        // and is likewise kept as-is (it IS the datum the API returned), so a
+        // consumer can tell a withheld password from a real one.
         ev = ev.with_attr("password", &pw);
-        if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
-            // `pw` is untrusted: take the first/last CHAR (not byte) so a
-            // multi-byte boundary can't panic the slice.
-            let first = pw.chars().next().map(String::from).unwrap_or_default();
-            let last = pw.chars().next_back().map(String::from).unwrap_or_default();
-            ev = ev
-                .with_attr("password_hint_first", first)
-                .with_attr("password_hint_last", last)
-                .with_attr("password_redacted", "true");
-        }
     }
     if let Some(uname) = val_str(item, "username") {
         ev = ev.with_attr("username", &uname);

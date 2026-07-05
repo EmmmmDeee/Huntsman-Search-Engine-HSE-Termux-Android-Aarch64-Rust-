@@ -2,7 +2,9 @@ use super::account::{
     ProfileUserResp, WigleAccountStatus, account_status, account_status_cache, is_unverified,
     status_from_profile,
 };
-use super::emit::{emit_bssid_entities, extract_bluetooth_intel, extract_cell_intel};
+use super::emit::{
+    emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel,
+};
 use super::*;
 use crate::core::{
     entity::EntityKind,
@@ -338,6 +340,15 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
         coords[0].value.starts_with("-27.4766"),
         "proximity sort: closest tower first"
     );
+    // The total distinct tower positions is surfaced on the coordinates evidence
+    // (so the top-3 bound is visible even when the carrier Org is suppressed).
+    assert!(
+        coords[0].evidence.iter().any(|ev| ev
+            .attributes
+            .get("tower_positions_observed")
+            .is_some_and(|n| n == "3")),
+        "coordinates surface the total observed tower-position count"
+    );
 }
 
 #[test]
@@ -369,7 +380,47 @@ fn extract_bluetooth_intel_emits_at_most_three_mac_entities() {
     for e in &r.entities {
         assert_eq!(e.kind, EntityKind::MacAddress);
         assert!(e.has_tag("bluetooth-beacon"));
+        // The total beacons observed (5) is surfaced so the 3-beacon bound is
+        // visible, not a silent drop.
+        assert!(
+            e.evidence.iter().any(|ev| ev
+                .attributes
+                .get("beacons_observed")
+                .is_some_and(|n| n == "5")),
+            "each beacon entity surfaces the total observed count"
+        );
     }
+}
+
+#[test]
+fn emit_ssid_entities_surfaces_all_admitted_location_fixes() {
+    // An SSID admitted as unique can have up to SSID_UNIQUE_MAX (20) global
+    // observations; every one is a subject-location fix that must be emitted. A
+    // former SSID_RESULT_CAP of 10 (below the admission gate) dropped up to half.
+    let results: Vec<Network> = (0..15)
+        .map(|i| Network {
+            ssid: Some("HaigenHomeWiFi".to_string()),
+            netid: Some(format!("AA:BB:CC:DD:EE:{i:02X}")),
+            encryption: None,
+            lastupdt: None,
+            trilat: Some(-27.4766 - f64::from(i) * 0.001),
+            trilong: Some(153.0166 + f64::from(i) * 0.001),
+            city: None,
+            region: None,
+            country: None,
+            postalcode: None,
+        })
+        .collect();
+    let r = emit_ssid_entities("HaigenHomeWiFi", &results, "test-scan");
+    let coords = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 15,
+        "every admitted SSID location fix is emitted, not capped below the admission gate"
+    );
 }
 
 #[test]

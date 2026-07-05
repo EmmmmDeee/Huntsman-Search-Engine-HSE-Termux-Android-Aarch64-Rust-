@@ -28,7 +28,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::extract::URL_RE;
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "reddit_user";
@@ -179,7 +178,7 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             sr.title.as_deref().unwrap_or("")
         );
         // Extract ALL emails from the bio (not just the first).
-        for email in crate::util::extract::emails(&bio).into_iter().take(5) {
+        for email in crate::util::extract::emails(&bio) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.76, scan_id);
             e.tag("reddit");
             e.tag("public-profile");
@@ -190,12 +189,8 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             result.push(e);
         }
         // Extract ALL URLs from the bio; also emit the host as a Domain entity.
-        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in URL_RE.find_iter(&bio).take(5) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
-            if !seen_urls.insert(link.to_string()) {
-                continue;
-            }
+        for link in crate::util::extract::urls(&bio) {
+            let link = link.as_str();
             let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
             url_e.tag("reddit");
             url_e.tag("personal-site");
@@ -250,17 +245,30 @@ async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) 
         return Vec::new();
     };
 
-    // Parse subreddit names from JSON without a full Deserialize struct; cap
-    // the length to skip pathological values, and dedup across the listing.
-    let subreddits: std::collections::HashSet<String> =
-        crate::util::json::scan_string_field(&body, "subreddit")
-            .into_iter()
-            .filter(|sub| sub.len() <= 50)
-            .collect();
+    submitted_entities(&body, username, scan_id)
+}
+
+/// Emit one `Organisation` entity per distinct subreddit a user posts in, parsed
+/// from a `submitted.json` body. Pure and deterministic: the raw scan dedups
+/// through a `HashSet` (randomised iteration order), so the distinct set is
+/// sorted before emission — identical input always yields the identical entity
+/// set in the identical order. EVERY distinct subreddit is emitted: the caller's
+/// `limit=25` listing already bounds the set, so there is no flood to cap and a
+/// prior `.take(10)` was silently dropping (and non-deterministically selecting)
+/// real communities the handle participates in.
+fn submitted_entities(body: &str, username: &str, scan_id: &str) -> Vec<Entity> {
+    // Parse subreddit names from JSON without a full Deserialize struct; cap the
+    // length to skip pathological values, and dedup across the listing.
+    let mut subreddits: Vec<String> = crate::util::json::scan_string_field(body, "subreddit")
+        .into_iter()
+        .filter(|sub| sub.len() <= 50)
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
+    subreddits.sort_unstable();
 
     subreddits
         .into_iter()
-        .take(10)
         .map(|sub| {
             let mut org = Entity::new(EntityKind::Organisation, &sub, 0.40, scan_id);
             org.tag("subreddit");

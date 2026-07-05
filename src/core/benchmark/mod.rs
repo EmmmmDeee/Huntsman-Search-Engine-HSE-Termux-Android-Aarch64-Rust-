@@ -104,10 +104,12 @@ pub struct BenchmarkReport {
 pub fn report(scan: &Scan, entities: &[Entity], relations: &[Relation]) -> BenchmarkReport {
     let metrics = crate::core::metrics::compute(entities, relations);
     let pivots = crate::core::pivot::detect(entities, relations);
-    // Structural fragility: cut vertices come off the pivots' flags (a cut vertex always
-    // has degree ≥ 1, so every one is among the pivots); bridges are the graph's cut
-    // edges. Both are dimensions SpiderFoot reports nothing on.
-    let cut_vertex_count = pivots.iter().filter(|p| p.is_cut_vertex).count();
+    // Structural fragility: cut vertices (articulation points) and bridges (cut
+    // edges), both counted over the WHOLE graph — dimensions SpiderFoot reports
+    // nothing on. `pivots` above is truncated to the top PIVOT_CAP by score, so
+    // counting cut vertices off it undercounts them on a large graph; use the
+    // uncapped `pivot::cut_vertex_count` (the node complement to `pivot::bridges`).
+    let cut_vertex_count = crate::core::pivot::cut_vertex_count(entities, relations);
     let bridge_count = crate::core::pivot::bridges(entities, relations).len();
 
     let duration_secs = scan.finished_at.map(|f| f.saturating_sub(scan.started_at));

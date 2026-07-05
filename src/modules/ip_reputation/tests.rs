@@ -1,6 +1,29 @@
 use super::*;
 
 #[test]
+fn otx_confidence_graduates_with_pulse_corroboration() {
+    // A lone OTX pulse (often self-published) must score LOWER than several
+    // independent pulses, which in turn score lower than a broad consensus —
+    // instead of every indicator carrying the same flat confidence.
+    assert!(
+        otx_confidence(1) < otx_confidence(3),
+        "a single pulse is weaker than a few corroborating ones"
+    );
+    assert!(
+        otx_confidence(3) < otx_confidence(50),
+        "many corroborating pulses are stronger than a few"
+    );
+    assert!(
+        (otx_confidence(1) - 0.55).abs() < 1e-9,
+        "a single pulse is a lead, not the former flat 0.72"
+    );
+    assert!(
+        otx_confidence(50) <= 0.80,
+        "OTX pulse counts are not fully independent — the top tier stays bounded"
+    );
+}
+
+#[test]
 fn meaningful_tag_keeps_threat_categories_drops_noise() {
         // Signal — real threat categories from the scan's OTX dump.
         for ok in [

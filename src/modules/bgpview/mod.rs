@@ -1,8 +1,9 @@
 //! BGPView — ASN prefix enumeration and IP-to-ASN mapping.
 //!
 //! Queries the free `bgpview.io` API (no key) for two pivots:
-//! - **ASN** → the prefixes it announces (`/asn/{n}/prefixes`) → `Cidr`
-//!   entities (the network blocks), each carrying the owning org name.
+//! - **ASN** → every prefix it announces, both IPv4 and IPv6
+//!   (`/asn/{n}/prefixes`) → `Cidr` entities (the network blocks), each
+//!   carrying the owning org name.
 //! - **IP** → its PTR records and the prefix/ASN it sits in (`/ip/{ip}`) →
 //!   `Domain` (reverse DNS) + `Asn` + `Cidr` entities, the CIDR being the
 //!   announced network block the IP belongs to.
@@ -22,11 +23,6 @@ use crate::core::{
 };
 
 const SRC: &str = "bgpview";
-
-/// Output caps, keeping a single ASN/IP lookup bounded.
-const MAX_ANNOUNCED_PREFIXES: usize = 20;
-const MAX_PTR_RECORDS: usize = 3;
-const MAX_IP_PREFIXES: usize = 3;
 
 pub struct BgpView;
 
@@ -105,10 +101,17 @@ use crate::util::str_util::nonempty;
 
 /// `Cidr` entities for the prefixes an ASN announces (the network blocks it
 /// owns), each tagged `bgp-prefix` and carrying the owning org name when known.
+///
+/// Every announced prefix is emitted — both IPv4 AND IPv6 (the v6 set was
+/// previously dropped entirely) — and no cap is applied: these are the seed
+/// ASN's OWN routed blocks, the direct answer to an ASN lookup, not co-tenant
+/// noise. Each `Cidr` is a re-dispatchable pivot whose expansion frontier is
+/// owned by the engine's ROI gate, not this leaf — the same reasoning the
+/// crtsh / netlas / onyphe resolution paths document.
 fn asn_prefix_entities(data: &BgpPrefixData, asn_num: &str, scan_id: &str) -> Vec<Entity> {
     data.ipv4_prefixes
         .iter()
-        .take(MAX_ANNOUNCED_PREFIXES)
+        .chain(data.ipv6_prefixes.iter())
         .filter_map(|prefix| {
             let cidr = prefix.prefix.trim();
             if cidr.is_empty() || !cidr.contains('/') {
@@ -133,24 +136,25 @@ fn asn_prefix_entities(data: &BgpPrefixData, asn_num: &str, scan_id: &str) -> Ve
 /// parsed and discarded — which is the actionable network-ownership datum.
 fn ip_entities(data: &BgpIpData, ip: &str, scan_id: &str) -> Vec<Entity> {
     // PTRs are often trailing-dot FQDNs; normalise, require a real label, dedup.
+    // Every distinct PTR is emitted (deduped by `seen_ptr`): an IP's reverse-DNS
+    // names are all genuine host attributions for that address.
     let mut seen_ptr = std::collections::HashSet::new();
-    let ptr_entities = data
-        .ptr_record
-        .iter()
-        .take(MAX_PTR_RECORDS)
-        .filter_map(move |ptr| {
-            let host = ptr.trim().trim_end_matches('.').to_lowercase();
-            if !host.contains('.') || !seen_ptr.insert(host.clone()) {
-                return None;
-            }
-            let mut e = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
-            e.tag("ptr");
-            e.add_evidence(Evidence::new(SRC, format!("PTR record for {ip}")));
-            Some(e)
-        });
+    let ptr_entities = data.ptr_record.iter().filter_map(move |ptr| {
+        let host = ptr.trim().trim_end_matches('.').to_lowercase();
+        if !host.contains('.') || !seen_ptr.insert(host.clone()) {
+            return None;
+        }
+        let mut e = Entity::new(EntityKind::Domain, &host, 0.65, scan_id);
+        e.tag("ptr");
+        e.add_evidence(Evidence::new(SRC, format!("PTR record for {ip}")));
+        Some(e)
+    });
 
+    // Every covering prefix the IP sits in is emitted (BGPView returns the
+    // nested more-/less-specific announcements) — each is a real network-block +
+    // ASN mapping for the address, not a sample.
     let mut asn_and_cidr: Vec<Entity> = Vec::new();
-    for prefix in data.prefixes.iter().take(MAX_IP_PREFIXES) {
+    for prefix in &data.prefixes {
         let Some(asn) = prefix.asn.as_ref() else {
             continue;
         };
@@ -186,6 +190,10 @@ struct BgpPrefixResponse {
 struct BgpPrefixData {
     #[serde(default)]
     ipv4_prefixes: Vec<BgpPrefix>,
+    /// IPv6 announcements — previously undeserialised, so every v6 block the AS
+    /// owned was silently dropped. BGPView returns both families in one call.
+    #[serde(default)]
+    ipv6_prefixes: Vec<BgpPrefix>,
 }
 
 #[derive(Deserialize)]

@@ -101,6 +101,27 @@ fn emits_username_and_profile_url() {
 }
 
 #[test]
+fn package_coverage_reports_the_true_total_not_a_capped_count() {
+    // A prolific maintainer of 35 packages: the coverage note must report the
+    // real total (35), not a count silently capped at the old MAX_PACKAGES=30.
+    let pkgs: Vec<(String, String)> = (0..35)
+        .map(|i| ("Owner".to_string(), format!("pkg{i:02}")))
+        .collect();
+    let ents = build_entities("prolific", &pkgs, None, "scan-pypi-cap");
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "prolific")
+        .unwrap();
+    assert!(
+        u.evidence.iter().any(|ev| ev
+            .attributes
+            .get("packages")
+            .is_some_and(|p| p.contains("(35 packages)"))),
+        "coverage note reports the true total of 35 packages"
+    );
+}
+
+#[test]
 fn emits_email_from_author_email_field() {
     let pkgs = vec![("Owner".to_string(), "mypkg".to_string())];
     let info = make_info(None, Some("Alice Smith <alice@example.com>"), None);

@@ -1613,3 +1613,36 @@ fn regional_kinship_needs_a_postcode_anchor() {
         "without a shared town the common-surname pair stays unlinked"
     );
 }
+
+#[test]
+fn collapse_to_max_confidence_keeps_the_strongest_of_duplicate_edges() {
+    use super::builders::collapse_to_max_confidence;
+    // Same (from, kind, to, scan) → same Relation id (the id EXCLUDES confidence),
+    // so the builders' weakest-first emission (surname kinship 0.5 before a declared
+    // 0.9 on one pair) must collapse to the STRONGEST edge. Otherwise persistence's
+    // ON CONFLICT(id) DO NOTHING keeps the weakest and flips downstream confidence
+    // gating — the exact inverse of the "higher-trust wins" intent.
+    let weak = Relation::new("a", "b", RelationKind::AssociatedWith, 0.5, "s1");
+    let strong = Relation::new("a", "b", RelationKind::AssociatedWith, 0.9, "s1");
+    assert_eq!(weak.id, strong.id, "confidence is not part of the id");
+    let other = Relation::new("a", "c", RelationKind::AssociatedWith, 0.6, "s1");
+
+    let collapsed = collapse_to_max_confidence(vec![weak, strong, other]);
+    assert_eq!(
+        collapsed.len(),
+        2,
+        "the a→b duplicate collapses to one edge"
+    );
+    let ab = collapsed
+        .iter()
+        .find(|r| r.to_uid == "b")
+        .expect("a→b kept");
+    assert!(
+        (ab.confidence - 0.9).abs() < 1e-9,
+        "the strongest (0.9) edge survives, got {}",
+        ab.confidence
+    );
+    // Deterministic first-occurrence order; the distinct a→c edge is untouched.
+    assert_eq!(collapsed[0].to_uid, "b");
+    assert_eq!(collapsed[1].to_uid, "c");
+}

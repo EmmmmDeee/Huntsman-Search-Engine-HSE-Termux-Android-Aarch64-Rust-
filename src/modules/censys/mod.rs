@@ -142,11 +142,14 @@ impl Module for Censys {
 /// | `services[].port`/`name`/`proto`        | port/service/protocol evidence      |
 /// | `location.coordinates` (valid)          | `Coordinates` (+ `geoint`/`censys`) |
 /// | `location.country_code`                 | `country:<CC>` tag (uppercased)     |
-/// | `location.city` + `country`             | `Address` (+ `censys`/`geoint`)     |
+/// | `location.city` + `country` (valid geo) | `Address` (+ `censys`/`geoint`)     |
 ///
 /// Returns empty when the host carries neither services nor a location (the
-/// caller previously short-circuited on this); the Coordinates entity is gated
-/// on the shared [`is_valid_coords`] check so a `0,0` placeholder is dropped.
+/// caller previously short-circuited on this). The Coordinates AND the
+/// city/country Address are BOTH gated on the shared [`is_valid_coords`] check:
+/// a `0,0` location is Censys's "unknown" sentinel, where the city/country are
+/// equally unreliable, so it yields neither — keeping placeholder junk out of the
+/// graph (false positives are worse than a missed lead here).
 fn build_entities(host: &HostResult, ip: &str, scan_id: &str) -> Vec<Entity> {
     if host.services.is_empty() && host.location.is_none() {
         return Vec::new();

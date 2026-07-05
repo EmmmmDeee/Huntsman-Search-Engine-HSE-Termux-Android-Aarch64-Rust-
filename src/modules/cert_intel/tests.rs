@@ -1,6 +1,42 @@
 use super::*;
 
 #[test]
+fn ct_log_discriminates_subdomain_from_co_hosted_confidence() {
+    // A single crt.sh entry whose SAN list (name_value) carries BOTH a real
+    // subdomain of the target AND an unrelated co-tenant domain — as a shared-
+    // hosting certificate does. The subdomain is a confirmed asset; the co-tenant
+    // is only a weak co-hosting lead — they must not share high confidence.
+    let entries = vec![CrtEntry {
+        name_value: "api.example.com\nunrelated-cotenant.net".to_string(),
+        issuer_name: Some("Let's Encrypt".to_string()),
+        not_before: None,
+        not_after: None,
+        serial_number: None,
+    }];
+    let mut seen = std::collections::HashSet::new();
+    let out = ct_log_entities(&entries, "example.com", "s", &mut seen);
+
+    let sub = out
+        .iter()
+        .find(|e| e.value == "api.example.com")
+        .expect("subdomain emitted");
+    let co = out
+        .iter()
+        .find(|e| e.value == "unrelated-cotenant.net")
+        .expect("co-tenant emitted");
+    assert!(
+        (sub.confidence - 0.88).abs() < 1e-9,
+        "confirmed subdomain keeps high confidence"
+    );
+    assert!(sub.has_tag(tags::SUBDOMAIN));
+    assert!(
+        (co.confidence - 0.45).abs() < 1e-9,
+        "co-hosted non-subdomain is a weak lead, not an equally-confident 0.88"
+    );
+    assert!(co.has_tag("co-hosted") && !co.has_tag(tags::SUBDOMAIN));
+}
+
+#[test]
 fn accepts_domain_and_ip() {
     let m = CertIntel;
     assert!(m.accepts(&Target::new(TargetKind::Domain, "example.com")));

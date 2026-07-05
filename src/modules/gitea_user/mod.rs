@@ -143,7 +143,7 @@ pub(super) fn build_entities(user: GtUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio/description — extract email addresses.
     if let Some(bio) = user.description.as_deref() {
-        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id, 5) {
+        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id) {
             em.tag("gitea");
             em.tag("public-profile");
             em.add_evidence(

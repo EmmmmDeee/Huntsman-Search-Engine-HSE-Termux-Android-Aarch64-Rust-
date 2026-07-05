@@ -176,7 +176,7 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         env_var: "HUNTSMAN_NETLAS_KEY",
         category: "infrastructure",
         test_url: "https://app.netlas.io/api/users/current/",
-        key_header: KeyPlacement::Header("X-API-Key"),
+        key_header: KeyPlacement::BearerAuth,
         rate_limit_reset_secs: 60,
     },
     ServiceDef {
@@ -342,14 +342,17 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         rate_limit_reset_secs: 60,
     },
     // SeekNow (see-know.eu) — direct OathNet competitor with 5000 daily
-    // lookups on premiumhq tier. Auth: Authorization: Bearer <key>.
-    // /credits is a free introspection endpoint for validation.
+    // lookups on premiumhq tier. Auth: `X-API-Key: <key>` — the server REJECTS
+    // `Authorization: Bearer` with "Missing API key. Use X-API-Key" (see
+    // see_know/client.rs, which authenticates with AuthScheme::XApiKey), so the
+    // validation probe must send the same header or it mis-reports a valid key
+    // as invalid. /credits is a free introspection endpoint for validation.
     ServiceDef {
         name: "see_know",
         env_var: "HUNTSMAN_SEEKNOW_KEY",
         category: "breach",
         test_url: "https://see-know.eu/api/v1/credits",
-        key_header: KeyPlacement::BearerAuth,
+        key_header: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 17,
     },
     // Exa AI neural search — semantic web search for entity discovery.

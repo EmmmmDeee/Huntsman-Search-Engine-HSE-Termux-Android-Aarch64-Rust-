@@ -274,7 +274,12 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
         }
     }
     let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
-    sorted.sort_by_key(|b| std::cmp::Reverse(b.1));
+    // Count descending, then db-name ascending as a total, deterministic
+    // tie-break: `counts` is a HashMap (randomised iteration order), so without
+    // the name key equal-count names — and which of them survive `take(n)` on a
+    // boundary tie — would vary run to run and leak that non-determinism into the
+    // persisted `top_dbnames` entity attribute.
+    sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
 
@@ -400,6 +405,16 @@ pub fn stealer_indexable(field: &str) -> bool {
 static SEARCH_SESSION: std::sync::LazyLock<Mutex<Option<(String, String)>>> =
     std::sync::LazyLock::new(|| Mutex::new(None));
 
+/// Build the JSON body for the session-init POST. Serialised via `serde_json`
+/// so `value` is escaped correctly — a hand-rolled `replace('"', ...)` escaped
+/// only double-quotes, so a value containing a backslash produced invalid JSON
+/// (silent session-init failure) and a literal `\n`/`\t` decoded to a real
+/// control char rather than being escaped. Pure, so the escaping is unit-tested
+/// without a live POST.
+fn session_init_body(value: &str) -> String {
+    serde_json::json!({ "query": value }).to_string()
+}
+
 /// Initialise a search session for `value`. Returns the session ID on
 /// success, or None if the init call fails (non-fatal — queries still
 /// work without a session, they just cost more quota).
@@ -408,7 +423,7 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         return None;
     }
     let url = format!("{}{}", base_url(), paths::SESSION_INIT);
-    let body = format!(r#"{{"query":"{}"}}"#, value.replace('"', "\\\""));
+    let body = session_init_body(value);
     // Routed through the shared CurlClient — same UA / Accept /
     // auth-header layout as the GET path, just with a JSON body.
     let text = CLIENT.post_json(&url, key, &body).await.ok()?;

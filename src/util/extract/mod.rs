@@ -59,6 +59,26 @@ pub fn emails(text: &str) -> Vec<String> {
     out
 }
 
+/// Every HTTP(S) URL in `text`, with the trailing sentence punctuation that
+/// [`URL_RE`] deliberately over-matches (`.`, `,`, `)`) trimmed, de-duplicated
+/// on the trimmed value with first-occurrence order preserved. Mirrors
+/// [`emails`]: scanner-grade extraction with **no cap**, so a bio or profile
+/// that lists many links surfaces all of them rather than a silent first-N
+/// sample. Single-sources the identical `URL_RE.find_iter(...).trim_end_matches(...)
+/// + HashSet` loop the bio scanners each carried.
+#[must_use]
+pub fn urls(text: &str) -> Vec<String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut out = Vec::new();
+    for m in URL_RE.find_iter(text) {
+        let link = m.as_str().trim_end_matches(['.', ',', ')']);
+        if !link.is_empty() && seen.insert(link.to_string()) {
+            out.push(link.to_string());
+        }
+    }
+    out
+}
+
 /// Matches a labelled WiFi SSID line — `SSID: Home`, `WiFi Name = Office`,
 /// `Wireless Network: …` — capturing the network name. SSIDs are arbitrary
 /// strings, so only a *labelled* one can be recognised (never free-text).

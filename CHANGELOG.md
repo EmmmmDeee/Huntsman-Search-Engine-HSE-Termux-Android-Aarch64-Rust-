@@ -343,6 +343,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Bluesky, Reddit, Mastodon, Lobsters and Dev.to profile scans now surface every email
+  and link in a subject's bio, not just the first five of each.** All five modules ran the
+  same copy-pasted extraction that capped bio emails and URLs at five apiece — even though a
+  link-tree-style bio routinely lists more, and the same engine already extracts emails from
+  gist bodies and crawled pages without any cap. A shared, deduplicated URL extractor
+  (`extract::urls`, mirroring the existing email extractor) now backs all five, and every
+  distinct address and link is emitted (duplicates still collapse; ordering is
+  deterministic). Regression test `urls_extracts_all_distinct_trimmed_in_order_uncapped`.
+- **GitHub user lookups now emit every distinct commit-author email from the subject's
+  public push events, not just the first 10.** Each address published in the subject's own
+  commit author fields is a high-value real-email pivot, but the module deduplicated them
+  and then kept only the first 10 — a cap the code comment admitted was merely "to keep a
+  busy account bounded," even though the events endpoint is already limited to 30 events.
+  Every distinct usable address is now emitted (GitHub's privacy/noreply placeholders are
+  still dropped, never replaced with a placeholder; duplicates still collapse to one).
+  Regression test `commit_email_entities_emits_every_distinct_email_not_a_capped_ten`.
+- **GitHub user lookups now emit every one of the subject's published SSH public keys as a
+  correlatable artifact, not just the first 10.** Each key was fingerprinted into a
+  `Credential` entity so that the same public key found on two accounts merges into one
+  artifact carrying both logins — the strongest cross-account link there is — but the emit
+  loop stopped at 10, silently dropping the keys of anyone who has registered more. Every
+  published key is now emitted (malformed key bodies are still skipped, never replaced with
+  a placeholder); the human-readable evidence's true key count and sample are unchanged.
+  Regression test `ssh_key_entities_emits_every_key_not_a_capped_ten`.
 - **Shared-address and shared-phone associations (AU-049/AU-050) now reference every
   reachable email/phone handle, not just the first 8.** The correlation's linked-entity
   list capped the reachable handles at 8, so a large household or share-house with more

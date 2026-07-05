@@ -216,7 +216,15 @@ pub fn is_app_package_id(s: &str) -> bool {
     // hostname can technically have a subdomain literally named `com`, but in the
     // breach/stealer domain feeds this gates, that is vanishingly rare next to the
     // flood of `com.*`/`org.*` Android package ids.
-    const RDNS_PREFIXES: &[&str] = &["com", "org", "net", "io", "app", "dev"];
+    //
+    // `app` and `dev` are DELIBERATELY excluded: unlike `com`/`org`/`net`/`io`
+    // (near-never a leading hostname label), `app.` and `dev.` are two of the most
+    // common real subdomain prefixes (`app.example.com`, `dev.portal.com`), so
+    // treating them as package leads silently DROPPED valid `Domain` leads. The
+    // rare genuine `app.*`/`dev.*` reverse-DNS package is left to
+    // [`looks_like_domain`]'s final-label check rather than costing every app/dev
+    // subdomain — favouring recall of real domains, per the no-data-loss directive.
+    const RDNS_PREFIXES: &[&str] = &["com", "org", "net", "io"];
     RDNS_PREFIXES.contains(&labels[0])
 }
 

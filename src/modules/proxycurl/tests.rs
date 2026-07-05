@@ -13,6 +13,36 @@ fn target() -> Target {
     Target::new(TargetKind::Username, "janedoe")
 }
 
+#[test]
+fn emails_and_phones_are_not_capped() {
+    // A profile listing five distinct personal emails and five valid phones — all
+    // must surface. The prior MAX_EMAILS/MAX_PHONES=3 caps dropped the subject's
+    // own real contact pivots (and the emails' derived non-freemail domains).
+    let raw = r#"{
+        "public_identifier": "multi",
+        "personal_emails": ["a@acme1.com","b@acme2.com","c@acme3.com","d@acme4.com","e@acme5.com"],
+        "personal_numbers": ["+61400000001","+61400000002","+61400000003","+61400000004","+61400000005"]
+    }"#;
+    let profile: LinkedInProfile = serde_json::from_str(raw).unwrap();
+    let r = build_entities(&profile, &target(), "scan");
+    let count = |k: EntityKind| r.entities.iter().filter(|e| e.kind == k).count();
+    assert_eq!(
+        count(EntityKind::Email),
+        5,
+        "every distinct personal email emitted, not capped at 3"
+    );
+    assert_eq!(
+        count(EntityKind::Phone),
+        5,
+        "every valid personal phone emitted, not capped at 3"
+    );
+    assert_eq!(
+        count(EntityKind::Domain),
+        5,
+        "each email's derived non-freemail domain emitted"
+    );
+}
+
 fn full_profile() -> LinkedInProfile {
     let raw = r#"{
         "full_name": "Jane Doe",

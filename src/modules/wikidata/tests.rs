@@ -7,7 +7,7 @@ use crate::core::{
 };
 
 use super::{
-    HANDLE_PROPS, MAX_HANDLES, PERSON_PRIMARY, Wikidata,
+    HANDLE_PROPS, PERSON_PRIMARY, Wikidata,
     builder::{candidate_entity, primary_entities},
     claims::{claim_entity_ids, claim_p625, claim_strings, en_text},
     classify::{classify, name_matches_query, seed_kind},
@@ -178,25 +178,47 @@ fn search_url_and_entities_url_shapes() {
 }
 
 #[test]
-fn handle_cap_is_respected() {
-    // Build an entity with more handles than MAX_HANDLES across properties.
+fn every_handle_is_emitted_no_cap() {
+    // A subject with handle history: two distinct, curated handles on EVERY
+    // known platform — 2 × HANDLE_PROPS.len() total, well over the old
+    // MAX_HANDLES = 12. Each is a Wikidata-sourced identity statement AND a
+    // username-search pivot, so every one must surface; dropping the tail hid
+    // real accounts by property order.
     let mut claims = serde_json::Map::new();
-    for (pid, _) in HANDLE_PROPS {
+    for (pid, platform) in HANDLE_PROPS {
         claims.insert(
             (*pid).to_string(),
             serde_json::json!([
-                {"mainsnak": {"datavalue": {"value": "h1"}}},
-                {"mainsnak": {"datavalue": {"value": "h2"}}}
+                {"mainsnak": {"datavalue": {"value": format!("{platform}_primary")}}},
+                {"mainsnak": {"datavalue": {"value": format!("{platform}_old")}}}
             ]),
         );
     }
     let body = serde_json::json!({"claims": Value::Object(claims)});
     let ents = primary_entities("Q1", "X", &body, TargetKind::Organisation, "s");
-    let n = ents
+    let handles: Vec<&str> = ents
         .iter()
         .filter(|e| e.kind == EntityKind::Username)
-        .count();
-    assert!(n <= MAX_HANDLES, "emitted {n} usernames, cap {MAX_HANDLES}");
+        .map(|e| e.value.as_str())
+        .collect();
+    let expected = HANDLE_PROPS.len() * 2;
+    assert_eq!(
+        handles.len(),
+        expected,
+        "every distinct handle emitted, not capped at 12: got {}",
+        handles.len()
+    );
+    // Spot-check both the first and the last platform's handles survive — the
+    // cap dropped exactly the trailing platforms.
+    for (_, platform) in HANDLE_PROPS {
+        for suffix in ["primary", "old"] {
+            let want = format!("{platform}_{suffix}");
+            assert!(
+                handles.contains(&want.as_str()),
+                "missing handle {want} (a trailing-platform handle the cap would drop)"
+            );
+        }
+    }
 }
 
 #[test]

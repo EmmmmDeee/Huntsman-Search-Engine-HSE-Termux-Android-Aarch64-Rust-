@@ -290,6 +290,14 @@ pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
     Some((remaining, daily_limit))
 }
 
+/// Escape `s` for embedding inside a JSON string literal — the two body-builder
+/// call sites add the surrounding quotes, so this returns the interior only.
+/// Delegates to `serde_json` so backslash, quote AND the control bytes (`\n`,
+/// `\r`, `\t`, other `< 0x20`) that are illegal raw in a JSON string are all
+/// escaped; the hand-rolled version escaped only `\` and `"`, so a query
+/// carrying a newline/tab produced invalid JSON. `to_string()` on a JSON string
+/// `Value` yields `"…"`; strip the wrapping ASCII quotes to keep the contract.
 pub(super) fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let quoted = serde_json::Value::String(s.to_owned()).to_string();
+    quoted[1..quoted.len() - 1].to_owned()
 }

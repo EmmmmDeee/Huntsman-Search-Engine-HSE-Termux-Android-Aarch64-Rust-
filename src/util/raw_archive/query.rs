@@ -43,8 +43,15 @@ pub(super) fn records_filtered_dir(
     let utc_lo = format_utc(start_unix);
     let utc_hi = (end_unix != u64::MAX).then(|| format_utc(end_unix));
     // Pre-slug the wanted queries once so the per-file check is a set lookup.
+    // Lower-cased because the authoritative `_meta.query` check below is
+    // case-insensitive (`query.to_lowercase()`) while `slug()` PRESERVES case: a
+    // wanted query carrying any uppercase (a name/username like `MattDieg`) would
+    // otherwise never match its own archived filename slug, so the matching file
+    // would be skipped before it was ever opened — silently dropping a real paid
+    // response from the dossier. Both sides are lowered so the pre-filter can
+    // never skip a file the authoritative check would keep.
     let want_slugs: Option<std::collections::HashSet<String>> =
-        queries.map(|set| set.iter().map(|q| slug(q, 80)).collect());
+        queries.map(|set| set.iter().map(|q| slug(q, 80).to_lowercase()).collect());
 
     for entry in rd.flatten() {
         let filename = entry.file_name().to_string_lossy().into_owned();
@@ -66,7 +73,7 @@ pub(super) fn records_filtered_dir(
                 continue;
             }
             if let Some(want) = &want_slugs
-                && !want.contains(fq_slug)
+                && !want.contains(&fq_slug.to_lowercase())
             {
                 continue;
             }

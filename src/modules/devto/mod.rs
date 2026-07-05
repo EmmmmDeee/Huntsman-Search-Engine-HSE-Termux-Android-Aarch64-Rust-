@@ -29,7 +29,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::extract::URL_RE;
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "devto";
@@ -261,7 +260,7 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio/summary: extract emails and URLs.
     if let Some(bio) = user.summary.as_deref() {
-        for email in crate::util::extract::emails(bio).into_iter().take(5) {
+        for email in crate::util::extract::emails(bio) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.72, scan_id);
             e.tag("devto");
             e.tag("public-profile");
@@ -271,12 +270,8 @@ pub(super) fn build_entities(user: DevUser, scan_id: &str) -> Vec<Entity> {
             );
             result.push(e);
         }
-        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in URL_RE.find_iter(bio).take(5) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
-            if !seen_urls.insert(link.to_string()) {
-                continue;
-            }
+        for link in crate::util::extract::urls(bio) {
+            let link = link.as_str();
             let mut url_e = Entity::new(EntityKind::Url, link, 0.60, scan_id);
             url_e.tag("devto");
             url_e.add_evidence(

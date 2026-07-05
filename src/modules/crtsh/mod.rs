@@ -25,9 +25,6 @@ const SRC: &str = "crtsh";
 
 /// Shortest SAN email we'll surface (`a@b.c` is 5 chars).
 const MIN_EMAIL_LEN: usize = 5;
-/// Cap on entities returned from one CT search — a popular apex can have tens of
-/// thousands of certs; the highest-confidence 200 are plenty to pivot on.
-const MAX_ENTITIES: usize = 200;
 
 /// Build the crt.sh query for a target, or `None` for a kind/URL we can't key on.
 /// **Pure**: a `Domain` becomes a `%.domain` wildcard subdomain search, an
@@ -122,8 +119,10 @@ fn is_public_ca(org: &str) -> bool {
 /// Map crt.sh certificate entries to deduplicated Domain/Email/Organisation
 /// entities.  **Pure** (no network/IO): splits each cert's SAN list + common
 /// name, skips wildcards, classifies a name as a subdomain of `domain_base`
-/// (case-folded) for a confidence boost, dedups across the whole response,
-/// then returns the highest-confidence [`MAX_ENTITIES`].
+/// (case-folded) for a confidence boost, dedups across the whole response, then
+/// returns EVERY distinct entity, confidence-descending (uid-tie-broken). No
+/// per-module cap: each subdomain/email/org is a real BFS pivot and the frontier
+/// budget is the engine's, not this leaf module's.
 ///
 /// Organisation entities are emitted for non-public issuing CAs only — these
 /// signal enterprise or custom PKI infrastructure and are a high-value
@@ -181,39 +180,42 @@ fn build_entities(entries: &[CrtEntry], domain_base: &str, scan_id: &str) -> Vec
     // A custom or enterprise CA in the CT log reveals internal PKI and is a
     // strong attribution pivot: all domains signed by the same private CA
     // share an operator.
-    out.extend(
-        entries
-            .iter()
-            .filter_map(|entry| {
-                let dn = entry.issuer_name.as_deref()?;
-                let org = parse_dn_org(dn)?;
-                if is_public_ca(org) {
-                    return None;
-                }
-                let key = org.to_lowercase();
-                if !seen_issuers.insert(key) {
-                    return None;
-                }
-                let mut o = Entity::new(EntityKind::Organisation, org, 0.55, scan_id);
-                o.tag(tags::CT_LOG);
-                o.tag("certificate-issuer");
-                o.tag("derived");
-                o.add_evidence(
-                    cert_evidence(entry, &format!("Certificate issuer organisation: {org}"))
-                        .with_attr("issuer_dn", dn)
-                        .with_attr("signed_domain", domain_base),
-                );
-                Some(o)
-            })
-            .take(10),
-    );
+    out.extend(entries.iter().filter_map(|entry| {
+        let dn = entry.issuer_name.as_deref()?;
+        let org = parse_dn_org(dn)?;
+        if is_public_ca(org) {
+            return None;
+        }
+        let key = org.to_lowercase();
+        if !seen_issuers.insert(key) {
+            return None;
+        }
+        let mut o = Entity::new(EntityKind::Organisation, org, 0.55, scan_id);
+        o.tag(tags::CT_LOG);
+        o.tag("certificate-issuer");
+        o.tag("derived");
+        o.add_evidence(
+            cert_evidence(entry, &format!("Certificate issuer organisation: {org}"))
+                .with_attr("issuer_dn", dn)
+                .with_attr("signed_domain", domain_base),
+        );
+        Some(o)
+    }));
 
+    // Confidence-descending, uid-ascending as a total, deterministic tie-break.
+    // NO truncation: every discovered subdomain / SAN email / enterprise-CA org is
+    // a real BFS expansion pivot, and the frontier budget is owned by the engine
+    // (max depth / frontier cap), not this leaf module — the same reasoning the
+    // netlas cert path documents. A prior `.take(10)` on issuers and a
+    // `truncate(200)` here silently dropped genuine pivots (subdomains a popular
+    // apex's CT history exposes, custom-PKI attribution orgs) with the total count
+    // surfaced nowhere.
     out.sort_by(|a, b| {
         b.confidence
             .partial_cmp(&a.confidence)
             .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
     });
-    out.truncate(MAX_ENTITIES);
     out
 }
 

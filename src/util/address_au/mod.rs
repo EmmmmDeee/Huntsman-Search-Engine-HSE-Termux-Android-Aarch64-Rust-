@@ -300,6 +300,7 @@ pub fn normalise_phone(s: &str) -> Option<String> {
         && (digits.starts_with('2')
             || digits.starts_with('3')
             || digits.starts_with('4')
+            || digits.starts_with('5')
             || digits.starts_with('7')
             || digits.starts_with('8'))
     {

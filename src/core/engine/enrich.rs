@@ -163,10 +163,21 @@ pub(super) fn address_to_coords_pass(
     // Coordinates from two Address entities that both name the same city.
     let mut seen_coords: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for addr_entity in entities.values() {
-        if addr_entity.kind != EntityKind::Address {
-            continue;
-        }
+    // Deterministic winner on a shared centroid: HashMap iteration is randomised,
+    // and the `seen_coords` first-wins dedup below means WHICH address supplies a
+    // shared city's Coordinates — its confidence and evidence — must not depend on
+    // that order. Sort by confidence desc (the best address wins the slot) then
+    // value asc (a total, stable tiebreak), so the persisted result is reproducible.
+    let mut addrs: Vec<&Entity> = entities
+        .values()
+        .filter(|e| e.kind == EntityKind::Address)
+        .collect();
+    addrs.sort_by(|a, b| {
+        b.confidence
+            .total_cmp(&a.confidence)
+            .then_with(|| a.value.cmp(&b.value))
+    });
+    for addr_entity in addrs {
         // Registry/validated sources (ABR, company registries, social profiles
         // with explicit geoint tag) have externally-verified addresses; lower
         // their gate from 0.45 to 0.40 so even conservative confidence estimates
@@ -592,5 +603,51 @@ mod tests {
             1,
             "the tag must not be duplicated on a second pass"
         );
+    }
+
+    #[test]
+    fn address_to_coords_pass_winner_on_shared_centroid_is_deterministic() {
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        // Two distinct Brisbane addresses resolve to the same city centroid, so the
+        // seen_coords first-wins dedup emits ONE Coordinates. WHICH address supplies
+        // it — hence the Coordinates' confidence — must be the higher-confidence
+        // address every time, not whichever the randomised HashMap iterated first.
+        // Confidence caps at 0.72, so the 0.80 address yields 0.72 and the 0.55
+        // address yields 0.55 — a clean, order-independent discriminator.
+        let mk = || {
+            let mut hi = Entity::new(
+                EntityKind::Address,
+                "10 Queen St, Brisbane QLD 4000",
+                0.80,
+                "s1",
+            );
+            hi.tag("seed");
+            hi.add_evidence(Evidence::new("abr", "hi addr"));
+            let mut lo = Entity::new(
+                EntityKind::Address,
+                "99 King St, Brisbane QLD 4000",
+                0.55,
+                "s1",
+            );
+            lo.tag("seed");
+            lo.add_evidence(Evidence::new("abr", "lo addr"));
+            let mut m = std::collections::HashMap::new();
+            m.insert(hi.uid.clone(), hi);
+            m.insert(lo.uid.clone(), lo);
+            m
+        };
+        for _ in 0..16 {
+            let out = address_to_coords_pass(&mk(), "s1");
+            let coords: Vec<_> = out
+                .iter()
+                .filter(|e| e.kind == EntityKind::Coordinates)
+                .collect();
+            assert_eq!(coords.len(), 1, "one centroid for the shared city");
+            assert!(
+                (coords[0].confidence - 0.72).abs() < 1e-9,
+                "the higher-confidence 0.80 (→cap 0.72) address must win, got {}",
+                coords[0].confidence
+            );
+        }
     }
 }

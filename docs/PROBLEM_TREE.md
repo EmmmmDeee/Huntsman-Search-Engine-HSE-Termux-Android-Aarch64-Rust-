@@ -4134,3 +4134,67 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   same commit. **This closes the fidelity-audit arc**: all 7 distinct confirmed
   silent-fidelity violations (register scrapers, netlas SAN/emails, niamonx ULP login,
   entities_filtered LIMIT, SEON names, AU-049/050 handles) are fixed.
+- **2026-07-04** — **Full-fidelity: `github_user` capped the subject's own SSH public-key
+  Credential entities at `.take(10)`.** Found by a direct post-audit grep sweep of the
+  remaining `.take(N)` sites (not the 5-finder workflow, which did not reach it). The
+  `fetch_ssh_keys` module read all of GitHub's `/users/{login}/keys` (the subject's own
+  published keys — no false-attribution risk) but the emit loop did
+  `result.extend(keys.iter().take(10).filter_map(...))`, silently dropping keys 11+ so they
+  never became fingerprinted `Credential` artifacts. Each SSH public key is an independent
+  AU-048 cross-account cryptographic pivot (the same key on two accounts proves one
+  private-key holder), so the cap discarded exactly the strongest cross-account evidence the
+  module exists to surface; a developer commonly registers more than ten keys. The sibling
+  display evidence already surfaces the true `ssh_key_count` and a five-key sample (a
+  JUSTIFIED, count-carrying sample — left intact), so only the correlatable-artifact path
+  was lossy. Fix: extracted the `SshKey` row struct to module scope and a pure
+  `ssh_key_entities(keys, scan_id, login)` that emits every parsed key (malformed/empty
+  bodies still dropped by `ssh_fingerprint`, represented by omission, never a placeholder);
+  `fetch_ssh_keys` now calls it. Test delta:
+  `ssh_key_entities_emits_every_key_not_a_capped_ten` (15 distinct keys → 15 distinct
+  Credential uids; fail-before: 10) plus a mixed valid/malformed/null case. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4563). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+- **2026-07-04** — **Full-fidelity: `github_user` capped the subject's own commit-author
+  emails at `.take(10)`.** Sibling of the SSH-keys cap, in the same module's `fetch_events`.
+  The subject's public push events embed the `git` author email of each commit — one of the
+  most reliable real-email→handle links in OSINT — and the module deduped them then emitted
+  via `.take(10)`. My prior-cycle note had deferred this as a "false-attribution control,"
+  but re-reading the code that was wrong: the comment says the cap is merely "to keep a busy
+  account bounded," and it does NOT discriminate co-author addresses from the subject's (it
+  applies identically to emails 1–10), so it is a silent resource bound, not a precision
+  gate. It also has no real resource justification — the endpoint is already bounded to 30
+  events (`per_page=30`), so the distinct-email set is naturally small. Result: distinct,
+  real, subject-published addresses 11+ were silently dropped. Fix: moved the `GhEvent`/
+  `GhPayload`/`GhCommit`/`GhCommitAuthor` structs to module scope and extracted a pure
+  `commit_email_entities(events, scan_id, login)` that emits every DISTINCT usable address
+  (dedup by normalised value; GitHub noreply/placeholder forms still dropped by
+  `usable_commit_email` → absence by omission, never a placeholder; first-seen order over
+  the newest-first event stream is deterministic). The evidence label ("Email from
+  @{login}'s public commit author field") keeps provenance honest — it does not claim the
+  address IS the subject — so surfacing every one adds fidelity without over-attributing.
+  Any genuine co-author-attribution concern is a separate precision question (it would need
+  an author-matches-login filter, which `.take(10)` never provided) and is not conflated
+  here. Test delta: `commit_email_entities_emits_every_distinct_email_not_a_capped_ten` (15
+  events, 15 distinct emails → 15 pivots in deterministic order; fail-before: 10) plus a
+  dedup + placeholder-drop case. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4564). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-04** — **Full-fidelity: five social modules capped bio-extracted emails AND URLs
+  at `.take(5)` each.** `bluesky_user`, `reddit_user`, `mastodon_user`, `lobsters` and
+  `devto` each ran the identical copy-paste block: `extract::emails(bio).take(5)` and
+  `URL_RE.find_iter(bio).trim_end_matches(…).dedup.take(5)`, silently dropping distinct
+  emails/links 6+ from a profile bio (a link-tree-style bio genuinely lists many URLs). The
+  cap is a copy-paste artifact, not a principled bound: the SAME codebase extracts emails
+  from gist bodies and crawled pages *uncapped* (`github_user::fetch_gist_content`,
+  `web_crawler`), and `reddit_user`'s own comments say "extract ALL emails/URLs" directly
+  above the `.take(5)` that contradicts them. Since a bio is a small bounded field, the cap
+  protects nothing the field size doesn't already. Fix (single logical change, §3
+  single-sourcing): added a tested `util::extract::urls(text) -> Vec<String>` mirroring the
+  existing `emails()` (trailing-punct-trimmed via `URL_RE`'s documented over-match, deduped
+  on the trimmed value, first-occurrence order, **no cap**), then routed all five modules'
+  bio scanners through `emails()` + `urls()` uncapped — deleting the ten `.take(5)` sites
+  and the now-redundant per-module `seen_urls`/`trim_end_matches` loops (and three unused
+  `URL_RE` imports). Each module keeps its own skip-list/confidence/entity emission. Test
+  delta: `urls_extracts_all_distinct_trimmed_in_order_uncapped` (six distinct link-heavy-bio
+  URLs, trimmed + deduped, in order; fail-before: a capped five); all five modules' existing
+  tests still pass. Gate green: fmt/clippy/doc clean, full suite 0 failures (4565).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

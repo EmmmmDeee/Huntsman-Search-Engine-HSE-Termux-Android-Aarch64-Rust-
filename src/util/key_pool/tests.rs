@@ -228,6 +228,45 @@ fn tier_ordering() {
 }
 
 #[test]
+fn load_pool_from_backs_up_an_unreadable_file_instead_of_silently_dropping_it() {
+    // Regression: a pool file that EXISTS but can't be read (here: invalid UTF-8
+    // corruption) must be preserved as `.json.bak` and warned about — not
+    // silently discarded (the old blanket `Err(_) => KeyPool::new()`) and then
+    // clobbered by the next atomic save. A genuinely MISSING file stays a quiet
+    // fresh start with no backup.
+    use super::persistence::load_pool_from;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("hse_kp_{}_{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("key_pool.json");
+    let bak = path.with_extension("json.bak");
+
+    // (1) Missing file → empty pool, NO backup.
+    assert_eq!(load_pool_from(&path).total_keys(), 0);
+    assert!(
+        !bak.exists(),
+        "a missing file is a fresh start, not a corruption backup"
+    );
+
+    // (2) Present but unreadable (invalid UTF-8) → empty pool, file preserved as .bak.
+    std::fs::write(&path, [0xff, 0xfe, 0x00, 0x01, 0x80]).unwrap();
+    assert_eq!(load_pool_from(&path).total_keys(), 0);
+    assert!(
+        !path.exists(),
+        "the unreadable file is renamed aside, not left to be clobbered"
+    );
+    assert!(
+        bak.exists(),
+        "the unreadable file is preserved as .json.bak"
+    );
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn next_key_prefers_higher_tier() {
     let pool = KeyPool::new();
     let mut basic = KeyEntry::new("basic-key");

@@ -180,6 +180,53 @@ use super::*;
     }
 
     #[test]
+    fn stealer_preserves_the_captured_password_verbatim() {
+        use serde_json::json;
+        // Full fidelity: the captured password is preserved verbatim in the
+        // `password` evidence attribute — authorised evidentiary data is never
+        // redacted, hinted, or hidden.
+        let item = json!({
+            "email": ["victim@example.com"],
+            "url": "https://login.site",
+            "password": "SuperSecret123"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        let has_pw = result.entities.iter().any(|e| {
+            e.evidence.iter().any(|ev| {
+                ev.attributes.get("password").map(String::as_str) == Some("SuperSecret123")
+            })
+        });
+        assert!(
+            has_pw,
+            "the captured password is preserved verbatim in evidence"
+        );
+    }
+
+    #[test]
+    fn stealer_preserves_the_paywall_sentinel_verbatim() {
+        use serde_json::json;
+        // The raw `UPGRADE_TO_SEE…` paywall sentinel is the datum the API returned
+        // and is kept as-is (never replaced with a marker), so a consumer can tell
+        // a withheld password from a real one.
+        let item = json!({
+            "email": ["victim@example.com"],
+            "password": "UPGRADE_TO_SEE_FULL_DATA"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+        assert!(
+            result.entities.iter().any(|e| e.evidence.iter().any(|ev| {
+                ev.attributes.get("password").map(String::as_str) == Some("UPGRADE_TO_SEE_FULL_DATA")
+            })),
+            "the paywall sentinel is preserved verbatim"
+        );
+    }
+
+    #[test]
     fn stealer_row_surfaces_device_fingerprints_and_long_tail() {
         use serde_json::json;
         // The defining payload of an infostealer log — machine fingerprints and

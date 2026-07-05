@@ -1707,6 +1707,75 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     );
 }
 
+/// Recall's confidence-DESC sort must carry a total, deterministic tie-break so
+/// equal-confidence nodes come back in a fixed order — otherwise WHICH of them
+/// survive the internal `truncate(MAX_ENTITIES)` boundary cut is decided by
+/// `HashMap` iteration order (`merged.into_values()`), leaking non-determinism
+/// into the persisted working set. The tie-break is `uid` ascending, so a run of
+/// same-confidence recalled entities must emerge uid-sorted, identically on every
+/// call even though each call rebuilds the `merged` map (fresh random seed).
+#[tokio::test]
+async fn recall_prior_entities_tie_breaks_equal_confidence_by_uid() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+
+    // A prior scan whose seed Username anchors the recall, plus 24 discovered
+    // emails ALL at the same confidence. Their uids (hex(SHA-256("email:...")))
+    // scatter relative to insertion order, so only an explicit uid tie-break can
+    // make the recalled run monotonic — a stable sort alone preserves the
+    // randomised HashMap order.
+    let seed = Entity::new(EntityKind::Username, "tiebreaksubject", 0.95, "prior-scan");
+    store.upsert_entity(&seed).unwrap();
+    for i in 0..24u32 {
+        let mut email = Entity::new(
+            EntityKind::Email,
+            format!("tiebreak{i:02}@example.com"),
+            0.8,
+            "prior-scan",
+        );
+        email.add_evidence(Evidence::new("plant", "found in an earlier scan"));
+        store.upsert_entity(&email).unwrap();
+    }
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Username, "tiebreaksubject");
+
+    // The uid sequence of the equal-confidence emails, in recalled order.
+    let email_uids = |recalled: &[Entity]| -> Vec<String> {
+        recalled
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| e.uid.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let first = engine.recall_prior_entities(&target, "current-scan", true);
+    let first_uids = email_uids(&first);
+    assert_eq!(
+        first_uids.len(),
+        24,
+        "every planted email is recalled — no cap loses any at this size"
+    );
+    let mut sorted = first_uids.clone();
+    sorted.sort();
+    assert_eq!(
+        first_uids, sorted,
+        "equal-confidence recalled entities emerge uid-ascending, not in HashMap order"
+    );
+
+    // Rebuild-independence: a second recall constructs a fresh `merged` HashMap
+    // (new random seed) yet must yield the identical order.
+    let second = email_uids(&engine.recall_prior_entities(&target, "current-scan", true));
+    assert_eq!(
+        first_uids, second,
+        "recall order is deterministic across calls despite the internal HashMap"
+    );
+}
+
 /// A FullName seed must recall prior intel even though the stored Person anchor
 /// is reformatted by name parsing: the `seed_uid` derives from the raw,
 /// un-title-cased input and misses, so the value-match fallback's token-set key

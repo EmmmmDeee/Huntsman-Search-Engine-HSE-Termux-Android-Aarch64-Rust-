@@ -96,8 +96,7 @@ pub fn is_non_routable_ip(s: &str) -> bool {
 /// discovered CDN-edge IP as a target: its geo/reputation belong to the CDN, not
 /// the subject, and reverse-IP on it is pure noise. This is decided by IP RANGE,
 /// not by a `cdn`/`cloudflare` tag, so it holds BEFORE any reverse-IP module runs
-/// in the same round — no tag-ordering race. IPv6 returns `false` (the reverse-IP
-/// modules here are v4-only and the v6 CDN space is impractical to enumerate).
+/// in the same round — no tag-ordering race.
 ///
 /// Cloudflare ranges are stable and authoritative (`cloudflare.com/ips-v4` +
 /// `/ips-v6`); a stray IP that drifts out of the list simply isn't gated

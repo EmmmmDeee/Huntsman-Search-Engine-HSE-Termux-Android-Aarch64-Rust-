@@ -77,6 +77,10 @@ pub(super) fn extract_cell_intel(
         .collect();
     towers.sort_by(|a, b| a.2.partial_cmp(&b.2).unwrap_or(std::cmp::Ordering::Equal));
     towers.dedup_by(|a, b| (a.0 - b.0).abs() < 1e-5 && (a.1 - b.1).abs() < 1e-5);
+    // Total distinct tower positions, surfaced on every emitted Coordinates below
+    // (independent of the carrier Organisation entity, which is suppressed for
+    // generic AU carriers) so the top-3-nearest bound is never a silent drop.
+    let tower_positions = towers.len();
 
     for (lat, lon, _) in towers.into_iter().take(3) {
         let coords = format!("{lat:.6},{lon:.6}");
@@ -92,15 +96,19 @@ pub(super) fn extract_cell_intel(
             )
             .with_attr("source", "wigle_cell")
             .with_attr("latitude", lat.to_string())
-            .with_attr("longitude", lon.to_string()),
+            .with_attr("longitude", lon.to_string())
+            .with_attr("tower_positions_observed", tower_positions.to_string()),
         );
         result.push(geo);
     }
 }
 
-/// Extract Bluetooth beacon MAC addresses near the target. Limited
-/// to the 3 most consistently-observed beacons so we don't flood
-/// downstream pivots with hardware that's only been seen once.
+/// Extract Bluetooth beacon MAC addresses observed near the target. Bounded to a
+/// few beacons — Bluetooth is transient (a passing device leaves a one-off
+/// beacon), so flooding downstream pivots with it is noise — in the order WiGLE
+/// returns them (the API exposes no per-beacon observation count to rank by). The
+/// total number observed is surfaced on each emitted entity's `beacons_observed`
+/// evidence so the bound is visible, never a silent drop.
 pub(super) fn extract_bluetooth_intel(
     resp: &Resp,
     target_value: &str,
@@ -110,6 +118,7 @@ pub(super) fn extract_bluetooth_intel(
     if resp.success != Some(true) || resp.results.is_empty() {
         return;
     }
+    let beacons_observed = resp.results.len();
     result.extend(resp.results.iter().take(3).filter_map(|net| {
         let mac = net.netid.as_deref()?;
         if mac.len() < 12 {
@@ -123,7 +132,8 @@ pub(super) fn extract_bluetooth_intel(
             format!("Bluetooth beacon observed near {target_value}"),
         )
         .with_attr("source", "wigle_bluetooth")
-        .with_attr("coordinates", target_value);
+        .with_attr("coordinates", target_value)
+        .with_attr("beacons_observed", beacons_observed.to_string());
         if let Some(oui) = crate::util::oui::classify_mac(mac) {
             e.tag(format!("vendor:{}", oui.vendor));
             e.tag(format!("device:{}", oui.class.as_str()));
@@ -211,9 +221,13 @@ pub(super) fn emit_bssid_entities(
     result
 }
 
-/// Max matched networks surfaced for an SSID search — a unique SSID resolves to
-/// a handful of points (the victim's location(s)); more means it isn't unique.
-const SSID_RESULT_CAP: usize = 10;
+/// Max matched networks surfaced for an SSID search. Aligned to the admission
+/// gate [`super::SSID_UNIQUE_MAX`]: an SSID is only searched when it has at most
+/// that many global observations (more ⇒ not a unique/personal network), so
+/// emission must surface ALL of an admitted SSID's location fixes. A smaller cap
+/// here silently dropped up to half the subject-location points of a network the
+/// module had already judged unique — the very fixes that "place its owner".
+const SSID_RESULT_CAP: usize = super::SSID_UNIQUE_MAX as usize;
 
 /// Emit geolocation entities for a unique SSID's matched networks: each
 /// network's coordinates (where WiGLE observed it) and its BSSID (tying the SSID

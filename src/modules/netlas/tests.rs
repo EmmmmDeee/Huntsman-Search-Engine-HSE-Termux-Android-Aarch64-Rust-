@@ -99,6 +99,32 @@ fn build_entities_emits_every_unique_san_domain_and_email() {
 }
 
 #[test]
+fn build_entities_emits_every_unique_cert_subject_org() {
+    use crate::core::entity::EntityKind;
+    // A shared-hosting IP whose certificate Subject O carries 6 distinct verified
+    // legal-entity names: each is an attribution pivot and must surface as an
+    // Organisation — the prior `.take(3)` silently dropped three.
+    let orgs: Vec<String> = (0..6).map(|i| format!("Acme Legal Entity {i}")).collect();
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "203.0.113.10",
+            "certificate": { "subject": { "organization": orgs } }
+        }}]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let org_ct = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("ssl-subject-org"))
+        .count();
+    assert_eq!(
+        org_ct, 6,
+        "every unique cert Subject O must be emitted, not capped at 3"
+    );
+}
+
+#[test]
 fn build_entities_emits_a_deterministic_jarm_fingerprint() {
     use crate::core::entity::EntityKind;
     // A host can expose several JARM fingerprints (one per TLS service), but only
