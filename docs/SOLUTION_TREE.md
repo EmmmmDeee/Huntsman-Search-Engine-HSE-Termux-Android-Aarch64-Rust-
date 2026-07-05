@@ -755,6 +755,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `profile_kit::person_from_name` helper. The earlier grep only checked for
   the literal `EntityKind::Person` construction inside the file itself and
   missed the indirection.
+- **`[x]` SOL-DOCKERHUB-ATTACK-COMPLETE · `dockerhub_user`'s ATT&CK override
+  now covers every entity kind it actually produces — the identical
+  replace-instead-of-extend gap just fixed in `github_user`** — the
+  override `&["T1593.003"]` alone left `Person` (`full_name`),
+  `Organisation` (`company`), `Address`/`Coordinates` (`location`), and
+  `Email` (`gravatar_email`) with no matching MITRE provenance. *Closes:*
+  new node **T2.28**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed. The same recurring shape was flagged across
+  several other Social-category "profile lookup" modules (`codewars_user`,
+  `mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`) — logged as a scoped
+  future sweep, not pursued in this commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -822,6 +835,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-WEB-CRAWLER-ORDER-DETERMINISM | T2.25 | `[x]` |
 | SOL-EMAIL-USERNAME-ORDER-DETERMINISM | T2.26 | `[x]` |
 | SOL-GITHUB-ATTACK-COMPLETE | T2.27 | `[x]` |
+| SOL-DOCKERHUB-ATTACK-COMPLETE | T2.28 | `[x]` |
 
 ---
 
@@ -948,7 +962,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-HN-DOMAIN-DETERMINISM, 2026-07-05); **T2.25 `[x]`** ✅
   (SOL-WEB-CRAWLER-ORDER-DETERMINISM, 2026-07-05); **T2.26 `[x]`** ✅
   (SOL-EMAIL-USERNAME-ORDER-DETERMINISM, 2026-07-05); **T2.27 `[x]`** ✅
-  (SOL-GITHUB-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
+  (SOL-GITHUB-ATTACK-COMPLETE, 2026-07-05); **T2.28 `[x]`** ✅
+  (SOL-DOCKERHUB-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3756,3 +3771,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   note in place. Mirrors the earlier `TrackingId`/AU-044 refutation:
   verifying independently before building avoided shipping a fix for a
   problem that didn't exist. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 40: SOL-DOCKERHUB-ATTACK-COMPLETE —
+  `dockerhub_user` had the identical replace-instead-of-extend
+  `attack_techniques()` gap just fixed in `github_user`.** A background
+  agent swept other Social-category "profile lookup" modules for the same
+  shape and found `dockerhub_user`'s override was `&["T1593.003"]` alone,
+  while `build_entities` demonstrably constructs `Person` (via
+  `profile_kit::person_from_name` from `full_name`), `Organisation` (from
+  `company`), `Address`/`Coordinates` (via
+  `profile_kit::location_address`/`location_coordinates` from `location`),
+  and `Email` (from `gravatar_email`) — 4 of the module's 5 produced entity
+  kinds carried no matching MITRE provenance. Independently re-verified by
+  direct read of `dockerhub_user/mod.rs` line-by-line before touching any
+  code, confirming every cited construction path is real, live code
+  reachable from genuine Docker Hub API fields, not aspirational. Declared
+  the precise, complete set — `T1589.002` (Email Addresses), `T1589.003`
+  (Employee Names), `T1591.001` (Determine Physical Locations), `T1591.002`
+  (Business Relationships), `T1593.003` (Code Repositories) — mirroring
+  `github_user`'s exact fix shape (no `T1589.001`: unlike `github_user`,
+  `dockerhub_user` emits no `Credential` entities). *Closes:* new node
+  **T2.28**. Tests:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.002` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `dockerhub_user`, so no cross-module update was
+  needed. The same recurring shape was flagged across several other
+  Social-category "profile lookup" modules (`codewars_user`,
+  `mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`) — logged as a scoped
+  future sweep rather than pursued in this same commit; `dockerhub_user`
+  was the single largest, most cleanly verified instance. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4409 lib tests), architecture
+  suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.

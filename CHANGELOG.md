@@ -364,6 +364,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`dockerhub_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The same replace-instead-of-extend gap just
+  fixed in `github_user`: its override declared only "Code Repositories,"
+  silently dropping the technique for the Person, Organisation, Address/
+  Coordinates, and Email entities it also builds from a Docker Hub profile's
+  real name, company, location, and Gravatar email. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`github_user`'s ATT&CK mapping now covers every entity kind the module
   actually produces.** Its override correctly swapped the Social category's
   default "Social Media" technique for the more precise "Code Repositories"

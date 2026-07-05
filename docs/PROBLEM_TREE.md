@@ -1000,6 +1000,33 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   package-registry siblings' correct narrower expectation untouched. **P2**
   (a MITRE-provenance correctness gap affecting the majority of one module's
   emitted entity kinds, not a crash or PII leak).
+- **`[x]` T2.28 · `dockerhub_user` had the identical replace-instead-of-extend
+  `attack_techniques()` gap just fixed in `github_user` — 4 of its 5
+  produced entity kinds carried no matching MITRE provenance** — with the
+  `github_user` fix shipped, a background agent swept other Social-category
+  "profile lookup" modules for the same shape and found `dockerhub_user`'s
+  override was `&["T1593.003"]` alone, while `build_entities` demonstrably
+  constructs `Person` (via `profile_kit::person_from_name` from
+  `full_name`), `Organisation` (from `company`), `Address`/`Coordinates`
+  (via `profile_kit::location_address`/`location_coordinates` from
+  `location`), and `Email` (from `gravatar_email`) — independently
+  re-verified by direct read of `dockerhub_user/mod.rs` line-by-line before
+  touching any code, confirming every cited construction path is real, live
+  code reachable from genuine Docker Hub API fields, not aspirational. The
+  agent also flagged this exact shape as recurring across several other
+  Social-category "profile lookup" modules (`codewars_user`,
+  `mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`) — logged as a scoped
+  future sweep rather than pursued in this same commit; `dockerhub_user` was
+  the single largest, most cleanly verified instance (4 missing techniques)
+  and this cycle fixes one module at a time by design. → **Solution:**
+  declared the precise, complete set — `T1589.002` (Email Addresses),
+  `T1589.003` (Employee Names), `T1591.001` (Determine Physical Locations),
+  `T1591.002` (Business Relationships), `T1593.003` (Code Repositories) —
+  mirroring `github_user`'s exact fix shape (no `T1589.001` here: unlike
+  `github_user`, `dockerhub_user` emits no `Credential` entities). **P2** (a
+  MITRE-provenance correctness gap affecting the majority of one module's
+  emitted entity kinds, not a crash or PII leak).
 
 ---
 
@@ -5079,3 +5106,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   single line of "fix" code is exactly the outcome this discipline exists
   to produce, mirroring the earlier `TrackingId`/AU-044 refutation.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 40 (new T2.28): `dockerhub_user` had the identical
+  replace-instead-of-extend `attack_techniques()` gap just fixed in
+  `github_user`.** A background agent swept other Social-category "profile
+  lookup" modules for the same shape and found `dockerhub_user`'s override
+  was `&["T1593.003"]` alone, while `build_entities` demonstrably
+  constructs `Person` (via `profile_kit::person_from_name` from
+  `full_name`), `Organisation` (from `company`), `Address`/`Coordinates`
+  (via `profile_kit::location_address`/`location_coordinates` from
+  `location`), and `Email` (from `gravatar_email`). Independently
+  re-verified by direct read of `dockerhub_user/mod.rs` line-by-line before
+  touching any code, confirming every cited construction path is real, live
+  code reachable from genuine Docker Hub API fields — 4 of the module's 5
+  produced entity kinds carried no matching MITRE provenance tag. The agent
+  also flagged this exact shape as recurring across several other
+  Social-category "profile lookup" modules (`codewars_user`,
+  `mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`) — logged as a scoped
+  future sweep rather than pursued in this same commit; `dockerhub_user` was
+  the single largest, most cleanly verified instance (4 missing techniques).
+  → **Solution:** declared the precise, complete set — `T1589.002`,
+  `T1589.003`, `T1591.001`, `T1591.002`, `T1593.003` — mirroring
+  `github_user`'s exact fix shape (no `T1589.001`: unlike `github_user`,
+  `dockerhub_user` emits no `Credential` entities). Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.002` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `dockerhub_user`, so no cross-module test update was
+  needed this time. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4409 lib tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
