@@ -244,7 +244,7 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
 
     // Bio/description — extract emails.
     if let Some(bio) = user.description.as_deref() {
-        for mut e in profile_kit::bio_emails(bio, 0.70, scan_id, 5) {
+        for mut e in profile_kit::bio_emails(bio, 0.70, scan_id) {
             e.tag("codeberg");
             e.tag("public-profile");
             e.add_evidence(

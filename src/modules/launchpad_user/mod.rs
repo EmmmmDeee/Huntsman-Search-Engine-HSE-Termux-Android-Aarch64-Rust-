@@ -91,7 +91,7 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
 
     // Bio — extract email addresses mentioned in the free-text field.
     if let Some(bio) = person.homepage_content.as_deref() {
-        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id, 5) {
+        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id) {
             em.tag("launchpad");
             em.tag("public-profile");
             em.add_evidence(

@@ -165,13 +165,14 @@ pub(crate) fn location_coordinates(
     Some(c)
 }
 
-/// Extract up to `limit` `Email` entities mentioned in a free-text
-/// bio / description field, in first-seen order. The caller tags and evidences
-/// each returned entity.
-pub(crate) fn bio_emails(bio: &str, confidence: f64, scan_id: &str, limit: usize) -> Vec<Entity> {
+/// Extract EVERY `Email` entity mentioned in a free-text bio / description field,
+/// in first-seen order (deduped by [`crate::util::extract::emails`]). A profile
+/// bio is a bounded field, so there is no cap: a prior `.take(limit)` silently
+/// dropped real contact-email pivots past the 3rd–5th on the handful of bios that
+/// list several. The caller tags and evidences each returned entity.
+pub(crate) fn bio_emails(bio: &str, confidence: f64, scan_id: &str) -> Vec<Entity> {
     crate::util::extract::emails(bio)
         .into_iter()
-        .take(limit)
         .map(|email| Entity::new(EntityKind::Email, &email, confidence, scan_id))
         .collect()
 }
