@@ -364,6 +364,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`codewars_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The third instance of the same
+  replace-instead-of-extend gap: its override declared only "Code
+  Repositories," silently dropping the technique for the Person,
+  Organisation, and Address/Coordinates entities it also builds from a
+  Codewars profile's real name, clan, and city. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`dockerhub_user`'s ATT&CK mapping now covers every entity kind the
   module actually produces.** The same replace-instead-of-extend gap just
   fixed in `github_user`: its override declared only "Code Repositories,"

@@ -768,6 +768,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
   `codeberg_user`, `huggingface_user`, `hexpm_user`) — logged as a scoped
   future sweep, not pursued in this commit.
+- **`[x]` SOL-CODEWARS-ATTACK-COMPLETE · `codewars_user`'s ATT&CK override now
+  covers every entity kind it actually produces — the 3rd instance of the
+  same replace-instead-of-extend gap** — picked from T2.28's scoped
+  future-sweep list; the override `&["T1593.003"]` alone left `Person`
+  (`name`), `Organisation` (`clan`), and `Address`/`Coordinates` (`city`)
+  with no matching MITRE provenance (no `Email` field on this API, so
+  `T1589.002` correctly does not apply, unlike `dockerhub_user`). *Closes:*
+  new node **T2.29**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed. 7 modules remain on the scoped sweep list
+  (`mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`) for future cycles.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -836,6 +848,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMAIL-USERNAME-ORDER-DETERMINISM | T2.26 | `[x]` |
 | SOL-GITHUB-ATTACK-COMPLETE | T2.27 | `[x]` |
 | SOL-DOCKERHUB-ATTACK-COMPLETE | T2.28 | `[x]` |
+| SOL-CODEWARS-ATTACK-COMPLETE | T2.29 | `[x]` |
 
 ---
 
@@ -963,7 +976,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-WEB-CRAWLER-ORDER-DETERMINISM, 2026-07-05); **T2.26 `[x]`** ✅
   (SOL-EMAIL-USERNAME-ORDER-DETERMINISM, 2026-07-05); **T2.27 `[x]`** ✅
   (SOL-GITHUB-ATTACK-COMPLETE, 2026-07-05); **T2.28 `[x]`** ✅
-  (SOL-DOCKERHUB-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
+  (SOL-DOCKERHUB-ATTACK-COMPLETE, 2026-07-05); **T2.29 `[x]`** ✅
+  (SOL-CODEWARS-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3803,3 +3817,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   was the single largest, most cleanly verified instance. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4409 lib tests), architecture
   suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 41: SOL-CODEWARS-ATTACK-COMPLETE —
+  `codewars_user` was the 3rd instance of the same replace-instead-of-extend
+  `attack_techniques()` gap.** Picked from T2.28's scoped future-sweep list,
+  surveying each of the 8 candidates' `attack_techniques()`/`produces()`
+  pair before selecting the largest remaining verified gap. The override
+  `&["T1593.003"]` alone left `Person` (via `profile_kit::person_from_name`
+  from the API's `name` field), `Organisation` (from `clan`), and
+  `Address`/`Coordinates` (via `profile_kit::location_address`/
+  `location_coordinates` from `city`) with no matching MITRE provenance —
+  independently re-verified line-by-line before touching any code. No
+  `Email` field exists on the Codewars API, so `T1589.002` correctly does
+  not apply here, unlike `dockerhub_user`. Declared the precise, complete
+  set — `T1589.003`, `T1591.001`, `T1591.002`, `T1593.003` — mirroring the
+  prior two fixes' shape, scoped to only what this module's fields support.
+  *Closes:* new node **T2.29**. Tests:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.003` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `codewars_user`. 7 modules remain on the scoped
+  sweep list (`mastodon_user`, `sourceforge_user`, `cpan_user`,
+  `gitea_user`, `codeberg_user`, `huggingface_user`, `hexpm_user`) for
+  future cycles — one independently-verified module per cycle by design.
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4410 lib tests),
+  architecture suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.

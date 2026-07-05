@@ -1027,6 +1027,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `github_user`, `dockerhub_user` emits no `Credential` entities). **P2** (a
   MITRE-provenance correctness gap affecting the majority of one module's
   emitted entity kinds, not a crash or PII leak).
+- **`[x]` T2.29 · `codewars_user` had the third instance of the identical
+  replace-instead-of-extend `attack_techniques()` gap — 3 of its 6 produced
+  entity kinds carried no matching MITRE provenance** — picked up from the
+  scoped future-sweep list T2.28 logged (`codewars_user`, `mastodon_user`,
+  `sourceforge_user`, `cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`), surveying each candidate's
+  `attack_techniques()`/`produces()` pair before selecting the largest
+  remaining verified gap. `codewars_user`'s override was `&["T1593.003"]`
+  alone, while `build_entities` (independently re-verified by direct,
+  line-by-line read before touching any code) demonstrably constructs
+  `Person` (via `profile_kit::person_from_name` from the API's `name`
+  field), `Organisation` (from `clan`), and `Address`/`Coordinates` (via
+  `profile_kit::location_address`/`location_coordinates` from `city`) — no
+  `Email` field exists on the Codewars API, so `T1589.002` correctly does
+  not apply here (unlike `dockerhub_user`). → **Solution:** declared the
+  precise, complete set — `T1589.003` (Employee Names), `T1591.001`
+  (Determine Physical Locations), `T1591.002` (Business Relationships),
+  `T1593.003` (Code Repositories) — mirroring `github_user`'s/
+  `dockerhub_user`'s exact fix shape, scoped down to only the techniques
+  this module's fields actually support. The remaining 7 modules on the
+  scoped sweep list remain open for future cycles — this loop fixes one
+  independently-verified module at a time by design, not a batch. **P2** (a
+  MITRE-provenance correctness gap affecting half of one module's emitted
+  entity kinds, not a crash or PII leak).
 
 ---
 
@@ -5136,3 +5160,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   needed this time. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4409 lib tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE`
   §5 — same commit.
+- **2026-07-05** — **Cycle 41 (new T2.29): `codewars_user` was the 3rd
+  instance of the same replace-instead-of-extend `attack_techniques()` gap.**
+  Picked up from the scoped future-sweep list T2.28 logged, surveying each
+  of the 8 candidates' `attack_techniques()`/`produces()` pair before
+  selecting the largest remaining verified gap: `codewars_user`'s override
+  was `&["T1593.003"]` alone, while `build_entities` (independently
+  re-verified line-by-line before touching any code) demonstrably
+  constructs `Person` (via `profile_kit::person_from_name` from the API's
+  `name` field), `Organisation` (from `clan`), and `Address`/`Coordinates`
+  (via `profile_kit::location_address`/`location_coordinates` from `city`)
+  — 3 of the module's 6 produced entity kinds carried no matching MITRE
+  provenance. No `Email` field exists on the Codewars API, so `T1589.002`
+  correctly does not apply here, unlike `dockerhub_user`. → **Solution:**
+  declared the precise, complete set — `T1589.003`, `T1591.001`,
+  `T1591.002`, `T1593.003` — mirroring the prior two fixes' exact shape,
+  scoped down to only what this module's fields support. Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.003` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `codewars_user`. The remaining 7 modules on the
+  scoped sweep list (`mastodon_user`, `sourceforge_user`, `cpan_user`,
+  `gitea_user`, `codeberg_user`, `huggingface_user`, `hexpm_user`) stay
+  open for future cycles — one independently-verified module per cycle by
+  design. Gate green: fmt/clippy/doc clean, full suite 0 failures (4410 lib
+  tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
