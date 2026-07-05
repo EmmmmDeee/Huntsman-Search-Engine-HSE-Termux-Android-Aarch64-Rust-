@@ -858,6 +858,14 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
             format!("{} ({crit}/{det})", provider(e))
         })
         .collect();
+    // The priority list is capped at 5, but the description must never claim
+    // completeness it doesn't have — a portfolio of, say, 12 keys must say so,
+    // not silently show 5 with no indication 7 were omitted (the same
+    // disclosure `join_capped` gives AU-047/AU-048/AU-106).
+    let mut priority = top.join("; ");
+    if rows.len() > 5 {
+        priority.push_str(&format!(" (+{} more)", rows.len() - 5));
+    }
 
     let n = keys.len();
     let providers = by_provider.len();
@@ -879,8 +887,7 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
         format!(
             "{n} exposed API key(s) across {providers} provider(s) retained as exposure \
              intelligence — {high_value} high-criticality{exploit_note}. Revoke-first priority: \
-             {}. (Exposure scoring only — harvested keys are catalogued, not reused.)",
-            top.join("; ")
+             {priority}. (Exposure scoring only — harvested keys are catalogued, not reused.)"
         ),
         keys.iter().map(|e| e.uid.clone()).collect(),
         scan_id,

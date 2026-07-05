@@ -5095,6 +5095,28 @@ fn au095_flags_exploitable_and_handles_unrated() {
 }
 
 #[test]
+fn au095_discloses_when_the_priority_list_is_truncated() {
+    // The revoke-first list is capped at 5, but the description must never
+    // read as complete when it isn't — the same "(+N more)" disclosure
+    // AU-047/AU-048/AU-106 already carry via join_capped.
+    let keys: Vec<Entity> = (0..7)
+        .map(|i| api_key_ent(&format!("key-{i}"), &format!("svc{i}"), "high", "proven"))
+        .collect();
+    let r = super::rules::rule_au_095_exposed_key_portfolio(&keys, "s", 0);
+    assert_eq!(r.len(), 1);
+    assert!(
+        r[0].description.contains("7 exposed API key"),
+        "the true total must still be stated: {}",
+        r[0].description
+    );
+    assert!(
+        r[0].description.contains("(+2 more)"),
+        "the capped (top-5) priority list must disclose the 2 it omitted: {}",
+        r[0].description
+    );
+}
+
+#[test]
 fn au095_no_keys_no_finding() {
     let p = Entity::new(EntityKind::Person, "Jo Citizen", 0.9, "s");
     assert!(super::rules::rule_au_095_exposed_key_portfolio(&[p], "s", 0).is_empty());
