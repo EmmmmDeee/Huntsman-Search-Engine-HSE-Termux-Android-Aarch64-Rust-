@@ -138,7 +138,16 @@ impl CurlClient {
         let auth_header = self.auth.header_line(key);
 
         let mut cmd = Command::new("curl");
-        cmd.args(["-s", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
+        // `-S`/`--show-error` alongside `-s`: silent mode alone suppresses BOTH
+        // the progress meter AND curl's own fatal-error text, so a DNS/connect
+        // failure previously surfaced as a bare "curl exited 6" with an empty
+        // `output.stderr` below — diagnosable only by looking up what curl exit
+        // code 6 means, never WHICH host or WHY. `-S` keeps the progress meter
+        // suppressed but restores the one-line diagnostic ("curl: (6) Could not
+        // resolve host: …") into stderr, which the failure branch below already
+        // captures and reports — so this is a pure debuggability fix, no output
+        // shape change on success.
+        cmd.args(["-s", "-S", "-L", "--max-time", &secs, "-A", DEFAULT_UA]);
         // Protocol/redirect/size hardening, single-sourced so this keyed-API
         // path and the free-function curl path can never drift apart.
         //
