@@ -617,11 +617,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   count. Predates this repo's single root commit (`770df4c9`), so — unlike
   most corrections this session — no specific delivery cycle can be
   attributed; it simply was never reconciled into this note.
-  *Remaining (real):* `changelog_lines`/`commits_behind` have no test
-  exercising the actual `git` subprocess calls (a real local git-repo-pair
-  fixture, `tempfile` already a dev-dep, would close it) — left as a
-  separate, smaller follow-on.
+  *Remaining (real), closed 2026-07-05:* `changelog_lines`/`commits_behind`
+  had no test exercising the actual `git` subprocess calls — closed by
+  **SOL-UPDATE-GIT-FIXTURE** below (new node **T2.21**).
   **(cycle 22)**
+- **`[x]` SOL-UPDATE-GIT-FIXTURE · `commits_behind`/`changelog_lines` now
+  proven against a real `git` subprocess, not just pure-logic tests** — the
+  residual explicitly deferred in SOL-UPDATE's own 2026-07-01 correction.
+  Built a local origin+clone fixture pair (plain directories, `tempfile`, no
+  network): commits land on the "origin," `commits_behind`/`changelog_lines`
+  are asserted against the "local" clone's real ahead/behind state. Along the
+  way, corrected a wrong assumption in the test's own first draft — a second
+  `commits_behind` call was expected to report 0 after a mere fetch, but it
+  correctly still reports the same count (the function only ever fetches; it
+  never advances local `HEAD` — only an explicit `git merge --ff-only @{u}`,
+  mirroring what `install.sh`'s real `git pull` does, moves it). Also covers
+  the no-configured-upstream case (`None`/empty, not a bogus count). Since
+  there was no behavioural bug — the functions were already correct, only
+  untested — the fail-before proof was adapted: temporarily reversed the
+  `rev-list` range to `@{u}..HEAD`, confirmed the new fixture test failed,
+  restored from a diff-verified backup. *Closes:* new node **T2.21**. ✅ 2
+  tests (`commits_behind_and_changelog_lines_reflect_real_git_state`,
+  `commits_behind_returns_none_without_a_configured_upstream`).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -682,6 +699,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-FORENSIC | C7 | `[ ]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
+| SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
 
 ---
 
@@ -754,12 +772,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   import, not an incremental change), so — unlike the AU-084 correction
   above — no earlier delivery date or authoring cycle can be attributed from
   `git log` here; it simply predates this repo's history and was never
-  reconciled into this note. **Residual, real gap:** `changelog_lines` and
-  `commits_behind` are both untested — no fixture exercises the actual `git`
-  subprocess calls (unlike most of this codebase's I/O-adjacent logic). A
-  real local git-repo-pair fixture (`tempfile`, already a dev-dep) would
-  close it; left as a separate, smaller follow-on rather than bolted onto
-  this doc correction.
+  reconciled into this note. **Residual, real gap — closed 2026-07-05:**
+  `changelog_lines`/`commits_behind` were untested — no fixture exercised
+  the actual `git` subprocess calls. Closed by **SOL-UPDATE-GIT-FIXTURE**
+  (new node **T2.21**): a local origin+clone `tempfile` fixture pair proves
+  both functions against real `git fetch`/`rev-list`/`log` output.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -802,7 +819,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
   (SOL-CHMOD-DIAG, 2026-07-05); **T2.17 `[x]`** ✅ (SOL-LATEST-SCAN-ERR,
   2026-07-05); **T2.18 `[x]`** ✅ (SOL-EXPOSURE-DOB, 2026-07-05); **T2.20
-  `[x]`** ✅ (SOL-FILTER-CANDIDATE-LEAK, 2026-07-05); T2.7 open;
+  `[x]`** ✅ (SOL-FILTER-CANDIDATE-LEAK, 2026-07-05); **T2.21 `[x]`** ✅
+  (SOL-UPDATE-GIT-FIXTURE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3357,3 +3375,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   failed against the unfixed handler; restored from a diff-verified post-fix
   backup, test passed). *Closes:* new node **T2.20**. Gate green: fmt/clippy/
   doc clean, full suite 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 32: SOL-UPDATE-GIT-FIXTURE — closed the
+  `cli::update` git-fixture test gap `SOL-UPDATE`'s own 2026-07-01
+  correction explicitly deferred.** With T2.20 just closed, re-scanned §4a
+  for the next already-scoped coverage gap rather than run another discovery
+  pass — `changelog_lines`/`commits_behind` were untested against real `git`
+  subprocess behaviour, confirmed by reading `cli/update.rs`'s test module
+  directly (every existing test targets pure logic; none constructs a real
+  repo). Built a local origin+clone fixture pair (`tempfile`, no network)
+  proving both functions' actual ahead/behind counting and changelog
+  formatting against genuine `git fetch`/`rev-list`/`log` output. The test's
+  own first draft assumed a second `commits_behind` call would report 0
+  behind after a mere fetch — wrong: the function only ever fetches, never
+  advances local `HEAD`, so it correctly still reported the same count;
+  corrected the test to `git merge --ff-only @{u}` between checks (mirroring
+  what `install.sh`'s real `git pull` does) before asserting the caught-up
+  state. Also covers the no-configured-upstream case. Since the functions
+  were already correct — only untested — adapted the fail-before proof:
+  temporarily reversed the `rev-list` range to `@{u}..HEAD`, confirmed the
+  new fixture test failed, restored the original from a diff-verified
+  backup. *Closes:* new node **T2.21**. Tests:
+  `commits_behind_and_changelog_lines_reflect_real_git_state`,
+  `commits_behind_returns_none_without_a_configured_upstream`. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4396 lib tests). Paired:
+  `PROBLEM_TREE` §8 — same commit.

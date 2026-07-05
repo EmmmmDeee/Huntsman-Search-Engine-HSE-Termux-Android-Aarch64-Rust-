@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
+  is now proven against a real `git` subprocess, not just pure-logic tests.**
+  A local origin+clone fixture pair (no network) exercises the actual
+  `git fetch`/`rev-list`/`log` calls behind the ahead/behind count and the
+  one-line changelog, including the no-upstream-configured case. Dev-only,
+  zero shipped cost. Regression tests
+  `commits_behind_and_changelog_lines_reflect_real_git_state`,
+  `commits_behind_returns_none_without_a_configured_upstream`.
 - **A proven "reused secret" tie between two accounts is now a walkable graph
   edge, not just a standalone correlation finding.** When the correlator
   proves two accounts share a controller via a reused, individuating secret

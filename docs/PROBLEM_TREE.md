@@ -767,6 +767,26 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `wants_candidates(&params)` and `.retain(|e|
   !e.has_tag(crate::core::tags::CANDIDATE))` before `ok_list`. **P1** (a real
   PII-leak bug, not a missing diagnostic).
+- **`[x]` T2.21 · `cli::update`'s `commits_behind`/`changelog_lines` were
+  untested against real `git` subprocess behaviour** — a residual explicitly
+  logged (2026-07-01) when a stale "`--check` shows only a bare count" note
+  was corrected: both functions shell out to `git fetch`/`git rev-list`/`git
+  log` and parse the output, but every existing test in `cli/update.rs`
+  exercised only pure logic (`should_check_now`, `parse_throttle_secs`,
+  `command_self_updates`, `autoupdate_paths_live_under_the_cache_dir`) — none
+  constructed an actual git repository, so a regression in the `rev-list`/
+  `log` argument shape (wrong ref order, wrong flag) had no test to catch it.
+  Confirmed by direct read of the test module before writing any code. →
+  **Solution:** a local origin+clone fixture pair (plain directories,
+  `tempfile`, no network) that commits real changes to the "origin," fetches
+  from "local," and asserts `commits_behind`/`changelog_lines` report the
+  true ahead/behind state — including that `commits_behind` only ever
+  fetches (never advances local `HEAD`, so a repeat check without a pull
+  reports the same count, not a spuriously-reset zero) and that a repo with
+  no configured upstream returns `None`/empty rather than a bogus count.
+  Verified the new tests have real teeth: temporarily reversed the
+  `rev-list` range to `@{u}..HEAD`, confirmed the fixture test failed,
+  restored the original from a diff-verified backup. **P2**
 
 ---
 
@@ -4596,3 +4616,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   restored from a diff-verified post-fix backup, test passed). Gate green:
   fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5
   — same commit.
+- **2026-07-05** — **Cycle 32 (new T2.21): closed the `cli::update` git-fixture
+  test gap explicitly deferred in the 2026-07-01 S→P audit note.** With T2.20
+  just closed, re-scanned `SOLUTION_TREE` §4a for the next already-scoped,
+  not-yet-started coverage gap rather than run another discovery pass — found
+  the "hse update --check changelog" entry's own residual: `changelog_lines`/
+  `commits_behind` were untested against real `git` subprocess behaviour.
+  Confirmed independently by reading `cli/update.rs`'s test module: every
+  existing test targets pure logic, none constructs a real repo. Built a
+  local origin+clone fixture pair (`tempfile`, no network) proving both
+  functions' actual ahead/behind counting and one-line changelog formatting
+  against genuine `git fetch`/`rev-list`/`log` output — including the
+  correction of a wrong assumption in the test's own first draft (that a
+  second `commits_behind` call would report 0 after a mere fetch; it
+  correctly still reports the same count, since `commits_behind` never
+  advances local `HEAD` — only an explicit `git merge --ff-only @{u}` does,
+  matching what `install.sh`'s real `git pull` does). Since there was no
+  behavioural bug to fix (the functions were already correct, only
+  untested), the fail-before proof was adapted accordingly: temporarily
+  reversed the `rev-list` range to `@{u}..HEAD`, confirmed the new fixture
+  test failed against that regression, restored the original range from a
+  diff-verified backup. Test delta:
+  `commits_behind_and_changelog_lines_reflect_real_git_state`,
+  `commits_behind_returns_none_without_a_configured_upstream`. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4396 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
