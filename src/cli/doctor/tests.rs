@@ -2,6 +2,33 @@ use super::*;
     use crate::util::key_roi::KeyRoi;
 
     #[test]
+    fn curl_missing_message_names_every_curl_only_no_fallback_surface() {
+        let msg = curl_missing_message();
+        // The six curl-only (no reqwest path) modules.
+        for name in [
+            "search_engines",
+            "social_probe",
+            "see_know",
+            "oathnet_pro",
+            "api_key_probe",
+            "abn_lookup",
+        ] {
+            assert!(msg.contains(name), "message must name {name}: {msg}");
+        }
+        // The two `hse keys` commands whose validation also shells out to curl
+        // with no fallback — previously missing from this message entirely.
+        assert!(msg.contains("hse keys validate"), "{msg}");
+        assert!(msg.contains("hse keys import-tsv"), "{msg}");
+        // `geocode` tries reqwest before ever falling back to curl, so its
+        // absence only loses a fallback — it must NOT be listed here as if
+        // curl's absence broke the module outright.
+        assert!(
+            !msg.contains("geocode"),
+            "geocode has a reqwest fallback and must not be listed: {msg}"
+        );
+    }
+
+    #[test]
     fn unset_keys_rank_multiplier_first_then_name() {
         // Nothing configured → every KNOWN_KEY is unset and ranked.
         let ranked = rank_unset_keys(|_| false);

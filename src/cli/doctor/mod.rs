@@ -68,11 +68,7 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     if curl_ok {
         println!("  curl:      present");
     } else {
-        println!(
-            "  curl:      MISSING — search_engines + social_probe (default modules), plus\n             \
-             see_know, oathnet_pro, api_key_probe and abn_lookup, shell out to curl and\n             \
-             will silently return nothing. Install it: pkg install curl"
-        );
+        println!("{}", curl_missing_message());
     }
 
     println!("\nModules ({} registered):", mods.len());
@@ -147,6 +143,33 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The `curl:      MISSING` diagnostic body — every module/command that shells
+/// out to the `curl` binary with NO reqwest fallback, so it silently fails
+/// rather than erroring when curl is absent. Verified against the current
+/// codebase (not every module that mentions curl qualifies — e.g. `geocode`
+/// tries reqwest first and only falls back to curl, so curl's absence there
+/// just loses a fallback, not the whole feature):
+/// - `search_engines`, `social_probe` (default modules), `see_know`,
+///   `oathnet_pro`, `api_key_probe`, `abn_lookup` — each calls a curl
+///   subprocess directly (or via `util::see_know`/`util::oathnet`'s
+///   `CurlClient`) with no other transport, so the module returns nothing.
+/// - `hse keys validate` / `hse keys import-tsv --validate`
+///   (`util::key_pool::validation::validate_against_endpoint`) — a failed
+///   `curl` spawn is swallowed into `false`, the SAME return value as a
+///   genuinely dead key, so every key in the pool reports INVALID rather
+///   than the command erroring — a materially worse failure mode than
+///   "returns nothing", since it looks like the key pool died, not that a
+///   tool is missing.
+fn curl_missing_message() -> String {
+    "  curl:      MISSING — search_engines + social_probe (default modules), plus\n             \
+     see_know, oathnet_pro, api_key_probe and abn_lookup, shell out to curl and\n             \
+     will silently return nothing. `hse keys validate` / `hse keys import-tsv\n             \
+     --validate` also shell out to curl — without it they report every key as\n             \
+     INVALID rather than erroring, which reads as a dead key pool, not a missing\n             \
+     tool. Install it: pkg install curl"
+        .to_string()
 }
 
 /// Rank every unset `KNOWN_KEYS` env var by acquisition ROI, highest first.
