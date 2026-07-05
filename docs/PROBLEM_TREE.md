@@ -660,12 +660,19 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
-  real design for the noise question** — `util::diagnostics::analyse` no
+- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+  real design for the noise question** — *Scan-level half done (2026-07-05);
+  per-module half remains.* `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
   unreachable dead code, honestly removed rather than left misleading, but
-  neither was replaced. → **Solution:** either (a) widen `analyse`'s pure
+  neither was replaced. **Scan-level half reinstated:** a slow-scan advisory
+  keyed purely on `wall_time_ms` (a parameter `analyse` already receives) now
+  fires at ≥60s — reachable and deterministic, unlike the removed dead code
+  that tied the 60s threshold to an unobservable per-module zero-yield
+  condition. **Per-module half still open:** needs the event-sourced approach
+  below *plus* the noise decision. → **Solution (remainder):** either (a)
+  widen `analyse`'s pure
   signature to accept the caller's already-fetched event data (touches 16
   existing call/test sites — a real but mechanical ripple), or (b) compute
   both at the caller layer (which already has `StoragePort` access) and
@@ -5412,3 +5419,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   panicked on the mutex still being poisoned/phase not updated). Gate
   green: fmt/clippy/doc clean, full suite 0 failures (4413 lib tests),
   architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-05** — **T2.14 (scan-level half): reinstated the slow-scan
+  advisory `analyse()` lost in the T2.13 dead-hint purge, in its reachable
+  form.** T2.13 removed a "scan exceeded 60s with a zero-yield module" hint as
+  confirmed-dead code — its `entities_emitted == 0` premise could never fire,
+  because `modules_by_yield` is built only from emitted entities' evidence, so
+  a module that yielded nothing is absent, not present-at-zero. The removal was
+  honest but left `analyse()` with no slow-scan signal at all. Fix: emit the
+  scan-level half keyed purely on `wall_time_ms` — a parameter `analyse()`
+  already receives from every caller (`cli/scan`, `api/handlers`,
+  `cli/scan/dossier`) — so it is reachable and deterministic (same wall time →
+  same hint), needing none of the `StoragePort`-sourced event data the removed
+  form wrongly assumed. Threshold `SLOW_SCAN_MS = 60_000` matches the original.
+  The **per-module** "module X returned 0 entities" half stays open (T2.14 now
+  `[~]`): it genuinely needs the event-sourced caller-side approach *plus* the
+  noise decision (a real multi-module scan legitimately leaves dozens at zero
+  yield), so it is split out rather than force-fit here. Test delta:
+  `analyse_emits_slow_scan_hint_above_threshold_only` — asserts the advisory is
+  absent at 59,999 ms and present at 60,000 ms; fail-before confirmed (no such
+  hint existed pre-change, so the ≥60s assertion failed). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4414 lib tests). **P3**
+  (advisory-only). **Paired:** `SOLUTION_TREE` §5 — same commit.

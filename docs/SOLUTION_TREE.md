@@ -578,10 +578,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
-  with a real per-module noise decision** → **T2.14**: the scan-level "60s +
-  zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
-  (event-sourced, caller-side); the per-module "module X returned 0 entities"
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+  with a real per-module noise decision** → **T2.14**: *scan-level half done
+  (2026-07-05).* The scan-level slow-scan hint is reinstated in its
+  **reachable** form — keyed purely on `wall_time_ms` (a parameter `analyse`
+  already receives), not on the unobservable per-module zero-yield condition
+  the removed dead code assumed, so no event-sourcing was needed for this
+  half. The per-module "module X returned 0 entities"
   hint needs a design decision first — fired correctly on real event data, a
   realistic multi-module scan leaves dozens of modules at zero yield for any
   given target kind (normal, not noteworthy), so a naive per-module
@@ -881,7 +884,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -4005,3 +4008,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `if let Ok(...)` pattern in place; the poisoned-mutex assertion failed).
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4413 lib tests),
   architecture suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-05** — **SOL-HINT-NOISE `[ ]`→`[~]`: scan-level slow-scan hint
+  reinstated in `analyse()`.** T2.13 purged a "60s + zero-yield module" hint
+  as dead code (its `entities_emitted == 0` premise is unreachable —
+  `modules_by_yield` only ever contains modules that emitted something).
+  Reinstated the scan-level half in its reachable shape: keyed purely on
+  `wall_time_ms`, a parameter `analyse()` already receives, so no
+  `StoragePort`/event-sourcing is needed for this half and it stays inside
+  `util`'s pure signature. The per-module half remains open (needs the
+  event-sourced caller-side data *and* the noise decision), so SOL-HINT-NOISE
+  is `[~]`, not `[x]`. *Advances:* **T2.14** (`[ ]`→`[~]`). Test:
+  `analyse_emits_slow_scan_hint_above_threshold_only` (silent below 60s, fires
+  at 60s). Gate green: fmt/clippy/doc clean, 4414 lib tests, 0 failures.
+  Paired: `PROBLEM_TREE` §8 — same commit.

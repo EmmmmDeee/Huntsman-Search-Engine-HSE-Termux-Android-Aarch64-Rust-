@@ -11,6 +11,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Scan diagnostics regained a slow-scan advisory.** `hse scan`'s diagnostics
+  now emit an optimization hint when a scan's wall-time reaches 60 s, advising
+  `--adaptive` routing or a shallower depth. Keyed purely on the measured
+  wall-time (not on an unobservable per-module condition, as an earlier removed
+  form wrongly was), so it is deterministic and always reachable. Regression
+  test `analyse_emits_slow_scan_hint_above_threshold_only`.
 - **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
   is now proven against a real `git` subprocess, not just pure-logic tests.**
   A local origin+clone fixture pair (no network) exercises the actual

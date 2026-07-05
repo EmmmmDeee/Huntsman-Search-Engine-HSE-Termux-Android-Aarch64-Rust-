@@ -18,6 +18,37 @@ fn analyse_empty_scan() {
 }
 
 #[test]
+fn analyse_emits_slow_scan_hint_above_threshold_only() {
+    // T2.14 (scan-level): the reinstated slow-scan advisory is keyed purely on
+    // `wall_time_ms`. It must fire at/above 60_000 ms and stay silent below it,
+    // regardless of what modules yielded. This is the reachable form of the
+    // T2.13-removed dead hint (which keyed on an unobservable per-module
+    // condition) — so the test exercises the *wall-time* boundary, nothing else.
+    let entities = vec![ent(EntityKind::Email, "a@b.com", 0.8, "modA")];
+    let hint_present = |d: &ScanDiagnostics| {
+        d.optimization_hints
+            .iter()
+            .any(|h| h.contains("scan wall-time") && h.contains("exceeded"))
+    };
+
+    // Below threshold: no slow-scan hint.
+    let fast = analyse("sid", "email", "x@y.com", 59_999, &entities);
+    assert!(
+        !hint_present(&fast),
+        "no slow-scan hint below 60s: {:?}",
+        fast.optimization_hints
+    );
+
+    // At/above threshold: the advisory fires.
+    let slow = analyse("sid", "email", "x@y.com", 60_000, &entities);
+    assert!(
+        hint_present(&slow),
+        "slow-scan hint expected at 60s: {:?}",
+        slow.optimization_hints
+    );
+}
+
+#[test]
 fn analyse_ranks_modules_by_yield() {
     let entities = vec![
         ent(EntityKind::Email, "a@b.com", 0.8, "modA"),
