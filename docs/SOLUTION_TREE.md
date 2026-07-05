@@ -290,8 +290,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `core_does_not_import_util_directly` (the established pattern — *not* by threading
   `scan_id` through the util HTTP layer). Isolation regression test +
   `key_chaining_{sequential,concurrent}_dispatch` integration tests green; no
-  single-scan regression. *Residual:* the per-scan **budget** statics'
-  `reset_scan`-zeroing folds into the same ambient later (LOW).
+  single-scan regression. *Residual (stale, corrected 2026-07-05):* this entry
+  originally flagged the per-scan **budget** statics' `reset_scan`-zeroing as a
+  pending follow-on — but SOL-BUDGET's own re-assessment the very next day
+  (cycle 18) found that residual was a faulty premise (`reset_per_scan` already
+  runs at every scan start) and accepted it `[-]`, with no further action
+  needed. This note was never updated to reflect that, so it kept describing
+  closed-out work as outstanding; see SOL-BUDGET for the actual disposition.
 - **`[x]` SOL-LIVE-DISPATCH-BUDGET · Live `max_entities` check inside the
   concurrent spawn loop** — `dispatch_target_concurrent`'s Phase-2 loop now calls
   `JoinSet::try_join_next` (non-blocking) at the top of every iteration, absorbing
@@ -783,10 +788,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
   (SOL-CHMOD-DIAG, 2026-07-05); **T2.17 `[x]`** ✅ (SOL-LATEST-SCAN-ERR,
   2026-07-05); **T2.18 `[x]`** ✅ (SOL-EXPOSURE-DOB, 2026-07-05); T2.7 open;
-  T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE + LOW
-  over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
-  budget-reset-zeroing note remains, and no further action is planned on it);
-  T2.14 open (deferred noise design).
+  **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
+  over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
+  (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
+  SOL-BUDGET back in cycle 18 — SOL-ISOLATE's own text just never caught up to
+  that, corrected this cycle); T2.14 open (deferred noise design).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -3277,3 +3283,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   per `docs/CONVENTIONS.md` §9. Gate green (4394 lib tests). **This closes C1's third
   and final remaining item** — (d) further AU-0xx rule-gap fill is C1's only open
   thread. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 29: closed T2.11 — reconciled a stale cross-tree note, no
+  code changed.** With no small, code-grounded gap left to point at for C1(d) and
+  T2.7/T2.14 both blocked on design decisions, re-read this section's own
+  SOL-BUDGET/SOL-ISOLATE/SOL-LIVE-DISPATCH-BUDGET entries (all three close a T2.11
+  sub-item) closely and found a genuine drift: SOL-ISOLATE's entry (2026-06-17) and
+  `PROBLEM_TREE` T2.11's own body both still described the "budget-static
+  `reset_scan`-zeroing" as a pending follow-on, but SOL-BUDGET's own re-assessment
+  the very next day (cycle 18, 2026-06-18) found that exact residual was a faulty
+  premise (`reset_per_scan` already runs at every scan start) and accepted it `[-]`
+  — no further action needed. Neither the T2.11 body nor SOL-ISOLATE's residual note
+  was ever updated to reflect that, so both kept describing already-closed work as
+  outstanding, an internal inconsistency within this very tree (SOL-BUDGET said
+  "resolved," two sibling entries kept saying "pending"). Corrected SOL-ISOLATE's
+  residual note to point at SOL-BUDGET's actual disposition, and flipped T2.11
+  `[~]`→`[x]` in `PROBLEM_TREE` (all three of its real sub-items were long since
+  `[x]`/✅; the one "residual" was independently resolved a day later by a sibling
+  node — nothing left open). No code changed; full gate re-run to confirm the
+  working tree is still green (unchanged from the prior commit, as expected).
+  Paired: `PROBLEM_TREE` §8 — same commit.

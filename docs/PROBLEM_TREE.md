@@ -465,7 +465,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   stamps to `SCHEMA_VERSION` when 0 (fresh or pre-versioned DB); `tracing::warn!`
   when `>SCHEMA_VERSION` (forward-compat signal — a newer binary wrote this DB).
   **Paired:** `SOLUTION_TREE` SOL-SCHEMA-VERSION `[x]` + §3/§4/§5 — same commit.
-- **`[~]` T2.11 · Concurrency — process-global state not isolated across the 8
+- **`[x]` T2.11 · Concurrency — process-global state not isolated across the 8
   concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
   scans at once, but several **process-global `static`s** are shared without
   per-scan isolation. The deep engine audit (2026-06-17) found three defects here;
@@ -510,7 +510,10 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
     regression test `concurrent_scans_do_not_contaminate_each_others_found_keys` +
     the existing `key_chaining_{sequential,concurrent}_dispatch` integration tests
     (both green) prove per-scan attribution with no single-scan regression. The
-    budget-static `reset_scan`-zeroing remains (folds into the same task-local later).
+    budget-static `reset_scan`-zeroing this note originally flagged as a follow-on
+    was re-assessed the next day (SOL-BUDGET, cycle 18) and found to be a faulty
+    premise — `reset_per_scan` already runs at every scan start — so no further
+    action was needed there; see the closure note below.
   - **LOW — bounded over-dispatch.** `core/engine/dispatch.rs:684-762` (concurrent
     path) judges the `max_entities` budget + the cross-correlation gate against
     round-start `entity_map.len()`, but merges happen only in the post-spawn
@@ -532,7 +535,14 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   **Root cause:** per-scan/per-session budgets and the key sink live in `static`s
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
-  through `ModuleContext`), which also subsumes the budget-reset race. **P2**
+  through `ModuleContext`). **P2** ✅ **All three sub-items closed** (paid overspend,
+  cross-scan credential contamination, bounded over-dispatch); the one residual any
+  of them flagged (budget-static `reset_scan`-zeroing) was independently
+  re-assessed and accepted as a non-issue by `SOLUTION_TREE`'s SOL-BUDGET (cycle
+  18, same commit-adjacent day) — a genuine cross-reference this node's own text
+  never linked back to until now (found 2026-07-05: `SOLUTION_TREE`'s SOL-ISOLATE
+  entry, dated the day *before* SOL-BUDGET's re-assessment, still described the
+  same residual as pending; corrected there too, same commit).
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -4467,3 +4477,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   item** — (d) further AU-0xx rule-gap fill is C1's only open thread, correctly
   left for a future cycle with a real, code-grounded rule gap to point at rather
   than an invented one.
+- **2026-07-05** — **Cycle 29: closed T2.11 — a stale cross-tree note, not new
+  code.** With C1's only remaining item (d) needing a real, un-invented AU-0xx
+  rule gap (not yet found) and T2.7/T2.14 both needing bigger design decisions,
+  re-read `SOLUTION_TREE` §2's SOL-BUDGET/SOL-ISOLATE/SOL-LIVE-DISPATCH-BUDGET
+  entries closely (all three close a T2.11 sub-item) and found a genuine
+  documentation drift, not a code gap: T2.11's own body text (the found_keys
+  bullet) and `SOLUTION_TREE`'s SOL-ISOLATE entry (dated 2026-06-17) both still
+  described the "budget-static `reset_scan`-zeroing" as a pending follow-on —
+  but SOL-BUDGET's own re-assessment the very next day (cycle 18, 2026-06-18)
+  found that exact residual was based on a faulty premise (`reset_per_scan`
+  already runs at every scan start) and accepted it `[-]`, with no further
+  action needed. Neither T2.11's body nor SOL-ISOLATE's residual note was ever
+  updated to reflect that acceptance, so both kept describing already-closed
+  work as outstanding. With all three of T2.11's actual sub-items long since
+  `[x]`/✅ Fixed (paid overspend, cross-scan credential contamination, bounded
+  over-dispatch) and its one remaining "residual" independently resolved a
+  day later by a sibling solution node, T2.11 itself is fully closed — flipped
+  `[~]`→`[x]`, with both stale mentions corrected to cross-reference
+  SOL-BUDGET's actual disposition instead of contradicting it. No code
+  changed; the gate was re-run to confirm the working tree is still green
+  (fmt/clippy/doc clean, full suite 0 failures, 4394 lib tests — unchanged
+  from the prior commit, as expected for a docs-only reconciliation).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
