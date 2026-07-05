@@ -748,9 +748,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fail-before confirmed. Also split `github_user` out of a pre-existing
   `tests/architecture.rs` pinning assertion it had been bundled into with
   `crates_io`/`npm_author` (confirmed those two are NOT affected — pure
-  package-registry lookups). Found, but deliberately deferred as a separate
-  bug on an unrelated module: `crates_io` declares `Person` in `produces()`
-  but never constructs one.
+  package-registry lookups). **Correction (same day):** a same-cycle
+  follow-up initially flagged `crates_io` as declaring `Person` in
+  `produces()` with no matching construction — refuted on a deeper read:
+  `build_entities` does construct one, via the shared
+  `profile_kit::person_from_name` helper. The earlier grep only checked for
+  the literal `EntityKind::Person` construction inside the file itself and
+  missed the indirection.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3739,3 +3743,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   package-registry siblings' narrower expectation is untouched. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4408 lib tests), architecture
   suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 39 (doctrine hygiene): refuted the `crates_io`
+  "Person" gap logged one commit earlier; no code changed.** Picked up the
+  lead Cycle 38 had logged as a ready-scoped deferred candidate rather than
+  starting a fresh discovery pass. Reading `crates_io::build_entities` in
+  full found it DOES construct a `Person` — via the shared
+  `profile_kit::person_from_name` helper — exactly matching the module's
+  own doc comment. The earlier finding was a literal-string grep for
+  `EntityKind::Person` inside `crates_io/mod.rs` alone, which cannot see a
+  construction performed by a shared helper in another file. Corrected the
+  SOL-GITHUB-ATTACK-COMPLETE node body and the paired `PROBLEM_TREE` T2.27
+  note in place. Mirrors the earlier `TrackingId`/AU-044 refutation:
+  verifying independently before building avoided shipping a fix for a
+  problem that didn't exist. Paired: `PROBLEM_TREE` §8 — same commit.

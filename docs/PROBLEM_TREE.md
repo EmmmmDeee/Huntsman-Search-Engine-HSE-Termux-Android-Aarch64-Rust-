@@ -975,15 +975,17 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `attack:T1593.003`. Cross-referencing `produces()` against
   `attack_techniques()` for the module's sibling code-repository lookups
   (`crates_io`, `npm_author`) found they are NOT affected — both are pure
-  package-registry lookups with no Person/Organisation/Address collection —
-  but the same sweep surfaced a DIFFERENT, unrelated gap in `crates_io`:
-  it declares `EntityKind::Person` in `produces()` but never actually
-  constructs one anywhere in the file (confirmed via grep — the only match
-  is the `produces()` declaration itself), an over-claimed capability.
-  Logged as a deferred candidate for a future cycle rather than fixed here —
-  a different bug shape (over-declared `produces()`, not
-  under-claimed `attack_techniques()`) on an unrelated module, out of this
-  cycle's scope. → **Solution:** declared the precise, complete set:
+  package-registry lookups with no Person/Organisation/Address collection.
+  **Correction (same day, before any code was touched for it):** a
+  same-cycle follow-up flagged `crates_io` as declaring `EntityKind::Person`
+  in `produces()` with no matching construction, based on a grep for the
+  literal `EntityKind::Person` string inside `crates_io/mod.rs` — but a
+  deeper read of `build_entities` found it DOES construct one, via the
+  shared `profile_kit::person_from_name(name, 0.70, scan_id)` helper (a real
+  name → `Person` pivot, exactly as the module's own doc comment describes).
+  The literal-string grep missed the indirection through a shared helper —
+  refuted before a single line of "fix" code was written, per this loop's
+  own verify-independently discipline. → **Solution:** declared the precise, complete set:
   `T1589.001` (Credentials), `T1589.002` (Email Addresses), `T1589.003`
   (Employee Names), `T1591.001` (Determine Physical Locations), `T1591.002`
   (Business Relationships), `T1593.003` (Code Repositories) — each backed by
@@ -5058,3 +5060,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the missing `T1589.001` assertion). Gate green: fmt/clippy/doc clean,
   full suite 0 failures (4408 lib tests), architecture suite 30/30. **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 39 (doctrine hygiene): an honest, empty-handed
+  refutation of the `crates_io` "Person" gap logged one commit earlier; no
+  code changed.** Before starting a fresh discovery pass, picked up the
+  `crates_io` lead Cycle 38 had logged as a deferred candidate ("declares
+  `Person` in `produces()` but never constructs one") — it looked like a
+  small, ready-scoped follow-on. Reading `crates_io::build_entities` in
+  full (rather than trusting the earlier grep) found it DOES construct a
+  `Person`, via `profile_kit::person_from_name(name, 0.70, scan_id)` (a
+  shared helper used across several code-repository/profile modules) —
+  exactly matching the module's own doc comment ("exposes the maintainer's
+  REAL NAME"). The earlier finding was a literal-string grep for
+  `EntityKind::Person` inside `crates_io/mod.rs` alone, which cannot see a
+  construction performed by a shared helper in a different file — a false
+  positive, not a real gap. Corrected the T2.27 node body (§3.2) and the
+  paired `SOLUTION_TREE` note in place, per this loop's own
+  verify-independently discipline: refuting a false lead before writing a
+  single line of "fix" code is exactly the outcome this discipline exists
+  to produce, mirroring the earlier `TrackingId`/AU-044 refutation.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
