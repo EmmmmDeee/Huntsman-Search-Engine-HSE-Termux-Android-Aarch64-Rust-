@@ -824,6 +824,57 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `api_key_probe` reference instead, per explicit operator sign-off,
   clearly disclosed as not live-validated in this environment. **P2**
   (a real dead-key-registration gap, not a crash or PII leak).
+- **`[x]` T2.23 · `search_engines`'s username-scoring let a business/place-name
+  slug reach PROBABLE off the bare surname substring, then recycled it into a
+  further search** — a live "Brett Lawnton" self-test scan surfaced this
+  directly (not a speculative finding): the search-derived candidate
+  `tackle_world_lawnton` (a real "Tackle World" fishing-tackle retailer
+  franchise located in the Lawnton, QLD suburb — unrelated to the subject)
+  reached PROBABLE (0.55) confidence in `score_username`'s Signal 1
+  (surname-anchor substring match: `"lawnton"` present in the slug) — with no
+  check that the candidate's OTHER parts (`"tackle"`, `"world"`) bore any
+  relation to the subject's actual name. Because `recycle_entities`
+  (`search_engines/extract/mod.rs`) re-queries every reliable engine with any
+  `Username` entity ≥0.40 confidence verbatim, this one false PROBABLE match
+  triggered a further search that pulled the retailer's own web presence
+  (Facebook, business directories, a fishing magazine feature) into the
+  subject's identity graph — and it went on to become part of the
+  correlator's single HIGHEST-CONFIDENCE "resolved identity" cluster in the
+  final dossier. Traced with a background agent to the exact mechanism:
+  `extract_path_username` mints a `Username` candidate from any social-host
+  URL's first path segment with no person/business distinction (Facebook
+  serves personal profiles and business Pages from the identical URL shape),
+  and `score_username`'s Signal 1 is a bare substring/equality test with no
+  check that a compound candidate's non-anchor parts belong to the subject's
+  own name. Confirmed no existing guard in this codebase applies (the
+  correlator's `GENERIC_HANDLES` denylist is a different module, never
+  consulted here, and only excludes role-mailbox words, not business
+  phrases; `is_navigation_path` denylists site-navigation tokens, not
+  business/place names) — a genuine, previously-undocumented gap. → **Solution:**
+  gate Signal 1 so a compound candidate (e.g. `"tackle_world_lawnton"`) whose
+  non-anchor parts match NEITHER the subject's given name nor surname is
+  capped at CANDIDATE (0.30, below the 0.40 recycle threshold) UNLESS a
+  genuinely independent signal — people-search host provenance (Signal 2,
+  from the HOST) or an explicit `site:` targeted query (Signal 4, from the
+  QUERY structure) — also corroborates it. Deliberately excludes co-occurrence
+  (Signal 3) and stem/bigram similarity (Signal 5) from counting as
+  independent corroboration: both are themselves surname-substring-driven
+  (a business's own page about itself naturally contains its own name too),
+  so allowing them to override the gate would have let the exact same
+  confound re-admit itself — caught by a pre-existing test
+  (`username_scoring_people_search`, a `"jerome_despal"` handle on
+  `peekyou.com` with an unenumerated real surname) that initially failed
+  against a too-broad first draft of this gate (any independent-looking
+  score total, incl. Signal 3/5) before the fix was narrowed to name genuinely
+  independent signals explicitly. A genuine `"brett_lawnton"` handle is
+  unaffected (no foreign part). **Explicit scope note:** this closes the one
+  concrete case observed, plus the general "compound business-Page slug"
+  shape it represents — it does NOT eliminate free-text surname/place-name
+  collision broadly (a single-token business slug identical to the surname,
+  or a sole-trader's tradename, still slips through); true elimination needs
+  a gazetteer/NER pass or page-semantics verification, a materially bigger
+  design change tracked separately, not claimed as fixed here. **P2**
+  (a real correlation-precision/false-positive-recycling bug, not a crash).
 
 ---
 
@@ -4716,3 +4767,46 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   that don't exist without the fix). Gate green: fmt/clippy/doc clean, full
   suite 0 failures (4401 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+- **2026-07-05** — **Cycle 34 (new T2.23): the correlator's single
+  highest-confidence "resolved identity" cluster on a real self-test turned
+  out to be a false positive — traced to its root cause in
+  `score_username`.** Continuing "improve precision" against real evidence
+  rather than speculation: the earlier live "Brett Lawnton" self-test's
+  dossier tied `brett.lawnton`/`Brett Lawnton` to `tackle_world_lawnton` and
+  an unrelated email at the correlator's top confidence (0.55, weakest-link)
+  — `tackle_world_lawnton` is a real fishing-tackle retailer's Facebook slug
+  (named after the Lawnton, QLD suburb, unrelated to the subject). Dispatched
+  a background agent to trace the exact mechanism rather than guess: found
+  `score_username`'s Signal 1 (`search_engines/helpers/entity/mod.rs`) scores
+  a bare surname-substring match on ANY candidate at +3 (immediately clearing
+  the PROBABLE threshold) with no check that a compound candidate's other
+  parts relate to the subject at all, and `recycle_entities`
+  (`extract/mod.rs`) then re-queries verbatim with any ≥0.40-confidence
+  `Username`, which is exactly what pulled the retailer's own web presence
+  into the graph. Confirmed no existing guard in this codebase covers this
+  (the correlator's `GENERIC_HANDLES` denylist is unrelated and
+  never consulted by `search_engines`). → **Solution:** gate Signal 1 so a
+  compound candidate whose non-anchor parts match neither the subject's given
+  nor surname is capped at CANDIDATE unless independently corroborated by
+  people-search host provenance or an explicit `site:` query — deliberately
+  excluding co-occurrence/stem-similarity from counting as independent
+  corroboration, since both are themselves surname-substring-driven (a
+  business page about itself naturally contains its own name too). A
+  too-broad first draft of this gate (treating ANY corroborating score total
+  as independent) failed a pre-existing test
+  (`username_scoring_people_search`, a legitimate `"jerome_despal"` handle
+  with an unenumerated real surname) — caught and narrowed to name the
+  genuinely independent signals explicitly rather than widen the test to
+  accommodate an imprecise gate. Test delta:
+  `score_username_business_slug_containing_the_surname_stays_candidate`
+  (fail-before confirmed: reverted to pre-fix code with the new test present,
+  scored 7/PROBABLE against the unfixed function),
+  `score_username_genuine_firstname_lastname_handle_still_reaches_probable`
+  (proves the fix doesn't over-broadly demote real compound personal
+  handles). Explicitly scoped: this closes the observed case and the general
+  "compound business-Page slug" shape, not free-text surname/place-name
+  collision broadly (a single-token business slug identical to the surname
+  still slips through — that needs a gazetteer/NER pass, a separate, larger
+  tracked item, not claimed as fixed here). Gate green: fmt/clippy/doc clean,
+  full suite 0 failures (4403 lib tests). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

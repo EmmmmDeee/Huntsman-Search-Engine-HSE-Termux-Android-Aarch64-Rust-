@@ -669,6 +669,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cause, disclosed as inconclusive rather than asserted. Shipped on the
   unit-test + already-verified-reference basis per explicit operator
   sign-off.
+- **`[x]` SOL-USERNAME-SLUG-GATE · a compound business/place-name slug can no
+  longer reach PROBABLE off a bare surname substring, then get recycled into
+  a further search** — a real live self-test's dossier put an unrelated
+  fishing-tackle retailer's Facebook slug (`tackle_world_lawnton`, named
+  after the Lawnton, QLD suburb) into the correlator's single
+  highest-confidence "resolved identity" cluster with the subject. Traced
+  via a background agent to `score_username`'s Signal 1: a bare surname
+  substring match on ANY candidate scored +3 (clearing PROBABLE) with no
+  check that a compound candidate's other parts relate to the subject, and
+  `recycle_entities` then re-queried verbatim with the false PROBABLE match,
+  pulling the retailer's own pages into the graph. *Closes:* new node
+  **T2.23**. ✅ 2 tests
+  (`score_username_business_slug_containing_the_surname_stays_candidate`,
+  `score_username_genuine_firstname_lastname_handle_still_reaches_probable`),
+  fail-before confirmed. A too-broad first draft (any corroborating score
+  counted as independent) broke the pre-existing
+  `username_scoring_people_search` test — caught and narrowed to name only
+  genuinely independent signals (people-search host, `site:` query) rather
+  than widen the test to fit an imprecise gate. Explicitly scoped: closes
+  the observed case and the general compound-slug shape, not free-text
+  surname/place-name collision broadly.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -731,6 +752,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 | SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
 | SOL-GREYNOISE-KEYED | T2.22 | `[x]` |
+| SOL-USERNAME-SLUG-GATE | T2.23 | `[x]` |
 
 ---
 
@@ -852,7 +874,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   2026-07-05); **T2.18 `[x]`** ✅ (SOL-EXPOSURE-DOB, 2026-07-05); **T2.20
   `[x]`** ✅ (SOL-FILTER-CANDIDATE-LEAK, 2026-07-05); **T2.21 `[x]`** ✅
   (SOL-UPDATE-GIT-FIXTURE, 2026-07-05); **T2.22 `[x]`** ✅
-  (SOL-GREYNOISE-KEYED, 2026-07-05); T2.7 open;
+  (SOL-GREYNOISE-KEYED, 2026-07-05); **T2.23 `[x]`** ✅
+  (SOL-USERNAME-SLUG-GATE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3470,3 +3493,44 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   present; they fail to compile, referencing symbols the fix introduces).
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4401 lib
   tests). Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 34: SOL-USERNAME-SLUG-GATE — a real false-positive
+  observed in a live self-test, traced to its exact root cause and closed.**
+  The earlier "Brett Lawnton" self-test's own dossier put an unrelated
+  fishing-tackle retailer (`tackle_world_lawnton`, a Facebook slug named
+  after the Lawnton, QLD suburb) into the correlator's single
+  highest-confidence "resolved identity" cluster alongside the subject —
+  real evidence, not a speculative precision concern. Dispatched a
+  background agent to trace the exact mechanism: `score_username`'s Signal 1
+  (`search_engines/helpers/entity/mod.rs`) scored a bare surname-substring
+  match on ANY candidate at +3, immediately clearing the PROBABLE threshold,
+  with no check that a compound candidate's non-anchor parts (`tackle`,
+  `world`) relate to the subject at all; `recycle_entities` then re-queried
+  every reliable engine verbatim with any ≥0.40-confidence `Username`,
+  which is exactly what pulled the retailer's own pages into the graph.
+  Confirmed no existing guard covers this (the correlator's
+  `GENERIC_HANDLES` denylist is a different module, never consulted by
+  `search_engines`, and only excludes role-mailbox words). Gated Signal 1 so
+  a compound candidate whose non-anchor parts match neither the subject's
+  given nor surname is capped at CANDIDATE unless independently
+  corroborated by people-search host provenance or an explicit `site:`
+  query — deliberately excluding co-occurrence/stem-similarity from
+  counting as independent, since both are themselves surname-substring-
+  driven (a business page about itself naturally contains its own name
+  too, so letting them override would re-admit the same confound). A
+  too-broad first draft (any corroborating score total counted as
+  independent) broke the pre-existing `username_scoring_people_search` test
+  — a legitimate `"jerome_despal"` handle on `peekyou.com` with an
+  unenumerated real surname ("despal") — caught immediately and narrowed to
+  name the genuinely independent signals explicitly rather than widen the
+  test to fit an imprecise gate. *Closes:* new node **T2.23**. Tests:
+  `score_username_business_slug_containing_the_surname_stays_candidate`
+  (fail-before confirmed: scored 7/PROBABLE against the unfixed function),
+  `score_username_genuine_firstname_lastname_handle_still_reaches_probable`
+  (proves the fix doesn't over-broadly demote real compound handles).
+  Explicitly scoped: closes the observed case and the general
+  compound-business-slug shape, not free-text surname/place-name collision
+  broadly (a single-token business slug identical to the surname still
+  slips through — a materially bigger gazetteer/NER-pass design change,
+  tracked separately, not claimed as fixed here). Gate green: fmt/clippy/
+  doc clean, full suite 0 failures (4403 lib tests). Paired: `PROBLEM_TREE`
+  §8 — same commit.

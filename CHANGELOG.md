@@ -364,6 +364,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A search-derived username matching only a subject's surname substring no
+  longer reaches PROBABLE confidence and gets recycled into a further
+  search.** A real self-test scan showed an unrelated business's Facebook
+  slug (named after the same-spelled suburb as the subject's surname)
+  reaching the correlator's highest-confidence identity cluster, because a
+  compound candidate's other, unrelated parts were never checked against
+  the subject's actual name before the match was treated as strong evidence
+  and used to launch further searches. A genuine `firstname_lastname`-style
+  handle is unaffected. Regression tests
+  `score_username_business_slug_containing_the_surname_stays_candidate`,
+  `score_username_genuine_firstname_lastname_handle_still_reaches_probable`.
 - **The `greynoise` module now uses a configured `HUNTSMAN_GREYNOISE_KEY`
   instead of silently ignoring it.** The module always called GreyNoise's
   free Community endpoint, even when a key was configured — an operator
