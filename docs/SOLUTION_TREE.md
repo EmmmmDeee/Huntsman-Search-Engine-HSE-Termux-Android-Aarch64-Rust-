@@ -773,7 +773,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Correction (2026-07-01):* the "C7 has no comparably small gap" note above
   was itself wrong — a follow-up discovery pass found one directly (see
   SOL-FORENSIC below).
-- **`[~]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
+- **`[x]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
   exports + evidence chains as the auditable, machine-diffable deliverable.
   *Delivered (2026-07-01):* `Store::entities_from_events` (the event-log
   recovery path for a scan that never finalised — "routine on
@@ -809,9 +809,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   passthrough kind where `raw_value == value`). Added the three fields;
   strengthened the test with a divergent mixed-case Email fixture,
   red/green-verified.
-  *Remaining:* everything else in "byte-stable exports" as a *proven*
-  property (proptest coverage across export paths) rather than a
-  case-by-case one; the node stays `[~]`, not `[x]`.
+  *Delivered (2026-07-05) — node closed `[~]`→`[x]`:* "byte-stable exports"
+  now proven as a *general property*, not case-by-case. New
+  `exports_are_insertion_order_independent` proptest (`src/cli/export/
+  tests.rs`, `mod prop`) generates an arbitrary entity/tag/evidence set,
+  inserts it into two stores in opposite orders, and asserts all five
+  byte-deterministic renderers (json/csv/gexf/full/debug) serialise
+  identically — the `CONVENTIONS.md` §5 property ("independent of …
+  task-completion order"), exercising the store's merge-on-conflict fold
+  and each renderer's own serialisation in one shot. `report.json`'s
+  `exported_at` stays excluded as documented. Non-vacuity confirmed by
+  temporarily removing the store's deterministic read order and watching
+  the proptest fail ("json leaked insertion order") before restoring. With
+  the concrete recovery/checkpoint determinism bugs already fixed above and
+  the property now proven across every export path, nothing concrete
+  remains — hence `[x]`.
 
 ### S.QUALITY — Periphery correctness (paired with `PROBLEM_TREE` T2.12)
 
@@ -997,7 +1009,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-PERF-PUBLISH | C2 | `[~]` |
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[~]` |
-| SOL-FORENSIC | C7 | `[~]` |
+| SOL-FORENSIC | C7 | `[x]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 
@@ -1071,11 +1083,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   graph, and shared key pipeline all confirmed already mature. Exposure-dork
   Address coverage delivered 2026-07-01 (cont'd). *Remaining:* the rest of
   the node beyond exposure-dork target-kind coverage.
-- **C7** — `[~]` (SOL-FORENSIC). Event-log scan-recovery evidence-order
+- **C7** — `[x]` (SOL-FORENSIC). Event-log scan-recovery evidence-order
   determinism delivered 2026-07-01; the higher-impact mid-scan checkpoint
   path's evidence-order determinism delivered 2026-07-01 (cont'd).
-  *Remaining:* proving byte-stable determinism across every export path
-  as a general property, not case-by-case.
+  **Closed 2026-07-05:** byte-stable determinism across every export path
+  now proven as a general property (the `exports_are_insertion_order_
+  independent` proptest), not case-by-case — the last open leg. Node `[x]`.
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
   real when logged (cycle 20) but was built and shipped 2026-06-30
@@ -1177,7 +1190,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C7 delivered** ✅ (SOL-FORENSIC, 2026-07-05: recovery/checkpoint evidence-order determinism + export byte-stability now proven as a general property via the `exports_are_insertion_order_independent` proptest); C1/C2/C6 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -4094,3 +4107,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   real, pre-existing cross-surface gap, not introduced here and outside this
   node's stated scope, left for a future pick rather than force-fit into
   this commit. Paired: `PROBLEM_TREE` T2.14 `[~]`→`[x]` + §8 — same commit.
+
+- **2026-07-05** — **SOL-FORENSIC `[~]`→`[x]`: export byte-determinism proven
+  as a general property, closing C7.** P→S pick after a five-angle backlog
+  survey; the node's own §4a "Remaining" named exactly one open leg —
+  "proving byte-stable determinism across every export path as a general
+  property, not case-by-case" — with every concrete determinism bug
+  (recovery + checkpoint evidence order) already fixed 2026-07-01. The
+  existing `export_formats_determinism_audit` only double-renders a single
+  hand-built fixture (same store, twice): the case-by-case form. New
+  `exports_are_insertion_order_independent` proptest (`src/cli/export/
+  tests.rs`, `mod prop`, 48 bounded cases) generalises it to the
+  `CONVENTIONS.md` §5 property — output "independent of … task-completion
+  order" — by inserting an arbitrary generated entity/tag/evidence set into
+  two stores in opposite orders and asserting all five byte-deterministic
+  renderers (json/csv/gexf/full/debug) match. Exercises the store's
+  merge-on-conflict fold and each renderer's own serialisation in one shot;
+  `report.json`'s `exported_at` excluded as documented. Non-vacuity proven
+  by a scoped red/green (removed the store's deterministic read order →
+  proptest fails "json leaked insertion order"; restored → passes). **S→P
+  gap-refresh:** §4a's C7 entry now closed; the §4d capability row and the
+  "open by design" summary updated (C1/C2/C6 remain, C7 off the list).
+  Test-only, no production behaviour changed (the guarded determinism was
+  already correct by construction). Gate green: fmt/clippy/strict-rustdoc
+  `cargo doc`/`cargo test` — 4596 total pass (+1). A rival survey candidate
+  — a genuine cross-scan `see_know` `KEY_INVALID` contamination under
+  concurrent `hse serve` — was investigated and deliberately deferred: its
+  correct fix is architectural (the key is a shared process-wide
+  credential, so per-scan task-local isolation would be semantically
+  wrong), not a single-cycle drop-in. Paired: `PROBLEM_TREE` C7 `[~]`→`[x]`
+  + §8 — same commit.

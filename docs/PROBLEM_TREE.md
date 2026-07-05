@@ -1313,7 +1313,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   `source` for existing consumers), so AU-105 sees the true per-breach
   granularity. 2 regression tests (one per module), each red/green-verified.
   *Remaining:* C6 as a whole node is not closed.
-- **`[~]` C7 · Output & forensics superiority** — *Current:* deterministic
+- **`[x]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
   the auditable intelligence product, keep GEXF as the optional graph. This is a
@@ -1373,6 +1373,28 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   `util::timefmt::compact_utc`) per entity; test strengthened with a
   mixed-case Email fixture whose `raw_value` provably diverges, and
   confirmed to fail against the pre-fix renderer (red/green verified).
+  *Delivered (2026-07-05) — node closed `[~]`→`[x]`:* the last remaining
+  leg above ("proptest coverage across every export path … stated as
+  policy"). New `exports_are_insertion_order_independent` proptest
+  (`src/cli/export/tests.rs`, `mod prop`) generalises the single-fixture
+  `export_formats_determinism_audit` into the property `CONVENTIONS.md` §5
+  actually mandates: output "independent of … task-completion order". Over
+  an arbitrary generated entity/tag/evidence set (48 cases), it inserts the
+  same entities into two stores in opposite orders and asserts all five
+  byte-deterministic renderers (json/csv/gexf/full/debug) serialise
+  identically — exercising both order-sensitive legs at once (the store's
+  merge-on-conflict fold and each renderer's own attribute/tag/evidence
+  serialisation). `report.json`'s documented `exported_at` wall-clock field
+  stays excluded exactly as the fixture audit excludes it. Verified
+  non-vacuous: with the store's deterministic read order
+  (`sort_entities_for_display` + `ORDER BY … uid`) temporarily removed the
+  proptest fails on a two-entity minimal case ("json leaked insertion
+  order"); restored, it passes. With every concrete determinism bug already
+  fixed (recovery + checkpoint paths, above) and the guarantee now proven
+  as a general property across all export paths, nothing concrete remains
+  open for C7. Gate green (fmt/clippy `-D warnings`/strict-rustdoc/`cargo
+  test` — 4596 total pass, +1). **Paired:** `SOLUTION_TREE` SOL-FORENSIC
+  `[~]`→`[x]` + §5 — same commit.
 - **`[x]` C8 · Webcam, fan-subscription & adult-video platform identity (DELIVERED)**
   — *Problem:* `username_search` covers mainstream social/dev/gaming/music platforms
   only; webcam performers, fan-content creators, and adult-video contributors are an
@@ -5524,3 +5546,41 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   architecture-guard or `#![forbid(unsafe_code)]` impact.
   **Paired:** `SOLUTION_TREE` §5 SOL-HINT-NOISE `[~]`→`[x]`, §4a entry
   removed — same commit.
+
+- **2026-07-05** — **C7 `[~]`→`[x]`: export byte-determinism proven as a
+  general property, closing the node.** C7's own text named its sole
+  remaining open leg: "proptest coverage across every export path, a
+  machine-diffable-audit guarantee stated as policy" (the two concrete
+  determinism bugs — recovery + checkpoint evidence order — were already
+  fixed 2026-07-01; every other C7 leg delivered). Selected as the
+  cycle's unit after a five-angle survey (structured across T2.7, T2.11,
+  `SOLUTION_TREE` §4b, §4a remaining-notes, and a fresh discovery pass;
+  the strongest rival candidate — a real cross-scan `see_know`
+  `KEY_INVALID` contamination under concurrent `hse serve` — was
+  investigated and deliberately NOT taken: its correct fix is
+  architectural, not a drop-in, since the key is a shared process-wide
+  credential, so the survey agent's proposed per-scan task-local isolation
+  would be semantically wrong; surfaced for a future dedicated cycle rather
+  than force-fit here). The existing `export_formats_determinism_audit`
+  only double-renders ONE hand-built fixture (same store, twice) — the
+  "case-by-case" the node called out. New
+  `exports_are_insertion_order_independent` proptest (`src/cli/export/
+  tests.rs`, `mod prop`, 48 bounded cases) generates an arbitrary
+  entity/tag/evidence set, inserts it into two stores in OPPOSITE orders,
+  and asserts all five byte-deterministic renderers
+  (json/csv/gexf/full/debug) serialise identically — the `CONVENTIONS.md`
+  §5 property ("independent of … task-completion order"), exercising the
+  store's merge-on-conflict fold and each renderer's own
+  attribute/tag/evidence serialisation at once. `report.json`'s documented
+  `exported_at` wall-clock field stays excluded, exactly as the fixture
+  audit excludes it. Verified non-vacuous with a scoped red/green: with the
+  store's deterministic read order (`sort_entities_for_display` + SQL
+  `ORDER BY … uid`) temporarily removed, the proptest fails on a
+  two-entity minimal case ("json leaked insertion order"); restored, it
+  passes. Test-only change (no production behaviour touched — the
+  determinism it guards was already correct by construction), so no
+  identity/PII, architecture-guard, ATT&CK-mapping, or
+  `#![forbid(unsafe_code)]` impact. Gate green: fmt/clippy `--all-targets
+  -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4596 total pass
+  (+1). **Paired:** `SOLUTION_TREE` SOL-FORENSIC `[~]`→`[x]` + §4a + §5 —
+  same commit.

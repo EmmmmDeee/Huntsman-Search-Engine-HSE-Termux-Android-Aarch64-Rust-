@@ -395,3 +395,136 @@ fn join_or_dash_empty_iterator_is_explicit_none() {
     let v: Vec<String> = Vec::new();
     assert_eq!(join_or_dash(v.iter()), "(none)");
 }
+
+// ── Property test: export determinism as a GENERAL property ─────────────────
+//
+// `export_formats_determinism_audit` above proves byte-reproducibility for one
+// hand-built fixture (double-rendering the same store). This generalises that
+// to the stronger, doctrine-defining property (`docs/CONVENTIONS.md` §5:
+// output is "independent of `HashMap` iteration or task-completion order"):
+// the SAME entities inserted in TWO different orders must export byte-
+// identically. That exercises both order-sensitive legs at once — the store's
+// merge-on-conflict fold and every renderer's own attribute/tag/evidence
+// serialisation — over arbitrary well-formed input rather than a single
+// scenario, closing `SOLUTION_TREE` §4a's C7 "general property, not
+// case-by-case" gap.
+mod prop {
+    use super::{
+        Scan, Store, Target, TargetKind, render_csv, render_debug_bundle, render_full, render_gexf,
+        render_json,
+    };
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use proptest::prelude::*;
+
+    /// A representative spread of kinds so generated entities hit varied
+    /// renderer branches — identity (Email/Username/Person), infrastructure
+    /// (IpAddress/Domain), a secret (Password), and geo (Coordinates).
+    fn any_kind() -> impl Strategy<Value = EntityKind> {
+        prop_oneof![
+            Just(EntityKind::Email),
+            Just(EntityKind::Username),
+            Just(EntityKind::Person),
+            Just(EntityKind::IpAddress),
+            Just(EntityKind::Domain),
+            Just(EntityKind::Password),
+            Just(EntityKind::Coordinates),
+        ]
+    }
+
+    /// One arbitrary entity carrying the fields whose ordering, if leaked from
+    /// a `HashMap` or left order-sensitive, would break byte-determinism: a
+    /// value, confidence, corroboration, a tag set, and evidence records each
+    /// with their own attribute map.
+    fn any_entity() -> impl Strategy<Value = Entity> {
+        (
+            any_kind(),
+            "[a-z0-9._-]{1,16}",
+            0.0f64..=1.0,
+            1u32..8,
+            prop::collection::vec("[a-z]{1,8}", 0..4),
+            prop::collection::vec(
+                (
+                    "[a-z_]{1,10}",
+                    prop::collection::vec(("[a-z_]{1,8}", "[a-zA-Z0-9 ._-]{0,12}"), 0..4),
+                ),
+                0..3,
+            ),
+        )
+            .prop_map(|(kind, val, conf, corr, tags, evs)| {
+                let mut e = Entity::new(kind, &val, conf, "scan-prop");
+                e.corroboration = corr;
+                for t in tags {
+                    e.tag(t);
+                }
+                for (src, attrs) in evs {
+                    let mut ev = Evidence::new(src, "prop-generated evidence");
+                    for (k, v) in attrs {
+                        ev = ev.with_attr(k, v);
+                    }
+                    e.add_evidence(ev);
+                }
+                e
+            })
+    }
+
+    /// Build a fresh store under `dir` holding `order`-sequenced entities.
+    fn store_with(dir: &std::path::Path, name: &str, order: &[Entity]) -> Store {
+        let store = Store::open(dir.join(name).to_str().unwrap()).unwrap();
+        let scan = Scan::new(
+            "scan-prop",
+            Target::new(TargetKind::Email, "seed@example-real.com"),
+        );
+        store.upsert_scan(&scan).unwrap();
+        store.upsert_entities_batch(order).unwrap();
+        store
+    }
+
+    proptest! {
+        // DB-per-case (open + insert + 10 renders), so bound the case count to
+        // keep the suite fast on-device while still fuzzing a real spread.
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        /// Every byte-deterministic export renderer is insertion-order-
+        /// independent: the same entities inserted forwards vs. reversed must
+        /// serialise identically. (`report.json`'s documented `exported_at`
+        /// wall-clock field keeps it out of this set, exactly as the
+        /// single-fixture audit above excludes it.)
+        #[test]
+        fn exports_are_insertion_order_independent(
+            mut ents in prop::collection::vec(any_entity(), 1..6),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let forward = store_with(dir.path(), "fwd.db", &ents);
+            ents.reverse();
+            let reversed = store_with(dir.path(), "rev.db", &ents);
+
+            // Store-typed formats.
+            prop_assert_eq!(
+                render_json(&forward, "scan-prop").unwrap(),
+                render_json(&reversed, "scan-prop").unwrap(),
+                "json leaked insertion order"
+            );
+            prop_assert_eq!(
+                render_csv(&forward, "scan-prop").unwrap(),
+                render_csv(&reversed, "scan-prop").unwrap(),
+                "csv leaked insertion order"
+            );
+            prop_assert_eq!(
+                render_gexf(&forward, "scan-prop").unwrap(),
+                render_gexf(&reversed, "scan-prop").unwrap(),
+                "gexf leaked insertion order"
+            );
+            // Port-typed formats (`&dyn StoragePort`).
+            prop_assert_eq!(
+                render_full(&forward, "scan-prop").unwrap(),
+                render_full(&reversed, "scan-prop").unwrap(),
+                "full dossier leaked insertion order"
+            );
+            prop_assert_eq!(
+                render_debug_bundle(&forward, "scan-prop").unwrap(),
+                render_debug_bundle(&reversed, "scan-prop").unwrap(),
+                "debug bundle leaked insertion order"
+            );
+        }
+    }
+}

@@ -419,6 +419,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Export byte-determinism is now guaranteed as a general property, not
+  just for one test fixture.** Every export format (JSON, CSV, GEXF, full
+  dossier, debug bundle) was already required to be byte-reproducible so
+  artifacts are diffable across runs, but that was only checked against a
+  single hand-built scenario. A new property test now generates arbitrary
+  scans and confirms that the same findings, inserted in any order, always
+  export byte-identically — so a re-export of the same evidence is stable
+  regardless of the order modules happened to complete in. (`report.json`'s
+  documented generation-timestamp field remains the one intentional
+  exception.)
 - **The scan dossier now flags a wasted keyed/paid module call as a proper
   optimization hint, not just a separate CLI line.** A `KeyGated`/`Paid`
   module that ran and returned zero entities is real, actionable signal (a
