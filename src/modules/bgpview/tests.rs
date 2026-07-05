@@ -60,17 +60,37 @@ fn asn_prefix_entities_map_blocks_with_org_name() {
 }
 
 #[test]
-fn asn_prefix_entities_respect_the_cap() {
-    let prefixes: Vec<_> = (0..30)
+fn asn_prefix_entities_emit_every_block_v4_and_v6() {
+    // 30 IPv4 blocks (> the old MAX_ANNOUNCED_PREFIXES = 20) plus 5 IPv6 blocks
+    // (previously dropped entirely — the struct never deserialised them). Every
+    // announced block the AS owns must surface: they are the direct answer to an
+    // ASN lookup, not a truncated sample.
+    let v4: Vec<_> = (0..30)
         .map(|i| format!(r#"{{"prefix":"10.{i}.0.0/24"}}"#))
         .collect();
-    let data: BgpPrefixData =
-        serde_json::from_str(&format!(r#"{{"ipv4_prefixes":[{}]}}"#, prefixes.join(",")))
-            .unwrap();
+    let v6: Vec<_> = (0..5)
+        .map(|i| format!(r#"{{"prefix":"2001:db8:{i}::/48"}}"#))
+        .collect();
+    let data: BgpPrefixData = serde_json::from_str(&format!(
+        r#"{{"ipv4_prefixes":[{}],"ipv6_prefixes":[{}]}}"#,
+        v4.join(","),
+        v6.join(",")
+    ))
+    .unwrap();
+    let es = asn_prefix_entities(&data, "1", "s");
     assert_eq!(
-        asn_prefix_entities(&data, "1", "s").len(),
-        MAX_ANNOUNCED_PREFIXES
+        es.len(),
+        35,
+        "every IPv4 (30) and IPv6 (5) announced block emitted, not capped at 20"
     );
+    // The IPv6 blocks — 100% dropped before the fix — are present.
+    for i in 0..5 {
+        let want = format!("2001:db8:{i}::/48");
+        assert!(
+            es.iter().any(|e| e.kind == EntityKind::Cidr && e.value == want),
+            "missing IPv6 block {want}"
+        );
+    }
 }
 
 // ── IP → PTR + ASN, now WITH the announced CIDR ─────────────────────
