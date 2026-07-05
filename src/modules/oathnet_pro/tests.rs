@@ -180,6 +180,75 @@ use super::*;
     }
 
     #[test]
+    fn stealer_never_emits_a_captured_password_verbatim() {
+        use serde_json::json;
+        // A real captured password must NEVER be persisted verbatim in any emitted
+        // entity's evidence — only a redacted hint + length + marker. This is an
+        // evidentiary tool; storing a victim's plaintext credential is exactly the
+        // leak it must not create.
+        let item = json!({
+            "email": ["victim@example.com"],
+            "url": "https://login.site",
+            "password": "SuperSecret123"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+
+        for e in &result.entities {
+            for ev in &e.evidence {
+                assert!(
+                    !ev.attributes.values().any(|v| v.contains("SuperSecret123")),
+                    "captured password leaked verbatim into evidence of {:?}",
+                    e.value
+                );
+            }
+        }
+        let attr_is = |key: &str, want: &str| {
+            result.entities.iter().any(|e| {
+                e.evidence
+                    .iter()
+                    .any(|ev| ev.attributes.get(key).map(String::as_str) == Some(want))
+            })
+        };
+        assert!(
+            attr_is("password_redacted", "true"),
+            "a redaction marker must be surfaced"
+        );
+        assert!(
+            attr_is("password_hint_first", "S") && attr_is("password_hint_last", "3"),
+            "first/last-char hints must be surfaced"
+        );
+    }
+
+    #[test]
+    fn stealer_paywall_sentinel_is_not_emitted_verbatim() {
+        use serde_json::json;
+        let item = json!({
+            "email": ["victim@example.com"],
+            "password": "UPGRADE_TO_SEE_FULL_DATA"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_stealer_entities(&item, "scan", "oathnet.org:test", &mut seen, &mut result);
+        for e in &result.entities {
+            for ev in &e.evidence {
+                assert!(
+                    !ev.attributes.values().any(|v| v.contains("UPGRADE_TO_SEE")),
+                    "paywall sentinel leaked verbatim"
+                );
+            }
+        }
+        assert!(
+            result.entities.iter().any(|e| e
+                .evidence
+                .iter()
+                .any(|ev| ev.attributes.get("password_paywalled").map(String::as_str) == Some("true"))),
+            "the paywall sentinel is recorded as password_paywalled"
+        );
+    }
+
+    #[test]
     fn stealer_row_surfaces_device_fingerprints_and_long_tail() {
         use serde_json::json;
         // The defining payload of an infostealer log — machine fingerprints and

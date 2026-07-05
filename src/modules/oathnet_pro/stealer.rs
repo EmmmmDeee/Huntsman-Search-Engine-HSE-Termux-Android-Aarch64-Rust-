@@ -49,10 +49,13 @@ pub(super) fn push_stealer_entity(
 ///     `see_know` also uses, so both stealer consumers extract one identical
 ///     field set.
 ///
-/// A redacted `UPGRADE_TO_SEE` password is never emitted verbatim — only a
-/// first/last-character hint (taken char-wise so a multi-byte value can't
-/// panic the slice) and a `password_redacted` marker. Shared evidence carries
-/// the `api_key_origin` fingerprint for provenance.
+/// A captured password is NEVER emitted verbatim: a provider `UPGRADE_TO_SEE`
+/// paywall sentinel is recorded only as `password_paywalled`, and a real
+/// password only as a first/last-character hint (taken char-wise so a multi-byte
+/// value can't panic the slice), its length, and a `password_redacted` marker —
+/// the tool must not persist a victim's plaintext credential into the graph or
+/// exports. Shared evidence carries the `api_key_origin` fingerprint for
+/// provenance.
 pub(super) fn extract_stealer_entities(
     item: &Value,
     scan_id: &str,
@@ -70,16 +73,25 @@ pub(super) fn extract_stealer_entities(
     if let Some(lid) = val_str(item, "log_id").or_else(|| val_str(item, "log")) {
         ev = ev.with_attr("log_id", &lid);
     }
-    if let Some(pw) = val_str(item, "password") {
-        ev = ev.with_attr("password", &pw);
-        if pw.contains("UPGRADE_TO_SEE") && pw.len() >= 3 {
-            // `pw` is untrusted: take the first/last CHAR (not byte) so a
-            // multi-byte boundary can't panic the slice.
+    if let Some(pw) = val_str(item, "password").filter(|p| !p.is_empty()) {
+        if pw.contains("UPGRADE_TO_SEE") {
+            // Provider paywall sentinel — a password EXISTS but the free tier
+            // withholds it. Record only that it is paywalled, never the sentinel
+            // string itself.
+            ev = ev.with_attr("password_paywalled", "true");
+        } else {
+            // A real captured credential must NEVER be emitted verbatim: this is
+            // an evidentiary tool, and persisting a victim's plaintext password
+            // into the entity graph/exports is exactly the kind of leak it must
+            // not create. Surface only a char-wise first/last hint (so a
+            // multi-byte value can't panic the slice), the length, and a
+            // redaction marker.
             let first = pw.chars().next().map(String::from).unwrap_or_default();
             let last = pw.chars().next_back().map(String::from).unwrap_or_default();
             ev = ev
                 .with_attr("password_hint_first", first)
                 .with_attr("password_hint_last", last)
+                .with_attr("password_len", pw.chars().count().to_string())
                 .with_attr("password_redacted", "true");
         }
     }
