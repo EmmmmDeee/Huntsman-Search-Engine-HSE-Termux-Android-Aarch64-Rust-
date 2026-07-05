@@ -34,10 +34,14 @@ use super::{bank_row, char_prefix, mask_key, run_tsv_import};
     }
 
     #[test]
-    fn mask_key_short_value_returned_verbatim() {
-        assert_eq!(mask_key(""), "");
-        assert_eq!(mask_key("abc"), "abc");
-        assert_eq!(mask_key("abcdefgh"), "abcdefgh");
+    fn mask_key_short_value_fully_masked() {
+        // `mask_key` now delegates to the shared `< 16` full-mask policy — the
+        // old `> 8` threshold used to return an 8-char (or shorter) value
+        // completely UNMASKED, and revealed 8 of 9 chars for a 9-char key.
+        assert_eq!(mask_key(""), "•");
+        assert_eq!(mask_key("abc"), "•••");
+        assert_eq!(mask_key("abcdefgh"), "••••••••");
+        assert_eq!(mask_key("abcdefghijklmno"), "•".repeat(15)); // 15 chars
     }
 
     #[test]
@@ -49,7 +53,7 @@ use super::{bank_row, char_prefix, mask_key, run_tsv_import};
     fn mask_key_handles_multibyte_chars() {
         // Pre-fix this byte-indexed `&v[..4]`/`&v[len-4..]` would panic
         // for a value whose 4th byte falls inside a multi-byte char.
-        let v = "𝕊éCRet𝕊éCRet"; // 12 chars, 22 bytes
+        let v = "𝕊éCRet𝕊éCRet𝕊éCRet"; // 18 chars (≥ 16, so head+tail applies), 33 bytes
         let m = mask_key(v);
         assert!(m.contains('…'));
         assert_eq!(m.chars().count(), 9);

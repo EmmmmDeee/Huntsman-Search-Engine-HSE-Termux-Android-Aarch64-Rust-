@@ -705,19 +705,15 @@ fn bank_row(e: &crate::util::key_vault::VaultEntry, reveal: bool) -> String {
     )
 }
 
-/// Char-aware masked key display: `ABCD…WXYZ` for values longer than
-/// 8 chars, full value otherwise. Byte-indexing the value directly
-/// panics when the key contains multi-byte UTF-8 (rare but real for
-/// imported test tokens). Operates on chars instead.
+/// Masked key display for the `hse keys` bank — delegates to the single
+/// masking policy shared with the web dashboard's key-pool view
+/// ([`crate::util::str_util::mask_secret`]), so the CLI and API can never
+/// independently drift on how much of a stored key they reveal (as they once
+/// did: this used to reimplement an `> 8`-char threshold, revealing 8 of an
+/// unmasked 9-char key — or all of one 8 chars or shorter — instead of the
+/// correct `< 16` full-mask cutoff).
 fn mask_key(value: &str) -> String {
-    let total = value.chars().count();
-    if total > 8 {
-        let head: String = value.chars().take(4).collect();
-        let tail: String = value.chars().skip(total - 4).collect();
-        format!("{head}…{tail}")
-    } else {
-        value.to_string()
-    }
+    crate::util::str_util::mask_secret(value)
 }
 
 #[cfg(test)]

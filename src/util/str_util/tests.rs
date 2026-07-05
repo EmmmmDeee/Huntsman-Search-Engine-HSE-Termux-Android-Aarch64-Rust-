@@ -1,7 +1,7 @@
 
 use super::{
-    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, nonempty, parse_asn,
-    slugify, truncate_display, truncate_safe,
+    ascii_digits, char_window, find_ascii_ci, fold_ascii_lower, is_handle, mask_secret, nonempty,
+    parse_asn, slugify, truncate_display, truncate_safe,
 };
 
     #[test]
@@ -226,6 +226,34 @@ use super::{
     fn find_ascii_ci_non_ascii_never_matches_ascii_needle() {
         // A multibyte char's bytes never ASCII-fold-equal an ASCII needle byte.
         assert_eq!(find_ascii_ci("İ", "i"), None);
+    }
+
+    #[test]
+    fn mask_secret_fully_masks_below_sixteen_chars() {
+        // A 9-15 char secret must NOT get a head(4)+tail(4) hint — that would
+        // leave less than half of it hidden (and reveal ALL of one <= 8 chars,
+        // the shape of the bug this guards: one call site used an `> 8`
+        // threshold instead of this `< 16` one).
+        assert_eq!(mask_secret(""), "•");
+        assert_eq!(mask_secret("abc"), "•••");
+        assert_eq!(mask_secret("abcdefgh"), "••••••••");
+        assert_eq!(mask_secret("abcdefghijklmno"), "•".repeat(15));
+    }
+
+    #[test]
+    fn mask_secret_reveals_head_and_tail_at_sixteen_chars_and_above() {
+        assert_eq!(mask_secret("AKIAIOSFODNN7EXAMPLE"), "AKIA…MPLE");
+        assert_eq!(mask_secret(&"x".repeat(16)), "xxxx…xxxx");
+    }
+
+    #[test]
+    fn mask_secret_is_char_boundary_safe_on_multibyte_input() {
+        // Byte-indexed slicing (`&v[..4]`/`&v[len-4..]`) would panic if the 4th
+        // byte lands inside a multi-byte char; `chars()`-based indexing never does.
+        let v = "𝕊éCRet𝕊éCRet𝕊éCRet"; // 18 chars, well over the 16-char threshold
+        let m = mask_secret(v);
+        assert!(m.contains('…'));
+        assert_eq!(m.chars().count(), 9);
     }
 
 // ── Property tests (proptest) ──────────────────────────────────────────────
