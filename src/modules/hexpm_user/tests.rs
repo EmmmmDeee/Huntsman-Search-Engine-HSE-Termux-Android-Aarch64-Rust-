@@ -102,3 +102,32 @@ fn empty_username_returns_no_entities() {
     let user = make_user("", None, vec![]);
     assert!(build_entities(user, "scan-hx-007").is_empty());
 }
+
+#[test]
+fn handle_pivots_emit_in_deterministic_key_order() {
+    // Determinism by construction: `handles` is a BTreeMap, so when a profile
+    // carries BOTH a github and a twitter handle the two Username pivots are
+    // emitted in sorted-key order ("github" < "twitter") on every run — never in
+    // hash-seed order. This pins the canonical order the pre-fix `HashMap`
+    // iteration did not guarantee (it would leak per-process order into the
+    // emitted entity / EntityFound event stream). The insertion order below is
+    // deliberately twitter-first to prove emission order does not follow it.
+    let user = make_user(
+        "polyglot",
+        None,
+        vec![("twitter", "poly_tw"), ("github", "poly_gh")],
+    );
+    let ents = build_entities(user, "scan-hx-008");
+    let gh = ents
+        .iter()
+        .position(|e| e.kind == EntityKind::Username && e.value == "poly_gh")
+        .expect("github pivot present");
+    let tw = ents
+        .iter()
+        .position(|e| e.kind == EntityKind::Username && e.value == "poly_tw")
+        .expect("twitter pivot present");
+    assert!(
+        gh < tw,
+        "github pivot (key 'github') must precede twitter pivot (key 'twitter') deterministically, got gh={gh} tw={tw}"
+    );
+}

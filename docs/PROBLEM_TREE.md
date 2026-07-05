@@ -1193,6 +1193,29 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   prefix ends in `.`) is left intact. **P2** (a false-positive that fabricates a
   correlation edge, corrupting the intelligence product — not a crash or PII
   leak).
+- **`[x]` T2.35 · `modules::hexpm_user` iterates a `HashMap` into emitted
+  entities, leaking hash-seed order into the `EntityFound` event stream** —
+  surfaced by a code-grounded determinism audit (fan-out over every module +
+  `core`/`util`/`storage`/`cli`; this was the one confirmed construction-level
+  leak, resolved from a split verifier verdict by reading the path). In
+  `build_entities`, `for (platform, linked_handle) in &user.handles` iterates a
+  `HashMap<String, String>` (the deserialized cross-platform handle map) and
+  pushes the github/twitter `Username` pivots straight into `out`; when a profile
+  carries both, their relative emission order follows per-process hash-seed
+  order. The persisted *entity product* is unaffected — storage reads back
+  `ORDER BY confidence …, uid ASC` and the two pivots differ in confidence
+  (github 0.72, twitter 0.62) — but the emitted `ModuleResult.entities` order
+  feeds the `EntityFound` event stream (the debug bundle's SEQUENCE section) in
+  emission order, so the raw event trace varied run-to-run. This is the exact
+  "no `HashMap`-iteration-order leaking into output" construction rule
+  (`CONVENTIONS.md` §5) the sibling `hacker_news` (T2.24) already fixed. →
+  **Solution:** change the `handles` field from `HashMap` to `BTreeMap` — the
+  type itself now guarantees sorted-key iteration ("github" < "twitter"), so the
+  pivots emit in a stable order every run with no separate sort call
+  (determinism by construction, not by convention). **P3** (the byte-reproducible
+  intelligence product was already deterministic via the storage ordering; only
+  the raw event-stream emission order leaked — a construction-doctrine hardening,
+  not a product-corruption bug).
 
 ---
 
@@ -5492,4 +5515,30 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `page_emails_does_not_deglue_across_different_domains` guarding the
   non-regression. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4417 lib tests). **P2** (fabricated finding → false correlation edge).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-05** — **T2.35 (new): `hexpm_user` leaked `HashMap` iteration order
+  into the emitted entity / `EntityFound` event stream.** Selected under a
+  direct user "deterministic coding" directive, via a code-grounded determinism
+  audit that fanned out over every module plus `core`/`util`/`storage`/`cli`
+  hunting for order-into-output leaks; of two raw candidates this was the one
+  confirmed after resolving a split verifier verdict by reading the actual path.
+  `build_entities` iterated `for (platform, linked_handle) in &user.handles` over
+  a `HashMap<String,String>`, pushing the github/twitter `Username` pivots into
+  `out` in hash-seed order. Verified the blast radius precisely: the persisted
+  entity product is NOT affected (storage reads `ORDER BY confidence …, uid ASC`
+  and the two pivots differ in confidence), but the emitted `ModuleResult.entities`
+  order feeds the `EntityFound` event stream in emission order, so the raw event
+  trace (debug-bundle SEQUENCE) varied run-to-run — the exact
+  "no `HashMap`-iteration-order leaking into output" rule the sibling
+  `hacker_news` (T2.24) already fixed. Fix: change the `handles` field from
+  `HashMap` to `BTreeMap`, so sorted-key iteration is guaranteed by the type
+  (determinism by construction, no separate sort). Test delta:
+  `handle_pivots_emit_in_deterministic_key_order` — builds a profile carrying
+  both handles (inserted twitter-first to prove emission order ignores insertion)
+  and asserts the github pivot precedes the twitter pivot; this pins the canonical
+  order the pre-fix `HashMap` gave no guarantee of (it would fail under seeds
+  iterating twitter first). Gate green: fmt/clippy/doc clean, full suite 0
+  failures (4418 lib tests). **P3** (event-stream order only; the reproducible
+  product was already deterministic — construction-doctrine hardening).
   **Paired:** `SOLUTION_TREE` §5 — same commit.

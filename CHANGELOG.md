@@ -370,6 +370,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`hex.pm` profile results emit their GitHub/Twitter handle pivots in a
+  stable order.** The handle map was iterated as a `HashMap`, so when a profile
+  carried both handles the two derived username entities could appear in either
+  order across runs in the raw event stream. The map is now ordered by
+  construction (`BTreeMap`), so the order is deterministic. Regression test
+  `handle_pivots_emit_in_deterministic_key_order`.
 - **Email extraction no longer fabricates an address when a URL path word is
   welded onto a real one.** A search-result snippet whose truncated URL abutted
   a real address with no separator (e.g. `…/viewtopic` glued onto

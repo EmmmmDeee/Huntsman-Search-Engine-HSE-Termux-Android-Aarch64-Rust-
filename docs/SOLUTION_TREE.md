@@ -852,6 +852,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   new node **T2.34**. ✅ 3 tests
   (`page_emails_deglues_a_path_word_welded_onto_a_real_address`, fail-before
   confirmed, + two non-regression guards).
+- **`[x]` SOL-HEXPM-DETERMINISM · `hexpm_user` no longer leaks `HashMap`
+  iteration order into emitted entities** — surfaced by a code-grounded
+  determinism audit under a user "deterministic coding" directive.
+  `build_entities` iterated `&user.handles` (a `HashMap`) and pushed the
+  github/twitter `Username` pivots in hash-seed order; the persisted product was
+  safe (storage orders by confidence/uid) but the `EntityFound` event stream
+  carried the raw emission order, violating the "no `HashMap`-iteration-order in
+  output" construction rule the sibling `hacker_news` (T2.24) already fixed.
+  Changed the `handles` field from `HashMap` to `BTreeMap`, making sorted-key
+  iteration a property of the type rather than a convention. *Closes:* new node
+  **T2.35**. ✅ 1 test (`handle_pivots_emit_in_deterministic_key_order`, pins
+  github-before-twitter regardless of insertion order).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -926,6 +938,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
 | SOL-EMAIL-DEGLUE | T2.34 | `[x]` |
+| SOL-HEXPM-DETERMINISM | T2.35 | `[x]` |
 
 ---
 
@@ -4053,3 +4066,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   case, fail-before confirmed) + 2 non-regression guards. Gate green:
   fmt/clippy/doc clean, 4417 lib tests, 0 failures. Paired: `PROBLEM_TREE` §8 —
   same commit.
+
+- **2026-07-05** — **SOL-HEXPM-DETERMINISM `[x]`: killed a `HashMap`-order leak
+  in `hexpm_user` under a user "deterministic coding" directive.** A code-grounded
+  determinism audit (fan-out over every module + core/util/storage/cli) confirmed
+  one construction-level leak after resolving a split verifier verdict by reading
+  the path: `build_entities` iterated `&user.handles` (`HashMap`) and emitted the
+  github/twitter `Username` pivots in hash-seed order. The persisted product was
+  already deterministic (storage `ORDER BY confidence, uid`), but the
+  `EntityFound` event stream carried the raw emission order — the "no
+  `HashMap`-iteration-order in output" rule `hacker_news` (T2.24) already honours.
+  Fixed by construction: `handles` is now a `BTreeMap`, so sorted-key iteration is
+  a type guarantee. *Closes:* **T2.35** (`[ ]`→`[x]`). Test:
+  `handle_pivots_emit_in_deterministic_key_order` (github before twitter,
+  insertion-order-independent). Gate green: fmt/clippy/doc clean, 4418 lib tests,
+  0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

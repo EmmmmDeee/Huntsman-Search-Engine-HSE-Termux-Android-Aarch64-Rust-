@@ -13,7 +13,7 @@
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -37,8 +37,13 @@ pub(super) struct HexUser {
     #[serde(alias = "name", default)]
     pub(super) full_name: Option<String>,
     /// Platform handle map: "github" → handle, "twitter" → handle, etc.
+    /// A `BTreeMap` (not `HashMap`) so iteration in [`build_entities`] is by
+    /// sorted key — the emitted github/twitter `Username` pivots keep a stable
+    /// relative order across process runs instead of leaking hash-seed order into
+    /// the emitted entity / `EntityFound` event stream (determinism by
+    /// construction, per `CONVENTIONS.md` §5).
     #[serde(default)]
-    pub(super) handles: HashMap<String, String>,
+    pub(super) handles: BTreeMap<String, String>,
 }
 
 pub(super) fn build_entities(user: HexUser, scan_id: &str) -> Vec<Entity> {
