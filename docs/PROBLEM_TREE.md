@@ -897,6 +897,31 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   identical entity set in the identical order. **P2** (a determinism/
   reproducibility bug — evidentiary output must be stable across identical
   runs — not a crash or PII leak).
+- **`[x]` T2.25 · `web_crawler::build_entities` leaked `HashSet` iteration
+  order into emitted `Domain`/`Email`/`TrackingId`/`Phone` entity order at
+  FIVE separate sites** — a background discovery agent, tasked with finding
+  the next candidate right after T2.24 closed the identical bug in
+  `hacker_news`, swept the module tree for the same shape and found
+  `web_crawler` had it worse: `state.subdomains`, `state.external_domains`,
+  `state.emails`, `state.tracking_ids` (a `HashSet<(String, String)>`), and
+  `state.phones` were each aggregated into a `HashSet` across the whole BFS
+  crawl, then iterated directly into `state.result.extend(...)` with no sort
+  — five independent non-determinism sites in the one function, versus one
+  in `hacker_news`. Notably, the SAME function already gets this right two
+  helper attributes above (lines 404-412): `state.frameworks`/
+  `state.page_types` are correctly collected into a `Vec`, `.sort_unstable()`-ed,
+  then joined into the `frameworks`/`page_types` evidence-string attributes —
+  proving the sort step was a deliberate, known pattern in this exact file
+  that the five entity-emission sites simply never received. Independently
+  re-verified by direct read of `src/modules/web_crawler/mod.rs` before
+  touching any code, confirming all five sites exactly as cited. → **Solution:**
+  applied the identical local pattern already used two lines above in the same
+  function — collect each `HashSet` into a `Vec` (`&str` slices for the four
+  `HashSet<String>` fields, `&(String, String)` tuple refs for
+  `tracking_ids`, whose `Ord` sorts by id then provider), `.sort_unstable()`,
+  then map to entities — at all five sites. **P2** (a determinism/
+  reproducibility bug across the module's four dominant entity kinds, not a
+  crash or PII leak).
 
 ---
 
@@ -4858,3 +4883,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `algolia_domain_entities`, a symbol that doesn't exist without the fix).
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4405 lib tests).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 36 (new T2.25): `web_crawler::build_entities` had
+  the SAME determinism-leak shape at FIVE sites in one function.** Right
+  after T2.24 closed the identical bug in `hacker_news`, dispatched a
+  background agent to sweep the rest of the module tree for the same shape
+  rather than assume it was isolated. It found `web_crawler` worse:
+  `subdomains`/`external_domains`/`emails`/`tracking_ids`/`phones` are each
+  aggregated into a `HashSet` across a whole BFS crawl, then every one is
+  iterated straight into `state.result.extend(...)` with no sort — five
+  independent non-determinism sites across the module's four dominant entity
+  kinds (`Domain`, `Email`, `TrackingId`, `Phone`). The telling detail: the
+  SAME function already gets this right two lines above, for the
+  `frameworks`/`page_types` evidence-string attributes (`Vec` + `.sort_unstable()`
+  before `.join()`) — proving sorting-before-emission was already a known,
+  deliberate pattern in this exact file that the five entity sites simply
+  never received. Independently re-verified by direct read of
+  `src/modules/web_crawler/mod.rs` before touching any code. → **Solution:**
+  applied that exact same local pattern (already used two lines above) to all
+  five sites: collect the `HashSet` into a `Vec` (`&(String, String)` tuple
+  refs for `tracking_ids`, whose `Ord` sorts by id then provider), sort, map
+  to entities. Test delta:
+  `build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`
+  (deliberately non-alphabetical `HashSet` insertion order across all five
+  fields; asserts subdomains then external domains, emails, phones, and
+  tracking ids all emerge sorted) — fail-before confirmed (reverted `mod.rs`
+  to pre-fix `HEAD` with the new test present; failed on the unsorted
+  `external_domains`/`emails` order). A first draft of the test helper used
+  `.map(|s| s.to_string())`, which the newer clippy lint table flagged as
+  `redundant_closure_for_method_calls` — corrected to
+  `.map(ToString::to_string)` before the gate passed. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4406 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

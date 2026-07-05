@@ -707,6 +707,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `algolia_domain_entities_no_urls_yields_nothing`), fail-before confirmed
   (reverted `mod.rs` to pre-fix `HEAD` with the new tests still present —
   they fail to compile, referencing a symbol the fix introduces).
+- **`[x]` SOL-WEB-CRAWLER-ORDER-DETERMINISM · `web_crawler::build_entities`'s
+  five `HashSet`-backed entity-emission sites (subdomains, external domains,
+  emails, tracking IDs, phones) no longer leak `HashSet` iteration order**
+  — a background agent, swept the module tree for the same shape right after
+  T2.24 closed it in `hacker_news`, and found `web_crawler` had it at five
+  sites in one function, worse than the single-site bugs already fixed.
+  Tellingly, the same function already applies the correct pattern two lines
+  above for its `frameworks`/`page_types` evidence-string attributes (`Vec`
+  + `.sort_unstable()`) — the fix simply extends that already-established,
+  already-proven-correct local pattern to the five entity sites that never
+  received it. *Closes:* new node **T2.25**. ✅ 1 test
+  (`build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`),
+  fail-before confirmed (reverted to pre-fix `HEAD` with the new test
+  present — failed on the unsorted external-domain/email order).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -771,6 +785,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GREYNOISE-KEYED | T2.22 | `[x]` |
 | SOL-USERNAME-SLUG-GATE | T2.23 | `[x]` |
 | SOL-HN-DOMAIN-DETERMINISM | T2.24 | `[x]` |
+| SOL-WEB-CRAWLER-ORDER-DETERMINISM | T2.25 | `[x]` |
 
 ---
 
@@ -894,7 +909,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-UPDATE-GIT-FIXTURE, 2026-07-05); **T2.22 `[x]`** ✅
   (SOL-GREYNOISE-KEYED, 2026-07-05); **T2.23 `[x]`** ✅
   (SOL-USERNAME-SLUG-GATE, 2026-07-05); **T2.24 `[x]`** ✅
-  (SOL-HN-DOMAIN-DETERMINISM, 2026-07-05); T2.7 open;
+  (SOL-HN-DOMAIN-DETERMINISM, 2026-07-05); **T2.25 `[x]`** ✅
+  (SOL-WEB-CRAWLER-ORDER-DETERMINISM, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3581,3 +3597,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `algolia_domain_entities`, a symbol that doesn't exist without the fix).
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4405 lib tests).
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 36: SOL-WEB-CRAWLER-ORDER-DETERMINISM —
+  `web_crawler::build_entities` had the same determinism-leak shape at FIVE
+  sites in one function.** Immediately after T2.24 closed the identical bug
+  in `hacker_news`, dispatched a background agent to sweep the rest of the
+  module tree for the same shape rather than assume it was isolated — found
+  `web_crawler` had it worse: `subdomains`, `external_domains`, `emails`,
+  `tracking_ids` (a `HashSet<(String, String)>`), and `phones` are each
+  aggregated into a `HashSet` across the whole BFS crawl, then every one is
+  iterated straight into `state.result.extend(...)` with no sort step —
+  five independent non-determinism sites spanning the module's four
+  dominant entity kinds (`Domain`, `Email`, `TrackingId`, `Phone`). The
+  telling detail: the SAME function already gets this right two lines
+  above, for its `frameworks`/`page_types` evidence-string attributes
+  (`Vec` + `.sort_unstable()` before `.join()`) — proving the sort-before-
+  emission pattern was already known and deliberate in this exact file, and
+  the five entity sites simply never received it. Independently
+  re-verified by direct read of `src/modules/web_crawler/mod.rs` before
+  touching any code, confirming all five sites exactly as the agent cited.
+  Applied that identical, already-proven local pattern to all five sites:
+  collect the `HashSet` into a `Vec` (tuple refs for `tracking_ids`, whose
+  `Ord` sorts by id then provider), `.sort_unstable()`, then map to
+  entities. *Closes:* new node **T2.25**. Tests:
+  `build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`
+  (deliberately non-alphabetical `HashSet` insertion order across all five
+  fields; asserts subdomains-then-external-domains, emails, phones, and
+  tracking IDs each emerge sorted) — fail-before confirmed (reverted
+  `mod.rs` to pre-fix `HEAD` with the new test present; failed on the
+  unsorted external-domain/email order). A first draft of the test's `set()`
+  helper used `.map(|s| s.to_string())`, which the newer clippy lint table
+  flagged as `redundant_closure_for_method_calls`; corrected to
+  `.map(ToString::to_string)`. Gate green: fmt/clippy/doc clean, full suite
+  0 failures (4406 lib tests). Paired: `PROBLEM_TREE` §8 — same commit.

@@ -364,6 +364,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`web_crawler`'s Domain, Email, Tracking-ID, and Phone entities are now
+  emitted in a deterministic order.** Five separate `HashSet`-backed
+  aggregations (subdomains, external domains, emails, web-analytics tracking
+  IDs, phone numbers) from a page crawl were each iterated straight into the
+  emitted entity list with no sort step — the same determinism-leak class
+  just fixed for `hacker_news`, but at five sites in one function instead of
+  one. All five now emerge sorted, matching the pattern the same function
+  already used for its framework/page-type attributes. Regression test
+  `build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`.
 - **`hacker_news`'s Algolia-submissions domain lookup now emits `Domain`
   entities in a deterministic order.** The distinct domains linked from a
   user's Hacker News submissions were deduplicated via a `HashSet` and then
