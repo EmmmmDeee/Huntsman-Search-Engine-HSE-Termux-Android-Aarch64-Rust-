@@ -149,3 +149,40 @@ fn build_entities_title_field_also_mined_for_bio() {
     let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
     assert_eq!(email.value, "carol@test.org");
 }
+
+#[test]
+fn submitted_entities_emits_all_distinct_subreddits_deterministically() {
+    // A submitted.json body naming 12 distinct subreddits (plus a duplicate) in
+    // deliberately non-alphabetical order — more than the old silent cap of 10.
+    let names = [
+        "rust", "python", "golang", "aww", "pics", "news", "science", "space",
+        "gaming", "movies", "books", "history", "rust", // duplicate — deduped
+    ];
+    let body = format!(
+        "[{}]",
+        names
+            .iter()
+            .map(|s| format!(r#"{{"subreddit":"{s}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let out = submitted_entities(&body, "someuser", "s");
+    // Every DISTINCT subreddit is emitted (12), none dropped by a cap.
+    assert_eq!(
+        out.len(),
+        12,
+        "all distinct subreddits emitted, not capped at 10"
+    );
+    // Deterministic: values emerge sorted, independent of the dedup HashSet's
+    // randomised iteration order.
+    let vals: Vec<&str> = out.iter().map(|e| e.value.as_str()).collect();
+    let mut sorted = vals.clone();
+    sorted.sort_unstable();
+    assert_eq!(vals, sorted, "subreddits emerge in sorted, deterministic order");
+    assert!(
+        out.iter()
+            .all(|e| e.kind == EntityKind::Organisation && e.has_tag("subreddit")),
+        "each is a subreddit-tagged Organisation"
+    );
+}
