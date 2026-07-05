@@ -510,6 +510,15 @@ fn push_crypto(
 /// `identify_api_key`, so only real vendor-key shapes (AWS `AKIA…`, GitHub
 /// `ghp_…`, Slack `xox…`, Stripe `sk_live_…`, Google `AIza…`, …) are kept.
 /// Capped at 50/import. Returns the number emitted.
+///
+/// Persists the pool to disk itself (once, only if it actually added a key)
+/// rather than leaving that to the caller: the in-memory `pool.add` inside
+/// `store_key_in_pool` is invisible on disk until `save_pool`/
+/// `save_pool_best_effort` runs, and most of this function's 7 callers never
+/// called it at all — every key this scanner found (its whole point: keys
+/// outside a recognised `service: key` field) was silently lost on process
+/// exit. A single choke point here fixes every caller at once and can't
+/// drift back out of sync the way 7 separate call-site edits could.
 fn push_api_keys(
     text: &str,
     sid: &str,
@@ -537,6 +546,9 @@ fn push_api_keys(
                 break;
             }
         }
+    }
+    if n > 0 {
+        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
     n
 }
