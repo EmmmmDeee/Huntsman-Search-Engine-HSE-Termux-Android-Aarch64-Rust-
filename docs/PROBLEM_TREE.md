@@ -827,6 +827,29 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   remaining item* — (d) further AU-0xx rule-gap fill is now C1's only open
   thread, deliberately left unstarted (an un-invented gap, not a mechanical
   slice).
+  *Investigated (cycle 30, 2026-07-05) — (d)'s rule-gap search, methodology
+  reusable next time:* cross-referenced every `EntityKind` variant against
+  `EntityKind::X` hits inside `core::correlator::rules/` (recursively — an
+  earlier, non-recursive pass falsely flagged `TrackingId` as uncorrelated).
+  Three kinds showed zero correlator engagement: **`TrackingId`** — REFUTED,
+  not a gap: `AU-044` (`rules/identity/account.rs`) already correlates it
+  ("shared web-analytics ID ⇒ common ownership") exactly as the `web_crawler`
+  module's own comment describes; my first, non-recursive grep simply missed
+  the subdirectory it lives in. **`Ssid`** — a real gap, but not a
+  correlator-only slice: `cli/import::push_ssids` extracts SSIDs as a flat
+  text-level scan with no per-record account attribution (unlike AU-047/106's
+  structured `email`/`username` evidence), so a "shared SSID ⇒ same
+  household/controller" rule (AU-106's device-fingerprint pattern, applied to
+  network co-presence) needs the import extractor changed FIRST to attribute
+  each SSID to the record it came from — a two-part change, not one. **`Cidr`**
+  — plausibly a gap (shared-CIDR-block hosting could indicate common
+  infrastructure, extending AU-044/106's "shared X ⇒ common owner" family),
+  but unlike the exact-value matching those rules do, it needs real
+  CIDR-containment computation (which IP falls in which block), a new
+  capability, not a mechanical addition. Neither `Ssid` nor `Cidr` was
+  pursued this cycle to avoid scope creep into the import/parsing layer; both
+  are legitimate candidates for a FUTURE cycle that scopes the prerequisite
+  change as its own step first.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -4500,3 +4523,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (fmt/clippy/doc clean, full suite 0 failures, 4394 lib tests — unchanged
   from the prior commit, as expected for a docs-only reconciliation).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 30: made a genuine, honest attempt at C1(d)'s AU-0xx
+  rule-gap fill; refuted one candidate, scoped two more for later, closed a
+  second stale-doc drift.** Methodology: cross-referenced every `EntityKind`
+  variant against `EntityKind::X` usage inside `core::correlator::rules/`
+  (recursively, correcting an earlier non-recursive pass that falsely flagged
+  `TrackingId` as uncorrelated). `TrackingId` — **refuted**: `AU-044` already
+  exists and does exactly what the `web_crawler` module's own comment
+  describes ("shared web-analytics ID ⇒ common ownership"); no gap. `Ssid` —
+  real gap, but needs `cli/import::push_ssids` changed FIRST to attribute each
+  extracted SSID to the record it came from (currently a flat text-level scan
+  with no per-account attribution, unlike AU-047/106's structured evidence);
+  scoped as future work, not attempted this cycle. `Cidr` — plausibly a gap
+  (shared-block hosting as a "common infrastructure" signal, extending
+  AU-044/106's family) but needs real CIDR-containment computation, a new
+  capability; also scoped as future work. Neither was pursued to avoid
+  expanding this cycle into the import/parsing layer. Separately, found
+  `SOLUTION_TREE` §4d's C5 coverage-snapshot summary was stale in the same way
+  T2.11's was last cycle: it still said "Weiszfeld/centroid fusion... remaining"
+  although the geometric-median convergence work was delivered 2026-07-01 (per
+  both `PROBLEM_TREE` C5's own body and `SOLUTION_TREE`'s SOL-GEOINT node,
+  neither of which the one-line summary was ever reconciled against).
+  Corrected. No code changed this cycle — an honest rule-gap search that came
+  up empty for a mechanical slice, plus a second doctrine-hygiene fix. Gate
+  re-run to confirm the working tree is still green (unchanged from the prior
+  commit). **Paired:** `SOLUTION_TREE` §5 — same commit.

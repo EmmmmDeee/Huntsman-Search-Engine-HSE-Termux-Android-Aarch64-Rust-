@@ -799,7 +799,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28; only AU-0xx rule-gap fill remains); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; AU bounding precision, movement/timeline layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28; only AU-0xx rule-gap fill remains); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -3302,3 +3302,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node — nothing left open). No code changed; full gate re-run to confirm the
   working tree is still green (unchanged from the prior commit, as expected).
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 30: an honest, empty-handed AU-0xx rule-gap search for
+  C1(d), plus a second stale-note fix (§4d's C5 line).** Cross-referenced every
+  `EntityKind` variant against its usage inside `core::correlator::rules/`
+  (recursively — an earlier non-recursive pass falsely flagged `TrackingId` as
+  uncorrelated). `TrackingId` — refuted: `AU-044` already correlates it exactly
+  as `web_crawler`'s own comment describes; verifying before building avoided
+  shipping a duplicate rule. `Ssid` and `Cidr` both show genuinely zero
+  correlator engagement, but neither is a mechanical slice: `Ssid` needs
+  `cli/import::push_ssids` changed first to attribute each extracted SSID to
+  its source record (currently a flat text scan, no per-account attribution);
+  `Cidr` needs real CIDR-containment computation, a new capability. Both
+  logged as scoped future candidates rather than pursued into the
+  import/parsing layer this cycle. Separately, `§4d`'s C5 coverage-snapshot
+  summary was found stale the same way T2.11's was last cycle — still saying
+  "Weiszfeld/centroid fusion... remaining" a `PROBLEM_TREE`/SOL-GEOINT-confirmed
+  4+ days after that work actually shipped (2026-07-01); corrected. No code
+  changed this cycle. Gate re-run to confirm the working tree is unchanged and
+  green. Paired: `PROBLEM_TREE` §8 — same commit.
