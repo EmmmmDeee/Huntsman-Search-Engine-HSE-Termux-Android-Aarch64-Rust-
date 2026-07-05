@@ -233,13 +233,15 @@ async fn fetch_algolia_submissions(
 /// `reddit_user::submitted_entities`).
 fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Entity> {
     // Extract URLs from "url":"..." fields, then reduce to deduped domains.
+    // Sort first so equal domains are adjacent, then `dedup()` — avoids the
+    // hashing + extra allocation of a `HashSet` round-trip for the same
+    // sorted-deduped result.
     let mut domains: Vec<String> = crate::util::json::scan_string_field(body, "url")
         .iter()
         .filter_map(|url_str| extract_domain_from_url(url_str))
-        .collect::<std::collections::HashSet<String>>()
-        .into_iter()
         .collect();
     domains.sort_unstable();
+    domains.dedup();
 
     domains
         .into_iter()

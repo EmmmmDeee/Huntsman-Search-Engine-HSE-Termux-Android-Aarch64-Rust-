@@ -1128,6 +1128,38 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   established convention. **P2** (a MITRE-provenance correctness gap
   affecting a majority of one high-traffic module's emitted entity kinds,
   not a crash or PII leak).
+- **`[x]` T2.33 · `api::update_handlers`'s two update-finish sites silently
+  no-op on a poisoned `update_info` mutex, permanently stranding the
+  self-update status at `Applying`** — surfaced by an automated review
+  comment on PR #215 (`copilot-pull-request-reviewer`), independently
+  verified by direct read before acting. `try_start_update` (the
+  check-and-claim gate for `POST /api/v1/update/trigger`) already recovers
+  from a poisoned mutex via `.unwrap_or_else(PoisonError::into_inner)` — a
+  deliberate, documented design choice. But the two sites in the spawned
+  update task that record the OUTCOME (`Ok(()) => phase = Restarting`,
+  `Err(e) => phase = Error(...)`) instead used a bare
+  `if let Ok(mut info) = update_info.lock() { .. }`, which silently no-ops
+  on `Err(PoisonError)` — so if the mutex were ever poisoned, the phase
+  would freeze at `Applying` forever: every subsequent `POST
+  /update/trigger` would then be rejected with 409 by `try_start_update`'s
+  own `Applying`-gate, and `GET /update/status` would report "applying"
+  indefinitely even after the update task had actually finished
+  (successfully or with an error that was silently never recorded). No
+  existing test covered poison-recovery at these two sites (only
+  `try_start_update`'s was tested). → **Solution:** extracted a shared
+  `set_phase()` helper using the identical poison-recovery pattern as
+  `try_start_update`, and routed both finish-sites through it — one
+  poison-recovery policy for the whole mutex, not two inconsistent ones.
+  A second, unrelated review comment on the same PR
+  (`gemini-code-assist`) flagged `hacker_news::algolia_domain_entities`'s
+  `HashSet`-round-trip-then-sort (from the T2.24 fix) as doing more
+  allocation/hashing than necessary for a result that ends up sorted
+  anyway; applied the suggested `Vec` → `sort_unstable()` → `dedup()`
+  rewrite in the same commit — behaviourally identical output, confirmed
+  by the pre-existing `algolia_domain_entities_emits_all_distinct_
+  domains_deterministically` test still passing unmodified. **P2** (a
+  correctness gap that could permanently wedge an operator-facing status
+  endpoint and block all future self-updates, not a crash or PII leak).
 
 ---
 
@@ -5350,4 +5382,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   assertion). No `tests/architecture.rs` pinning assertion referenced
   `name_intel`. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4412 lib tests — a 1-for-1 test replacement, not a net addition),
+  architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 45 (new T2.33): fixed a poisoned-mutex
+  inconsistency in `api::update_handlers` surfaced by automated PR review,
+  plus a minor efficiency tweak from a second review comment.** With PR
+  #215 (this arc's rollup) open, subscribed to its activity and found two
+  unresolved review threads. `copilot-pull-request-reviewer` flagged that
+  `try_start_update`'s poison-recovery policy
+  (`.unwrap_or_else(PoisonError::into_inner)`) wasn't mirrored at the two
+  sites in the spawned update task that record the outcome — both used a
+  bare `if let Ok(mut info) = update_info.lock() { .. }`, silently no-oping
+  on a poisoned lock. Independently verified by direct read before acting:
+  confirmed this could strand `phase` at `Applying` forever, since
+  `try_start_update`'s own gate rejects every future
+  `POST /update/trigger` while `Applying` — a poisoned mutex would
+  permanently wedge the self-update mechanism with no operator-visible
+  error. Extracted a shared `set_phase()` helper using the same
+  poison-recovery pattern and routed both finish-sites through it.
+  `gemini-code-assist` separately flagged `hacker_news::
+  algolia_domain_entities` (the T2.24 fix)'s `HashSet`-round-trip-then-sort
+  as more allocation/hashing than the sorted-output shape needs; applied
+  the suggested `Vec` → `sort_unstable()` → `dedup()` rewrite — same
+  deterministic output, confirmed by the pre-existing determinism test
+  passing unmodified. Test delta:
+  `set_phase_recovers_from_a_poisoned_mutex` (poisons a real `Mutex` via
+  `catch_unwind` around a panicking lock guard, then asserts `set_phase`
+  still lands the phase transition) — fail-before confirmed (reverted
+  `set_phase`'s body to the bare `if let Ok(...)` pattern in place;
+  panicked on the mutex still being poisoned/phase not updated). Gate
+  green: fmt/clippy/doc clean, full suite 0 failures (4413 lib tests),
   architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.

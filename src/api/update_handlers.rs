@@ -96,6 +96,19 @@ fn try_start_update(update_info: &std::sync::Mutex<UpdateInfo>) -> bool {
     true
 }
 
+/// Set `update_info`'s phase, recovering from a poisoned mutex the same way
+/// `try_start_update` does. Both call sites below run this after `Applying`
+/// has already been claimed, so silently no-oping on a poisoned lock (as a
+/// bare `if let Ok(...) = update_info.lock()` would) could strand the phase
+/// at `Applying` forever — `try_start_update`'s own gate rejects every future
+/// trigger while `Applying`, so a stranded phase permanently blocks updates.
+fn set_phase(update_info: &std::sync::Mutex<UpdateInfo>, phase: UpdatePhase) {
+    let mut info = update_info
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    info.phase = phase;
+}
+
 /// `POST /api/v1/update/trigger` — manually kick off an update.
 ///
 /// Returns 202 immediately and drives the update in a detached task.
@@ -121,9 +134,7 @@ pub(crate) async fn post_trigger(
     tokio::spawn(async move {
         match crate::cli::update::apply_update(None).await {
             Ok(()) => {
-                if let Ok(mut info) = update_info.lock() {
-                    info.phase = UpdatePhase::Restarting;
-                }
+                set_phase(&update_info, UpdatePhase::Restarting);
                 // Brief pause so the SPA can fetch the Restarting status before
                 // the process image is replaced.
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -141,9 +152,7 @@ pub(crate) async fn post_trigger(
                 crate::cli::update::self_restart();
             }
             Err(e) => {
-                if let Ok(mut info) = update_info.lock() {
-                    info.phase = UpdatePhase::Error(e.to_string());
-                }
+                set_phase(&update_info, UpdatePhase::Error(e.to_string()));
             }
         }
     });
@@ -153,10 +162,41 @@ pub(crate) async fn post_trigger(
 
 #[cfg(test)]
 mod tests {
-    use super::{UpdateInfo, UpdatePhase, reject_non_loopback, try_start_update};
+    use super::{UpdateInfo, UpdatePhase, reject_non_loopback, set_phase, try_start_update};
     use axum::http::StatusCode;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
     use std::sync::Mutex;
+
+    #[test]
+    fn set_phase_recovers_from_a_poisoned_mutex() {
+        // The two "finish" transitions (Ok -> Restarting, Err -> Error) must
+        // land even after the mutex is poisoned, exactly like
+        // try_start_update's own poison-recovery — a bare
+        // `if let Ok(mut info) = update_info.lock() { .. }` would silently
+        // no-op on a poisoned lock, stranding phase at Applying forever
+        // (try_start_update's own gate then rejects every future trigger).
+        let info = Mutex::new(UpdateInfo {
+            phase: UpdatePhase::Applying,
+            ..UpdateInfo::default()
+        });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = info.lock().unwrap();
+            panic!("simulated panic while holding the update_info lock");
+        }));
+        assert!(
+            info.is_poisoned(),
+            "the mutex must be poisoned by the panic above"
+        );
+
+        set_phase(&info, UpdatePhase::Restarting);
+        assert_eq!(
+            info.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .phase,
+            UpdatePhase::Restarting,
+            "phase must progress past a poisoned lock, not stay stuck at Applying"
+        );
+    }
 
     #[test]
     fn try_start_update_admits_exactly_one_of_two_concurrent_callers() {

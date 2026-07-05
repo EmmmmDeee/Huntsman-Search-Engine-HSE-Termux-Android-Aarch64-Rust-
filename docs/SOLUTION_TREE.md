@@ -817,6 +817,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   parallel investigation into `permute::parse`'s honorific handling for
   2-token names ("Dr Ali", "John Jr") was REFUTED — `parse()`'s
   documented, tested "safety guard" behaviour, not a fabrication bug.
+- **`[x]` SOL-UPDATE-POISON-CONSISTENT · `api::update_handlers`'s two
+  update-finish sites now recover from a poisoned mutex the same way
+  `try_start_update` already does, closing a permanent-wedge risk on the
+  self-update status endpoint** — surfaced by an automated
+  `copilot-pull-request-reviewer` comment on PR #215, independently
+  verified: a bare `if let Ok(mut info) = update_info.lock()` at the two
+  outcome-recording sites silently no-oped on a poisoned lock, which could
+  strand `phase` at `Applying` forever (permanently rejecting every future
+  update trigger via `try_start_update`'s own `Applying`-gate). Extracted a
+  shared `set_phase()` helper using the identical poison-recovery pattern.
+  Also applied a `gemini-code-assist` suggestion in the same commit:
+  `hacker_news::algolia_domain_entities` (T2.24) now sorts-then-`dedup()`s
+  a plain `Vec` instead of round-tripping through a `HashSet`, avoiding
+  unnecessary hashing/allocation for the same deterministic output.
+  *Closes:* new node **T2.33**. ✅ 1 test
+  (`set_phase_recovers_from_a_poisoned_mutex`, poisons a real `Mutex` via
+  `catch_unwind`), fail-before confirmed.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -889,6 +906,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-MASTODON-ATTACK-COMPLETE | T2.30 | `[x]` |
 | SOL-SOURCEFORGE-ATTACK-COMPLETE | T2.31 | `[x]` |
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
+| SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
 
 ---
 
@@ -1020,7 +1038,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-CODEWARS-ATTACK-COMPLETE, 2026-07-05); **T2.30 `[x]`** ✅
   (SOL-MASTODON-ATTACK-COMPLETE, 2026-07-05); **T2.31 `[x]`** ✅
   (SOL-SOURCEFORGE-ATTACK-COMPLETE, 2026-07-05); **T2.32 `[x]`** ✅
-  (SOL-NAMEINTEL-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
+  (SOL-NAMEINTEL-ATTACK-COMPLETE, 2026-07-05); **T2.33 `[x]`** ✅
+  (SOL-UPDATE-POISON-CONSISTENT, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3962,3 +3981,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   failures (4412 lib tests — a 1-for-1 test replacement, not a net
   addition), architecture suite 30/30. Paired: `PROBLEM_TREE` §8 — same
   commit.
+- **2026-07-05** — **Cycle 45: SOL-UPDATE-POISON-CONSISTENT — fixed a
+  poisoned-mutex inconsistency in `api::update_handlers` surfaced by
+  automated PR review, plus a minor efficiency tweak.** Subscribed to PR
+  #215's activity and found two unresolved review threads.
+  `copilot-pull-request-reviewer` flagged that `try_start_update`'s
+  poison-recovery policy wasn't mirrored at the two update-finish sites
+  (`Ok(()) => Restarting`, `Err(e) => Error(...)`), which used a bare
+  `if let Ok(mut info) = update_info.lock() { .. }` — silently no-oping on
+  a poisoned lock. Independently verified: this could strand `phase` at
+  `Applying` forever, permanently blocking every future update trigger via
+  `try_start_update`'s own gate, with no operator-visible error. Extracted
+  a shared `set_phase()` helper using the same poison-recovery pattern and
+  routed both finish-sites through it. Separately, `gemini-code-assist`
+  flagged `hacker_news::algolia_domain_entities` (T2.24)'s
+  `HashSet`-round-trip-then-sort as unnecessary allocation/hashing for a
+  result that ends up sorted anyway; rewrote it as `Vec` →
+  `sort_unstable()` → `dedup()` — identical deterministic output, confirmed
+  by the pre-existing determinism test passing unmodified. *Closes:* new
+  node **T2.33**. Tests: `set_phase_recovers_from_a_poisoned_mutex` (poisons
+  a real `Mutex` via `catch_unwind` around a panicking lock guard) —
+  fail-before confirmed (reverted `set_phase`'s body to the bare
+  `if let Ok(...)` pattern in place; the poisoned-mutex assertion failed).
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4413 lib tests),
+  architecture suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.

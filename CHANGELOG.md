@@ -364,6 +364,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The self-update mechanism can no longer wedge itself into a permanent
+  "applying" state.** Two sites that record the outcome of a triggered
+  update (success → restarting, failure → error) silently did nothing if
+  the shared status mutex was ever poisoned, unlike the check-and-claim
+  gate which already recovers from poisoning — a poisoned mutex would have
+  left every future update trigger permanently rejected with no
+  diagnosable error. Both sites now use the same poison-recovery policy.
+  Regression test `set_phase_recovers_from_a_poisoned_mutex`.
 - **`name_intel`'s ATT&CK mapping no longer silently inherits an incorrect
   category default.** The module never overrode `attack_techniques()`,
   so it inherited the full People-category pair — over-claiming "Identify
