@@ -2,8 +2,9 @@
 //!
 //! Consumes `Organisation` and `AbnAcn` target kinds (enabled by
 //! Phase 0.3). Searches the Australian Business Register for matching
-//! entities and emits `Person`, `Address`, `Domain`, `Organisation`
-//! entities from the results.
+//! entities and emits `AbnAcn`, `Person`, `Address`, `Coordinates`, and
+//! `Organisation` entities from the results — never `Domain` (the ABR
+//! register carries no website field).
 //!
 //! Free API — requires a GUID from <https://abr.business.gov.au/Tools/WebServicesRegister>
 //! (instant, free registration). Set `HUNTSMAN_ABR_GUID` in the env file.
