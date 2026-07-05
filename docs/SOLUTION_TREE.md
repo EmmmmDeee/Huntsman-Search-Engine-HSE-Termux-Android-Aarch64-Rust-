@@ -864,6 +864,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   iteration a property of the type rather than a convention. *Closes:* new node
   **T2.35**. ✅ 1 test (`handle_pivots_emit_in_deterministic_key_order`, pins
   github-before-twitter regardless of insertion order).
+- **`[x]` SOL-BREACH-DATE-EXACT · `date_diff_days` now measures exact calendar
+  days** — surfaced by a "most faulty file" pass into the correlation-rules
+  subsystem. The helper behind AU-019's ≤30-day temporal-breach cluster computed
+  `year*365 + month*30 + day`, a fake day count that ignores month lengths and
+  leap years, so the same real gap gave different diffs by boundary crossings and
+  a borderline cluster split/merged by several days. Replaced with Howard
+  Hinnant's exact `days_from_civil`, plus out-of-range month/day rejection so a
+  malformed date returns `u64::MAX` (never clusters). *Closes:* new node
+  **T2.36**. ✅ 3 new boundary tests (Jan-31, non-leap Feb, leap Feb) that fail
+  against the old approximation and pass against exact arithmetic; all prior
+  `date_diff_days` tests unchanged.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -939,6 +950,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
 | SOL-EMAIL-DEGLUE | T2.34 | `[x]` |
 | SOL-HEXPM-DETERMINISM | T2.35 | `[x]` |
+| SOL-BREACH-DATE-EXACT | T2.36 | `[x]` |
 
 ---
 
@@ -4081,3 +4093,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `handle_pivots_emit_in_deterministic_key_order` (github before twitter,
   insertion-order-independent). Gate green: fmt/clippy/doc clean, 4418 lib tests,
   0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-05** — **SOL-BREACH-DATE-EXACT `[x]`: exact calendar-day arithmetic
+  for AU-019.** A "most faulty file" pass into the correlation-rules subsystem
+  (after clearing the churn leaders `storage/mod.rs` and `breach.rs` as sound)
+  found `date_diff_days` measuring gaps as `year*365 + month*30 + day` — a fake
+  day count that mis-fired the ≤30-day temporal-breach cluster at month/leap
+  boundaries. Replaced with Howard Hinnant's `days_from_civil` (exact) plus
+  out-of-range month/day rejection. *Closes:* **T2.36** (`[ ]`→`[x]`). Tests:
+  `date_diff_days_is_exact_across_month_and_leap_boundaries` (+ extended malformed
+  guard) — fail against the old formula, pass against the fix; all prior tests
+  unchanged. Gate green: fmt/clippy/doc clean, 4419 lib tests, 0 failures.
+  Paired: `PROBLEM_TREE` §8 — same commit.

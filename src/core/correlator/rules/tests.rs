@@ -137,6 +137,25 @@ use crate::core::entity::Evidence;
         assert_eq!(date_diff_days("not-a-date", "2024-06-15"), u64::MAX);
         assert_eq!(date_diff_days("2024-06-15", ""), u64::MAX);
         assert_eq!(date_diff_days("2024-06", "2024-06-15"), u64::MAX);
+        // Out-of-range month/day must not masquerade as a valid day count.
+        assert_eq!(date_diff_days("2024-13-01", "2024-06-15"), u64::MAX);
+        assert_eq!(date_diff_days("2024-06-00", "2024-06-15"), u64::MAX);
+    }
+
+    #[test]
+    fn date_diff_days_is_exact_across_month_and_leap_boundaries() {
+        // These fail against the old `year*365 + month*30 + day` approximation and
+        // pass against exact civil-day arithmetic — the reason the rewrite exists.
+        // January has 31 days, so 2021-01-05 → 2021-02-05 is 31 days, not 30.
+        assert_eq!(date_diff_days("2021-01-05", "2021-02-05"), 31);
+        // 2021 is not a leap year: 2021-02-28 → 2021-03-01 is exactly 1 day.
+        assert_eq!(date_diff_days("2021-02-28", "2021-03-01"), 1);
+        // 2020 IS a leap year: 2020-02-28 → 2020-03-01 spans Feb 29, so 2 days.
+        assert_eq!(date_diff_days("2020-02-28", "2020-03-01"), 2);
+        // Order-independent (absolute gap).
+        assert_eq!(date_diff_days("2021-02-05", "2021-01-05"), 31);
+        // Full leap year is exactly 366 days end to end.
+        assert_eq!(date_diff_days("2020-01-01", "2021-01-01"), 366);
     }
 
     // ── canonical_handle ──────────────────────────────────────────────────────

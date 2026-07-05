@@ -1216,6 +1216,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   intelligence product was already deterministic via the storage ordering; only
   the raw event-stream emission order leaked — a construction-doctrine hardening,
   not a product-corruption bug).
+- **`[x]` T2.36 · `core::correlator::rules::date_diff_days` used a fake
+  `year*365 + month*30 + day` day count, so the AU-019 temporal-breach cluster
+  fired on wrong day gaps** — surfaced by a "most faulty file" discovery pass
+  into the highest-churn correlation-rules subsystem, confirmed by reading the
+  path. The helper measured the calendar-day gap between two breach dates as
+  `year*365 + month*30 + day`, which is **not a valid day count**: it ignores
+  actual month lengths and leap years, so two date pairs the *same* real
+  distance apart return *different* diffs depending on how many month/year
+  boundaries they cross. `rule_au_019_temporal_breach_cluster` thresholds this
+  at "≤30 days" to claim a coordinated-compromise window, so a borderline
+  cluster was split or merged by up to several days of error — e.g.
+  `2021-01-05`→`2021-02-05` is 31 real days but computed as 30 (would wrongly
+  cluster), and a non-leap `2021-02-28`→`2021-03-01` is 1 real day but computed
+  as 3. A malformed date with an out-of-range month/day (`2024-13-01`) also
+  parsed to a garbage number instead of being rejected. → **Solution:** compute
+  the exact proleptic-Gregorian day number via Howard Hinnant's
+  `days_from_civil` (accounts for month lengths + leap years), and reject
+  out-of-range month/day so a malformed date returns `u64::MAX` (never clusters)
+  instead of a spurious small gap. All existing `date_diff_days` tests still pass
+  (exact arithmetic satisfies the same-day/5-day/~365-day assertions); three new
+  boundary cases pin the month-length and leap-year correctness the approximation
+  got wrong. **P2** (a correctness defect that mis-fires a HIGH-severity
+  correlation at the cluster boundary — corrupts the intelligence product, not a
+  crash or PII leak).
 
 ---
 
@@ -5542,3 +5566,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   failures (4418 lib tests). **P3** (event-stream order only; the reproducible
   product was already deterministic — construction-doctrine hardening).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-05** — **T2.36 (new): `date_diff_days` used a fake
+  `year*365 + month*30 + day` day count, mis-firing the AU-019 temporal-breach
+  cluster.** Selected by a "most faulty file" discovery pass into the
+  highest-churn correlation-rules subsystem (`core/correlator/rules`); after
+  confirming the fix-churn leaders `storage/mod.rs` and `breach.rs` were sound
+  (LIKE escaping carries matching `ESCAPE '\'`, `breach_dates[0]` is len-guarded),
+  read the shared date helper `breach.rs` depends on and found the defect. The
+  gap between two breach dates was `year*365 + month*30 + day` — not a valid day
+  count: it ignores month lengths and leap years, so the same real gap yields
+  different diffs by how many month/year boundaries it crosses, and
+  `rule_au_019_temporal_breach_cluster`'s "≤30 days" test was off by up to
+  several days at the boundary. Replaced with exact proleptic-Gregorian
+  arithmetic (Howard Hinnant's `days_from_civil`), and rejected out-of-range
+  month/day so a malformed date returns `u64::MAX` instead of a spurious small
+  gap. Test delta: extended `date_diff_days_returns_max_for_malformed` (rejects
+  `2024-13-01` / `2024-06-00`) and added
+  `date_diff_days_is_exact_across_month_and_leap_boundaries` — asserts
+  `2021-01-05`→`2021-02-05` = 31 (Jan has 31 days; the approximation gave 30),
+  non-leap `2021-02-28`→`2021-03-01` = 1 (approximation gave 3), leap
+  `2020-02-28`→`2020-03-01` = 2, and a full leap year = 366; all fail against the
+  old formula and pass against the fix. Every pre-existing `date_diff_days` test
+  still passes unchanged. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4419 lib tests). **P2** (mis-fires a HIGH-severity correlation at the cluster
+  boundary — product correctness). **Paired:** `SOLUTION_TREE` §5 — same commit.

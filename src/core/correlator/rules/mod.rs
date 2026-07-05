@@ -91,25 +91,46 @@ fn text_mentions_ip(text: &str, ip: &str) -> bool {
     false
 }
 
-/// Approximate the absolute day gap between two `YYYY-MM-DD` strings.
+/// Days since the civil epoch (1970-01-01) for a proleptic-Gregorian `(y, m, d)`,
+/// via Howard Hinnant's `days_from_civil` algorithm. Exact for every real
+/// calendar date — it accounts for actual month lengths and leap years — so the
+/// difference of two results is the true calendar-day gap. `m` must be `1..=12`
+/// and `d` `1..=31`; the caller validates that before calling.
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    // Shift so the year starts in March, putting the leap day at the year's end.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400; // year of era, [0, 399]
+    let mp = if m > 2 { m - 3 } else { m + 9 }; // Mar=0 … Feb=11
+    let doy = (153 * mp + 2) / 5 + d - 1; // day of year (Mar-based), [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // day of era, [0, 146096]
+    era * 146097 + doe - 719_468
+}
+
+/// Exact absolute calendar-day gap between two `YYYY-MM-DD` dates, or [`u64::MAX`]
+/// when either is malformed (wrong shape, non-numeric, or an out-of-range month
+/// or day) so a malformed date never masquerades as a small gap and clusters
+/// spuriously.
 ///
-/// Intentionally dependency-free (no `chrono`/`time`): days are estimated as
-/// `y*365 + m*30 + d`, so the result is **not** an exact calendar difference.
-/// Error is bounded to a few days near month/year boundaries (e.g. `2020-01-31`
-/// vs `2020-02-01` reads as 0). Every caller (AU-019 temporal clustering) uses a
-/// coarse window (≥30 days) where this noise is irrelevant — do not reuse this
-/// where exact-day precision matters. Returns `u64::MAX` if either side fails to
-/// parse, which sorts/compares as "infinitely far apart" (never clusters).
+/// The gap is exact (real month lengths and leap years), not the former
+/// `year*365 + month*30 + day` approximation — which was not a valid day count at
+/// all: two date pairs the same real distance apart returned different diffs
+/// depending on how many month/year boundaries they crossed, so a borderline
+/// 30-day breach cluster (AU-019) could be split or merged by up to several days
+/// of error.
 pub(super) fn date_diff_days(a: &str, b: &str) -> u64 {
-    let parse = |s: &str| -> Option<u64> {
+    let parse = |s: &str| -> Option<i64> {
         let parts: Vec<&str> = s.split('-').collect();
         if parts.len() != 3 {
             return None;
         }
-        let y: u64 = parts[0].parse().ok()?;
-        let m: u64 = parts[1].parse().ok()?;
-        let d: u64 = parts[2].parse().ok()?;
-        Some(y * 365 + m * 30 + d)
+        let y: i64 = parts[0].parse().ok()?;
+        let m: i64 = parts[1].parse().ok()?;
+        let d: i64 = parts[2].parse().ok()?;
+        if !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+            return None;
+        }
+        Some(days_from_civil(y, m, d))
     };
     match (parse(a), parse(b)) {
         (Some(da), Some(db)) => da.abs_diff(db),

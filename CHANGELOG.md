@@ -370,6 +370,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Temporal breach-cluster correlation (AU-019) now measures exact calendar
+  days.** The day gap between two breach dates was approximated as
+  `year*365 + month*30 + day`, which ignores month lengths and leap years, so
+  the "within 30 days" coordinated-compromise window was off by up to several
+  days at month/leap boundaries — splitting real clusters or merging unrelated
+  ones. It now uses exact proleptic-Gregorian day arithmetic, and a malformed
+  date with an out-of-range month/day is rejected rather than treated as a small
+  gap. Regression test `date_diff_days_is_exact_across_month_and_leap_boundaries`.
 - **`hex.pm` profile results emit their GitHub/Twitter handle pivots in a
   stable order.** The handle map was iterated as a `HashMap`, so when a profile
   carried both handles the two derived username entities could appear in either
