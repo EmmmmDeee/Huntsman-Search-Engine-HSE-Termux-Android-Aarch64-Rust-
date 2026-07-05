@@ -24,8 +24,9 @@ use super::*;
     #[tokio::test]
     async fn curl_failure_reports_exit_code_not_opaque_message() {
         // Point at an unroutable host with a tiny timeout so curl exits
-        // non-zero (typically 28 timeout or 6/7 resolve/connect). The error
-        // must carry curl's exit code, not the old opaque "curl failed".
+        // non-zero (typically 28 timeout, 6/7 resolve/connect, or 60 cert
+        // mismatch on an environment that intercepts the connection). The
+        // error must carry curl's exit code, not the old opaque "curl failed".
         static C: CurlClient = CurlClient::new("test_seeknow", AuthScheme::None, 1, 3_000);
         let err = C
             .get("https://10.255.255.1/definitely-not-real", "")
@@ -36,9 +37,25 @@ use super::*;
             err.contains("curl exited"),
             "error must surface curl's exit code, got: {err}"
         );
+        // The OLD opaque message was the bare literal "curl failed" with no
+        // exit code or detail at all — distinct from curl's own diagnostic
+        // text (which may itself legitimately mention "curl failed to verify
+        // the legitimacy of the server..." for a TLS-cert-mismatch failure, as
+        // happens when a network intercepts the connection). Check the exact
+        // old opaque form is gone, not a coincidental substring of real detail.
+        assert_ne!(
+            err, "curl failed",
+            "opaque message with no exit code/detail must be gone"
+        );
+        // `-S`/`--show-error` must accompany `-s`: silent mode alone
+        // suppresses curl's own diagnostic text too, leaving only the bare
+        // "curl exited N" with no indication of WHY (DNS failure? refused
+        // connection? cert mismatch?). A real diagnostic snippet — signalled
+        // here by the ": " separator `exec` only appends when `stderr` was
+        // non-empty — must be present.
         assert!(
-            !err.contains("curl failed"),
-            "opaque message must be gone: {err}"
+            err.contains("curl exited") && err.contains(": "),
+            "error must carry curl's own diagnostic text (requires -S alongside -s), got: {err}"
         );
     }
 

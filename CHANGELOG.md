@@ -343,6 +343,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Curl-subprocess failures (see_know, oathnet) now report WHY, not just an exit code.**
+  `CurlClient::exec` ran curl with `-s` (silent) but not `-S`/`--show-error`, so curl
+  suppressed its own diagnostic text on failure alongside the progress meter — every
+  `[seek_now] curl exited N` / `[oathnet] curl exited N` log line carried a bare numeric
+  code with no indication of which host failed to resolve, connect, or verify. Added `-S`
+  so curl's one-line diagnostic (`curl: (6) Could not resolve host: …`) is restored into
+  `stderr`, which the existing failure branch already captures and reports — output shape
+  is unchanged on success. Regression-tested against a network-unreachable target.
+- **SeekNow embedded default key rotated** to the operator-supplied `seek-fd18f1db…` key,
+  with the prior default demoted into the superseded-key chain so any env file carrying it
+  upgrades in place on next run (no operator action needed). Not live-verified from this
+  build environment — its own outbound network policy rejects `see-know.eu` independent of
+  the key; verify with `hse doctor` on the operator's own device.
 - **Bluesky, Reddit, Mastodon, Lobsters and Dev.to profile scans now surface every email
   and link in a subject's bio, not just the first five of each.** All five modules ran the
   same copy-pasted extraction that capped bio emails and URLs at five apiece — even though a
