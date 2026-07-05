@@ -364,6 +364,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`sourceforge_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The fifth instance of the same
+  under-declared-coverage gap: its override already correctly credited the
+  Username lookup and bio-extracted emails, but silently dropped the
+  technique for the Person and Address/Coordinates entities it also builds
+  from a profile's display name and self-reported location. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`mastodon_user`'s ATT&CK mapping now covers every entity kind the
   module actually produces.** Unlike the sibling fixes above, its override
   had the correct base technique ("Social Media," since Mastodon genuinely

@@ -1071,6 +1071,23 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `Organisation` entities are built here, so `T1591.002` does not apply.
   **P2** (a MITRE-provenance correctness gap on a minority of one module's
   emitted entity kinds, not a crash or PII leak).
+- **`[x]` T2.31 · `sourceforge_user` had the same under-declared-coverage
+  `attack_techniques()` gap — 2 of its 6 produced entity kinds carried no
+  matching MITRE provenance** — the 5th instance on the scoped sweep list,
+  and a return to the code-hosting shape (unlike `mastodon_user`'s
+  already-correct-base variant): `sourceforge_user`'s override
+  `&["T1589.002", "T1593.003"]` already correctly covered the Username
+  (Code Repositories) and bio-extracted Email, but independent line-by-line
+  verification of `build_entities` (before touching any code) confirmed a
+  `Person` (via `profile_kit::person_from_name` from `display_name`) and an
+  `Address`/`Coordinates` (via `profile_kit::location_address`/
+  `location_coordinates` from `location`) with no matching technique. No
+  `Organisation`/`Domain` entities are built here, so `T1591.002` does not
+  apply and there is no `T1590`-family Domain-discovery technique to add. →
+  **Solution:** extended the existing correct pair — added `T1589.003`
+  (Employee Names) and `T1591.001` (Determine Physical Locations). **P2** (a
+  MITRE-provenance correctness gap on a minority of one module's emitted
+  entity kinds, not a crash or PII leak).
 
 ---
 
@@ -5236,3 +5253,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   future cycles. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4411 lib tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE`
   §5 — same commit.
+- **2026-07-05** — **Cycle 43 (new T2.31): `sourceforge_user` was the 5th
+  instance of the same under-declared-coverage `attack_techniques()` gap.**
+  Continuing the scoped sweep list, `sourceforge_user`'s override
+  `&["T1589.002", "T1593.003"]` already correctly covered the Username
+  (Code Repositories) and bio-extracted Email — this instance is back to
+  the code-hosting shape rather than `mastodon_user`'s already-correct-base
+  variant. Independent line-by-line verification of `build_entities`
+  (before touching any code) confirmed a `Person` (via
+  `profile_kit::person_from_name` from `display_name`) and an `Address`/
+  `Coordinates` (via `profile_kit::location_address`/
+  `location_coordinates` from `location`) with no matching technique. No
+  `Organisation` entities are built here, so `T1591.002` correctly does not
+  apply. → **Solution:** extended the existing correct pair — added
+  `T1589.003` (Employee Names) and `T1591.001` (Determine Physical
+  Locations). Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.003` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `sourceforge_user`. 5 modules remain on the scoped
+  sweep list (`cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`) for future cycles. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4412 lib tests), architecture
+  suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -794,6 +794,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   file). 6 modules remain on the scoped sweep list (`sourceforge_user`,
   `cpan_user`, `gitea_user`, `codeberg_user`, `huggingface_user`,
   `hexpm_user`) for future cycles.
+- **`[x]` SOL-SOURCEFORGE-ATTACK-COMPLETE · `sourceforge_user`'s ATT&CK
+  override now covers every entity kind it actually produces — the 5th
+  instance, back to the code-hosting shape** — the override
+  `&["T1589.002", "T1593.003"]` already correctly covered the Username and
+  bio-extracted Email, but left `Person` (`display_name`) and `Address`/
+  `Coordinates` (`location`) with no matching technique. *Closes:* new node
+  **T2.31**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed. 5 modules remain on the scoped sweep list
+  (`cpan_user`, `gitea_user`, `codeberg_user`, `huggingface_user`,
+  `hexpm_user`) for future cycles.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -864,6 +875,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-DOCKERHUB-ATTACK-COMPLETE | T2.28 | `[x]` |
 | SOL-CODEWARS-ATTACK-COMPLETE | T2.29 | `[x]` |
 | SOL-MASTODON-ATTACK-COMPLETE | T2.30 | `[x]` |
+| SOL-SOURCEFORGE-ATTACK-COMPLETE | T2.31 | `[x]` |
 
 ---
 
@@ -993,7 +1005,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-GITHUB-ATTACK-COMPLETE, 2026-07-05); **T2.28 `[x]`** ✅
   (SOL-DOCKERHUB-ATTACK-COMPLETE, 2026-07-05); **T2.29 `[x]`** ✅
   (SOL-CODEWARS-ATTACK-COMPLETE, 2026-07-05); **T2.30 `[x]`** ✅
-  (SOL-MASTODON-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
+  (SOL-MASTODON-ATTACK-COMPLETE, 2026-07-05); **T2.31 `[x]`** ✅
+  (SOL-SOURCEFORGE-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3885,3 +3898,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   future cycles. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4411 lib tests), architecture suite 30/30. Paired: `PROBLEM_TREE` §8 —
   same commit.
+- **2026-07-05** — **Cycle 43: SOL-SOURCEFORGE-ATTACK-COMPLETE —
+  `sourceforge_user` was the 5th instance of the same under-declared-coverage
+  gap, back to the code-hosting shape.** Continuing the scoped sweep list;
+  the override `&["T1589.002", "T1593.003"]` already correctly covered the
+  Username (Code Repositories) and bio-extracted Email. Independent
+  line-by-line verification of `build_entities` confirmed a `Person` (via
+  `profile_kit::person_from_name` from `display_name`) and an `Address`/
+  `Coordinates` (via `profile_kit::location_address`/
+  `location_coordinates` from `location`) with no matching technique; no
+  `Organisation` entities are built here, so `T1591.002` correctly does not
+  apply. Extended the existing correct pair: added `T1589.003` (Employee
+  Names) and `T1591.001` (Determine Physical Locations). *Closes:* new node
+  **T2.31**. Tests:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.003` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `sourceforge_user`. 5 modules remain on the scoped
+  sweep list (`cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`) for future cycles. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4412 lib tests), architecture
+  suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.
