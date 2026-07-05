@@ -1051,6 +1051,26 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   independently-verified module at a time by design, not a batch. **P2** (a
   MITRE-provenance correctness gap affecting half of one module's emitted
   entity kinds, not a crash or PII leak).
+- **`[x]` T2.30 · `mastodon_user` had the same under-declared-coverage
+  `attack_techniques()` gap, but with the CORRECT base technique this
+  time — a variant proving the fix pattern isn't always "swap in
+  T1593.003"** — continuing the scoped sweep list, this instance is
+  meaningfully different from the three prior fixes: `mastodon_user`'s
+  existing override `&["T1589.002", "T1593.001"]` correctly kept
+  `T1593.001` (Social Media) rather than substituting `T1593.003` (Code
+  Repositories), since Mastodon genuinely IS a social platform, unlike
+  the code-hosting modules (`github_user`/`dockerhub_user`/`codewars_user`)
+  mis-declared as Social. But the override still under-declared: independent
+  line-by-line verification of `build_entities` confirmed a `Person` (via
+  `profile_kit::person_from_name` from `display_name`) and an `Address`/
+  `Coordinates` (from a profile field whose name matches
+  `looks_like_location_field`) with no matching technique. → **Solution:**
+  extended the existing correct base rather than replacing it — added
+  `T1589.003` (Employee Names) and `T1591.001` (Determine Physical
+  Locations) to the pre-existing `T1589.002`/`T1593.001` pair. No
+  `Organisation` entities are built here, so `T1591.002` does not apply.
+  **P2** (a MITRE-provenance correctness gap on a minority of one module's
+  emitted entity kinds, not a crash or PII leak).
 
 ---
 
@@ -5186,3 +5206,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   design. Gate green: fmt/clippy/doc clean, full suite 0 failures (4410 lib
   tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+- **2026-07-05** — **Cycle 42 (new T2.30): `mastodon_user` was a variant of
+  the same under-declared-coverage gap, this time on a CORRECT base
+  technique.** Continuing the scoped sweep list, picked `mastodon_user`
+  next for a deliberately different reason than the prior three fixes: its
+  existing override `&["T1589.002", "T1593.001"]` correctly kept
+  `T1593.001` (Social Media) — Mastodon genuinely is social media, unlike
+  the code-hosting modules mis-declared as Social — so this instance tests
+  whether the fix pattern generalises beyond "swap in T1593.003," or was
+  only ever fixing a wrong substitution. Independent line-by-line
+  verification of `build_entities` confirmed the override was still missing
+  coverage for a `Person` (via `profile_kit::person_from_name` from
+  `display_name`) and an `Address`/`Coordinates` (from a profile field
+  matching `looks_like_location_field`) — no `Organisation` entities are
+  built here, so `T1591.002` correctly does not apply. → **Solution:**
+  extended the existing correct pair rather than replacing it — added
+  `T1589.003` (Employee Names) and `T1591.001` (Determine Physical
+  Locations). Because `mastodon_user`'s tests live inline in `mod.rs` (no
+  separate `tests.rs`), the fail-before step required reverting only the
+  `attack_techniques()` function body in place (not the whole file, which
+  would also have deleted the new test) — confirmed against the isolated
+  buggy function, restored via a diff-verified whole-file backup. Test
+  delta: `attack_techniques_covers_every_entity_kind_this_module_produces`
+  — fail-before confirmed (panicked on the missing `T1589.003` assertion
+  against the reverted-in-place `attack_techniques()` body). No
+  `tests/architecture.rs` pinning assertion referenced `mastodon_user`. 6
+  modules remain on the scoped sweep list (`sourceforge_user`, `cpan_user`,
+  `gitea_user`, `codeberg_user`, `huggingface_user`, `hexpm_user`) for
+  future cycles. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4411 lib tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE`
+  §5 — same commit.

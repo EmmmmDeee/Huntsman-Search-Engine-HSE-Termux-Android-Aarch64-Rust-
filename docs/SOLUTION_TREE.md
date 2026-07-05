@@ -780,6 +780,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fail-before confirmed. 7 modules remain on the scoped sweep list
   (`mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
   `codeberg_user`, `huggingface_user`, `hexpm_user`) for future cycles.
+- **`[x]` SOL-MASTODON-ATTACK-COMPLETE · `mastodon_user`'s ATT&CK override
+  now covers every entity kind it actually produces — a variant of the
+  same gap on an already-correct base technique** — unlike the three prior
+  fixes, `mastodon_user`'s existing `T1593.001` (Social Media) substitution
+  was already correct (Mastodon genuinely is social media); the override was
+  simply missing coverage for `Person` (`display_name`) and `Address`/
+  `Coordinates` (a location-shaped profile field). *Closes:* new node
+  **T2.30**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed (tests live inline in `mod.rs`, so the buggy
+  `attack_techniques()` body was reverted in place rather than the whole
+  file). 6 modules remain on the scoped sweep list (`sourceforge_user`,
+  `cpan_user`, `gitea_user`, `codeberg_user`, `huggingface_user`,
+  `hexpm_user`) for future cycles.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -849,6 +863,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GITHUB-ATTACK-COMPLETE | T2.27 | `[x]` |
 | SOL-DOCKERHUB-ATTACK-COMPLETE | T2.28 | `[x]` |
 | SOL-CODEWARS-ATTACK-COMPLETE | T2.29 | `[x]` |
+| SOL-MASTODON-ATTACK-COMPLETE | T2.30 | `[x]` |
 
 ---
 
@@ -977,7 +992,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-EMAIL-USERNAME-ORDER-DETERMINISM, 2026-07-05); **T2.27 `[x]`** ✅
   (SOL-GITHUB-ATTACK-COMPLETE, 2026-07-05); **T2.28 `[x]`** ✅
   (SOL-DOCKERHUB-ATTACK-COMPLETE, 2026-07-05); **T2.29 `[x]`** ✅
-  (SOL-CODEWARS-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
+  (SOL-CODEWARS-ATTACK-COMPLETE, 2026-07-05); **T2.30 `[x]`** ✅
+  (SOL-MASTODON-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3841,3 +3857,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   future cycles — one independently-verified module per cycle by design.
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4410 lib tests),
   architecture suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 42: SOL-MASTODON-ATTACK-COMPLETE —
+  `mastodon_user` was a variant of the same gap, on an already-correct base
+  technique.** Continuing the scoped sweep list, deliberately picked
+  `mastodon_user` next: unlike the three prior fixes, its existing override
+  `&["T1589.002", "T1593.001"]` already kept the correct `T1593.001`
+  (Social Media) — Mastodon genuinely is social media, unlike the
+  code-hosting modules mis-declared as Social — testing whether the fix
+  pattern generalises beyond "swap in T1593.003." Independent line-by-line
+  verification of `build_entities` confirmed the override was still missing
+  a `Person` (via `profile_kit::person_from_name` from `display_name`) and
+  an `Address`/`Coordinates` (from a profile field matching
+  `looks_like_location_field`); no `Organisation` entities are built here,
+  so `T1591.002` correctly does not apply. Extended the existing correct
+  pair rather than replacing it: added `T1589.003` (Employee Names) and
+  `T1591.001` (Determine Physical Locations). Because `mastodon_user`'s
+  tests live inline in `mod.rs` (no separate `tests.rs`), the fail-before
+  step required reverting only the `attack_techniques()` function body in
+  place — reverting the whole file would also have deleted the new test —
+  confirmed against the isolated buggy function, then restored via a
+  diff-verified whole-file backup. *Closes:* new node **T2.30**. Tests:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (panicked on the missing `T1589.003` assertion). No
+  `tests/architecture.rs` pinning assertion referenced `mastodon_user`. 6
+  modules remain on the scoped sweep list (`sourceforge_user`, `cpan_user`,
+  `gitea_user`, `codeberg_user`, `huggingface_user`, `hexpm_user`) for
+  future cycles. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4411 lib tests), architecture suite 30/30. Paired: `PROBLEM_TREE` §8 —
+  same commit.

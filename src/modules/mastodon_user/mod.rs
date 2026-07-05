@@ -104,7 +104,22 @@ impl Module for MastodonUser {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1589.002", "T1593.001"]
+        // T1593.001 (Social Media) is the genuinely correct substitution here
+        // — unlike the code-hosting "profile lookup" modules mis-declared as
+        // Social (github_user/dockerhub_user/codewars_user, all really
+        // T1593.003), Mastodon IS social media. But this override was
+        // missing coverage for two entity kinds `build_entities` also
+        // constructs: a `Person` (`display_name`) and an `Address`/
+        // `Coordinates` (a location-shaped profile field) — the same
+        // under-declared-technique gap already fixed in the sibling
+        // code-hosting modules, just with a correct base technique instead
+        // of a wrong one.
+        &[
+            "T1589.002", // Email Addresses — emails extracted from the bio
+            "T1589.003", // Employee Names — Person from display_name
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from a location field
+            "T1593.001", // Social Media — the module's own core mechanism
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -529,6 +544,38 @@ mod tests {
             "unverified field URL should be below 0.75"
         );
         assert!(!url_e.unwrap().has_tag("rel-me-verified"));
+    }
+
+    #[test]
+    fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+        // Mirrors the github_user/dockerhub_user/codewars_user regression:
+        // the override must not omit coverage for entity kinds
+        // `build_entities` actually constructs. Unlike those three,
+        // T1593.001 (Social Media) is the CORRECT base technique here — the
+        // gap was purely missing additions, not a wrong substitution.
+        let techniques = MastodonUser.attack_techniques();
+        assert!(
+            techniques.contains(&"T1593.001"),
+            "Social Media: Mastodon genuinely is a social platform"
+        );
+        assert!(
+            techniques.contains(&"T1589.002"),
+            "Email Addresses: bio-extracted emails"
+        );
+        assert!(
+            techniques.contains(&"T1589.003"),
+            "Employee Names: display_name becomes a Person entity"
+        );
+        assert!(
+            techniques.contains(&"T1591.001"),
+            "Determine Physical Locations: a location field becomes Address/Coordinates"
+        );
+        for &id in techniques {
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "{id} must be a catalogued Reconnaissance technique"
+            );
+        }
     }
 
     #[test]

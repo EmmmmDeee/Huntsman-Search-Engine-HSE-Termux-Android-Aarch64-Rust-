@@ -364,6 +364,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`mastodon_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** Unlike the sibling fixes above, its override
+  had the correct base technique ("Social Media," since Mastodon genuinely
+  is social media) but was still missing coverage for the Person and
+  Address/Coordinates entities it also builds from a display name and a
+  self-reported location field. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`codewars_user`'s ATT&CK mapping now covers every entity kind the
   module actually produces.** The third instance of the same
   replace-instead-of-extend gap: its override declared only "Code
