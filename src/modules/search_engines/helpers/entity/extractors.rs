@@ -8,10 +8,11 @@
 
 use super::*;
 
-/// Extract "City, State" patterns from text for geolocation.
-/// Only matches when a comma-separated city name precedes a known
-/// state/territory name, and the city portion starts with an uppercase
-/// letter (filters out random sentence fragments).
+/// Extract AU location strings from free text for geolocation, in three passes:
+/// (1) a comma-separated "City, State" where the city starts with an uppercase
+/// letter (filters random sentence fragments); (2) a known AU place name with
+/// state context nearby (no comma required); (3) an AU postcode following a place
+/// name, appended as a more-specific variant of a matched "City, STATE".
 pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str) -> Vec<String> {
     const STATES: &[&str] = &[
         "Queensland",

@@ -177,8 +177,8 @@ pub(super) async fn fetch_gists(
         .collect()
 }
 
-/// Fetch up to `max_gists` gist details and scan their file content for emails
-/// and domains.  Each gist detail call goes through `send_tagged` so the
+/// Fetch up to `MAX_GISTS` gist details and scan their file content for emails.
+/// Each gist detail call goes through `send_tagged` so the
 /// `found_keys` scanner automatically processes every response body for leaked
 /// API keys — satisfying the "preserve every API key" vault policy with no
 /// extra code.

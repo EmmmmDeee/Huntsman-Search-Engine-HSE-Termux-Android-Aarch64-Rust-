@@ -694,16 +694,16 @@ fn regional_enabled() -> bool {
     REGIONAL_SEARCH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Whether a search engine is enabled — the first per-capability toggle of the
-/// universal toggleability registry. Default on; turned off (persisted) via
-/// `hse config engine.<name> off`. Checked in every engine-dispatch loop and the
-/// liveness probe so a disabled engine is never queried.
 /// True when `name` has been silenced by the session-dead tracker.
 /// Exported so the `/engines/health` API can surface it per-engine.
 pub(crate) fn session_dead(name: &str) -> bool {
     is_session_dead(name)
 }
 
+/// Whether a search engine is enabled — the first per-capability toggle of the
+/// universal toggleability registry. Default on; turned off (persisted) via
+/// `hse config engine.<name> off`. Checked in every engine-dispatch loop and the
+/// liveness probe so a disabled engine is never queried.
 pub(crate) fn engine_enabled(name: &str) -> bool {
     crate::util::settings::get_bool(&format!("engine.{name}"), true)
 }

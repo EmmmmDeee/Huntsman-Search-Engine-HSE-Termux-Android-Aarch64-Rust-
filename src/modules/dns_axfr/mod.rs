@@ -2,10 +2,11 @@
 //! permissive nameservers.
 //!
 //! Many legacy nameservers still permit unauthenticated AXFR. When
-//! successful, this yields every DNS record in the zone — a complete
-//! subdomain inventory in one query. Most modern nameservers reject
-//! AXFR from unauthorised sources (which is the expected/correct
-//! outcome for production zones).
+//! successful, this parses the subdomains carried in the server's first
+//! response message — often the bulk of a small zone's inventory, though a
+//! very large zone split across multiple messages is not fully pulled. Most
+//! modern nameservers reject AXFR from unauthorised sources (which is the
+//! expected/correct outcome for production zones).
 //!
 //! Implementation: raw TCP to port 53 with an AXFR query built via
 //! hickory-resolver's DNS wire format.
