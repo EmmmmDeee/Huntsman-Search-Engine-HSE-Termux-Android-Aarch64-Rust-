@@ -734,6 +734,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`username_candidates_emerge_in_deterministic_sorted_order`), fail-before
   confirmed (reverted to pre-fix `HEAD` with the new test present —
   panicked on the unsorted order).
+- **`[x]` SOL-GITHUB-ATTACK-COMPLETE · `github_user`'s ATT&CK override now
+  covers every entity kind it actually produces, instead of replacing the
+  whole category default with a single technique** — the module correctly
+  argued for `T1593.003` (Code Repositories) over the Social default's
+  `T1593.001`, but the override dropped `T1589.003` (Employee Names) and
+  never covered the `Email`/`Organisation`/`Address`/`Coordinates`/
+  `Credential` entities it also builds — corrupting the real per-finding
+  `attack:<ID>` provenance `core::engine::dispatch` stamps on every admitted
+  entity, sourced directly from this list. *Closes:* new node **T2.27**.
+  ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed. Also split `github_user` out of a pre-existing
+  `tests/architecture.rs` pinning assertion it had been bundled into with
+  `crates_io`/`npm_author` (confirmed those two are NOT affected — pure
+  package-registry lookups). Found, but deliberately deferred as a separate
+  bug on an unrelated module: `crates_io` declares `Person` in `produces()`
+  but never constructs one.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -800,6 +817,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HN-DOMAIN-DETERMINISM | T2.24 | `[x]` |
 | SOL-WEB-CRAWLER-ORDER-DETERMINISM | T2.25 | `[x]` |
 | SOL-EMAIL-USERNAME-ORDER-DETERMINISM | T2.26 | `[x]` |
+| SOL-GITHUB-ATTACK-COMPLETE | T2.27 | `[x]` |
 
 ---
 
@@ -925,7 +943,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-USERNAME-SLUG-GATE, 2026-07-05); **T2.24 `[x]`** ✅
   (SOL-HN-DOMAIN-DETERMINISM, 2026-07-05); **T2.25 `[x]`** ✅
   (SOL-WEB-CRAWLER-ORDER-DETERMINISM, 2026-07-05); **T2.26 `[x]`** ✅
-  (SOL-EMAIL-USERNAME-ORDER-DETERMINISM, 2026-07-05); T2.7 open;
+  (SOL-EMAIL-USERNAME-ORDER-DETERMINISM, 2026-07-05); **T2.27 `[x]`** ✅
+  (SOL-GITHUB-ATTACK-COMPLETE, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3677,3 +3696,46 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   on the unsorted `HashSet` order). Gate green: fmt/clippy/doc clean, full
   suite 0 failures (4407 lib tests). Paired: `PROBLEM_TREE` §8 — same
   commit.
+- **2026-07-05** — **Cycle 38: SOL-GITHUB-ATTACK-COMPLETE — `github_user`'s
+  ATT&CK override replaced instead of extended the category default,
+  silently dropping real MITRE provenance for 5 of its 6 produced entity
+  kinds.** With the `HashSet`-order-leak bug class confirmed closed
+  project-wide, a background agent widened its sweep to TODO markers,
+  dropped Deserialize fields, newer-clippy shapes, and stale ATT&CK
+  mappings, surfacing this in the last category. The module's own comment
+  correctly argued for `T1593.003` (Code Repositories) over the Social
+  default's `T1593.001` (Social Media) — a genuinely right call for a
+  GitHub profile — but `&["T1593.003"]` replaced the WHOLE default array
+  instead of substituting just that one technique, so `T1589.003` (Employee
+  Names) silently vanished even though `process()` unconditionally builds a
+  `Person` from the real name. Independently re-verifying by direct read
+  surfaced a bigger gap than the agent's initial finding: `github_user`
+  also builds `Organisation` (company + org membership), `Address`/
+  `Coordinates` (location), and `Credential` (SSH-key fingerprints) — none
+  of which had ANY matching technique — and `Email` (published/gist/commit
+  emails) was never covered even before this override, since it was never
+  in the Social default either. Confirmed via `core::engine::dispatch` this
+  corrupts real per-finding provenance, not just documentation: every
+  admitted entity is stamped `attack:<ID>` sourced directly from
+  `attack_techniques()`. Cross-referenced the module's code-repository
+  siblings `crates_io`/`npm_author` — confirmed NOT affected (pure
+  package-registry lookups, no Person/Organisation/Address collection) —
+  but found a different, unrelated gap in `crates_io` along the way: it
+  declares `Person` in `produces()` but never constructs one anywhere in
+  the file. Logged as a deferred candidate for a future cycle rather than
+  fixed here — a different bug shape on an unrelated module, out of this
+  cycle's scope. Declared the precise, complete set (`T1589.001`,
+  `T1589.002`, `T1589.003`, `T1591.001`, `T1591.002`, `T1593.003`), each
+  backed by a real catalogued ID and a matching entity-emission code path,
+  following the established "superset of the default" convention already
+  used by `fullcontact`/`hunter_io`/`oathnet_pro`/`pgp`. *Closes:* new node
+  **T2.27**. Tests:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.001` assertion). Also split `github_user` out of a
+  pre-existing `tests/architecture.rs` pinning assertion that had bundled
+  it with `crates_io`/`npm_author` under one shared expectation, into its
+  own assertion reflecting the corrected, larger set — the two
+  package-registry siblings' narrower expectation is untouched. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4408 lib tests), architecture
+  suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.

@@ -420,8 +420,11 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             .unwrap_or_default()
     };
 
-    // Code repositories — NOT social media (T1593.001).
-    for name in ["github_user", "crates_io", "npm_author"] {
+    // Code repositories — NOT social media (T1593.001). `crates_io` and
+    // `npm_author` are pure package-registry lookups with no Person/
+    // Organisation/Address collection, so Code Repositories alone is precise
+    // for them.
+    for name in ["crates_io", "npm_author"] {
         assert_eq!(
             techniques(name),
             vec!["T1593.003"],
@@ -432,6 +435,29 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             "{name} must no longer claim Social Media"
         );
     }
+    // `github_user` is also Code Repositories rather than Social Media for its
+    // Username discovery, but — unlike its two package-registry siblings
+    // above — it additionally collects a real name (Person), published/gist/
+    // commit emails, company/org membership (Organisation), a location
+    // (Address/Coordinates), and published SSH keys (Credential), so its
+    // precise set is a superset of the bare Code Repositories technique.
+    assert_eq!(
+        techniques("github_user"),
+        vec![
+            "T1589.001",
+            "T1589.002",
+            "T1589.003",
+            "T1591.001",
+            "T1591.002",
+            "T1593.003",
+        ],
+        "github_user → Code Repositories plus every technique its Person/Email/\
+         Organisation/Address/Coordinates/Credential collection actually performs"
+    );
+    assert!(
+        !techniques("github_user").contains(&"T1593.001"),
+        "github_user must no longer claim Social Media"
+    );
     // DnsRecon family — each its specific technique, not the whole bundle.
     assert_eq!(techniques("crtsh"), vec!["T1596.003"]); // Digital Certificates
     assert_eq!(techniques("cert_intel"), vec!["T1596.003"]);

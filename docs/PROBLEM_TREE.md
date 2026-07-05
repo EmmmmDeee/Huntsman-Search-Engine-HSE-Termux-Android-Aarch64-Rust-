@@ -947,6 +947,57 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `.sort_unstable()`, then map to entities. **P2** (a determinism/
   reproducibility bug on the module's headline Username-derivation output,
   not a crash or PII leak).
+- **`[x]` T2.27 · `github_user`'s `attack_techniques()` override REPLACED the
+  whole Social-category default array instead of substituting one technique,
+  silently dropping real per-finding MITRE provenance for 5 of its 6
+  produced entity kinds** — with the `HashSet`-order-leak class closed, a
+  background agent widened its next sweep to categories 1–4 (TODO markers,
+  dropped Deserialize fields, newer-clippy shapes, stale ATT&CK mappings)
+  and found this in category 4. The module's own comment justified
+  overriding the Social default's `T1593.001` (Social Media) with the more
+  precise `T1593.003` (Code Repositories) — a genuinely correct call for a
+  GitHub profile — but the override `&["T1593.003"]` replaced the ENTIRE
+  array rather than substituting just that one technique, so `T1589.003`
+  (Employee Names) silently vanished even though `process()` unconditionally
+  builds a `Person` from the profile's real name. Independently re-verifying
+  by direct read of `github_user/mod.rs` surfaced a materially bigger gap
+  than the agent's initial finding: the module also builds `Organisation`
+  (company + GitHub-org membership), `Address`/`Coordinates` (location), and
+  `Credential` (published SSH-key fingerprints, per `fetch.rs`) — none of
+  which had ANY matching technique, and `Email` (published profile email +
+  gist/commit-scanned emails) was ALSO never covered even before this
+  override, since `T1589.002` was never in the Social default either. This
+  is not cosmetic: `core::engine::dispatch` stamps every ADMITTED entity
+  with an `attack:<ID>` tag sourced directly from `attack_techniques()` —
+  "the technique that collected each datum travels with the data" — so
+  every Person/Email/Organisation/Address/Coordinates/Credential this module
+  ever emitted carried NO matching MITRE provenance tag, only
+  `attack:T1593.003`. Cross-referencing `produces()` against
+  `attack_techniques()` for the module's sibling code-repository lookups
+  (`crates_io`, `npm_author`) found they are NOT affected — both are pure
+  package-registry lookups with no Person/Organisation/Address collection —
+  but the same sweep surfaced a DIFFERENT, unrelated gap in `crates_io`:
+  it declares `EntityKind::Person` in `produces()` but never actually
+  constructs one anywhere in the file (confirmed via grep — the only match
+  is the `produces()` declaration itself), an over-claimed capability.
+  Logged as a deferred candidate for a future cycle rather than fixed here —
+  a different bug shape (over-declared `produces()`, not
+  under-claimed `attack_techniques()`) on an unrelated module, out of this
+  cycle's scope. → **Solution:** declared the precise, complete set:
+  `T1589.001` (Credentials), `T1589.002` (Email Addresses), `T1589.003`
+  (Employee Names), `T1591.001` (Determine Physical Locations), `T1591.002`
+  (Business Relationships), `T1593.003` (Code Repositories) — each backed by
+  a real, already-registered `core::attack::RECONNAISSANCE` catalogue ID and
+  a matching entity-emission code path in `github_user`, following the
+  established "superset of the default, precisely justified per entity kind"
+  convention already used by `fullcontact`/`hunter_io`/`oathnet_pro`/`pgp`.
+  Updated the pre-existing `tests/architecture.rs` pinning assertion (which
+  bundled `github_user` with `crates_io`/`npm_author` under one shared
+  `vec!["T1593.003"]` expectation) to split `github_user` into its own
+  assertion reflecting the corrected, larger set, leaving the two
+  package-registry siblings' correct narrower expectation untouched. **P2**
+  (a MITRE-provenance correctness gap affecting the majority of one module's
+  emitted entity kinds, not a crash or PII leak).
 
 ---
 
@@ -4967,3 +5018,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   on the unsorted `HashSet` order). Gate green: fmt/clippy/doc clean, full
   suite 0 failures (4407 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+- **2026-07-05** — **Cycle 38 (new T2.27): `github_user`'s ATT&CK override
+  replaced instead of extended the category default, silently dropping
+  real MITRE provenance for 5 of its 6 produced entity kinds.** With the
+  `HashSet`-order-leak bug class confirmed closed project-wide, a background
+  agent widened its sweep to a fresh set of categories (TODO markers,
+  dropped Deserialize fields, newer-clippy-only shapes, stale ATT&CK
+  mappings) and surfaced this in the last one: `github_user`'s own comment
+  correctly argued for `T1593.003` (Code Repositories) over the Social
+  default's `T1593.001` (Social Media), but the override `&["T1593.003"]`
+  replaced the WHOLE default array rather than swapping just that one
+  technique — silently dropping `T1589.003` (Employee Names) even though
+  `process()` unconditionally builds a `Person` from the real name.
+  Independently re-verifying by direct read surfaced a bigger gap than the
+  agent's initial finding: `github_user` also builds `Organisation`
+  (company + org membership), `Address`/`Coordinates` (location), and
+  `Credential` (SSH-key fingerprints), none of which had ANY matching
+  technique, and `Email` was never covered even before this override (never
+  in the Social default). Cross-checked against `core::engine::dispatch`,
+  confirmed this corrupts real per-finding provenance, not just a doc
+  comment: every admitted entity is stamped `attack:<ID>` sourced directly
+  from this list. Cross-referenced the module's sibling code-repository
+  lookups (`crates_io`, `npm_author`) — confirmed NOT affected (pure
+  package lookups, no Person/Organisation/Address collection) — but found
+  a different, unrelated gap in `crates_io` along the way: it declares
+  `Person` in `produces()` but never constructs one anywhere in the file
+  (an over-claimed capability). Logged as a deferred candidate for a future
+  cycle rather than pursued here — a different bug shape on an unrelated
+  module, out of scope for this commit. → **Solution:** declared the
+  precise, complete set (`T1589.001`, `T1589.002`, `T1589.003`, `T1591.001`,
+  `T1591.002`, `T1593.003`), each backed by a real catalogued ID and a
+  matching code path, following the established "superset of the default"
+  convention (`fullcontact`/`hunter_io`/`oathnet_pro`/`pgp`). Updated the
+  pre-existing `tests/architecture.rs` pinning assertion (previously bundled
+  `github_user` with `crates_io`/`npm_author`) to split `github_user` into
+  its own assertion. Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.001` assertion). Gate green: fmt/clippy/doc clean,
+  full suite 0 failures (4408 lib tests), architecture suite 30/30. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

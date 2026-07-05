@@ -364,6 +364,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`github_user`'s ATT&CK mapping now covers every entity kind the module
+  actually produces.** Its override correctly swapped the Social category's
+  default "Social Media" technique for the more precise "Code Repositories"
+  one, but replaced the entire default array in doing so — silently dropping
+  the technique for the Person, Email, Organisation, Address/Coordinates,
+  and Credential entities it also builds. Every admitted entity is stamped
+  with the technique(s) that collected it, so this was a real per-finding
+  MITRE-provenance gap, not just documentation. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`email_parse`'s derived `Username` entities are now emitted in a
   deterministic order.** The set of candidate username spelling variants
   (detagged, digit-stripped, collapsed, split, plus initial-blend forms for
