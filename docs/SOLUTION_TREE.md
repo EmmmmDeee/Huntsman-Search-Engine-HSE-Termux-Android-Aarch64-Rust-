@@ -245,6 +245,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   bug, not just a missing diagnostic like SOL-STORAGE-DIAG/SOL-CHMOD-DIAG. ✅
   1 test
   (`latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none`).
+- **`[x]` SOL-EXPOSURE-DOB · `core::exposure`'s `DOB_KEYS` recognises
+  Wikidata's own DOB spelling** — a direct follow-up on the previous cycle's
+  logged "three independently-drifted DOB-key vocabularies" observation.
+  `wikidata::builder` stamps a Person's date of birth as `birth_date` (its own
+  canonical spelling, confirmed by direct grep), but `DOB_KEYS =
+  ["date_of_birth", "dob"]` — whose own doc comment claims it tracks "the
+  canonical keys the breach/dossier producers stamp" — never matched it, so a
+  Wikidata-sourced DOB silently scored zero toward the Sensitive PII
+  component (verified `GOV_ID_KEYS`/`FINANCIAL_KEYS` have no analogous gap —
+  `oathnet_pro`'s producer-side normalisation tuples already resolve every
+  raw provider spelling to the canonical keys those lists expect). *Closes:*
+  a small standalone gap surfaced by, but distinct from, C1 (new node
+  **T2.18**, not folded into C1 since the Exposure Index is a separate
+  subsystem). ✅ 1 test
+  (`sensitive_pii_recognises_wikidata_birth_date_spelling`). The broader
+  3-way unification (with `breach_pii::DOB_KEYS`'s import-facing 8-spelling
+  list) remains deferred — a real design decision, not mechanical.
 - **`[-]` SOL-BUDGET · Atomic quota reservation (accepted-as-is)** —
   `QuotaBudget::try_increment` (CAS, saturating session rollback) replaces every
   racy `remaining()`-then-`increment()`. *Closes:* **T2.11** (oathnet — done;
@@ -606,6 +623,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-STORAGE-DIAG | T2.15 | `[x]` |
 | SOL-CHMOD-DIAG | T2.16 | `[x]` |
 | SOL-LATEST-SCAN-ERR | T2.17 | `[x]` |
+| SOL-EXPOSURE-DOB | T2.18 | `[x]` |
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
@@ -749,10 +767,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
   (SOL-CHMOD-DIAG, 2026-07-05); **T2.17 `[x]`** ✅ (SOL-LATEST-SCAN-ERR,
-  2026-07-05); T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE
-  + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the
-  accepted-`[-]` budget-reset-zeroing note remains, and no further action is
-  planned on it); T2.14 open (deferred noise design).
+  2026-07-05); **T2.18 `[x]`** ✅ (SOL-EXPOSURE-DOB, 2026-07-05); T2.7 open;
+  T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE + LOW
+  over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
+  budget-reset-zeroing note remains, and no further action is planned on it);
+  T2.14 open (deferred noise design).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -3195,3 +3214,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   "controller behind reused secrets" link facet needs a new `RelationKind` plus a visibility
   decision on the correlator's private `Secret` primitive — assessed and confirmed too large
   for one focused commit. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **SOL-EXPOSURE-DOB: the Exposure Index recognises Wikidata's own DOB
+  spelling.** With C1's two remaining slices both genuinely too large/open-ended for one
+  commit (an un-invented AU-0xx rule gap; the reused-secret `RelationKind` refactor),
+  followed up on the previous cycle's own logged "three independently-drifted DOB-key
+  vocabularies" observation instead — a concrete gap already surfaced by this project's own
+  prior investigation, not a fresh speculative hunt. Confirmed by direct grep:
+  `wikidata::builder` stamps a Person's DOB as `birth_date` (its own canonical spelling), but
+  `core::exposure`'s `DOB_KEYS = ["date_of_birth", "dob"]` — whose own doc comment says it
+  tracks "the canonical keys the breach/dossier producers stamp" — never matched it, so a
+  Wikidata-sourced DOB silently scored 0 of the 7 points toward the Sensitive PII component,
+  contradicting the constant's own documented intent. Also verified `GOV_ID_KEYS`/
+  `FINANCIAL_KEYS` have no analogous gap (every raw provider spelling `oathnet_pro` sees
+  already normalises to the canonical keys those lists expect). Fix: added `"birth_date"` to
+  `DOB_KEYS`. New standalone node `T2.18` (not folded into C1 — the Exposure Index is a
+  separate subsystem C1 doesn't cover). Test: `sensitive_pii_recognises_wikidata_birth_date_spelling`
+  (a `birth_date`-only Person now scores 7/30; fail-before: confirmed 0/30 against the
+  unfixed list). Gate green (4391 lib tests). The broader 3-way DOB-key unification (with
+  `breach_pii::DOB_KEYS`'s import-facing 8-spelling list) remains correctly deferred as a
+  real design decision. Paired: `PROBLEM_TREE` §8 — same commit.

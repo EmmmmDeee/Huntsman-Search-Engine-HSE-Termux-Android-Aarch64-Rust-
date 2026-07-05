@@ -136,6 +136,24 @@ fn sensitive_pii_flags_score_once_per_category() {
 }
 
 #[test]
+fn sensitive_pii_recognises_wikidata_birth_date_spelling() {
+    // `wikidata::builder` stamps `birth_date` (its own canonical spelling),
+    // distinct from `date_of_birth` (what the breach/stealer producers
+    // normalise to). `DOB_KEYS`'s own doc comment says it tracks "the
+    // canonical keys the breach/dossier producers stamp" — omitting a real
+    // producer's spelling silently undercounted the disclosure.
+    let mut dob = Entity::new(EntityKind::Person, "Dana Whitlock", 0.8, "s");
+    dob.add_evidence(Evidence::new("wikidata", "rec").with_attr("birth_date", "1990-01-01"));
+    let idx = assess(&[dob], &[]);
+    let s = component(&idx, "Sensitive PII");
+    assert_eq!(
+        s.score, 7,
+        "a Wikidata birth_date must score as a DOB disclosure"
+    );
+    assert!(s.detail.contains("date of birth"));
+}
+
+#[test]
 fn identifier_surface_counts_distinct_capped() {
     let ents = vec![
         Entity::new(EntityKind::Email, "a@x.com", 0.8, "s"),

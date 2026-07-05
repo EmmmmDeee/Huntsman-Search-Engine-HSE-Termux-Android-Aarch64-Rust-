@@ -43,7 +43,11 @@ const MAX_CORRELATION: u8 = 15;
 /// the canonical keys the breach/dossier producers stamp (`core::correlator::rules`
 /// AU-073/074 scan the same names).
 const GOV_ID_KEYS: &[&str] = &["tfn", "medicare", "crn", "drivers_licence", "passport"];
-const DOB_KEYS: &[&str] = &["date_of_birth", "dob"];
+/// `birth_date` is `wikidata`'s own canonical spelling (distinct from
+/// `date_of_birth`, which the breach/stealer producers normalise to) — a
+/// first-party producer this list's own doc comment says it tracks, so
+/// omitting it silently undercounted a Wikidata-sourced DOB disclosure.
+const DOB_KEYS: &[&str] = &["date_of_birth", "dob", "birth_date"];
 const FINANCIAL_KEYS: &[&str] = &["iban", "bank_account", "card_number"];
 
 /// Qualitative band for the headline number.

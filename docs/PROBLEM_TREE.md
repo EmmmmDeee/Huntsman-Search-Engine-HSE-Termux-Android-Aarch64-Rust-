@@ -719,6 +719,22 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   structure exactly — `Ok(None)` now means only "no complete scan exists";
   any SQL or deserialize failure on the matched row propagates as `Err`.
   **P1** (a real wrong-result bug, not just a missing diagnostic).
+- **`[x]` T2.18 · `core::exposure`'s `DOB_KEYS` missing Wikidata's own DOB
+  spelling** — the Exposure Index's `sensitive_component` scores a "date of
+  birth" disclosure (+7 of the 30-point Sensitive PII ceiling) only when an
+  evidence attribute key is in `DOB_KEYS = ["date_of_birth", "dob"]`. The
+  constant's own doc comment states it tracks "the canonical keys the
+  breach/dossier producers stamp" — but `wikidata::builder` stamps
+  `birth_date` (a genuinely different spelling than the `date_of_birth` the
+  breach/stealer producers normalise to, confirmed by direct grep), so a
+  Wikidata-sourced Person's date of birth silently scored zero, contradicting
+  the constant's own stated intent. Surfaced by a direct follow-up on the
+  "three independently-drifted DOB-key vocabularies" observation from the
+  previous cycle (`PROBLEM_TREE`/`SOLUTION_TREE`, 2026-07-05) — this fixes the
+  one CONCRETE, demonstrable instance of that drift; the broader 3-way
+  unification (with `breach_pii::DOB_KEYS`'s 8-spelling, import-facing list)
+  remains a separate, deliberately deferred design decision. → **Solution:**
+  added `"birth_date"` to `DOB_KEYS`. **P2**
 
 ---
 
@@ -4368,3 +4384,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the "controller behind reused secrets" remaining item needs a new `RelationKind`
   plus a visibility decision on the correlator's private `Secret` primitive — both
   correctly left as future C1 work rather than scope-crept into this commit.
+- **2026-07-05** — **Executed T2.18.** With C1's two remaining slices ((d) AU-0xx
+  rule-gap fill, needing a real un-invented gap to point at; the reused-secret
+  `RelationKind` facet, needing a bigger refactor) both genuinely too large or
+  open-ended for one focused commit, followed up on the previous cycle's own
+  logged "three independently-drifted DOB-key vocabularies" observation instead —
+  a concrete gap surfaced by this project's own prior-cycle investigation, not a
+  fresh speculative hunt. Confirmed by direct grep: `wikidata::builder` stamps a
+  Person's date of birth as `birth_date` (its own canonical spelling), while
+  `core::exposure`'s `DOB_KEYS = ["date_of_birth", "dob"]` — whose own doc comment
+  claims it tracks "the canonical keys the breach/dossier producers stamp" — never
+  matched it, so a Wikidata-sourced DOB silently scored zero toward the Sensitive
+  PII component, contradicting the constant's own stated intent (verified `tfn`/
+  `medicare`/`crn`/`drivers_licence`/`passport`/`iban` all correctly resolve via
+  `oathnet_pro`'s producer-side normalisation tuples — no analogous gap there).
+  Fix: added `"birth_date"` to `DOB_KEYS`. Test delta: +1
+  (`sensitive_pii_recognises_wikidata_birth_date_spelling`: a `birth_date`-only
+  Person now scores 7/30 on Sensitive PII with "date of birth" in the detail
+  string; fail-before: confirmed 0/30 against the unfixed list). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4391 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit. The broader 3-way DOB-key unification (with
+  `breach_pii::DOB_KEYS`'s import-facing 8-spelling list) remains correctly
+  deferred — a real design decision, not mechanical, and not attempted here.

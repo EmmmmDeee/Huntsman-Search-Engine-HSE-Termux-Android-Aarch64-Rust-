@@ -343,6 +343,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The Exposure Index now recognises Wikidata's own date-of-birth spelling.**
+  The Sensitive PII component scores a date-of-birth disclosure only for a
+  fixed set of evidence-attribute spellings, which omitted the spelling the
+  Wikidata module actually uses — so a subject's Wikidata-sourced date of
+  birth silently contributed nothing to their exposure score. Regression
+  test `sensitive_pii_recognises_wikidata_birth_date_spelling`.
 - **The reconstructed timeline no longer silently drops account-creation,
   birth/death, profile-verification, and threat-intel first-seen dates that
   several modules already collect.** Eight evidence-attribute keys —
