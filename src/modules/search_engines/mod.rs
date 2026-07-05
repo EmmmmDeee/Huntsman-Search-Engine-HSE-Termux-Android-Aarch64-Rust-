@@ -570,7 +570,17 @@ impl Module for SearchEngines {
                     None => {}
                 }
             }
-            if all_results.len() >= MAX_ACCUMULATED_RESULTS {
+            // Working-set ceiling for a broad multi-dork scan on a low-RAM
+            // device. The cap stays, but the drop is WARNED (as the email/phone
+            // extractors are) instead of silent — later raw SERP rows that would
+            // dedup into additional Domain/Email/URL entities are being discarded,
+            // and the operator should be able to see coverage was bounded.
+            if all_results.len() > MAX_ACCUMULATED_RESULTS {
+                tracing::warn!(
+                    found = all_results.len(),
+                    cap = MAX_ACCUMULATED_RESULTS,
+                    "search result accumulator hit cap — later raw SERP rows this round were dropped"
+                );
                 all_results.truncate(MAX_ACCUMULATED_RESULTS);
             }
         }
