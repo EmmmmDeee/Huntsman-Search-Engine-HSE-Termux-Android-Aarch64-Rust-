@@ -137,18 +137,46 @@ fn surfaces_san_emails_above_min_length() {
 }
 
 #[test]
-fn results_are_capped_highest_confidence_first() {
-    // Build > MAX_ENTITIES distinct unrelated domains (conf 0.45) plus one
-    // subdomain (0.75); the cap must keep the subdomain (sorted first).
-    let mut sans: Vec<String> = (0..MAX_ENTITIES + 50)
-        .map(|i| format!("host{i}.other-{i}.net"))
-        .collect();
+fn results_emit_all_confidence_first_uncapped() {
+    // 250 distinct unrelated external domains (conf 0.45) plus one subdomain
+    // (0.75). NO per-module cap: EVERY distinct entity is emitted (each a real
+    // BFS pivot the engine's frontier budget bounds, not this leaf module), with
+    // the subdomain ranked first and the order confidence-descending.
+    let n = 250usize;
+    let mut sans: Vec<String> = (0..n).map(|i| format!("host{i}.other-{i}.net")).collect();
     sans.push("keep.example.com".to_string());
     let json = format!(r#"[{{"name_value":"{}"}}]"#, sans.join("\\n"));
     let out = build_entities(&entries(&json), "example.com", "s");
-    assert_eq!(out.len(), MAX_ENTITIES);
+    assert_eq!(
+        out.len(),
+        n + 1,
+        "every distinct domain emitted, none truncated"
+    );
     assert_eq!(out[0].value, "keep.example.com"); // highest confidence first
     assert!(out.windows(2).all(|w| w[0].confidence >= w[1].confidence));
+}
+
+#[test]
+fn emits_all_enterprise_ca_issuers_uncapped() {
+    // 15 distinct non-public issuing CAs → all 15 Organisation entities emitted;
+    // a prior `.take(10)` on issuers dropped five custom-PKI attribution pivots.
+    let certs: Vec<String> = (0..15)
+        .map(|i| {
+            format!(
+                r#"{{"name_value":"h{i}.example.com","issuer_name":"O=Acme Enterprise CA {i}, C=US"}}"#
+            )
+        })
+        .collect();
+    let json = format!("[{}]", certs.join(","));
+    let out = build_entities(&entries(&json), "example.com", "s");
+    let orgs = out
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation)
+        .count();
+    assert_eq!(
+        orgs, 15,
+        "every distinct enterprise-CA org emitted, not capped at 10"
+    );
 }
 
 #[test]
