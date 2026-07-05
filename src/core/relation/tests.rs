@@ -404,6 +404,96 @@ fn derive_all_aggregates_every_structural_derivation() {
 }
 
 #[test]
+fn derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash() {
+    use crate::core::entity::Evidence;
+    // The graph-native counterpart of AU-047: a salted hash carried against two
+    // distinct emails must produce a walkable SharesSecretWith edge between
+    // them, mirroring the correlator's own fixture exactly (delegates to the
+    // same `Secret::classify`).
+    let mut cred = Entity::new(
+        EntityKind::Credential,
+        "$2a$10$id3HAw6TcOjKvPH/RK7MS.abcdef",
+        0.6,
+        "s",
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "burner1@proton.me"),
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "real.name@gmail.com"),
+    );
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "s");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "s");
+
+    let rels = derive_reused_secret_link(&[cred, a.clone(), b.clone()], "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "a shared salted hash must tie the two accounts"
+    );
+    assert_eq!(rels[0].kind, RelationKind::SharesSecretWith);
+    let (lo, hi) = if a.uid <= b.uid {
+        (&a.uid, &b.uid)
+    } else {
+        (&b.uid, &a.uid)
+    };
+    assert_eq!(&rels[0].from_uid, lo);
+    assert_eq!(&rels[0].to_uid, hi);
+}
+
+#[test]
+fn derive_reused_secret_link_precision_gate_matches_au047_exactly() {
+    use crate::core::entity::Evidence;
+    // An UNSALTED digest must NOT link — it could be a common password shared
+    // by unrelated people. Same `Secret::classify` admission gate AU-047
+    // fires on, so the two must never disagree.
+    let mut cred = Entity::new(
+        EntityKind::Credential,
+        "00346d91dd87c74089f3bfa88e13de8101000000dcb6",
+        0.6,
+        "s",
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "burner1@proton.me"),
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "real.name@gmail.com"),
+    );
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "s");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "s");
+    assert!(
+        derive_reused_secret_link(&[cred, a, b], "s").is_empty(),
+        "an unsalted digest must not manufacture a shared-secret edge"
+    );
+}
+
+#[test]
+fn derive_reused_secret_link_emits_the_full_pairwise_clique() {
+    use crate::core::entity::Evidence;
+    // Three accounts sharing ONE secret must produce a full 3-clique (every
+    // pair directly linked), so identity_paths' BFS finds the direct edge
+    // between ANY two of them, not just a chain through one hub.
+    let mut cred = Entity::new(EntityKind::ApiKey, "sk-live-abcdef0123456789", 0.6, "s");
+    for em in ["a@x.com", "b@x.com", "c@x.com"] {
+        cred.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", em));
+    }
+    let a = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+    let b = Entity::new(EntityKind::Email, "b@x.com", 0.6, "s");
+    let c = Entity::new(EntityKind::Email, "c@x.com", 0.6, "s");
+
+    let rels = derive_reused_secret_link(&[cred, a, b, c], "s");
+    assert_eq!(
+        rels.len(),
+        3,
+        "3 accounts must yield a full 3-clique (3 pairs)"
+    );
+    assert!(
+        rels.iter()
+            .all(|r| r.kind == RelationKind::SharesSecretWith)
+    );
+}
+
+#[test]
 fn derive_all_within_budget_stops_starting_new_passes_past_the_deadline() {
     use std::time::{Duration, Instant};
     // Same mixed set as the aggregation test: a subdomain edge (structural,

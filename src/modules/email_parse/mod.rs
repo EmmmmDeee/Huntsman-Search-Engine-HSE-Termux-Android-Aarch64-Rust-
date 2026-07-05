@@ -192,6 +192,11 @@ impl Module for EmailParse {
                 let email_domain = target.value.split('@').nth(1).unwrap_or("").to_lowercase();
                 let is_corporate = !is_freemail(&email_domain);
                 let uname_conf = if is_corporate { 0.70 } else { 0.55 };
+                // Sorted before emission so the HashSet's randomised iteration
+                // order never leaks into entity order (the same determinism-leak
+                // class fixed for `reddit_user`/`hacker_news`/`web_crawler`).
+                let mut candidates: Vec<String> = candidates.into_iter().collect();
+                candidates.sort_unstable();
                 result.extend(candidates.into_iter().map(|candidate| {
                     let mut entity =
                         Entity::new(EntityKind::Username, &candidate, uname_conf, &ctx.scan_id);

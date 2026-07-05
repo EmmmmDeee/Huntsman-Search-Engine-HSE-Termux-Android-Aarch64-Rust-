@@ -196,6 +196,46 @@ use super::*;
         assert_eq!(conf, 0.55);
     }
 
+    #[test]
+    fn score_username_business_slug_containing_the_surname_stays_candidate() {
+        // Regression: a live "Brett Lawnton" scan surfaced a real "Tackle World
+        // Lawnton" fishing-tackle retailer (named after the Lawnton suburb, QLD —
+        // unrelated to the subject) whose Facebook slug "tackle_world_lawnton"
+        // reached PROBABLE via Signal 1 (bare surname-anchor match) alone, then
+        // got recycled into a further search purely because "lawnton" is a
+        // substring — pulling the business's own web presence into the subject's
+        // identity graph. "tackle"/"world" match neither the given nor surname
+        // term, so this compound slug must be capped at CANDIDATE.
+        let terms = vec!["brett".to_string(), "lawnton".to_string()];
+        let r = sr(
+            "Tackle World Lawnton",
+            "Your local independent fishing expert",
+            "https://m.facebook.com/tackle_world_lawnton",
+            "\"tackleworldlawnton1\"",
+        );
+        let (score, conf) = score_username("tackle_world_lawnton", "facebook.com", &terms, &r);
+        assert!(
+            score < 3,
+            "an unrelated business slug containing only the surname must not reach PROBABLE: {score}"
+        );
+        assert_eq!(conf, 0.30);
+    }
+
+    #[test]
+    fn score_username_genuine_firstname_lastname_handle_still_reaches_probable() {
+        // The fix must not over-broadly demote a real compound personal handle:
+        // every part of "brett_lawnton" belongs to the subject's own name (no
+        // foreign part), so Signal 1 alone still reaches PROBABLE.
+        let terms = vec!["brett".to_string(), "lawnton".to_string()];
+        let r = sr("Brett Lawnton", "profile", "https://x.com/brett_lawnton", "brett lawnton");
+        let (score, conf) = score_username("brett_lawnton", "x.com", &terms, &r);
+        assert!(
+            score >= 3,
+            "a genuine firstname_lastname handle must still reach PROBABLE: {score}"
+        );
+        assert_eq!(conf, 0.55);
+    }
+
     // ── normalise_address_key ────────────────────────────────────────────────
 
     #[test]

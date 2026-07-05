@@ -70,6 +70,55 @@ fn order_dossier_kinds<'a>(
     ordered
 }
 
+/// The dossier header's "Entities:" line: the count actually rendered by the
+/// kind sections below (`shown` — the caller's already infra-filtered
+/// entities), with a disclosure when the scan's raw persisted total
+/// (`raw_total`, `Scan::entity_count`, set before any display-layer filter
+/// runs) exceeds it. Previously this line always printed the RAW total even
+/// though every section below renders the filtered list — a scan with
+/// platform-infra entities showed a header count higher than anything
+/// actually listed, with no explanation of the gap (`--include-infra` shows
+/// them and closes it).
+fn entities_header_line(shown: usize, raw_total: usize) -> String {
+    if raw_total > shown {
+        format!(
+            "  Entities:  {shown} ({} platform-infra excluded of {raw_total} total — pass \
+             --include-infra to show)",
+            raw_total - shown
+        )
+    } else {
+        format!("  Entities:  {shown}")
+    }
+}
+
+/// The trailing "… N more" disclosure for a ranked list truncated to `shown`
+/// of `total` — `None` when the full list already fits. The SAME wording
+/// TIMELINE/CONNECTIONS already print; applied to the sections that
+/// previously truncated with no indication at all (cross-scan leverage,
+/// module yield, source confidence, enrichment lineage).
+fn truncation_note(shown: usize, total: usize) -> Option<String> {
+    (total > shown).then(|| format!("  … {} more", total - shown))
+}
+
+/// The subset of `relations` whose BOTH endpoints are present in `entities` —
+/// the same confinement [`crate::core::relation::sorted_confined_adjacency`]
+/// applies for CONNECTIONS/RESOLVED IDENTITIES/CONNECTION BROKERS below.
+/// Previously the raw RELATIONS section printed every relation regardless, so
+/// an edge to/from a platform-infra (or otherwise excluded) entity rendered as
+/// a bare hex UID stub with no explanation for why that node appears nowhere
+/// else in the dossier.
+fn confine_relations_to_visible<'a>(
+    entities: &[Entity],
+    relations: &'a [Relation],
+) -> Vec<&'a Relation> {
+    let visible: std::collections::HashSet<&str> =
+        entities.iter().map(|e| e.uid.as_str()).collect();
+    relations
+        .iter()
+        .filter(|r| visible.contains(r.from_uid.as_str()) && visible.contains(r.to_uid.as_str()))
+        .collect()
+}
+
 pub(super) fn print_dossier(args: DossierArgs<'_>) {
     let DossierArgs {
         scan,
@@ -90,7 +139,10 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
     println!("  Target:    {kind} = {value}");
     println!("  Scan ID:   {}", &scan.id[..16]);
     println!("  Status:    {}", scan.status.as_str());
-    println!("  Entities:  {}", scan.entity_count);
+    println!(
+        "{}",
+        entities_header_line(entities.len(), scan.entity_count)
+    );
     println!(
         "  Modules:   {} run, {} errored, {} deduped",
         scan.modules_run, scan.modules_errored, scan.modules_deduped
@@ -119,12 +171,19 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         .filter(|l| l.cross_scan_degree >= 2)
         .collect();
     if !bridges.is_empty() {
-        println!("  Cross-scan leverage (identifiers bridging prior investigations):");
-        for l in bridges.iter().take(8) {
+        const SHOWN: usize = 8;
+        println!(
+            "  Cross-scan leverage ({} identifiers bridging prior investigations):",
+            bridges.len()
+        );
+        for l in bridges.iter().take(SHOWN) {
             println!(
                 "    · {} {} — bridges {} investigations",
                 l.kind, l.value, l.cross_scan_degree
             );
+        }
+        if let Some(note) = truncation_note(SHOWN, bridges.len()) {
+            println!("{note}");
         }
         println!();
     }
@@ -246,9 +305,19 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
                 |e| super::super::truncate(&e.value, 40),
             )
         };
-        println!("━━━ RELATIONS ({}) ━━━", relations.len());
+        let confined = confine_relations_to_visible(entities, relations);
+        let hidden = relations.len() - confined.len();
+        if hidden > 0 {
+            println!(
+                "━━━ RELATIONS ({} of {} — {hidden} hidden, endpoint excluded from view) ━━━",
+                confined.len(),
+                relations.len()
+            );
+        } else {
+            println!("━━━ RELATIONS ({}) ━━━", relations.len());
+        }
         println!();
-        for r in relations {
+        for r in &confined {
             println!(
                 "  {}  ──{}──▶  {}   (conf={:.2})",
                 label(&r.from_uid),
@@ -529,8 +598,12 @@ fn print_diagnostics(
         None => "·",
     };
 
-    println!("  Modules ranked by yield (cost tier shown for ROI tuning):");
-    for m in diag.modules_by_yield.iter().take(15) {
+    const MODULES_SHOWN: usize = 15;
+    println!(
+        "  Modules ranked by yield ({}, cost tier shown for ROI tuning):",
+        diag.modules_by_yield.len()
+    );
+    for m in diag.modules_by_yield.iter().take(MODULES_SHOWN) {
         let kinds = m.unique_kinds.join(",");
         println!(
             "    {:4}  {:<5} {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
@@ -541,6 +614,9 @@ fn print_diagnostics(
             m.novelty_ratio * 100.0,
             kinds
         );
+    }
+    if let Some(note) = truncation_note(MODULES_SHOWN, diag.modules_by_yield.len()) {
+        println!("{note}");
     }
     let events = store.events_for_scan(sid).unwrap_or_default();
     let wasted = zero_yield_keyed_or_paid_modules(&events, &cost_by_module);
@@ -553,14 +629,21 @@ fn print_diagnostics(
     }
     println!();
 
-    println!("  Source confidence (n / mean / p50 / p90):");
+    const SOURCES_SHOWN: usize = 15;
     let mut srcs: Vec<_> = diag.source_confidence.iter().collect();
+    println!(
+        "  Source confidence ({}, n / mean / p50 / p90):",
+        srcs.len()
+    );
     srcs.sort_by_key(|(_, s)| std::cmp::Reverse(s.n));
-    for (src, s) in srcs.iter().take(15) {
+    for (src, s) in srcs.iter().take(SOURCES_SHOWN) {
         println!(
             "    {:<22} n={:<4} mean={:.2}  p50={:.2}  p90={:.2}",
             src, s.n, s.mean, s.p50, s.p90
         );
+    }
+    if let Some(note) = truncation_note(SOURCES_SHOWN, srcs.len()) {
+        println!("{note}");
     }
     println!();
 
@@ -676,16 +759,20 @@ fn print_diagnostics(
     }
     println!();
 
-    println!("━━━ ENRICHMENT LINEAGE ━━━");
-    println!();
+    const LINEAGE_SHOWN: usize = 20;
     let mut lineage_sorted = diag.enrichment_lineage.clone();
+    println!("━━━ ENRICHMENT LINEAGE ({}) ━━━", lineage_sorted.len());
+    println!();
     lineage_sorted.sort_by_key(|n| std::cmp::Reverse(n.source_chain.len()));
-    for node in lineage_sorted.iter().take(20) {
+    for node in lineage_sorted.iter().take(LINEAGE_SHOWN) {
         println!(
             "  [{}] {} (conf={:.2}, corr={})",
             node.kind, node.value_preview, node.confidence, node.corroboration
         );
         println!("    sources: {}", node.source_chain.join(" → "));
+    }
+    if let Some(note) = truncation_note(LINEAGE_SHOWN, lineage_sorted.len()) {
+        println!("{note}");
     }
     println!();
 
@@ -701,10 +788,14 @@ fn print_diagnostics(
 
 #[cfg(test)]
 mod tests {
-    use super::{DOSSIER_KIND_ORDER, order_dossier_kinds, zero_yield_keyed_or_paid_modules};
+    use super::{
+        DOSSIER_KIND_ORDER, confine_relations_to_visible, entities_header_line,
+        order_dossier_kinds, truncation_note, zero_yield_keyed_or_paid_modules,
+    };
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
     use crate::core::module::ModuleCost;
+    use crate::core::relation::{Relation, RelationKind};
     use std::collections::{BTreeMap, HashMap};
 
     #[test]
@@ -840,5 +931,64 @@ mod tests {
             zero_yield_keyed_or_paid_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
+    }
+
+    #[test]
+    fn entities_header_line_discloses_infra_excluded_gap() {
+        // The bug: the header always printed the RAW `scan.entity_count`, even
+        // though every section below renders the caller's infra-filtered list —
+        // a scan with platform-infra entities showed a header count higher than
+        // anything actually listed, with no explanation of the gap.
+        assert_eq!(
+            entities_header_line(42, 50),
+            "  Entities:  42 (8 platform-infra excluded of 50 total — pass --include-infra to show)"
+        );
+    }
+
+    #[test]
+    fn entities_header_line_is_plain_when_nothing_was_excluded() {
+        assert_eq!(entities_header_line(50, 50), "  Entities:  50");
+    }
+
+    #[test]
+    fn truncation_note_discloses_the_hidden_count() {
+        assert_eq!(truncation_note(8, 20), Some("  … 12 more".to_string()));
+        assert_eq!(truncation_note(20, 20), None);
+        assert_eq!(
+            truncation_note(20, 5),
+            None,
+            "fewer than the cap: nothing hidden"
+        );
+    }
+
+    #[test]
+    fn confine_relations_to_visible_drops_edges_with_an_excluded_endpoint() {
+        // Mirrors `core::relation::sorted_confined_adjacency`'s own confinement:
+        // an edge is only traversable/renderable when BOTH endpoints are in the
+        // visible entity set. Previously the raw RELATIONS section ignored this
+        // entirely and printed every relation regardless.
+        let a = Entity::new(EntityKind::Domain, "a.example", 0.9, "s");
+        let b = Entity::new(EntityKind::Domain, "b.example", 0.9, "s");
+        let hidden_uid = "deadbeef00000000000000000000000000000000000000000000000000000";
+        let entities = [a.clone(), b.clone()];
+        let relations = [
+            Relation::new(
+                a.uid.clone(),
+                b.uid.clone(),
+                RelationKind::CoLocatedWith,
+                0.8,
+                "s",
+            ),
+            Relation::new(
+                a.uid.clone(),
+                hidden_uid,
+                RelationKind::CoLocatedWith,
+                0.8,
+                "s",
+            ),
+        ];
+        let confined = confine_relations_to_visible(&entities, &relations);
+        assert_eq!(confined.len(), 1, "only the fully-visible edge survives");
+        assert_eq!(confined[0].to_uid, b.uid);
     }
 }

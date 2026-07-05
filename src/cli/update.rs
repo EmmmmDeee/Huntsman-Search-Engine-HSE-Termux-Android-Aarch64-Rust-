@@ -447,6 +447,112 @@ mod tests {
         assert!(!command_self_updates(&Command::Doctor));
     }
 
+    // ── Real-git fixtures for `commits_behind` / `changelog_lines` ──────────
+    //
+    // Neither function had ever been exercised against an actual `git`
+    // subprocess — every existing test above targets pure logic. A local
+    // origin + clone pair (both plain directories, no network) reproduces the
+    // exact "behind the tracking branch" state these functions parse.
+
+    fn run_git(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git must be installed to run this test");
+        assert!(status.success(), "git {args:?} failed in {}", dir.display());
+    }
+
+    fn init_git_repo(dir: &Path) {
+        run_git(dir, &["init", "--quiet", "-b", "main"]);
+        run_git(dir, &["config", "user.email", "test@example.com"]);
+        run_git(dir, &["config", "user.name", "Test"]);
+    }
+
+    fn commit_file(dir: &Path, name: &str, contents: &str, message: &str) {
+        std::fs::write(dir.join(name), contents).unwrap();
+        run_git(dir, &["add", name]);
+        run_git(dir, &["commit", "--quiet", "-m", message]);
+    }
+
+    #[test]
+    fn commits_behind_and_changelog_lines_reflect_real_git_state() {
+        let base = tempfile::tempdir().unwrap();
+        let origin = base.path().join("origin");
+        std::fs::create_dir(&origin).unwrap();
+        init_git_repo(&origin);
+        commit_file(&origin, "a.txt", "1", "initial commit");
+
+        let local = base.path().join("local");
+        run_git(
+            base.path(),
+            &[
+                "clone",
+                "--quiet",
+                origin.to_str().unwrap(),
+                local.to_str().unwrap(),
+            ],
+        );
+
+        // Origin gains two more commits after the clone — local's tracking
+        // branch (`@{u}`) is now two commits behind until the next fetch.
+        commit_file(&origin, "b.txt", "2", "feat: second commit");
+        commit_file(&origin, "c.txt", "3", "fix: third commit");
+
+        assert_eq!(
+            commits_behind(&local),
+            Some(2),
+            "commits_behind must fetch and count the two new origin commits"
+        );
+        let lines = changelog_lines(&local);
+        assert_eq!(lines.len(), 2, "one line per new commit: {lines:?}");
+        assert!(
+            lines[0].contains("third commit"),
+            "newest commit listed first: {lines:?}"
+        );
+        assert!(
+            lines[1].contains("second commit"),
+            "oldest of the two listed second: {lines:?}"
+        );
+
+        // `commits_behind` only ever fetches — it never advances local `HEAD` —
+        // so a repeated check with no local pull still reports the same 2
+        // behind, not a spuriously-reset 0.
+        assert_eq!(
+            commits_behind(&local),
+            Some(2),
+            "fetching again with no local pull must not change the behind-count"
+        );
+
+        // Once local's HEAD actually advances to match the tracking branch
+        // (what `hse update` does via `install.sh`'s `git pull`), both
+        // functions report the caught-up state.
+        run_git(&local, &["merge", "--ff-only", "@{u}"]);
+        assert_eq!(commits_behind(&local), Some(0));
+        assert!(changelog_lines(&local).is_empty());
+    }
+
+    #[test]
+    fn commits_behind_returns_none_without_a_configured_upstream() {
+        // A real git repo with no remote/tracking branch — `@{u}` cannot resolve,
+        // mirroring the "git absent or remote unreachable" contract in the doc
+        // comment without needing an actually-unreachable network remote.
+        let dir = tempfile::tempdir().unwrap();
+        init_git_repo(dir.path());
+        commit_file(dir.path(), "a.txt", "1", "solo commit");
+        assert_eq!(
+            commits_behind(dir.path()),
+            None,
+            "no upstream configured must yield None, not a bogus count"
+        );
+        assert!(
+            changelog_lines(dir.path()).is_empty(),
+            "no upstream configured must yield no changelog lines"
+        );
+    }
+
     #[test]
     fn autoupdate_paths_live_under_the_cache_dir() {
         // Stamp, log, and lock are siblings in the cache dir, so install.sh (which

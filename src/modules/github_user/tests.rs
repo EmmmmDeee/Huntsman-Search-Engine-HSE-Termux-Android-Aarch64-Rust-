@@ -159,6 +159,50 @@ fn accepts_only_username() {
 }
 
 #[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // The override replaced the whole Social-category default array instead
+    // of substituting just T1593.001 → T1593.003, silently dropping
+    // T1589.003 (Employee Names) and every technique for the Email/
+    // Organisation/Address/Coordinates/Credential entities this module also
+    // emits. Every admitted entity's `attack:<ID>` provenance tag is sourced
+    // directly from this list (core::engine::dispatch), so the gap was a
+    // real per-finding MITRE mis-attribution, not a doc nit.
+    let techniques = GithubUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the module's own username discovery mechanism"
+    );
+    assert!(
+        techniques.contains(&"T1589.001"),
+        "Credentials: published SSH public keys become Credential entities"
+    );
+    assert!(
+        techniques.contains(&"T1589.002"),
+        "Email Addresses: published profile/gist/commit emails"
+    );
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: a real name becomes a Person entity"
+    );
+    assert!(
+        techniques.contains(&"T1591.001"),
+        "Determine Physical Locations: location becomes Address/Coordinates"
+    );
+    assert!(
+        techniques.contains(&"T1591.002"),
+        "Business Relationships: company/org membership become Organisation"
+    );
+    // Every declared technique must be a catalogued, real ATT&CK ID — no
+    // typo'd or made-up ID slips past the project-wide architecture guard.
+    for &id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "{id} must be a catalogued Reconnaissance technique"
+        );
+    }
+}
+
+#[test]
 fn deserialize_full_profile() {
     let json = r#"{
         "login":"alice","id":12345,"name":"Alice Smith",

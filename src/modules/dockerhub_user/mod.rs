@@ -152,8 +152,21 @@ impl Module for DockerhubUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Container registry profile lookup — Code Repositories (T1593.003).
-        &["T1593.003"]
+        // A container-registry profile — ATT&CK Code Repositories (T1593.003)
+        // for the Username itself, not the Social-Media default. But
+        // `build_entities` also constructs a Person (full_name), an
+        // Organisation (company), an Address/Coordinates (location), and an
+        // Email (gravatar_email) — each needs its own technique so the
+        // `attack:<ID>` provenance tag core::engine::dispatch stamps on every
+        // admitted entity actually matches what collected it (the same gap
+        // just fixed for `github_user`).
+        &[
+            "T1589.002", // Email Addresses — gravatar_email
+            "T1589.003", // Employee Names — Person from full_name
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from location
+            "T1591.002", // Business Relationships — Organisation from company
+            "T1593.003", // Code Repositories — Username via the Docker Hub profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[

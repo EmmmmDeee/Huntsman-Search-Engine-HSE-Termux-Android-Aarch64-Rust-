@@ -285,7 +285,9 @@ brand-new toggle added in a later release — resolves to that default, so old
 settings files stay forward-compatible.
 
 The same toggles are manageable from the web dashboard's **Settings** page as a
-click-to-flip grid (backed by `GET`/`PUT /api/v1/settings/toggles`, loopback-only).
+click-to-flip grid, backed by `GET /api/v1/settings/toggles` (unrestricted read)
+and `PUT /api/v1/settings/toggles` (loopback-only — a network-exposed bind can
+view but not flip a toggle).
 
 ---
 

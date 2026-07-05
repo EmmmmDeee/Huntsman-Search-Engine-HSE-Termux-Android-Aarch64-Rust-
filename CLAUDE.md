@@ -2,8 +2,8 @@
 
 ## Working with the user
 
-- The user identifies as **Haigen Bamford**. Address them accordingly, with respect.
-- Do **not** use the user's former name or any email/handle derived from it — none of it is applicable any more. For an authorised self-test, seed on the name **Haigen Bamford** (the current email is unknown/forgotten). `jordanavery@gmail.com` / `Jordan Avery` are synthetic placeholders used only in test fixtures, not the user's identity.
+- The user identifies as **Brett Lawnton**. Address them accordingly, with respect.
+- Do **not** use the user's former name(s) (including **Haigen Bamford**) or any email/handle derived from them — none of it is applicable any more. For an authorised self-test, seed on the name **Brett Lawnton** (the current email is unknown/forgotten). `jordanavery@gmail.com` / `Jordan Avery` are synthetic placeholders used only in test fixtures, not the user's identity.
 
 ## Verification gate (must match CI before committing)
 

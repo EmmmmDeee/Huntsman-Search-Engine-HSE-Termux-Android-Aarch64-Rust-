@@ -92,7 +92,16 @@ pub async fn scan_entities_filter(
     })
     .await
     {
-        Ok(Ok(entities)) => ok_list("entities", entities),
+        Ok(Ok(mut entities)) => {
+            // Quarantine by default (opt in with `?include_candidates=1`) — matches
+            // `scan_entities`, `scan_entities_csv`, and `report.json` so this filtered
+            // view can't be used to route around the candidate quarantine the other
+            // entity-listing endpoints already enforce.
+            if !super::wants_candidates(&params) {
+                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+            }
+            ok_list("entities", entities)
+        }
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("query task failed: {e}")),
     }

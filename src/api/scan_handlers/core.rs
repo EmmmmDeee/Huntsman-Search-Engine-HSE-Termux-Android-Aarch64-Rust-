@@ -36,6 +36,16 @@ pub async fn scan_create(
         .into_response()
 }
 
+/// The scan-history bound for [`scan_auto`]/[`scan_auto_plan`]/[`scan_auto_sweep`]'s
+/// candidate pool. Each handler's own doc promises it ranks "everything the
+/// platform has discovered" — a hardcoded `list_scans(50)` silently broke that
+/// promise on any device with more than 50 scans in its history, quietly
+/// excluding older (but potentially higher-leverage) entities from ever being
+/// selected. `10_000` mirrors the same "effectively all, but SQL-bounded for
+/// device safety" convention [`crate::api::handlers::stats`] already uses for
+/// its own full-history aggregation, so the two full-history reads agree.
+const AUTONOMOUS_POOL_MAX_SCANS: usize = 10_000;
+
 /// The operator-local default seed (`HUNTSMAN_DEFAULT_SEED`), with its kind
 /// auto-detected from the value — the autonomous scan's fallback when the local
 /// intelligence base is still empty.
@@ -70,7 +80,7 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let store = Arc::clone(&s.store);
     let selected = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<Option<crate::core::engine::ClusteredTarget>> {
-            let scans = store.list_scans(50)?;
+            let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut rels: Vec<crate::core::relation::Relation> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
@@ -197,7 +207,7 @@ pub async fn scan_auto_plan(
     let store = Arc::clone(&s.store);
     let planned = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
-            let scans = store.list_scans(50)?;
+            let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
@@ -272,7 +282,7 @@ pub async fn scan_auto_sweep(
     let store = Arc::clone(&s.store);
     let planned = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
-            let scans = store.list_scans(50)?;
+            let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
@@ -535,14 +545,17 @@ pub async fn scan_import(
     // so SQLite commits don't stall the 2-worker async reactor.
     let store = Arc::clone(&s.store);
     let sid2 = sid.clone();
-    let (relation_count, correlation_count) =
+    // The third element is `false` when enrichment was skipped for size — the
+    // caller must be able to tell that apart from a genuinely relation-free
+    // dossier, both of which otherwise report `relation_count: 0`.
+    let (relation_count, correlation_count, enriched) =
         match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
-                return Ok((0usize, 0usize));
+                return Ok((0usize, 0usize, false));
             }
             let mut relations = 0usize;
             for r in &crate::core::relation::derive_all(&entities, &sid2) {
@@ -562,7 +575,7 @@ pub async fn scan_import(
                     }
                 }
             }
-            Ok((relations, correlations))
+            Ok((relations, correlations, true))
         })
         .await
         {
@@ -580,6 +593,12 @@ pub async fn scan_import(
             "entity_count": entity_count,
             "relation_count": relation_count,
             "correlation_count": correlation_count,
+            // `true` only when the upload exceeded `IMPORT_ENRICH_MAX_ENTITIES` —
+            // disambiguates a size-skipped enrichment pass from a dossier that
+            // genuinely yielded zero relations/correlations. Every entity is
+            // still persisted either way; the scan can be enriched on demand
+            // via `/scans/{id}/rerun`.
+            "enrichment_skipped": !enriched,
             "status": "complete",
         })),
     )

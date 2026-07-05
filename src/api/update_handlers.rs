@@ -17,7 +17,7 @@ use axum::{
 use serde::Serialize;
 use serde_json::json;
 
-use crate::api::{AppState, UpdatePhase};
+use crate::api::{AppState, UpdateInfo, UpdatePhase};
 
 /// Response body for `GET /api/v1/update/status`.
 #[derive(Serialize)]
@@ -74,6 +74,41 @@ fn reject_non_loopback(peer: &SocketAddr) -> Option<(StatusCode, Json<serde_json
     }
 }
 
+/// Atomically check whether an update can be started and, if so, claim it by
+/// setting the phase to `Applying` — in the SAME lock acquisition as the
+/// check. Returns `true` iff this call is the one that gets to proceed.
+///
+/// The check and the claim must never be split across two lock acquisitions:
+/// if the phase were only flipped later (e.g. inside a spawned task, as it
+/// used to be), two near-simultaneous callers could both observe `Idle`, both
+/// pass, and both spawn an update — two concurrent `apply_update` runs (git
+/// pull / cargo build / binary replace) racing each other, and potentially
+/// two concurrent `self_restart()` calls. Making the read-then-write atomic
+/// under one lock closes that window structurally rather than narrowing it.
+fn try_start_update(update_info: &std::sync::Mutex<UpdateInfo>) -> bool {
+    let mut info = update_info
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    if matches!(info.phase, UpdatePhase::Applying | UpdatePhase::Restarting) {
+        return false;
+    }
+    info.phase = UpdatePhase::Applying;
+    true
+}
+
+/// Set `update_info`'s phase, recovering from a poisoned mutex the same way
+/// `try_start_update` does. Both call sites below run this after `Applying`
+/// has already been claimed, so silently no-oping on a poisoned lock (as a
+/// bare `if let Ok(...) = update_info.lock()` would) could strand the phase
+/// at `Applying` forever — `try_start_update`'s own gate rejects every future
+/// trigger while `Applying`, so a stranded phase permanently blocks updates.
+fn set_phase(update_info: &std::sync::Mutex<UpdateInfo>, phase: UpdatePhase) {
+    let mut info = update_info
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    info.phase = phase;
+}
+
 /// `POST /api/v1/update/trigger` — manually kick off an update.
 ///
 /// Returns 202 immediately and drives the update in a detached task.
@@ -86,29 +121,20 @@ pub(crate) async fn post_trigger(
     if let Some(rejection) = reject_non_loopback(&peer) {
         return rejection.into_response();
     }
-    // Reject if already applying or restarting.
-    {
-        let info = state
-            .update_info
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        if matches!(info.phase, UpdatePhase::Applying | UpdatePhase::Restarting) {
-            return StatusCode::CONFLICT.into_response();
-        }
+    // Atomic check-and-claim: only one concurrent caller can win this.
+    if !try_start_update(&state.update_info) {
+        return StatusCode::CONFLICT.into_response();
     }
 
     // Spawn the update in a detached task — handler returns 202 immediately.
+    // Phase is already `Applying` (set by `try_start_update` above), so no
+    // second lock acquisition is needed before `apply_update` starts.
     let update_info = Arc::clone(&state.update_info);
     let state_for_restart = Arc::clone(&state);
     tokio::spawn(async move {
-        if let Ok(mut info) = update_info.lock() {
-            info.phase = UpdatePhase::Applying;
-        }
         match crate::cli::update::apply_update(None).await {
             Ok(()) => {
-                if let Ok(mut info) = update_info.lock() {
-                    info.phase = UpdatePhase::Restarting;
-                }
+                set_phase(&update_info, UpdatePhase::Restarting);
                 // Brief pause so the SPA can fetch the Restarting status before
                 // the process image is replaced.
                 tokio::time::sleep(std::time::Duration::from_secs(2)).await;
@@ -126,9 +152,7 @@ pub(crate) async fn post_trigger(
                 crate::cli::update::self_restart();
             }
             Err(e) => {
-                if let Ok(mut info) = update_info.lock() {
-                    info.phase = UpdatePhase::Error(e.to_string());
-                }
+                set_phase(&update_info, UpdatePhase::Error(e.to_string()));
             }
         }
     });
@@ -138,9 +162,91 @@ pub(crate) async fn post_trigger(
 
 #[cfg(test)]
 mod tests {
-    use super::reject_non_loopback;
+    use super::{UpdateInfo, UpdatePhase, reject_non_loopback, set_phase, try_start_update};
     use axum::http::StatusCode;
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+    use std::sync::Mutex;
+
+    #[test]
+    fn set_phase_recovers_from_a_poisoned_mutex() {
+        // The two "finish" transitions (Ok -> Restarting, Err -> Error) must
+        // land even after the mutex is poisoned, exactly like
+        // try_start_update's own poison-recovery — a bare
+        // `if let Ok(mut info) = update_info.lock() { .. }` would silently
+        // no-op on a poisoned lock, stranding phase at Applying forever
+        // (try_start_update's own gate then rejects every future trigger).
+        let info = Mutex::new(UpdateInfo {
+            phase: UpdatePhase::Applying,
+            ..UpdateInfo::default()
+        });
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _guard = info.lock().unwrap();
+            panic!("simulated panic while holding the update_info lock");
+        }));
+        assert!(
+            info.is_poisoned(),
+            "the mutex must be poisoned by the panic above"
+        );
+
+        set_phase(&info, UpdatePhase::Restarting);
+        assert_eq!(
+            info.lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .phase,
+            UpdatePhase::Restarting,
+            "phase must progress past a poisoned lock, not stay stuck at Applying"
+        );
+    }
+
+    #[test]
+    fn try_start_update_admits_exactly_one_of_two_concurrent_callers() {
+        // Simulates two near-simultaneous `POST /update/trigger` calls
+        // (double-clicked button, or a client retrying a slow first response)
+        // racing to read-then-write `phase`. The check-and-claim MUST be atomic
+        // under one lock acquisition: if it were split into a separate "read
+        // phase" step and a later "write Applying" step (as it used to be,
+        // deferred into the spawned update task), both callers could observe
+        // `Idle` and both would proceed, racing two concurrent installer runs.
+        let info = Mutex::new(UpdateInfo::default());
+        assert!(
+            try_start_update(&info),
+            "the first caller must be admitted and claim the update"
+        );
+        assert!(
+            !try_start_update(&info),
+            "a second, concurrent caller must be rejected — not race past the check \
+             because the claim happens in a separate lock acquisition"
+        );
+        assert_eq!(
+            info.lock().unwrap().phase,
+            UpdatePhase::Applying,
+            "phase must already be Applying by the time try_start_update returns true, \
+             not deferred to a later task"
+        );
+    }
+
+    #[test]
+    fn try_start_update_rejects_while_restarting() {
+        let info = Mutex::new(UpdateInfo {
+            phase: UpdatePhase::Restarting,
+            ..UpdateInfo::default()
+        });
+        assert!(!try_start_update(&info));
+    }
+
+    #[test]
+    fn try_start_update_admits_after_error_or_idle() {
+        for phase in [UpdatePhase::Idle, UpdatePhase::Error("boom".into())] {
+            let info = Mutex::new(UpdateInfo {
+                phase,
+                ..UpdateInfo::default()
+            });
+            assert!(
+                try_start_update(&info),
+                "a prior error or idle state must not block a fresh trigger"
+            );
+        }
+    }
 
     #[test]
     fn trigger_rejects_non_loopback_peers() {

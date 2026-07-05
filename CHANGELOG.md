@@ -11,6 +11,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
+  is now proven against a real `git` subprocess, not just pure-logic tests.**
+  A local origin+clone fixture pair (no network) exercises the actual
+  `git fetch`/`rev-list`/`log` calls behind the ahead/behind count and the
+  one-line changelog, including the no-upstream-configured case. Dev-only,
+  zero shipped cost. Regression tests
+  `commits_behind_and_changelog_lines_reflect_real_git_state`,
+  `commits_behind_returns_none_without_a_configured_upstream`.
+- **A proven "reused secret" tie between two accounts is now a walkable graph
+  edge, not just a standalone correlation finding.** When the correlator
+  proves two accounts share a controller via a reused, individuating secret
+  (a salted hash, session token, wallet address, API key, or a
+  cross-source-corroborated password), that tie is now also emitted as a
+  first-class relation between the two identities — so the dossier's
+  CONNECTIONS section and the graph export can walk it like any other
+  relationship, not just read it off a separate finding. A secret tying
+  three or more accounts links every pair directly, not just a chain through
+  one of them. Regression tests
+  `derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash`,
+  `derive_reused_secret_link_precision_gate_matches_au047_exactly`,
+  `derive_reused_secret_link_emits_the_full_pairwise_clique`.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and
@@ -343,6 +364,168 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The self-update mechanism can no longer wedge itself into a permanent
+  "applying" state.** Two sites that record the outcome of a triggered
+  update (success → restarting, failure → error) silently did nothing if
+  the shared status mutex was ever poisoned, unlike the check-and-claim
+  gate which already recovers from poisoning — a poisoned mutex would have
+  left every future update trigger permanently rejected with no
+  diagnosable error. Both sites now use the same poison-recovery policy.
+  Regression test `set_phase_recovers_from_a_poisoned_mutex`.
+- **`name_intel`'s ATT&CK mapping no longer silently inherits an incorrect
+  category default.** The module never overrode `attack_techniques()`,
+  so it inherited the full People-category pair — over-claiming "Identify
+  Roles" (this module has no role/organisational logic anywhere) while
+  never crediting "Email Addresses" for the speculative emails it derives
+  from a name. Now declares the same precise pair already used by `pgp`
+  for an identical Person+Email shape. Regression test
+  `attack_techniques_matches_produced_entity_kinds`.
+- **`sourceforge_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The fifth instance of the same
+  under-declared-coverage gap: its override already correctly credited the
+  Username lookup and bio-extracted emails, but silently dropped the
+  technique for the Person and Address/Coordinates entities it also builds
+  from a profile's display name and self-reported location. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`mastodon_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** Unlike the sibling fixes above, its override
+  had the correct base technique ("Social Media," since Mastodon genuinely
+  is social media) but was still missing coverage for the Person and
+  Address/Coordinates entities it also builds from a display name and a
+  self-reported location field. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`codewars_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The third instance of the same
+  replace-instead-of-extend gap: its override declared only "Code
+  Repositories," silently dropping the technique for the Person,
+  Organisation, and Address/Coordinates entities it also builds from a
+  Codewars profile's real name, clan, and city. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`dockerhub_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The same replace-instead-of-extend gap just
+  fixed in `github_user`: its override declared only "Code Repositories,"
+  silently dropping the technique for the Person, Organisation, Address/
+  Coordinates, and Email entities it also builds from a Docker Hub profile's
+  real name, company, location, and Gravatar email. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`github_user`'s ATT&CK mapping now covers every entity kind the module
+  actually produces.** Its override correctly swapped the Social category's
+  default "Social Media" technique for the more precise "Code Repositories"
+  one, but replaced the entire default array in doing so — silently dropping
+  the technique for the Person, Email, Organisation, Address/Coordinates,
+  and Credential entities it also builds. Every admitted entity is stamped
+  with the technique(s) that collected it, so this was a real per-finding
+  MITRE-provenance gap, not just documentation. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`email_parse`'s derived `Username` entities are now emitted in a
+  deterministic order.** The set of candidate username spelling variants
+  (detagged, digit-stripped, collapsed, split, plus initial-blend forms for
+  a two-token local part) was deduplicated via a `HashSet` and iterated
+  straight into the emitted entity list with no sort step — the same
+  determinism-leak class already fixed for `reddit_user`, `hacker_news`, and
+  `web_crawler`. A project-wide sweep confirms this was the last remaining
+  instance. Regression test
+  `username_candidates_emerge_in_deterministic_sorted_order`.
+- **`web_crawler`'s Domain, Email, Tracking-ID, and Phone entities are now
+  emitted in a deterministic order.** Five separate `HashSet`-backed
+  aggregations (subdomains, external domains, emails, web-analytics tracking
+  IDs, phone numbers) from a page crawl were each iterated straight into the
+  emitted entity list with no sort step — the same determinism-leak class
+  just fixed for `hacker_news`, but at five sites in one function instead of
+  one. All five now emerge sorted, matching the pattern the same function
+  already used for its framework/page-type attributes. Regression test
+  `build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`.
+- **`hacker_news`'s Algolia-submissions domain lookup now emits `Domain`
+  entities in a deterministic order.** The distinct domains linked from a
+  user's Hacker News submissions were deduplicated via a `HashSet` and then
+  walked straight into the emitted entity list with no ordering step, so
+  identical submissions could legally produce differently-ordered entities
+  (and a differently-ordered live event stream) across separate runs of the
+  same scan, purely from the process's randomised hash-iteration order — the
+  same determinism-leak class already fixed for `reddit_user`. Domains now
+  emerge sorted. Regression tests
+  `algolia_domain_entities_emits_all_distinct_domains_deterministically`,
+  `algolia_domain_entities_no_urls_yields_nothing`.
+- **A search-derived username matching only a subject's surname substring no
+  longer reaches PROBABLE confidence and gets recycled into a further
+  search.** A real self-test scan showed an unrelated business's Facebook
+  slug (named after the same-spelled suburb as the subject's surname)
+  reaching the correlator's highest-confidence identity cluster, because a
+  compound candidate's other, unrelated parts were never checked against
+  the subject's actual name before the match was treated as strong evidence
+  and used to launch further searches. A genuine `firstname_lastname`-style
+  handle is unaffected. Regression tests
+  `score_username_business_slug_containing_the_surname_stays_candidate`,
+  `score_username_genuine_firstname_lastname_handle_still_reaches_probable`.
+- **The `greynoise` module now uses a configured `HUNTSMAN_GREYNOISE_KEY`
+  instead of silently ignoring it.** The module always called GreyNoise's
+  free Community endpoint, even when a key was configured — an operator
+  who registered for one got no additional capability. It now upgrades to
+  GreyNoise's keyed `v3/ip` lookup when a key is present, matching the
+  Shodan module's existing free/paid pattern. Regression tests
+  `paid_response_deserialization`,
+  `paid_path_tags_seen_in_addition_to_the_shared_signal`,
+  `paid_path_surfaces_a_seen_but_otherwise_unclassified_ip`,
+  `paid_path_no_signal_at_all_yields_nothing`,
+  `paid_path_still_yields_the_operator_organisation_pivot`.
+- **`GET /scans/{id}/entities/filter` no longer leaks quarantined `candidate`
+  entities.** Every other entity-listing surface (`/entities`, the CSV
+  export, `report.json`, and the GEXF graph export) hides non-subject breach
+  co-occurrence rows by default and only returns them with
+  `?include_candidates=1` — but the filtered-view endpoint never applied
+  that quarantine, so a caller could see a foreign breach victim's data
+  simply by adding a `kind`/`min_confidence`/`q` query parameter. It now
+  applies the same default-hide/opt-in behaviour as the other endpoints.
+  Regression test
+  `scan_entities_filter_quarantines_candidate_entities_by_default`.
+- **The Exposure Index now recognises Wikidata's own date-of-birth spelling.**
+  The Sensitive PII component scores a date-of-birth disclosure only for a
+  fixed set of evidence-attribute spellings, which omitted the spelling the
+  Wikidata module actually uses — so a subject's Wikidata-sourced date of
+  birth silently contributed nothing to their exposure score. Regression
+  test `sensitive_pii_recognises_wikidata_birth_date_spelling`.
+- **The reconstructed timeline no longer silently drops account-creation,
+  birth/death, profile-verification, and threat-intel first-seen dates that
+  several modules already collect.** Eight evidence-attribute keys —
+  including the account-creation family that left the documented
+  `AccountCreated` timeline event kind completely unreachable — were never
+  recognised by the timeline's date classifier, so an OathNet/StackOverflow
+  account-creation date, a Discord-snowflake- or UUID-decoded creation
+  timestamp, a Wikidata birth/death date, a Mastodon profile verification
+  date, and an OTX pulse's earliest-report date all vanished from the
+  chronology with no signal. All eight now appear. Regression tests
+  `classify_maps_every_live_account_created_key_not_leaving_it_dead_code`,
+  `classify_recognises_wikidata_and_mastodon_date_keys`,
+  `reconstruct_surfaces_an_account_created_event_end_to_end`.
+- **Resolving the "latest" scan no longer reports an empty store when the most
+  recent completed scan is actually corrupted.** `hse export`/`diff`/`audit
+  latest` and the SPA's "open latest scan" all resolve through a lookup that
+  silently treated a database read error or a corrupted scan record the same
+  as "no completed scans exist," so a genuinely corrupted latest scan
+  produced a misleading "nothing to export" instead of a diagnosable error.
+  It now surfaces the underlying failure, matching how looking up a scan by
+  ID already behaves. Regression test
+  `latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none`.
+- **The store's owner-only permission lockdown now logs, rather than silently
+  swallows, a failure.** `Store::open` restricts the database file (and its
+  WAL/SHM siblings) to owner-only (0600) since it holds PII and harvested
+  API keys, but discarded the result of that chmod with no diagnostic —
+  unlike a nearby best-effort step in the same function, which already logs
+  its failures. A failed chmod could silently leave the store at the
+  process umask, often world-readable, with no signal. It now logs a
+  warning naming the file. Regression test
+  `restrict_to_owner_only_logs_when_a_chmod_fails`.
+- **Storage reads now log a corrupted or schema-drifted row instead of silently
+  dropping it.** Eight multi-row readers (`list_scans`, `correlations_for_scan`,
+  `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
+  `entities_filtered`, and both `search_entities` code paths) discarded any row
+  that failed SQL extraction or JSON deserialization with zero trace — unlike
+  the single-row getters, which already surface the same failure as an error.
+  Two shared helpers now log a warning naming the caller before dropping the
+  row; the well-formed rows still come back exactly as before. Regression
+  tests `deserialize_rows_drops_corrupt_json_but_logs_the_failure`,
+  `collect_rows_drops_sql_errors_but_logs_the_failure`, and
+  `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`.
 - **Curl-subprocess failures (see_know, oathnet) now report WHY, not just an exit code.**
   `CurlClient::exec` ran curl with `-s` (silent) but not `-S`/`--show-error`, so curl
   suppressed its own diagnostic text on failure alongside the progress meter — every

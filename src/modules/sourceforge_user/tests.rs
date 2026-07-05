@@ -101,3 +101,35 @@ fn empty_name_returns_no_entities() {
     let user = make_user("", None, None, None, None);
     assert!(build_entities(user, "scan-sf-007").is_empty());
 }
+
+#[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // Mirrors the github_user/dockerhub_user/codewars_user/mastodon_user
+    // regression: the override must not omit coverage for entity kinds
+    // `build_entities` actually constructs — every admitted entity's
+    // `attack:<ID>` provenance tag is sourced directly from this list
+    // (core::engine::dispatch).
+    let techniques = SourceforgeUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the module's own username discovery mechanism"
+    );
+    assert!(
+        techniques.contains(&"T1589.002"),
+        "Email Addresses: emails extracted from the bio"
+    );
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: display_name becomes a Person entity"
+    );
+    assert!(
+        techniques.contains(&"T1591.001"),
+        "Determine Physical Locations: location becomes Address/Coordinates"
+    );
+    for &id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "{id} must be a catalogued Reconnaissance technique"
+        );
+    }
+}

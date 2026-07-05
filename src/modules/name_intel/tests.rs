@@ -199,9 +199,33 @@ use super::*;
     }
 
     #[tokio::test]
-    async fn attack_techniques_non_empty() {
+    async fn attack_techniques_matches_produced_entity_kinds() {
+        // With no override this module silently inherited the full People
+        // default (T1589.003 + T1591.004) — over-claiming Identify Roles
+        // (this module has zero role/organisational logic anywhere) while
+        // never crediting the Email Addresses technique for the Email
+        // entities it explicitly produces. Mirrors the same over/under-claim
+        // fix already shipped for `pgp`.
         let m = NameIntel;
-        assert!(!m.attack_techniques().is_empty());
+        let techniques = m.attack_techniques();
+        assert!(
+            techniques.contains(&"T1589.003"),
+            "Employee Names: the subject Person anchor and derived usernames"
+        );
+        assert!(
+            techniques.contains(&"T1589.002"),
+            "Email Addresses: derived speculative Email entities"
+        );
+        assert!(
+            !techniques.contains(&"T1591.004"),
+            "Identify Roles must not be claimed: no role/org info is ever derived"
+        );
+        for &id in techniques {
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "{id} must be a catalogued Reconnaissance technique"
+            );
+        }
     }
 
     // ── Onur Ada seed ────────────────────────────────────────────────────────

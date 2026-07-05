@@ -144,3 +144,53 @@ fn build_entities_no_bio_yields_only_username() {
     assert_eq!(ents.len(), 1);
     assert_eq!(ents[0].kind, EntityKind::Username);
 }
+
+// ── algolia_domain_entities ────────────────────────────────────────────────
+
+#[test]
+fn algolia_domain_entities_emits_all_distinct_domains_deterministically() {
+    // An Algolia search response naming several distinct domains (plus a
+    // duplicate and a self-referential ycombinator link) in deliberately
+    // non-alphabetical order.
+    let urls = [
+        "https://rust-lang.org/blog",
+        "https://python.org/docs",
+        "https://golang.org/",
+        "https://aws.amazon.com/blogs/x",
+        "https://rust-lang.org/other", // same domain as the first — deduped
+        "https://cloudflare.com/",
+        "https://news.ycombinator.com/item?id=1", // HN's own domain, still counted
+    ];
+    let body = format!(
+        "[{}]",
+        urls.iter()
+            .map(|u| format!(r#"{{"url":"{u}"}}"#))
+            .collect::<Vec<_>>()
+            .join(",")
+    );
+
+    let out = algolia_domain_entities(&body, "someuser", "s");
+    // 6 distinct domains: rust-lang.org, python.org, golang.org,
+    // aws.amazon.com, cloudflare.com, news.ycombinator.com. The bio-extractor's
+    // ycombinator.com/news.ycombinator.com exclusion does not apply here — this
+    // path has no such exclusion.
+    assert_eq!(out.len(), 6, "all distinct domains emitted: {out:?}");
+
+    // Deterministic: values emerge sorted, independent of the dedup
+    // HashSet's randomised iteration order.
+    let vals: Vec<&str> = out.iter().map(|e| e.value.as_str()).collect();
+    let mut sorted = vals.clone();
+    sorted.sort_unstable();
+    assert_eq!(vals, sorted, "domains emerge in sorted, deterministic order");
+    assert!(
+        out.iter()
+            .all(|e| e.kind == EntityKind::Domain && e.has_tag("hn-submission")),
+        "each is an hn-submission-tagged Domain"
+    );
+}
+
+#[test]
+fn algolia_domain_entities_no_urls_yields_nothing() {
+    let body = r#"[{"title":"no url field here"}]"#;
+    assert!(algolia_domain_entities(body, "someuser", "s").is_empty());
+}

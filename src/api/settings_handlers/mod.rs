@@ -234,7 +234,7 @@ pub async fn keys_pool_get(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl I
                 .map(|e| {
                     json!({
                         "id": crate::util::key_pool::key_id(&e.value),
-                        "masked": mask_secret(&e.value),
+                        "masked": crate::util::str_util::mask_secret(&e.value),
                         "status": e.status.as_str(),
                         "environment": e.environment(),
                         "tier": e.tier.as_str(),
@@ -340,28 +340,6 @@ pub async fn keys_pool_rotate(
         )
             .into_response()
     }
-}
-
-/// Mask a secret to a non-reversible hint: first 4 + last 4 chars (char-safe).
-fn mask_secret(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    // Only reveal a 4+4 head/tail hint for secrets long enough that 8 exposed
-    // characters are a small fraction. Below 16, fully mask — a 9-12 char secret
-    // would otherwise leak almost all of itself (e.g. 8 of 9). The hint is only
-    // an operator recognition aid, never enough to reconstruct the value.
-    if chars.len() < 16 {
-        return "•".repeat(chars.len().max(1));
-    }
-    let head: String = chars.iter().take(4).collect();
-    let tail: String = chars
-        .iter()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{head}…{tail}")
 }
 
 /// `GET /api/v1/settings/toggles` — the full capability-toggle catalogue

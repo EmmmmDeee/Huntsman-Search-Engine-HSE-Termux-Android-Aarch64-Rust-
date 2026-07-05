@@ -204,34 +204,15 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     .clamp_depth();
 
     // `--profile <name>` overlays a preset's tuning (depth / free-only / passive /
-    // expansion threshold / concurrency / budgets) on top of the per-flag options,
-    // leaving the orthogonal selection/output flags (`--modules`, `--exclude`,
-    // `--output`, `--throttle`, webhook) intact. `recommended` is the zero-setup
-    // out-of-box bundle. Resolution is shared with the API via `core::profiles`,
-    // so CLI and web agree on what a profile means.
+    // expansion threshold / concurrency / budgets / expansion strategy /
+    // regional search) on top of the per-flag options, leaving the orthogonal
+    // selection/output flags (`--modules`, `--exclude`, `--output`,
+    // `--throttle`, webhook) intact. `recommended` is the zero-setup
+    // out-of-box bundle.
     let options = if let Some(name) = cmd.profile.as_deref() {
-        let p = crate::core::profiles::resolve_profile(name).ok_or_else(|| {
-            crate::core::error::Error::Other(format!(
-                "unknown --profile '{name}' (try: recommended, passive, footprint, \
-                 investigate, fast, skiptrace)"
-            ))
-        })?;
+        let opts = apply_named_profile(name, options).map_err(crate::core::error::Error::Other)?;
         eprintln!("profile: {name}");
-        ScanOptions {
-            free_only: p.free_only,
-            passive_only: p.passive_only,
-            depth: p.depth,
-            min_expand_confidence: p.min_expand_confidence,
-            max_concurrent: p.max_concurrent,
-            max_entities: p.max_entities,
-            max_wall_time_secs: p.max_wall_time_secs,
-            // A profile's category focus has no per-flag equivalent, so carry it
-            // through the overlay — otherwise `--profile skiptrace` would lose
-            // the very focus that defines it.
-            category_focus: p.category_focus,
-            ..options
-        }
-        .clamp_depth()
+        opts
     } else {
         options
     };
@@ -404,6 +385,27 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Resolve `--profile <name>` and overlay its tuning onto `options` via the
+/// SAME `core::profiles::apply_profile_overlay` the HTTP API uses for its
+/// `"profile"` request field, so a profile means the same thing on the CLI and
+/// the API — not just on what [`crate::core::profiles::resolve_profile`]
+/// returns, but on how it's merged. `Err` names an unknown profile.
+///
+/// Previously the CLI reimplemented the overlay as a hand-written 8-field
+/// `ScanOptions { ..., ..options }` construction here, which omitted
+/// `expansion_strategy`/`regional_search` — dormant only because
+/// `ScanOptions::default()` happened to coincide with every current profile's
+/// values for those two fields, not because it was correct.
+fn apply_named_profile(name: &str, options: ScanOptions) -> Result<ScanOptions, String> {
+    let p = crate::core::profiles::resolve_profile(name).ok_or_else(|| {
+        format!(
+            "unknown --profile '{name}' (try: recommended, passive, footprint, \
+             investigate, fast, skiptrace)"
+        )
+    })?;
+    Ok(crate::core::profiles::apply_profile_overlay(options, p).clamp_depth())
 }
 
 /// Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,
@@ -686,5 +688,51 @@ mod tests {
     fn source_labels_em_dash_when_no_evidence() {
         let e = Entity::new(EntityKind::Email, "x@y.com", 0.5, "s");
         assert_eq!(entity_source_labels(&e), "—");
+    }
+
+    #[test]
+    fn apply_named_profile_preserves_client_flags_and_applies_every_tuning_field() {
+        // The bug this guards: the CLI's old hand-written overlay listed only 8
+        // of the profile-tuning fields, omitting `expansion_strategy` and
+        // `regional_search` — dormant only because `ScanOptions::default()`
+        // happened to coincide with every profile's values for those two
+        // fields (both `GeoConverge`/`true`, same as `skiptrace`'s). Pin the
+        // base options to the OPPOSITE values so the overlay is actually
+        // required to override them from the named profile.
+        let options = ScanOptions {
+            modules: Some(vec!["hunter_io".to_string()]),
+            min_confidence: Some(0.7),
+            expansion_strategy: crate::core::scan::ExpansionStrategy::BreadthFirst,
+            regional_search: false,
+            ..ScanOptions::default()
+        };
+        let merged = apply_named_profile("skiptrace", options.clone()).unwrap();
+        assert_eq!(
+            merged.modules, options.modules,
+            "--modules must survive the overlay"
+        );
+        assert_eq!(
+            merged.min_confidence, options.min_confidence,
+            "--min-confidence must survive the overlay"
+        );
+        let skiptrace = crate::core::profiles::resolve_profile("skiptrace").unwrap();
+        assert_eq!(merged.depth, skiptrace.depth);
+        assert_eq!(
+            merged.expansion_strategy, skiptrace.expansion_strategy,
+            "expansion_strategy must be carried by the CLI overlay"
+        );
+        assert_eq!(
+            merged.regional_search, skiptrace.regional_search,
+            "regional_search must be carried by the CLI overlay"
+        );
+    }
+
+    #[test]
+    fn apply_named_profile_rejects_unknown_name() {
+        let err = apply_named_profile("not-a-real-profile", ScanOptions::default()).unwrap_err();
+        assert!(
+            err.starts_with("unknown --profile "),
+            "error must carry the client-facing prefix, got: {err}"
+        );
     }
 }

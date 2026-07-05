@@ -130,8 +130,20 @@ impl Module for CodewarsUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Coding-platform profile lookup — Code Repositories (T1593.003).
-        &["T1593.003"]
+        // A coding-platform profile — ATT&CK Code Repositories (T1593.003)
+        // for the Username itself. `build_entities` also constructs a Person
+        // (real `name`), an Organisation (`clan`), and an Address/
+        // Coordinates (`city`) — each needs its own technique so the
+        // `attack:<ID>` provenance tag core::engine::dispatch stamps on
+        // every admitted entity actually matches what collected it (the
+        // same gap fixed for `github_user`/`dockerhub_user`). No Email field
+        // exists on this API, so T1589.002 does not apply.
+        &[
+            "T1589.003", // Employee Names — Person from the real `name` field
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from `city`
+            "T1591.002", // Business Relationships — Organisation from `clan`
+            "T1593.003", // Code Repositories — Username via the Codewars profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[

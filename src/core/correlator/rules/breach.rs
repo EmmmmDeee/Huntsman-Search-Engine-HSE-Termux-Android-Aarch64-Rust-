@@ -182,8 +182,14 @@ fn is_substantial_token(s: &str) -> bool {
 /// the link is. Computing this once per secret removes the previous triple
 /// recomputation of `is_salted_hash` / `has_tag` across the filter, the label,
 /// and the severity decision.
+///
+/// `pub(in crate::core)` (re-exported from `correlator::mod`, mirroring
+/// `gap_fill_probes`/`multipath_corroborated_links`): `core::relation::builders`'
+/// `derive_reused_secret_link` calls [`Secret::classify`] directly so the
+/// `SharesSecretWith` graph edge and this AU-047 correlation can never
+/// disagree on which secrets qualify (Rule 4: one classifier).
 #[derive(Clone, Copy)]
-enum Secret {
+pub(in crate::core) enum Secret {
     /// Salted password hash — globally unique by construction.
     SaltedHash,
     /// Reused high-entropy plaintext password — strong, but two people *could*
@@ -208,7 +214,7 @@ impl Secret {
     /// a common password (or an unsalted digest of one) from manufacturing
     /// phantom identities; a session token is admitted only on `Credential` with
     /// explicit `session-token` provenance, never inferred from shape alone.
-    fn classify(e: &Entity) -> Option<Self> {
+    pub(in crate::core) fn classify(e: &Entity) -> Option<Self> {
         match e.kind {
             EntityKind::CryptoAddress => Some(Self::WalletAddress),
             EntityKind::ApiKey => Some(Self::ApiKey),
@@ -434,23 +440,19 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
         let source_clause = if sources.is_empty() {
             String::new()
         } else {
-            let named: Vec<&str> = sources.iter().take(5).map(String::as_str).collect();
             format!(
                 " across {} source{} ({})",
                 sources.len(),
                 if sources.len() == 1 { "" } else { "s" },
-                named.join(", ")
+                join_capped(sources.iter().map(String::as_str), 5)
             )
         };
-        // List the implicated identifiers (emails first, then usernames). The
+        // List the implicated identifiers (emails first, then usernames — an
+        // ExactSizeIterator chain, so join_capped's cap-and-disclose never
+        // re-sorts them into one merged, alphabetically-interleaved set). The
         // separate-account COUNT is the distinct-handle count, which de-dupes an
         // email and the matching username down to the one controller they name.
-        let listed: Vec<&str> = emails
-            .iter()
-            .chain(usernames.iter())
-            .take(6)
-            .map(String::as_str)
-            .collect();
+        let listed = join_capped(emails.iter().chain(usernames.iter()).map(String::as_str), 6);
 
         out.push(Correlation {
             rule_id: "AU-047".into(),
@@ -461,7 +463,7 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
                 class.label(),
                 handles.len(),
                 source_clause,
-                listed.join(", ")
+                listed
             ),
             entity_uids: uids,
             scan_id: scan_id.into(),
@@ -584,12 +586,7 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
                 uids.push(id.uid.to_owned());
             }
         }
-        let listed: Vec<&str> = emails
-            .iter()
-            .chain(usernames.iter())
-            .take(6)
-            .map(String::as_str)
-            .collect();
+        let listed = join_capped(emails.iter().chain(usernames.iter()).map(String::as_str), 6);
         out.push(Correlation::new(
             "AU-106",
             "Shared device fingerprint links accounts",
@@ -598,7 +595,7 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
                 "A single device fingerprint ties {} otherwise-separate accounts to one \
                  controller — the same physical machine: {}",
                 handles.len(),
-                listed.join(", ")
+                listed
             ),
             uids,
             scan_id,
@@ -867,6 +864,14 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
             format!("{} ({crit}/{det})", provider(e))
         })
         .collect();
+    // The priority list is capped at 5, but the description must never claim
+    // completeness it doesn't have — a portfolio of, say, 12 keys must say so,
+    // not silently show 5 with no indication 7 were omitted (the same
+    // disclosure `join_capped` gives AU-047/AU-048/AU-106).
+    let mut priority = top.join("; ");
+    if rows.len() > 5 {
+        priority.push_str(&format!(" (+{} more)", rows.len() - 5));
+    }
 
     let n = keys.len();
     let providers = by_provider.len();
@@ -888,8 +893,7 @@ pub(in crate::core::correlator) fn rule_au_095_exposed_key_portfolio(
         format!(
             "{n} exposed API key(s) across {providers} provider(s) retained as exposure \
              intelligence — {high_value} high-criticality{exploit_note}. Revoke-first priority: \
-             {}. (Exposure scoring only — harvested keys are catalogued, not reused.)",
-            top.join("; ")
+             {priority}. (Exposure scoring only — harvested keys are catalogued, not reused.)"
         ),
         keys.iter().map(|e| e.uid.clone()).collect(),
         scan_id,

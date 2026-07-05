@@ -166,6 +166,75 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
+/// Best-effort `chmod 0600` on each of the store's on-disk files. Failure must
+/// not block [`Store::open`] — a transient or permission-denied chmod is not
+/// fatal — but, mirroring the FTS-rebuild best-effort/never-silent pattern in
+/// `open`, must not be silent either: the store holds PII + harvested
+/// third-party keys, so a failed chmod left at the process umask (often
+/// 0644, world-readable) is a real, if lower-severity, exposure worth a
+/// trace to debug from.
+#[cfg(unix)]
+fn restrict_to_owner_only(paths: &[String]) {
+    use std::os::unix::fs::PermissionsExt;
+    let owner_only = std::fs::Permissions::from_mode(0o600);
+    for p in paths {
+        if let Err(e) = std::fs::set_permissions(p, owner_only.clone()) {
+            tracing::warn!(
+                path = %p,
+                error = %e,
+                "failed to restrict a store file to owner-only (0600) — it may be left world-readable at the process umask"
+            );
+        }
+    }
+}
+
+/// Collect a `query_map` iterator, logging (not silently dropping) any row
+/// that fails SQL-level extraction. In practice this means genuine DB
+/// corruption (a `NOT NULL TEXT` column somehow unreadable as a `String`) —
+/// rare next to a JSON-deserialize failure (see [`deserialize_rows`]), but
+/// every multi-row reader used to swallow it identically via `filter_map(...
+/// .ok())` with zero trace, the same "search is broken with no diagnostic"
+/// failure mode the FTS-rebuild path above already treats as unacceptable.
+fn collect_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>, context: &str) -> Vec<T> {
+    rows.filter_map(|r| match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                context,
+                error = %e,
+                "failed to read a stored row — dropped from result set"
+            );
+            None
+        }
+    })
+    .collect()
+}
+
+/// Deserialize a batch of raw `data_json` rows, logging (not silently
+/// dropping) any row that fails to parse — a corrupted value, or a struct
+/// field added/removed since the row was written. Every multi-row reader
+/// (`list_scans`, `*_for_scan`, `entities_filtered`, `search_entities`) used
+/// to chain `.filter_map(|s| serde_json::from_str(&s).ok())` and vanish a bad
+/// row with no trace, unlike the single-row getters (`get_scan`, `get_entity`)
+/// which already propagate a deserialize error via `?` — this brings every
+/// multi-row reader to the same standard without failing the whole page over
+/// one bad row.
+fn deserialize_rows<T: serde::de::DeserializeOwned>(raw: Vec<String>, context: &str) -> Vec<T> {
+    raw.into_iter()
+        .filter_map(|s| match serde_json::from_str(&s) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(
+                    context,
+                    error = %e,
+                    "failed to deserialize a stored row — dropped from result set"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 impl Store {
     pub fn open(path: &str) -> Result<Self> {
         // Performance pragmas are env-tunable (low-RAM Termux devices may want a
@@ -254,17 +323,11 @@ impl Store {
         // (no `storage → util` edge) (PROBLEM_TREE §7 S3). The `-wal`/`-shm` exist
         // by now (WAL mode + the schema write above created them).
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let owner_only = std::fs::Permissions::from_mode(0o600);
-            for p in [
-                path.to_string(),
-                format!("{path}-wal"),
-                format!("{path}-shm"),
-            ] {
-                let _ = std::fs::set_permissions(&p, owner_only.clone());
-            }
-        }
+        restrict_to_owner_only(&[
+            path.to_string(),
+            format!("{path}-wal"),
+            format!("{path}-shm"),
+        ]);
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -356,12 +419,9 @@ impl Store {
                 "SELECT data_json FROM scans ORDER BY started_at DESC, id DESC LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "list_scans")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "list_scans"))
     }
 
     /// Return the most recent scan whose serialised status matches
@@ -370,8 +430,14 @@ impl Store {
     /// so we don't deserialise dozens of non-Complete rows just to
     /// find one Complete record. Used by `hse export latest …` and
     /// the SPA's "open latest scan" affordance.
+    ///
+    /// Returns `Ok(None)` only when no complete scan exists — a genuine SQL
+    /// failure or a corrupted `data_json` on the matched row propagates as
+    /// `Err`, exactly like [`Store::get_scan`], so a corrupt row is never
+    /// misreported as "no completed scans" to `resolve_scan_id`'s callers
+    /// (`export`/`diff`/`audit latest`).
     pub fn latest_completed_scan(&self) -> Result<Option<Scan>> {
-        let raw: Option<String> = {
+        let json: Option<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
                 // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
@@ -382,9 +448,12 @@ impl Store {
                  WHERE json_extract(data_json, '$.status') = 'complete'
                  ORDER BY started_at DESC, id DESC LIMIT 1",
             )?;
-            stmt.query_row(params![], |r| r.get::<_, String>(0)).ok()
+            let mut rows = stmt.query(params![])?;
+            rows.next()?.map(|r| r.get(0)).transpose()?
         };
-        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+        json.map(|j| serde_json::from_str(&j))
+            .transpose()
+            .map_err(Into::into)
     }
 
     // ── Correlations ───────────────────────────────────────────────────────
@@ -490,12 +559,9 @@ impl Store {
                  END, id",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "correlations_for_scan")
         };
-        let mut corrs: Vec<Correlation> = raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect();
+        let mut corrs: Vec<Correlation> = deserialize_rows(raw, "correlations_for_scan");
         // Rank desc: severity × max child C_eff (computed at correlator-run
         // time). Stable tie-break on severity then rule_id, matching the
         // correlator's own ordering so CLI and API agree.
@@ -542,12 +608,9 @@ impl Store {
                 "SELECT data_json FROM relations WHERE scan_id = ?1 ORDER BY kind, id",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "relations_for_scan")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "relations_for_scan"))
     }
 
     // ── Delete (cascade) ───────────────────────────────────────────────────
@@ -659,12 +722,9 @@ impl Store {
                 "SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "events_for_scan")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "events_for_scan"))
     }
 }
 

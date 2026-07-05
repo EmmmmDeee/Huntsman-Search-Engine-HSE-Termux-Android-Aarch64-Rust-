@@ -434,9 +434,13 @@ fn build_entities(
     entity.add_evidence(ev);
     state.result.push(entity);
 
-    // Subdomain entities — feed back into expansion
-    state.result.extend(state.subdomains.iter().map(|sub| {
-        let mut e = Entity::new(EntityKind::Domain, sub.as_str(), 0.82, scan_id);
+    // Subdomain entities — feed back into expansion. Sorted before emission so
+    // the HashSet's randomised iteration order never leaks into entity order
+    // (the same determinism-leak class fixed for `reddit_user`/`hacker_news`).
+    let mut subs: Vec<&str> = state.subdomains.iter().map(String::as_str).collect();
+    subs.sort_unstable();
+    state.result.extend(subs.into_iter().map(|sub| {
+        let mut e = Entity::new(EntityKind::Domain, sub, 0.82, scan_id);
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(
@@ -446,18 +450,18 @@ fn build_entities(
         e
     }));
 
-    // External domain entities
-    state
-        .result
-        .extend(state.external_domains.iter().map(|ext| {
-            let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
-            e.tag(tags::EXTERNAL);
-            e.add_evidence(
-                Evidence::new(SRC, format!("External domain linked from {domain}"))
-                    .with_attr("source_domain", domain),
-            );
-            e
-        }));
+    // External domain entities — sorted for the same reason.
+    let mut exts: Vec<&str> = state.external_domains.iter().map(String::as_str).collect();
+    exts.sort_unstable();
+    state.result.extend(exts.into_iter().map(|ext| {
+        let mut e = Entity::new(EntityKind::Domain, ext, 0.50, scan_id);
+        e.tag(tags::EXTERNAL);
+        e.add_evidence(
+            Evidence::new(SRC, format!("External domain linked from {domain}"))
+                .with_attr("source_domain", domain),
+        );
+        e
+    }));
 
     // Email entities. A crawl that scrapes an implausible number of distinct
     // addresses has hit a directory / forum / comment-thread dump, not the
@@ -467,8 +471,10 @@ fn build_entities(
     // contact/about page (a handful of addresses) passes through.
     const CONTACT_DUMP_LIMIT: usize = 20;
     if state.emails.len() <= CONTACT_DUMP_LIMIT {
-        state.result.extend(state.emails.iter().map(|email| {
-            let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
+        let mut emails: Vec<&str> = state.emails.iter().map(String::as_str).collect();
+        emails.sort_unstable();
+        state.result.extend(emails.into_iter().map(|email| {
+            let mut e = Entity::new(EntityKind::Email, email, 0.75, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Email found on {domain}"))
@@ -483,9 +489,11 @@ fn build_entities(
     // correlator count how many distinct sites carry the same id (shared id ⇒
     // common ownership). When two crawled domains share an id, both emit the same
     // TrackingId value → it merges to one entity, raising corroboration.
+    let mut tracking_ids: Vec<&(String, String)> = state.tracking_ids.iter().collect();
+    tracking_ids.sort_unstable();
     state
         .result
-        .extend(state.tracking_ids.iter().map(|(id, provider)| {
+        .extend(tracking_ids.into_iter().map(|(id, provider)| {
             let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), 0.80, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.tag("web-analytics");
@@ -500,8 +508,10 @@ fn build_entities(
     // Phone entities — same dump guard (a page with dozens of numbers is a
     // directory, not the subject's).
     if state.phones.len() <= CONTACT_DUMP_LIMIT {
-        state.result.extend(state.phones.iter().map(|phone| {
-            let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.75, scan_id);
+        let mut phones: Vec<&str> = state.phones.iter().map(String::as_str).collect();
+        phones.sort_unstable();
+        state.result.extend(phones.into_iter().map(|phone| {
+            let mut e = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Phone found on {domain}"))

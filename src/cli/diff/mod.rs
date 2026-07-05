@@ -26,6 +26,18 @@ struct Side {
 
 /// Load one side of the diff: a JSON entity snapshot if `arg` is a file on
 /// disk, otherwise the entities of a resolved scan id.
+///
+/// Both branches must yield the SAME confirmed-footprint view: a snapshot
+/// file was itself written by `hse export --format json`, which already
+/// drops quarantined `candidate` rows (the breach co-occurrence "strangers" —
+/// non-subject PII) via `confirmed_entities`. The scan-id branch strips the
+/// identical tag here so the two sides stay comparable. Without this, a
+/// `candidate` entity would leak as non-subject PII into the diff output, AND
+/// (for the documented `hse export … ; hse diff snapshot.json latest`
+/// workflow) every `candidate` entity on the live scan side would show up as
+/// spuriously "added" on every re-scan even when nothing about the target
+/// changed — corrupting the very "what changed" signal this command exists to
+/// produce.
 fn load_side(store: &Store, arg: &str) -> Result<Side> {
     if std::path::Path::new(arg).is_file() {
         let body =
@@ -38,7 +50,8 @@ fn load_side(store: &Store, arg: &str) -> Result<Side> {
         });
     }
     let sid = super::resolve_scan_id(store, arg)?;
-    let entities = store.entities_for_scan(&sid)?;
+    let mut entities = store.entities_for_scan(&sid)?;
+    entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
     Ok(Side {
         entities,
         scan_id: Some(sid),

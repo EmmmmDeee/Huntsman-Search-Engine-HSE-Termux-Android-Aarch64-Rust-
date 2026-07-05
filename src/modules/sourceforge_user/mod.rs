@@ -146,8 +146,19 @@ impl Module for SourceforgeUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Code-repository profile — T1593.003; bio may surface real name/email — T1589.002.
-        &["T1589.002", "T1593.003"]
+        // Code-repository profile — T1593.003; bio may surface an email —
+        // T1589.002. `build_entities` also constructs a Person
+        // (`display_name`) and an Address/Coordinates (`location`) — the
+        // same under-declared-coverage gap fixed for the sibling
+        // "profile lookup" modules (`github_user`/`dockerhub_user`/
+        // `codewars_user`/`mastodon_user`). No `Organisation` entities are
+        // built here, so T1591.002 does not apply.
+        &[
+            "T1589.002", // Email Addresses — emails extracted from the bio
+            "T1589.003", // Employee Names — Person from display_name
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from location
+            "T1593.003", // Code Repositories — Username via the SourceForge profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[

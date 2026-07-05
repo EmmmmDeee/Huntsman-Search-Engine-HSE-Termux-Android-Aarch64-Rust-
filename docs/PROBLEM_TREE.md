@@ -465,7 +465,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   stamps to `SCHEMA_VERSION` when 0 (fresh or pre-versioned DB); `tracing::warn!`
   when `>SCHEMA_VERSION` (forward-compat signal — a newer binary wrote this DB).
   **Paired:** `SOLUTION_TREE` SOL-SCHEMA-VERSION `[x]` + §3/§4/§5 — same commit.
-- **`[~]` T2.11 · Concurrency — process-global state not isolated across the 8
+- **`[x]` T2.11 · Concurrency — process-global state not isolated across the 8
   concurrent `serve` scans** — `hse serve` runs up to `MAX_CONCURRENT_SCANS = 8`
   scans at once, but several **process-global `static`s** are shared without
   per-scan isolation. The deep engine audit (2026-06-17) found three defects here;
@@ -510,7 +510,10 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
     regression test `concurrent_scans_do_not_contaminate_each_others_found_keys` +
     the existing `key_chaining_{sequential,concurrent}_dispatch` integration tests
     (both green) prove per-scan attribution with no single-scan regression. The
-    budget-static `reset_scan`-zeroing remains (folds into the same task-local later).
+    budget-static `reset_scan`-zeroing this note originally flagged as a follow-on
+    was re-assessed the next day (SOL-BUDGET, cycle 18) and found to be a faulty
+    premise — `reset_per_scan` already runs at every scan start — so no further
+    action was needed there; see the closure note below.
   - **LOW — bounded over-dispatch.** `core/engine/dispatch.rs:684-762` (concurrent
     path) judges the `max_entities` budget + the cross-correlation gate against
     round-start `entity_map.len()`, but merges happen only in the post-spawn
@@ -532,7 +535,14 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   **Root cause:** per-scan/per-session budgets and the key sink live in `static`s
   sized for a single in-process scan; `serve`'s concurrency (8) makes them shared
   mutable state. The clean fix is per-`scan_id` keying (or threading the state
-  through `ModuleContext`), which also subsumes the budget-reset race. **P2**
+  through `ModuleContext`). **P2** ✅ **All three sub-items closed** (paid overspend,
+  cross-scan credential contamination, bounded over-dispatch); the one residual any
+  of them flagged (budget-static `reset_scan`-zeroing) was independently
+  re-assessed and accepted as a non-issue by `SOLUTION_TREE`'s SOL-BUDGET (cycle
+  18, same commit-adjacent day) — a genuine cross-reference this node's own text
+  never linked back to until now (found 2026-07-05: `SOLUTION_TREE`'s SOL-ISOLATE
+  entry, dated the day *before* SOL-BUDGET's re-assessment, still described the
+  same residual as pending; corrected there too, same commit).
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -670,6 +680,486 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+- **`[x]` T2.15 · Silent multi-row deserialize/read failures (storage layer)**
+  — every multi-row reader in `storage/` (`list_scans`, `correlations_for_scan`,
+  `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
+  `entities_filtered`, `search_entities`'s FTS and LIKE paths — 8 sites total)
+  chained a bare `.filter_map(|s| serde_json::from_str(&s).ok())` (and, one
+  layer up, `.filter_map(Result::ok)` over the `query_map` iterator) to drop a
+  corrupted or schema-drifted row with **zero trace** — the single-row getters
+  (`get_scan`, `get_entity`) already propagate the identical failure via `?`,
+  so multi-row and single-row reads silently disagreed on how loud a corrupt
+  row should be, and an operator staring at a suspiciously short result page
+  had no signal a row was ever dropped. Found by a code-grounded discovery
+  pass across the storage layer. → **Solution:** two shared private helpers,
+  `collect_rows` (SQL-extraction layer) and `deserialize_rows` (JSON layer),
+  each emitting a `tracing::warn!` keyed by the caller's name before dropping
+  the row; wired into all 8 call sites across `storage/mod.rs` and
+  `storage/entities.rs`. The "one bad row must not fail the whole page"
+  behaviour is unchanged — only the missing diagnostic is added. **P2**
+- **`[x]` T2.16 · Silent chmod failure on the store's PII-bearing files** —
+  `Store::open`'s owner-only (0600) restriction loop over the db file plus its
+  `-wal`/`-shm` siblings did `let _ = std::fs::set_permissions(&p,
+  owner_only.clone());`, discarding the `Result` with no `tracing::warn!` —
+  unlike the FTS-rebuild best-effort step ~30 lines earlier in the same
+  function, which is explicitly best-effort **and** never silent. Since the
+  store "holds PII + harvested third-party keys" per the code's own comment,
+  a failed chmod silently left the file at the process umask (often 0644,
+  world-readable) with zero operator signal. Found by the same storage-layer
+  discovery pass as T2.15. → **Solution:** extracted the loop into a private
+  `restrict_to_owner_only(paths)` helper that logs a `tracing::warn!` keyed
+  by the failing path before continuing — startup is still never blocked by a
+  chmod failure, only made loud. **P2**
+- **`[x]` T2.17 · `latest_completed_scan` misreports a corrupt row as "no
+  completed scans"** — *(supersedes the "closes the storage-layer discovery-
+  pass arc" claim in T2.16's log entry — one more genuine finding surfaced by
+  a direct follow-up grep sweep of the same file.)* `Store::get_scan`
+  propagates a corrupted `data_json` as `Err` via `?` (confirmed by direct
+  comparison), but the sibling single-row getter `latest_completed_scan` did
+  `stmt.query_row(...).ok()` then `raw.and_then(|s|
+  serde_json::from_str(&s).ok())` — collapsing THREE distinct outcomes (no
+  complete scan exists / a genuine SQL error / the matched row's JSON is
+  corrupt) into the same `Ok(None)`. `resolve_scan_id` (`cli/mod.rs`, backing
+  `hse export/diff/audit latest` and the SPA's "open latest scan") turns that
+  `None` into "no completed scans in store" — so a corrupted MOST-RECENT
+  complete scan is misreported as an empty store instead of surfacing the
+  corruption, exactly the class of misleading result this arc exists to
+  close. → **Solution:** rewrote `latest_completed_scan` to mirror
+  `get_scan`'s `rows.next()?...transpose()?` / `.map_err(Into::into)`
+  structure exactly — `Ok(None)` now means only "no complete scan exists";
+  any SQL or deserialize failure on the matched row propagates as `Err`.
+  **P1** (a real wrong-result bug, not just a missing diagnostic).
+- **`[x]` T2.18 · `core::exposure`'s `DOB_KEYS` missing Wikidata's own DOB
+  spelling** — the Exposure Index's `sensitive_component` scores a "date of
+  birth" disclosure (+7 of the 30-point Sensitive PII ceiling) only when an
+  evidence attribute key is in `DOB_KEYS = ["date_of_birth", "dob"]`. The
+  constant's own doc comment states it tracks "the canonical keys the
+  breach/dossier producers stamp" — but `wikidata::builder` stamps
+  `birth_date` (a genuinely different spelling than the `date_of_birth` the
+  breach/stealer producers normalise to, confirmed by direct grep), so a
+  Wikidata-sourced Person's date of birth silently scored zero, contradicting
+  the constant's own stated intent. Surfaced by a direct follow-up on the
+  "three independently-drifted DOB-key vocabularies" observation from the
+  previous cycle (`PROBLEM_TREE`/`SOLUTION_TREE`, 2026-07-05) — this fixes the
+  one CONCRETE, demonstrable instance of that drift; the broader 3-way
+  unification (with `breach_pii::DOB_KEYS`'s 8-spelling, import-facing list)
+  remains a separate, deliberately deferred design decision. → **Solution:**
+  added `"birth_date"` to `DOB_KEYS`. **P2**
+- **`[x]` T2.20 · `/entities/filter` never applied the candidate quarantine
+  every sibling entity-listing endpoint enforces** — `scan_entities`,
+  `scan_entities_csv`, `report.json`, and GEXF export all hide quarantined
+  `candidate`-tagged entities (non-subject breach co-occurrence rows) by
+  default via `wants_candidates()`, opting in only on `?include_candidates=1`.
+  `scan_entities_filter` (`api::scan_handlers::analysis`), registered as `GET
+  /api/v1/scans/{id}/entities/filter`, read only `kind`/`min_confidence`/`q`
+  from the query string and returned `store.entities_filtered(...)` raw —
+  never calling `wants_candidates`, never retaining out `CANDIDATE`-tagged
+  rows, and `entities_filtered` itself has no tag-based `WHERE` clause. A
+  caller could therefore route around the quarantine every other read path
+  enforces simply by hitting the filter endpoint instead — the same class of
+  PII leak as the GEXF `candidate`-node leak fixed 2026-07-04, on a different
+  endpoint the earlier fix didn't touch. Confirmed via `git log
+  -S"wants_candidates"`: the quarantine mechanism was retrofitted onto the
+  other three read paths but never onto this one, which predates it (existed
+  since v1.0.0). Surfaced by a fresh, code-grounded discovery pass (background
+  agent) once the direct rule-gap search on C1(d) (`Ssid`/`Cidr`) came up
+  empty for this cycle. → **Solution:** mirror `scan_entities` exactly — call
+  `wants_candidates(&params)` and `.retain(|e|
+  !e.has_tag(crate::core::tags::CANDIDATE))` before `ok_list`. **P1** (a real
+  PII-leak bug, not a missing diagnostic).
+- **`[x]` T2.21 · `cli::update`'s `commits_behind`/`changelog_lines` were
+  untested against real `git` subprocess behaviour** — a residual explicitly
+  logged (2026-07-01) when a stale "`--check` shows only a bare count" note
+  was corrected: both functions shell out to `git fetch`/`git rev-list`/`git
+  log` and parse the output, but every existing test in `cli/update.rs`
+  exercised only pure logic (`should_check_now`, `parse_throttle_secs`,
+  `command_self_updates`, `autoupdate_paths_live_under_the_cache_dir`) — none
+  constructed an actual git repository, so a regression in the `rev-list`/
+  `log` argument shape (wrong ref order, wrong flag) had no test to catch it.
+  Confirmed by direct read of the test module before writing any code. →
+  **Solution:** a local origin+clone fixture pair (plain directories,
+  `tempfile`, no network) that commits real changes to the "origin," fetches
+  from "local," and asserts `commits_behind`/`changelog_lines` report the
+  true ahead/behind state — including that `commits_behind` only ever
+  fetches (never advances local `HEAD`, so a repeat check without a pull
+  reports the same count, not a spuriously-reset zero) and that a repo with
+  no configured upstream returns `None`/empty rather than a bogus count.
+  Verified the new tests have real teeth: temporarily reversed the
+  `rev-list` range to `@{u}..HEAD`, confirmed the fixture test failed,
+  restored the original from a diff-verified backup. **P2**
+- **`[x]` T2.22 · `greynoise` module never used the operator's configured
+  `HUNTSMAN_GREYNOISE_KEY`** — surfaced by a direct request to audit whether
+  every currently-configured `HUNTSMAN_*` key is genuinely wired to a live
+  module. `src/modules/greynoise/mod.rs`'s own doc comment stated "Auth:
+  None (community tier is key-free)... Free, no API key required" — and a
+  direct read of `process()` confirmed zero `ctx.key_opt`/`ctx.key(` calls
+  anywhere in the file: it unconditionally called the free `v3/community`
+  endpoint regardless of whether a key was configured. An operator who
+  registered for a GreyNoise key (per the tool's own signup-hint UI) got
+  zero additional capability from it — the same class of gap as a
+  registered-but-unimplemented key, except here the module and the key both
+  exist, just never connected. Confirmed the richer endpoint's shape is
+  already known-good elsewhere in this codebase:
+  `src/modules/api_key_probe/probes.rs`'s own GreyNoise key-validation probe
+  already calls `GET https://api.greynoise.io/v3/ip/{ip}` with header `key`
+  (its own comment: "the community endpoint works without auth and would
+  cause false positives" for a validity check) and parses `ip`/`seen`/
+  `classification` from the response — confirming the endpoint, auth
+  header, and those three fields are real and live, not assumed. →
+  **Solution:** mirror the Shodan module's free/paid split exactly
+  (`ctx.key_opt` present → paid path; absent → free path, `cost()` stays
+  `Free` either way since the module still fully functions without a key).
+  Added a `PaidResp` type reusing the community tier's own already-verified
+  `noise`/`riot`/`classification`/`name`/`link`/`message` fields (the v3
+  family) plus the confirmed `seen` flag; `#[serde(default)]` throughout so
+  an unexpected upstream field degrades to "absent," never a parse failure.
+  A live end-to-end validation (a real scan against the configured key) was
+  planned but became impossible mid-cycle: the key disappeared from this
+  environment's `~/.huntsman.env` for a reason that could not be
+  conclusively attributed to any code path in this repository (audited
+  `hse keys validate`, `ensure_hardcoded_keys`, and the full test suite —
+  none write to that file in a way that would drop an unrelated key; a
+  mid-session container restart re-provisioning the environment is the more
+  likely cause). Shipped on unit tests plus the already-verified
+  `api_key_probe` reference instead, per explicit operator sign-off,
+  clearly disclosed as not live-validated in this environment. **P2**
+  (a real dead-key-registration gap, not a crash or PII leak).
+- **`[x]` T2.23 · `search_engines`'s username-scoring let a business/place-name
+  slug reach PROBABLE off the bare surname substring, then recycled it into a
+  further search** — a live "Brett Lawnton" self-test scan surfaced this
+  directly (not a speculative finding): the search-derived candidate
+  `tackle_world_lawnton` (a real "Tackle World" fishing-tackle retailer
+  franchise located in the Lawnton, QLD suburb — unrelated to the subject)
+  reached PROBABLE (0.55) confidence in `score_username`'s Signal 1
+  (surname-anchor substring match: `"lawnton"` present in the slug) — with no
+  check that the candidate's OTHER parts (`"tackle"`, `"world"`) bore any
+  relation to the subject's actual name. Because `recycle_entities`
+  (`search_engines/extract/mod.rs`) re-queries every reliable engine with any
+  `Username` entity ≥0.40 confidence verbatim, this one false PROBABLE match
+  triggered a further search that pulled the retailer's own web presence
+  (Facebook, business directories, a fishing magazine feature) into the
+  subject's identity graph — and it went on to become part of the
+  correlator's single HIGHEST-CONFIDENCE "resolved identity" cluster in the
+  final dossier. Traced with a background agent to the exact mechanism:
+  `extract_path_username` mints a `Username` candidate from any social-host
+  URL's first path segment with no person/business distinction (Facebook
+  serves personal profiles and business Pages from the identical URL shape),
+  and `score_username`'s Signal 1 is a bare substring/equality test with no
+  check that a compound candidate's non-anchor parts belong to the subject's
+  own name. Confirmed no existing guard in this codebase applies (the
+  correlator's `GENERIC_HANDLES` denylist is a different module, never
+  consulted here, and only excludes role-mailbox words, not business
+  phrases; `is_navigation_path` denylists site-navigation tokens, not
+  business/place names) — a genuine, previously-undocumented gap. → **Solution:**
+  gate Signal 1 so a compound candidate (e.g. `"tackle_world_lawnton"`) whose
+  non-anchor parts match NEITHER the subject's given name nor surname is
+  capped at CANDIDATE (0.30, below the 0.40 recycle threshold) UNLESS a
+  genuinely independent signal — people-search host provenance (Signal 2,
+  from the HOST) or an explicit `site:` targeted query (Signal 4, from the
+  QUERY structure) — also corroborates it. Deliberately excludes co-occurrence
+  (Signal 3) and stem/bigram similarity (Signal 5) from counting as
+  independent corroboration: both are themselves surname-substring-driven
+  (a business's own page about itself naturally contains its own name too),
+  so allowing them to override the gate would have let the exact same
+  confound re-admit itself — caught by a pre-existing test
+  (`username_scoring_people_search`, a `"jerome_despal"` handle on
+  `peekyou.com` with an unenumerated real surname) that initially failed
+  against a too-broad first draft of this gate (any independent-looking
+  score total, incl. Signal 3/5) before the fix was narrowed to name genuinely
+  independent signals explicitly. A genuine `"brett_lawnton"` handle is
+  unaffected (no foreign part). **Explicit scope note:** this closes the one
+  concrete case observed, plus the general "compound business-Page slug"
+  shape it represents — it does NOT eliminate free-text surname/place-name
+  collision broadly (a single-token business slug identical to the surname,
+  or a sole-trader's tradename, still slips through); true elimination needs
+  a gazetteer/NER pass or page-semantics verification, a materially bigger
+  design change tracked separately, not claimed as fixed here. **P2**
+  (a real correlation-precision/false-positive-recycling bug, not a crash).
+- **`[x]` T2.24 · `hacker_news::fetch_algolia_submissions` emitted `Domain`
+  entities in non-deterministic order** — surfaced by a background discovery
+  agent, independently re-verified by direct read. The function collected
+  distinct domains parsed from a user's Algolia HN-submissions search
+  response directly into a `HashSet<String>`, then iterated that set straight
+  into the emitted `Vec<Entity>` with no ordering step — Rust's `HashSet`
+  iteration order is randomised per-process (SipHash with a random seed), so
+  the identical submissions JSON could legally produce differently-ordered
+  `Domain` entities, and a differently-ordered live `EntityFound` event
+  stream, across separate runs of the identical scan. This is the same
+  determinism-leak class already fixed for `reddit_user::fetch_submitted` at
+  commit `d5adaefd` earlier in this arc — `HashSet` used for deduplication is
+  correct and necessary, but the raw set must never be walked straight into
+  emission order. → **Solution:** extracted the pure logic into a new
+  `algolia_domain_entities(body, username, scan_id) -> Vec<Entity>` helper
+  (separately unit-testable without any HTTP I/O, mirroring the module's own
+  established `build_entities` pattern) that collects into a `HashSet` for
+  dedup as before, then converts to a `Vec` and calls `.sort_unstable()`
+  before mapping to entities — identical input now always yields the
+  identical entity set in the identical order. **P2** (a determinism/
+  reproducibility bug — evidentiary output must be stable across identical
+  runs — not a crash or PII leak).
+- **`[x]` T2.25 · `web_crawler::build_entities` leaked `HashSet` iteration
+  order into emitted `Domain`/`Email`/`TrackingId`/`Phone` entity order at
+  FIVE separate sites** — a background discovery agent, tasked with finding
+  the next candidate right after T2.24 closed the identical bug in
+  `hacker_news`, swept the module tree for the same shape and found
+  `web_crawler` had it worse: `state.subdomains`, `state.external_domains`,
+  `state.emails`, `state.tracking_ids` (a `HashSet<(String, String)>`), and
+  `state.phones` were each aggregated into a `HashSet` across the whole BFS
+  crawl, then iterated directly into `state.result.extend(...)` with no sort
+  — five independent non-determinism sites in the one function, versus one
+  in `hacker_news`. Notably, the SAME function already gets this right two
+  helper attributes above (lines 404-412): `state.frameworks`/
+  `state.page_types` are correctly collected into a `Vec`, `.sort_unstable()`-ed,
+  then joined into the `frameworks`/`page_types` evidence-string attributes —
+  proving the sort step was a deliberate, known pattern in this exact file
+  that the five entity-emission sites simply never received. Independently
+  re-verified by direct read of `src/modules/web_crawler/mod.rs` before
+  touching any code, confirming all five sites exactly as cited. → **Solution:**
+  applied the identical local pattern already used two lines above in the same
+  function — collect each `HashSet` into a `Vec` (`&str` slices for the four
+  `HashSet<String>` fields, `&(String, String)` tuple refs for
+  `tracking_ids`, whose `Ord` sorts by id then provider), `.sort_unstable()`,
+  then map to entities — at all five sites. **P2** (a determinism/
+  reproducibility bug across the module's four dominant entity kinds, not a
+  crash or PII leak).
+- **`[x]` T2.26 · `email_parse`'s derived-username `HashSet` leaked iteration
+  order into emitted `Username` entity order — the 4th instance of this bug
+  class found** — after T2.25 closed the identical shape in `web_crawler`,
+  dispatched a background agent to sweep the ENTIRE `src/modules/` tree for
+  any remaining `HashSet`-into-emission-order leaks before assuming the class
+  was closed. It found one more: `process()`'s `candidates: HashSet<String>`
+  accumulates up to ~10 derived username spelling variants (detagged,
+  digit-stripped, separator-collapsed, separator-split, and — for a
+  two-token local part — five initial-blend forms: `flast`, `firstl`,
+  `i.last`, `first_last`, `first-last`), then
+  `result.extend(candidates.into_iter().map(...))` walks that set straight
+  into the emitted `Vec<Entity>` with no sort step. The existing
+  `derives_multiple_username_candidates` test only asserted `.contains(...)`
+  membership, never order, so this never surfaced. The same sweep confirmed
+  every OTHER direct-`HashSet`-iteration site in `src/modules/**/*.rs` is
+  already safe — `hibp::mod.rs`'s `all_data_classes` and
+  `search_engines::build.rs`'s `engines_hit` both already collect-then-sort
+  before use — so this closes the bug class project-wide (pending any future
+  module introducing a fresh instance). → **Solution:** identical minimal
+  fix to `web_crawler`'s in-place pattern (no function extraction needed,
+  since insertion order carried no meaning here — it is a bag of derived
+  spelling variants): collect `candidates` into a `Vec<String>`,
+  `.sort_unstable()`, then map to entities. **P2** (a determinism/
+  reproducibility bug on the module's headline Username-derivation output,
+  not a crash or PII leak).
+- **`[x]` T2.27 · `github_user`'s `attack_techniques()` override REPLACED the
+  whole Social-category default array instead of substituting one technique,
+  silently dropping real per-finding MITRE provenance for 5 of its 6
+  produced entity kinds** — with the `HashSet`-order-leak class closed, a
+  background agent widened its next sweep to categories 1–4 (TODO markers,
+  dropped Deserialize fields, newer-clippy shapes, stale ATT&CK mappings)
+  and found this in category 4. The module's own comment justified
+  overriding the Social default's `T1593.001` (Social Media) with the more
+  precise `T1593.003` (Code Repositories) — a genuinely correct call for a
+  GitHub profile — but the override `&["T1593.003"]` replaced the ENTIRE
+  array rather than substituting just that one technique, so `T1589.003`
+  (Employee Names) silently vanished even though `process()` unconditionally
+  builds a `Person` from the profile's real name. Independently re-verifying
+  by direct read of `github_user/mod.rs` surfaced a materially bigger gap
+  than the agent's initial finding: the module also builds `Organisation`
+  (company + GitHub-org membership), `Address`/`Coordinates` (location), and
+  `Credential` (published SSH-key fingerprints, per `fetch.rs`) — none of
+  which had ANY matching technique, and `Email` (published profile email +
+  gist/commit-scanned emails) was ALSO never covered even before this
+  override, since `T1589.002` was never in the Social default either. This
+  is not cosmetic: `core::engine::dispatch` stamps every ADMITTED entity
+  with an `attack:<ID>` tag sourced directly from `attack_techniques()` —
+  "the technique that collected each datum travels with the data" — so
+  every Person/Email/Organisation/Address/Coordinates/Credential this module
+  ever emitted carried NO matching MITRE provenance tag, only
+  `attack:T1593.003`. Cross-referencing `produces()` against
+  `attack_techniques()` for the module's sibling code-repository lookups
+  (`crates_io`, `npm_author`) found they are NOT affected — both are pure
+  package-registry lookups with no Person/Organisation/Address collection.
+  **Correction (same day, before any code was touched for it):** a
+  same-cycle follow-up flagged `crates_io` as declaring `EntityKind::Person`
+  in `produces()` with no matching construction, based on a grep for the
+  literal `EntityKind::Person` string inside `crates_io/mod.rs` — but a
+  deeper read of `build_entities` found it DOES construct one, via the
+  shared `profile_kit::person_from_name(name, 0.70, scan_id)` helper (a real
+  name → `Person` pivot, exactly as the module's own doc comment describes).
+  The literal-string grep missed the indirection through a shared helper —
+  refuted before a single line of "fix" code was written, per this loop's
+  own verify-independently discipline. → **Solution:** declared the precise, complete set:
+  `T1589.001` (Credentials), `T1589.002` (Email Addresses), `T1589.003`
+  (Employee Names), `T1591.001` (Determine Physical Locations), `T1591.002`
+  (Business Relationships), `T1593.003` (Code Repositories) — each backed by
+  a real, already-registered `core::attack::RECONNAISSANCE` catalogue ID and
+  a matching entity-emission code path in `github_user`, following the
+  established "superset of the default, precisely justified per entity kind"
+  convention already used by `fullcontact`/`hunter_io`/`oathnet_pro`/`pgp`.
+  Updated the pre-existing `tests/architecture.rs` pinning assertion (which
+  bundled `github_user` with `crates_io`/`npm_author` under one shared
+  `vec!["T1593.003"]` expectation) to split `github_user` into its own
+  assertion reflecting the corrected, larger set, leaving the two
+  package-registry siblings' correct narrower expectation untouched. **P2**
+  (a MITRE-provenance correctness gap affecting the majority of one module's
+  emitted entity kinds, not a crash or PII leak).
+- **`[x]` T2.28 · `dockerhub_user` had the identical replace-instead-of-extend
+  `attack_techniques()` gap just fixed in `github_user` — 4 of its 5
+  produced entity kinds carried no matching MITRE provenance** — with the
+  `github_user` fix shipped, a background agent swept other Social-category
+  "profile lookup" modules for the same shape and found `dockerhub_user`'s
+  override was `&["T1593.003"]` alone, while `build_entities` demonstrably
+  constructs `Person` (via `profile_kit::person_from_name` from
+  `full_name`), `Organisation` (from `company`), `Address`/`Coordinates`
+  (via `profile_kit::location_address`/`location_coordinates` from
+  `location`), and `Email` (from `gravatar_email`) — independently
+  re-verified by direct read of `dockerhub_user/mod.rs` line-by-line before
+  touching any code, confirming every cited construction path is real, live
+  code reachable from genuine Docker Hub API fields, not aspirational. The
+  agent also flagged this exact shape as recurring across several other
+  Social-category "profile lookup" modules (`codewars_user`,
+  `mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`) — logged as a scoped
+  future sweep rather than pursued in this same commit; `dockerhub_user` was
+  the single largest, most cleanly verified instance (4 missing techniques)
+  and this cycle fixes one module at a time by design. → **Solution:**
+  declared the precise, complete set — `T1589.002` (Email Addresses),
+  `T1589.003` (Employee Names), `T1591.001` (Determine Physical Locations),
+  `T1591.002` (Business Relationships), `T1593.003` (Code Repositories) —
+  mirroring `github_user`'s exact fix shape (no `T1589.001` here: unlike
+  `github_user`, `dockerhub_user` emits no `Credential` entities). **P2** (a
+  MITRE-provenance correctness gap affecting the majority of one module's
+  emitted entity kinds, not a crash or PII leak).
+- **`[x]` T2.29 · `codewars_user` had the third instance of the identical
+  replace-instead-of-extend `attack_techniques()` gap — 3 of its 6 produced
+  entity kinds carried no matching MITRE provenance** — picked up from the
+  scoped future-sweep list T2.28 logged (`codewars_user`, `mastodon_user`,
+  `sourceforge_user`, `cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`), surveying each candidate's
+  `attack_techniques()`/`produces()` pair before selecting the largest
+  remaining verified gap. `codewars_user`'s override was `&["T1593.003"]`
+  alone, while `build_entities` (independently re-verified by direct,
+  line-by-line read before touching any code) demonstrably constructs
+  `Person` (via `profile_kit::person_from_name` from the API's `name`
+  field), `Organisation` (from `clan`), and `Address`/`Coordinates` (via
+  `profile_kit::location_address`/`location_coordinates` from `city`) — no
+  `Email` field exists on the Codewars API, so `T1589.002` correctly does
+  not apply here (unlike `dockerhub_user`). → **Solution:** declared the
+  precise, complete set — `T1589.003` (Employee Names), `T1591.001`
+  (Determine Physical Locations), `T1591.002` (Business Relationships),
+  `T1593.003` (Code Repositories) — mirroring `github_user`'s/
+  `dockerhub_user`'s exact fix shape, scoped down to only the techniques
+  this module's fields actually support. The remaining 7 modules on the
+  scoped sweep list remain open for future cycles — this loop fixes one
+  independently-verified module at a time by design, not a batch. **P2** (a
+  MITRE-provenance correctness gap affecting half of one module's emitted
+  entity kinds, not a crash or PII leak).
+- **`[x]` T2.30 · `mastodon_user` had the same under-declared-coverage
+  `attack_techniques()` gap, but with the CORRECT base technique this
+  time — a variant proving the fix pattern isn't always "swap in
+  T1593.003"** — continuing the scoped sweep list, this instance is
+  meaningfully different from the three prior fixes: `mastodon_user`'s
+  existing override `&["T1589.002", "T1593.001"]` correctly kept
+  `T1593.001` (Social Media) rather than substituting `T1593.003` (Code
+  Repositories), since Mastodon genuinely IS a social platform, unlike
+  the code-hosting modules (`github_user`/`dockerhub_user`/`codewars_user`)
+  mis-declared as Social. But the override still under-declared: independent
+  line-by-line verification of `build_entities` confirmed a `Person` (via
+  `profile_kit::person_from_name` from `display_name`) and an `Address`/
+  `Coordinates` (from a profile field whose name matches
+  `looks_like_location_field`) with no matching technique. → **Solution:**
+  extended the existing correct base rather than replacing it — added
+  `T1589.003` (Employee Names) and `T1591.001` (Determine Physical
+  Locations) to the pre-existing `T1589.002`/`T1593.001` pair. No
+  `Organisation` entities are built here, so `T1591.002` does not apply.
+  **P2** (a MITRE-provenance correctness gap on a minority of one module's
+  emitted entity kinds, not a crash or PII leak).
+- **`[x]` T2.31 · `sourceforge_user` had the same under-declared-coverage
+  `attack_techniques()` gap — 2 of its 6 produced entity kinds carried no
+  matching MITRE provenance** — the 5th instance on the scoped sweep list,
+  and a return to the code-hosting shape (unlike `mastodon_user`'s
+  already-correct-base variant): `sourceforge_user`'s override
+  `&["T1589.002", "T1593.003"]` already correctly covered the Username
+  (Code Repositories) and bio-extracted Email, but independent line-by-line
+  verification of `build_entities` (before touching any code) confirmed a
+  `Person` (via `profile_kit::person_from_name` from `display_name`) and an
+  `Address`/`Coordinates` (via `profile_kit::location_address`/
+  `location_coordinates` from `location`) with no matching technique. No
+  `Organisation`/`Domain` entities are built here, so `T1591.002` does not
+  apply and there is no `T1590`-family Domain-discovery technique to add. →
+  **Solution:** extended the existing correct pair — added `T1589.003`
+  (Employee Names) and `T1591.001` (Determine Physical Locations). **P2** (a
+  MITRE-provenance correctness gap on a minority of one module's emitted
+  entity kinds, not a crash or PII leak).
+- **`[x]` T2.32 · `name_intel` had NO `attack_techniques()` override at all,
+  silently inheriting the People category default's over/under-claim
+  already fixed for `pgp`** — with `hse selftest`/`hse diagnostics` both
+  clean (9/9 self-test checks; doctor+selftest+engines all pass — the
+  search-engine CAPTCHA/throttle statuses are expected environment
+  limitations, not bugs), pivoted to a direct code-grounded discovery pass
+  on `name_intel`, one of the highest-yield/noisiest modules on a real
+  "Brett Lawnton" scan (NAMINT-style username/email/pivot permutation from
+  a `FullName` seed). Found the module never overrides `attack_techniques()`
+  at all, so it silently inherits the full `People` category default
+  (`T1589.003` Employee Names + `T1591.004` Identify Roles) — the EXACT
+  over/under-claim shape `pgp`'s own comment already documents and fixed:
+  "PGP key lookup surfaces the key owner's real name (T1589.003) and email
+  address (T1589.002) — but carries no role/organisational information, so
+  T1591.004 is over-claimed." `name_intel` emits the identical pair (a
+  subject-anchor `Person` plus derived speculative `Email` permutations)
+  with zero role/employer logic anywhere in the file (confirmed by full
+  read of `mod.rs` and `permute/mod.rs`) — so `T1591.004` is equally
+  over-claimed here, and `T1589.002` (Email Addresses) was never credited
+  at all. A separate investigation into `permute::parse`'s honorific-
+  handling for degenerate 2-token names ("Dr Ali", "John Jr") initially
+  looked like a fabrication bug (an honorific literally becoming the
+  parsed first/last name) but was REFUTED on closer reading: the existing
+  test `suffix_not_stripped_from_two_word_name` explicitly documents this
+  as deliberate "safety guard" behaviour (`p("John Jr")` → `last == "jr"`
+  is the pinned, intended contract, not an oversight) — logged here as a
+  refuted lead per this loop's verify-independently discipline, not pursued
+  as a fix. → **Solution:** declared the precise pair `["T1589.002",
+  "T1589.003"]`, identical to `pgp`'s already-established fix, dropping the
+  over-claimed `T1591.004` and adding the missing `T1589.002`. The
+  search-pivot `Url` entities earn no separate technique (they are
+  unexecuted, offline-constructed query links per the module's own "no
+  network calls" doc comment — mirroring `employer_pivot`'s precedent of
+  not crediting derived `Url` entities their own technique). Replaced the
+  pre-existing weak `attack_techniques_non_empty` test (which would pass
+  against the buggy inherited default too, since it only checked
+  non-emptiness) with a precise regression test matching this arc's
+  established convention. **P2** (a MITRE-provenance correctness gap
+  affecting a majority of one high-traffic module's emitted entity kinds,
+  not a crash or PII leak).
+- **`[x]` T2.33 · `api::update_handlers`'s two update-finish sites silently
+  no-op on a poisoned `update_info` mutex, permanently stranding the
+  self-update status at `Applying`** — surfaced by an automated review
+  comment on PR #215 (`copilot-pull-request-reviewer`), independently
+  verified by direct read before acting. `try_start_update` (the
+  check-and-claim gate for `POST /api/v1/update/trigger`) already recovers
+  from a poisoned mutex via `.unwrap_or_else(PoisonError::into_inner)` — a
+  deliberate, documented design choice. But the two sites in the spawned
+  update task that record the OUTCOME (`Ok(()) => phase = Restarting`,
+  `Err(e) => phase = Error(...)`) instead used a bare
+  `if let Ok(mut info) = update_info.lock() { .. }`, which silently no-ops
+  on `Err(PoisonError)` — so if the mutex were ever poisoned, the phase
+  would freeze at `Applying` forever: every subsequent `POST
+  /update/trigger` would then be rejected with 409 by `try_start_update`'s
+  own `Applying`-gate, and `GET /update/status` would report "applying"
+  indefinitely even after the update task had actually finished
+  (successfully or with an error that was silently never recorded). No
+  existing test covered poison-recovery at these two sites (only
+  `try_start_update`'s was tested). → **Solution:** extracted a shared
+  `set_phase()` helper using the identical poison-recovery pattern as
+  `try_start_update`, and routed both finish-sites through it — one
+  poison-recovery policy for the whole mutex, not two inconsistent ones.
+  A second, unrelated review comment on the same PR
+  (`gemini-code-assist`) flagged `hacker_news::algolia_domain_entities`'s
+  `HashSet`-round-trip-then-sort (from the T2.24 fix) as doing more
+  allocation/hashing than necessary for a result that ends up sorted
+  anyway; applied the suggested `Vec` → `sort_unstable()` → `dedup()`
+  rewrite in the same commit — behaviourally identical output, confirmed
+  by the pre-existing `algolia_domain_entities_emits_all_distinct_
+  domains_deterministically` test still passing unmodified. **P2** (a
+  correctness gap that could permanently wedge an operator-facing status
+  endpoint and block all future self-updates, not a crash or PII leak).
 
 ---
 
@@ -704,6 +1194,77 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   each chain's weakest-edge confidence. *Remaining:* (c) first-class timeline
   output (footprint timeline shipped; widen), (d) further AU-0xx rule-gap fill,
   and the "controller behind reused secrets" link facet.
+  *Delivered (cycle 27, 2026-07-05) — partial progress on (c):* `core::timeline`'s
+  `classify()` was silently missing several live evidence-attribute keys that
+  first-party modules already stamp, and `TimelineEventKind::AccountCreated` —
+  defined, documented, given its own `as_str()` label — was completely
+  unreachable dead code because no key ever produced it. Widened `classify()` to
+  recognise `account_created`/`joined_at`/`discord_created_date`/
+  `discord_created_unix_ms`/`uuid_created_date` (→ `AccountCreated`, now live),
+  `birth_date` (Wikidata's spelling, distinct from the canonical
+  `date_of_birth` other modules normalise to → `DateOfBirth`), and
+  `death_date`/`verified_at` (→ `Generic`, `first_pulse_created` → `FirstSeen`
+  — an OTX pulse's earliest-report date). *Investigated but deferred, not
+  fabricated as this cycle's fix:* a genuine, separate single-sourcing gap —
+  THREE independently-maintained DOB-key vocabularies exist in this codebase
+  (`core::correlator::rules::breach_pii::DOB_KEYS`, 8 spellings, scans
+  arbitrary imported breach data; `core::exposure::DOB_KEYS`, only 2 spellings;
+  `core::timeline::classify`, now 2 spellings) — unifying them is a real,
+  worthwhile follow-on but a distinct decision (the broader import-facing list
+  may deliberately accept noisier spellings a first-party-module-only timeline
+  key shouldn't), so left as a separate future node rather than scope-crept
+  into this fix. *Remaining on (c):* investigate whether `Generic`-bucketed
+  keys warrant their own first-class kinds (e.g. a symmetric `DateOfDeath` next
+  to `DateOfBirth`). (d) and the reused-secret facet are unstarted — the latter
+  was assessed this cycle and needs a new `RelationKind` variant plus a
+  visibility/single-sourcing decision on the correlator's private `Secret`
+  primitive (`core::correlator::rules::breach::Secret`), too large for one
+  focused commit; left as future work under the same node rather than rushed.
+  *Delivered (cycle 28, 2026-07-05) — the reused-secret link facet.* Built the
+  design assessed and correctly deferred last cycle. New `RelationKind::
+  SharesSecretWith` edge — the graph-native counterpart of the AU-047/AU-048/
+  AU-106 "controller behind reused secrets" correlations — so
+  `identity_paths`/CONNECTIONS can walk a proven shared-secret tie as a real
+  edge, not just read it off a standalone correlation. Widened the
+  correlator's own `Secret` enum + `Secret::classify` and `canonical_handle`
+  to `pub(in crate::core)` (re-exported from `correlator::mod`, mirroring the
+  established `gap_fill_probes`/`multipath_corroborated_links` pattern — Rule
+  4: one classifier/one folder, so the new edge and the correlations can
+  never disagree on which secrets qualify or which handles are the same
+  account) rather than duplicating the entropy/denylist precision logic. New
+  `core::relation::builders::derive_reused_secret_link`, wired into
+  `derive_all`, emits a full pairwise clique over every identity entity a
+  qualifying secret's evidence names (via the existing `emit_pairwise`
+  primitive) — so a shared secret tying 3+ accounts produces the complete
+  clique, not just a chain through one hub. Updated the two exhaustive
+  `RelationKind` matches in `core::network` (graph-view grouping + edge
+  labelling) the new variant forced. *This closes C1's third and final
+  remaining item* — (d) further AU-0xx rule-gap fill is now C1's only open
+  thread, deliberately left unstarted (an un-invented gap, not a mechanical
+  slice).
+  *Investigated (cycle 30, 2026-07-05) — (d)'s rule-gap search, methodology
+  reusable next time:* cross-referenced every `EntityKind` variant against
+  `EntityKind::X` hits inside `core::correlator::rules/` (recursively — an
+  earlier, non-recursive pass falsely flagged `TrackingId` as uncorrelated).
+  Three kinds showed zero correlator engagement: **`TrackingId`** — REFUTED,
+  not a gap: `AU-044` (`rules/identity/account.rs`) already correlates it
+  ("shared web-analytics ID ⇒ common ownership") exactly as the `web_crawler`
+  module's own comment describes; my first, non-recursive grep simply missed
+  the subdirectory it lives in. **`Ssid`** — a real gap, but not a
+  correlator-only slice: `cli/import::push_ssids` extracts SSIDs as a flat
+  text-level scan with no per-record account attribution (unlike AU-047/106's
+  structured `email`/`username` evidence), so a "shared SSID ⇒ same
+  household/controller" rule (AU-106's device-fingerprint pattern, applied to
+  network co-presence) needs the import extractor changed FIRST to attribute
+  each SSID to the record it came from — a two-part change, not one. **`Cidr`**
+  — plausibly a gap (shared-CIDR-block hosting could indicate common
+  infrastructure, extending AU-044/106's "shared X ⇒ common owner" family),
+  but unlike the exact-value matching those rules do, it needs real
+  CIDR-containment computation (which IP falls in which block), a new
+  capability, not a mechanical addition. Neither `Ssid` nor `Cidr` was
+  pursued this cycle to avoid scope creep into the import/parsing layer; both
+  are legitimate candidates for a FUTURE cycle that scopes the prerequisite
+  change as its own step first.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -4198,3 +4759,656 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   URLs, trimmed + deduped, in order; fail-before: a capped five); all five modules' existing
   tests still pass. Gate green: fmt/clippy/doc clean, full suite 0 failures (4565).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Executed T2.15.** A fresh code-grounded discovery pass across the
+  storage layer (post-fidelity-audit-arc) found every multi-row reader in `storage/`
+  chaining a bare `.filter_map(...ok())` at both the SQL-extraction and JSON-deserialize
+  layers — 8 sites across `list_scans`, `correlations_for_scan`, `relations_for_scan`,
+  `events_for_scan`, `entities_for_scan`, `entities_filtered`, and both branches of
+  `search_entities` — so a corrupted or schema-drifted row vanished with zero trace, unlike
+  `get_scan`/`get_entity` which already propagate the identical failure via `?`. Fix: two
+  shared private helpers in `storage/mod.rs`, `collect_rows` and `deserialize_rows`, each
+  logging `tracing::warn!(context, error, ...)` before dropping a bad row; wired into all 8
+  call sites (four in `storage/mod.rs`, four in `storage/entities.rs` via `super::`). The
+  drop-one-bad-row-keep-the-rest behaviour is unchanged — only the missing diagnostic is
+  added, so the regression test targets the log, not the (already-correct) output: a scoped
+  `tracing` subscriber (mirroring `core::engine::tests`' `VecWriter` pattern) proves the
+  warning fires and is keyed by the caller's name (fail-before: the pre-fix bare filter_map
+  emitted no log at all), plus an end-to-end `list_scans` test proving a corrupt sibling row
+  still doesn't fail the read. Test delta: +3 (`deserialize_rows_drops_corrupt_json_but_logs_
+  the_failure`, `collect_rows_drops_sql_errors_but_logs_the_failure`,
+  `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`). Gate green: fmt/clippy/doc
+  clean, full suite 0 failures (4385 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
+- **2026-07-05** — **Executed T2.16.** Second item from the same storage-layer discovery
+  pass as T2.15: `Store::open`'s owner-only (0600) chmod loop over the db file and its
+  `-wal`/`-shm` siblings discarded the `Result` via `let _ = ...`, with no
+  `tracing::warn!` — unlike the FTS-rebuild best-effort step ~30 lines earlier in the same
+  function, which is explicitly best-effort AND never silent, and unlike T2.15's fix to the
+  read paths just above. Since the store holds PII and harvested third-party keys per its
+  own doc comment, a failed chmod silently left it at the process umask (often 0644,
+  world-readable) with zero signal. Fix: extracted the loop into a private
+  `restrict_to_owner_only(paths: &[String])` helper that logs a `tracing::warn!` keyed by
+  the failing path on each failure; startup is still never blocked by a chmod failure, only
+  made loud. Test delta: +1 (`restrict_to_owner_only_logs_when_a_chmod_fails`, unix-only —
+  chmod on a nonexistent path reliably fails without a read-only-filesystem fixture;
+  fail-before: the pre-fix `let _ = ...` produced no log at all). Gate green: fmt/clippy/doc
+  clean, full suite 0 failures (4386 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit. **This closes the storage-layer discovery-pass arc** (T2.15 + T2.16); the
+  remaining item from that pass (no actual migration-application mechanism behind
+  `SCHEMA_VERSION`) is already correctly captured as T2.10's own stated P3/advisory
+  residual — a version stamp + forward-compat warning were the delivered scope, and
+  there is no live non-additive migration to apply yet, so no new node is warranted.
+- **2026-07-05** — **Executed T2.17 (correction: the arc wasn't fully closed).** A
+  direct follow-up grep sweep of `storage/mod.rs` for the same silent-swallow shape
+  (prompted by checking on a background "fourth discovery pass: storage layer" agent
+  that turned out to be unresolvable in this session — its task ID no longer exists,
+  likely from before a context reset) found one more, and this one a genuine
+  wrong-result bug rather than a missing diagnostic: `latest_completed_scan` did
+  `stmt.query_row(...).ok()` then `.and_then(|s| serde_json::from_str(&s).ok())` —
+  collapsing "no complete scan exists," "a genuine SQL error," and "the matched row's
+  JSON is corrupt" into the identical `Ok(None)`, unlike the sibling `get_scan` two
+  functions above it, which already propagates the same failure via `?`.
+  `resolve_scan_id` (`cli/mod.rs`) turns that `None` into "no completed scans in
+  store" — so a corrupted MOST-RECENT complete scan would be reported to `hse
+  export/diff/audit latest` and the SPA as an empty store instead of surfacing the
+  corruption. Fix: rewrote `latest_completed_scan` to mirror `get_scan`'s
+  `rows.next()?...transpose()?` / `.map_err(Into::into)` structure exactly. Test
+  delta: +1 (`latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none`:
+  a `status='complete'` row with syntactically-valid-but-`Scan`-incompatible
+  `data_json` → `Err`, not `Ok(None)`; fail-before: confirmed `Ok(None)` against the
+  unfixed code). Gate green: fmt/clippy/doc clean, full suite 0 failures (4387 lib
+  tests). **Paired:** `SOLUTION_TREE` §5 — same commit. **This now genuinely closes
+  the storage-layer sweep** — a second follow-up grep for the `.ok())`/`let _ = `
+  silent-swallow shapes across `storage/*.rs` found nothing further outside test
+  cleanup code.
+- **2026-07-05** — **Cycle 27 (C1, partial progress on remaining item (c)).** With
+  the storage-layer sweep closed, picked C1 (`[~]`, in-progress) per step 1's
+  priority order over the open T2.7/T2.14 nodes. Verified `core::timeline::classify`
+  against every `.with_attr("...date...")`/`.with_attr("...created...")`-shaped key
+  actually stamped by first-party modules (direct grep across `src/modules/`, not
+  speculative): confirmed `account_created` (`oathnet_pro`, `stackoverflow_user`),
+  `joined_at` (`devto`), `discord_created_date`/`discord_created_unix_ms`
+  (`discord_snowflake`'s decoded snowflake timestamp), `uuid_created_date`
+  (`structured_id`'s decoded UUIDv1 timestamp), `birth_date`/`death_date`
+  (`wikidata`'s Wikidata-claim dates, a DIFFERENT spelling than the canonical
+  `date_of_birth` other modules normalise to), `verified_at` (`mastodon_user`'s
+  profile-field verification timestamp), and `first_pulse_created`
+  (`ip_reputation`'s OTX pulse earliest-report date) were all live evidence keys
+  `classify` never matched — silently absent from every timeline, and in
+  `account_created`'s case leaving the documented `TimelineEventKind::AccountCreated`
+  variant completely unreachable dead code (defined, labelled via `as_str()`, never
+  producible). Verified each value's actual format is `parse_date`-compatible
+  (`utc_date`'s `YYYY-MM-DD`, raw millisecond digit strings, ISO-8601 with
+  fractional seconds) before adding the mapping, rather than assuming. Fix: widened
+  `classify`'s match arms — the account-creation family → `AccountCreated`
+  (finally reachable), `birth_date` → `DateOfBirth`, `death_date`/`verified_at` →
+  `Generic`, `first_pulse_created` → `FirstSeen`. Test delta: +3
+  (`classify_maps_every_live_account_created_key_not_leaving_it_dead_code`,
+  `classify_recognises_wikidata_and_mastodon_date_keys`,
+  `reconstruct_surfaces_an_account_created_event_end_to_end` — fail-before: the
+  end-to-end test showed 0 events instead of 1 against the unfixed match). Gate
+  green: fmt/clippy/doc clean, full suite 0 failures (4390 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit. Investigation also surfaced a genuine but
+  separate single-sourcing gap (three independently-drifted DOB-key vocabularies:
+  `breach_pii::DOB_KEYS`, `exposure::DOB_KEYS`, `timeline::classify`) and confirmed
+  the "controller behind reused secrets" remaining item needs a new `RelationKind`
+  plus a visibility decision on the correlator's private `Secret` primitive — both
+  correctly left as future C1 work rather than scope-crept into this commit.
+- **2026-07-05** — **Executed T2.18.** With C1's two remaining slices ((d) AU-0xx
+  rule-gap fill, needing a real un-invented gap to point at; the reused-secret
+  `RelationKind` facet, needing a bigger refactor) both genuinely too large or
+  open-ended for one focused commit, followed up on the previous cycle's own
+  logged "three independently-drifted DOB-key vocabularies" observation instead —
+  a concrete gap surfaced by this project's own prior-cycle investigation, not a
+  fresh speculative hunt. Confirmed by direct grep: `wikidata::builder` stamps a
+  Person's date of birth as `birth_date` (its own canonical spelling), while
+  `core::exposure`'s `DOB_KEYS = ["date_of_birth", "dob"]` — whose own doc comment
+  claims it tracks "the canonical keys the breach/dossier producers stamp" — never
+  matched it, so a Wikidata-sourced DOB silently scored zero toward the Sensitive
+  PII component, contradicting the constant's own stated intent (verified `tfn`/
+  `medicare`/`crn`/`drivers_licence`/`passport`/`iban` all correctly resolve via
+  `oathnet_pro`'s producer-side normalisation tuples — no analogous gap there).
+  Fix: added `"birth_date"` to `DOB_KEYS`. Test delta: +1
+  (`sensitive_pii_recognises_wikidata_birth_date_spelling`: a `birth_date`-only
+  Person now scores 7/30 on Sensitive PII with "date of birth" in the detail
+  string; fail-before: confirmed 0/30 against the unfixed list). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4391 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit. The broader 3-way DOB-key unification (with
+  `breach_pii::DOB_KEYS`'s import-facing 8-spelling list) remains correctly
+  deferred — a real design decision, not mechanical, and not attempted here.
+- **2026-07-05** — **Cycle 28: closed C1's "controller behind reused secrets" link
+  facet.** Built the design assessed and correctly deferred in cycle 27 (a
+  `RelationKind` variant plus a visibility decision on the correlator's private
+  `Secret` primitive). Added `RelationKind::SharesSecretWith` — the graph-native
+  counterpart of the AU-047 (reused secret) / AU-048 (shared key) / AU-106 (shared
+  device) correlations, so `identity_paths`/the dossier's CONNECTIONS section can
+  walk a proven shared-secret tie as a real edge instead of only reading it off a
+  standalone correlation. Rather than duplicate the entropy/denylist precision
+  logic those correlations already embody, widened `Secret` + `Secret::classify`
+  (`core::correlator::rules::breach`) and `canonical_handle`
+  (`core::correlator::rules::mod`) to `pub(in crate::core)`, re-exported from
+  `correlator::mod` — mirroring the ALREADY-ESTABLISHED
+  `gap_fill_probes`/`multipath_corroborated_links`/`source_family` pattern in the
+  same file (found by inspection, not invented): Rule 4, one classifier/one
+  folder, so the new edge and the correlations can never disagree on which
+  secrets qualify or which handles are the same account. New
+  `core::relation::builders::derive_reused_secret_link`, wired into `derive_all`
+  (mirroring how every other structural pass is dispatched), reuses the existing
+  `emit_pairwise` primitive to emit a full pairwise clique over every identity
+  entity a qualifying secret's evidence names — so a secret tying 3+ accounts
+  produces the complete clique (every pair directly linked), not a chain through
+  one arbitrarily-chosen hub, letting `identity_paths`' BFS find the direct edge
+  between ANY two of them. Updated the two exhaustive `RelationKind` matches in
+  `core::network` (graph-view grouping into "Identifiers — accounts & contacts";
+  edge label "shared secret") the new variant forced — clippy's own
+  non-exhaustive-match error caught both, confirming no other match site needed
+  updating. Test delta: +3
+  (`derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash`,
+  `derive_reused_secret_link_precision_gate_matches_au047_exactly`,
+  `derive_reused_secret_link_emits_the_full_pairwise_clique` — fixtures mirror
+  AU-047's own correlator test exactly; fail-before: 2 of 3 confirmed failing
+  against a stubbed-empty function, the third trivially passes against a stub
+  since it asserts emptiness). Also exercised the built binary directly
+  (`hse selftest`: 9/9 pass) per `docs/CONVENTIONS.md` §9. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4394 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit. **This closes C1's third and final remaining
+  item** — (d) further AU-0xx rule-gap fill is C1's only open thread, correctly
+  left for a future cycle with a real, code-grounded rule gap to point at rather
+  than an invented one.
+- **2026-07-05** — **Cycle 29: closed T2.11 — a stale cross-tree note, not new
+  code.** With C1's only remaining item (d) needing a real, un-invented AU-0xx
+  rule gap (not yet found) and T2.7/T2.14 both needing bigger design decisions,
+  re-read `SOLUTION_TREE` §2's SOL-BUDGET/SOL-ISOLATE/SOL-LIVE-DISPATCH-BUDGET
+  entries closely (all three close a T2.11 sub-item) and found a genuine
+  documentation drift, not a code gap: T2.11's own body text (the found_keys
+  bullet) and `SOLUTION_TREE`'s SOL-ISOLATE entry (dated 2026-06-17) both still
+  described the "budget-static `reset_scan`-zeroing" as a pending follow-on —
+  but SOL-BUDGET's own re-assessment the very next day (cycle 18, 2026-06-18)
+  found that exact residual was based on a faulty premise (`reset_per_scan`
+  already runs at every scan start) and accepted it `[-]`, with no further
+  action needed. Neither T2.11's body nor SOL-ISOLATE's residual note was ever
+  updated to reflect that acceptance, so both kept describing already-closed
+  work as outstanding. With all three of T2.11's actual sub-items long since
+  `[x]`/✅ Fixed (paid overspend, cross-scan credential contamination, bounded
+  over-dispatch) and its one remaining "residual" independently resolved a
+  day later by a sibling solution node, T2.11 itself is fully closed — flipped
+  `[~]`→`[x]`, with both stale mentions corrected to cross-reference
+  SOL-BUDGET's actual disposition instead of contradicting it. No code
+  changed; the gate was re-run to confirm the working tree is still green
+  (fmt/clippy/doc clean, full suite 0 failures, 4394 lib tests — unchanged
+  from the prior commit, as expected for a docs-only reconciliation).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 30: made a genuine, honest attempt at C1(d)'s AU-0xx
+  rule-gap fill; refuted one candidate, scoped two more for later, closed a
+  second stale-doc drift.** Methodology: cross-referenced every `EntityKind`
+  variant against `EntityKind::X` usage inside `core::correlator::rules/`
+  (recursively, correcting an earlier non-recursive pass that falsely flagged
+  `TrackingId` as uncorrelated). `TrackingId` — **refuted**: `AU-044` already
+  exists and does exactly what the `web_crawler` module's own comment
+  describes ("shared web-analytics ID ⇒ common ownership"); no gap. `Ssid` —
+  real gap, but needs `cli/import::push_ssids` changed FIRST to attribute each
+  extracted SSID to the record it came from (currently a flat text-level scan
+  with no per-account attribution, unlike AU-047/106's structured evidence);
+  scoped as future work, not attempted this cycle. `Cidr` — plausibly a gap
+  (shared-block hosting as a "common infrastructure" signal, extending
+  AU-044/106's family) but needs real CIDR-containment computation, a new
+  capability; also scoped as future work. Neither was pursued to avoid
+  expanding this cycle into the import/parsing layer. Separately, found
+  `SOLUTION_TREE` §4d's C5 coverage-snapshot summary was stale in the same way
+  T2.11's was last cycle: it still said "Weiszfeld/centroid fusion... remaining"
+  although the geometric-median convergence work was delivered 2026-07-01 (per
+  both `PROBLEM_TREE` C5's own body and `SOLUTION_TREE`'s SOL-GEOINT node,
+  neither of which the one-line summary was ever reconciled against).
+  Corrected. No code changed this cycle — an honest rule-gap search that came
+  up empty for a mechanical slice, plus a second doctrine-hygiene fix. Gate
+  re-run to confirm the working tree is still green (unchanged from the prior
+  commit). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 31 (new T2.20): `/entities/filter` leaked
+  quarantined `candidate` entities every sibling endpoint hides by default.**
+  With cycle 30's direct C1(d) rule-gap search coming up empty for a
+  mechanical slice, delegated a fresh, code-grounded discovery pass to a
+  background agent (isolated worktree) rather than force a weak finding or
+  default to a third consecutive docs-only cycle. It found a real gap:
+  `scan_entities`, `scan_entities_csv`, `report.json`, and GEXF export all
+  apply the `wants_candidates()`/`CANDIDATE`-tag quarantine, but
+  `scan_entities_filter` — registered at `/api/v1/scans/{id}/entities/filter`,
+  absent from `api::routes`'s own doc table — read only
+  `kind`/`min_confidence`/`q` and returned `store.entities_filtered(...)` raw,
+  with no tag-based `WHERE` clause anywhere downstream either. Verified
+  independently before touching code: confirmed all four call sites, confirmed
+  no other layer re-applies the filter, confirmed via `git log
+  -S"wants_candidates"` that the quarantine was retrofitted onto the other
+  three read paths but never this one (which predates it, v1.0.0), confirmed
+  the existing `scan_entities_filter_returns_entities` test never seeded a
+  candidate entity so never caught it. → **Solution:** added the same
+  `wants_candidates(&params)` + `.retain(...)` guard `scan_entities` already
+  uses. Test delta:
+  `scan_entities_filter_quarantines_candidate_entities_by_default`
+  (`tests/api.rs`, mirroring `scan_gexf_quarantines_candidate_nodes_by_default`'s
+  shape) — confirmed fail-before (reverted the fix in-place, test failed;
+  restored from a diff-verified post-fix backup, test passed). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5
+  — same commit.
+- **2026-07-05** — **Cycle 32 (new T2.21): closed the `cli::update` git-fixture
+  test gap explicitly deferred in the 2026-07-01 S→P audit note.** With T2.20
+  just closed, re-scanned `SOLUTION_TREE` §4a for the next already-scoped,
+  not-yet-started coverage gap rather than run another discovery pass — found
+  the "hse update --check changelog" entry's own residual: `changelog_lines`/
+  `commits_behind` were untested against real `git` subprocess behaviour.
+  Confirmed independently by reading `cli/update.rs`'s test module: every
+  existing test targets pure logic, none constructs a real repo. Built a
+  local origin+clone fixture pair (`tempfile`, no network) proving both
+  functions' actual ahead/behind counting and one-line changelog formatting
+  against genuine `git fetch`/`rev-list`/`log` output — including the
+  correction of a wrong assumption in the test's own first draft (that a
+  second `commits_behind` call would report 0 after a mere fetch; it
+  correctly still reports the same count, since `commits_behind` never
+  advances local `HEAD` — only an explicit `git merge --ff-only @{u}` does,
+  matching what `install.sh`'s real `git pull` does). Since there was no
+  behavioural bug to fix (the functions were already correct, only
+  untested), the fail-before proof was adapted accordingly: temporarily
+  reversed the `rev-list` range to `@{u}..HEAD`, confirmed the new fixture
+  test failed against that regression, restored the original range from a
+  diff-verified backup. Test delta:
+  `commits_behind_and_changelog_lines_reflect_real_git_state`,
+  `commits_behind_returns_none_without_a_configured_upstream`. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4396 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 33 (new T2.22): `greynoise` module wired to the
+  operator's configured key it had silently ignored.** A direct request to
+  audit every currently-configured `HUNTSMAN_*` key's wiring surfaced this
+  independently of a background-agent pass: `greynoise/mod.rs`'s own doc
+  comment claimed "Free, no API key required," and a direct read confirmed
+  zero `ctx.key_opt` calls anywhere in the file — the module always called
+  the free `v3/community` endpoint regardless of whether
+  `HUNTSMAN_GREYNOISE_KEY` was set. Rather than guess at an unverified
+  richer-tier response shape, found the endpoint already proven live
+  elsewhere in this codebase: `api_key_probe`'s own GreyNoise
+  key-validation probe already calls the paid `v3/ip/{ip}` endpoint (header
+  `key`) and parses `ip`/`seen`/`classification` — confirming the real,
+  working contract without speculation. Mirrored the Shodan module's
+  established free/paid dual-path pattern exactly (`cost()` stays `Free`;
+  `ctx.key_opt` presence branches to the richer endpoint). During
+  live-validation an unrelated but serious issue surfaced: the configured
+  `HUNTSMAN_GREYNOISE_KEY` had disappeared from this environment's
+  `~/.huntsman.env` entirely (confirmed via `hse doctor`: 14 keys → 13,
+  GreyNoise absent from both loaded and unset lists). Audited every code
+  path that touches that file (`hse keys validate`'s pool-only writes,
+  `ensure_hardcoded_keys`'s OathNet/HIBP/WiGLE/SeekNow-only rewrite gate —
+  confirmed via trace logs it never fired during this session's test scans
+  — and the full test suite, which only ever writes to isolated temp
+  paths) and found no code path in this repository that explains it; a
+  mid-session container restart re-provisioning the environment is the more
+  likely cause, disclosed to the operator as inconclusive rather than
+  asserted. Per explicit operator sign-off, shipped on the unit-test +
+  already-verified-reference basis instead of a blocked live call. Test
+  delta: `paid_response_deserialization`,
+  `paid_path_tags_seen_in_addition_to_the_shared_signal`,
+  `paid_path_surfaces_a_seen_but_otherwise_unclassified_ip`,
+  `paid_path_no_signal_at_all_yields_nothing`,
+  `paid_path_still_yields_the_operator_organisation_pivot` — fail-before
+  confirmed (reverted to the pre-fix community-only code with the new tests
+  still present; they failed to compile against it, referencing symbols
+  that don't exist without the fix). Gate green: fmt/clippy/doc clean, full
+  suite 0 failures (4401 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
+- **2026-07-05** — **Cycle 34 (new T2.23): the correlator's single
+  highest-confidence "resolved identity" cluster on a real self-test turned
+  out to be a false positive — traced to its root cause in
+  `score_username`.** Continuing "improve precision" against real evidence
+  rather than speculation: the earlier live "Brett Lawnton" self-test's
+  dossier tied `brett.lawnton`/`Brett Lawnton` to `tackle_world_lawnton` and
+  an unrelated email at the correlator's top confidence (0.55, weakest-link)
+  — `tackle_world_lawnton` is a real fishing-tackle retailer's Facebook slug
+  (named after the Lawnton, QLD suburb, unrelated to the subject). Dispatched
+  a background agent to trace the exact mechanism rather than guess: found
+  `score_username`'s Signal 1 (`search_engines/helpers/entity/mod.rs`) scores
+  a bare surname-substring match on ANY candidate at +3 (immediately clearing
+  the PROBABLE threshold) with no check that a compound candidate's other
+  parts relate to the subject at all, and `recycle_entities`
+  (`extract/mod.rs`) then re-queries verbatim with any ≥0.40-confidence
+  `Username`, which is exactly what pulled the retailer's own web presence
+  into the graph. Confirmed no existing guard in this codebase covers this
+  (the correlator's `GENERIC_HANDLES` denylist is unrelated and
+  never consulted by `search_engines`). → **Solution:** gate Signal 1 so a
+  compound candidate whose non-anchor parts match neither the subject's given
+  nor surname is capped at CANDIDATE unless independently corroborated by
+  people-search host provenance or an explicit `site:` query — deliberately
+  excluding co-occurrence/stem-similarity from counting as independent
+  corroboration, since both are themselves surname-substring-driven (a
+  business page about itself naturally contains its own name too). A
+  too-broad first draft of this gate (treating ANY corroborating score total
+  as independent) failed a pre-existing test
+  (`username_scoring_people_search`, a legitimate `"jerome_despal"` handle
+  with an unenumerated real surname) — caught and narrowed to name the
+  genuinely independent signals explicitly rather than widen the test to
+  accommodate an imprecise gate. Test delta:
+  `score_username_business_slug_containing_the_surname_stays_candidate`
+  (fail-before confirmed: reverted to pre-fix code with the new test present,
+  scored 7/PROBABLE against the unfixed function),
+  `score_username_genuine_firstname_lastname_handle_still_reaches_probable`
+  (proves the fix doesn't over-broadly demote real compound personal
+  handles). Explicitly scoped: this closes the observed case and the general
+  "compound business-Page slug" shape, not free-text surname/place-name
+  collision broadly (a single-token business slug identical to the surname
+  still slips through — that needs a gazetteer/NER pass, a separate, larger
+  tracked item, not claimed as fixed here). Gate green: fmt/clippy/doc clean,
+  full suite 0 failures (4403 lib tests). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+- **2026-07-05** — **Cycle 35 (new T2.24): `hacker_news::fetch_algolia_submissions`
+  leaked `HashSet` iteration order into emitted `Domain` entity order.**
+  Continuing the fresh-discovery step of the loop: a background agent swept
+  the module tree for the same determinism-leak shape already fixed for
+  `reddit_user::fetch_submitted` (commit `d5adaefd`, this same arc), and
+  found `hacker_news` had the identical bug — domains parsed from a user's
+  Algolia HN-submissions search response were deduplicated via `HashSet` and
+  then walked straight into `Vec<Entity>` with no sort step, so identical
+  submissions could legally emit differently-ordered `Domain` entities (and a
+  differently-ordered live `EntityFound` stream) across runs of the identical
+  scan, purely as an artefact of the process's randomised `HashSet` seed.
+  Independently re-verified by direct read of `src/modules/hacker_news/mod.rs`
+  before touching any code. → **Solution:** extracted the pure logic into a
+  new `algolia_domain_entities(body, username, scan_id) -> Vec<Entity>`
+  helper — collect into a `HashSet` for dedup as before, convert to `Vec`,
+  `.sort_unstable()`, then map to entities — mirroring the `reddit_user`
+  fix's exact shape. Test delta:
+  `algolia_domain_entities_emits_all_distinct_domains_deterministically`
+  (7 URLs across 6 distinct domains, deliberately non-alphabetical input
+  order, asserts output is sorted and every entity carries the `hn-submission`
+  tag), `algolia_domain_entities_no_urls_yields_nothing` — fail-before
+  confirmed (reverted `mod.rs` to pre-fix `HEAD` with the new tests still
+  present in `tests.rs`; both failed to compile, referencing
+  `algolia_domain_entities`, a symbol that doesn't exist without the fix).
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4405 lib tests).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 36 (new T2.25): `web_crawler::build_entities` had
+  the SAME determinism-leak shape at FIVE sites in one function.** Right
+  after T2.24 closed the identical bug in `hacker_news`, dispatched a
+  background agent to sweep the rest of the module tree for the same shape
+  rather than assume it was isolated. It found `web_crawler` worse:
+  `subdomains`/`external_domains`/`emails`/`tracking_ids`/`phones` are each
+  aggregated into a `HashSet` across a whole BFS crawl, then every one is
+  iterated straight into `state.result.extend(...)` with no sort — five
+  independent non-determinism sites across the module's four dominant entity
+  kinds (`Domain`, `Email`, `TrackingId`, `Phone`). The telling detail: the
+  SAME function already gets this right two lines above, for the
+  `frameworks`/`page_types` evidence-string attributes (`Vec` + `.sort_unstable()`
+  before `.join()`) — proving sorting-before-emission was already a known,
+  deliberate pattern in this exact file that the five entity sites simply
+  never received. Independently re-verified by direct read of
+  `src/modules/web_crawler/mod.rs` before touching any code. → **Solution:**
+  applied that exact same local pattern (already used two lines above) to all
+  five sites: collect the `HashSet` into a `Vec` (`&(String, String)` tuple
+  refs for `tracking_ids`, whose `Ord` sorts by id then provider), sort, map
+  to entities. Test delta:
+  `build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`
+  (deliberately non-alphabetical `HashSet` insertion order across all five
+  fields; asserts subdomains then external domains, emails, phones, and
+  tracking ids all emerge sorted) — fail-before confirmed (reverted `mod.rs`
+  to pre-fix `HEAD` with the new test present; failed on the unsorted
+  `external_domains`/`emails` order). A first draft of the test helper used
+  `.map(|s| s.to_string())`, which the newer clippy lint table flagged as
+  `redundant_closure_for_method_calls` — corrected to
+  `.map(ToString::to_string)` before the gate passed. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4406 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 37 (new T2.26): `email_parse`'s derived-username
+  `HashSet` was the 4th instance of the same determinism-leak bug class —
+  a project-wide sweep confirms it is now closed.** Rather than assume the
+  three prior fixes (`reddit_user`, `hacker_news`, `web_crawler`) had closed
+  every instance, dispatched a background agent to sweep the ENTIRE
+  `src/modules/` tree for the same shape before moving to a different
+  category. Found `email_parse::process`'s `candidates: HashSet<String>`
+  (up to ~10 derived username spelling variants — detagged, digit-stripped,
+  collapsed, split, plus five initial-blend forms for a two-token local
+  part) walked straight into `result.extend(candidates.into_iter().map(...))`
+  with no sort — the module's own headline Username-derivation output could
+  legally emit in a different order run-to-run. The existing
+  `derives_multiple_username_candidates` test only asserted membership
+  (`.contains(...)`), never order, so it never caught this. The same sweep
+  independently confirmed every other direct-`HashSet`-iteration site in
+  `src/modules/**/*.rs` is already safe (`hibp` and `search_engines::build`
+  both already sort before use) — closing this bug class project-wide.
+  → **Solution:** applied the identical minimal in-place fix used for
+  `web_crawler` (collect into `Vec<String>`, `.sort_unstable()`, then map to
+  entities — no function extraction needed since insertion order carried no
+  meaning here). Test delta:
+  `username_candidates_emerge_in_deterministic_sorted_order` (a two-token
+  corporate local part exercising every derivation branch, asserting the
+  emitted usernames equal their own sorted form) — fail-before confirmed
+  (reverted `mod.rs` to pre-fix `HEAD` with the new test present; panicked
+  on the unsorted `HashSet` order). Gate green: fmt/clippy/doc clean, full
+  suite 0 failures (4407 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
+- **2026-07-05** — **Cycle 38 (new T2.27): `github_user`'s ATT&CK override
+  replaced instead of extended the category default, silently dropping
+  real MITRE provenance for 5 of its 6 produced entity kinds.** With the
+  `HashSet`-order-leak bug class confirmed closed project-wide, a background
+  agent widened its sweep to a fresh set of categories (TODO markers,
+  dropped Deserialize fields, newer-clippy-only shapes, stale ATT&CK
+  mappings) and surfaced this in the last one: `github_user`'s own comment
+  correctly argued for `T1593.003` (Code Repositories) over the Social
+  default's `T1593.001` (Social Media), but the override `&["T1593.003"]`
+  replaced the WHOLE default array rather than swapping just that one
+  technique — silently dropping `T1589.003` (Employee Names) even though
+  `process()` unconditionally builds a `Person` from the real name.
+  Independently re-verifying by direct read surfaced a bigger gap than the
+  agent's initial finding: `github_user` also builds `Organisation`
+  (company + org membership), `Address`/`Coordinates` (location), and
+  `Credential` (SSH-key fingerprints), none of which had ANY matching
+  technique, and `Email` was never covered even before this override (never
+  in the Social default). Cross-checked against `core::engine::dispatch`,
+  confirmed this corrupts real per-finding provenance, not just a doc
+  comment: every admitted entity is stamped `attack:<ID>` sourced directly
+  from this list. Cross-referenced the module's sibling code-repository
+  lookups (`crates_io`, `npm_author`) — confirmed NOT affected (pure
+  package lookups, no Person/Organisation/Address collection) — but found
+  a different, unrelated gap in `crates_io` along the way: it declares
+  `Person` in `produces()` but never constructs one anywhere in the file
+  (an over-claimed capability). Logged as a deferred candidate for a future
+  cycle rather than pursued here — a different bug shape on an unrelated
+  module, out of scope for this commit. → **Solution:** declared the
+  precise, complete set (`T1589.001`, `T1589.002`, `T1589.003`, `T1591.001`,
+  `T1591.002`, `T1593.003`), each backed by a real catalogued ID and a
+  matching code path, following the established "superset of the default"
+  convention (`fullcontact`/`hunter_io`/`oathnet_pro`/`pgp`). Updated the
+  pre-existing `tests/architecture.rs` pinning assertion (previously bundled
+  `github_user` with `crates_io`/`npm_author`) to split `github_user` into
+  its own assertion. Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.001` assertion). Gate green: fmt/clippy/doc clean,
+  full suite 0 failures (4408 lib tests), architecture suite 30/30. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 39 (doctrine hygiene): an honest, empty-handed
+  refutation of the `crates_io` "Person" gap logged one commit earlier; no
+  code changed.** Before starting a fresh discovery pass, picked up the
+  `crates_io` lead Cycle 38 had logged as a deferred candidate ("declares
+  `Person` in `produces()` but never constructs one") — it looked like a
+  small, ready-scoped follow-on. Reading `crates_io::build_entities` in
+  full (rather than trusting the earlier grep) found it DOES construct a
+  `Person`, via `profile_kit::person_from_name(name, 0.70, scan_id)` (a
+  shared helper used across several code-repository/profile modules) —
+  exactly matching the module's own doc comment ("exposes the maintainer's
+  REAL NAME"). The earlier finding was a literal-string grep for
+  `EntityKind::Person` inside `crates_io/mod.rs` alone, which cannot see a
+  construction performed by a shared helper in a different file — a false
+  positive, not a real gap. Corrected the T2.27 node body (§3.2) and the
+  paired `SOLUTION_TREE` note in place, per this loop's own
+  verify-independently discipline: refuting a false lead before writing a
+  single line of "fix" code is exactly the outcome this discipline exists
+  to produce, mirroring the earlier `TrackingId`/AU-044 refutation.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 40 (new T2.28): `dockerhub_user` had the identical
+  replace-instead-of-extend `attack_techniques()` gap just fixed in
+  `github_user`.** A background agent swept other Social-category "profile
+  lookup" modules for the same shape and found `dockerhub_user`'s override
+  was `&["T1593.003"]` alone, while `build_entities` demonstrably
+  constructs `Person` (via `profile_kit::person_from_name` from
+  `full_name`), `Organisation` (from `company`), `Address`/`Coordinates`
+  (via `profile_kit::location_address`/`location_coordinates` from
+  `location`), and `Email` (from `gravatar_email`). Independently
+  re-verified by direct read of `dockerhub_user/mod.rs` line-by-line before
+  touching any code, confirming every cited construction path is real, live
+  code reachable from genuine Docker Hub API fields — 4 of the module's 5
+  produced entity kinds carried no matching MITRE provenance tag. The agent
+  also flagged this exact shape as recurring across several other
+  Social-category "profile lookup" modules (`codewars_user`,
+  `mastodon_user`, `sourceforge_user`, `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`) — logged as a scoped
+  future sweep rather than pursued in this same commit; `dockerhub_user` was
+  the single largest, most cleanly verified instance (4 missing techniques).
+  → **Solution:** declared the precise, complete set — `T1589.002`,
+  `T1589.003`, `T1591.001`, `T1591.002`, `T1593.003` — mirroring
+  `github_user`'s exact fix shape (no `T1589.001`: unlike `github_user`,
+  `dockerhub_user` emits no `Credential` entities). Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.002` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `dockerhub_user`, so no cross-module test update was
+  needed this time. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4409 lib tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
+- **2026-07-05** — **Cycle 41 (new T2.29): `codewars_user` was the 3rd
+  instance of the same replace-instead-of-extend `attack_techniques()` gap.**
+  Picked up from the scoped future-sweep list T2.28 logged, surveying each
+  of the 8 candidates' `attack_techniques()`/`produces()` pair before
+  selecting the largest remaining verified gap: `codewars_user`'s override
+  was `&["T1593.003"]` alone, while `build_entities` (independently
+  re-verified line-by-line before touching any code) demonstrably
+  constructs `Person` (via `profile_kit::person_from_name` from the API's
+  `name` field), `Organisation` (from `clan`), and `Address`/`Coordinates`
+  (via `profile_kit::location_address`/`location_coordinates` from `city`)
+  — 3 of the module's 6 produced entity kinds carried no matching MITRE
+  provenance. No `Email` field exists on the Codewars API, so `T1589.002`
+  correctly does not apply here, unlike `dockerhub_user`. → **Solution:**
+  declared the precise, complete set — `T1589.003`, `T1591.001`,
+  `T1591.002`, `T1593.003` — mirroring the prior two fixes' exact shape,
+  scoped down to only what this module's fields support. Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.003` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `codewars_user`. The remaining 7 modules on the
+  scoped sweep list (`mastodon_user`, `sourceforge_user`, `cpan_user`,
+  `gitea_user`, `codeberg_user`, `huggingface_user`, `hexpm_user`) stay
+  open for future cycles — one independently-verified module per cycle by
+  design. Gate green: fmt/clippy/doc clean, full suite 0 failures (4410 lib
+  tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
+- **2026-07-05** — **Cycle 42 (new T2.30): `mastodon_user` was a variant of
+  the same under-declared-coverage gap, this time on a CORRECT base
+  technique.** Continuing the scoped sweep list, picked `mastodon_user`
+  next for a deliberately different reason than the prior three fixes: its
+  existing override `&["T1589.002", "T1593.001"]` correctly kept
+  `T1593.001` (Social Media) — Mastodon genuinely is social media, unlike
+  the code-hosting modules mis-declared as Social — so this instance tests
+  whether the fix pattern generalises beyond "swap in T1593.003," or was
+  only ever fixing a wrong substitution. Independent line-by-line
+  verification of `build_entities` confirmed the override was still missing
+  coverage for a `Person` (via `profile_kit::person_from_name` from
+  `display_name`) and an `Address`/`Coordinates` (from a profile field
+  matching `looks_like_location_field`) — no `Organisation` entities are
+  built here, so `T1591.002` correctly does not apply. → **Solution:**
+  extended the existing correct pair rather than replacing it — added
+  `T1589.003` (Employee Names) and `T1591.001` (Determine Physical
+  Locations). Because `mastodon_user`'s tests live inline in `mod.rs` (no
+  separate `tests.rs`), the fail-before step required reverting only the
+  `attack_techniques()` function body in place (not the whole file, which
+  would also have deleted the new test) — confirmed against the isolated
+  buggy function, restored via a diff-verified whole-file backup. Test
+  delta: `attack_techniques_covers_every_entity_kind_this_module_produces`
+  — fail-before confirmed (panicked on the missing `T1589.003` assertion
+  against the reverted-in-place `attack_techniques()` body). No
+  `tests/architecture.rs` pinning assertion referenced `mastodon_user`. 6
+  modules remain on the scoped sweep list (`sourceforge_user`, `cpan_user`,
+  `gitea_user`, `codeberg_user`, `huggingface_user`, `hexpm_user`) for
+  future cycles. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4411 lib tests), architecture suite 30/30. **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
+- **2026-07-05** — **Cycle 43 (new T2.31): `sourceforge_user` was the 5th
+  instance of the same under-declared-coverage `attack_techniques()` gap.**
+  Continuing the scoped sweep list, `sourceforge_user`'s override
+  `&["T1589.002", "T1593.003"]` already correctly covered the Username
+  (Code Repositories) and bio-extracted Email — this instance is back to
+  the code-hosting shape rather than `mastodon_user`'s already-correct-base
+  variant. Independent line-by-line verification of `build_entities`
+  (before touching any code) confirmed a `Person` (via
+  `profile_kit::person_from_name` from `display_name`) and an `Address`/
+  `Coordinates` (via `profile_kit::location_address`/
+  `location_coordinates` from `location`) with no matching technique. No
+  `Organisation` entities are built here, so `T1591.002` correctly does not
+  apply. → **Solution:** extended the existing correct pair — added
+  `T1589.003` (Employee Names) and `T1591.001` (Determine Physical
+  Locations). Test delta:
+  `attack_techniques_covers_every_entity_kind_this_module_produces` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD`; panicked on
+  the missing `T1589.003` assertion). No `tests/architecture.rs` pinning
+  assertion referenced `sourceforge_user`. 5 modules remain on the scoped
+  sweep list (`cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`) for future cycles. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4412 lib tests), architecture
+  suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 44 (new T2.32): `name_intel` had NO
+  `attack_techniques()` override at all, silently inheriting the exact
+  over/under-claim `pgp` already fixed.** With the release binary confirmed
+  built, ran `hse selftest` (9/9 pass) and `hse diagnostics` (doctor +
+  selftest + engines all pass — search-engine CAPTCHA/throttle statuses are
+  expected environmental limitations, not bugs) — neither surfaced a gap,
+  so pivoted to a direct code-grounded discovery pass on `name_intel`, one
+  of the highest-yield/noisiest modules flagged in earlier "Brett Lawnton"
+  scan diagnostics (NAMINT-style username/email/pivot permutation from a
+  `FullName` seed). Found the module never overrides `attack_techniques()`,
+  so it silently inherits the full `People` category default (`T1589.003`
+  + `T1591.004`) — the identical shape `pgp`'s own comment already
+  documents: a Person + Email-producing module over-claiming Identify Roles
+  with zero role/organisational logic anywhere, while never crediting Email
+  Addresses. Confirmed by full read of `mod.rs` and `permute/mod.rs`: the
+  module emits a subject-anchor `Person` and derived speculative `Email`
+  permutations, with zero role/employer logic anywhere. A parallel
+  investigation into `permute::parse`'s honorific-handling for degenerate
+  2-token names ("Dr Ali", "John Jr") initially looked like a fabrication
+  bug (an honorific literally becoming the parsed first/last name) but was
+  REFUTED on closer reading: `suffix_not_stripped_from_two_word_name`
+  already pins this as deliberate "safety guard" behaviour, not an
+  oversight — logged as a refuted lead, not pursued. → **Solution:**
+  declared the precise pair `["T1589.002", "T1589.003"]`, identical to
+  `pgp`'s established fix. The search-pivot `Url` entities earn no separate
+  technique (unexecuted, offline-constructed links, mirroring
+  `employer_pivot`'s precedent). Replaced the pre-existing weak
+  `attack_techniques_non_empty` test (which would pass against the buggy
+  inherited default too) with
+  `attack_techniques_matches_produced_entity_kinds` — fail-before confirmed
+  (reverted `mod.rs` to pre-fix `HEAD`; panicked on the missing `T1589.002`
+  assertion). No `tests/architecture.rs` pinning assertion referenced
+  `name_intel`. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4412 lib tests — a 1-for-1 test replacement, not a net addition),
+  architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 45 (new T2.33): fixed a poisoned-mutex
+  inconsistency in `api::update_handlers` surfaced by automated PR review,
+  plus a minor efficiency tweak from a second review comment.** With PR
+  #215 (this arc's rollup) open, subscribed to its activity and found two
+  unresolved review threads. `copilot-pull-request-reviewer` flagged that
+  `try_start_update`'s poison-recovery policy
+  (`.unwrap_or_else(PoisonError::into_inner)`) wasn't mirrored at the two
+  sites in the spawned update task that record the outcome — both used a
+  bare `if let Ok(mut info) = update_info.lock() { .. }`, silently no-oping
+  on a poisoned lock. Independently verified by direct read before acting:
+  confirmed this could strand `phase` at `Applying` forever, since
+  `try_start_update`'s own gate rejects every future
+  `POST /update/trigger` while `Applying` — a poisoned mutex would
+  permanently wedge the self-update mechanism with no operator-visible
+  error. Extracted a shared `set_phase()` helper using the same
+  poison-recovery pattern and routed both finish-sites through it.
+  `gemini-code-assist` separately flagged `hacker_news::
+  algolia_domain_entities` (the T2.24 fix)'s `HashSet`-round-trip-then-sort
+  as more allocation/hashing than the sorted-output shape needs; applied
+  the suggested `Vec` → `sort_unstable()` → `dedup()` rewrite — same
+  deterministic output, confirmed by the pre-existing determinism test
+  passing unmodified. Test delta:
+  `set_phase_recovers_from_a_poisoned_mutex` (poisons a real `Mutex` via
+  `catch_unwind` around a panicking lock guard, then asserts `set_phase`
+  still lands the phase transition) — fail-before confirmed (reverted
+  `set_phase`'s body to the bare `if let Ok(...)` pattern in place;
+  panicked on the mutex still being poisoned/phase not updated). Gate
+  green: fmt/clippy/doc clean, full suite 0 failures (4413 lib tests),
+  architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -103,3 +103,67 @@ use super::*;
         assert_eq!(aliased.depth, opts.depth);
         assert_eq!(aliased.free_only, opts.free_only);
     }
+
+    #[test]
+    fn apply_profile_overlay_preserves_orthogonal_caller_fields() {
+        // The bug this function fixes: `opts = profile_opts` (a full replace)
+        // silently discarded every client-supplied field the profile doesn't
+        // itself tune. `modules`/`min_confidence`/`webhook_url` have no profile
+        // equivalent at all, so they must survive the overlay untouched.
+        let base = ScanOptions {
+            modules: Some(vec!["hunter_io".to_string()]),
+            min_confidence: Some(0.7),
+            webhook_url: Some("https://example.com/hook".to_string()),
+            scan_tags: vec!["case-42".to_string()],
+            throttle_ms: 250,
+            ..ScanOptions::default()
+        };
+        let profile = resolve_profile("investigate").unwrap();
+        let merged = apply_profile_overlay(base.clone(), profile.clone());
+
+        assert_eq!(
+            merged.modules, base.modules,
+            "modules must survive the overlay"
+        );
+        assert_eq!(
+            merged.min_confidence, base.min_confidence,
+            "min_confidence must survive the overlay"
+        );
+        assert_eq!(
+            merged.webhook_url, base.webhook_url,
+            "webhook_url must survive the overlay"
+        );
+        assert_eq!(merged.scan_tags, base.scan_tags);
+        assert_eq!(merged.throttle_ms, base.throttle_ms);
+
+        // The profile's own tuning DOES take effect.
+        assert_eq!(merged.depth, profile.depth);
+        assert_eq!(merged.max_entities, profile.max_entities);
+    }
+
+    #[test]
+    fn apply_profile_overlay_carries_every_profile_tuning_field() {
+        // skiptrace is the profile that exercises every tuning field,
+        // including expansion_strategy/regional_search — the two fields the
+        // CLI's old hand-written overlay omitted (dormant only because
+        // `ScanOptions::default()` happened to coincide with skiptrace's
+        // values for both).
+        let base = ScanOptions::default();
+        let profile = resolve_profile("skiptrace").unwrap();
+        let merged = apply_profile_overlay(base, profile.clone());
+
+        assert_eq!(merged.category_focus, profile.category_focus);
+        assert_eq!(merged.depth, profile.depth);
+        assert_eq!(merged.min_expand_confidence, profile.min_expand_confidence);
+        assert_eq!(merged.max_concurrent, profile.max_concurrent);
+        assert_eq!(merged.max_entities, profile.max_entities);
+        assert_eq!(merged.max_wall_time_secs, profile.max_wall_time_secs);
+        assert_eq!(
+            merged.expansion_strategy, profile.expansion_strategy,
+            "expansion_strategy must be carried by the overlay"
+        );
+        assert_eq!(
+            merged.regional_search, profile.regional_search,
+            "regional_search must be carried by the overlay"
+        );
+    }

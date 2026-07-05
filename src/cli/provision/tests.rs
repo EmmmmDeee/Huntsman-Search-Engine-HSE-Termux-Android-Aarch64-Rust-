@@ -31,6 +31,30 @@ use super::*;
     }
 
     #[test]
+    fn read_existing_env_treats_missing_file_as_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("does-not-exist.env");
+        assert_eq!(read_existing_env(&path).unwrap(), "");
+    }
+
+    #[test]
+    fn read_existing_env_surfaces_non_notfound_errors_instead_of_silently_emptying() {
+        // A directory path passed to `read_to_string` fails with an error kind
+        // OTHER than NotFound. The old `unwrap_or_default()` collapsed this
+        // (and any other read failure — permission denied, a non-UTF-8 byte
+        // from disk corruption) into "", which would make the subsequent merge
+        // believe every currently-configured HUNTSMAN_* key was absent and
+        // overwrite them all with template placeholders. The error must
+        // surface instead.
+        let dir = tempfile::tempdir().unwrap();
+        let err = read_existing_env(dir.path()).unwrap_err();
+        assert!(
+            err.to_string().contains("read "),
+            "expected a read error, got: {err}"
+        );
+    }
+
+    #[test]
     fn merge_appends_user_custom_keys() {
         let existing = "HUNTSMAN_CUSTOM_INTEGRATION_KEY=\"my-secret\"\n";
         let merged = merge_template(existing, template_for_test());

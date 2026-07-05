@@ -424,8 +424,9 @@ fn detect_and_create_api_key_entity(
 /// Extract WiFi BSSIDs / MAC addresses from `text` and push them as
 /// `MacAddress` entities — a victim's router BSSID lifted from a stealer log or
 /// breach record becomes a geolocation seed that `mylnikov` / `wigle` can turn
-/// into coordinates. Capped so a hostile blob can't flood the graph. Returns the
-/// number emitted.
+/// into coordinates. [`crate::util::extract::macs`] already dedupes, so every
+/// distinct BSSID found is emitted — no arbitrary cap. Returns the number
+/// emitted.
 fn push_macs(
     text: &str,
     sid: &str,
@@ -434,7 +435,7 @@ fn push_macs(
 ) -> usize {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
-    for mac in crate::util::extract::macs(text).into_iter().take(50) {
+    for mac in crate::util::extract::macs(text) {
         let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.55, sid);
         e.tag("import");
         e.tag(source_tag);
@@ -457,7 +458,8 @@ fn push_macs(
 /// victim's BTC/ETH/… wallets, and a recovered address is a chain-analysis seed
 /// (`chain_intel`). Every candidate token is checksum-validated by
 /// [`crate::core::crypto::classify_crypto_address`], so noise (hashes, API keys)
-/// is rejected. Capped at 50/import. Returns the number emitted.
+/// is rejected; every distinct validated address is emitted — no arbitrary cap.
+/// Returns the number emitted.
 fn push_crypto(
     text: &str,
     sid: &str,
@@ -496,9 +498,6 @@ fn push_crypto(
         );
         entities.push(e);
         n += 1;
-        if n >= 50 {
-            break;
-        }
     }
     n
 }
@@ -510,6 +509,15 @@ fn push_crypto(
 /// `identify_api_key`, so only real vendor-key shapes (AWS `AKIA…`, GitHub
 /// `ghp_…`, Slack `xox…`, Stripe `sk_live_…`, Google `AIza…`, …) are kept.
 /// Capped at 50/import. Returns the number emitted.
+///
+/// Persists the pool to disk itself (once, only if it actually added a key)
+/// rather than leaving that to the caller: the in-memory `pool.add` inside
+/// `store_key_in_pool` is invisible on disk until `save_pool`/
+/// `save_pool_best_effort` runs, and most of this function's 7 callers never
+/// called it at all — every key this scanner found (its whole point: keys
+/// outside a recognised `service: key` field) was silently lost on process
+/// exit. A single choke point here fixes every caller at once and can't
+/// drift back out of sync the way 7 separate call-site edits could.
 fn push_api_keys(
     text: &str,
     sid: &str,
@@ -538,12 +546,16 @@ fn push_api_keys(
             }
         }
     }
+    if n > 0 {
+        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
+    }
     n
 }
 
 /// Extract checksum-valid IBANs (international bank accounts) from `text` and
 /// push them as `Other("iban")` financial-intel entities — a victim's bank
-/// account recovered from a breach/stealer dump. Capped at 50/import.
+/// account recovered from a breach/stealer dump. [`crate::util::extract::ibans`]
+/// already dedupes, so every distinct IBAN found is emitted — no arbitrary cap.
 fn push_ibans(
     text: &str,
     sid: &str,
@@ -552,7 +564,7 @@ fn push_ibans(
 ) -> usize {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
-    for iban in crate::util::extract::ibans(text).into_iter().take(50) {
+    for iban in crate::util::extract::ibans(text) {
         let mut e = Entity::new(EntityKind::Other("iban".into()), &iban, 0.62, sid);
         e.tag("import");
         e.tag(source_tag);
@@ -574,7 +586,8 @@ fn push_ibans(
 /// Extract labelled WiFi SSIDs from `text` and push them as `Ssid` entities —
 /// a victim's network names from a stealer log. A *unique* SSID then dispatches
 /// to `wigle`'s SSID search, which returns where the network was observed,
-/// placing the owner. Capped at 50/import.
+/// placing the owner. [`crate::util::extract::labeled_ssids`] already dedupes,
+/// so every distinct SSID found is emitted — no arbitrary cap.
 fn push_ssids(
     text: &str,
     sid: &str,
@@ -583,10 +596,7 @@ fn push_ssids(
 ) -> usize {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
-    for ssid in crate::util::extract::labeled_ssids(text)
-        .into_iter()
-        .take(50)
-    {
+    for ssid in crate::util::extract::labeled_ssids(text) {
         let mut e = Entity::new(EntityKind::Ssid, &ssid, 0.60, sid);
         e.tag("import");
         e.tag(source_tag);
