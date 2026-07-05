@@ -976,6 +976,67 @@ async fn dossier_upload_derives_and_persists_entity_relations() {
 }
 
 #[tokio::test]
+async fn dossier_upload_reports_relation_count_as_a_true_zero_within_the_enrichment_cap() {
+    // A dossier with no relatable entities (one bare email, no shared
+    // domain/URL to link) is well within `IMPORT_ENRICH_MAX_ENTITIES`, so
+    // enrichment actually runs and the reported zero is a REAL zero — not the
+    // size-skip zero the over-cap case below also reports as `0`.
+    let app = test_app("import-real-zero");
+    let dossier = "Entry #1\n\u{2022} email: solo@enrichcheck.io\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["enrichment_skipped"], false,
+        "a dossier within the enrichment cap must not be flagged as skipped: {json}"
+    );
+}
+
+#[tokio::test]
+async fn dossier_upload_flags_enrichment_skipped_above_the_entity_cap() {
+    // Above `IMPORT_ENRICH_MAX_ENTITIES` (5,000) the O(n²) relation/correlator
+    // pass is skipped for device safety — every entity is still persisted, but
+    // the response must say so rather than reporting the SAME `relation_count:
+    // 0` / `correlation_count: 0` a genuinely relation-free small dossier
+    // (the sibling test above) also reports.
+    let app = test_app("import-enrich-cap");
+    let mut dossier = String::with_capacity(500_000);
+    for i in 0..5_100u32 {
+        dossier.push_str(&format!(
+            "Entry #{i}\n\u{2022} email: user{i}@enrichcap{i}.io\n"
+        ));
+    }
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json["entity_count"].as_u64().unwrap() > 5_000,
+        "fixture must exceed the enrichment cap: {json}"
+    );
+    assert_eq!(
+        json["enrichment_skipped"], true,
+        "an over-cap import must flag that enrichment was skipped, not silently \
+         report a zero indistinguishable from a genuinely relation-free import: {json}"
+    );
+    assert_eq!(json["relation_count"], 0);
+    assert_eq!(json["correlation_count"], 0);
+}
+
+#[tokio::test]
 async fn dossier_upload_rejects_unrecognised_format() {
     let app = test_app("import-bad");
     let req = Request::builder()

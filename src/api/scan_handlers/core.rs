@@ -535,14 +535,17 @@ pub async fn scan_import(
     // so SQLite commits don't stall the 2-worker async reactor.
     let store = Arc::clone(&s.store);
     let sid2 = sid.clone();
-    let (relation_count, correlation_count) =
+    // The third element is `false` when enrichment was skipped for size — the
+    // caller must be able to tell that apart from a genuinely relation-free
+    // dossier, both of which otherwise report `relation_count: 0`.
+    let (relation_count, correlation_count, enriched) =
         match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
-                return Ok((0usize, 0usize));
+                return Ok((0usize, 0usize, false));
             }
             let mut relations = 0usize;
             for r in &crate::core::relation::derive_all(&entities, &sid2) {
@@ -562,7 +565,7 @@ pub async fn scan_import(
                     }
                 }
             }
-            Ok((relations, correlations))
+            Ok((relations, correlations, true))
         })
         .await
         {
@@ -580,6 +583,12 @@ pub async fn scan_import(
             "entity_count": entity_count,
             "relation_count": relation_count,
             "correlation_count": correlation_count,
+            // `true` only when the upload exceeded `IMPORT_ENRICH_MAX_ENTITIES` —
+            // disambiguates a size-skipped enrichment pass from a dossier that
+            // genuinely yielded zero relations/correlations. Every entity is
+            // still persisted either way; the scan can be enriched on demand
+            // via `/scans/{id}/rerun`.
+            "enrichment_skipped": !enriched,
             "status": "complete",
         })),
     )
