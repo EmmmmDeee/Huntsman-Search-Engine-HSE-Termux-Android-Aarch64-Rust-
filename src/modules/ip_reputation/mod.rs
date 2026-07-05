@@ -167,6 +167,21 @@ impl Module for IpReputation {
 
 // ── OTX sub-routine ────────────────────────────────────────────────
 
+/// Confidence for an OTX-flagged indicator, graduated by corroborating pulse
+/// count. A lone pulse is often self-published low-signal noise — a lead, not a
+/// probable finding — while many independent pulses agreeing is stronger
+/// evidence. A flat score inflated a single noisy pulse to the same weight as a
+/// broad consensus. Kept conservative: OTX pulse counts are not fully independent
+/// (one actor can publish several), so the top tier only slightly exceeds the
+/// former flat value rather than approaching certainty.
+fn otx_confidence(pulse_count: u64) -> f64 {
+    match pulse_count {
+        0 | 1 => 0.55,
+        2..=4 => 0.68,
+        _ => 0.75,
+    }
+}
+
 async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult) {
     let itype = match target.kind {
         TargetKind::IpAddress => "IPv4",
@@ -196,7 +211,7 @@ async fn run_otx(target: &Target, ctx: &ModuleContext, result: &mut ModuleResult
         return;
     }
 
-    let mut entity = target.to_entity(0.72, &ctx.scan_id);
+    let mut entity = target.to_entity(otx_confidence(pulse_count), &ctx.scan_id);
     entity.tag(crate::core::tags::THREAT_INTEL);
 
     // Surface a few pulse names + the most SIGNIFICANT tags. OTX pulses dump
