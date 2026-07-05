@@ -202,6 +202,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SCHEMA_VERSION` → `tracing::warn!` (forward-compat signal — a newer binary wrote
   this DB). Provides a migration ladder for future non-additive schema changes without
   requiring an explicit migration table. *Closes:* **T2.10** (`[ ]`→`[x]`). ✅ cycle 16.
+- **`[x]` SOL-STORAGE-DIAG · Multi-row storage reads log, not just drop, a
+  corrupt row** — two shared private helpers in `src/storage/mod.rs`,
+  `collect_rows` (SQL-extraction layer) and `deserialize_rows` (JSON layer),
+  each `tracing::warn!`-logging the row's caller-supplied context and the
+  underlying error before dropping it; every multi-row reader across
+  `storage/mod.rs` and `storage/entities.rs` (`list_scans`,
+  `correlations_for_scan`, `relations_for_scan`, `events_for_scan`,
+  `entities_for_scan`, `entities_filtered`, `search_entities`'s FTS and LIKE
+  paths — 8 sites) rewired onto them, replacing a bare
+  `.filter_map(...ok())` that swallowed a corrupted/schema-drifted row with
+  no trace. Brings multi-row reads to the same diagnostic standard the
+  single-row getters (`get_scan`, `get_entity`) already had via `?`. *Closes:*
+  **T2.15** (new). ✅ 3 tests: a scoped-subscriber (`VecWriter`, mirroring
+  `core::engine::tests`) proof for each helper that the drop is both kept AND
+  logged, plus an end-to-end `list_scans` proof a corrupt sibling row still
+  doesn't fail the read.
 - **`[-]` SOL-BUDGET · Atomic quota reservation (accepted-as-is)** —
   `QuotaBudget::try_increment` (CAS, saturating session rollback) replaces every
   racy `remaining()`-then-`increment()`. *Closes:* **T2.11** (oathnet — done;
@@ -546,6 +562,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BLOCKING | T2.2 · T1.2 (all write paths) | `[x]` |
 | SOL-FINALISE-BLOCKING | T1.5 | `[x]` |
 | SOL-SCHEMA-VERSION | T2.10 | `[x]` |
+| SOL-STORAGE-DIAG | T2.15 | `[x]` |
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
@@ -682,9 +699,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
-  T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE +
-  LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the accepted-`[-]`
-  budget-reset-zeroing note remains, and no further action is planned on it).
+  **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); T2.7 open; T2.11 mostly done
+  (oathnet + found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET
+  all closed; only the accepted-`[-]` budget-reset-zeroing note remains, and no
+  further action is planned on it); T2.14 open (deferred noise design).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -3035,3 +3053,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `urls_extracts_all_distinct_trimmed_in_order_uncapped` (six distinct URLs → all six,
   trimmed/deduped/ordered; fail-before: five). Gate green (4565). Paired: `PROBLEM_TREE` §8 —
   same commit.
+- **2026-07-05** — **SOL-STORAGE-DIAG: every multi-row storage read now logs, not just
+  drops, a corrupt row.** A fresh code-grounded discovery pass across the storage layer (the
+  fidelity-audit arc having closed) found 8 multi-row readers in `storage/mod.rs` and
+  `storage/entities.rs` (`list_scans`, `correlations_for_scan`, `relations_for_scan`,
+  `events_for_scan`, `entities_for_scan`, `entities_filtered`, `search_entities`'s FTS and
+  LIKE paths) chaining a bare `.filter_map(...ok())` at both the SQL-extraction and
+  JSON-deserialize layers, silently vanishing a corrupted or schema-drifted row with zero
+  trace — unlike the single-row getters (`get_scan`, `get_entity`), which already propagate
+  the identical failure via `?`. Added two shared private helpers, `collect_rows` and
+  `deserialize_rows`, each `tracing::warn!`-logging the caller's context and the underlying
+  error before dropping the row; rewired all 8 call sites onto them. The
+  drop-one-bad-row-keep-the-rest behaviour is unchanged (a corrupt row must not fail the
+  whole page) — only the missing diagnostic is added, so the regression tests target the
+  log itself: a scoped `tracing` subscriber (`VecWriter`, mirroring
+  `core::engine::tests::module_dispatch_is_logged_...`) proves each helper both keeps the
+  good rows and emits a context-keyed warning (fail-before: the pre-fix bare filter_map kept
+  the rows but logged nothing), plus an end-to-end `list_scans` test proving a corrupt
+  sibling row still doesn't fail the read. Test delta: +3
+  (`deserialize_rows_drops_corrupt_json_but_logs_the_failure`,
+  `collect_rows_drops_sql_errors_but_logs_the_failure`,
+  `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`). Gate green (4385 lib
+  tests). Paired: `PROBLEM_TREE` §8 — same commit.

@@ -343,6 +343,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Storage reads now log a corrupted or schema-drifted row instead of silently
+  dropping it.** Eight multi-row readers (`list_scans`, `correlations_for_scan`,
+  `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
+  `entities_filtered`, and both `search_entities` code paths) discarded any row
+  that failed SQL extraction or JSON deserialization with zero trace — unlike
+  the single-row getters, which already surface the same failure as an error.
+  Two shared helpers now log a warning naming the caller before dropping the
+  row; the well-formed rows still come back exactly as before. Regression
+  tests `deserialize_rows_drops_corrupt_json_but_logs_the_failure`,
+  `collect_rows_drops_sql_errors_but_logs_the_failure`, and
+  `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`.
 - **Curl-subprocess failures (see_know, oathnet) now report WHY, not just an exit code.**
   `CurlClient::exec` ran curl with `-s` (silent) but not `-S`/`--show-error`, so curl
   suppressed its own diagnostic text on failure alongside the progress meter — every

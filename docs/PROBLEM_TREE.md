@@ -670,6 +670,23 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+- **`[x]` T2.15 · Silent multi-row deserialize/read failures (storage layer)**
+  — every multi-row reader in `storage/` (`list_scans`, `correlations_for_scan`,
+  `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
+  `entities_filtered`, `search_entities`'s FTS and LIKE paths — 8 sites total)
+  chained a bare `.filter_map(|s| serde_json::from_str(&s).ok())` (and, one
+  layer up, `.filter_map(Result::ok)` over the `query_map` iterator) to drop a
+  corrupted or schema-drifted row with **zero trace** — the single-row getters
+  (`get_scan`, `get_entity`) already propagate the identical failure via `?`,
+  so multi-row and single-row reads silently disagreed on how loud a corrupt
+  row should be, and an operator staring at a suspiciously short result page
+  had no signal a row was ever dropped. Found by a code-grounded discovery
+  pass across the storage layer. → **Solution:** two shared private helpers,
+  `collect_rows` (SQL-extraction layer) and `deserialize_rows` (JSON layer),
+  each emitting a `tracing::warn!` keyed by the caller's name before dropping
+  the row; wired into all 8 call sites across `storage/mod.rs` and
+  `storage/entities.rs`. The "one bad row must not fail the whole page"
+  behaviour is unchanged — only the missing diagnostic is added. **P2**
 
 ---
 
@@ -4198,3 +4215,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   URLs, trimmed + deduped, in order; fail-before: a capped five); all five modules' existing
   tests still pass. Gate green: fmt/clippy/doc clean, full suite 0 failures (4565).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Executed T2.15.** A fresh code-grounded discovery pass across the
+  storage layer (post-fidelity-audit-arc) found every multi-row reader in `storage/`
+  chaining a bare `.filter_map(...ok())` at both the SQL-extraction and JSON-deserialize
+  layers — 8 sites across `list_scans`, `correlations_for_scan`, `relations_for_scan`,
+  `events_for_scan`, `entities_for_scan`, `entities_filtered`, and both branches of
+  `search_entities` — so a corrupted or schema-drifted row vanished with zero trace, unlike
+  `get_scan`/`get_entity` which already propagate the identical failure via `?`. Fix: two
+  shared private helpers in `storage/mod.rs`, `collect_rows` and `deserialize_rows`, each
+  logging `tracing::warn!(context, error, ...)` before dropping a bad row; wired into all 8
+  call sites (four in `storage/mod.rs`, four in `storage/entities.rs` via `super::`). The
+  drop-one-bad-row-keep-the-rest behaviour is unchanged — only the missing diagnostic is
+  added, so the regression test targets the log, not the (already-correct) output: a scoped
+  `tracing` subscriber (mirroring `core::engine::tests`' `VecWriter` pattern) proves the
+  warning fires and is keyed by the caller's name (fail-before: the pre-fix bare filter_map
+  emitted no log at all), plus an end-to-end `list_scans` test proving a corrupt sibling row
+  still doesn't fail the read. Test delta: +3 (`deserialize_rows_drops_corrupt_json_but_logs_
+  the_failure`, `collect_rows_drops_sql_errors_but_logs_the_failure`,
+  `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`). Gate green: fmt/clippy/doc
+  clean, full suite 0 failures (4385 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.

@@ -218,12 +218,9 @@ impl super::Store {
                  ORDER BY e.confidence DESC, e.uid ASC",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            super::collect_rows(rows, "entities_for_scan")
         };
-        let mut entities: Vec<Entity> = raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect();
+        let mut entities: Vec<Entity> = super::deserialize_rows(raw, "entities_for_scan");
         // Recovery fallback. The `entities` table is only populated when a scan
         // FINALISES; a scan still running, interrupted, or killed before
         // finalisation (routine on Termux/Android, where the OS reclaims
@@ -370,12 +367,9 @@ impl super::Store {
                 ),
                 |r| r.get::<_, String>(0),
             )?;
-            rows.filter_map(std::result::Result::ok).collect()
+            super::collect_rows(rows, "entities_filtered")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(super::deserialize_rows(raw, "entities_filtered"))
     }
 
     pub fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
@@ -433,13 +427,10 @@ impl super::Store {
             ) && let Ok(rows) =
                 stmt.query_map(params![fts_expr, limit as i64], |r| r.get::<_, String>(0))
             {
-                hits = rows.filter_map(std::result::Result::ok).collect();
+                hits = super::collect_rows(rows, "search_entities(fts)");
             }
             if !hits.is_empty() {
-                return Ok(hits
-                    .into_iter()
-                    .filter_map(|s| serde_json::from_str(&s).ok())
-                    .collect());
+                return Ok(super::deserialize_rows(hits, "search_entities(fts)"));
             }
         }
 
@@ -452,11 +443,8 @@ impl super::Store {
              ORDER BY confidence DESC, uid ASC LIMIT ?2",
         )?;
         let rows = stmt.query_map(params![pattern, limit as i64], |r| r.get::<_, String>(0))?;
-        let raw: Vec<String> = rows.filter_map(std::result::Result::ok).collect();
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        let raw: Vec<String> = super::collect_rows(rows, "search_entities(like)");
+        Ok(super::deserialize_rows(raw, "search_entities(like)"))
     }
 
     /// Build a safe FTS5 prefix MATCH expression from free-text input:

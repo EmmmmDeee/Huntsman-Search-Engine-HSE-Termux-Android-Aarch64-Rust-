@@ -166,6 +166,53 @@ fn escape_like(s: &str) -> String {
         .replace('_', "\\_")
 }
 
+/// Collect a `query_map` iterator, logging (not silently dropping) any row
+/// that fails SQL-level extraction. In practice this means genuine DB
+/// corruption (a `NOT NULL TEXT` column somehow unreadable as a `String`) —
+/// rare next to a JSON-deserialize failure (see [`deserialize_rows`]), but
+/// every multi-row reader used to swallow it identically via `filter_map(...
+/// .ok())` with zero trace, the same "search is broken with no diagnostic"
+/// failure mode the FTS-rebuild path above already treats as unacceptable.
+fn collect_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>, context: &str) -> Vec<T> {
+    rows.filter_map(|r| match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                context,
+                error = %e,
+                "failed to read a stored row — dropped from result set"
+            );
+            None
+        }
+    })
+    .collect()
+}
+
+/// Deserialize a batch of raw `data_json` rows, logging (not silently
+/// dropping) any row that fails to parse — a corrupted value, or a struct
+/// field added/removed since the row was written. Every multi-row reader
+/// (`list_scans`, `*_for_scan`, `entities_filtered`, `search_entities`) used
+/// to chain `.filter_map(|s| serde_json::from_str(&s).ok())` and vanish a bad
+/// row with no trace, unlike the single-row getters (`get_scan`, `get_entity`)
+/// which already propagate a deserialize error via `?` — this brings every
+/// multi-row reader to the same standard without failing the whole page over
+/// one bad row.
+fn deserialize_rows<T: serde::de::DeserializeOwned>(raw: Vec<String>, context: &str) -> Vec<T> {
+    raw.into_iter()
+        .filter_map(|s| match serde_json::from_str(&s) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(
+                    context,
+                    error = %e,
+                    "failed to deserialize a stored row — dropped from result set"
+                );
+                None
+            }
+        })
+        .collect()
+}
+
 impl Store {
     pub fn open(path: &str) -> Result<Self> {
         // Performance pragmas are env-tunable (low-RAM Termux devices may want a
@@ -356,12 +403,9 @@ impl Store {
                 "SELECT data_json FROM scans ORDER BY started_at DESC, id DESC LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "list_scans")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "list_scans"))
     }
 
     /// Return the most recent scan whose serialised status matches
@@ -490,12 +534,9 @@ impl Store {
                  END, id",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "correlations_for_scan")
         };
-        let mut corrs: Vec<Correlation> = raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect();
+        let mut corrs: Vec<Correlation> = deserialize_rows(raw, "correlations_for_scan");
         // Rank desc: severity × max child C_eff (computed at correlator-run
         // time). Stable tie-break on severity then rule_id, matching the
         // correlator's own ordering so CLI and API agree.
@@ -542,12 +583,9 @@ impl Store {
                 "SELECT data_json FROM relations WHERE scan_id = ?1 ORDER BY kind, id",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "relations_for_scan")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "relations_for_scan"))
     }
 
     // ── Delete (cascade) ───────────────────────────────────────────────────
@@ -659,12 +697,9 @@ impl Store {
                 "SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "events_for_scan")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "events_for_scan"))
     }
 }
 

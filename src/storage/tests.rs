@@ -1553,3 +1553,123 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
     }
     let _ = std::fs::remove_file(&path);
 }
+
+/// A `MakeWriter` that tees formatted log lines into a shared buffer, so a
+/// test can assert on what a scoped `tracing` subscriber actually emitted
+/// without touching the process-global subscriber. Mirrors the pattern
+/// established in `core::engine::tests::module_dispatch_is_logged_...`.
+#[derive(Clone)]
+struct VecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for VecWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl tracing_subscriber::fmt::MakeWriter<'_> for VecWriter {
+    type Writer = VecWriter;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+fn capture_warn_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(VecWriter(std::sync::Arc::clone(&buf)))
+        .with_max_level(tracing::Level::WARN)
+        .without_time()
+        .finish();
+    let out = tracing::subscriber::with_default(subscriber, f);
+    let log = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    (out, log)
+}
+
+#[test]
+fn deserialize_rows_drops_corrupt_json_but_logs_the_failure() {
+    // Every multi-row reader used to swallow a bad `data_json` row via a
+    // bare `.filter_map(|s| serde_json::from_str(&s).ok())`, with zero
+    // trace — the same "search is broken, no diagnostic" failure mode the
+    // FTS-rebuild path already treats as unacceptable. `deserialize_rows`
+    // must keep the "one bad row must not fail the whole page" behaviour
+    // AND leave a trace naming the caller; a bare filter_map would pass the
+    // first assertion here but not the second.
+    #[derive(serde::Deserialize)]
+    struct Probe {
+        uid: String,
+    }
+    let raw = vec![
+        r#"{"uid":"e1"}"#.to_string(),
+        "not valid json".to_string(),
+        r#"{"uid":"e2"}"#.to_string(),
+    ];
+    let (out, log) = capture_warn_logs(|| deserialize_rows::<Probe>(raw, "test_probe_deserialize"));
+
+    assert_eq!(
+        out.iter().map(|p| p.uid.as_str()).collect::<Vec<_>>(),
+        vec!["e1", "e2"],
+        "the well-formed rows must survive, in order, around the corrupt one"
+    );
+    assert!(
+        log.contains("test_probe_deserialize"),
+        "dropped-row warning must be keyed by the caller's context; got: {log:?}"
+    );
+    assert!(
+        log.contains("failed to deserialize"),
+        "dropped-row warning must say why; got: {log:?}"
+    );
+}
+
+#[test]
+fn collect_rows_drops_sql_errors_but_logs_the_failure() {
+    // Mirror of the deserialize_rows test above, for the SQL-extraction
+    // layer: a genuine per-row read error (e.g. a corrupt column) must be
+    // dropped without failing the whole page, but must not vanish silently.
+    let rows: Vec<rusqlite::Result<String>> = vec![
+        Ok("a".to_string()),
+        Err(rusqlite::Error::QueryReturnedNoRows),
+        Ok("b".to_string()),
+    ];
+    let (out, log) = capture_warn_logs(|| collect_rows(rows.into_iter(), "test_probe_collect"));
+
+    assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+    assert!(
+        log.contains("test_probe_collect"),
+        "dropped-row warning must be keyed by the caller's context; got: {log:?}"
+    );
+    assert!(
+        log.contains("failed to read a stored row"),
+        "dropped-row warning must say why; got: {log:?}"
+    );
+}
+
+#[test]
+fn list_scans_drops_a_corrupt_row_end_to_end_without_erroring() {
+    // Integration-level proof that the collect_rows/deserialize_rows wiring
+    // in `list_scans` is real, not just exercised in isolation above: a
+    // corrupt `data_json` row inserted directly (bypassing upsert_scan)
+    // must not error or panic the read, and the well-formed sibling row
+    // must still come back.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-good");
+    {
+        let conn = store.conn.lock();
+        conn.execute(
+            "INSERT INTO scans(id, target_kind, target_value, status, started_at, \
+             finished_at, entity_count, error, data_json) \
+             VALUES('scan-corrupt', 'email', 'x@y.com', 'completed', 0, NULL, 0, NULL, ?1)",
+            params!["not valid json"],
+        )
+        .unwrap();
+    }
+    let scans = store
+        .list_scans(10)
+        .expect("a corrupt sibling row must not fail the whole read");
+    assert_eq!(scans.len(), 1, "only the well-formed row must be returned");
+    assert_eq!(scans[0].id, "scan-good");
+    let _ = std::fs::remove_file(&path);
+}
