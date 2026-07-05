@@ -364,6 +364,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`hacker_news`'s Algolia-submissions domain lookup now emits `Domain`
+  entities in a deterministic order.** The distinct domains linked from a
+  user's Hacker News submissions were deduplicated via a `HashSet` and then
+  walked straight into the emitted entity list with no ordering step, so
+  identical submissions could legally produce differently-ordered entities
+  (and a differently-ordered live event stream) across separate runs of the
+  same scan, purely from the process's randomised hash-iteration order — the
+  same determinism-leak class already fixed for `reddit_user`. Domains now
+  emerge sorted. Regression tests
+  `algolia_domain_entities_emits_all_distinct_domains_deterministically`,
+  `algolia_domain_entities_no_urls_yields_nothing`.
 - **A search-derived username matching only a subject's surname substring no
   longer reaches PROBABLE confidence and gets recycled into a further
   search.** A real self-test scan showed an unrelated business's Facebook

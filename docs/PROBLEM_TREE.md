@@ -875,6 +875,28 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   a gazetteer/NER pass or page-semantics verification, a materially bigger
   design change tracked separately, not claimed as fixed here. **P2**
   (a real correlation-precision/false-positive-recycling bug, not a crash).
+- **`[x]` T2.24 · `hacker_news::fetch_algolia_submissions` emitted `Domain`
+  entities in non-deterministic order** — surfaced by a background discovery
+  agent, independently re-verified by direct read. The function collected
+  distinct domains parsed from a user's Algolia HN-submissions search
+  response directly into a `HashSet<String>`, then iterated that set straight
+  into the emitted `Vec<Entity>` with no ordering step — Rust's `HashSet`
+  iteration order is randomised per-process (SipHash with a random seed), so
+  the identical submissions JSON could legally produce differently-ordered
+  `Domain` entities, and a differently-ordered live `EntityFound` event
+  stream, across separate runs of the identical scan. This is the same
+  determinism-leak class already fixed for `reddit_user::fetch_submitted` at
+  commit `d5adaefd` earlier in this arc — `HashSet` used for deduplication is
+  correct and necessary, but the raw set must never be walked straight into
+  emission order. → **Solution:** extracted the pure logic into a new
+  `algolia_domain_entities(body, username, scan_id) -> Vec<Entity>` helper
+  (separately unit-testable without any HTTP I/O, mirroring the module's own
+  established `build_entities` pattern) that collects into a `HashSet` for
+  dedup as before, then converts to a `Vec` and calls `.sort_unstable()`
+  before mapping to entities — identical input now always yields the
+  identical entity set in the identical order. **P2** (a determinism/
+  reproducibility bug — evidentiary output must be stable across identical
+  runs — not a crash or PII leak).
 
 ---
 
@@ -4810,3 +4832,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tracked item, not claimed as fixed here). Gate green: fmt/clippy/doc clean,
   full suite 0 failures (4403 lib tests). **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-05** — **Cycle 35 (new T2.24): `hacker_news::fetch_algolia_submissions`
+  leaked `HashSet` iteration order into emitted `Domain` entity order.**
+  Continuing the fresh-discovery step of the loop: a background agent swept
+  the module tree for the same determinism-leak shape already fixed for
+  `reddit_user::fetch_submitted` (commit `d5adaefd`, this same arc), and
+  found `hacker_news` had the identical bug — domains parsed from a user's
+  Algolia HN-submissions search response were deduplicated via `HashSet` and
+  then walked straight into `Vec<Entity>` with no sort step, so identical
+  submissions could legally emit differently-ordered `Domain` entities (and a
+  differently-ordered live `EntityFound` stream) across runs of the identical
+  scan, purely as an artefact of the process's randomised `HashSet` seed.
+  Independently re-verified by direct read of `src/modules/hacker_news/mod.rs`
+  before touching any code. → **Solution:** extracted the pure logic into a
+  new `algolia_domain_entities(body, username, scan_id) -> Vec<Entity>`
+  helper — collect into a `HashSet` for dedup as before, convert to `Vec`,
+  `.sort_unstable()`, then map to entities — mirroring the `reddit_user`
+  fix's exact shape. Test delta:
+  `algolia_domain_entities_emits_all_distinct_domains_deterministically`
+  (7 URLs across 6 distinct domains, deliberately non-alphabetical input
+  order, asserts output is sorted and every entity carries the `hn-submission`
+  tag), `algolia_domain_entities_no_urls_yields_nothing` — fail-before
+  confirmed (reverted `mod.rs` to pre-fix `HEAD` with the new tests still
+  present in `tests.rs`; both failed to compile, referencing
+  `algolia_domain_entities`, a symbol that doesn't exist without the fix).
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4405 lib tests).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -218,12 +218,28 @@ async fn fetch_algolia_submissions(
         return Vec::new();
     };
 
+    algolia_domain_entities(&body, username, scan_id)
+}
+
+/// Emit one `Domain` entity per distinct domain linked from a user's HN
+/// submissions, parsed from an Algolia `search` response body. Pure and
+/// deterministic: the raw scan dedups through a `HashSet` (randomised
+/// iteration order), so the distinct set is sorted before emission —
+/// identical input always yields the identical entity set in the identical
+/// order (a `HashSet` walked straight into `ModuleResult.entities`
+/// previously let the same submissions produce differently-ordered `Domain`
+/// entities — and a differently-ordered live `EntityFound` event stream —
+/// across runs, the same determinism-leak class already fixed for
+/// `reddit_user::submitted_entities`).
+fn algolia_domain_entities(body: &str, username: &str, scan_id: &str) -> Vec<Entity> {
     // Extract URLs from "url":"..." fields, then reduce to deduped domains.
-    let domains: std::collections::HashSet<String> =
-        crate::util::json::scan_string_field(&body, "url")
-            .iter()
-            .filter_map(|url_str| extract_domain_from_url(url_str))
-            .collect();
+    let mut domains: Vec<String> = crate::util::json::scan_string_field(body, "url")
+        .iter()
+        .filter_map(|url_str| extract_domain_from_url(url_str))
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
+    domains.sort_unstable();
 
     domains
         .into_iter()

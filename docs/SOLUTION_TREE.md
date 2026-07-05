@@ -690,6 +690,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   than widen the test to fit an imprecise gate. Explicitly scoped: closes
   the observed case and the general compound-slug shape, not free-text
   surname/place-name collision broadly.
+- **`[x]` SOL-HN-DOMAIN-DETERMINISM · `hacker_news`'s Algolia-submissions
+  domain extraction no longer leaks `HashSet` iteration order into emitted
+  entity order** — a background discovery agent found the same
+  determinism-leak shape already fixed for `reddit_user::fetch_submitted`
+  (commit `d5adaefd`, this arc): distinct domains were deduplicated via
+  `HashSet` then walked straight into `Vec<Entity>` with no sort step, so
+  the identical submissions JSON could legally emit differently-ordered
+  `Domain` entities (and a differently-ordered live `EntityFound` stream)
+  across runs of the identical scan. Extracted the pure logic into
+  `algolia_domain_entities(body, username, scan_id)` — dedup via `HashSet`
+  as before, convert to `Vec`, `.sort_unstable()`, then map to entities —
+  mirroring the `reddit_user` fix's exact shape. *Closes:* new node
+  **T2.24**. ✅ 2 tests
+  (`algolia_domain_entities_emits_all_distinct_domains_deterministically`,
+  `algolia_domain_entities_no_urls_yields_nothing`), fail-before confirmed
+  (reverted `mod.rs` to pre-fix `HEAD` with the new tests still present —
+  they fail to compile, referencing a symbol the fix introduces).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -753,6 +770,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
 | SOL-GREYNOISE-KEYED | T2.22 | `[x]` |
 | SOL-USERNAME-SLUG-GATE | T2.23 | `[x]` |
+| SOL-HN-DOMAIN-DETERMINISM | T2.24 | `[x]` |
 
 ---
 
@@ -875,7 +893,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `[x]`** ✅ (SOL-FILTER-CANDIDATE-LEAK, 2026-07-05); **T2.21 `[x]`** ✅
   (SOL-UPDATE-GIT-FIXTURE, 2026-07-05); **T2.22 `[x]`** ✅
   (SOL-GREYNOISE-KEYED, 2026-07-05); **T2.23 `[x]`** ✅
-  (SOL-USERNAME-SLUG-GATE, 2026-07-05); T2.7 open;
+  (SOL-USERNAME-SLUG-GATE, 2026-07-05); **T2.24 `[x]`** ✅
+  (SOL-HN-DOMAIN-DETERMINISM, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3534,3 +3553,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   tracked separately, not claimed as fixed here). Gate green: fmt/clippy/
   doc clean, full suite 0 failures (4403 lib tests). Paired: `PROBLEM_TREE`
   §8 — same commit.
+- **2026-07-05** — **Cycle 35: SOL-HN-DOMAIN-DETERMINISM — `hacker_news`'s
+  Algolia-submissions domain extraction leaked `HashSet` iteration order
+  into emitted entity order.** A background discovery agent swept the module
+  tree for the same determinism-leak shape already closed for
+  `reddit_user::fetch_submitted` (commit `d5adaefd`, this arc) and found
+  `hacker_news::fetch_algolia_submissions` had the identical bug: distinct
+  domains parsed from a user's Algolia HN-submissions search response were
+  deduplicated via `HashSet` and then walked straight into `Vec<Entity>`
+  with no ordering step, so the identical submissions JSON could legally
+  emit differently-ordered `Domain` entities (and a differently-ordered live
+  `EntityFound` stream) across runs of the identical scan — purely an
+  artefact of the process's randomised `HashSet` seed, not the input data.
+  Independently re-verified by direct read of
+  `src/modules/hacker_news/mod.rs` before touching any code. Extracted the
+  pure logic into `algolia_domain_entities(body, username, scan_id)` —
+  dedup via `HashSet` as before, convert to `Vec`, `.sort_unstable()`, then
+  map to entities — mirroring the `reddit_user` fix's exact shape, keeping
+  the HTTP-fetching `fetch_algolia_submissions` a thin wrapper around the
+  new pure, unit-testable helper. *Closes:* new node **T2.24**. Tests:
+  `algolia_domain_entities_emits_all_distinct_domains_deterministically`
+  (7 URLs across 6 distinct domains in deliberately non-alphabetical order;
+  asserts the output emerges sorted and every entity carries the
+  `hn-submission` tag), `algolia_domain_entities_no_urls_yields_nothing` —
+  fail-before confirmed (reverted `mod.rs` to pre-fix `HEAD` with the new
+  tests still present in `tests.rs`; both failed to compile, referencing
+  `algolia_domain_entities`, a symbol that doesn't exist without the fix).
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4405 lib tests).
+  Paired: `PROBLEM_TREE` §8 — same commit.
