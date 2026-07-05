@@ -700,6 +700,25 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `restrict_to_owner_only(paths)` helper that logs a `tracing::warn!` keyed
   by the failing path before continuing — startup is still never blocked by a
   chmod failure, only made loud. **P2**
+- **`[x]` T2.17 · `latest_completed_scan` misreports a corrupt row as "no
+  completed scans"** — *(supersedes the "closes the storage-layer discovery-
+  pass arc" claim in T2.16's log entry — one more genuine finding surfaced by
+  a direct follow-up grep sweep of the same file.)* `Store::get_scan`
+  propagates a corrupted `data_json` as `Err` via `?` (confirmed by direct
+  comparison), but the sibling single-row getter `latest_completed_scan` did
+  `stmt.query_row(...).ok()` then `raw.and_then(|s|
+  serde_json::from_str(&s).ok())` — collapsing THREE distinct outcomes (no
+  complete scan exists / a genuine SQL error / the matched row's JSON is
+  corrupt) into the same `Ok(None)`. `resolve_scan_id` (`cli/mod.rs`, backing
+  `hse export/diff/audit latest` and the SPA's "open latest scan") turns that
+  `None` into "no completed scans in store" — so a corrupted MOST-RECENT
+  complete scan is misreported as an empty store instead of surfacing the
+  corruption, exactly the class of misleading result this arc exists to
+  close. → **Solution:** rewrote `latest_completed_scan` to mirror
+  `get_scan`'s `rows.next()?...transpose()?` / `.map_err(Into::into)`
+  structure exactly — `Ok(None)` now means only "no complete scan exists";
+  any SQL or deserialize failure on the matched row propagates as `Err`.
+  **P1** (a real wrong-result bug, not just a missing diagnostic).
 
 ---
 
@@ -4267,3 +4286,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `SCHEMA_VERSION`) is already correctly captured as T2.10's own stated P3/advisory
   residual — a version stamp + forward-compat warning were the delivered scope, and
   there is no live non-additive migration to apply yet, so no new node is warranted.
+- **2026-07-05** — **Executed T2.17 (correction: the arc wasn't fully closed).** A
+  direct follow-up grep sweep of `storage/mod.rs` for the same silent-swallow shape
+  (prompted by checking on a background "fourth discovery pass: storage layer" agent
+  that turned out to be unresolvable in this session — its task ID no longer exists,
+  likely from before a context reset) found one more, and this one a genuine
+  wrong-result bug rather than a missing diagnostic: `latest_completed_scan` did
+  `stmt.query_row(...).ok()` then `.and_then(|s| serde_json::from_str(&s).ok())` —
+  collapsing "no complete scan exists," "a genuine SQL error," and "the matched row's
+  JSON is corrupt" into the identical `Ok(None)`, unlike the sibling `get_scan` two
+  functions above it, which already propagates the same failure via `?`.
+  `resolve_scan_id` (`cli/mod.rs`) turns that `None` into "no completed scans in
+  store" — so a corrupted MOST-RECENT complete scan would be reported to `hse
+  export/diff/audit latest` and the SPA as an empty store instead of surfacing the
+  corruption. Fix: rewrote `latest_completed_scan` to mirror `get_scan`'s
+  `rows.next()?...transpose()?` / `.map_err(Into::into)` structure exactly. Test
+  delta: +1 (`latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none`:
+  a `status='complete'` row with syntactically-valid-but-`Scan`-incompatible
+  `data_json` → `Err`, not `Ok(None)`; fail-before: confirmed `Ok(None)` against the
+  unfixed code). Gate green: fmt/clippy/doc clean, full suite 0 failures (4387 lib
+  tests). **Paired:** `SOLUTION_TREE` §5 — same commit. **This now genuinely closes
+  the storage-layer sweep** — a second follow-up grep for the `.ok())`/`let _ = `
+  silent-swallow shapes across `storage/*.rs` found nothing further outside test
+  cleanup code.

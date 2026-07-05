@@ -430,8 +430,14 @@ impl Store {
     /// so we don't deserialise dozens of non-Complete rows just to
     /// find one Complete record. Used by `hse export latest …` and
     /// the SPA's "open latest scan" affordance.
+    ///
+    /// Returns `Ok(None)` only when no complete scan exists — a genuine SQL
+    /// failure or a corrupted `data_json` on the matched row propagates as
+    /// `Err`, exactly like [`Store::get_scan`], so a corrupt row is never
+    /// misreported as "no completed scans" to `resolve_scan_id`'s callers
+    /// (`export`/`diff`/`audit latest`).
     pub fn latest_completed_scan(&self) -> Result<Option<Scan>> {
-        let raw: Option<String> = {
+        let json: Option<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
                 // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
@@ -442,9 +448,12 @@ impl Store {
                  WHERE json_extract(data_json, '$.status') = 'complete'
                  ORDER BY started_at DESC, id DESC LIMIT 1",
             )?;
-            stmt.query_row(params![], |r| r.get::<_, String>(0)).ok()
+            let mut rows = stmt.query(params![])?;
+            rows.next()?.map(|r| r.get(0)).transpose()?
         };
-        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+        json.map(|j| serde_json::from_str(&j))
+            .transpose()
+            .map_err(Into::into)
     }
 
     // ── Correlations ───────────────────────────────────────────────────────

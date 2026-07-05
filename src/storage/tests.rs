@@ -140,6 +140,39 @@ fn latest_completed_scan_is_deterministic_on_same_second_ties() {
 }
 
 #[test]
+fn latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none() {
+    // `latest_completed_scan` backs `resolve_scan_id`'s `latest` selector
+    // (`hse export/diff/audit latest`, the SPA's "open latest scan"). If the
+    // one row matching `status = 'complete'` has a corrupted/schema-drifted
+    // `data_json`, the function must propagate that as an `Err` — exactly
+    // like the sibling `get_scan` already does via `?` — never silently
+    // report `Ok(None)`, which `resolve_scan_id` turns into the misleading
+    // "no completed scans in store" when a complete scan actually exists.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    {
+        let conn = store.conn.lock();
+        // Valid JSON (so the `json_extract(...) = 'complete'` SQL filter
+        // matches and the row is selected) but missing every field `Scan`
+        // requires, so `serde_json::from_str::<Scan>` fails.
+        conn.execute(
+            "INSERT INTO scans(id, target_kind, target_value, status, started_at, \
+             finished_at, entity_count, error, data_json) \
+             VALUES('scan-corrupt', 'email', 'x@y.com', 'complete', 0, 0, 0, NULL, ?1)",
+            params![r#"{"status":"complete"}"#],
+        )
+        .unwrap();
+    }
+    let result = store.latest_completed_scan();
+    assert!(
+        result.is_err(),
+        "a corrupted complete-scan row must surface as an error, not Ok(None) \
+         (which resolve_scan_id would misreport as 'no completed scans'); got: {result:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn entities_for_scan_orders_deterministically_on_confidence_ties() {
     // `ORDER BY confidence DESC` alone is non-deterministic when entities
     // share a confidence (the common case — e.g. every name permutation gets

@@ -343,6 +343,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Resolving the "latest" scan no longer reports an empty store when the most
+  recent completed scan is actually corrupted.** `hse export`/`diff`/`audit
+  latest` and the SPA's "open latest scan" all resolve through a lookup that
+  silently treated a database read error or a corrupted scan record the same
+  as "no completed scans exist," so a genuinely corrupted latest scan
+  produced a misleading "nothing to export" instead of a diagnosable error.
+  It now surfaces the underlying failure, matching how looking up a scan by
+  ID already behaves. Regression test
+  `latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none`.
 - **The store's owner-only permission lockdown now logs, rather than silently
   swallows, a failure.** `Store::open` restricts the database file (and its
   WAL/SHM siblings) to owner-only (0600) since it holds PII and harvested

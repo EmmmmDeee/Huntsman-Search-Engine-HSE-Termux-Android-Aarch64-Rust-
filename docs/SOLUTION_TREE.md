@@ -228,6 +228,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   is still never blocked by it. *Closes:* **T2.16** (new). ✅ 1 test
   (`restrict_to_owner_only_logs_when_a_chmod_fails`, unix-only — a chmod on a
   nonexistent path reliably fails without a read-only-filesystem fixture).
+- **`[x]` SOL-LATEST-SCAN-ERR · `latest_completed_scan` propagates a corrupt
+  row as `Err`, not a misleading `Ok(None)`** — a follow-up grep sweep of
+  `storage/mod.rs` (checking on an unresolvable background "fourth discovery
+  pass" agent) found `latest_completed_scan` doing
+  `stmt.query_row(...).ok()` then `.and_then(|s|
+  serde_json::from_str(&s).ok())`, collapsing "no complete scan exists," "a
+  genuine SQL error," and "the matched row's JSON is corrupt" into the same
+  `Ok(None)` — unlike the sibling `get_scan`, which already propagates the
+  identical failure via `?`. `resolve_scan_id` (`cli/mod.rs`, backing `hse
+  export/diff/audit latest` and the SPA's "open latest scan") turns that
+  `None` into "no completed scans in store," so a corrupted MOST-RECENT
+  complete scan was misreported as an empty store. Rewrote it to mirror
+  `get_scan`'s `rows.next()?...transpose()?` / `.map_err(Into::into)`
+  structure exactly. *Closes:* **T2.17** (new) — this is a real wrong-result
+  bug, not just a missing diagnostic like SOL-STORAGE-DIAG/SOL-CHMOD-DIAG. ✅
+  1 test
+  (`latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none`).
 - **`[-]` SOL-BUDGET · Atomic quota reservation (accepted-as-is)** —
   `QuotaBudget::try_increment` (CAS, saturating session rollback) replaces every
   racy `remaining()`-then-`increment()`. *Closes:* **T2.11** (oathnet — done;
@@ -574,6 +591,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SCHEMA-VERSION | T2.10 | `[x]` |
 | SOL-STORAGE-DIAG | T2.15 | `[x]` |
 | SOL-CHMOD-DIAG | T2.16 | `[x]` |
+| SOL-LATEST-SCAN-ERR | T2.17 | `[x]` |
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
@@ -711,10 +729,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
-  (SOL-CHMOD-DIAG, 2026-07-05); T2.7 open; T2.11 mostly done (oathnet +
-  found_keys/SOL-ISOLATE + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all
-  closed; only the accepted-`[-]` budget-reset-zeroing note remains, and no
-  further action is planned on it); T2.14 open (deferred noise design).
+  (SOL-CHMOD-DIAG, 2026-07-05); **T2.17 `[x]`** ✅ (SOL-LATEST-SCAN-ERR,
+  2026-07-05); T2.7 open; T2.11 mostly done (oathnet + found_keys/SOL-ISOLATE
+  + LOW over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; only the
+  accepted-`[-]` budget-reset-zeroing note remains, and no further action is
+  planned on it); T2.14 open (deferred noise design).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -3104,3 +3123,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   remaining item (no migration-application mechanism behind `SCHEMA_VERSION`) is already
   T2.10's own stated P3/advisory residual, not a new gap. Paired: `PROBLEM_TREE` §8 — same
   commit.
+- **2026-07-05** — **SOL-LATEST-SCAN-ERR: `latest_completed_scan` now propagates a corrupt
+  row as `Err`, correcting the prior entry's "arc closed" claim.** A direct follow-up grep
+  sweep of `storage/mod.rs` (prompted by checking on a background "fourth discovery pass:
+  storage layer" agent whose task ID turned out unresolvable in this session) found one more
+  instance of the same silent-swallow shape, and unlike SOL-STORAGE-DIAG/SOL-CHMOD-DIAG this
+  one is a genuine wrong-result bug, not just a missing log. `latest_completed_scan` did
+  `stmt.query_row(...).ok()` then `.and_then(|s| serde_json::from_str(&s).ok())`, collapsing
+  "no complete scan exists," "a genuine SQL error," and "the matched row's JSON is corrupt"
+  into the identical `Ok(None)` — unlike the sibling `get_scan` two functions above it, which
+  already propagates the same failure via `?`. `resolve_scan_id` (`cli/mod.rs`, backing `hse
+  export/diff/audit latest` and the SPA's "open latest scan") turns that `None` into "no
+  completed scans in store," so a corrupted MOST-RECENT complete scan was silently reported
+  as an empty store rather than surfacing the corruption. Rewrote it to mirror `get_scan`'s
+  `rows.next()?...transpose()?` / `.map_err(Into::into)` structure exactly. Test:
+  `latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none` (a
+  `status='complete'` row with syntactically-valid-but-`Scan`-incompatible `data_json` →
+  `Err`, not `Ok(None)`; fail-before: confirmed `Ok(None)` against the unfixed code). Gate
+  green (4387 lib tests). A second follow-up grep across `storage/*.rs` for the same
+  `.ok())`/`let _ = ` silent-swallow shapes found nothing further outside test cleanup code —
+  this now genuinely closes the storage-layer sweep. Paired: `PROBLEM_TREE` §8 — same commit.
