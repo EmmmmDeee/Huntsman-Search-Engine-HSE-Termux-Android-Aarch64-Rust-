@@ -480,6 +480,28 @@ fn total_dead_scan_hint(entities: &[Entity], modules_run: usize) -> Option<Strin
     })
 }
 
+/// Closes PROBLEM_TREE T2.14 / `SOLUTION_TREE` SOL-HINT-NOISE's per-module
+/// noise decision, left open since 2026-07-01: a `KeyGated`/`Paid` module
+/// that ran and yielded zero entities is real, actionable signal (a wasted
+/// paid/key-gated API call), unlike the dozens of `Free` modules that
+/// legitimately find nothing for a given target kind — surfacing one line
+/// per THOSE would flood the hints list, exactly the noise problem the node
+/// left unresolved. Adopts the same cost-gate the dossier's own `--exclude`
+/// suggesting ROI line already uses (`zero_yield_keyed_or_paid_modules`),
+/// formatted as a single [`crate::util::diagnostics::analyse`]-style
+/// `optimization_hints` entry rather than a per-module enumeration. Pure
+/// over the already-computed, already cost-gated set, so it's testable
+/// without a live scan.
+fn keyed_or_paid_zero_yield_hint(wasted: &[String]) -> Option<String> {
+    (!wasted.is_empty()).then(|| {
+        format!(
+            "{} keyed/paid module(s) yielded zero entities this scan: {}",
+            wasted.len(),
+            wasted.join(", ")
+        )
+    })
+}
+
 /// The dossier's one-line "online since X" headline — the same tenure/
 /// recency computation `api::scan_handlers::intel::scan_timeline` already
 /// returns as `tenure`/`recency` JSON fields, rendered for the CLI. Pure so
@@ -553,6 +575,9 @@ fn print_diagnostics(
             wasted.len(),
             wasted.join(",")
         );
+    }
+    if let Some(hint) = keyed_or_paid_zero_yield_hint(&wasted) {
+        diag.optimization_hints.push(hint);
     }
     println!();
 
@@ -863,5 +888,27 @@ mod tests {
         use crate::core::entity::{Entity, EntityKind};
         let entities = vec![Entity::new(EntityKind::Email, "a@b.com", 0.5, "s")];
         assert_eq!(total_dead_scan_hint(&entities, 12), None);
+    }
+
+    use super::keyed_or_paid_zero_yield_hint;
+
+    /// Closes T2.14 / SOL-HINT-NOISE's per-module noise decision: a wasted
+    /// keyed/paid module call is real signal and must reach
+    /// `optimization_hints`, not just the dossier's separate ROI println.
+    #[test]
+    fn keyed_or_paid_zero_yield_hint_fires_when_a_keyed_or_paid_module_wasted_its_call() {
+        let wasted = vec!["hunter_io".to_string(), "shodan".to_string()];
+        let hint = keyed_or_paid_zero_yield_hint(&wasted).expect("must fire");
+        assert!(hint.contains("hunter_io"));
+        assert!(hint.contains("shodan"));
+        assert!(hint.contains('2'));
+    }
+
+    /// No wasted keyed/paid module — must not fire (this is the common case:
+    /// `Free` modules finding nothing for a given target kind is normal and
+    /// must never appear here, which is exactly what stayed undecided).
+    #[test]
+    fn keyed_or_paid_zero_yield_hint_is_silent_when_nothing_wasted() {
+        assert_eq!(keyed_or_paid_zero_yield_hint(&[]), None);
     }
 }

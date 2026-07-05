@@ -862,7 +862,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[x]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -883,9 +883,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   wart left honest, not hidden: doesn't remove the pre-existing "well-
   tuned" fallback line, so both can print together on an empty scan —
   cosmetic, deferred.
-  *Gap:* the two ORIGINAL dead hints (scan-level 60s-and-zero-yield,
-  per-module zero-entities) remain unrestored; the per-module noise
-  decision is still open. **(§4a)**
+  *Delivered (2026-07-05):* the per-module noise decision, closed. Adopted
+  the cost-gate candidate — `KeyGated`/`Paid` zero-yield is real, actionable
+  signal (a wasted paid/key-gated call), unlike the dozens of `Free` modules
+  that legitimately find nothing for a given target kind. New
+  `keyed_or_paid_zero_yield_hint` formats the already-computed, already
+  cost-gated `zero_yield_keyed_or_paid_modules` set (SOL-ROI-HINT's own
+  set — no new gating logic, no duplication) as a single
+  `optimization_hints` entry, alongside the dossier's separate
+  `--exclude`-suggesting ROI println. 2 unit tests. *Known residual, noted
+  honestly rather than silently dropped:* this reaches the CLI dossier
+  surface only — the same surface `total_dead_scan_hint` above already
+  reaches and no more; `api::handlers`'s own `analyse()` call (which only
+  updates the adaptive-routing ledger) and the plain `hse scan` diagnostics
+  path do not consume `optimization_hints` for rendering at all today, so
+  neither hint reaches those surfaces — a pre-existing cross-surface gap,
+  not introduced by this fix, real but out of T2.14's own stated scope
+  (a future node's concern, not force-fit here). The two ORIGINALLY-dead
+  hints (scan-level 60s-and-zero-yield, per-module zero-entities) remain
+  unrestored by design — both replaced by safer, differently-designed
+  signals per the two entries above. **(§4a closed)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -970,7 +987,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[~]` |
+| SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -994,10 +1011,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.14** — `[~]` (SOL-HINT-NOISE). A third, differently-designed
-  scan-wide dead-hint delivered 2026-07-01 (`total_dead_scan_hint`); the
-  two ORIGINAL `analyse()` hints T2.13 removed remain unrestored, and the
-  per-module noise decision is still open.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4056,3 +4069,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   doctor` command directly (now prints alphabetically); `hse selftest` 9/9. No
   identity/PII, architecture-guard, or `unsafe` impact. Paired: `PROBLEM_TREE`
   §8 — same commit.
+
+- **2026-07-05** — **SOL-HINT-NOISE `[~]`→`[x]`: closed the per-module noise
+  decision left open since cycle 2026-07-01 — the finish queue's oldest
+  in-progress node.** P→S pick: T2.14/SOL-HINT-NOISE was the sole item in
+  §4a (P→S coverage gaps) and the only in-progress node from a prior cycle,
+  so it took priority over drawing a fresh unit from the backlog. Adopted the
+  cost-gate candidate (`KeyGated`/`Paid`-only) already proven by T2.13's ROI
+  hint: a wasted paid/key-gated module call is real signal, a `Free` module's
+  routine zero-yield is not, and per-module enumeration of the latter is
+  exactly the noise the node was blocked on deciding against. New pure
+  `keyed_or_paid_zero_yield_hint` formats the existing, already cost-gated
+  `zero_yield_keyed_or_paid_modules` set — no new gating logic — as an
+  `optimization_hints` entry alongside the dossier's pre-existing
+  `--exclude`-suggesting ROI println. 2 new unit tests (new functionality,
+  tested directly, matching how `total_dead_scan_hint` was tested). Gate
+  green: fmt/clippy/strict-rustdoc `cargo doc`/`cargo test` (4345 lib tests,
+  +2). **S→P gap-refresh result:** §4a's T2.14 entry removed — the section
+  is now empty (4a + 4b agree with the trees). Known residual, disclosed:
+  the new hint reaches the CLI dossier surface only, same as
+  `total_dead_scan_hint`; `api::handlers`'s `analyse()` call discards its
+  return value (ledger-update only) and the plain `hse scan` path never
+  renders `optimization_hints`, so neither hint reaches those surfaces — a
+  real, pre-existing cross-surface gap, not introduced here and outside this
+  node's stated scope, left for a future pick rather than force-fit into
+  this commit. Paired: `PROBLEM_TREE` T2.14 `[~]`→`[x]` + §8 — same commit.

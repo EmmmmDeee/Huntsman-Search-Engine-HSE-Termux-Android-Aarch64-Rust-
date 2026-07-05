@@ -419,6 +419,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The scan dossier now flags a wasted keyed/paid module call as a proper
+  optimization hint, not just a separate CLI line.** A `KeyGated`/`Paid`
+  module that ran and returned zero entities is real, actionable signal (a
+  wasted paid/key-gated API call) — unlike the dozens of `Free` modules
+  that legitimately find nothing for a given target kind, which is normal
+  and would flood the hints list if surfaced per-module (the noise question
+  this had been left open on). The already cost-gated, already-computed
+  wasted-module set now also appears as an `optimization_hints` entry,
+  alongside the dossier's existing `--exclude`-suggesting ROI line.
 - **`hse doctor`'s loaded-keys listing now prints in a stable order.** The
   "HUNTSMAN_* keys loaded" list was read straight off an internal hash map with
   no sort, so it could print in a different order on separate runs against the

@@ -849,7 +849,7 @@ direct.**
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[x]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -894,6 +894,24 @@ direct.**
   hints (scan-level 60s-and-zero-yield, per-module zero-entities) remain
   unrestored; this closes T2.14's underlying value gap with a safer
   design, not the literal restoration the node's title describes.
+  *Delivered (2026-07-05):* the per-module noise decision, closed — the
+  remaining open question from the partial fix above. Adopted the
+  cost-gate candidate (`KeyGated`/`Paid`-only): a wasted paid/key-gated
+  module call is real, actionable signal, unlike the dozens of `Free`
+  modules that legitimately find nothing for a given target kind, which
+  would flood the list if surfaced per-module. New
+  `keyed_or_paid_zero_yield_hint` in `cli/scan/dossier.rs` formats the
+  already-computed, already cost-gated `zero_yield_keyed_or_paid_modules`
+  set (T2.13's own ROI-hint set — no new gating logic) as a single
+  `optimization_hints` entry, alongside the dossier's separate
+  `--exclude`-suggesting ROI println. 2 unit tests (4345 lib tests, +2).
+  Known residual, noted honestly: this reaches the CLI dossier surface
+  only, same as `total_dead_scan_hint` above — `api::handlers`'s own
+  `analyse()` call only updates the adaptive-routing ledger and the plain
+  `hse scan` diagnostics path doesn't render `optimization_hints` either,
+  so neither hint reaches those surfaces yet; a pre-existing cross-surface
+  gap, not introduced here, and out of this node's stated scope. T2.14
+  closed `[~]`→`[x]`.
 
 ---
 
@@ -5473,3 +5491,36 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   selftest` 9/9 (161 modules, dispatch graph intact). No identity/PII decision
   logic, no architecture-guard or `#![forbid(unsafe_code)]` impact.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-05** — **T2.14 `[~]`→`[x]`: closed the per-module noise decision
+  SOL-HINT-NOISE left open since 2026-07-01.** Two of the node's three
+  candidate designs (cap-to-worst-N, bounded summary count) were left on the
+  table in favour of the third: cost-gate `KeyGated`/`Paid`-only, mirroring
+  the already-shipped, already-tested T2.13 ROI hint exactly — a wasted
+  paid/key-gated module call is real, actionable signal; the dozens of `Free`
+  modules that legitimately find nothing for a given target kind are not, and
+  would flood the hints list if surfaced per-module (the noise problem the
+  node existed to resolve). New pure `keyed_or_paid_zero_yield_hint` in
+  `cli/scan/dossier.rs` formats the already-computed, already cost-gated
+  `zero_yield_keyed_or_paid_modules` set — no new gating logic, no
+  duplication — as a single `optimization_hints` entry, pushed alongside the
+  dossier's pre-existing `--exclude`-suggesting ROI println rather than
+  replacing it. 2 new unit tests (`..._fires_when_a_keyed_or_paid_module_
+  wasted_its_call`, `..._is_silent_when_nothing_wasted`), both exercising the
+  pure function directly since this is new functionality, not a behaviour
+  regression, matching how `total_dead_scan_hint`'s own tests were written.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc` (the new `[\`crate::util::diagnostics::analyse\`]` intra-doc
+  link resolves cleanly)/`cargo test` (4345 lib tests, +2; full suite —
+  unit + integration + doctests — green). Known residual, disclosed rather
+  than silently dropped: this hint (like `total_dead_scan_hint` before it)
+  reaches the CLI dossier surface only — `api::handlers`'s own `analyse()`
+  call discards its return value entirely (used only to update the
+  adaptive-routing ledger) and the plain `hse scan` diagnostics path never
+  renders `optimization_hints`, so neither hint reaches those surfaces; a
+  real, pre-existing cross-surface gap, not introduced by this change and
+  outside T2.14's own stated scope, left for a future node rather than
+  force-fit into this commit. No identity/PII decision logic, no
+  architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` §5 SOL-HINT-NOISE `[~]`→`[x]`, §4a entry
+  removed — same commit.
