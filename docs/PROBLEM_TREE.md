@@ -787,6 +787,43 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   Verified the new tests have real teeth: temporarily reversed the
   `rev-list` range to `@{u}..HEAD`, confirmed the fixture test failed,
   restored the original from a diff-verified backup. **P2**
+- **`[x]` T2.22 · `greynoise` module never used the operator's configured
+  `HUNTSMAN_GREYNOISE_KEY`** — surfaced by a direct request to audit whether
+  every currently-configured `HUNTSMAN_*` key is genuinely wired to a live
+  module. `src/modules/greynoise/mod.rs`'s own doc comment stated "Auth:
+  None (community tier is key-free)... Free, no API key required" — and a
+  direct read of `process()` confirmed zero `ctx.key_opt`/`ctx.key(` calls
+  anywhere in the file: it unconditionally called the free `v3/community`
+  endpoint regardless of whether a key was configured. An operator who
+  registered for a GreyNoise key (per the tool's own signup-hint UI) got
+  zero additional capability from it — the same class of gap as a
+  registered-but-unimplemented key, except here the module and the key both
+  exist, just never connected. Confirmed the richer endpoint's shape is
+  already known-good elsewhere in this codebase:
+  `src/modules/api_key_probe/probes.rs`'s own GreyNoise key-validation probe
+  already calls `GET https://api.greynoise.io/v3/ip/{ip}` with header `key`
+  (its own comment: "the community endpoint works without auth and would
+  cause false positives" for a validity check) and parses `ip`/`seen`/
+  `classification` from the response — confirming the endpoint, auth
+  header, and those three fields are real and live, not assumed. →
+  **Solution:** mirror the Shodan module's free/paid split exactly
+  (`ctx.key_opt` present → paid path; absent → free path, `cost()` stays
+  `Free` either way since the module still fully functions without a key).
+  Added a `PaidResp` type reusing the community tier's own already-verified
+  `noise`/`riot`/`classification`/`name`/`link`/`message` fields (the v3
+  family) plus the confirmed `seen` flag; `#[serde(default)]` throughout so
+  an unexpected upstream field degrades to "absent," never a parse failure.
+  A live end-to-end validation (a real scan against the configured key) was
+  planned but became impossible mid-cycle: the key disappeared from this
+  environment's `~/.huntsman.env` for a reason that could not be
+  conclusively attributed to any code path in this repository (audited
+  `hse keys validate`, `ensure_hardcoded_keys`, and the full test suite —
+  none write to that file in a way that would drop an unrelated key; a
+  mid-session container restart re-provisioning the environment is the more
+  likely cause). Shipped on unit tests plus the already-verified
+  `api_key_probe` reference instead, per explicit operator sign-off,
+  clearly disclosed as not live-validated in this environment. **P2**
+  (a real dead-key-registration gap, not a crash or PII leak).
 
 ---
 
@@ -4641,3 +4678,41 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `commits_behind_returns_none_without_a_configured_upstream`. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4396 lib tests). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 33 (new T2.22): `greynoise` module wired to the
+  operator's configured key it had silently ignored.** A direct request to
+  audit every currently-configured `HUNTSMAN_*` key's wiring surfaced this
+  independently of a background-agent pass: `greynoise/mod.rs`'s own doc
+  comment claimed "Free, no API key required," and a direct read confirmed
+  zero `ctx.key_opt` calls anywhere in the file — the module always called
+  the free `v3/community` endpoint regardless of whether
+  `HUNTSMAN_GREYNOISE_KEY` was set. Rather than guess at an unverified
+  richer-tier response shape, found the endpoint already proven live
+  elsewhere in this codebase: `api_key_probe`'s own GreyNoise
+  key-validation probe already calls the paid `v3/ip/{ip}` endpoint (header
+  `key`) and parses `ip`/`seen`/`classification` — confirming the real,
+  working contract without speculation. Mirrored the Shodan module's
+  established free/paid dual-path pattern exactly (`cost()` stays `Free`;
+  `ctx.key_opt` presence branches to the richer endpoint). During
+  live-validation an unrelated but serious issue surfaced: the configured
+  `HUNTSMAN_GREYNOISE_KEY` had disappeared from this environment's
+  `~/.huntsman.env` entirely (confirmed via `hse doctor`: 14 keys → 13,
+  GreyNoise absent from both loaded and unset lists). Audited every code
+  path that touches that file (`hse keys validate`'s pool-only writes,
+  `ensure_hardcoded_keys`'s OathNet/HIBP/WiGLE/SeekNow-only rewrite gate —
+  confirmed via trace logs it never fired during this session's test scans
+  — and the full test suite, which only ever writes to isolated temp
+  paths) and found no code path in this repository that explains it; a
+  mid-session container restart re-provisioning the environment is the more
+  likely cause, disclosed to the operator as inconclusive rather than
+  asserted. Per explicit operator sign-off, shipped on the unit-test +
+  already-verified-reference basis instead of a blocked live call. Test
+  delta: `paid_response_deserialization`,
+  `paid_path_tags_seen_in_addition_to_the_shared_signal`,
+  `paid_path_surfaces_a_seen_but_otherwise_unclassified_ip`,
+  `paid_path_no_signal_at_all_yields_nothing`,
+  `paid_path_still_yields_the_operator_organisation_pivot` — fail-before
+  confirmed (reverted to the pre-fix community-only code with the new tests
+  still present; they failed to compile against it, referencing symbols
+  that don't exist without the fix). Gate green: fmt/clippy/doc clean, full
+  suite 0 failures (4401 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.

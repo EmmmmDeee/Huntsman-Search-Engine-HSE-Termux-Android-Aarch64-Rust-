@@ -16,9 +16,10 @@ use super::*;
         assert_eq!(m.priority(), 30);
         assert_eq!(
             m.description(),
-            "GreyNoise IP reputation: internet noise and RIOT classification"
+            "GreyNoise IP reputation: internet noise and RIOT classification (paid v3/ip lookup when keyed)"
         );
-        // Free, community tier — no API key required.
+        // Free by default (Community tier); a configured key upgrades to the
+        // paid v3/ip lookup instead of gating the module off entirely.
         assert!(matches!(m.cost(), crate::core::module::ModuleCost::Free));
     }
 
@@ -206,4 +207,79 @@ use super::*;
             ev.attributes.get("classification").map(String::as_str),
             Some("benign")
         );
+    }
+
+    // ── Paid v3/ip path (regression: the configured key used to be
+    // completely unused — the module always called the free Community
+    // endpoint regardless) ──────────────────────────────────────────
+
+    #[test]
+    fn paid_response_deserialization() {
+        // Same field shape `api_key_probe`'s own GreyNoise probe confirms this
+        // endpoint returns (`ip` + `seen` alongside the community fields).
+        let json = r#"{
+            "ip": "71.6.135.131",
+            "seen": true,
+            "noise": true,
+            "riot": false,
+            "classification": "malicious",
+            "name": "unknown",
+            "link": "https://viz.greynoise.io/ip/71.6.135.131"
+        }"#;
+        let resp: PaidResp = serde_json::from_str(json).unwrap();
+        assert!(resp.seen);
+        assert!(resp.noise);
+        assert!(!resp.riot);
+        assert_eq!(resp.classification.as_deref(), Some("malicious"));
+    }
+
+    fn paid_resp(json: &str) -> PaidResp {
+        serde_json::from_str(json).expect("fixture is valid PaidResp JSON")
+    }
+
+    #[test]
+    fn paid_path_tags_seen_in_addition_to_the_shared_signal() {
+        let body = paid_resp(
+            r#"{ "seen": true, "noise": true, "riot": false, "classification": "malicious" }"#,
+        );
+        let subject = build_paid_entities(&body, "71.6.135.131", "s").remove(0);
+        assert!((subject.confidence - 0.80).abs() < 1e-9);
+        assert!(subject.has_tag("greynoise-seen"));
+        assert!(subject.has_tag("greynoise-malicious"));
+        assert!(subject.has_tag(crate::core::tags::MALICIOUS));
+    }
+
+    #[test]
+    fn paid_path_surfaces_a_seen_but_otherwise_unclassified_ip() {
+        // The community tier would gate this to nothing (no noise/riot/
+        // classification) — the paid tier's confirmed `seen` is its own
+        // positive signal, so the record must still surface.
+        let body = paid_resp(r#"{ "seen": true, "noise": false, "riot": false }"#);
+        let ents = build_paid_entities(&body, "9.9.9.9", "s");
+        assert_eq!(ents.len(), 1, "a seen-only record must still surface: {ents:?}");
+        let subject = &ents[0];
+        // No classification → 0.55 unknown band, same as the community path.
+        assert!((subject.confidence - 0.55).abs() < 1e-9);
+        assert!(subject.has_tag("greynoise-seen"));
+        assert!(subject.has_tag("greynoise-unknown"));
+    }
+
+    #[test]
+    fn paid_path_no_signal_at_all_yields_nothing() {
+        let body = paid_resp(r#"{ "seen": false, "noise": false, "riot": false }"#);
+        assert!(build_paid_entities(&body, "192.168.1.1", "s").is_empty());
+    }
+
+    #[test]
+    fn paid_path_still_yields_the_operator_organisation_pivot() {
+        let body = paid_resp(
+            r#"{ "seen": true, "noise": true, "riot": true, "classification": "benign",
+                 "name": "Google Public DNS" }"#,
+        );
+        let ents = build_paid_entities(&body, "8.8.8.8", "s");
+        let org = ents
+            .iter()
+            .find(|e| e.kind == EntityKind::Organisation)
+            .expect("operator Organisation");
+        assert_eq!(org.value, "Google Public DNS");
     }

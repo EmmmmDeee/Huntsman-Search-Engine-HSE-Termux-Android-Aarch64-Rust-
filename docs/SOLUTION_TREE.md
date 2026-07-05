@@ -639,6 +639,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   restored from a diff-verified backup. *Closes:* new node **T2.21**. ✅ 2
   tests (`commits_behind_and_changelog_lines_reflect_real_git_state`,
   `commits_behind_returns_none_without_a_configured_upstream`).
+- **`[x]` SOL-GREYNOISE-KEYED · `greynoise` now uses the operator's
+  configured key instead of silently ignoring it** — an operator-requested
+  audit of every currently-configured `HUNTSMAN_*` key's wiring found the
+  module's own doc comment claimed "Free, no API key required" with zero
+  `ctx.key_opt` calls anywhere in the file: it always called the free
+  `v3/community` endpoint regardless of a configured key. Rather than guess
+  at an unverified richer-tier shape, reused the endpoint HSE's own
+  `api_key_probe` key-validation probe already calls and trusts —
+  `v3/ip/{ip}` with header `key`, confirmed fields `ip`/`seen`/
+  `classification` — and mirrored the Shodan module's established
+  free/paid dual-path pattern (`cost()` stays `Free`; a configured key
+  upgrades the lookup, same policy). *Closes:* new node **T2.22**. ✅ 5
+  tests (`paid_response_deserialization`,
+  `paid_path_tags_seen_in_addition_to_the_shared_signal`,
+  `paid_path_surfaces_a_seen_but_otherwise_unclassified_ip`,
+  `paid_path_no_signal_at_all_yields_nothing`,
+  `paid_path_still_yields_the_operator_organisation_pivot`), fail-before
+  confirmed (reverted to the pre-fix file with the new tests still present
+  — they fail to compile, referencing symbols the fix introduces). Live
+  end-to-end validation against the real configured key was planned but
+  blocked mid-cycle when the key disappeared from this environment's
+  `~/.huntsman.env` (confirmed via `hse doctor`, 14→13 keys) for a reason
+  audited and found NOT attributable to any code path in this repository
+  (`hse keys validate`'s pool-only writes, `ensure_hardcoded_keys`'s
+  narrower rewrite gate confirmed unfired via trace logs, and the test
+  suite's isolated-temp-path-only writes were all ruled out); a mid-session
+  container restart re-provisioning the environment is the more likely
+  cause, disclosed as inconclusive rather than asserted. Shipped on the
+  unit-test + already-verified-reference basis per explicit operator
+  sign-off.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -700,6 +730,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 | SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
+| SOL-GREYNOISE-KEYED | T2.22 | `[x]` |
 
 ---
 
@@ -820,7 +851,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-CHMOD-DIAG, 2026-07-05); **T2.17 `[x]`** ✅ (SOL-LATEST-SCAN-ERR,
   2026-07-05); **T2.18 `[x]`** ✅ (SOL-EXPOSURE-DOB, 2026-07-05); **T2.20
   `[x]`** ✅ (SOL-FILTER-CANDIDATE-LEAK, 2026-07-05); **T2.21 `[x]`** ✅
-  (SOL-UPDATE-GIT-FIXTURE, 2026-07-05); T2.7 open;
+  (SOL-UPDATE-GIT-FIXTURE, 2026-07-05); **T2.22 `[x]`** ✅
+  (SOL-GREYNOISE-KEYED, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3399,3 +3431,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `commits_behind_returns_none_without_a_configured_upstream`. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4396 lib tests). Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 33: SOL-GREYNOISE-KEYED — the `greynoise` module
+  now uses the operator's configured key instead of silently ignoring it.**
+  An operator-requested audit of every currently-configured `HUNTSMAN_*`
+  key's wiring — independent of the earlier background-agent pass — found
+  `greynoise/mod.rs`'s own doc comment claiming "Free, no API key
+  required," and confirmed by direct read: zero `ctx.key_opt` calls
+  anywhere in the file, always calling the free `v3/community` endpoint.
+  Rather than guess at an unverified richer-tier response shape (this
+  project's standing anti-fabrication discipline), found the exact
+  endpoint already proven live elsewhere in this codebase:
+  `api_key_probe`'s own GreyNoise key-validation probe already calls the
+  paid `v3/ip/{ip}` endpoint (header `key`) and parses `ip`/`seen`/
+  `classification` from real responses — a genuine, already-verified
+  reference, not speculation. Mirrored the Shodan module's established
+  free/paid dual-path architecture exactly (`cost()` stays `Free`; a
+  configured key upgrades the lookup). A live end-to-end validation was
+  planned but blocked mid-cycle: the configured `HUNTSMAN_GREYNOISE_KEY`
+  disappeared from this environment's `~/.huntsman.env` (confirmed via
+  `hse doctor`, 14→13 keys, GreyNoise absent from both lists). Audited
+  every code path in this repository that touches that file — `hse keys
+  validate`'s pool-only writes (confirmed the "greynoise" pool entry it
+  tested was an unrelated auto-harvested candidate key, not the real one),
+  `ensure_hardcoded_keys`'s narrower OathNet/HIBP/WiGLE/SeekNow-only
+  rewrite gate (confirmed via trace logs it never fired during this
+  session's scans), and the test suite (confirmed every write path uses an
+  isolated temp path, never the real file) — and found none of them
+  explains it; disclosed the mid-session container restart as the more
+  likely cause without asserting it as fact. Per explicit operator
+  sign-off, shipped on the unit-test + already-verified-reference basis
+  rather than continuing to block on an unavailable key. *Closes:* new
+  node **T2.22**. Tests: `paid_response_deserialization`,
+  `paid_path_tags_seen_in_addition_to_the_shared_signal`,
+  `paid_path_surfaces_a_seen_but_otherwise_unclassified_ip`,
+  `paid_path_no_signal_at_all_yields_nothing`,
+  `paid_path_still_yields_the_operator_organisation_pivot` — fail-before
+  confirmed (reverted to the pre-fix file with the new tests still
+  present; they fail to compile, referencing symbols the fix introduces).
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4401 lib
+  tests). Paired: `PROBLEM_TREE` §8 — same commit.

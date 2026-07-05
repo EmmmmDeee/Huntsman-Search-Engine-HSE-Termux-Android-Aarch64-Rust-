@@ -364,6 +364,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The `greynoise` module now uses a configured `HUNTSMAN_GREYNOISE_KEY`
+  instead of silently ignoring it.** The module always called GreyNoise's
+  free Community endpoint, even when a key was configured — an operator
+  who registered for one got no additional capability. It now upgrades to
+  GreyNoise's keyed `v3/ip` lookup when a key is present, matching the
+  Shodan module's existing free/paid pattern. Regression tests
+  `paid_response_deserialization`,
+  `paid_path_tags_seen_in_addition_to_the_shared_signal`,
+  `paid_path_surfaces_a_seen_but_otherwise_unclassified_ip`,
+  `paid_path_no_signal_at_all_yields_nothing`,
+  `paid_path_still_yields_the_operator_organisation_pivot`.
 - **`GET /scans/{id}/entities/filter` no longer leaks quarantined `candidate`
   entities.** Every other entity-listing surface (`/entities`, the CSV
   export, `report.json`, and the GEXF graph export) hides non-subject breach
