@@ -60,7 +60,11 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
     if let Some(ref profile_name) = opts.profile
         && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
     {
-        opts = profile_opts;
+        // Field-by-field overlay — the SAME policy the CLI's `--profile` flag
+        // uses — not a wholesale replace. A full `opts = profile_opts` used to
+        // silently discard every other client-supplied option (`modules`,
+        // `min_confidence`, `webhook_url`, …) the moment a profile was named.
+        opts = crate::core::profiles::apply_profile_overlay(opts, profile_opts);
     }
     let scan = Scan::new(sid, target.clone()).with_options(opts.clamp_depth());
     Ok((scan, target))

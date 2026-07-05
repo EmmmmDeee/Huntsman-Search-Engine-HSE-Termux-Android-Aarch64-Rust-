@@ -108,6 +108,41 @@ use super::*;
     }
 
     #[test]
+    fn build_scan_from_request_profile_overlay_preserves_client_options() {
+        // The bug this guards: a full `opts = profile_opts` replace silently
+        // discarded every option the client set alongside `"profile"` — here,
+        // `modules` and `min_confidence` have no profile equivalent at all, so
+        // a request combining a profile with an explicit module allowlist used
+        // to have that allowlist vanish without any error or warning.
+        let req = ScanRequest {
+            kind: Some(TargetKind::Domain),
+            value: "cloudflare.com".to_string(),
+            options: crate::core::scan::ScanOptions {
+                profile: Some("investigate".to_string()),
+                modules: Some(vec!["hunter_io".to_string()]),
+                min_confidence: Some(0.7),
+                ..Default::default()
+            },
+        };
+        let (scan, _) = build_scan_from_request(req).expect("valid request should build");
+        assert_eq!(
+            scan.options.modules,
+            Some(vec!["hunter_io".to_string()]),
+            "client-supplied modules must survive a profile overlay"
+        );
+        assert_eq!(
+            scan.options.min_confidence,
+            Some(0.7),
+            "client-supplied min_confidence must survive a profile overlay"
+        );
+        // The named profile's own tuning still takes effect (depth is clamped
+        // to MAX_DEPTH by `clamp_depth`, same as any other scan).
+        let investigate = crate::core::profiles::resolve_profile("investigate").unwrap();
+        assert_eq!(scan.options.depth, crate::core::scan::MAX_DEPTH);
+        assert_eq!(scan.options.max_entities, investigate.max_entities);
+    }
+
+    #[test]
     fn build_scan_from_request_rejects_invalid_target() {
         let req = ScanRequest {
             kind: Some(TargetKind::Domain),
