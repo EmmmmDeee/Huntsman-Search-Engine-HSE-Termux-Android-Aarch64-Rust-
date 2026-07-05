@@ -66,9 +66,10 @@ fn is_free_covered_single_origin(call: EndpointCall) -> bool {
 /// Per-target endpoint plan — names that will be dispatched concurrently
 /// by `dispatch_plan`. Order is meaningful only for tiebreakers when
 /// the per-scan budget cuts the plan short; high-yield endpoints come
-/// first. The single-origin members are filtered out by [`effective_plan`]
-/// before dispatch — they remain here so the matrix stays self-documenting
-/// and the capability is one policy-flip away.
+/// first. [`effective_plan`] dispatches this matrix UNFILTERED (the
+/// single-origin members are no longer stripped — see its doc for why);
+/// [`is_free_covered_single_origin`] and [`FREE_COVERED_SINGLE_ORIGIN`]
+/// stay retained so that filtering policy is one flip away, not deleted.
 fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     match kind {
         // Breach + stealer + external records all come back from the universal

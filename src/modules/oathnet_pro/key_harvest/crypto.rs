@@ -84,7 +84,6 @@ pub(super) fn identify_pem_private_key(s: &str) -> Option<&'static str> {
 // otherwise drift into the generic-hex catch-all). Real
 // addresses pass entropy ≥ 3.5 trivially.
 
-/// True if `c` is a Base58 character (Bitcoin-style; excludes
 /// Try to classify a string as a cryptocurrency wallet address. Delegates to
 /// the canonical, shared classifier in `core::crypto` (the same one the target
 /// auto-detector uses) so the shape rules live in exactly one place.

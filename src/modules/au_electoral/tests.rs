@@ -113,6 +113,38 @@ fn build_electoral_entities_unknown_division_emits_address_only() {
 }
 
 #[test]
+fn address_confidence_reflects_whether_a_suburb_was_resolved() {
+    // A confirmed division WITH a resolvable suburb (from the offline
+    // centroid table) gets the higher, module-doc-promised 0.72 tier —
+    // electoral roll enrolment is compulsory and address-verified.
+    let with_suburb = build_electoral_entities("Sydney", None, "Test", "s");
+    let addr = with_suburb
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .unwrap();
+    assert!(
+        (addr.confidence - 0.72).abs() < 1e-9,
+        "suburb-level match must score 0.72, got {}",
+        addr.confidence
+    );
+
+    // A division with NO suburb resolved (no centroid, no hint) is a
+    // materially weaker locate — a division can span many suburbs — so it
+    // must score the documented lower 0.58 tier, not the flat 0.72 a
+    // suburb-level match gets.
+    let division_only = build_electoral_entities("Xyzzy", None, "Test", "s");
+    let addr2 = division_only
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .unwrap();
+    assert!(
+        (addr2.confidence - 0.58).abs() < 1e-9,
+        "division-only match must score 0.58, not the suburb-level 0.72: got {}",
+        addr2.confidence
+    );
+}
+
+#[test]
 fn build_electoral_entities_suburb_hint_overrides_centroid_suburb() {
     let ents = build_electoral_entities("Sydney", Some("Newtown"), "Test", "s");
     let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();

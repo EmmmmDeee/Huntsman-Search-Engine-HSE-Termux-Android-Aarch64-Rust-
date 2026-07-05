@@ -66,12 +66,10 @@ macro_rules! s {
 
 /// Webcam, fan-subscription, and adult-video platform database.
 ///
-/// Detection discipline:
+/// Detection discipline — the only two modes [`Detect`] supports:
 /// - `H, 200` when the site properly 404s non-existent profiles (most platforms).
 /// - `NOT, 200, "error_marker"` when the site returns 200 for all URLs and
 ///   embeds a "not found" message in the body (JS-rendered platforms like OnlyFans).
-/// - `HAS, 200, "presence_marker"` when the profile URL exists for all usernames
-///   but a specific field/attribute is only present on real profiles.
 ///
 /// Order is irrelevant; all probes run concurrently up to `MAX_CONCURRENT_PROBES`.
 pub(super) const SITES: &[Site] = &[

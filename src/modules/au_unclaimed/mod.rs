@@ -128,9 +128,10 @@ impl Module for AuUnclaimed {
 /// with an exact-name pass, owner Person/Organisation extraction, and
 /// suburb-level locality enumeration restricted to the seed's own postcodes).
 ///
-/// Extends `out` in place; a portal/transport error is logged-as-skipped (the
-/// surrounding [`AuUnclaimed::process`] still runs the other states) rather than
-/// aborting the whole module.
+/// Extends `out` in place; a portal/transport error is logged-as-skipped so
+/// [`AuUnclaimed::process`] degrades to an empty result rather than aborting
+/// or tripping the circuit breaker. QLD is the only pass — see the module docs
+/// for why every other state/territory lacks a queryable datastore.
 async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResult) {
     use qld_helpers::{
         derive_query, exact_postcodes, merge_records, query_url, records_to_entities,

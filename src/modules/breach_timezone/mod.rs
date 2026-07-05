@@ -1,7 +1,7 @@
 //! Breach timestamp timezone inference — cluster entity observation
 //! timestamps to infer the target's active timezone.
 //!
-//! Stealer logs and breach records carry timestamps. If 80%+ of a
+//! Stealer logs and breach records carry timestamps. If 70%+ of a
 //! target's activity falls within a consistent 14-hour window, the
 //! midpoint of that window reveals the local timezone (±1 hour).
 //!
