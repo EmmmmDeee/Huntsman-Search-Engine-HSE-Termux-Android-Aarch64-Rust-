@@ -1379,18 +1379,23 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 .iter()
                 .map(|ev| source_family(ev.source.as_str()))
                 .collect();
-            // `is_disjoint` → no shared family at all (strongest independence).
-            // Relax to "not identical" so that e.g. two breach-derived records
-            // from different databases (both family "breach") still fire — the
-            // *database names* differ even if the family doesn't.  Gate instead
-            // on source identity: skip only when the full source sets are equal.
+            // Independence gate, in two parts — "independent" means the two
+            // records were collected by genuinely different methods, not merely
+            // two rows of one database:
+            //
+            // (1) Skip when the exact source SETS are equal — literally the same
+            //     source(s) re-derived the name (e.g. two `name_intel` outputs).
             let src1: HashSet<&str> = e1.evidence.iter().map(|ev| ev.source.as_str()).collect();
             let src2: HashSet<&str> = e2.evidence.iter().map(|ev| ev.source.as_str()).collect();
             if src1 == src2 {
                 continue; // exactly the same source(s) — not independent
             }
-            // Require at least one family from each entity is NOT shared, so
-            // purely co-derived records (e.g. two name_intel outputs) don't fire.
+            // (2) Skip when the source FAMILY sets are equal — records of the same
+            //     family are co-derived, not independent, so two breach databases
+            //     (both family "breach") do NOT fire on their own; a match needs at
+            //     least one differing family (e.g. breach + social). This is
+            //     stricter than gate (1): identical families can still have
+            //     different `source` strings, which (1) alone would let through.
             if fam1 == fam2 {
                 continue;
             }

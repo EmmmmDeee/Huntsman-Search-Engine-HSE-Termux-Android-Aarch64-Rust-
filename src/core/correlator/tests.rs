@@ -7515,6 +7515,25 @@ fn au081_canonical_person_name_match_fires_on_cross_source_same_name() {
 }
 
 #[test]
+fn au081_same_family_different_databases_is_not_independent() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // Two Person records with the SAME canonical name, from two DIFFERENT breach
+    // databases (`dehashed` and `leakcheck`). Their source strings differ, but
+    // `source_family` maps both to "breach" — so they are co-derived, not
+    // independent, and the family gate must suppress the match. (Guards the
+    // independence contract: distinct database names alone are not independence.)
+    let mut dehashed_p = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    dehashed_p.add_evidence(Evidence::new("dehashed", "Breach record".to_string()));
+    let mut leakcheck_p = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    leakcheck_p.add_evidence(Evidence::new("leakcheck", "Breach record".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&[dehashed_p, leakcheck_p], "s", 0);
+    assert!(
+        r.is_empty(),
+        "two databases of the same source family are not independent — must not fire"
+    );
+}
+
+#[test]
 fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
     use super::rules::rule_au_081_canonical_person_name_match;
     // Two independently-sourced "John Smith" records — a breach dump and a
