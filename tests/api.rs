@@ -583,6 +583,39 @@ async fn autonomous_plan_previews_the_queue_without_dispatching() {
 }
 
 #[tokio::test]
+async fn autonomous_plan_considers_the_full_scan_history_not_just_the_newest_50() {
+    // `scan_auto`/`scan_auto_plan`/`scan_auto_sweep`'s own doc comments promise the
+    // candidate pool is ranked from "everything the platform has discovered" — but
+    // a hardcoded `list_scans(50)` silently bounded the pool to the 50 MOST RECENT
+    // scans, so an entity discovered in any older scan could never be selected, no
+    // matter how high its leverage. Seed 55 scans, each with one distinct
+    // cross-scan-candidate entity, and confirm every one is considered — not just
+    // the newest 50.
+    let (app, store) = test_app_with_store("autonomous-pool-bound");
+    for i in 0..55u64 {
+        let target = Target::new(TargetKind::Email, format!("history{i}@poolbound.io"));
+        let mut scan = Scan::new(format!("hist-scan-{i:03}"), target.clone());
+        // Distinct, ascending timestamps — scan 0 is the OLDEST and would be the
+        // first one dropped by a `list_scans(50)`-style newest-first cap.
+        scan.started_at = 1_700_000_000 + i;
+        store.upsert_scan(&scan).unwrap();
+        let e = Entity::new(EntityKind::Email, &target.value, 0.9, &scan.id);
+        store.upsert_entities_batch(&[e]).unwrap();
+    }
+    let resp = app
+        .oneshot(get("/api/v1/scan/auto/plan?limit=200"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["considered"].as_u64().unwrap(),
+        55,
+        "every scan's entity must be considered, not just the 50 most recent: {json}"
+    );
+}
+
+#[tokio::test]
 async fn autonomous_sweep_dispatches_without_input() {
     // `POST /api/v1/scan/auto/sweep` takes NO body, NO seed — the platform plans the
     // diversity-aware queue and dispatches its top `breadth` targets in one call. On
