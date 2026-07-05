@@ -1,6 +1,14 @@
 use super::*;
 
     #[test]
+    fn csv_scan_id_conflict_note_names_the_winning_path() {
+        let note = csv_scan_id_conflict_note("/tmp/export.csv");
+        assert!(note.contains("--csv"));
+        assert!(note.contains("--scan-id"));
+        assert!(note.contains("/tmp/export.csv"));
+    }
+
+    #[test]
     fn csv_parses_old_format_header_driven() {
         let csv = "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,tags\n\
             ip_address,172.66.147.185,172.66.147.185,0.950,1.000,258,VERIFIED,1780814281,dns_intel|shodan,cloudflare|hosting\n\
