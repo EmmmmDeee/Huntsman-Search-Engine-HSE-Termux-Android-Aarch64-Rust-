@@ -433,6 +433,29 @@ fn cidr_is_geo_convergent_and_outranks_its_parent_asn() {
 }
 
 #[test]
+fn ssid_is_geo_convergent_on_par_with_its_wigle_peer_mac() {
+    // An SSID geo-resolves through WiGLE (ssid_search → Coordinates) in exactly
+    // one hop — the same path a MacAddress takes (bssid_lookup → Coordinates) —
+    // so it must carry the same geo-proximity boost, not fall through to the
+    // non-geo 1.0 default (which the `wigle` module, geo_npv 14.0, and
+    // seed_marginal_yield all contradict). At equal confidence, and since both
+    // share geo_npv 14.0 with no domain dampener, their expansion weights match.
+    let ssid = expansion_weight(TargetKind::Ssid, 0.8, "HomeNetwork", false);
+    let mac = expansion_weight(TargetKind::MacAddress, 0.8, "aa:bb:cc:dd:ee:ff", false);
+    assert!(
+        (ssid - mac).abs() < 1e-9,
+        "SSID ({ssid:.3}) must rank on par with its WiGLE peer MAC ({mac:.3})"
+    );
+    // And an SSID must beat a non-geo terminal kind of equal confidence — proof
+    // it is no longer scored as non-geo (boost 1.0).
+    let crypto = expansion_weight(TargetKind::CryptoAddress, 0.8, "bc1qxyz", false);
+    assert!(
+        ssid > crypto,
+        "SSID ({ssid:.2}) is geo-convergent vs crypto ({crypto:.2})"
+    );
+}
+
+#[test]
 fn expansion_weight_respects_confidence() {
     let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
     let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
