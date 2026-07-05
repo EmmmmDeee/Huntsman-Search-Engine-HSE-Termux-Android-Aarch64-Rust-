@@ -180,6 +180,31 @@ fn canonical_handle(s: &str) -> String {
         .collect()
 }
 
+/// Join at most `cap` of `values` with ", ", appending "(+N more)" when there
+/// are more — the single disclosure policy for every rule that names a
+/// handful of the identifiers/sources behind a finding (AU-047, AU-048,
+/// AU-076, AU-106, …) while stating the TRUE total count elsewhere in the same
+/// description. Shared here (rather than re-derived per rule file) so a rule
+/// can never silently enumerate a capped list with no indication that more
+/// exist — the failure mode this fixes: a Critical finding whose description
+/// states "controls 9 accounts" but lists only 6, with nothing telling the
+/// operator 3 were omitted.
+///
+/// Takes a `Clone` iterator (not a `BTreeSet` directly, and not
+/// `ExactSizeIterator` — `std::iter::Chain` never implements it, even when
+/// both sides do) so a caller who must preserve a deliberate relative order —
+/// e.g. "emails first, then usernames" — can pass `a.iter().chain(b.iter())`
+/// without the values being silently re-sorted into one merged set.
+fn join_capped<'a>(values: impl Iterator<Item = &'a str> + Clone, cap: usize) -> String {
+    let total = values.clone().count();
+    let shown: Vec<&str> = values.take(cap).collect();
+    let mut s = shown.join(", ");
+    if total > cap {
+        s.push_str(&format!(" (+{} more)", total - cap));
+    }
+    s
+}
+
 /// True if `handle` (already canonicalised) is too generic to identify a
 /// person — a placeholder username, a role mailbox, or a non-identity
 /// extraction artifact (`from`, `dns`, `http`, …).

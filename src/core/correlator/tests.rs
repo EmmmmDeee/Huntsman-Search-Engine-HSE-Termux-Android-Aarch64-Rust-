@@ -3469,6 +3469,40 @@ fn au106_links_accounts_sharing_a_unique_device_fingerprint() {
 }
 
 #[test]
+fn au106_discloses_when_the_identifier_list_is_truncated() {
+    // Same "(+N more)" disclosure convention as AU-047/AU-048/AU-076 — a device
+    // genuinely shared across MANY accounts must say so, not silently cut the
+    // enumerated list at 6 with no indication.
+    let mut dev = Entity::new(
+        EntityKind::DeviceId,
+        "HWID-widelysharedmachine01",
+        0.55,
+        "scan",
+    );
+    dev.tag("stealer");
+    for i in 0..9 {
+        dev.add_evidence(
+            Evidence::new("oathnet", format!("rec{i}"))
+                .with_attr("username", format!("user_account_{i}")),
+        );
+    }
+    let hits = super::rules::rule_au_106_shared_device_identity(&[dev], "scan", 0);
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0]
+            .description
+            .contains("9 otherwise-separate accounts"),
+        "the true total must still be stated: {}",
+        hits[0].description
+    );
+    assert!(
+        hits[0].description.contains("(+3 more)"),
+        "the enumerated (top-6) identifier list must disclose the 3 it omitted: {}",
+        hits[0].description
+    );
+}
+
+#[test]
 fn au106_links_accounts_sharing_a_breach_router_bssid_or_imei() {
     // A stealer-logged router BSSID (a `device`-tagged MacAddress) shared across
     // two DISTINCT accounts is the same single-device co-location proof as a hwid.
@@ -4115,6 +4149,39 @@ fn au047_links_identities_by_a_reused_unique_secret_only() {
 }
 
 #[test]
+fn au047_discloses_when_the_identifier_list_is_truncated() {
+    // The description enumerates at most 6 implicated identifiers, but a
+    // secret genuinely reused across MANY accounts must say so — not silently
+    // cut the list with no indication, the same "(+N more)" convention AU-048/
+    // AU-076/AU-106 all share via join_capped.
+    let emails: Vec<String> = (0..9).map(|i| format!("acct{i}@breach-corp.io")).collect();
+    let email_refs: Vec<&str> = emails.iter().map(String::as_str).collect();
+    let mut cred = Entity::new(
+        EntityKind::Credential,
+        "$2a$10$manyAccountsShareThisOneHashXYZ",
+        0.6,
+        "scan",
+    );
+    for em in &email_refs {
+        cred.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", *em));
+    }
+    let hits = super::rules::rule_au_047_reused_secret_identity(&[cred], "scan", 0);
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0]
+            .description
+            .contains("9 otherwise-separate accounts"),
+        "the true total must still be stated: {}",
+        hits[0].description
+    );
+    assert!(
+        hits[0].description.contains("(+3 more)"),
+        "the enumerated (top-6) identifier list must disclose the 3 it omitted: {}",
+        hits[0].description
+    );
+}
+
+#[test]
 fn au047_links_on_reused_plaintext_password_and_session_token() {
     // Password reuse, session/cookie tokens and raw credentials are all valid
     // cross-correlation join-keys. AU-047 must link on a reused HIGH-ENTROPY
@@ -4526,6 +4593,34 @@ fn au048_links_accounts_sharing_a_public_key() {
     );
     let hits = super::rules::rule_au_048_shared_public_key(&[cross], "scan", 0);
     assert_eq!(hits.len(), 1, "distinct handles sharing a key must link");
+}
+
+#[test]
+fn au048_discloses_when_the_account_list_is_truncated() {
+    // The description enumerates at most 6 accounts, but a key genuinely
+    // shared across MANY accounts (a stolen/reused keypair pushed to several
+    // profiles) must say so — not silently cut the list with no indication,
+    // the same "(+N more)" convention AU-076 already uses via join_capped.
+    let mut key = Entity::new(EntityKind::Credential, "ssh:widelyshared", 0.85, "scan");
+    key.tag("ssh-key");
+    for i in 0..9 {
+        key.add_evidence(
+            Evidence::new("github_user", format!("SSH key published by @acct{i}"))
+                .with_attr("github_login", format!("acct{i}")),
+        );
+    }
+    let hits = super::rules::rule_au_048_shared_public_key(&[key], "scan", 0);
+    assert_eq!(hits.len(), 1);
+    assert!(
+        hits[0].description.contains("9 accounts"),
+        "the true total must still be stated: {}",
+        hits[0].description
+    );
+    assert!(
+        hits[0].description.contains("(+3 more)"),
+        "the enumerated (top-6) list must disclose the 3 it omitted: {}",
+        hits[0].description
+    );
 }
 
 // ─── Associates / household family (AU-049 … AU-051) ─────────────────────────

@@ -434,23 +434,19 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
         let source_clause = if sources.is_empty() {
             String::new()
         } else {
-            let named: Vec<&str> = sources.iter().take(5).map(String::as_str).collect();
             format!(
                 " across {} source{} ({})",
                 sources.len(),
                 if sources.len() == 1 { "" } else { "s" },
-                named.join(", ")
+                join_capped(sources.iter().map(String::as_str), 5)
             )
         };
-        // List the implicated identifiers (emails first, then usernames). The
+        // List the implicated identifiers (emails first, then usernames — an
+        // ExactSizeIterator chain, so join_capped's cap-and-disclose never
+        // re-sorts them into one merged, alphabetically-interleaved set). The
         // separate-account COUNT is the distinct-handle count, which de-dupes an
         // email and the matching username down to the one controller they name.
-        let listed: Vec<&str> = emails
-            .iter()
-            .chain(usernames.iter())
-            .take(6)
-            .map(String::as_str)
-            .collect();
+        let listed = join_capped(emails.iter().chain(usernames.iter()).map(String::as_str), 6);
 
         out.push(Correlation {
             rule_id: "AU-047".into(),
@@ -461,7 +457,7 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
                 class.label(),
                 handles.len(),
                 source_clause,
-                listed.join(", ")
+                listed
             ),
             entity_uids: uids,
             scan_id: scan_id.into(),
@@ -584,12 +580,7 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
                 uids.push(id.uid.to_owned());
             }
         }
-        let listed: Vec<&str> = emails
-            .iter()
-            .chain(usernames.iter())
-            .take(6)
-            .map(String::as_str)
-            .collect();
+        let listed = join_capped(emails.iter().chain(usernames.iter()).map(String::as_str), 6);
         out.push(Correlation::new(
             "AU-106",
             "Shared device fingerprint links accounts",
@@ -598,7 +589,7 @@ pub(in crate::core::correlator) fn rule_au_106_shared_device_identity(
                 "A single device fingerprint ties {} otherwise-separate accounts to one \
                  controller — the same physical machine: {}",
                 handles.len(),
-                listed.join(", ")
+                listed
             ),
             uids,
             scan_id,

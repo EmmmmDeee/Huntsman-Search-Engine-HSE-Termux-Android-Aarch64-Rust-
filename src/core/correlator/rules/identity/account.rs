@@ -190,7 +190,6 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
                 uids.push((*uid).to_owned());
             }
         }
-        let listed: Vec<&str> = accounts.iter().take(6).map(String::as_str).collect();
         out.push(Correlation {
             rule_id: "AU-048".into(),
             rule_name: "Shared public key links accounts".into(),
@@ -198,7 +197,7 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
             description: format!(
                 "A reused public key proves one person controls {} accounts (same private key): {}",
                 accounts.len(),
-                listed.join(", ")
+                join_capped(accounts.iter().map(String::as_str), 6)
             ),
             entity_uids: uids,
             scan_id: scan_id.into(),
@@ -833,9 +832,9 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
                  and {} username form(s) ({}); the username is the email login (free, offline, \
                  zero-API identity resolution)",
                 email_vals.len(),
-                join_capped(&email_vals, 8),
+                join_capped(email_vals.iter().copied(), 8),
                 uname_vals.len(),
-                join_capped(&uname_vals, 8),
+                join_capped(uname_vals.iter().copied(), 8),
             )
         };
 
@@ -851,18 +850,6 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
         });
     }
     out
-}
-
-/// Join up to `cap` comma-separated values from an ordered set, appending
-/// `(+N more)` when the set is larger — keeps a consolidated finding's text
-/// bounded while still naming the representative values.
-fn join_capped(values: &std::collections::BTreeSet<&str>, cap: usize) -> String {
-    let shown: Vec<&str> = values.iter().take(cap).copied().collect();
-    let mut s = shown.join(", ");
-    if values.len() > cap {
-        s.push_str(&format!(" (+{} more)", values.len() - cap));
-    }
-    s
 }
 
 /// AU-077 — Name-derived username independently confirmed on a platform.
