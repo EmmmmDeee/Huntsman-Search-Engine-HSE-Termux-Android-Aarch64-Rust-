@@ -151,19 +151,30 @@ pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow (see-know.eu) key — the current embedded default. Enterprise plan,
-/// 5,000 daily credits. Live-verified (POST /api/v1/search → HTTP 200).
-pub const SEEKNOW_DEFAULT_KEY: &str = "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
+/// SeekNow (see-know.eu) key — the current embedded default, supplied directly
+/// by the operator. NOT live-verified from this build environment: the sandbox
+/// this key was rotated in has its own outbound proxy policy that rejects
+/// `see-know.eu` (a `CONNECT` denial at the proxy, unrelated to the key or the
+/// operator's own device network), so a live probe could not be run here. The
+/// key still becomes the one embedded default via the rotation below; verify
+/// with `hse doctor` (or the next live scan's `see_know` module status) on the
+/// operator's own device, which has no such proxy restriction.
+pub const SEEKNOW_DEFAULT_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
-/// default. Verified DEAD (HTTP 401 invalid_api_key).
-pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
+/// default. Was the prior embedded default (Enterprise plan, 5,000 daily
+/// credits, live-verified HTTP 200 at the time it was set).
+pub const SEEKNOW_SUPERSEDED_KEY: &str = "seek-62650f9a36e446fc3b1c1bcdf32a825048e608160e0fd0a4";
 /// Earlier retired SeekNow key — also upgraded in place to the current default.
+/// Verified DEAD (HTTP 401 invalid_api_key) at the time it was retired.
 pub(super) const SEEKNOW_SUPERSEDED_KEY_2: &str =
+    "seek-f419aa7ab831864149892e5145f6bc65dbb336e6ca94b4bc";
+/// Earlier retired SeekNow key — also upgraded in place to the current default.
+pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
     "seek-4b33b63d408dd7149765da4e76384ce91fd9f6df518f9a25";
 /// Prior embedded default (free-tier `seek-b4a9…`), rotated out in favour of the
 /// enterprise key above.
-pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
+pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
     "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
 
 /// API keys embedded in the build so a fresh install works zero-config.
@@ -187,6 +198,7 @@ pub(super) const SUPERSEDED: &[(&str, &str)] = &[
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_2),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_3),
+    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_4),
 ];
 
 /// Resolve an API key: the context-supplied key when present and non-empty,
