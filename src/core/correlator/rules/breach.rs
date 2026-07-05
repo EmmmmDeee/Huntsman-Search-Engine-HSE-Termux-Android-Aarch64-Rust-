@@ -182,8 +182,14 @@ fn is_substantial_token(s: &str) -> bool {
 /// the link is. Computing this once per secret removes the previous triple
 /// recomputation of `is_salted_hash` / `has_tag` across the filter, the label,
 /// and the severity decision.
+///
+/// `pub(in crate::core)` (re-exported from `correlator::mod`, mirroring
+/// `gap_fill_probes`/`multipath_corroborated_links`): `core::relation::builders`'
+/// `derive_reused_secret_link` calls [`Secret::classify`] directly so the
+/// `SharesSecretWith` graph edge and this AU-047 correlation can never
+/// disagree on which secrets qualify (Rule 4: one classifier).
 #[derive(Clone, Copy)]
-enum Secret {
+pub(in crate::core) enum Secret {
     /// Salted password hash — globally unique by construction.
     SaltedHash,
     /// Reused high-entropy plaintext password — strong, but two people *could*
@@ -208,7 +214,7 @@ impl Secret {
     /// a common password (or an unsalted digest of one) from manufacturing
     /// phantom identities; a session token is admitted only on `Credential` with
     /// explicit `session-token` provenance, never inferred from shape alone.
-    fn classify(e: &Entity) -> Option<Self> {
+    pub(in crate::core) fn classify(e: &Entity) -> Option<Self> {
         match e.kind {
             EntityKind::CryptoAddress => Some(Self::WalletAddress),
             EntityKind::ApiKey => Some(Self::ApiKey),

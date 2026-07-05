@@ -223,6 +223,12 @@ pub(in crate::core) use rules::gap::single_route_identity_links;
 // with — so what AU-063 names, the engine actually pursues.
 pub(in crate::core) use rules::gap::gap_fill_probes;
 pub(in crate::core) use rules::source_family;
+// The reused-secret classifier + handle-canonicaliser: `core::relation::builders`'
+// `derive_reused_secret_link` calls both directly so the `SharesSecretWith` graph
+// edge and the AU-047/AU-048/AU-106 correlations can never disagree on which
+// secrets/handles qualify.
+pub(in crate::core) use rules::Secret;
+pub(in crate::core) use rules::canonical_handle;
 use rules::*;
 
 const RULES: &[RuleFn] = &[

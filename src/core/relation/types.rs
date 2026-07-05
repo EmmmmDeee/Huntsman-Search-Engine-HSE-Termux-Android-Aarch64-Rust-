@@ -67,6 +67,18 @@ pub enum RelationKind {
     /// handle matches it — case-insensitively, across every supported social platform.
     /// Directed `Username → Url`.
     SameIdentity,
+    /// `from` and `to` (both Email or Username entities) are proven tied to
+    /// ONE controller by a reused, individuating secret — a salted password
+    /// hash, session token, wallet address, API key, or a plaintext password
+    /// corroborated across ≥2 independent sources (the same admission gate
+    /// the AU-047 correlation fires on; see
+    /// [`Secret::classify`](crate::core::correlator::Secret::classify)).
+    /// Distinct from [`AssociatedWith`](RelationKind::AssociatedWith) (a
+    /// damped, lower-confidence *candidate* tie): this edge asserts a proven
+    /// shared-secret link, the graph-native counterpart of the "controller
+    /// behind reused secrets" correlator finding. Symmetric; emitted
+    /// smaller-UID → larger.
+    SharesSecretWith,
 }
 
 impl RelationKind {
@@ -90,6 +102,7 @@ impl RelationKind {
             Self::SameAs => "same_as",
             Self::SameOperator => "same_operator",
             Self::SameIdentity => "same_identity",
+            Self::SharesSecretWith => "shares_secret_with",
         }
     }
 }

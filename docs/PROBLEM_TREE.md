@@ -795,6 +795,28 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   visibility/single-sourcing decision on the correlator's private `Secret`
   primitive (`core::correlator::rules::breach::Secret`), too large for one
   focused commit; left as future work under the same node rather than rushed.
+  *Delivered (cycle 28, 2026-07-05) — the reused-secret link facet.* Built the
+  design assessed and correctly deferred last cycle. New `RelationKind::
+  SharesSecretWith` edge — the graph-native counterpart of the AU-047/AU-048/
+  AU-106 "controller behind reused secrets" correlations — so
+  `identity_paths`/CONNECTIONS can walk a proven shared-secret tie as a real
+  edge, not just read it off a standalone correlation. Widened the
+  correlator's own `Secret` enum + `Secret::classify` and `canonical_handle`
+  to `pub(in crate::core)` (re-exported from `correlator::mod`, mirroring the
+  established `gap_fill_probes`/`multipath_corroborated_links` pattern — Rule
+  4: one classifier/one folder, so the new edge and the correlations can
+  never disagree on which secrets qualify or which handles are the same
+  account) rather than duplicating the entropy/denylist precision logic. New
+  `core::relation::builders::derive_reused_secret_link`, wired into
+  `derive_all`, emits a full pairwise clique over every identity entity a
+  qualifying secret's evidence names (via the existing `emit_pairwise`
+  primitive) — so a shared secret tying 3+ accounts produces the complete
+  clique, not just a chain through one hub. Updated the two exhaustive
+  `RelationKind` matches in `core::network` (graph-view grouping + edge
+  labelling) the new variant forced. *This closes C1's third and final
+  remaining item* — (d) further AU-0xx rule-gap fill is now C1's only open
+  thread, deliberately left unstarted (an un-invented gap, not a mechanical
+  slice).
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -4406,3 +4428,42 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `SOLUTION_TREE` §5 — same commit. The broader 3-way DOB-key unification (with
   `breach_pii::DOB_KEYS`'s import-facing 8-spelling list) remains correctly
   deferred — a real design decision, not mechanical, and not attempted here.
+- **2026-07-05** — **Cycle 28: closed C1's "controller behind reused secrets" link
+  facet.** Built the design assessed and correctly deferred in cycle 27 (a
+  `RelationKind` variant plus a visibility decision on the correlator's private
+  `Secret` primitive). Added `RelationKind::SharesSecretWith` — the graph-native
+  counterpart of the AU-047 (reused secret) / AU-048 (shared key) / AU-106 (shared
+  device) correlations, so `identity_paths`/the dossier's CONNECTIONS section can
+  walk a proven shared-secret tie as a real edge instead of only reading it off a
+  standalone correlation. Rather than duplicate the entropy/denylist precision
+  logic those correlations already embody, widened `Secret` + `Secret::classify`
+  (`core::correlator::rules::breach`) and `canonical_handle`
+  (`core::correlator::rules::mod`) to `pub(in crate::core)`, re-exported from
+  `correlator::mod` — mirroring the ALREADY-ESTABLISHED
+  `gap_fill_probes`/`multipath_corroborated_links`/`source_family` pattern in the
+  same file (found by inspection, not invented): Rule 4, one classifier/one
+  folder, so the new edge and the correlations can never disagree on which
+  secrets qualify or which handles are the same account. New
+  `core::relation::builders::derive_reused_secret_link`, wired into `derive_all`
+  (mirroring how every other structural pass is dispatched), reuses the existing
+  `emit_pairwise` primitive to emit a full pairwise clique over every identity
+  entity a qualifying secret's evidence names — so a secret tying 3+ accounts
+  produces the complete clique (every pair directly linked), not a chain through
+  one arbitrarily-chosen hub, letting `identity_paths`' BFS find the direct edge
+  between ANY two of them. Updated the two exhaustive `RelationKind` matches in
+  `core::network` (graph-view grouping into "Identifiers — accounts & contacts";
+  edge label "shared secret") the new variant forced — clippy's own
+  non-exhaustive-match error caught both, confirming no other match site needed
+  updating. Test delta: +3
+  (`derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash`,
+  `derive_reused_secret_link_precision_gate_matches_au047_exactly`,
+  `derive_reused_secret_link_emits_the_full_pairwise_clique` — fixtures mirror
+  AU-047's own correlator test exactly; fail-before: 2 of 3 confirmed failing
+  against a stubbed-empty function, the third trivially passes against a stub
+  since it asserts emptiness). Also exercised the built binary directly
+  (`hse selftest`: 9/9 pass) per `docs/CONVENTIONS.md` §9. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4394 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit. **This closes C1's third and final remaining
+  item** — (d) further AU-0xx rule-gap fill is C1's only open thread, correctly
+  left for a future cycle with a real, code-grounded rule gap to point at rather
+  than an invented one.

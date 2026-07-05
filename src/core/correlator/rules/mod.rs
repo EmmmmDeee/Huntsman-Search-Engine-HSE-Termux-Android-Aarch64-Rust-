@@ -173,7 +173,12 @@ const NON_IDENTITY_TOKENS: &[&str] = &[
 /// `jordan_meyers`, `jordanmeyers` → `jordanmeyers`). People reuse a single
 /// handle across services with different separators; this is the comparison
 /// the match needs.
-fn canonical_handle(s: &str) -> String {
+///
+/// `pub(in crate::core)` (re-exported from `correlator::mod`): shared with
+/// `core::relation::builders::derive_reused_secret_link`, which folds handles
+/// identically to AU-047/AU-048/AU-106 so the graph edge and the correlations
+/// agree on which handles are the same account.
+pub(in crate::core) fn canonical_handle(s: &str) -> String {
     s.chars()
         .filter(|c| !matches!(c, '.' | '_' | '-'))
         .map(|c| c.to_ascii_lowercase())
@@ -519,6 +524,11 @@ mod transitive;
 
 pub(super) use assoc::*;
 pub(super) use breach::*;
+// Narrow re-export at the enum's own `pub(in crate::core)` visibility — the
+// blanket glob above is only `pub(super)` (correlator-internal), which would
+// otherwise cap `Secret` there too and block `core::relation::builders` from
+// reaching it via `correlator::mod`'s own re-export.
+pub(in crate::core) use breach::Secret;
 pub(super) use breach_pii::*;
 pub(super) use broker::*;
 pub(super) use crypto::*;

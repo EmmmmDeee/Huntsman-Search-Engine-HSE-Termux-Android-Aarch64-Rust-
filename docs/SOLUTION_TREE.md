@@ -394,6 +394,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   primitive — assessed this cycle, too large for one commit); a
   single-sourcing follow-on for the three independently-drifted DOB-key lists
   (`breach_pii`, `exposure`, `timeline`) found during this investigation.
+  *Delivered (cycle 28, 2026-07-05) — the reused-secret link facet.* New
+  `RelationKind::SharesSecretWith` — the graph-native counterpart of the
+  AU-047/AU-048/AU-106 "controller behind reused secrets" correlations.
+  Widened the correlator's own `Secret`/`Secret::classify`
+  (`rules::breach`) and `canonical_handle` (`rules::mod`) to
+  `pub(in crate::core)`, re-exported from `correlator::mod` mirroring the
+  already-established `gap_fill_probes`/`multipath_corroborated_links`
+  pattern in the same file — Rule 4, one classifier, so the graph edge and
+  the correlations can never disagree on admission. New
+  `core::relation::builders::derive_reused_secret_link`, wired into
+  `derive_all`, reuses `emit_pairwise` to emit a full pairwise clique (not a
+  hub-and-spoke chain) over every identity entity a qualifying secret's
+  evidence names. Updated the two exhaustive `RelationKind` matches in
+  `core::network` the new variant forced. *Remaining:* only further AU-0xx
+  rule-gap fill — the last of C1's four sub-items.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -778,7 +793,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27; AU-0xx rule-gap fill + reused-secret link facet remaining); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28; only AU-0xx rule-gap fill remains); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -3233,3 +3248,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unfixed list). Gate green (4391 lib tests). The broader 3-way DOB-key unification (with
   `breach_pii::DOB_KEYS`'s import-facing 8-spelling list) remains correctly deferred as a
   real design decision. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 28: SOL-CORR closes C1's "controller behind reused secrets"
+  link facet — the design assessed and correctly deferred in cycle 27.** New
+  `RelationKind::SharesSecretWith` — the graph-native counterpart of the AU-047
+  (reused-secret) / AU-048 (shared key) / AU-106 (shared device) correlations, so
+  `identity_paths`/CONNECTIONS can walk a proven shared-secret tie as a real edge
+  instead of only reading it off a standalone correlation. Rather than duplicate the
+  entropy/denylist precision logic those correlations already embody, widened the
+  correlator's own `Secret`/`Secret::classify` (`core::correlator::rules::breach`) and
+  `canonical_handle` (`core::correlator::rules::mod`) to `pub(in crate::core)`,
+  re-exported from `correlator::mod` — mirroring the ALREADY-ESTABLISHED
+  `gap_fill_probes`/`multipath_corroborated_links`/`source_family` pattern in the same
+  file (found by inspection, not invented): Rule 4, one classifier/one folder, so the
+  new edge and the correlations can never disagree on admission. New
+  `core::relation::builders::derive_reused_secret_link`, wired into `derive_all`,
+  reuses the existing `emit_pairwise` primitive to emit a full pairwise clique over
+  every identity entity a qualifying secret's evidence names — a secret tying 3+
+  accounts produces the complete clique, not a chain through one hub, so
+  `identity_paths`' BFS finds the direct edge between any two of them. Updated the two
+  exhaustive `RelationKind` matches in `core::network` (graph-view grouping; edge
+  label) the new variant forced — clippy's own non-exhaustive-match error caught both,
+  confirming no other match site needed updating. Test: +3
+  (`derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash`,
+  `derive_reused_secret_link_precision_gate_matches_au047_exactly`,
+  `derive_reused_secret_link_emits_the_full_pairwise_clique` — fixtures mirror AU-047's
+  own correlator test exactly; fail-before: 2 of 3 confirmed failing against a
+  stubbed-empty function). Also ran `hse selftest` against the built binary (9/9 pass)
+  per `docs/CONVENTIONS.md` §9. Gate green (4394 lib tests). **This closes C1's third
+  and final remaining item** — (d) further AU-0xx rule-gap fill is C1's only open
+  thread. Paired: `PROBLEM_TREE` §8 — same commit.

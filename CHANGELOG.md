@@ -11,6 +11,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **A proven "reused secret" tie between two accounts is now a walkable graph
+  edge, not just a standalone correlation finding.** When the correlator
+  proves two accounts share a controller via a reused, individuating secret
+  (a salted hash, session token, wallet address, API key, or a
+  cross-source-corroborated password), that tie is now also emitted as a
+  first-class relation between the two identities — so the dossier's
+  CONNECTIONS section and the graph export can walk it like any other
+  relationship, not just read it off a separate finding. A secret tying
+  three or more accounts links every pair directly, not just a chain through
+  one of them. Regression tests
+  `derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash`,
+  `derive_reused_secret_link_precision_gate_matches_au047_exactly`,
+  `derive_reused_secret_link_emits_the_full_pairwise_clique`.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and

@@ -714,6 +714,91 @@ pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     out
 }
 
+/// Derive `SharesSecretWith` edges between Email/Username entities proven to
+/// share ONE reused, individuating secret — the graph-native counterpart of
+/// the correlator's "controller behind reused secrets" findings (AU-047
+/// reused-secret identity, AU-048 shared key, AU-106 shared device), so
+/// `identity_paths`/the dossier's CONNECTIONS section can walk this tie as a
+/// real edge instead of only reading it off a standalone correlation.
+///
+/// Delegates to the correlator's own [`crate::core::correlator::Secret`]
+/// classification and [`crate::core::correlator::canonical_handle`]
+/// handle-folding (Rule 4: one classifier/one folder, so the graph edge and
+/// the correlation can never disagree on which secrets qualify or which
+/// handles are the same account). Emits a full pairwise clique over every
+/// identity entity a qualifying secret's evidence names (not just a chain
+/// through one arbitrarily-chosen hub), so `identity_paths`' BFS finds the
+/// direct edge between ANY two accounts a shared secret ties together.
+pub fn derive_reused_secret_link(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
+    use crate::core::correlator::{Secret, canonical_handle};
+    use std::collections::BTreeSet;
+
+    let secrets: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| Secret::classify(e).is_some())
+        .collect();
+    if secrets.is_empty() {
+        return Vec::new();
+    }
+    let identities: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Username))
+        .collect();
+    if identities.len() < 2 {
+        return Vec::new();
+    }
+
+    let groups = secrets.iter().filter_map(|secret| {
+        // The distinct accounts this exact secret's evidence names — mirrors
+        // AU-047's own join-key read exactly (an email and/or a username per
+        // breach record).
+        let emails: BTreeSet<String> = secret
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("email"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| v.contains('@'))
+            .collect();
+        let usernames: BTreeSet<String> = secret
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("username"))
+            .map(|v| v.trim().to_lowercase())
+            .filter(|v| !v.is_empty())
+            .collect();
+        // Fold to distinct CONTROLLER HANDLES — the same admission gate AU-047
+        // uses (≥2 distinct handles, not just ≥2 raw email/username strings, so
+        // an email and its matching username from one record can't self-fire).
+        let handles: BTreeSet<String> = emails
+            .iter()
+            .map(|e| e.split('@').next().unwrap_or(e))
+            .chain(usernames.iter().map(String::as_str))
+            .map(canonical_handle)
+            .filter(|h| !h.is_empty())
+            .collect();
+        if handles.len() < 2 {
+            return None;
+        }
+        let members: Vec<&Entity> = identities
+            .iter()
+            .copied()
+            .filter(|id| {
+                let value_lc = id.value.trim().to_lowercase();
+                match id.kind {
+                    EntityKind::Email => emails.contains(&value_lc),
+                    EntityKind::Username => usernames.contains(&value_lc),
+                    _ => false,
+                }
+            })
+            .collect();
+        (members.len() >= 2).then_some(members)
+    });
+
+    emit_pairwise(groups, RelationKind::SharesSecretWith, scan_id, |a, b| {
+        a.confidence.min(b.confidence)
+    })
+}
+
 /// Derive `IdentifiedBy` edges (Person → Email/Username/Phone) binding the subject
 /// to their identifiers. Two grounded paths, evidence preferred:
 ///   * **evidence** — the identifier's evidence carries an owner/name attribute
@@ -1854,6 +1939,11 @@ pub fn derive_all_within(
     budget_spent!(out, "profile_links");
     out.extend(derive_handles(entities, scan_id));
     budget_spent!(out, "handles");
+    // The graph-native counterpart of the AU-047/AU-048/AU-106 "controller behind
+    // reused secrets" correlations — a proven shared-secret tie as a walkable edge,
+    // not just a standalone finding.
+    out.extend(derive_reused_secret_link(entities, scan_id));
+    budget_spent!(out, "reused_secret_link");
     out.extend(derive_identity_ownership(entities, scan_id));
     budget_spent!(out, "identity_ownership");
     out.extend(derive_residency(entities, scan_id));
