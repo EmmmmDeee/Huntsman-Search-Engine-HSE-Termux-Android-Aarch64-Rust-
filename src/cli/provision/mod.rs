@@ -173,10 +173,29 @@ fn write_env_file(path: &Path, contents: &str) -> Result<Option<PathBuf>> {
     Ok(backup)
 }
 
+/// Read the existing env file, treating a missing file as empty but
+/// surfacing every other read error. Mirrors `util::keys::io::write_keys_at`'s
+/// identical guard: `unwrap_or_default()` on a bare `read_to_string` would
+/// collapse ANY failure — not just "file missing" — into an empty string, so
+/// a transient permission error or a file containing even one non-UTF-8 byte
+/// (disk corruption, a bad paste, a non-UTF-8 edit) would make the merge
+/// think every currently-configured `HUNTSMAN_*` key is absent. The
+/// subsequent write (via `write_env_file`, whose own backup step uses
+/// `fs::copy` — raw bytes, no UTF-8 validation, so it would succeed where
+/// this read failed) would then silently overwrite every real key with the
+/// template's placeholders. Never degrade silently here.
+fn read_existing_env(path: &Path) -> Result<String> {
+    match fs::read_to_string(path) {
+        Ok(s) => Ok(s),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
+        Err(e) => Err(Error::Other(format!("read {}: {e}", path.display()))),
+    }
+}
+
 /// Run the env-merge phase. Prints a summary of what changed.
 pub fn cmd_provision_env(dry_run: bool) -> Result<()> {
     let path = PathBuf::from(keys::env_path());
-    let existing = fs::read_to_string(&path).unwrap_or_default();
+    let existing = read_existing_env(&path)?;
     let merged = merge_template(&existing, ENV_TEMPLATE);
 
     let (template_keys, real_keys, custom_keys) = count_keys(&existing);
