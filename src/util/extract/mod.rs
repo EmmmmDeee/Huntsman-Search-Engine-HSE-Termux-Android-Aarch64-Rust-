@@ -547,7 +547,52 @@ pub fn page_emails(text: &str) -> Vec<String> {
         }
         i = domain_end;
     }
-    out
+    deglue_welded_locals(out)
+}
+
+/// Drop addresses whose local part is a real co-extracted address with a URL path
+/// word welded onto its front. A scraped SERP/HTML fragment can abut a path
+/// segment directly onto a real mailbox with no separator — the real-scan bug
+/// `viewtopic` glued onto `rose.cl@onet.eu`, minting `viewtopicrose.cl@onet.eu`.
+/// That survives the [`SCRIPT_EXTS`] guard whenever the SERP truncated the
+/// extension (`viewtopic`, not `viewtopic.php`), so the extension-suffix check has
+/// nothing to match.
+///
+/// The tell is structural, not lexical: another extracted address on the **same
+/// domain** whose local part is a strict suffix of this one, welded at a word
+/// boundary — i.e. the extra prefix does not end in a local-part separator, so
+/// `rose.cl` is fused mid-token into `viewtopicrose.cl`, whereas a legitimately
+/// structured `team.rose.cl` (prefix ends in `.`) is left alone. A 4-char minimum
+/// on the shadowed local keeps a short coincidental suffix from collapsing two
+/// genuinely distinct mailboxes. Precision-first — the doctrine ranks a fabricated
+/// finding worse than a missed one — and non-destructive: the shorter real address
+/// it shadows is always retained, so a domain never loses all its mailboxes. Order
+/// and de-duplication of the survivors are preserved. Pure.
+fn deglue_welded_locals(emails: Vec<String>) -> Vec<String> {
+    const MIN_SHADOWED_LOCAL: usize = 4;
+    let split: Vec<(&str, &str)> = emails
+        .iter()
+        .map(|e| {
+            e.split_once('@')
+                .expect("page scanner emits exactly one '@'")
+        })
+        .collect();
+    let is_welded = |i: usize, li: &str, di: &str| {
+        split.iter().enumerate().any(|(j, (lj, dj))| {
+            j != i
+                && *dj == di
+                && lj.len() >= MIN_SHADOWED_LOCAL
+                && li.len() > lj.len()
+                && li.ends_with(lj)
+                && !li[..li.len() - lj.len()].ends_with(['.', '-', '_', '+', '%'])
+        })
+    };
+    emails
+        .iter()
+        .enumerate()
+        .filter(|&(i, _)| !is_welded(i, split[i].0, split[i].1))
+        .map(|(_, e)| e.clone())
+        .collect()
 }
 
 #[cfg(test)]

@@ -1167,6 +1167,32 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   domains_deterministically` test still passing unmodified. **P2** (a
   correctness gap that could permanently wedge an operator-facing status
   endpoint and block all future self-updates, not a crash or PII leak).
+- **`[x]` T2.34 · `util::extract::page_emails` fabricates an email when a URL
+  path word is welded onto a real address with no separator** — surfaced by a
+  user-supplied debug bundle (the authorised `Matthew Diegmann` self-test,
+  v1.13.0), independently confirmed by reading the extractor's code path before
+  acting. A Yahoo SERP snippet over `scamsurvivors.com/forum/viewtopic.php?…`
+  truncated the URL to `…/viewtopic` and abutted it directly onto the real
+  `rose.cl@onet.eu`, so the byte-scanner walked the local part backwards across
+  the word boundary and minted `viewtopicrose.cl@onet.eu` — a fabricated `Email`
+  entity that then fed correlation (it fired rule `AU-087` "shared
+  organisational domain" against the real address, inventing a link between two
+  "people" who are one). The existing `SCRIPT_EXTS` guard (added for the earlier
+  `viewtopic.phprose.cl@onet.eu` instance) could not catch it: the SERP had
+  already stripped the `.php`, so there was no extension left in the local part
+  to match. For an evidentiary OSINT tool a fabricated address is the worst
+  class of finding — a false positive that manufactures a relationship.
+  → **Solution:** a structural de-glue pass in `page_emails` — when another
+  extracted address on the **same domain** has a local part that is a strict,
+  word-boundary suffix of this one (the extra prefix does not end in a
+  local-part separator, and the shadowed local is ≥4 chars), this one is that
+  address with a path word welded on, so drop it. Precision-first (the doctrine
+  ranks a fabricated finding worse than a missed one) and non-destructive: the
+  shorter real address it shadows is always retained, so a domain never loses
+  all its mailboxes; a legitimately structured dotted local (`team.rose.cl`,
+  prefix ends in `.`) is left intact. **P2** (a false-positive that fabricates a
+  correlation edge, corrupting the intelligence product — not a crash or PII
+  leak).
 
 ---
 
@@ -5441,3 +5467,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   hint existed pre-change, so the ≥60s assertion failed). Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4414 lib tests). **P3**
   (advisory-only). **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-05** — **T2.34 (new): `page_emails` fabricated `viewtopicrose.cl@onet.eu`
+  from a real address with a URL path word welded on.** Selected from a
+  user-supplied debug bundle this session (authorised `Matthew Diegmann`
+  self-test, v1.13.0). A Yahoo SERP snippet over `…/forum/viewtopic.php?…`
+  truncated the URL to `…/viewtopic` and abutted it onto the real
+  `rose.cl@onet.eu`; the backward local-part byte-scan crossed the word boundary
+  and minted `viewtopicrose.cl@onet.eu`, which then fired correlation rule
+  `AU-087` against the real address — a fabricated `Email` inventing a link
+  between one person and their own ghost. Confirmed against the extractor's code
+  path before acting: the `SCRIPT_EXTS` guard (which caught the earlier
+  `viewtopic.phprose.cl@onet.eu` form) cannot fire once the SERP has stripped the
+  `.php`, so the local part carries no extension to match. Fix: a structural
+  de-glue pass — drop an address whose local part is a strict, word-boundary
+  suffix (extra prefix not ending in a local-part separator; shadowed local ≥4
+  chars) of another extracted address on the same domain. Precision-first and
+  non-destructive — the real shorter address is always retained, and a
+  structured dotted local (`team.rose.cl`) is left intact. Test delta:
+  `page_emails_deglues_a_path_word_welded_onto_a_real_address` (the exact bundle
+  case → keeps only `rose.cl@onet.eu`; fail-before: pre-change `page_emails`
+  returned both, so the single-element assertion failed) plus
+  `page_emails_keeps_distinct_locals_and_structured_dotted_locals` and
+  `page_emails_does_not_deglue_across_different_domains` guarding the
+  non-regression. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4417 lib tests). **P2** (fabricated finding → false correlation edge).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

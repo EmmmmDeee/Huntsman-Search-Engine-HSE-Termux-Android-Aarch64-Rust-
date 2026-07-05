@@ -837,6 +837,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes:* new node **T2.33**. ✅ 1 test
   (`set_phase_recovers_from_a_poisoned_mutex`, poisons a real `Mutex` via
   `catch_unwind`), fail-before confirmed.
+- **`[x]` SOL-EMAIL-DEGLUE · `util::extract::page_emails` no longer mints an
+  email from a URL path word welded onto a real address** — surfaced by a
+  user-supplied debug bundle (authorised `Matthew Diegmann` self-test, v1.13.0)
+  in which a Yahoo SERP snippet's truncated `…/viewtopic` abutted the real
+  `rose.cl@onet.eu`, minting `viewtopicrose.cl@onet.eu` — a fabricated `Email`
+  that fired correlation rule `AU-087` against its own source address. The prior
+  `SCRIPT_EXTS` guard (SOL for the `.php`-retained form) cannot see it once the
+  SERP strips the extension. Added a structural de-glue pass: an address whose
+  local part is a strict, word-boundary suffix (extra prefix not ending in a
+  local-part separator; shadowed local ≥4 chars) of another same-domain address
+  is that address with a path word welded on — dropped, keeping the real shorter
+  one and leaving structured dotted locals (`team.rose.cl`) intact. *Closes:*
+  new node **T2.34**. ✅ 3 tests
+  (`page_emails_deglues_a_path_word_welded_onto_a_real_address`, fail-before
+  confirmed, + two non-regression guards).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -910,6 +925,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SOURCEFORGE-ATTACK-COMPLETE | T2.31 | `[x]` |
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
+| SOL-EMAIL-DEGLUE | T2.34 | `[x]` |
 
 ---
 
@@ -4022,3 +4038,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `analyse_emits_slow_scan_hint_above_threshold_only` (silent below 60s, fires
   at 60s). Gate green: fmt/clippy/doc clean, 4414 lib tests, 0 failures.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-05** — **SOL-EMAIL-DEGLUE `[x]`: killed a fabricated email from a
+  user debug bundle.** Selection followed the loop's debug-bundle priority: the
+  authorised `Matthew Diegmann` self-test (v1.13.0) showed
+  `viewtopicrose.cl@onet.eu` — a Yahoo SERP's truncated `…/viewtopic` welded onto
+  the real `rose.cl@onet.eu` — surviving `page_emails` and firing correlation
+  rule `AU-087` against its own source. The `.php` `SCRIPT_EXTS` guard can't
+  match once the SERP strips the extension. Added a same-domain suffix-weld
+  de-glue pass (drop the longer address when a shorter real one is its
+  word-boundary suffix; keep structured dotted locals). Precision-first,
+  non-destructive. *Closes:* **T2.34** (`[ ]`→`[x]`). Tests:
+  `page_emails_deglues_a_path_word_welded_onto_a_real_address` (exact bundle
+  case, fail-before confirmed) + 2 non-regression guards. Gate green:
+  fmt/clippy/doc clean, 4417 lib tests, 0 failures. Paired: `PROBLEM_TREE` §8 —
+  same commit.

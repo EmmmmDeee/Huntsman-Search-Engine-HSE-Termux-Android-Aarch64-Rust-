@@ -370,6 +370,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Email extraction no longer fabricates an address when a URL path word is
+  welded onto a real one.** A search-result snippet whose truncated URL abutted
+  a real address with no separator (e.g. `…/viewtopic` glued onto
+  `rose.cl@onet.eu`) could mint a bogus `viewtopicrose.cl@onet.eu`, which then
+  fed correlation and invented a link to the real address. Extraction now drops
+  an address whose local part is a real co-extracted address on the same domain
+  with a path word welded on, keeping the genuine address. Regression tests
+  `page_emails_deglues_a_path_word_welded_onto_a_real_address` (+2 boundary
+  guards).
 - **The self-update mechanism can no longer wedge itself into a permanent
   "applying" state.** Two sites that record the outcome of a triggered
   update (success → restarting, failure → error) silently did nothing if

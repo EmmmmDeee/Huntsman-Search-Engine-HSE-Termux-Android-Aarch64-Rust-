@@ -114,6 +114,44 @@ use super::*;
     }
 
     #[test]
+    fn page_emails_deglues_a_path_word_welded_onto_a_real_address() {
+        // Real-scan bug (Matthew Diegmann self-test debug bundle, v1.13.0): a
+        // Yahoo SERP snippet truncated `.../forum/viewtopic.php?…` to `viewtopic`
+        // and abutted it onto `rose.cl@onet.eu`, minting the fabricated
+        // `viewtopicrose.cl@onet.eu`. It slips past the SCRIPT_EXTS guard because
+        // the `.php` was gone. Since the real `rose.cl@onet.eu` is co-extracted on
+        // the same domain and its local is a strict, word-boundary suffix of the
+        // welded one, the fabrication is dropped and the real address kept.
+        assert_eq!(
+            page_emails("forum viewtopicrose.cl@onet.eu ... contact rose.cl@onet.eu"),
+            ["rose.cl@onet.eu"]
+        );
+    }
+
+    #[test]
+    fn page_emails_keeps_distinct_locals_and_structured_dotted_locals() {
+        // De-glue must not collapse two genuinely distinct mailboxes whose locals
+        // share no suffix relation, and must leave a legitimately structured dotted
+        // local (`team.rose.cl`, prefix ends in `.`) intact even when the bare
+        // `rose.cl` co-occurs on the same domain.
+        assert_eq!(
+            page_emails("a bob@x.com and alice@x.com"),
+            ["bob@x.com", "alice@x.com"]
+        );
+        let mut structured = page_emails("team.rose.cl@onet.eu and rose.cl@onet.eu");
+        structured.sort();
+        assert_eq!(structured, ["rose.cl@onet.eu", "team.rose.cl@onet.eu"]);
+    }
+
+    #[test]
+    fn page_emails_does_not_deglue_across_different_domains() {
+        // A suffix match across *different* domains is not a weld — both are kept.
+        let mut out = page_emails("x viewtopicrose.cl@onet.eu and rose.cl@example.com");
+        out.sort();
+        assert_eq!(out, ["rose.cl@example.com", "viewtopicrose.cl@onet.eu"]);
+    }
+
+    #[test]
     fn looks_like_email_rejects_provider_field_junk() {
         // Real addresses seen in the breach `email` fields for the Ali.kareem scan.
         for good in [
