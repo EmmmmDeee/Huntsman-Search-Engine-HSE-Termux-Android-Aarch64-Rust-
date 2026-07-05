@@ -343,6 +343,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The reconstructed timeline no longer silently drops account-creation,
+  birth/death, profile-verification, and threat-intel first-seen dates that
+  several modules already collect.** Eight evidence-attribute keys —
+  including the account-creation family that left the documented
+  `AccountCreated` timeline event kind completely unreachable — were never
+  recognised by the timeline's date classifier, so an OathNet/StackOverflow
+  account-creation date, a Discord-snowflake- or UUID-decoded creation
+  timestamp, a Wikidata birth/death date, a Mastodon profile verification
+  date, and an OTX pulse's earliest-report date all vanished from the
+  chronology with no signal. All eight now appear. Regression tests
+  `classify_maps_every_live_account_created_key_not_leaving_it_dead_code`,
+  `classify_recognises_wikidata_and_mastodon_date_keys`,
+  `reconstruct_surfaces_an_account_created_event_end_to_end`.
 - **Resolving the "latest" scan no longer reports an empty store when the most
   recent completed scan is actually corrupted.** `hse export`/`diff`/`audit
   latest` and the SPA's "open latest scan" all resolve through a lookup that

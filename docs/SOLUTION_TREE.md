@@ -363,6 +363,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   delegate — one finder, no drift) **and** a new dossier **CONNECTIONS** section
   that renders the shortest typed thread between identities as text. *Remaining:*
   first-class timeline output + further AU-0xx rule-gap fill.
+  *Delivered (cycle 27, 2026-07-05) — partial progress on timeline output:*
+  `core::timeline::classify` recognises 8 more live evidence-attribute keys
+  (verified via direct grep against `src/modules/`, not speculative) that
+  first-party modules already stamp but the timeline silently never surfaced —
+  `account_created`/`joined_at`/`discord_created_date`/`discord_created_unix_ms`/
+  `uuid_created_date` → `AccountCreated` (previously unreachable dead code —
+  the variant existed with a serde label but no key ever produced it),
+  `birth_date` → `DateOfBirth`, `death_date`/`verified_at` → `Generic`,
+  `first_pulse_created` → `FirstSeen`. *Remaining:* further AU-0xx rule-gap
+  fill; the "controller behind reused secrets" link facet (needs a new
+  `RelationKind` + a visibility decision on the correlator's private `Secret`
+  primitive — assessed this cycle, too large for one commit); a
+  single-sourcing follow-on for the three independently-drifted DOB-key lists
+  (`breach_pii`, `exposure`, `timeline`) found during this investigation.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -650,7 +664,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
-- **C1/C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
+- **C1** — `[~]` (SOL-CORR), corrected stale note (found cycle 27, 2026-07-05):
+  this bullet previously read "none started," but C1/SOL-CORR has been
+  in-progress since cycle 26 (`identity_paths` + CONNECTIONS) and advanced
+  again this cycle (timeline `classify` widened). *Remaining:* further AU-0xx
+  rule-gap fill; the "controller behind reused secrets" link facet.
+- **C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
@@ -740,7 +759,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); C1/C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld/centroid fusion + auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27; AU-0xx rule-gap fill + reused-secret link facet remaining); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -3143,3 +3162,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green (4387 lib tests). A second follow-up grep across `storage/*.rs` for the same
   `.ok())`/`let _ = ` silent-swallow shapes found nothing further outside test cleanup code —
   this now genuinely closes the storage-layer sweep. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 27: SOL-CORR advances on C1's timeline-output remaining item —
+  `TimelineEventKind::AccountCreated` is no longer dead code, and 7 other live date keys are
+  no longer silently dropped from the timeline.** With the storage sweep closed, picked C1
+  (`[~]`, in-progress) over the open T2.7/T2.14 nodes per the loop's own priority order.
+  `core::timeline::classify` maps evidence-attribute keys to timeline event kinds; a direct
+  grep of every `.with_attr(...)` call across `src/modules/` (not a speculative gap) found 8
+  live keys it never matched: `account_created` (`oathnet_pro`, `stackoverflow_user`),
+  `joined_at` (`devto`), `discord_created_date`/`discord_created_unix_ms`
+  (`discord_snowflake`'s decoded snowflake timestamp), `uuid_created_date`
+  (`structured_id`'s decoded UUIDv1 timestamp), `birth_date`/`death_date` (`wikidata`'s
+  Wikidata-claim dates — a DIFFERENT spelling than the canonical `date_of_birth` other
+  modules normalise to), `verified_at` (`mastodon_user`'s profile-field verification
+  timestamp), and `first_pulse_created` (`ip_reputation`'s OTX pulse earliest-report date).
+  The `account_created` family's absence meant `TimelineEventKind::AccountCreated` — defined,
+  documented, with its own `as_str()` label — was completely unreachable: no key ever
+  produced it. Verified each value's format is `parse_date`-compatible before mapping
+  (`utc_date`'s `YYYY-MM-DD`, raw ms-digit strings, ISO-8601 with fractional seconds) rather
+  than assuming. Fix: widened `classify`'s match arms (account-creation family →
+  `AccountCreated`; `birth_date` → `DateOfBirth`; `death_date`/`verified_at` → `Generic`;
+  `first_pulse_created` → `FirstSeen`). Test: +3
+  (`classify_maps_every_live_account_created_key_not_leaving_it_dead_code`,
+  `classify_recognises_wikidata_and_mastodon_date_keys`,
+  `reconstruct_surfaces_an_account_created_event_end_to_end` — fail-before: the end-to-end
+  test showed 0 events instead of 1). Gate green (4390 lib tests). Also corrected a stale §4
+  note ("C1/C2/C6/C7... none started") that had drifted since cycle 26 delivered
+  `identity_paths`/CONNECTIONS. Investigation surfaced two genuine, deliberately-deferred
+  follow-ons rather than scope-creeping them into this commit: (1) three independently-drifted
+  DOB-key vocabularies (`breach_pii::DOB_KEYS`, `exposure::DOB_KEYS`,
+  `timeline::classify`) — a real single-sourcing gap, but unifying them needs a design
+  decision (the import-facing list may deliberately accept noisier spellings); (2) the
+  "controller behind reused secrets" link facet needs a new `RelationKind` plus a visibility
+  decision on the correlator's private `Secret` primitive — assessed and confirmed too large
+  for one focused commit. Paired: `PROBLEM_TREE` §8 — same commit.

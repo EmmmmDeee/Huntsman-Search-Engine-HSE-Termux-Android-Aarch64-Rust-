@@ -95,6 +95,17 @@ pub struct TimelineEvent {
 
 /// Maps an evidence attribute key to the event class it represents. Returning
 /// `None` means the attribute is not a recognised timeline date.
+///
+/// `AccountCreated`'s keys are real, live evidence attributes stamped by
+/// first-party modules (`account_created`: `oathnet_pro`/`stackoverflow_user`;
+/// `joined_at`: `devto`; `discord_created_date`/`discord_created_unix_ms`:
+/// `discord_snowflake`'s decoded snowflake timestamp; `uuid_created_date`:
+/// `structured_id`'s decoded UUIDv1 timestamp) — before this match gained
+/// them, none mapped to anything, so `TimelineEventKind::AccountCreated` was
+/// unreachable dead code and every one of these dates was silently absent
+/// from the timeline. `birth_date`/`death_date` (`wikidata`'s Wikidata-claim
+/// dates) and `verified_at` (`mastodon_user`'s profile-field verification
+/// timestamp) were equally live and equally unmatched.
 fn classify(attr_key: &str) -> Option<TimelineEventKind> {
     use TimelineEventKind::*;
     let kind = match attr_key.to_ascii_lowercase().as_str() {
@@ -102,11 +113,17 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
         "incorporation_date" => Incorporation,
         "dissolution_date" => Dissolution,
         "registered" | "created" | "created_at" | "created_at_unix" => Registered,
+        "account_created"
+        | "joined_at"
+        | "discord_created_date"
+        | "discord_created_unix_ms"
+        | "uuid_created_date" => AccountCreated,
         "expires" | "expire_secs" => Expiry,
-        "first_seen" | "first_seen_iso" => FirstSeen,
+        "first_seen" | "first_seen_iso" | "first_pulse_created" => FirstSeen,
         "last_seen" | "last_seen_iso" | "last_updated" | "last_update" | "updated" => LastSeen,
-        "date_of_birth" => DateOfBirth,
-        "start_date" | "review_date" | "end_date" | "date" | "timestamp" => Generic,
+        "date_of_birth" | "birth_date" => DateOfBirth,
+        "start_date" | "review_date" | "end_date" | "date" | "timestamp" | "death_date"
+        | "verified_at" => Generic,
         _ => return None,
     };
     Some(kind)

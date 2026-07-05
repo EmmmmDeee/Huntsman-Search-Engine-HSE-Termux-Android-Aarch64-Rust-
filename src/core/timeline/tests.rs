@@ -182,6 +182,62 @@ use super::*;
     }
 
     #[test]
+    fn classify_maps_every_live_account_created_key_not_leaving_it_dead_code() {
+        // `TimelineEventKind::AccountCreated` was defined, documented, and had
+        // its own `as_str()` label, but no key in `classify` ever produced it —
+        // dead code, and every real module attribute below was silently absent
+        // from the timeline. Each key here is a genuine evidence attribute a
+        // first-party module stamps today (verified by direct grep, not
+        // speculative): `oathnet_pro`/`stackoverflow_user` (`account_created`),
+        // `devto` (`joined_at`), `discord_snowflake`'s decoded snowflake
+        // timestamp (`discord_created_date`/`discord_created_unix_ms`), and
+        // `structured_id`'s decoded UUIDv1 timestamp (`uuid_created_date`).
+        use TimelineEventKind::AccountCreated;
+        for key in [
+            "account_created",
+            "joined_at",
+            "discord_created_date",
+            "discord_created_unix_ms",
+            "uuid_created_date",
+        ] {
+            assert!(
+                matches!(classify(key), Some(AccountCreated)),
+                "{key:?} must classify as AccountCreated"
+            );
+        }
+    }
+
+    #[test]
+    fn classify_recognises_wikidata_and_mastodon_date_keys() {
+        // `wikidata::builder` stamps `birth_date`/`death_date` (distinct from
+        // the canonical `date_of_birth` other modules normalise to) and
+        // `mastodon_user` stamps `verified_at` on a verified profile field;
+        // `ip_reputation` stamps `first_pulse_created` for an OTX pulse's
+        // earliest report date. None matched before this fix.
+        use TimelineEventKind::*;
+        assert!(matches!(classify("birth_date"), Some(DateOfBirth)));
+        assert!(matches!(classify("death_date"), Some(Generic)));
+        assert!(matches!(classify("verified_at"), Some(Generic)));
+        assert!(matches!(classify("first_pulse_created"), Some(FirstSeen)));
+    }
+
+    #[test]
+    fn reconstruct_surfaces_an_account_created_event_end_to_end() {
+        // classify() alone doesn't prove the pipeline: reconstruct must also
+        // successfully parse_date the value and emit a real TimelineEvent.
+        let e = entity_with_attrs(
+            EntityKind::Username,
+            "someuser",
+            "stackoverflow_user",
+            &[("account_created", "2015-06-12")],
+        );
+        let tl = reconstruct(&[e]);
+        assert_eq!(tl.len(), 1);
+        assert!(matches!(tl[0].kind, TimelineEventKind::AccountCreated));
+        assert_eq!(tl[0].iso, "2015-06-12");
+    }
+
+    #[test]
     fn classify_is_case_insensitive_and_none_for_unknown() {
         assert!(matches!(
             classify("BREACH_DATE"),

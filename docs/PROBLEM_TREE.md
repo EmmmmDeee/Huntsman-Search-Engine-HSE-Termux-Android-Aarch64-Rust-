@@ -753,6 +753,32 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   each chain's weakest-edge confidence. *Remaining:* (c) first-class timeline
   output (footprint timeline shipped; widen), (d) further AU-0xx rule-gap fill,
   and the "controller behind reused secrets" link facet.
+  *Delivered (cycle 27, 2026-07-05) — partial progress on (c):* `core::timeline`'s
+  `classify()` was silently missing several live evidence-attribute keys that
+  first-party modules already stamp, and `TimelineEventKind::AccountCreated` —
+  defined, documented, given its own `as_str()` label — was completely
+  unreachable dead code because no key ever produced it. Widened `classify()` to
+  recognise `account_created`/`joined_at`/`discord_created_date`/
+  `discord_created_unix_ms`/`uuid_created_date` (→ `AccountCreated`, now live),
+  `birth_date` (Wikidata's spelling, distinct from the canonical
+  `date_of_birth` other modules normalise to → `DateOfBirth`), and
+  `death_date`/`verified_at` (→ `Generic`, `first_pulse_created` → `FirstSeen`
+  — an OTX pulse's earliest-report date). *Investigated but deferred, not
+  fabricated as this cycle's fix:* a genuine, separate single-sourcing gap —
+  THREE independently-maintained DOB-key vocabularies exist in this codebase
+  (`core::correlator::rules::breach_pii::DOB_KEYS`, 8 spellings, scans
+  arbitrary imported breach data; `core::exposure::DOB_KEYS`, only 2 spellings;
+  `core::timeline::classify`, now 2 spellings) — unifying them is a real,
+  worthwhile follow-on but a distinct decision (the broader import-facing list
+  may deliberately accept noisier spellings a first-party-module-only timeline
+  key shouldn't), so left as a separate future node rather than scope-crept
+  into this fix. *Remaining on (c):* investigate whether `Generic`-bucketed
+  keys warrant their own first-class kinds (e.g. a symmetric `DateOfDeath` next
+  to `DateOfBirth`). (d) and the reused-secret facet are unstarted — the latter
+  was assessed this cycle and needs a new `RelationKind` variant plus a
+  visibility/single-sourcing decision on the correlator's private `Secret`
+  primitive (`core::correlator::rules::breach::Secret`), too large for one
+  focused commit; left as future work under the same node rather than rushed.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -4309,3 +4335,36 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the storage-layer sweep** — a second follow-up grep for the `.ok())`/`let _ = `
   silent-swallow shapes across `storage/*.rs` found nothing further outside test
   cleanup code.
+- **2026-07-05** — **Cycle 27 (C1, partial progress on remaining item (c)).** With
+  the storage-layer sweep closed, picked C1 (`[~]`, in-progress) per step 1's
+  priority order over the open T2.7/T2.14 nodes. Verified `core::timeline::classify`
+  against every `.with_attr("...date...")`/`.with_attr("...created...")`-shaped key
+  actually stamped by first-party modules (direct grep across `src/modules/`, not
+  speculative): confirmed `account_created` (`oathnet_pro`, `stackoverflow_user`),
+  `joined_at` (`devto`), `discord_created_date`/`discord_created_unix_ms`
+  (`discord_snowflake`'s decoded snowflake timestamp), `uuid_created_date`
+  (`structured_id`'s decoded UUIDv1 timestamp), `birth_date`/`death_date`
+  (`wikidata`'s Wikidata-claim dates, a DIFFERENT spelling than the canonical
+  `date_of_birth` other modules normalise to), `verified_at` (`mastodon_user`'s
+  profile-field verification timestamp), and `first_pulse_created`
+  (`ip_reputation`'s OTX pulse earliest-report date) were all live evidence keys
+  `classify` never matched — silently absent from every timeline, and in
+  `account_created`'s case leaving the documented `TimelineEventKind::AccountCreated`
+  variant completely unreachable dead code (defined, labelled via `as_str()`, never
+  producible). Verified each value's actual format is `parse_date`-compatible
+  (`utc_date`'s `YYYY-MM-DD`, raw millisecond digit strings, ISO-8601 with
+  fractional seconds) before adding the mapping, rather than assuming. Fix: widened
+  `classify`'s match arms — the account-creation family → `AccountCreated`
+  (finally reachable), `birth_date` → `DateOfBirth`, `death_date`/`verified_at` →
+  `Generic`, `first_pulse_created` → `FirstSeen`. Test delta: +3
+  (`classify_maps_every_live_account_created_key_not_leaving_it_dead_code`,
+  `classify_recognises_wikidata_and_mastodon_date_keys`,
+  `reconstruct_surfaces_an_account_created_event_end_to_end` — fail-before: the
+  end-to-end test showed 0 events instead of 1 against the unfixed match). Gate
+  green: fmt/clippy/doc clean, full suite 0 failures (4390 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit. Investigation also surfaced a genuine but
+  separate single-sourcing gap (three independently-drifted DOB-key vocabularies:
+  `breach_pii::DOB_KEYS`, `exposure::DOB_KEYS`, `timeline::classify`) and confirmed
+  the "controller behind reused secrets" remaining item needs a new `RelationKind`
+  plus a visibility decision on the correlator's private `Secret` primitive — both
+  correctly left as future C1 work rather than scope-crept into this commit.
