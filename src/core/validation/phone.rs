@@ -1,9 +1,9 @@
 use super::report::ValidationReport;
 
 /// True if `s` is a syntactically valid E.164 number: leading `+`,
-/// then 8 to 15 digits, with the country code in the conventional
-/// 1-3 digit range. Does NOT verify the number is dial-able; only
-/// the format.
+/// then 10 to 15 digits, with the country code in the conventional
+/// 1-3 digit range (and never a leading `0`). Does NOT verify the number is
+/// dial-able; only the format.
 pub fn validate_phone_e164(s: &str) -> ValidationReport {
     if !s.starts_with('+') {
         return ValidationReport::fail("e164.missing_plus", "must start with '+'");

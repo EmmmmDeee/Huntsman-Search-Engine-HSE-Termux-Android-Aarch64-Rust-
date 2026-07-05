@@ -2,11 +2,6 @@
 //! `TargetKind::detect` to recognise CIDR / MAC / phone / domain / company /
 //! address inputs before the structured-kind fall-through. No scan state.
 
-/// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`), or the
-/// Cisco dotted form of three 4-hex-digit groups (`aabb.ccdd.eeff`) — the same
-/// separator set `Target::validate` accepts for MacAddress. A 6-group colon
-/// form is not a valid IPv6 address (which needs 8 groups or `::`), so the
-/// IP check ahead of this in [`super::TargetKind::detect`] never steals a real MAC.
 /// A CIDR network block: `IP/prefix` where `IP` parses and `prefix` is within
 /// the address family's width (≤32 for v4, ≤128 for v6). Pure.
 pub(super) fn is_cidr_shaped(v: &str) -> bool {
@@ -20,6 +15,11 @@ pub(super) fn is_cidr_shaped(v: &str) -> bool {
     matches!(prefix.trim().parse::<u8>(), Ok(p) if p <= max)
 }
 
+/// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`), or the
+/// Cisco dotted form of three 4-hex-digit groups (`aabb.ccdd.eeff`) — the same
+/// separator set `Target::validate` accepts for MacAddress. A 6-group colon
+/// form is not a valid IPv6 address (which needs 8 groups or `::`), so the
+/// IP check ahead of this in [`super::TargetKind::detect`] never steals a real MAC.
 pub(super) fn is_mac_shaped(v: &str) -> bool {
     let sep = if v.contains(':') {
         ':'

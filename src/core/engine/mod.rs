@@ -1899,22 +1899,6 @@ pub struct LeverageRanked {
     pub cross_scan_degree: usize,
 }
 
-/// Rank the high-leverage identifiers in `entities` by how many distinct
-/// investigations each one bridges — the "which of my retained data most empowers
-/// the rest" query (`docs/data_retention_design.md` §4.1), and the read-only
-/// counterpart to [`history::link_cross_scan_history`], which writes the same
-/// bridge as evidence.
-///
-/// Only [`history::is_cross_scan_candidate`] identifiers are scored — the strong
-/// join keys (email / phone / crypto / distinctive username / full-name person /
-/// specific address), never infrastructure, coarse geo, speculative permutations
-/// or already-recalled nodes — so the ranking can never be topped by noise.
-/// Leverage is the *realised* cross-scan degree
-/// ([`StoragePort::observation_count`] — the count of distinct scans that recorded
-/// the value); there is no invented weighting, so the score is exactly "how many
-/// separate dossiers this identifier already connects". Sorted strongest-first,
-/// ties broken by UID for determinism, truncated to `limit`. A store error on an
-/// entity skips it (never fails). Pure and offline — indexed point lookups only.
 /// Run the deterministic, offline geospatial enrichment a live scan's finalise
 /// applies — over an arbitrary entity set, for callers outside the scan loop
 /// (the `hse import` / web-upload path). For each entity it parses an `Address`
@@ -1950,6 +1934,22 @@ pub fn enrich_offline_geo(entities: &mut Vec<Entity>, scan_id: &str) {
     }
 }
 
+/// Rank the high-leverage identifiers in `entities` by how many distinct
+/// investigations each one bridges — the "which of my retained data most empowers
+/// the rest" query (`docs/data_retention_design.md` §4.1), and the read-only
+/// counterpart to [`history::link_cross_scan_history`], which writes the same
+/// bridge as evidence.
+///
+/// Only [`history::is_cross_scan_candidate`] identifiers are scored — the strong
+/// join keys (email / phone / crypto / distinctive username / full-name person /
+/// specific address), never infrastructure, coarse geo, speculative permutations
+/// or already-recalled nodes — so the ranking can never be topped by noise.
+/// Leverage is the *realised* cross-scan degree
+/// ([`StoragePort::observation_count`] — the count of distinct scans that recorded
+/// the value); there is no invented weighting, so the score is exactly "how many
+/// separate dossiers this identifier already connects". Sorted strongest-first,
+/// ties broken by UID for determinism, truncated to `limit`. A store error on an
+/// entity skips it (never fails). Pure and offline — indexed point lookups only.
 #[must_use]
 pub fn rank_enrichment_leverage(
     store: &dyn StoragePort,
