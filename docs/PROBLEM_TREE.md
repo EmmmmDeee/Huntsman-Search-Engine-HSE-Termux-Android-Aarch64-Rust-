@@ -745,6 +745,28 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   unification (with `breach_pii::DOB_KEYS`'s 8-spelling, import-facing list)
   remains a separate, deliberately deferred design decision. → **Solution:**
   added `"birth_date"` to `DOB_KEYS`. **P2**
+- **`[x]` T2.20 · `/entities/filter` never applied the candidate quarantine
+  every sibling entity-listing endpoint enforces** — `scan_entities`,
+  `scan_entities_csv`, `report.json`, and GEXF export all hide quarantined
+  `candidate`-tagged entities (non-subject breach co-occurrence rows) by
+  default via `wants_candidates()`, opting in only on `?include_candidates=1`.
+  `scan_entities_filter` (`api::scan_handlers::analysis`), registered as `GET
+  /api/v1/scans/{id}/entities/filter`, read only `kind`/`min_confidence`/`q`
+  from the query string and returned `store.entities_filtered(...)` raw —
+  never calling `wants_candidates`, never retaining out `CANDIDATE`-tagged
+  rows, and `entities_filtered` itself has no tag-based `WHERE` clause. A
+  caller could therefore route around the quarantine every other read path
+  enforces simply by hitting the filter endpoint instead — the same class of
+  PII leak as the GEXF `candidate`-node leak fixed 2026-07-04, on a different
+  endpoint the earlier fix didn't touch. Confirmed via `git log
+  -S"wants_candidates"`: the quarantine mechanism was retrofitted onto the
+  other three read paths but never onto this one, which predates it (existed
+  since v1.0.0). Surfaced by a fresh, code-grounded discovery pass (background
+  agent) once the direct rule-gap search on C1(d) (`Ssid`/`Cidr`) came up
+  empty for this cycle. → **Solution:** mirror `scan_entities` exactly — call
+  `wants_candidates(&params)` and `.retain(|e|
+  !e.has_tag(crate::core::tags::CANDIDATE))` before `ok_list`. **P1** (a real
+  PII-leak bug, not a missing diagnostic).
 
 ---
 
@@ -4548,3 +4570,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   up empty for a mechanical slice, plus a second doctrine-hygiene fix. Gate
   re-run to confirm the working tree is still green (unchanged from the prior
   commit). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-05** — **Cycle 31 (new T2.20): `/entities/filter` leaked
+  quarantined `candidate` entities every sibling endpoint hides by default.**
+  With cycle 30's direct C1(d) rule-gap search coming up empty for a
+  mechanical slice, delegated a fresh, code-grounded discovery pass to a
+  background agent (isolated worktree) rather than force a weak finding or
+  default to a third consecutive docs-only cycle. It found a real gap:
+  `scan_entities`, `scan_entities_csv`, `report.json`, and GEXF export all
+  apply the `wants_candidates()`/`CANDIDATE`-tag quarantine, but
+  `scan_entities_filter` — registered at `/api/v1/scans/{id}/entities/filter`,
+  absent from `api::routes`'s own doc table — read only
+  `kind`/`min_confidence`/`q` and returned `store.entities_filtered(...)` raw,
+  with no tag-based `WHERE` clause anywhere downstream either. Verified
+  independently before touching code: confirmed all four call sites, confirmed
+  no other layer re-applies the filter, confirmed via `git log
+  -S"wants_candidates"` that the quarantine was retrofitted onto the other
+  three read paths but never this one (which predates it, v1.0.0), confirmed
+  the existing `scan_entities_filter_returns_entities` test never seeded a
+  candidate entity so never caught it. → **Solution:** added the same
+  `wants_candidates(&params)` + `.retain(...)` guard `scan_entities` already
+  uses. Test delta:
+  `scan_entities_filter_quarantines_candidate_entities_by_default`
+  (`tests/api.rs`, mirroring `scan_gexf_quarantines_candidate_nodes_by_default`'s
+  shape) — confirmed fail-before (reverted the fix in-place, test failed;
+  restored from a diff-verified post-fix backup, test passed). Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` §5
+  — same commit.

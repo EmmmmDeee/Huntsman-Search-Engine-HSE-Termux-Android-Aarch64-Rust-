@@ -262,6 +262,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`sensitive_pii_recognises_wikidata_birth_date_spelling`). The broader
   3-way unification (with `breach_pii::DOB_KEYS`'s import-facing 8-spelling
   list) remains deferred — a real design decision, not mechanical.
+- **`[x]` SOL-FILTER-CANDIDATE-LEAK · `/entities/filter` now applies the same
+  candidate quarantine every sibling entity-listing endpoint enforces** — a
+  background-agent discovery pass found `scan_entities_filter` never called
+  `wants_candidates()` nor retained out `CANDIDATE`-tagged rows, unlike
+  `scan_entities`, `scan_entities_csv`, `report.json`, and GEXF export, and
+  `entities_filtered` has no tag-based `WHERE` clause to compensate — the same
+  PII-leak shape as the GEXF candidate-node leak fixed 2026-07-04, on a route
+  that fix didn't touch (confirmed by `git log -S"wants_candidates"`: the
+  quarantine was retrofitted onto three read paths but never this
+  pre-existing one). *Closes:* new node **T2.20**. ✅ 1 test
+  (`scan_entities_filter_quarantines_candidate_entities_by_default`), fail-
+  before confirmed (revert → test fails; diff-verified restore → test
+  passes).
 - **`[-]` SOL-BUDGET · Atomic quota reservation (accepted-as-is)** —
   `QuotaBudget::try_increment` (CAS, saturating session rollback) replaces every
   racy `remaining()`-then-`increment()`. *Closes:* **T2.11** (oathnet — done;
@@ -644,6 +657,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CHMOD-DIAG | T2.16 | `[x]` |
 | SOL-LATEST-SCAN-ERR | T2.17 | `[x]` |
 | SOL-EXPOSURE-DOB | T2.18 | `[x]` |
+| SOL-FILTER-CANDIDATE-LEAK | T2.20 | `[x]` |
 | SOL-INSTALL-INTEGRITY | §7 S5 | `[x]` |
 | SOL-BUDGET | T2.11 oathnet (accepted-as-is) | `[-]` |
 | SOL-CAP | T2.1 · T2.8 (all sub-items) | `[x]` |
@@ -787,7 +801,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
   (SOL-CHMOD-DIAG, 2026-07-05); **T2.17 `[x]`** ✅ (SOL-LATEST-SCAN-ERR,
-  2026-07-05); **T2.18 `[x]`** ✅ (SOL-EXPOSURE-DOB, 2026-07-05); T2.7 open;
+  2026-07-05); **T2.18 `[x]`** ✅ (SOL-EXPOSURE-DOB, 2026-07-05); **T2.20
+  `[x]`** ✅ (SOL-FILTER-CANDIDATE-LEAK, 2026-07-05); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -3320,3 +3335,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   4+ days after that work actually shipped (2026-07-01); corrected. No code
   changed this cycle. Gate re-run to confirm the working tree is unchanged and
   green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-05** — **Cycle 31: SOL-FILTER-CANDIDATE-LEAK — `/entities/filter`
+  no longer leaks quarantined candidates.** Cycle 30's direct C1(d) search came
+  up empty for a mechanical slice, so rather than force a weak finding or run a
+  third consecutive docs-only cycle, delegated a fresh discovery pass to a
+  background agent (isolated worktree). It found a real, code-grounded gap:
+  `scan_entities`/`scan_entities_csv`/`report.json`/GEXF all quarantine
+  `candidate`-tagged entities by default via `wants_candidates()`, but
+  `scan_entities_filter` never called it and `entities_filtered` has no
+  tag-based filter of its own — a caller could bypass the quarantine every
+  sibling endpoint enforces just by using the filter route. Same PII-leak
+  shape as the GEXF candidate-node leak (2026-07-04), a different endpoint
+  that fix never touched. Verified independently before writing any code:
+  read all four call sites, confirmed no downstream layer re-applies the
+  filter, confirmed via `git log -S"wants_candidates"` this route predates the
+  quarantine mechanism (v1.0.0) and was simply never retrofitted, confirmed
+  the existing `scan_entities_filter_returns_entities` test seeds no candidate
+  entity so never exercised this path. Fix mirrors `scan_entities` exactly.
+  Test: `scan_entities_filter_quarantines_candidate_entities_by_default`
+  (`tests/api.rs`) — confirmed fail-before (reverted the fix in-place, test
+  failed against the unfixed handler; restored from a diff-verified post-fix
+  backup, test passed). *Closes:* new node **T2.20**. Gate green: fmt/clippy/
+  doc clean, full suite 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

@@ -1602,6 +1602,74 @@ async fn scan_entities_filter_returns_entities() {
     assert!(json["entities"].is_array());
 }
 
+#[tokio::test]
+async fn scan_entities_filter_quarantines_candidate_entities_by_default() {
+    // Regression: unlike `scan_entities`, `scan_entities_csv`, `report.json`, and
+    // GEXF export, `/entities/filter` never applied the candidate quarantine — a
+    // caller could route around the quarantine every sibling endpoint enforces
+    // simply by adding a `kind`/`min_confidence`/`q` query param.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("filter_candidate");
+    let sid = "s-filter-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+
+    // Default: the quarantined candidate must not leak through the filter route.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities/filter?kind=email"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let values: Vec<&str> = json["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["value"].as_str())
+        .collect();
+    assert!(
+        values.contains(&"subject@real.example"),
+        "the confirmed subject entity must be present: {json}"
+    );
+    assert!(
+        !values.contains(&"stranger@breach.example"),
+        "a quarantined candidate breach-victim must not leak through /entities/filter: {json}"
+    );
+
+    // Opt-in: `?include_candidates=1` returns the full set (parity with the other
+    // entity-listing endpoints).
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities/filter?kind=email&include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+    let json2 = body_json(resp2).await;
+    let values2: Vec<&str> = json2["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["value"].as_str())
+        .collect();
+    assert!(
+        values2.contains(&"stranger@breach.example"),
+        "include_candidates=1 must return the candidate entity: {json2}"
+    );
+}
+
 // ── Live list (empty) ───────────────────────────────────────────────────
 
 #[tokio::test]

@@ -356,6 +356,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`GET /scans/{id}/entities/filter` no longer leaks quarantined `candidate`
+  entities.** Every other entity-listing surface (`/entities`, the CSV
+  export, `report.json`, and the GEXF graph export) hides non-subject breach
+  co-occurrence rows by default and only returns them with
+  `?include_candidates=1` — but the filtered-view endpoint never applied
+  that quarantine, so a caller could see a foreign breach victim's data
+  simply by adding a `kind`/`min_confidence`/`q` query parameter. It now
+  applies the same default-hide/opt-in behaviour as the other endpoints.
+  Regression test
+  `scan_entities_filter_quarantines_candidate_entities_by_default`.
 - **The Exposure Index now recognises Wikidata's own date-of-birth spelling.**
   The Sensitive PII component scores a date-of-birth disclosure only for a
   fixed set of evidence-attribute spellings, which omitted the spelling the
