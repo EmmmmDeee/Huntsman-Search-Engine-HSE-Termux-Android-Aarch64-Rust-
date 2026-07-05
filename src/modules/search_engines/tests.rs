@@ -1297,6 +1297,25 @@ fn abn_extraction() {
 }
 
 #[test]
+fn abn_acn_extraction_is_not_capped_at_ten() {
+    // Twelve context-prefixed valid ABNs (Qantas's real ABN, repeated) — the
+    // former silent break at 10 dropped the last two; every checksum-validated,
+    // context-prefixed identifier must now be extracted.
+    let text = "ABN 53 004 085 616 ".repeat(12);
+    let results = extract_abn_acn_from_text(&text);
+    assert_eq!(
+        results.len(),
+        12,
+        "every context-prefixed valid ABN is extracted, not capped at 10"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|(v, k)| v.as_str() == "53004085616" && *k == "ABN")
+    );
+}
+
+#[test]
 fn abn_validation_checksum() {
     assert!(is_valid_abn("53004085616")); // real ABN: Qantas
     assert!(!is_valid_abn("12345678901"));

@@ -486,9 +486,6 @@ pub(in crate::modules::search_engines) fn extract_abn_acn_from_text(
                     || trimmed.ends_with("business number:")
                 {
                     results.push((num, "ABN"));
-                    if results.len() >= 10 {
-                        break;
-                    }
                 }
             }
         } else if digits.len() == 9 {
@@ -504,11 +501,21 @@ pub(in crate::modules::search_engines) fn extract_abn_acn_from_text(
             // random 9-digit number next to the word "acn" is rejected.
             if has_context && crate::util::abn::is_valid_acn(&num) {
                 results.push((num, "ACN"));
-                if results.len() >= 10 {
-                    break;
-                }
             }
         }
+    }
+    // Checksum-validated, context-prefixed ABN/ACN are high-value business
+    // identifiers, so every one is kept rather than silently dropped past a low
+    // inline break. Bounded + WARNED (as the email/phone extractors are) only to
+    // guard against a pathological identifier-stuffed page.
+    const ABN_ACN_CAP: usize = 200;
+    if results.len() > ABN_ACN_CAP {
+        tracing::warn!(
+            found = results.len(),
+            cap = ABN_ACN_CAP,
+            "extract_abn_acn_from_text hit cap — additional ABN/ACN in this text were not extracted"
+        );
+        results.truncate(ABN_ACN_CAP);
     }
     results
 }
