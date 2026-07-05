@@ -7,8 +7,8 @@ use crate::core::{
 use crate::util::url_util::host_from_url;
 
 use super::{
-    CANDIDATE, DOMAIN_CONF, HANDLE_CONF, HANDLE_PROPS, IMAGE_CONF, MAX_HANDLES, ORG_PRIMARY,
-    PERSON_PRIMARY, SRC,
+    CANDIDATE, DOMAIN_CONF, HANDLE_CONF, HANDLE_PROPS, IMAGE_CONF, ORG_PRIMARY, PERSON_PRIMARY,
+    SRC,
     claims::{claim_entity_ids, claim_p625, claim_strings, claim_time, en_text},
     classify::{classify, seed_kind},
 };
@@ -154,16 +154,16 @@ pub(super) fn primary_entities(
         out.push(c);
     }
 
-    // Social handles → Username (capped).
-    let mut emitted = 0usize;
+    // Social handles → Username. Every handle is emitted — no per-module cap.
+    // Each value is a curated, sourced Wikidata identity statement (a genuine
+    // account link for the subject) AND a real username-search pivot; the output
+    // is naturally bounded by the fixed `HANDLE_PROPS` platform set, and the
+    // expansion frontier is owned by the engine's ROI Top-K gate, not this leaf.
+    // A cap here silently dropped verified handles by `HANDLE_PROPS` order (the
+    // last platforms first), hiding real identities — the same reasoning the
+    // crtsh / netlas / onyphe resolution paths document.
     for (pid, platform) in HANDLE_PROPS {
-        if emitted >= MAX_HANDLES {
-            break;
-        }
         for handle in claim_strings(entity, pid) {
-            if emitted >= MAX_HANDLES {
-                break;
-            }
             let h = handle.trim();
             if h.is_empty() {
                 continue;
@@ -178,7 +178,6 @@ pub(super) fn primary_entities(
                     .with_attr("of", label),
             );
             out.push(u);
-            emitted += 1;
         }
     }
     out
