@@ -142,6 +142,45 @@ fn deduplicates_github_pivots_across_gems() {
 }
 
 #[test]
+fn scans_every_gem_not_capped() {
+    // 35 owned gems, each with a DISTINCT github source_code_uri → 35 distinct
+    // GitHub-pivot Usernames. A prior take(30) silently dropped the last five
+    // gems' pivots; every gem must now be scanned.
+    let gems: Vec<RgGem> = (0..35)
+        .map(|i| {
+            gem(
+                &format!("gem{i:02}"),
+                None,
+                None,
+                Some(&format!("https://github.com/ghuser{i:02}/gem{i:02}")),
+            )
+        })
+        .collect();
+    let ents = build_entities(gems, "prolific", "scan-rg-cap");
+
+    let gh_pivots = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username && e.has_tag("rubygems-pivot"))
+        .count();
+    assert_eq!(
+        gh_pivots, 35,
+        "every gem's distinct GitHub pivot is emitted, not capped at 30"
+    );
+    // The coverage summary reports the TRUE owned-gem total, not the capped count.
+    let u = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "prolific")
+        .unwrap();
+    assert!(
+        u.evidence.iter().any(|ev| ev
+            .attributes
+            .get("gems")
+            .is_some_and(|g| g.contains("(35 gems)"))),
+        "coverage summary reports the true total of 35 gems"
+    );
+}
+
+#[test]
 fn empty_gem_list_produces_only_header_entities() {
     // build_entities always emits the Username + profile URL; the process()
     // function guards against empty gem lists before calling build_entities, so
