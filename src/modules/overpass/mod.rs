@@ -126,14 +126,28 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
     );
     out.push(summary);
 
+    // Category breakdown over EVERY discovered node, not just the emitted subset:
+    // the summary's `node_count` reports the true total, so the breakdown must
+    // agree with it. Counting inside the `take(MAX_NODES)` loop below would report
+    // a distribution over only the first MAX_NODES while `node_count` showed the
+    // full total — a self-contradictory aggregate for a dense (>MAX_NODES) query.
     let mut categories: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for elem in elements {
+        if let Some(tags) = &elem.tags {
+            *categories.entry(classify_element(tags)).or_default() += 1;
+        }
+    }
+
+    // Emit one Coordinates entity per LOCATED node, bounded at MAX_NODES to avoid
+    // flooding the graph near a dense coordinate. The full node count and the
+    // complete category breakdown are already surfaced on the summary above, so
+    // this bound loses no aggregate information — only the individual far-node
+    // points beyond the cap.
     for elem in elements.iter().take(MAX_NODES) {
         let Some(tags) = &elem.tags else {
             continue;
         };
         let category = classify_element(tags);
-        *categories.entry(category).or_default() += 1;
-
         if let Some((nlat, nlon)) = elem.coords()
             && crate::util::geo::is_valid_coords(nlat, nlon)
         {

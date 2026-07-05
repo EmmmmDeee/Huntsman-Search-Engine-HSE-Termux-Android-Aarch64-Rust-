@@ -155,6 +155,15 @@ fn accepts_coordinates_only() {
         );
         // ...but only MAX_NODES node entities are emitted (+1 summary).
         assert_eq!(out.len(), MAX_NODES + 1);
+        // ...and the category breakdown counts EVERY node, not just the emitted
+        // subset, so it can never contradict node_count (all mast → cell_tower).
+        assert_eq!(
+            out[0].evidence[1]
+                .attributes
+                .get("categories")
+                .map(String::as_str),
+            Some(&format!("cell_tower={}", MAX_NODES + 10)[..])
+        );
     }
 
     #[test]
