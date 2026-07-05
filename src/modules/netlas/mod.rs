@@ -427,10 +427,14 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     }
 
     // SSL Subject O field → Organisation entity (OV/EV certs only).
-    // Deduplicate and skip values that match the ISP already emitted.
+    // Deduplicate and skip values that match the ISP already emitted. Emit EVERY
+    // unique cert Subject O: each is a confirmed legal-entity attribution pivot,
+    // and a shared-hosting IP can present certs from several distinct
+    // organisations — a silent `.take(3)` dropped real ones, inconsistent with
+    // the uncapped SAN-domain / extracted-email loops below.
     cert_orgs.sort();
     cert_orgs.dedup();
-    for cert_org in cert_orgs.iter().take(3) {
+    for cert_org in &cert_orgs {
         let org_lc = cert_org.trim().to_ascii_lowercase();
         if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
             continue;
