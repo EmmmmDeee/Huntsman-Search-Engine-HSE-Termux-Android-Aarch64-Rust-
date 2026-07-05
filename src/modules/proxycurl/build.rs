@@ -12,7 +12,7 @@ use crate::core::{
 use crate::util::domains::is_freemail;
 
 use super::types::{DateField, Education, LinkedInProfile};
-use super::{MAX_EMAILS, MAX_EXPERIENCES, MAX_LISTED, MAX_PHONES, SRC};
+use super::{MAX_EXPERIENCES, MAX_LISTED, SRC};
 
 use crate::util::str_util::nonempty;
 
@@ -166,10 +166,6 @@ pub(super) fn build_entities(
             de.add_evidence(Evidence::new(SRC, "Email domain from LinkedIn profile"));
             result.push(de);
         }
-
-        if seen_emails.len() >= MAX_EMAILS {
-            break;
-        }
     }
 
     // ── Phones ────────────────────────────────────────────────────────────
@@ -179,7 +175,6 @@ pub(super) fn build_entities(
             .iter()
             .map(|p| p.trim())
             .filter(|p| p.len() >= 7)
-            .take(MAX_PHONES)
             .map(|phone| {
                 let mut phe = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
                 phe.tag("proxycurl");
