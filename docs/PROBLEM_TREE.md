@@ -5729,3 +5729,33 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   architecture-guard, or `#![forbid(unsafe_code)]` impact. **Paired:**
   `SOLUTION_TREE` new node SOL-RECALL-ORDER `[x]` + capability table + §5
   — same commit.
+
+- **2026-07-05** — **`urlscan` fabricated its scan-count evidence from the
+  page-capped result count, not URLScan.io's true total.** From the same
+  backlog survey that found T2.15, cross-checked independently before
+  implementation. `SearchResp` never deserialized the response's `total`
+  field; queries explicitly cap the page (`size=10` Domain/IpAddress,
+  `size=5` Url), so `summarize()`'s `scan_count: results.len()` reflects
+  only the returned page, not URLScan.io's real match count — the same
+  fabricated-count class already fixed in `netlas`/`psbdmp`/`pypi_user`/
+  `rubygems_user` this session, in a module none of those sweeps had
+  reached. Confirmed live: `curl 'https://urlscan.io/api/v1/search/
+  ?q=domain:"google.com"&size=3'` returns `total: 10000` alongside only 3
+  `results` — the true total sits in the same response, silently dropped
+  by serde's default ignore-unknown-fields behaviour. Fixed by adding
+  `total: Option<u64>` to `SearchResp`, mirroring `dehashed`'s identical
+  `total`-with-`results.len()`-fallback idiom; the evidence now
+  distinguishes `scan_count` (the true total) from a new `scans_shown`
+  (the actual page size), rather than conflating them. Extracted the
+  target-entity-building logic into a pure `build_target_entity` (mirroring
+  this file's own existing `child_entities` pattern) so the fix is directly
+  unit-tested without a live response. 4 new tests (`total` deserializes
+  present/absent; the entity reports the true total, not the shown count;
+  falls back correctly when `total` is absent) — red/green-verified by
+  temporarily reverting the evidence attribute to the pre-fix
+  page-capped value (failed) and restoring (passed). Gate green:
+  fmt/clippy/strict-rustdoc `cargo doc`/`cargo test` — 4610 total pass
+  (+4). No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]`
+  impact. Logged here per the established precedent for this bug class
+  (pypi_user/rubygems_user, 2026-07-03): a contained, single-module fix,
+  not a new tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.

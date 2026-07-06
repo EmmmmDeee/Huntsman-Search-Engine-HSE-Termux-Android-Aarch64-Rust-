@@ -106,6 +106,64 @@ use super::*;
     }
 
     #[test]
+    fn deserialize_parses_the_true_total_when_present() {
+        let raw = r#"{"results":[{}],"total":12345,"took":3,"has_more":true}"#;
+        let resp: SearchResp = serde_json::from_str(raw).unwrap();
+        assert_eq!(resp.total, Some(12345));
+    }
+
+    #[test]
+    fn deserialize_total_is_none_when_the_field_is_absent() {
+        let raw = r#"{"results":[{}]}"#;
+        let resp: SearchResp = serde_json::from_str(raw).unwrap();
+        assert_eq!(resp.total, None);
+    }
+
+    #[test]
+    fn target_entity_reports_the_true_total_not_the_page_capped_shown_count() {
+        // A heavily-scanned domain: URLScan.io's true match count (12,345) far
+        // exceeds the page this query actually returned (3 results) — the
+        // fabricated-count bug reported the LATTER as if it were the former.
+        let r = results(
+            r#"{"results":[
+              {"page":{"url":"https://a.example.com/x","domain":"a.example.com","ip":"1.1.1.1"}},
+              {"page":{"url":"https://a.example.com/y","domain":"a.example.com","ip":"1.1.1.1"}},
+              {"page":{"url":"https://a.example.com/z","domain":"a.example.com","ip":"1.1.1.1"}}
+            ]}"#,
+        );
+        let intel = summarize(&r);
+        assert_eq!(intel.scan_count, 3, "the page itself has 3 results");
+
+        let target = Target::new(TargetKind::Domain, "a.example.com");
+        let entity = build_target_entity(&target, &intel, 12_345, "s");
+        let ev = entity.evidence.first().expect("evidence attached");
+        assert_eq!(
+            ev.attributes.get("scan_count").map(String::as_str),
+            Some("12345"),
+            "scan_count must be the true total, not the page-capped shown count"
+        );
+        assert_eq!(
+            ev.attributes.get("scans_shown").map(String::as_str),
+            Some("3"),
+            "the actual page size is still surfaced, under a distinct attribute"
+        );
+        assert!(ev.summary.contains("12345 scan(s) total"));
+        assert!(ev.summary.contains("3 shown"));
+    }
+
+    #[test]
+    fn target_entity_falls_back_to_the_shown_count_when_no_total_is_given() {
+        let r = results(r#"{"results":[{"page":{"domain":"example.com"}}]}"#);
+        let intel = summarize(&r);
+        let target = Target::new(TargetKind::Domain, "example.com");
+        // Caller passes results.len() as the fallback, matching process()'s
+        // `data.total.unwrap_or(data.results.len() as u64)`.
+        let entity = build_target_entity(&target, &intel, 1, "s");
+        let ev = entity.evidence.first().unwrap();
+        assert_eq!(ev.attributes.get("scan_count").map(String::as_str), Some("1"));
+    }
+
+    #[test]
     fn summarize_dedups_every_field() {
         let r = results(
             r#"{"results":[

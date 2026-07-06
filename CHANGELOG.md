@@ -427,6 +427,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`urlscan` no longer understates a heavily-scanned target's real footprint
+  as just the first page of results.** The module reported "N recent
+  scan(s)" using only the capped page URLScan.io returned (5-10 results),
+  not its true total match count, which the response carries in the same
+  payload. A domain with thousands of historical scans was silently shown
+  as having only a handful. The evidence now reports the true total
+  separately from how many are actually shown.
 - **A scan recall could retain a different set of prior findings across
   identical runs, not just reorder them.** When more than 300 prior-scan
   entities are recalled, the results are ranked and capped; the ranking

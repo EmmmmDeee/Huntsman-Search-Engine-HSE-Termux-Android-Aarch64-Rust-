@@ -4213,3 +4213,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Both pre-existing recall tests pass unchanged. Gate green: fmt/clippy/
   strict-rustdoc `cargo doc`/`cargo test` — 4606 total pass (+1). Paired:
   `PROBLEM_TREE` new node T2.15 `[x]` + §8 — same commit.
+
+- **2026-07-05** — **`urlscan` fabricated-count fix: scan-count evidence now
+  reports URLScan.io's true total, not the page-capped result count.** Same
+  backlog survey as T2.15 above; independently cross-checked (including a
+  live `curl` against the real API confirming `total`/`has_more` sit in the
+  response's top level alongside a size-capped `results` array) before
+  picking it as this cycle's follow-on unit. Same bug class already closed
+  in `netlas`/`psbdmp`/`pypi_user`/`rubygems_user`, in a module none of
+  those prior sweeps reached. Fixed by parsing `total: Option<u64>` and
+  falling back to the page length when absent, mirroring `dehashed`'s
+  identical idiom exactly; the evidence attribute split into `scan_count`
+  (true total) and `scans_shown` (actual page size) instead of conflating
+  them. Extracted the target-entity builder into a pure function (mirroring
+  this file's existing `child_entities` pattern) for direct testability. 4
+  new tests, red/green-verified (reverting to the page-capped value made
+  the new regression test fail; restoring passed). Gate green: fmt/clippy/
+  strict-rustdoc `cargo doc`/`cargo test` — 4610 total pass (+4). Logged as
+  a dated entry, not a new tracked node — matching the established
+  precedent for this exact bug class (pypi_user/rubygems_user, 2026-07-03):
+  a contained, single-module fix. Paired: `PROBLEM_TREE` §8 — same commit.
