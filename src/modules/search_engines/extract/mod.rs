@@ -328,6 +328,15 @@ pub(super) fn extract_family_names(
             if is_non_name_word(first) {
                 continue;
             }
+            // Reject a leading thoroughfare word ("Street", "Road", "Hwy"): a
+            // `"<Word> <Surname>"` bigram whose first token names a street type
+            // is an address fragment reflowed into a name shape (a live scan on
+            // a person whose surname doubles as a QLD suburb minted phantom
+            // "family" like "Street Lawnton" / "Road Lawnton" from address
+            // snippets), never a distinct relative.
+            if crate::util::address_au::is_thoroughfare_type(first) {
+                continue;
+            }
             if !seen.insert(first.to_string()) {
                 continue;
             }

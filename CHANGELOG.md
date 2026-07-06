@@ -376,6 +376,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A leading street-type word is no longer read as a relative's given name.**
+  Search-engine family extraction mines `"<Word> <Surname>"` bigrams from result
+  titles/snippets; when the subject's surname doubles as a locality (e.g. the QLD
+  suburb "Lawnton"), address text like "… Station Street Lawnton QLD …" reflowed a
+  thoroughfare word into the given-name slot, minting phantom "family members"
+  ("Street Lawnton", "Road Lawnton"). A new single-sourced
+  `util::address_au::is_thoroughfare_type` predicate (the reusable sibling of the
+  address regex's `(?:Street|St|Road|Rd|…)` group) now rejects any thoroughfare
+  token in the name slot — universal, so every future name scan benefits.
+  Regression tests `thoroughfare_leading_word_is_not_a_family_member`,
+  `is_thoroughfare_type_matches_words_and_abbrevs_case_insensitively`.
 - **`--max-wall-time` now bounds the whole scan, not just collection.** Expansion
   stopped at the cap, but the finalise passes (relation derivation, correlation)
   each then started a fresh full budget — up to ~3.5 minutes of extra work past

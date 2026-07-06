@@ -1,6 +1,19 @@
 use super::*;
 
     #[test]
+    fn is_thoroughfare_type_matches_words_and_abbrevs_case_insensitively() {
+        assert!(is_thoroughfare_type("Street"));
+        assert!(is_thoroughfare_type("street"));
+        assert!(is_thoroughfare_type("Rd"));
+        assert!(is_thoroughfare_type("HWY"));
+        assert!(is_thoroughfare_type(" Road "));
+        // Real given names / surnames must not be swallowed.
+        assert!(!is_thoroughfare_type("Brett"));
+        assert!(!is_thoroughfare_type("Lawnton"));
+        assert!(!is_thoroughfare_type("Street Lawnton"));
+    }
+
+    #[test]
     fn parses_level_address() {
         let s = "Our office is at Level 11, 133 Mary Street, Brisbane City QLD 4000";
         let a = extract_first(s).expect("should match");

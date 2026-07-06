@@ -74,6 +74,57 @@ fn full_pattern() -> &'static Regex {
     })
 }
 
+/// Australian thoroughfare (street-type) words and their common abbreviations,
+/// lower-cased. Single-sourced sibling of the `(?:Street|St|Road|Rd|…)` group in
+/// this module's address regex: any word here is an address component, never a personal-name
+/// token. Callers that mine free text for `"<Word> <Surname>"` family bigrams
+/// use [`is_thoroughfare_type`] to reject fragments like `"Street Lawnton"` /
+/// `"Road Lawnton"` that are addresses reflowed into a name shape.
+const THOROUGHFARE_TYPES: &[&str] = &[
+    "street",
+    "st",
+    "road",
+    "rd",
+    "avenue",
+    "ave",
+    "lane",
+    "ln",
+    "drive",
+    "dr",
+    "court",
+    "ct",
+    "crescent",
+    "cres",
+    "place",
+    "pl",
+    "way",
+    "highway",
+    "hwy",
+    "parade",
+    "pde",
+    "terrace",
+    "tce",
+    "boulevard",
+    "blvd",
+    "circuit",
+    "cct",
+    "close",
+    "cl",
+    "esplanade",
+    "esp",
+    "square",
+    "sq",
+];
+
+/// True when `word` is an Australian thoroughfare (street-type) token — e.g.
+/// `"Street"`, `"road"`, `"Hwy"`. Case-insensitive; matches whole words only
+/// (the caller passes a single already-tokenised word). A thoroughfare word is
+/// an address component, so it must never be accepted as a personal-name token.
+pub fn is_thoroughfare_type(word: &str) -> bool {
+    let w = word.trim().to_lowercase();
+    THOROUGHFARE_TYPES.contains(&w.as_str())
+}
+
 /// Find the first plausible Australian address in a free-text blob.
 pub fn extract_first(text: &str) -> Option<AuAddress> {
     extract_all(text).into_iter().next()

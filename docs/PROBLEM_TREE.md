@@ -1366,6 +1366,22 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   dossier survives. **P2** (a documented operator budget was not honoured and the
   scan could be externally killed mid-finalise — robustness + efficiency, not a
   wrong finding).
+- **`[x]` T2.43 · Search-engine family extraction reads a leading thoroughfare
+  word as a relative's given name** — surfaced by *executing* the rebuilt engine
+  (T2.34–T2.42 in) on "Brett Lawnton" and reading the fresh export: phantom
+  "family members" **"Street Lawnton"** and **"Road Lawnton"** (PROBABLE, 0.512
+  c_eff, `search_engines`). Root cause: `extract_family_names`
+  (`modules/search_engines/extract/mod.rs`) mines `"<Word> <Surname>"` bigrams
+  from SERP titles/snippets; when the subject's surname doubles as a QLD suburb
+  ("Lawnton"), address text like "… Station **Street Lawnton** QLD …" / "Gympie
+  **Road Lawnton**" reflows a street-type word into the given-name slot. The
+  `is_non_name_word` blocklist did not include thoroughfare types. → **Solution:**
+  a single-sourced `util::address_au::is_thoroughfare_type(word)` predicate (the
+  reusable sibling of the `(?:Street|St|Road|Rd|…)` group already inside the
+  address regex), added as one guard in the bigram loop — a thoroughfare token is
+  an address component, never a given name, so it can never become a family
+  candidate. **P3** (family-layer precision; complements T2.40/T2.41; universal —
+  benefits every future name scan, not just this suburb-surname collision).
 
 ---
 
@@ -5863,3 +5879,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy/doc clean, full suite 0 failures (4429 lib tests). **P2**
   (operator-budget robustness + efficiency). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+
+- **2026-07-06** — **T2.43 (new): search-engine family extraction read a leading
+  thoroughfare word as a relative's given name.** Found by *executing* the rebuilt
+  engine (T2.34–T2.42 in) on "Brett Lawnton" and reading the fresh export —
+  phantom "family members" "Street Lawnton" and "Road Lawnton" (PROBABLE, 0.512
+  c_eff, `search_engines`). Root cause: `extract_family_names` mines
+  `"<Word> <Surname>"` bigrams; when the surname doubles as a QLD suburb
+  ("Lawnton"), address text ("… Station Street Lawnton QLD …", "Gympie Road
+  Lawnton") reflows a street-type word into the given-name slot, and the
+  `is_non_name_word` blocklist did not cover thoroughfare types. Fix: a
+  single-sourced `util::address_au::is_thoroughfare_type(word)` predicate (reusable
+  sibling of the `(?:Street|St|Road|Rd|…)` group in the address regex) added as one
+  guard in the bigram loop. Test delta:
+  `thoroughfare_leading_word_is_not_a_family_member` (the two phantom names must
+  not appear) + `is_thoroughfare_type_matches_words_and_abbrevs_case_insensitively`.
+  **Fail-before proven by running it:** removed the guard, the test failed with
+  exactly `["Street Lawnton", "Road Lawnton"]`; restored, it passes. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures. **P3** (family-layer precision;
+  universal — every future name scan benefits). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

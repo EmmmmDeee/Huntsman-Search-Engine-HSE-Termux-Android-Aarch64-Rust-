@@ -101,6 +101,26 @@ use super::*;
     }
 
     #[test]
+    fn thoroughfare_leading_word_is_not_a_family_member() {
+        // Regression: a subject whose surname doubles as a suburb (here
+        // "Lawnton", a Queensland suburb) surfaces address snippets like
+        // "… Station Street Lawnton QLD …". The `"<Word> <Surname>"` bigram
+        // scan minted phantom "family" — "Street Lawnton", "Road Lawnton" —
+        // from the street-type word before the suburb. A thoroughfare token is
+        // an address component, never a given name.
+        let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+        let results = [sr(
+            "Station Street Lawnton QLD 4501",
+            "shops on Gympie Road Lawnton and Station Street Lawnton",
+        )];
+        let out = names(&results, &target);
+        assert!(
+            !out.iter().any(|n| n == "Street Lawnton" || n == "Road Lawnton"),
+            "thoroughfare words must not become family members: {out:?}"
+        );
+    }
+
+    #[test]
     fn non_fullname_non_email_kinds_yield_nothing() {
         let target = Target::new(TargetKind::Username, "smithy");
         let results = [sr("Jane Smith", "")];

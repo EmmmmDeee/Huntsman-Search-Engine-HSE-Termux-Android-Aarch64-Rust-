@@ -931,6 +931,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   full budget otherwise; wired into the derive deadline + a new
   `Correlator::run_within`. ✅ 1 test, fail-before proven by making the helper
   ignore `cancelled`.
+- **`[x]` SOL-THOROUGHFARE-GATE · a leading street-type word is never a relative's
+  given name** → **T2.43**: found by executing the engine on "Brett Lawnton" —
+  phantom "family" "Street Lawnton" / "Road Lawnton" (0.512, `search_engines`)
+  minted from address text ("… Station Street Lawnton QLD …") because the surname
+  doubles as a QLD suburb. Added a single-sourced
+  `util::address_au::is_thoroughfare_type` predicate (sibling of the address
+  regex's `(?:Street|St|Road|Rd|…)` group) as one guard in
+  `extract_family_names`. Universal — every future name scan benefits. ✅ 2 tests,
+  fail-before proven by removing the guard (failed with exactly the two phantom
+  names).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1013,6 +1023,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-TRADING-NAME-GATE | T2.40 | `[x]` |
 | SOL-STATE-TOKEN-GATE | T2.41 | `[x]` |
 | SOL-FINALISE-BUDGET | T2.42 | `[x]` |
+| SOL-THOROUGHFARE-GATE | T2.43 | `[x]` |
 
 ---
 
@@ -4254,3 +4265,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `finalise_pass_budget_shrinks_only_when_cancelled`; fail-before proven by making
   the helper ignore `cancelled`. Gate green: fmt/clippy/doc clean, 4429 lib tests,
   0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **SOL-THOROUGHFARE-GATE `[x]`: a leading street-type word is
+  never a relative's given name.** Found by executing the engine on "Brett
+  Lawnton" — phantom "family members" "Street Lawnton" / "Road Lawnton" (PROBABLE,
+  0.512 c_eff, `search_engines`). `extract_family_names` mines `"<Word> <Surname>"`
+  bigrams; because the surname doubles as a QLD suburb, address text ("… Station
+  Street Lawnton QLD …", "Gympie Road Lawnton") reflowed a thoroughfare word into
+  the given-name slot. Added a single-sourced
+  `util::address_au::is_thoroughfare_type(word)` (the reusable sibling of the
+  address regex's `(?:Street|St|Road|Rd|…)` group) and one guard in the bigram
+  loop. Universal — benefits every future name scan. *Closes:* **T2.43**
+  (`[ ]`→`[x]`). Tests: `thoroughfare_leading_word_is_not_a_family_member`,
+  `is_thoroughfare_type_matches_words_and_abbrevs_case_insensitively`; fail-before
+  proven by removing the guard (failed with exactly `["Street Lawnton", "Road
+  Lawnton"]`). Gate green: fmt/clippy/doc clean, 4431 lib tests, 0 failures.
+  Paired: `PROBLEM_TREE` §8 — same commit.
