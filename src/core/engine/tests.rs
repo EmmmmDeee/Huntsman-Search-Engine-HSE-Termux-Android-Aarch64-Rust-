@@ -111,6 +111,80 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
+/// One-subject invariant (real Brett-Lawnton self-test defect): during expansion,
+/// `name_intel` anchors EVERY name target `seed`/`subject`, so a same-surname
+/// family-candidate pivoted from the seed ("John Lawnton" from "Brett Lawnton")
+/// ends up falsely tagged as the subject and would anchor the geo-family
+/// promotion. Only the operator's seed may carry the subject-identity tags.
+#[test]
+fn demote_non_seed_name_subjects_strips_false_subjects_from_pivots() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Target, TargetKind};
+
+    let seed = Target::new(TargetKind::FullName, "Brett Lawnton");
+
+    let mut subject = Entity::new(EntityKind::Person, "Brett Lawnton", 0.82, "s");
+    for t in ["seed", "subject", "exact-name-match"] {
+        subject.tag(t);
+    }
+    let mut pivot = Entity::new(EntityKind::Person, "John Lawnton", 0.82, "s");
+    for t in ["seed", "subject", "exact-name-match", "family-candidate"] {
+        pivot.tag(t);
+    }
+
+    let mut ents = vec![subject, pivot];
+    assert_eq!(
+        demote_non_seed_name_subjects(&mut ents, &seed),
+        1,
+        "only the non-seed person is demoted"
+    );
+
+    let subject = ents.iter().find(|e| e.value == "Brett Lawnton").unwrap();
+    assert!(
+        subject.has_tag("subject")
+            && subject.has_tag("seed")
+            && subject.has_tag("exact-name-match"),
+        "the real seed keeps all subject-identity tags"
+    );
+
+    let pivot = ents.iter().find(|e| e.value == "John Lawnton").unwrap();
+    assert!(
+        !pivot.has_tag("subject") && !pivot.has_tag("seed") && !pivot.has_tag("exact-name-match"),
+        "the same-surname pivot loses the false subject tags"
+    );
+    assert!(
+        pivot.has_tag("family-candidate"),
+        "but stays a family-candidate"
+    );
+    assert!(
+        (pivot.confidence - 0.82).abs() < 1e-9,
+        "confidence is untouched — this corrects identity, not rank"
+    );
+
+    // Idempotent: a second run demotes nothing new.
+    assert_eq!(demote_non_seed_name_subjects(&mut ents, &seed), 0);
+}
+
+/// Scoped to name seeds: for an identifier seed (email/username) the subject is
+/// the identifier, not a Person, so the name-subject gate must not touch tags.
+#[test]
+fn demote_non_seed_name_subjects_is_noop_for_identifier_seeds() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::{Target, TargetKind};
+
+    let seed = Target::new(TargetKind::Email, "brett@example.com");
+    let mut p = Entity::new(EntityKind::Person, "John Lawnton", 0.82, "s");
+    for t in ["seed", "subject", "exact-name-match"] {
+        p.tag(t);
+    }
+    let mut ents = vec![p];
+    assert_eq!(demote_non_seed_name_subjects(&mut ents, &seed), 0);
+    assert!(
+        ents[0].has_tag("subject"),
+        "an identifier-seed scan leaves name-subject tags alone"
+    );
+}
+
 /// People-centric "return to old data": a same-name breach candidate whose
 /// locality resolves to the subject's confirmed metro is re-promoted out of
 /// namesake quarantine, while a same-name record in a different state stays a

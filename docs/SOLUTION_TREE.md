@@ -897,6 +897,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   mirrors the existing `!from_cache` circuit-breaker guard. *Closes:* new node
   **T2.38**. ✅ 1 test (`cache_replay_is_not_counted_in_modules_run`),
   fail-before proven by reverting the guard (`left: 1, right: 0`).
+- **`[x]` SOL-ONE-SUBJECT · enforce the one-subject invariant on name-seed
+  scans** — surfaced by the live "Brett Lawnton" self-test. `name_intel` tags
+  every name anchor `seed`/`subject`, so same-surname expansion pivots (register
+  `family-candidate`s crossing the 0.20 floor) became false subjects and
+  detonated a 100-person geo-family promotion of the homonym suburb's
+  neighbourhood. Added a pure core pass `demote_non_seed_name_subjects(entities,
+  seed)` stripping `seed`/`subject`/`exact-name-match` from any Person whose
+  identity-normalised name ≠ a `FullName` seed's; wired at finalise AND the
+  per-round promotion. Chosen over threading `is_expansion` into `ModuleContext`
+  (core, not a module, owns the cross-entity subject invariant). *Closes:* new
+  node **T2.39**. ✅ 2 tests, fail-before proven by stubbing the pass to a no-op
+  (`left: 0, right: 1`).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -975,6 +987,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BREACH-DATE-EXACT | T2.36 | `[x]` |
 | SOL-COOWNER-DETERMINISM | T2.37 | `[x]` |
 | SOL-RUNCOUNT-CACHE | T2.38 | `[x]` |
+| SOL-ONE-SUBJECT | T2.39 | `[x]` |
 
 ---
 
@@ -4167,3 +4180,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`zero_yield_ratio_*`); fail-before proven for the category by breaking the
   aggregation (`left: (2, 2)` vs `right: (1, 2)`). Gate green: fmt/clippy/doc
   clean, 4424 lib tests, 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **SOL-ONE-SUBJECT `[x]`: killed homonym-surname false-family
+  pollution, from the live "Brett Lawnton" self-test.** The scan promoted 100
+  unrelated same-surname people (the Lawnton QLD suburb's neighbourhood) to
+  "reliable relatives" because `name_intel` tagged same-surname expansion pivots
+  `seed`/`subject`, making several people false subjects that anchored the
+  geo-family promotion. Added a pure core pass
+  `demote_non_seed_name_subjects(entities, seed)` enforcing the one-subject
+  invariant for `FullName` seeds (strip `seed`/`subject`/`exact-name-match` from
+  any Person whose normalised name ≠ the seed's; confidence untouched), wired at
+  finalise AND the per-round promotion so it fixes both the persisted graph and
+  wasteful mid-scan over-expansion. *Closes:* **T2.39** (`[ ]`→`[x]`). Tests: 2
+  (`demote_non_seed_name_subjects_*`); fail-before proven by stubbing the pass to
+  a no-op (`left: 0, right: 1`). Gate green: fmt/clippy/doc clean, 4426 lib tests,
+  0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

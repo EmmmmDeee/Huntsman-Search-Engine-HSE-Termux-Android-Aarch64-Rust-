@@ -1283,6 +1283,35 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `scan.modules_run`; it becomes accurate, nothing else changes. **P3** (a
   reported-count inaccuracy on cached re-scans — operator-facing metric, not a
   wrong finding, crash, or PII leak).
+- **`[x]` T2.39 · A name-seed scan tags same-surname expansion pivots as false
+  `subject`s, detonating the geo-family promotion (homonym-surname pollution)**
+  — surfaced by a live authorised self-test (`hse scan --full --kind name
+  --value "Brett Lawnton"`), then traced from the persisted export to the exact
+  code path. `name_intel` anchors a Person for EVERY name `Target` it runs on and
+  unconditionally tags it `seed`/`subject` (`modules/name_intel/mod.rs:120-121`);
+  the AU registers tag a full-name hit `exact-name-match`. Under the default
+  expansion floor (0.20), the engine pivots on same-surname `family-candidate`
+  persons (register hits at 0.35, e.g. "John Lawnton", "Forever Flowers
+  Lawnton"), so `name_intel` runs on each and stamps it `seed`/`subject` — the
+  export confirmed *several different people* carrying `subject`+`seed`+
+  `exact-name-match`. Those false subjects then anchor
+  `geo_family::subject_fixes`/`subject_surname` and
+  `promote_geo_corroborated_family` promoted **100** unrelated same-surname people
+  to "reliable relatives", flooding the graph with the homonym suburb's
+  (Lawnton, QLD 4501) neighbourhood. The qld_helpers comment even assumes a "0.50
+  expansion floor" that isn't the default. → **Solution:** a pure core pass
+  `passes::demote_non_seed_name_subjects(entities, seed)` enforcing the
+  one-subject invariant — for a `FullName` seed it strips
+  `seed`/`subject`/`exact-name-match` from every Person whose identity-normalised
+  name ≠ the seed's, keeping a genuine exact register hit on the seed but
+  reducing a surname-only relative to its `family-candidate` status. Confidence
+  untouched (corrects identity, not rank). Wired BOTH at finalise (before
+  `promote_geo_corroborated_family`) and in the per-round incremental promotion,
+  so a pivot can neither corrupt the persisted graph nor waste expansion rounds
+  mid-scan. Chosen over adding `is_expansion` to `ModuleContext` (larger blast
+  radius, and a module still shouldn't own the cross-entity subject invariant —
+  core does). **P2** (fabricates a false family graph — corrupts the intelligence
+  product; not a crash or PII leak).
 
 ---
 
@@ -5703,3 +5732,28 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   mislabel test failed `left: (2, 2), right: (1, 2)`; restored, it passes. Gate
   green: fmt/clippy/doc clean, full suite 0 failures (4424 lib tests). **P3**
   (advisory diagnostic). **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **T2.39 (new): a name-seed scan tagged same-surname expansion
+  pivots as false subjects, detonating a 100-person false-family promotion.**
+  Surfaced by a live authorised self-test (`hse scan --full --kind name --value
+  "Brett Lawnton"`) and traced from the persisted export (`hse export`) to the
+  exact path this cycle. `name_intel` tags EVERY name anchor `seed`/`subject`
+  (`mod.rs:120`); under the default 0.20 expansion floor the engine pivots on
+  same-surname `family-candidate` register hits (0.35, e.g. "John Lawnton"), so
+  each got stamped `subject`/`seed`/`exact-name-match` — the export showed
+  several distinct people carrying them — which then anchored
+  `subject_fixes`/`subject_surname` and made `promote_geo_corroborated_family`
+  promote 100 unrelated same-surname people (the homonym suburb Lawnton QLD's
+  neighbourhood) to "reliable relatives". Fix: a pure core pass
+  `demote_non_seed_name_subjects(entities, seed)` — for a `FullName` seed, strip
+  `seed`/`subject`/`exact-name-match` from every Person whose identity-normalised
+  name ≠ the seed's; keeps a genuine exact register hit on the seed, reduces a
+  surname-only relative to `family-candidate`, leaves confidence untouched. Wired
+  at BOTH the finalise pass (before the promotion) and the per-round incremental
+  promotion (so it also stops wasteful mid-scan over-expansion). Test delta:
+  `demote_non_seed_name_subjects_strips_false_subjects_from_pivots` and
+  `demote_non_seed_name_subjects_is_noop_for_identifier_seeds`. **Fail-before
+  proven by running it:** stubbed the pass to a no-op and the demote assertion
+  failed (`left: 0, right: 1`); restored, it passes. Gate green: fmt/clippy/doc
+  clean, full suite 0 failures (4426 lib tests). **P2** (fabricated false family
+  graph — product correctness). **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -376,6 +376,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A name search on a surname that is also a place name no longer invents a
+  false family.** When the seed surname collided with an expansion-discovered
+  same-surname person (or an AU suburb bearing that surname), the pivot could be
+  tagged as the scan subject, anchoring the geo-family promotion and lifting
+  dozens of unrelated same-surname locals to "reliable relatives". The engine now
+  enforces a one-subject invariant: only the person matching the operator's seed
+  name carries the subject tags; same-surname relatives stay `family-candidate`s.
+  Regression tests `demote_non_seed_name_subjects_*`.
 - **`modules_run` no longer counts cache replays.** On a re-scan served from the
   inter-scan cache, each replayed module result was counted in both the `cached`
   tally and the `modules_run` tally, over-reporting how many modules actually

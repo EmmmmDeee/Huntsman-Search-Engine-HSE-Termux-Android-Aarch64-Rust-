@@ -39,8 +39,8 @@ mod timeout;
 mod writer;
 pub use ledger::DispatchLog;
 use passes::{
-    consolidate_address_localities, flag_geo_discordant_namesakes, hot_inject_keys,
-    promote_breach_candidate_geo_corroborated, promote_cross_scan_corroborated,
+    consolidate_address_localities, demote_non_seed_name_subjects, flag_geo_discordant_namesakes,
+    hot_inject_keys, promote_breach_candidate_geo_corroborated, promote_cross_scan_corroborated,
     promote_geo_corroborated_family, promote_multipath_corroborated,
 };
 use writer::DbWriter;
@@ -571,6 +571,14 @@ impl ScanEngine {
             // contributed, folding such variants into the most-specific one. It is
             // the engine-level backstop to the per-module dedup in `search_engines`.
             consolidate_address_localities(&mut entities);
+            // One-subject invariant: a name-seed scan pivots on same-surname
+            // family-candidates during expansion, and `name_intel` tags every name
+            // anchor `seed`/`subject` — so a homonym surname (also a place / a
+            // common family name) leaves several DIFFERENT people falsely tagged as
+            // the subject. Strip those tags from every non-seed Person BEFORE the
+            // geo-family promotion reads them, so a pivot can't masquerade as the
+            // subject and anchor the promotion to the homonym's neighbourhood.
+            demote_non_seed_name_subjects(&mut entities, &scan.target);
             // Free, offline cross-angle confirmation: a shared-surname
             // family-candidate whose postcode resolves into the subject's confirmed
             // area is corroborated by a SECOND independent signal (the subject's
@@ -1436,6 +1444,12 @@ impl ScanEngine {
             // so it can never itself stall a round.
             if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
                 let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                // Enforce the one-subject invariant on this round's snapshot too, so
+                // a same-surname expansion pivot never masquerades as the subject and
+                // over-promotes the homonym's neighbourhood mid-scan (which would then
+                // cross the expansion floor and waste further rounds). Same gate as
+                // finalise; idempotent, so re-applying each round is free.
+                demote_non_seed_name_subjects(&mut snapshot, seed);
                 let promoted = promote_geo_corroborated_family(&mut snapshot)
                     + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
                     + promote_breach_candidate_geo_corroborated(&mut snapshot);

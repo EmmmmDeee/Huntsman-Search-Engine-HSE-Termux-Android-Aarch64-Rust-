@@ -81,6 +81,55 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
     });
 }
 
+/// Strip the subject-identity tags (`seed` / `subject` / `exact-name-match`) from
+/// every Person that is NOT the operator's seed, on a name-seed scan — enforcing
+/// the one-subject invariant before any pass reads those tags.
+///
+/// `name_intel` anchors a Person for EVERY name target it runs on — including the
+/// expansion pivots the engine feeds back — and unconditionally tags each
+/// `seed`/`subject`; the AU registers similarly tag a full-name hit
+/// `exact-name-match`. On a surname that is also a place or a common family name,
+/// expansion pivots on same-surname `family-candidate`s (e.g. `John Lawnton` from
+/// a `Brett Lawnton` seed), so several DIFFERENT people end up carrying the
+/// subject tags. Those false subjects then anchor
+/// [`subject_fixes`](crate::core::geo_family::subject_fixes) /
+/// [`subject_surname`](crate::core::geo_family::subject_surname) and detonate
+/// [`promote_geo_corroborated_family`], flooding the graph with the homonym's
+/// whole neighbourhood as "reliable relatives".
+///
+/// The operator named exactly one subject: only the Person whose
+/// identity-normalised name equals the seed's may carry these tags. A genuine
+/// exact register hit on the seed keeps them (its value matches the seed); a
+/// surname-only relative loses them but stays a `family-candidate`. Confidence is
+/// left untouched — this corrects identity, not rank. Scoped to `FullName` seeds
+/// (for an identifier seed the subject is the identifier, and no Person is the
+/// operator-asserted subject). Pure and idempotent; must run BEFORE the family
+/// promotion so the false anchors are already gone. Returns the count demoted.
+pub(super) fn demote_non_seed_name_subjects(
+    entities: &mut [Entity],
+    seed: &crate::core::scan::Target,
+) -> usize {
+    use crate::core::scan::{TargetKind, identity_norm};
+
+    if seed.kind != TargetKind::FullName {
+        return 0;
+    }
+    const SUBJECT_TAGS: [&str; 3] = ["seed", "subject", "exact-name-match"];
+    let seed_norm = identity_norm(&seed.value);
+    let mut demoted = 0usize;
+    for e in entities.iter_mut() {
+        if e.kind != EntityKind::Person || identity_norm(&e.value) == seed_norm {
+            continue; // not a Person, or the real operator-named subject — keep
+        }
+        let before = e.tags.len();
+        e.tags.retain(|t| !SUBJECT_TAGS.contains(&t.as_str()));
+        if e.tags.len() != before {
+            demoted += 1;
+        }
+    }
+    demoted
+}
+
 /// Promote geo-corroborated family (free, offline, per scan).
 ///
 /// When the scan has a confirmed subject location, a `family-candidate` (shared
