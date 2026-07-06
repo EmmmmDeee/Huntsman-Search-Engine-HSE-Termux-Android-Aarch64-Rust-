@@ -660,9 +660,10 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[x]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — *Scan-level half done (2026-07-05);
-  per-module half remains.* `util::diagnostics::analyse` no
+  per-module half done (2026-07-06) — the noise question is resolved as a bounded
+  count, so both halves now ship.* `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
   unreachable dead code, honestly removed rather than left misleading, but
@@ -670,23 +671,20 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   keyed purely on `wall_time_ms` (a parameter `analyse` already receives) now
   fires at ≥60s — reachable and deterministic, unlike the removed dead code
   that tied the 60s threshold to an unobservable per-module zero-yield
-  condition. **Per-module half still open:** needs the event-sourced approach
-  below *plus* the noise decision. → **Solution (remainder):** either (a)
-  widen `analyse`'s pure
-  signature to accept the caller's already-fetched event data (touches 16
-  existing call/test sites — a real but mechanical ripple), or (b) compute
-  both at the caller layer (which already has `StoragePort` access) and
-  append to `ScanDiagnostics.optimization_hints` post-call, mirroring T2.13's
-  `zero_yield_keyed_or_paid_modules` pattern exactly. Either way, the
-  scan-level 60s hint is a straightforward reinstatement; the per-module hint
-  needs an explicit noise decision first — a 42-module scan can leave 30+
-  modules at zero yield for a given target kind, which is normal, not
-  noteworthy, so firing one line per module would flood the hints list.
-  Candidates: cap to the worst N, cost-gate it like the ROI hint
-  (`KeyGated`/`Paid` only), or replace the per-module enumeration with a
-  bounded count ("N of M dispatched modules found nothing for this target
-  kind"). **P3** *(advisory-only; nothing correctness-critical depends on
-  either hint).*
+  condition. **Per-module half done (2026-07-06):** taken via approach (b) — the
+  dossier caller (`cli/scan/dossier.rs`) already fetches the scan's `ModuleDone`
+  events for the ROI hint, so a pure `dispatched_zero_yield_ratio(events)` helper
+  computes it there with zero change to `analyse`'s 16 call sites. **Noise
+  decision resolved: a bounded count, not a per-module list** — a 42-module scan
+  can leave 30+ modules at zero yield for a given target kind (normal, not
+  noteworthy), so one summary line ("N of M dispatched module(s) found nothing
+  for this <kind> target — persistently-empty modules are --adaptive skip
+  candidates") is emitted instead of flooding the diagnostics. It complements the
+  ROI line (budgeted spend only) with the overall hit rate, and reads the durable
+  `ModuleDone` events (not `modules_by_yield`, which lists only producers), taking
+  the **max** `found` across a module's dispatches so a module empty on one
+  expansion target but yielding on another is not mislabelled. **P3**
+  *(advisory-only; nothing correctness-critical depends on either hint).*
 - **`[x]` T2.15 · Silent multi-row deserialize/read failures (storage layer)**
   — every multi-row reader in `storage/` (`list_scans`, `correlations_for_scan`,
   `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
@@ -5681,3 +5679,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   guard, it passes. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4421 lib tests). **P3** (reported-count accuracy). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **T2.14 fully closed (`[~]`→`[x]`): the per-module zero-yield
+  hint reinstated as a bounded count.** In-progress node picked per the strict
+  ladder (tier 1) over a discovery pass. The scan-level half shipped 2026-07-05;
+  this cycle closes the per-module half via approach (b): the dossier caller
+  already fetches the scan's `ModuleDone` events for the ROI hint, so a pure
+  `dispatched_zero_yield_ratio(events) -> (zero, total)` helper computes the
+  zero-yield ratio there — no change to `analyse`'s 16 call sites. **The noise
+  question the node deferred is resolved as a bounded count**, not a per-module
+  list: a realistic multi-module scan legitimately leaves dozens empty for a
+  target kind, so one summary line is emitted instead of flooding. It reads the
+  durable `ModuleDone` events (not `modules_by_yield`, which lists only
+  producers — the original T2.13 dead-code root cause) and takes the **max**
+  `found` across a module's dispatches, so a module empty on one expansion target
+  but yielding on another is never mislabelled. Functional parity: `analyse` and
+  every existing diagnostics line are unchanged; the new line is strictly
+  additive and suppressed when no module dispatched. Test delta:
+  `zero_yield_ratio_counts_all_dispatched_and_empty_modules`,
+  `zero_yield_ratio_does_not_mislabel_a_module_empty_on_only_some_targets`,
+  `zero_yield_ratio_is_zero_zero_without_module_done_events`. **Fail-before proven
+  for the category by running it:** broke the max-aggregation to `min` and the
+  mislabel test failed `left: (2, 2), right: (1, 2)`; restored, it passes. Gate
+  green: fmt/clippy/doc clean, full suite 0 failures (4424 lib tests). **P3**
+  (advisory diagnostic). **Paired:** `SOLUTION_TREE` §5 — same commit.

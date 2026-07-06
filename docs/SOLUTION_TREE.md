@@ -578,20 +578,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
-  with a real per-module noise decision** → **T2.14**: *scan-level half done
-  (2026-07-05).* The scan-level slow-scan hint is reinstated in its
-  **reachable** form — keyed purely on `wall_time_ms` (a parameter `analyse`
-  already receives), not on the unobservable per-module zero-yield condition
-  the removed dead code assumed, so no event-sourcing was needed for this
-  half. The per-module "module X returned 0 entities"
-  hint needs a design decision first — fired correctly on real event data, a
-  realistic multi-module scan leaves dozens of modules at zero yield for any
-  given target kind (normal, not noteworthy), so a naive per-module
-  reinstatement would flood the hints list with the opposite of signal.
-  Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+- **`[x]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+  with a real per-module noise decision** → **T2.14**: *both halves done.*
+  Scan-level half (2026-07-05): a slow-scan advisory keyed purely on
+  `wall_time_ms`. Per-module half (2026-07-06): the noise decision is **resolved
+  as a bounded summary count**, not a per-module list — a realistic multi-module
+  scan leaves dozens empty for a target kind, so one line ("N of M dispatched
+  module(s) found nothing …") is emitted rather than flooding. Taken via approach
+  (b): a pure `dispatched_zero_yield_ratio(events)` helper at the dossier caller,
+  reading the durable `ModuleDone` events the ROI hint already fetches (no change
+  to `analyse`'s 16 call sites), taking the max `found` across a module's
+  dispatches so an expansion-target-empty module that yielded elsewhere is not
+  mislabelled. *Gap:* closed. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -946,7 +944,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[~]` |
+| SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -988,10 +986,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
-  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
-  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
-  Not yet started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4161,3 +4155,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `cache_replay_is_not_counted_in_modules_run` — fail-before proven by reverting
   the guard (`left: 1, right: 0`). Gate green: fmt/clippy/doc clean, 4421 lib
   tests, 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **SOL-HINT-NOISE `[~]`→`[x]`: T2.14 fully closed.** In-progress
+  node taken per the strict ladder over a discovery pass. Per-module zero-yield
+  hint reinstated via approach (b): a pure `dispatched_zero_yield_ratio(events)`
+  helper at the dossier caller, reading the `ModuleDone` events the ROI hint
+  already fetches (no change to `analyse`'s 16 call sites). Noise question
+  resolved as a bounded summary count (one line, not per-module flooding); max
+  `found` aggregation so an expansion-target-empty-but-yielded-elsewhere module
+  is not mislabelled. *Closes:* **T2.14** (`[~]`→`[x]`). Tests: 3 new
+  (`zero_yield_ratio_*`); fail-before proven for the category by breaking the
+  aggregation (`left: (2, 2)` vs `right: (1, 2)`). Gate green: fmt/clippy/doc
+  clean, 4424 lib tests, 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

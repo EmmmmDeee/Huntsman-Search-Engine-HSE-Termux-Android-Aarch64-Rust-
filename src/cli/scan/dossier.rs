@@ -567,6 +567,41 @@ fn zero_yield_keyed_or_paid_modules(
     names
 }
 
+/// `(zero_yield, total_dispatched)` for this scan: how many distinct modules
+/// dispatched (emitted a `ModuleDone`) and how many of those found **zero**
+/// entities across *every* target they ran on.
+///
+/// This is the general-purpose (all-cost-tier) complement to
+/// [`zero_yield_keyed_or_paid_modules`] (the ROI hint, which flags only budgeted
+/// `KeyGated`/`Paid` empties). Both read the durable `ModuleDone` events rather
+/// than [`crate::util::diagnostics::analyse`]'s `modules_by_yield`, which is built
+/// only from emitted entities' evidence — so a module that ran and yielded nothing
+/// is absent there and could never be counted from it (the T2.13/T2.14 root
+/// cause). Emitted as a single **bounded count**, never a per-module list: a
+/// realistic multi-module scan legitimately leaves dozens of modules empty for a
+/// given target kind, so enumerating them would flood the diagnostics with the
+/// opposite of signal.
+///
+/// Aggregation takes the **max** `found` across a module's dispatches, so a module
+/// that yields for one target but not another is not mislabelled zero-yield by a
+/// single empty target. Pure and deterministic (a pair of counts, no ordering into
+/// output), so it is testable without a live scan.
+fn dispatched_zero_yield_ratio(events: &[crate::core::event::Event]) -> (usize, usize) {
+    use crate::core::event::EventKind;
+    use std::collections::HashMap;
+
+    let mut max_found: HashMap<&str, usize> = HashMap::new();
+    for ev in events {
+        if let EventKind::ModuleDone { module, found } = &ev.kind {
+            let slot = max_found.entry(module.as_str()).or_insert(0);
+            *slot = (*slot).max(*found);
+        }
+    }
+    let total = max_found.len();
+    let zero = max_found.values().filter(|&&f| f == 0).count();
+    (zero, total)
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -625,6 +660,16 @@ fn print_diagnostics(
             "  ROI: {} keyed/paid module(s) yielded nothing — consider --exclude {}",
             wasted.len(),
             wasted.join(",")
+        );
+    }
+    // General zero-yield signal (T2.14): the bounded count of dispatched modules
+    // that found nothing, reinstating the per-module hint T2.13 removed as dead
+    // code — in its reachable, event-sourced, non-flooding form. Complements the
+    // ROI line (which covers only budgeted spend) with the overall hit rate.
+    let (zero_yield, dispatched_total) = dispatched_zero_yield_ratio(&events);
+    if zero_yield > 0 && dispatched_total > 0 {
+        println!(
+            "  Yield: {zero_yield} of {dispatched_total} dispatched module(s) found nothing for this {kind} target — persistently-empty modules are --adaptive skip candidates"
         );
     }
     println!();
@@ -789,8 +834,9 @@ fn print_diagnostics(
 #[cfg(test)]
 mod tests {
     use super::{
-        DOSSIER_KIND_ORDER, confine_relations_to_visible, entities_header_line,
-        order_dossier_kinds, truncation_note, zero_yield_keyed_or_paid_modules,
+        DOSSIER_KIND_ORDER, confine_relations_to_visible, dispatched_zero_yield_ratio,
+        entities_header_line, order_dossier_kinds, truncation_note,
+        zero_yield_keyed_or_paid_modules,
     };
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
@@ -931,6 +977,44 @@ mod tests {
             zero_yield_keyed_or_paid_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
+    }
+
+    fn done(module: &str, found: usize) -> Event {
+        Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: module.into(),
+                found,
+            },
+        )
+    }
+
+    /// The general (all-cost-tier) zero-yield ratio counts every dispatched module
+    /// and the empty subset — including free modules and modules absent from
+    /// `modules_by_yield`, which is exactly the T2.14 signal.
+    #[test]
+    fn zero_yield_ratio_counts_all_dispatched_and_empty_modules() {
+        let events = vec![done("mod_a", 0), done("mod_b", 0), done("mod_c", 5)];
+        assert_eq!(dispatched_zero_yield_ratio(&events), (2, 3));
+    }
+
+    /// The category the naive "any `found == 0` event" count gets wrong: a module
+    /// dispatched on several targets (an expansion scan) that yields for at least
+    /// one is NOT zero-yield. Aggregation must take the max `found` across a
+    /// module's dispatches, so a single empty target never mislabels it.
+    #[test]
+    fn zero_yield_ratio_does_not_mislabel_a_module_empty_on_only_some_targets() {
+        // mod_x: empty on target 1, yields 3 on target 2 → NOT zero-yield.
+        // mod_y: empty on both → zero-yield. Two distinct modules dispatched.
+        let events = vec![done("mod_x", 0), done("mod_x", 3), done("mod_y", 0)];
+        assert_eq!(dispatched_zero_yield_ratio(&events), (1, 2));
+    }
+
+    /// No dispatches → no signal (the print site suppresses the line on a zero
+    /// total, so the diagnostics never show "0 of 0").
+    #[test]
+    fn zero_yield_ratio_is_zero_zero_without_module_done_events() {
+        assert_eq!(dispatched_zero_yield_ratio(&[]), (0, 0));
     }
 
     #[test]

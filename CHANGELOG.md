@@ -11,6 +11,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Scan diagnostics report the zero-yield ratio.** The dossier now shows how
+  many dispatched modules found nothing for the target ("N of M dispatched
+  module(s) found nothing …"), complementing the yield table (which lists only
+  modules that produced entities) and the ROI line (budgeted modules only) with
+  the scan's overall hit rate. Emitted as a single bounded line, sourced from the
+  scan's `ModuleDone` events. Regression tests `zero_yield_ratio_*`.
 - **Scan diagnostics regained a slow-scan advisory.** `hse scan`'s diagnostics
   now emit an optimization hint when a scan's wall-time reaches 60 s, advising
   `--adaptive` routing or a shallower depth. Keyed purely on the measured
