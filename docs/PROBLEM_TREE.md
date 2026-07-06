@@ -1312,6 +1312,23 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   radius, and a module still shouldn't own the cross-entity subject invariant —
   core does). **P2** (fabricates a false family graph — corrupts the intelligence
   product; not a crash or PII leak).
+- **`[x]` T2.40 · Suffix-less business trading names in the QLD unclaimed-money
+  register are classified as Person `family-candidate`s** — surfaced by the same
+  live "Brett Lawnton" self-test (export showed "Qld Property Maintenance" and
+  similar among the subject's "family"). `qld_helpers::clean_person_name` rejects
+  companies via `util::abn::looks_like_company`, but that only matches legal-form
+  suffixes (`PTY LTD`/`INC`/…), so a trading name without one ("Qld Property
+  Maintenance", "Sunstate Plumbing Solutions") is name-shaped, passes, and becomes
+  a false relative. → **Solution:** a conservative `looks_like_trading_name` gate
+  in `clean_person_name` — a curated set of trade/service nouns that are **never
+  Australian surnames** (`maintenance`, `plumbing`, `property`, `solutions`,
+  `holdings`, …), deliberately EXCLUDING real surnames that are also English nouns
+  ("Flowers", "Baker"), whitespace-token matched so a substring can't fire. Trades
+  recall for zero false-positive risk to a real person (no one is named
+  "…Maintenance"); the unambiguous-only list means a rarer suffix-less trading name
+  can still slip, but never at the cost of a genuine relative. **P3** (a precision
+  false-positive in the family layer; low severity after T2.39 already stripped
+  these from the subject anchors).
 
 ---
 
@@ -5757,3 +5774,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   failed (`left: 0, right: 1`); restored, it passes. Gate green: fmt/clippy/doc
   clean, full suite 0 failures (4426 lib tests). **P2** (fabricated false family
   graph — product correctness). **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **T2.40 (new): suffix-less register trading names classified
+  as Person family-candidates.** Same live "Brett Lawnton" self-test; export
+  showed "Qld Property Maintenance" among the "family". `clean_person_name`
+  excludes companies only via `looks_like_company` (legal suffixes), so a trading
+  name without `PTY LTD`/`INC` passes as a person. Fix: a conservative
+  `looks_like_trading_name` gate — a curated set of trade/service nouns that are
+  never Australian surnames (`maintenance`/`plumbing`/`property`/`solutions`/…),
+  deliberately excluding real noun-surnames ("Flowers", "Baker"), whitespace-token
+  matched. Trades recall for zero false-positive risk to a genuine name. Test
+  delta: `owner_person_names_excludes_suffixless_trading_names` (excludes three
+  trading names; still surfaces "Brett Lawnton" and, critically, "Jane Flowers" —
+  a real noun-surname). **Fail-before proven by running it:** neutered the gate to
+  `false`, the "QLD PROPERTY MAINTENANCE" assertion failed; restored, it passes.
+  Gate green: fmt/clippy/doc clean, full suite 0 failures (4427 lib tests). **P3**
+  (family-layer precision; low severity after T2.39). **Paired:** `SOLUTION_TREE`
+  §5 — same commit.

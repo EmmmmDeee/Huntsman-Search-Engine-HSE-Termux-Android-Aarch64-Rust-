@@ -70,6 +70,29 @@ mod qld {
     }
 
     #[test]
+    fn owner_person_names_excludes_suffixless_trading_names() {
+        // Real "Brett Lawnton" self-test defect: register trading names WITHOUT a
+        // legal suffix (so `looks_like_company` misses them) slipped through as
+        // `family-candidate` people — "Qld Property Maintenance" appeared among the
+        // subject's "family". A curated trade-noun gate excludes them.
+        assert!(owner_person_names("QLD PROPERTY MAINTENANCE").is_empty());
+        assert!(owner_person_names("SUNSTATE PLUMBING SOLUTIONS").is_empty());
+        assert!(owner_person_names("LAWNTON LANDSCAPING SERVICES").is_empty());
+        // A genuine individual is still surfaced — and a real surname that happens
+        // to be an English noun ("Flowers", "Baker") is NOT in the trade set, so a
+        // real person is never dropped.
+        assert_eq!(
+            owner_person_names("BRETT LAWNTON"),
+            vec!["Brett Lawnton".to_string()]
+        );
+        assert_eq!(
+            owner_person_names("JANE FLOWERS"),
+            vec!["Jane Flowers".to_string()],
+            "a real surname that is also an English noun must not be treated as a business"
+        );
+    }
+
+    #[test]
     fn classifies_exact_person_vs_surname_only_family() {
         let recs = sample().result.unwrap().records;
         let curt = records_to_entities(&recs, 3, "Curt Avery", true, "s");

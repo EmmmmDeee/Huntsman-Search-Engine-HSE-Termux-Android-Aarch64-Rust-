@@ -909,6 +909,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (core, not a module, owns the cross-entity subject invariant). *Closes:* new
   node **T2.39**. ✅ 2 tests, fail-before proven by stubbing the pass to a no-op
   (`left: 0, right: 1`).
+- **`[x]` SOL-TRADING-NAME-GATE · register trading names are no longer classified
+  as Person relatives** → **T2.40**: same "Brett Lawnton" self-test. A conservative
+  `looks_like_trading_name` gate in `qld_helpers::clean_person_name` — trade/service
+  nouns that are never Australian surnames — excludes suffix-less business names
+  ("Qld Property Maintenance") the legal-suffix `looks_like_company` check misses,
+  without dropping a real noun-surname ("Flowers"/"Baker"). ✅ 1 test, fail-before
+  proven by neutering the gate.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -988,6 +995,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-COOWNER-DETERMINISM | T2.37 | `[x]` |
 | SOL-RUNCOUNT-CACHE | T2.38 | `[x]` |
 | SOL-ONE-SUBJECT | T2.39 | `[x]` |
+| SOL-TRADING-NAME-GATE | T2.40 | `[x]` |
 
 ---
 
@@ -4195,3 +4203,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`demote_non_seed_name_subjects_*`); fail-before proven by stubbing the pass to
   a no-op (`left: 0, right: 1`). Gate green: fmt/clippy/doc clean, 4426 lib tests,
   0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **SOL-TRADING-NAME-GATE `[x]`: suffix-less register trading
+  names no longer become Person relatives.** Same "Brett Lawnton" self-test
+  ("Qld Property Maintenance" among the "family"). `clean_person_name` excluded
+  companies only by legal suffix (`looks_like_company`); added a conservative
+  `looks_like_trading_name` gate — trade/service nouns that are never Australian
+  surnames — excluding suffix-less businesses without dropping a real noun-surname
+  ("Flowers"). *Closes:* **T2.40** (`[ ]`→`[x]`). Test:
+  `owner_person_names_excludes_suffixless_trading_names`; fail-before proven by
+  neutering the gate. Gate green: fmt/clippy/doc clean, 4427 lib tests, 0
+  failures. Paired: `PROBLEM_TREE` §8 — same commit.

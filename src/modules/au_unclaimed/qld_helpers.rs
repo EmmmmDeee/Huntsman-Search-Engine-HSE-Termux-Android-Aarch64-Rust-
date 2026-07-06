@@ -177,6 +177,48 @@ fn push_comma_segments(part: &str, out: &mut Vec<String>) {
 /// Validate and canonicalise one owner segment into a `Person` value, or `None` if
 /// it isn't a usable individual: strip leading honorifics, require 2–4 name-shaped
 /// tokens with at least one real (non-initial) word, exclude companies, title-case.
+/// True if `name` is a business TRADING name rather than an individual.
+///
+/// A register owner field carries both people and businesses; a trading name that
+/// lacks a legal-form suffix (`looks_like_company` catches `PTY LTD`/`INC`/…) still
+/// slips through the person parser and becomes a false `family-candidate` relative
+/// — a live "Brett Lawnton" scan surfaced "Qld Property Maintenance" among the
+/// subject's "family". The low-false-positive signal is a curated set of
+/// trade/service nouns that are **never Australian surnames** (unlike "Flowers" or
+/// "Baker", which are, and are deliberately excluded): no person is named
+/// "…Maintenance" or "…Plumbing". Whitespace-token matched (case-insensitive) so a
+/// substring can't fire inside a longer word. Deliberately conservative — it
+/// recognises the unambiguous trade nouns, not every possible business, trading
+/// recall for zero risk to a real name.
+fn looks_like_trading_name(name: &str) -> bool {
+    const TRADE_NOUNS: &[&str] = &[
+        "maintenance",
+        "property",
+        "properties",
+        "services",
+        "solutions",
+        "plumbing",
+        "electrical",
+        "cleaning",
+        "landscaping",
+        "consulting",
+        "contractors",
+        "roofing",
+        "concreting",
+        "removals",
+        "rentals",
+        "supplies",
+        "trading",
+        "enterprises",
+        "holdings",
+        "investments",
+        "constructions",
+        "excavations",
+    ];
+    let lower = name.to_ascii_lowercase();
+    lower.split_whitespace().any(|w| TRADE_NOUNS.contains(&w))
+}
+
 fn clean_person_name(raw: &str) -> Option<String> {
     let mut tokens: Vec<&str> = raw.split_whitespace().collect();
     while let Some(first) = tokens.first() {
@@ -197,7 +239,10 @@ fn clean_person_name(raw: &str) -> Option<String> {
     let name_shaped = joined
         .chars()
         .all(|c| c.is_alphabetic() || c.is_whitespace() || matches!(c, '-' | '\'' | '.'));
-    if !name_shaped || crate::util::abn::looks_like_company(&joined) {
+    if !name_shaped
+        || crate::util::abn::looks_like_company(&joined)
+        || looks_like_trading_name(&joined)
+    {
         return None;
     }
     // Reject an all-initials fragment ("L B"): a real name has a ≥2-letter word.

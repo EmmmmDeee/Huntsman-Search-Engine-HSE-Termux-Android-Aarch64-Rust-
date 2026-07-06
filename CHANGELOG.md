@@ -376,6 +376,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Business trading names in the QLD unclaimed-money register are no longer
+  listed as a person's relatives.** A trading name without a legal suffix (e.g.
+  "Qld Property Maintenance") passed the company filter and became a
+  `family-candidate` person. A conservative trade-noun gate now excludes them,
+  chosen so it never drops a real surname that is also an English noun (Flowers,
+  Baker). Regression test `owner_person_names_excludes_suffixless_trading_names`.
 - **A name search on a surname that is also a place name no longer invents a
   false family.** When the seed surname collided with an expansion-discovered
   same-surname person (or an AU suburb bearing that surname), the pivot could be
