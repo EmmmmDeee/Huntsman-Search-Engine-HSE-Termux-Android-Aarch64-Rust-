@@ -922,6 +922,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   businesses, location-polluted names). A state-token gate in `clean_person_name`
   rejects owners whose tokens include `QLD`/`NSW`/`ACT`/`TAS`/`NT` (`VIC`/`SA`/`WA`
   excluded as name-like). ✅ 1 test, fail-before proven by emptying the token set.
+- **`[x]` SOL-FINALISE-BUDGET · `--max-wall-time` now bounds total scan time** →
+  **T2.42**: found by executing the engine (bounded runs SIGKILLed during finalise
+  before the dossier printed). The watchdog stopped expansion at the cap but
+  `finalise_scan` then paid a fresh 90 s derivation + 120 s correlation budget on
+  top. Added a pure `finalise_pass_budget(cancelled, default)` shrinking each
+  finalise pass to a 15 s bound when the scan was cancelled (incomplete graph),
+  full budget otherwise; wired into the derive deadline + a new
+  `Correlator::run_within`. ✅ 1 test, fail-before proven by making the helper
+  ignore `cancelled`.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1003,6 +1012,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ONE-SUBJECT | T2.39 | `[x]` |
 | SOL-TRADING-NAME-GATE | T2.40 | `[x]` |
 | SOL-STATE-TOKEN-GATE | T2.41 | `[x]` |
+| SOL-FINALISE-BUDGET | T2.42 | `[x]` |
 
 ---
 
@@ -4231,3 +4241,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `[x]`). Test: `owner_person_names_excludes_state_tokened_owners`; fail-before
   proven by emptying the token set. Gate green: fmt/clippy/doc clean, 4428 lib
   tests, 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **SOL-FINALISE-BUDGET `[x]`: `--max-wall-time` now bounds total
+  scan time.** Found by executing the engine — every bounded "Brett Lawnton" run
+  was SIGKILLed during finalise before the dossier printed. The watchdog stops
+  expansion at the cap, but `finalise_scan` then paid a fresh 90 s `DERIVE_BUDGET`
+  + 120 s `CORRELATOR_BUDGET` on top (≈3.5 min past a 150 s cap). Added a pure
+  `finalise_pass_budget(cancelled, default)` — 15 s bound when the scan was
+  cancelled (watchdog/stop = incomplete graph), full budget otherwise — wired into
+  the derivation deadline and a new `Correlator::run_within(scan_id, budget)`
+  (`run`/import/API keep the full budget). *Closes:* **T2.42** (`[ ]`→`[x]`). Test:
+  `finalise_pass_budget_shrinks_only_when_cancelled`; fail-before proven by making
+  the helper ignore `cancelled`. Gate green: fmt/clippy/doc clean, 4429 lib tests,
+  0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

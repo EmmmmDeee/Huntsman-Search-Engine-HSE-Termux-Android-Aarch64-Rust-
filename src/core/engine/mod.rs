@@ -122,6 +122,33 @@ pub(crate) struct ModuleStats {
     pub cached: usize,
 }
 
+/// Wall-clock budget a finalise pass (relation derivation, correlation) may spend
+/// on an INCOMPLETE scan.
+///
+/// A scan cancelled by the wall-time watchdog or an operator stop has, by
+/// definition, an incomplete working set. Letting each finalise pass then start a
+/// FRESH full budget (`DERIVE_BUDGET` 90s + `CORRELATOR_BUDGET` 120s) over that
+/// truncated graph pushed total scan time up to ~3.5 min PAST the operator's
+/// `--max-wall-time` — observed: a wall-timed-out `--full` scan was SIGKILLed by an
+/// external timeout during finalise, before the dossier was written. A short,
+/// bounded budget lets finalise still build a partial graph promptly while keeping
+/// the wall-time cap meaningful.
+const FINALISE_CANCELLED_BUDGET: std::time::Duration = std::time::Duration::from_secs(15);
+
+/// The budget a finalise pass should use: its full `default` for a scan that
+/// completed normally, or the bounded [`FINALISE_CANCELLED_BUDGET`] for a
+/// cancelled/incomplete one — never more than the pass's own `default`. Pure.
+pub(crate) fn finalise_pass_budget(
+    cancelled: bool,
+    default: std::time::Duration,
+) -> std::time::Duration {
+    if cancelled {
+        FINALISE_CANCELLED_BUDGET.min(default)
+    } else {
+        default
+    }
+}
+
 /// Mutable scan-wide accumulators threaded through the expansion loop: the
 /// working entity set, the visited-target set (the cycle guard), the run
 /// tallies, the paid-dedup ledger, the lineage (`DerivedFrom`) edges, and the
@@ -706,9 +733,13 @@ impl ScanEngine {
                 // Bounded derivation: stop starting new passes past the budget
                 // so a pathological (max_entities-filled) graph can't run the
                 // super-linear pass chain for minutes and get SIGKILLed before
-                // the dossier is written. Partial relations still persist.
-                let derive_deadline =
-                    Some(Instant::now() + crate::core::relation::DERIVE_BUDGET);
+                // the dossier is written. Partial relations still persist. On a
+                // cancelled (wall-timed-out / stopped) scan the budget shrinks so
+                // finalise can't push total time far past `--max-wall-time`.
+                let derive_deadline = Some(
+                    Instant::now()
+                        + finalise_pass_budget(cancelled, crate::core::relation::DERIVE_BUDGET),
+                );
                 let derived =
                     crate::core::relation::derive_all_within(&entities, &scan.id, derive_deadline);
                 if !lineage_relations.is_empty() || !derived.is_empty() {
@@ -740,8 +771,11 @@ impl ScanEngine {
             // the terminal `ScanComplete` event and the harvested key pool. A
             // caught panic (or a returned error) degrades to "no finalise
             // correlations," exactly as the live incremental pass does.
+            let corr_budget =
+                finalise_pass_budget(cancelled, crate::core::correlator::CORRELATOR_BUDGET);
             if let Some(firings) = guarded_finalise_correlation(&scan.id, || {
-                crate::core::correlator::Correlator::new(Arc::clone(&store)).run(&scan.id)
+                crate::core::correlator::Correlator::new(Arc::clone(&store))
+                    .run_within(&scan.id, corr_budget)
             }) {
                 for c in &firings {
                     if emitted_corr.insert(correlation_key(c)) {

@@ -376,6 +376,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`--max-wall-time` now bounds the whole scan, not just collection.** Expansion
+  stopped at the cap, but the finalise passes (relation derivation, correlation)
+  each then started a fresh full budget — up to ~3.5 minutes of extra work past
+  the cap, long enough for a wall-timed-out scan to be killed before its dossier
+  was written. A cancelled scan's finalise passes now use a short bounded budget,
+  so the cap is honoured and the dossier survives. Regression test
+  `finalise_pass_budget_shrinks_only_when_cancelled`.
 - **Register owner names containing an Australian state abbreviation are no
   longer listed as a person's relatives.** Government departments and businesses
   ("Racgp Qld", "Education Qld", "Qld Fire Pumps") and location-polluted names

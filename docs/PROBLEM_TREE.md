@@ -1344,6 +1344,28 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   name literally containing "Qld" is not a usable person identifier for pivoting
   anyway, so rejecting the ~3 location-polluted real names among the 17 costs no
   practical recall. **P3** (family-layer precision; complements T2.40).
+- **`[x]` T2.42 · `--max-wall-time` does not bound total scan time: the finalise
+  passes each start a fresh full budget, adding up to ~3.5 min after the cap** —
+  surfaced by *executing* the engine (every bounded "Brett Lawnton" run was
+  SIGKILLed by an external timeout during finalise, EXIT=124, before the dossier
+  printed — the data persisted, but the print was lost). The wall-time watchdog
+  (`engine/mod.rs`) fires `cancel` at `max_wall_time_secs` and stops *expansion*,
+  but `finalise_scan` then runs relation derivation on a fresh
+  `DERIVE_BUDGET` (**90 s**) deadline and the finalise correlator on a fresh
+  `CORRELATOR_BUDGET` (**120 s**) deadline — both `Instant::now() + BUDGET`,
+  independent of the cap. So a `--max-wall-time 150` scan could run to ~150 s +
+  90 s + 120 s ≈ 360 s. The `DERIVE_BUDGET` comment itself notes the "SIGKILLed
+  before the dossier is written" failure it half-addresses. → **Solution:** a pure
+  `finalise_pass_budget(cancelled, default)` — a scan cancelled by the watchdog or
+  an operator stop has an INCOMPLETE working set, so each finalise pass shrinks to
+  a bounded `FINALISE_CANCELLED_BUDGET` (15 s, `min`-clamped to the pass default),
+  while a normally-completed scan keeps its full budget. Wired into the derivation
+  deadline and, via a new `Correlator::run_within(scan_id, budget)`, the finalise
+  correlation (`run` and the import/API callers keep the full budget). Now a
+  wall-timed-out scan finalises in a bounded grace, the cap is meaningful, and the
+  dossier survives. **P2** (a documented operator budget was not honoured and the
+  scan could be externally killed mid-finalise — robustness + efficiency, not a
+  wrong finding).
 
 ---
 
@@ -5822,3 +5844,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   restored, it passes. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4428 lib tests). **P3** (family-layer precision). **Paired:** `SOLUTION_TREE`
   §5 — same commit.
+
+- **2026-07-06** — **T2.42 (new): `--max-wall-time` did not bound total scan time;
+  finalise added up to ~3.5 min past the cap.** Found by *executing* the engine —
+  every bounded "Brett Lawnton" run was SIGKILLed during finalise (EXIT=124)
+  before the dossier printed. The watchdog stops expansion at the cap, but
+  `finalise_scan` then ran relation derivation on a fresh 90 s `DERIVE_BUDGET` and
+  the finalise correlator on a fresh 120 s `CORRELATOR_BUDGET`, both independent of
+  the cap. Fix: a pure `finalise_pass_budget(cancelled, default)` shrinking each
+  finalise pass to a bounded 15 s `FINALISE_CANCELLED_BUDGET` when the scan was
+  cancelled (watchdog / operator stop — an incomplete graph doesn't warrant the
+  full budget), full budget otherwise; wired into the derivation deadline and a new
+  `Correlator::run_within(scan_id, budget)` (import/API keep the full budget via
+  `run`). Test delta: `finalise_pass_budget_shrinks_only_when_cancelled` (full
+  when not cancelled; ≤15 s and < default when cancelled; never exceeds a smaller
+  default). **Fail-before proven by running it:** made the helper ignore
+  `cancelled`, the shrink assertion failed; restored, it passes. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4429 lib tests). **P2**
+  (operator-budget robustness + efficiency). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.

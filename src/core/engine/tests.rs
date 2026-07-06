@@ -185,6 +185,28 @@ fn demote_non_seed_name_subjects_is_noop_for_identifier_seeds() {
     );
 }
 
+#[test]
+fn finalise_pass_budget_shrinks_only_when_cancelled() {
+    use std::time::Duration;
+    // A completed scan keeps the pass's full budget (90s derive / 120s correlate).
+    let derive = Duration::from_secs(90);
+    let correlate = Duration::from_secs(120);
+    assert_eq!(finalise_pass_budget(false, derive), derive);
+    assert_eq!(finalise_pass_budget(false, correlate), correlate);
+    // A cancelled (wall-timed-out / stopped) scan shrinks to a single bounded
+    // budget well under both defaults, so finalise over an incomplete graph can't
+    // push total time far past --max-wall-time. The bound is independent of the
+    // pass default.
+    let c_derive = finalise_pass_budget(true, derive);
+    let c_correlate = finalise_pass_budget(true, correlate);
+    assert!(c_derive < derive && c_derive <= Duration::from_secs(15));
+    assert!(c_correlate < correlate);
+    assert_eq!(c_derive, c_correlate, "one bound, not per-pass");
+    // Never exceeds the pass's own default (a default smaller than the bound).
+    let tiny = Duration::from_secs(3);
+    assert_eq!(finalise_pass_budget(true, tiny), tiny);
+}
+
 /// People-centric "return to old data": a same-name breach candidate whose
 /// locality resolves to the subject's confirmed metro is re-promoted out of
 /// namesake quarantine, while a same-name record in a different state stays a

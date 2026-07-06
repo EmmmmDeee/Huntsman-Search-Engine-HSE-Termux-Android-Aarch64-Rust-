@@ -156,6 +156,19 @@ impl Correlator {
     }
 
     pub fn run(&self, scan_id: &str) -> Result<Vec<Correlation>> {
+        self.run_within(scan_id, CORRELATOR_BUDGET)
+    }
+
+    /// Like [`run`](Self::run), but with an explicit wall-clock `budget` for the
+    /// whole finalise correlator phase. The engine passes a SHRUNK budget when the
+    /// scan was cancelled (wall-timed-out / stopped) so finalise over an incomplete
+    /// graph can't push total scan time far past the operator's `--max-wall-time`;
+    /// `run` (import / API paths) keeps the full [`CORRELATOR_BUDGET`].
+    pub fn run_within(
+        &self,
+        scan_id: &str,
+        budget: std::time::Duration,
+    ) -> Result<Vec<Correlation>> {
         let entities = self.store.entities_for_scan(scan_id)?;
         if entities.is_empty() {
             return Ok(Vec::new());
@@ -170,7 +183,7 @@ impl Correlator {
         // One shared wall-clock deadline across the entity AND relation passes, so
         // the WHOLE finalise correlator phase is bounded (a huge recalled graph
         // can't hang the scan). Never reached by a normal scan.
-        let deadline = Some(std::time::Instant::now() + CORRELATOR_BUDGET);
+        let deadline = Some(std::time::Instant::now() + budget);
         let mut firings = evaluate_rules_on(&confirmed, scan_id, now, deadline);
 
         // Graph-aware pass: rules that need the typed relation edges (the
@@ -429,7 +442,7 @@ fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
 /// reaches this deadline; a normal scan finishes in well under a second, so the
 /// finalise stays deterministic in every realistic case. Generous so legitimate
 /// scans keep every correlation.
-const CORRELATOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
+pub(crate) const CORRELATOR_BUDGET: std::time::Duration = std::time::Duration::from_secs(120);
 
 /// Run every entity-only rule over an already quarantine-filtered, confirmed
 /// entity slice. Split out from [`evaluate_rules`] so a caller that runs both
