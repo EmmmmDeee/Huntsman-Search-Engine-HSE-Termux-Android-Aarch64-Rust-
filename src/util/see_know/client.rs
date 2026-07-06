@@ -61,8 +61,11 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
 }
 
 pub(super) fn base_url() -> String {
-    std::env::var("HUNTSMAN_SEEKNOW_BASE")
-        .unwrap_or_else(|_| "https://see-know.eu/api/v1".to_string())
+    // Vet the operator's override: refuse non-https / private-host redirects and
+    // WARN on a divergent host, so a key-bearing request can't be silently
+    // redirected to a look-alike (e.g. a `see-know.icu`-style domain) or an
+    // internal address. See [`crate::util::endpoint_override`].
+    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.eu/api/v1")
 }
 
 /// The SeekNow API key to use for a request: the per-scan context key `ctx_key`

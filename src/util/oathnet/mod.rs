@@ -115,7 +115,11 @@ fn mark_quota_exhausted() {
 }
 
 fn base_url() -> String {
-    std::env::var("HUNTSMAN_OATHNET_BASE").unwrap_or_else(|_| "https://oathnet.org/api".to_string())
+    // Vet the operator's override: refuse non-https / private-host redirects and
+    // WARN on a divergent host, so a key-bearing request can't be silently
+    // redirected to a look-alike or internal address. See
+    // [`crate::util::endpoint_override`].
+    crate::util::endpoint_override::resolve("HUNTSMAN_OATHNET_BASE", "https://oathnet.org/api")
 }
 
 /// The OathNet API key to use for a request: the per-scan context key `ctx_key`
