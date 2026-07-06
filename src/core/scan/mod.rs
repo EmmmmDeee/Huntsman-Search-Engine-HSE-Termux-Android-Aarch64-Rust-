@@ -327,7 +327,19 @@ fn sanitise_target_input(raw: &str) -> String {
     // Separators a list/CSV paste leaves dangling on an end. Never bound a target.
     let stray = |c: char| matches!(c, ',' | ';' | '|');
 
-    let mut s = raw.trim();
+    // Drop invisible/format characters (zero-width, bidi controls, soft hyphen,
+    // word joiner, BOM) FIRST — BEFORE the quote/separator unwrap below, not after.
+    // Two reasons: (1) two seeds a human reads as identical but that differ only by
+    // such a char must deduplicate; (2) an invisible char sitting BETWEEN a
+    // surrounding quote and the string edge (`\u{200b}"x"`, routine in rich-text /
+    // chat copy-paste) makes the first/last char NOT the quote pair, so the unwrap
+    // below skips it — leaving the quote ON the value (the exact leak this function
+    // exists to prevent) AND breaking idempotence, because a re-sanitise of the
+    // now-invisible-free value WOULD strip the quote. Stripping up front lets the
+    // unwrap loop reach a true fixed point. `strip_invisible` borrows (no
+    // allocation) for the common clean input.
+    let stripped = crate::core::validation::strip_invisible(raw);
+    let mut s = stripped.trim();
     loop {
         let before = s;
         s = s.trim_matches(stray).trim();
@@ -341,12 +353,7 @@ fn sanitise_target_input(raw: &str) -> String {
             break;
         }
     }
-    // Drop invisible/format characters (zero-width, bidi controls, soft hyphen,
-    // word joiner) that have no place in a seed value: two seeds a human reads
-    // as identical but that differ only by such a character would otherwise
-    // never deduplicate. `strip_invisible` borrows (no allocation) for the
-    // common clean input, so this is free when there is nothing to strip.
-    crate::core::validation::strip_invisible(s).into_owned()
+    s.to_string()
 }
 
 /// Detect a [`TargetKind`] from a **raw**, user-supplied value — sanitising

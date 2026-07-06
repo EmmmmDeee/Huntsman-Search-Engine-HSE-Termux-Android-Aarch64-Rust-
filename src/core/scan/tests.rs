@@ -26,6 +26,17 @@ fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {
         sanitise_target_input("jordanavery@gmail.com"),
         "jordanavery@gmail.com"
     );
+    // Regression: an invisible/format char adjacent to a surrounding quote must not
+    // shield the quote from the strip. Before the fix the zero-width char sat
+    // between the quote and the edge (so first/last weren't the quote pair), the
+    // unwrap skipped it, and `strip_invisible` — run afterwards — removed the char,
+    // leaving `"jdoe"` (quotes intact) on the value.
+    assert_eq!(sanitise_target_input("\u{200b}\"jdoe\""), "jdoe");
+    assert_eq!(sanitise_target_input("\"jdoe\"\u{200b}"), "jdoe");
+    // …and the sanitised value is a fixed point (re-sanitising is a no-op).
+    let once = sanitise_target_input("\u{200d}\"Jane Roe\",");
+    assert_eq!(once, "Jane Roe");
+    assert_eq!(sanitise_target_input(&once), once);
     assert_eq!(sanitise_target_input(""), "");
 }
 
@@ -1291,5 +1302,52 @@ fn scan_request_defaults_to_comprehensive_options() {
             Some(2500),
             "entity cap literal for {body}"
         );
+    }
+}
+
+/// Property tests for the pure target-model functions — this module eats
+/// untrusted, user-supplied text, so the doctrine (unit tests AND `proptest`
+/// no-panic / invariant properties) applies to every entry point.
+#[cfg(test)]
+mod prop {
+    use super::super::*;
+    use proptest::prelude::*;
+
+    fn any_target_kind() -> impl Strategy<Value = TargetKind> {
+        prop::sample::select(crate::core::dependency::ALL_TARGET_KINDS.to_vec())
+    }
+
+    proptest! {
+        /// `TargetKind::detect` and the raw-input `detect_kind` are TOTAL: they
+        /// never panic on ANY input — arbitrary bytes, multibyte, control chars —
+        /// and always return a kind. The unified-scan contract is that the caller
+        /// always gets a target to run; a panic here would abort the request.
+        #[test]
+        fn detect_never_panics(v in ".{0,80}") {
+            let _ = TargetKind::detect(&v);
+            let _ = detect_kind(&v);
+        }
+
+        /// `sanitise_target_input` is IDEMPOTENT — a fixed point. Re-sanitising an
+        /// already-sanitised value must not change it, or the same pasted seed keys
+        /// to two different values across runs. Regression guard for the class where
+        /// an invisible/format char adjacent to a surrounding quote (`\u{200b}"x"`)
+        /// shielded the quote on the first pass but is removed by a re-sanitise,
+        /// leaking the quote onto the value.
+        #[test]
+        fn sanitise_is_idempotent(v in ".{0,80}") {
+            let once = sanitise_target_input(&v);
+            let twice = sanitise_target_input(&once);
+            prop_assert_eq!(&once, &twice, "value={:?}", v);
+        }
+
+        /// `Target::validate` is TOTAL over every (kind, value): for any kind paired
+        /// with arbitrary text it returns Ok/Err but NEVER panics — no unchecked
+        /// slice / parse / index on user input can escape it.
+        #[test]
+        fn validate_never_panics(kind in any_target_kind(), v in ".{0,80}") {
+            let t = Target { kind, value: v };
+            let _ = t.validate();
+        }
     }
 }
