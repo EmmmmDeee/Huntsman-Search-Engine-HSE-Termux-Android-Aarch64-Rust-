@@ -297,6 +297,39 @@ pub async fn engines_health() -> Json<Value> {
     }))
 }
 
+/// Shape a module-health snapshot into the `GET /api/v1/modules/health` wire
+/// JSON. Split out of the handler so the mapping is unit-testable without
+/// depending on the live process-global health state — that state is shared
+/// across the whole test binary (mirrors why `cli::doctor::format_module_health`
+/// takes a plain [`crate::core::engine::ModuleHealth`] rather than reading the
+/// global directly).
+pub(crate) fn module_health_json(unhealthy: &[crate::core::engine::ModuleHealth]) -> Value {
+    let modules: Vec<Value> = unhealthy
+        .iter()
+        .map(|h| {
+            json!({
+                "name": h.name,
+                "consecutive_failures": h.consecutive_failures,
+                "last_success_at": h.last_success_at,
+            })
+        })
+        .collect();
+    let count = modules.len();
+    json!({ "modules": modules, "count": count })
+}
+
+/// `GET /api/v1/modules/health` — every module currently showing a failure
+/// streak this process, worst-first (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
+/// SOL-HEALTH-SIGNAL). Empty `modules: []` on a freshly-started or fully
+/// healthy process — mirrors `hse doctor`'s "quiet unless something's
+/// actually wrong" behaviour, the same live dispatch-outcome data that
+/// backs it, just reachable from the web/API surface instead of only the CLI.
+pub async fn modules_health() -> Json<Value> {
+    Json(module_health_json(
+        &crate::core::engine::module_health_report(),
+    ))
+}
+
 /// `GET /api/v1/selftest` — run the full module + feature self-validation suite
 /// on demand and return the structured report. Powers the Settings page's
 /// "Run self-test" button. Offline + side-effect-free (a throwaway temp DB).

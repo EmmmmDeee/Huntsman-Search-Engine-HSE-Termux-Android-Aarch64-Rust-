@@ -199,6 +199,22 @@ use super::*;
     }
 
     #[test]
+    fn embedded_spa_wires_the_module_health_endpoint() {
+        // /api/v1/modules/health (PROBLEM_TREE T2.7 / SOLUTION_TREE
+        // SOL-HEALTH-SIGNAL) was previously reachable only from `hse doctor`;
+        // guard that the Dashboard's "Module Health" panel actually fetches
+        // and renders it, so it can't silently regress to dead-from-the-UI.
+        assert!(
+            SPA_HTML.contains("/api/v1/modules/health"),
+            "SPA must call /api/v1/modules/health (Dashboard Module Health panel)"
+        );
+        assert!(
+            SPA_HTML.contains("moduleHealthPanel("),
+            "the Dashboard must render the module-health panel"
+        );
+    }
+
+    #[test]
     fn embedded_spa_wires_the_per_scan_analysis_endpoints() {
         // Per-scan endpoints that were implemented + routed but the SPA never
         // surfaced. Each is now a section in the scan report; guard the wiring so

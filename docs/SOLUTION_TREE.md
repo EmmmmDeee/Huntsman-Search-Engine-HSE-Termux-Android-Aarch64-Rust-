@@ -944,6 +944,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   failure streak"). 9 new unit tests (6 in `health`, 3 in `cli::doctor`).
   *Gap:* `parse_rate`/"drifted" auto-flagging (blocked on the golden-fixture
   corpus) and the SPA health panel remain open — node stays `[~]`. **(§4a)**
+  *Delivered (2026-07-06):* the SPA-panel half. New `GET
+  /api/v1/modules/health` handler (`api::handlers::modules_health`), thin
+  over an extracted pure `module_health_json` mapping function — split out
+  for the same reason `cli::doctor::format_module_health` already is a pure
+  function: the underlying health state is a process-global shared across
+  the whole test binary, so testing the live state directly would be
+  flaky. New Dashboard "Module Health" panel in `spa.html`
+  (`moduleHealthPanel`), quiet by default (one line on a healthy process, a
+  full name/streak/last-success table otherwise) — the same "quiet unless
+  something's actually wrong" philosophy `hse doctor` already established.
+  2 new unit tests (shape + empty case), 1 new API integration test (route
+  wiring, red/green-verified by temporarily removing the route
+  registration — correctly 404s, restored and re-verified green), 1 new
+  SPA dead-from-the-UI guard mirroring the established pattern for
+  `/keys/status`/`/benchmark`/`/scan/auto/plan`. Confirmed against a real
+  `hse serve` process: `curl /api/v1/modules/health` returns
+  `{"count":0,"modules":[]}` on a healthy process. *Gap:* `parse_rate`/
+  "drifted" auto-flagging remains open (still blocked on the golden-fixture
+  corpus) — node stays `[~]` for that one leg. **(§4a)**
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -4311,3 +4330,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Logged as a dated entry, not a new tracked node — same precedent as the
   entry above: a contained, single-function fix. Paired: `PROBLEM_TREE`
   §8 — same commit.
+
+- **2026-07-06** — **SOL-HEALTH-SIGNAL: closed the SPA-panel leg left open
+  by the 2026-07-05 entry — `hse doctor` could report a module's failure
+  streak, but the web/API surface had no way to see it at all.**
+  `core::engine::module_health_report()` (the live `last_success_at`/
+  `consecutive_failures` data driven by real dispatch outcomes) was only
+  ever called from `cli::doctor`; no API handler and no SPA panel existed.
+  Added `GET /api/v1/modules/health` (`api::handlers::modules_health`), a
+  thin handler over a new pure `module_health_json` mapping function — split
+  out the same way `cli::doctor::format_module_health` already is a pure
+  function taking a `ModuleHealth` value, because the underlying health
+  state is a process-global shared across the whole test binary and
+  asserting against it directly would be flaky/order-dependent. Wired a new
+  "Module Health" panel into the SPA Dashboard (`moduleHealthPanel`),
+  fetched via `API.moduleHealth()`, rendered quiet-by-default: one
+  reassuring line on a healthy process, a name/streak/last-succeeded table
+  otherwise — mirroring `hse doctor`'s own established "quiet unless
+  something's actually wrong" philosophy rather than an always-visible
+  table that would be noise on the common healthy case. 2 new unit tests
+  (`module_health_json`'s two-entry shape and the empty-process case), 1
+  new API integration test (pins the route's wire shape; red/green-verified
+  by temporarily removing the route registration — correctly 404s,
+  restored and re-verified green), and 1 new SPA dead-from-the-UI guard
+  (`embedded_spa_wires_the_module_health_endpoint`), matching the
+  established pattern already guarding `/keys/status`, `/benchmark`,
+  `/scan/auto/plan` against silently becoming unreachable from the UI.
+  Confirmed against a real running `hse serve` process (not just the test
+  suite): `curl http://127.0.0.1:.../api/v1/modules/health` returns
+  `{"count":0,"modules":[]}` on a healthy process. Only `parse_rate`/
+  "drifted" auto-flagging remains open on this node (still blocked on the
+  golden-fixture corpus, repeatedly confirmed infeasible without a live
+  fetch or a fabricated-looking snippet) — node stays `[~]`, not `[x]`, for
+  that one leg. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4617 total pass (+4). Paired:
+  `PROBLEM_TREE` §3.2 T2.7 — same commit.

@@ -476,6 +476,34 @@ direct.**
   panel remain open — T2.7 stays `[~]`, not `[x]`.
   **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL `[ ]`→`[~]` + §4a + §5 —
   same commit.
+  *Partial (2026-07-06): the SPA-panel leg closed.* `module_health_report()`
+  was reachable only from `hse doctor` — an operator running the web UI
+  (the SPA, not the CLI) had zero visibility into a module's failure streak
+  even though the engine tracked it live for every scan. Added `GET
+  /api/v1/modules/health` (mirroring `engines_health`'s existing shape: a
+  thin handler over an extracted pure `module_health_json` mapping function,
+  split out the same way `cli::doctor::format_module_health` already is, so
+  the JSON shaping is unit-testable without depending on the live
+  process-global health state — that state is shared across the whole test
+  binary and would make direct assertions flaky). Wired a new "Module
+  Health" Dashboard panel in `spa.html`, quiet by default (one reassuring
+  line on a healthy process, a table of name/streak/last-success otherwise
+  — mirroring `hse doctor`'s own "quiet unless something's actually wrong"
+  behaviour). 2 new unit tests (`module_health_json`'s shape + empty case),
+  1 new API integration test (route wiring — red/green-verified by
+  temporarily removing the route registration, which correctly 404s), and 1
+  new SPA-wiring guard (`embedded_spa_wires_the_module_health_endpoint`,
+  matching the established "dead-from-the-UI" guard pattern already used
+  for `/keys/status`, `/benchmark`, `/scan/auto/plan`, …). Confirmed against
+  a real running `hse serve` process: `GET /api/v1/modules/health` returns
+  `{"count":0,"modules":[]}` on a healthy process. Only `parse_rate`/
+  "drifted" auto-flagging remains open (still blocked on the golden-fixture
+  corpus, repeatedly confirmed infeasible without a live fetch or a
+  fabricated-looking snippet — see the 2026-07-01 notes above); T2.7 stays
+  `[~]`, not `[x]`, for that one remaining leg. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4617 total pass (+4). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL §4a +
+  §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own

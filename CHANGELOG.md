@@ -19,6 +19,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   any module currently showing a failure streak (worst first), each with
   its consecutive-failure count and last-success time; it's silent by
   default on a healthy process, so it only ever adds signal, never noise.
+- **Per-module health is now also visible from the web UI, not just `hse
+  doctor`.** A new `GET /api/v1/modules/health` endpoint and a Dashboard
+  "Module Health" panel surface the same failure-streak data the CLI
+  already reports, so an operator using the web interface has the same
+  visibility into a silently-failing source. Quiet by default, same as the
+  CLI: one reassuring line on a healthy process, a full table otherwise.
 - **`shodan` paid host lookup now surfaces the host classification tags.**
   Shodan's keyed `/shodan/host/{ip}` response returns the same top-level
   `tags` array (`compromised`, `malware`, `honeypot`, `self-signed`,
