@@ -245,6 +245,20 @@ fn clean_person_name(raw: &str) -> Option<String> {
     {
         return None;
     }
+    // An Australian state/territory abbreviation is never a token of a person's
+    // name: a register owner carrying one ("Racgp Qld", "Education Qld", "Qld Fire
+    // Pumps", or a real name the register polluted with a trailing "… Qld") is a
+    // department / business / location-tagged entry, not a clean individual — a
+    // live "Brett Lawnton" scan surfaced 17 such false Person relatives. VIC / SA /
+    // WA are deliberately EXCLUDED: they read as names ("Vic" = Victor; romanised
+    // "Wa"/"Sa"), so only the unambiguous abbreviations gate.
+    const AU_STATE_TOKENS: [&str; 5] = ["QLD", "NSW", "ACT", "TAS", "NT"];
+    if tokens
+        .iter()
+        .any(|t| AU_STATE_TOKENS.contains(&t.to_ascii_uppercase().as_str()))
+    {
+        return None;
+    }
     // Reject an all-initials fragment ("L B"): a real name has a ≥2-letter word.
     if !tokens
         .iter()

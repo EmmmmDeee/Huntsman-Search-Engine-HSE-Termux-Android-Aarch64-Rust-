@@ -916,6 +916,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   ("Qld Property Maintenance") the legal-suffix `looks_like_company` check misses,
   without dropping a real noun-surname ("Flowers"/"Baker"). ✅ 1 test, fail-before
   proven by neutering the gate.
+- **`[x]` SOL-STATE-TOKEN-GATE · register owners with an AU state token are not
+  Person relatives** → **T2.41**: found by re-executing the rebuilt engine on
+  "Brett Lawnton" — 17 Person entities carried a state token (departments,
+  businesses, location-polluted names). A state-token gate in `clean_person_name`
+  rejects owners whose tokens include `QLD`/`NSW`/`ACT`/`TAS`/`NT` (`VIC`/`SA`/`WA`
+  excluded as name-like). ✅ 1 test, fail-before proven by emptying the token set.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -996,6 +1002,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-RUNCOUNT-CACHE | T2.38 | `[x]` |
 | SOL-ONE-SUBJECT | T2.39 | `[x]` |
 | SOL-TRADING-NAME-GATE | T2.40 | `[x]` |
+| SOL-STATE-TOKEN-GATE | T2.41 | `[x]` |
 
 ---
 
@@ -4214,3 +4221,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `owner_person_names_excludes_suffixless_trading_names`; fail-before proven by
   neutering the gate. Gate green: fmt/clippy/doc clean, 4427 lib tests, 0
   failures. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **SOL-STATE-TOKEN-GATE `[x]`: register owners with an AU state
+  token are not persons.** Found by re-executing the rebuilt engine on "Brett
+  Lawnton" — the fresh export had 17 Person entities carrying a state token
+  ("Racgp Qld", "Education Qld", "Qld Fire Pumps", location-polluted names). Added
+  a state-token gate to `clean_person_name` (reject `QLD`/`NSW`/`ACT`/`TAS`/`NT`
+  tokens; `VIC`/`SA`/`WA` excluded as name-like). *Closes:* **T2.41** (`[ ]`→
+  `[x]`). Test: `owner_person_names_excludes_state_tokened_owners`; fail-before
+  proven by emptying the token set. Gate green: fmt/clippy/doc clean, 4428 lib
+  tests, 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

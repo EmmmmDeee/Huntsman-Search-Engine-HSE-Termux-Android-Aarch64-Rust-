@@ -1329,6 +1329,21 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   can still slip, but never at the cost of a genuine relative. **P3** (a precision
   false-positive in the family layer; low severity after T2.39 already stripped
   these from the subject anchors).
+- **`[x]` T2.41 · Register owner names containing an Australian state token are
+  classified as Person `family-candidate`s** — surfaced by *re-executing* the
+  rebuilt engine on "Brett Lawnton" (T2.34–T2.40 compiled in) and reading the
+  fresh export: **17** Person entities carried a state token — departments and
+  businesses ("Racgp Qld", "Education Qld", "Dept Of Health Qld", "Qld Fire
+  Pumps") and location-polluted names ("Djalinda Burroughs Lawnton Qld", "Paul
+  Crichton Lawnton Qld"). The T2.40 trade-noun gate doesn't cover these, and a
+  state abbreviation is never a token of a real person's name. → **Solution:** a
+  state-token gate in `qld_helpers::clean_person_name` rejecting any owner whose
+  name tokens include an unambiguous AU state/territory abbreviation
+  (`QLD`/`NSW`/`ACT`/`TAS`/`NT`); `VIC`/`SA`/`WA` are deliberately excluded (they
+  read as names — "Vic" = Victor, romanised "Wa"/"Sa"). Precision-first: a
+  name literally containing "Qld" is not a usable person identifier for pivoting
+  anyway, so rejecting the ~3 location-polluted real names among the 17 costs no
+  practical recall. **P3** (family-layer precision; complements T2.40).
 
 ---
 
@@ -5790,4 +5805,20 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `false`, the "QLD PROPERTY MAINTENANCE" assertion failed; restored, it passes.
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4427 lib tests). **P3**
   (family-layer precision; low severity after T2.39). **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
+
+- **2026-07-06** — **T2.41 (new): register owner names with an AU state token
+  classified as Person relatives.** Found by *re-executing* the rebuilt engine
+  (T2.34–T2.40 in) on "Brett Lawnton" and reading the fresh export — 17 Person
+  entities carried a state token (all departments/businesses/location-polluted:
+  "Racgp Qld", "Education Qld", "Qld Fire Pumps", "Paul Crichton Lawnton Qld").
+  The T2.40 trade-noun gate misses these. Fix: a state-token gate in
+  `clean_person_name` rejecting an owner whose tokens include an unambiguous AU
+  abbreviation (`QLD`/`NSW`/`ACT`/`TAS`/`NT`); `VIC`/`SA`/`WA` excluded as
+  name-like. Test delta: `owner_person_names_excludes_state_tokened_owners`
+  (excludes "RACGP QLD"/"EDUCATION QLD"/"QLD FIRE PUMPS"/"PAUL CRICHTON LAWNTON
+  QLD"; still surfaces "VIC ANDERSON" — VIC = Victor). **Fail-before proven by
+  running it:** emptied the state-token set, the "RACGP QLD" assertion failed;
+  restored, it passes. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4428 lib tests). **P3** (family-layer precision). **Paired:** `SOLUTION_TREE`
   §5 — same commit.

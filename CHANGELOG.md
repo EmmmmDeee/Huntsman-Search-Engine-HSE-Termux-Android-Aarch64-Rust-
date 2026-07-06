@@ -376,6 +376,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Register owner names containing an Australian state abbreviation are no
+  longer listed as a person's relatives.** Government departments and businesses
+  ("Racgp Qld", "Education Qld", "Qld Fire Pumps") and location-polluted names
+  ("… Lawnton Qld") were minted as `family-candidate` people. Owners whose name
+  tokens include an unambiguous state abbreviation (QLD/NSW/ACT/TAS/NT) are now
+  excluded (VIC/SA/WA are kept — they read as names). Regression test
+  `owner_person_names_excludes_state_tokened_owners`.
 - **Business trading names in the QLD unclaimed-money register are no longer
   listed as a person's relatives.** A trading name without a legal suffix (e.g.
   "Qld Property Maintenance") passed the company filter and became a

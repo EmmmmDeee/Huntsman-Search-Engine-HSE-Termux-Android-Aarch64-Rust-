@@ -93,6 +93,26 @@ mod qld {
     }
 
     #[test]
+    fn owner_person_names_excludes_state_tokened_owners() {
+        // Real "Brett Lawnton" self-test: 17 register owners containing an
+        // Australian state token were minted as Person relatives — departments,
+        // businesses, and location-polluted names ("Racgp Qld", "Education Qld",
+        // "Qld Fire Pumps", "Djalinda Burroughs Lawnton Qld"). A state abbreviation
+        // is never part of a person's name.
+        assert!(owner_person_names("RACGP QLD").is_empty());
+        assert!(owner_person_names("EDUCATION QLD").is_empty());
+        assert!(owner_person_names("QLD FIRE PUMPS").is_empty());
+        assert!(owner_person_names("PAUL CRICHTON LAWNTON QLD").is_empty());
+        // Ambiguous state-like tokens that ARE names must NOT be dropped:
+        // "Vic" = Victor, romanised "Wa"/"Sa" surnames.
+        assert_eq!(
+            owner_person_names("VIC ANDERSON"),
+            vec!["Vic Anderson".to_string()],
+            "VIC reads as Victor — must not be gated as a state token"
+        );
+    }
+
+    #[test]
     fn classifies_exact_person_vs_surname_only_family() {
         let recs = sample().result.unwrap().records;
         let curt = records_to_entities(&recs, 3, "Curt Avery", true, "s");
