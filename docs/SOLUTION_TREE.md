@@ -4005,3 +4005,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `if let Ok(...)` pattern in place; the poisoned-mutex assertion failed).
   Gate green: fmt/clippy/doc clean, full suite 0 failures (4413 lib tests),
   architecture suite 30/30. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-06** — **Fault-tree re-audit repairs (nodes FT.1–FT.8).** An
+  11-branch multi-agent fault-tree re-run of T1–T11 (every finding
+  adversarially verified) surfaced 8 residual defects, all fixed this commit:
+  a path-embedded own-API-key leak into the raw archive (`describe_url` now
+  excludes `keys::own_api_keys()` from every URL label), a cache-replay
+  observation mis-attribution that dropped a finding from a re-scanned target
+  (`dispatch.rs` re-stamps replayed entities to the current `scan_id`), the
+  typosquat session-dedup set never reset per scan (wired into
+  `reset_per_scan`), `au_postcode` reading a stray value digit-run as a
+  postcode on non-Address kinds (value-scan gated to Address), CSV
+  formula-guard corruption on export→re-import (guard stripped on import),
+  cell-tower IDs mis-detected as Phone (detector reordered), a reactor-blocking
+  `report.json` handler (`spawn_blocking`), and O(k·n) inline-block stripping
+  on untrusted SERP bytes (now O(n)). Three trace-phase candidates were
+  REJECTED by adversarial verification rather than fabricated into fixes. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4425
+  lib tests, +3), architecture suite green. Paired: `PROBLEM_TREE` §8 — same
+  commit.

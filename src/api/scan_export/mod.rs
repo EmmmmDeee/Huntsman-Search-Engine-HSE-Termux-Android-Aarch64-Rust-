@@ -134,21 +134,30 @@ pub async fn scan_report_json(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    match build_scan_report(
-        &*s.store,
-        &id,
-        wants_candidates(&params),
-        wants_infra(&params),
-    ) {
-        Ok(Some(report)) => {
-            let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
-                "{}".into()
-            });
+    // Offload to a blocking thread: build_scan_report does 3 synchronous SQLite
+    // reads + AU-location extraction and the pretty-JSON serialize is CPU-bound, so
+    // running them inline would stall one of the ~2 async reactor workers (matches
+    // scan_entities_csv / scan_export_gexf / scan_debug_bundle in this module).
+    let (id2, store) = (id.clone(), Arc::clone(&s.store));
+    let (cand, infra) = (wants_candidates(&params), wants_infra(&params));
+    let built = tokio::task::spawn_blocking(move || {
+        build_scan_report(store.as_ref(), &id2, cand, infra).map(|opt| {
+            opt.map(|report| {
+                serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
+                    "{}".into()
+                })
+            })
+        })
+    })
+    .await;
+    match built {
+        Ok(Ok(Some(body))) => {
             download_response(body, "application/json; charset=utf-8", &id, "json")
         }
-        Ok(None) => not_found(),
-        Err(e) => internal_error(&e),
+        Ok(Ok(None)) => not_found(),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("report task failed: {e}")),
     }
 }
 

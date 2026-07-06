@@ -243,7 +243,25 @@ impl TargetKind {
                 return Self::AbnAcn;
             }
         }
-        // 8. Phone — '+' country code or a punctuated digit run, no letters.
+        // 8. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 hyphen segments, MCC in
+        // 200-999). Checked BEFORE the phone shape because it is MORE SPECIFIC — a
+        // generic dialable digit run (`is_phone_shaped`) would otherwise swallow a
+        // `mcc-mnc-lac-cid` and leave this DeviceId branch dead for realistic inputs
+        // (the detector's documented most-specific-first ordering).
+        {
+            let parts: Vec<&str> = v.split('-').collect();
+            if parts.len() == 4
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                && parts[0]
+                    .parse::<u32>()
+                    .is_ok_and(|mcc| (200..=999).contains(&mcc))
+            {
+                return Self::DeviceId;
+            }
+        }
+        // 8b. Phone — '+' country code or a punctuated digit run, no letters.
         if is_phone_shaped(v) {
             return Self::Phone;
         }
@@ -257,20 +275,6 @@ impl TargetKind {
         // mis-bucketed as a Username.
         if crate::core::crypto::classify_crypto_address(v).is_some() {
             return Self::CryptoAddress;
-        }
-        // 9c. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
-        {
-            let parts: Vec<&str> = v.split('-').collect();
-            if parts.len() == 4
-                && parts
-                    .iter()
-                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-                && parts[0]
-                    .parse::<u32>()
-                    .is_ok_and(|mcc| (200..=999).contains(&mcc))
-            {
-                return Self::DeviceId;
-            }
         }
         // 9d. Tracking ID — Google Analytics (UA-XXXXXXX-X / G-XXXXXXXXXX),
         //     Google Tag Manager (GTM-XXXXXXX), Google Ads (AW-XXXXXXXXX).

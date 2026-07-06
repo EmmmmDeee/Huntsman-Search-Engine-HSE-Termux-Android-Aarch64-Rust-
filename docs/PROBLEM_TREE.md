@@ -5412,3 +5412,59 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   panicked on the mutex still being poisoned/phase not updated). Gate
   green: fmt/clippy/doc clean, full suite 0 failures (4413 lib tests),
   architecture suite 30/30. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-06** — **Fresh fault-tree re-audit (operator: "perform an error
+  tree analysis and then an exhaustive repair and upgrade") — 8 residual
+  defects found + fixed.** Re-ran the T1–T11 trees against the current tree
+  via an 11-branch multi-agent fault-tree workflow (whole-crate panic sweep,
+  engine, storage, concurrency, resource, security, correlator, HTTP server,
+  CLI, util, untrusted-byte parsing); every finding adversarially verified for
+  reachability and checked against existing guards; known-closed items (SSRF,
+  SQLi, the `to_lowercase` slice class, T2.8/T2.9, QuotaBudget CAS, the prior
+  API-integration + base-URL-override fixes) excluded. **8 of 11 confirmed,
+  all fixed this commit:**
+  **`[x]` FT.1 (T2/E2.4 secret leak, HIGH)** `util/raw_archive/url.rs` —
+  `describe_url`'s path-style branch surfaced a PATH-embedded API key
+  (IPQS `/api/json/ip/<KEY>/<value>`, ABR `guid=`) as the archive endpoint
+  label → the operator's own key leaked into the archive filename, `_meta`,
+  and every dossier / one-click debug bundle. → Exclude any URL segment/value
+  in `keys::own_api_keys()` (the set `found_keys` uses) from both path and
+  query labels. Regression test added.
+  **`[x]` FT.2 (T5/E5.2 data-loss)** `core/engine/dispatch.rs` (3 cache-hit
+  sites) — a cache-replayed module result carried the ARCHIVING scan's
+  `scan_id`, so the `entity_observations` `INSERT OR IGNORE` (keyed on
+  `entity.scan_id`) dropped the current scan's observation → the finding
+  vanished from `entities_for_scan` while still counted. → Re-stamp replayed
+  entities to `cx.scan_id` before replay.
+  **`[x]` FT.3 (T6/B6.1.3 unbounded + cross-scan suppression)**
+  `modules/typosquat` — the process-global `SEEN_REGISTRABLE` dedup set was
+  never reset per scan (unbounded across a long `serve`/`live`; silently
+  suppressed all findings for any domain scanned twice). → `reset_seen()`
+  wired into the `reset_per_scan` hook.
+  **`[x]` FT.4 (T5/E5.1 false geolocation)** `core/geo_family::au_postcode` —
+  ran the value trailing-4-digit postcode scan on EVERY kind, so a stray
+  digit run in an Email/Username/Url/Person value geolocated a confident
+  false AU location. → Gate the value-scan to `EntityKind::Address`; the
+  structured `postcode` evidence-attribute path stays open to all kinds.
+  Regression test added.
+  **`[x]` FT.5 (T5 round-trip corruption)** `cli/import/csv.rs` — HSE-CSV
+  export prepends the OWASP formula-injection apostrophe (`= + - @ TAB CR`)
+  but re-import never stripped it → export→import accreted an apostrophe onto
+  phone numbers / negative coords each cycle. → `strip_csv_formula_guard` on
+  re-import. Regression test added.
+  **`[x]` FT.6 (T1 mis-detection)** `core/scan::TargetKind::detect` — the
+  phone-shape check ran before the cell-tower (`mcc-mnc-lac-cid`) check, so a
+  cell-tower ID mis-detected as Phone and the DeviceId branch was dead. →
+  Reorder cell-tower before phone (most-specific-first). Regression cases added.
+  **`[x]` FT.7 (T3/T1.2 reactor-blocking)** `api/scan_export::scan_report_json`
+  — ran the full synchronous report build (3 SQLite reads + AU-location) and
+  pretty-JSON serialize directly on the ~2-worker reactor, unlike its
+  `spawn_blocking` siblings. → Wrap in `spawn_blocking`.
+  **`[x]` FT.8 (T6 quadratic parse)** `modules/search_engines/helpers/text.rs`
+  `strip_inline_blocks` — recomputed `to_ascii_lowercase()` once per
+  `<svg>/<style>/<script>` occurrence (O(k·n)) on unbounded anchor text. →
+  Lowercase once per tag, collect ranges, splice in reverse — O(n).
+  The concurrency budget-reset race, and two other trace-phase candidates,
+  were REJECTED by adversarial verification (already-mitigated / not
+  reachable) — not fabricated into fixes. Gate green: fmt/clippy `-D warnings`
+  clean, rustdoc (private items) clean, full suite 0 failures (4425 lib tests,
+  +3), architecture suite green. **Paired:** `SOLUTION_TREE` §5 — same commit.

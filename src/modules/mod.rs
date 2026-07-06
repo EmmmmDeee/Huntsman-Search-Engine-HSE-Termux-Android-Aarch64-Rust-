@@ -271,6 +271,7 @@ fn install_core_hooks() {
             oathnet_pro::reset_budget();
             see_know::reset_budget();
             wigle::reset_budget();
+            typosquat::reset_seen();
             reset_found_keys(scan_id);
         },
         set_regional: search_engines::set_regional,

@@ -297,6 +297,24 @@ fn kind_from_str(s: &str) -> Option<EntityKind> {
 }
 
 /// Reconstruct entities from HSE's own CSV export, faithfully restoring each
+/// Reverse HSE's CSV anti-formula-injection guard. `api::scan_export::csv_escape`
+/// prepends a single apostrophe when a cell's first byte is one of `= + - @ TAB
+/// CR` (so Excel/LibreOffice render it as text, not a formula). HSE is the only
+/// source of that exact prefix, so an export→re-import round-trip must strip it
+/// back off — otherwise the value accretes an apostrophe every cycle, corrupting
+/// phone numbers, negative coordinates, etc. Pure.
+fn strip_csv_formula_guard(v: &str) -> &str {
+    let b = v.as_bytes();
+    if b.first() == Some(&b'\'')
+        && b.get(1)
+            .is_some_and(|c| matches!(c, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r'))
+    {
+        &v[1..]
+    } else {
+        v
+    }
+}
+
 /// row's kind, value, confidence, tags, and evidence (the `[source] summary`
 /// trail). Pure — unit-tested. The `import`/`hse-csv` tags mark the provenance
 /// without erasing the original tags.
@@ -317,7 +335,9 @@ pub(super) fn parse_hse_csv(body: &str, sid: &str) -> (Vec<Entity>, ImportStats)
         let (Some(kind_s), Some(value)) = (get(k_i), get(v_i)) else {
             continue;
         };
-        let value = value.trim();
+        // Trim, then reverse HSE's own CSV formula-injection guard so a round-trip
+        // (export → re-import) preserves the value byte-for-byte.
+        let value = strip_csv_formula_guard(value.trim());
         let Some(kind) = kind_from_str(kind_s) else {
             continue;
         };
@@ -394,4 +414,29 @@ pub(super) async fn cmd_import_hse_csv(body: &str, output: &str) -> Result<()> {
     persist_and_report(&sid, &entities, output).await;
     render_import_entities(&entities, output);
     Ok(())
+}
+
+#[cfg(test)]
+mod formula_guard_tests {
+    use super::strip_csv_formula_guard as strip;
+
+    #[test]
+    fn strips_only_the_export_guard_apostrophe() {
+        // Reverses csv_escape's guard for every triggering byte (= + - @ TAB CR),
+        // so export→re-import round-trips value-for-value.
+        assert_eq!(strip("'=cmd|/c calc"), "=cmd|/c calc");
+        assert_eq!(strip("'+61400000000"), "+61400000000");
+        assert_eq!(strip("'-33.8688"), "-33.8688");
+        assert_eq!(strip("'@handle"), "@handle");
+        assert_eq!(strip("'\tTAB"), "\tTAB");
+        assert_eq!(strip("'\rCR"), "\rCR");
+        // A leading apostrophe NOT followed by a trigger byte is left intact, so a
+        // value that genuinely starts with an apostrophe is preserved.
+        assert_eq!(strip("'hello"), "'hello");
+        assert_eq!(strip("O'Brien"), "O'Brien");
+        // Plain values (no leading apostrophe) are untouched.
+        assert_eq!(strip("+61 400 000"), "+61 400 000");
+        assert_eq!(strip("example.com"), "example.com");
+        assert_eq!(strip(""), "");
+    }
 }

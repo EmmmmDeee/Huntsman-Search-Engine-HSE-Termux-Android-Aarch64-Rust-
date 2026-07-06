@@ -658,6 +658,11 @@ fn detect_classifies_structured_kinds() {
         ("51 824 753 556", AbnAcn), // spaced ABN
         ("+61 400 123 456", Phone),
         ("(07) 3000 1234", Phone),
+        // Cell-tower ID (mcc-mnc-lac-cid) — more specific than a dialable digit run,
+        // so it classifies as DeviceId, NOT Phone. Regression: the phone check
+        // previously ran first and swallowed it, leaving DeviceId dead.
+        ("505-1-2020-12345", DeviceId),
+        ("310-410-7-84215", DeviceId),
         // CIDR — checked after a bare IP, before domain.
         ("192.0.2.0/24", Cidr),
         ("2001:db8::/48", Cidr),

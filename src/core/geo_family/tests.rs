@@ -63,6 +63,29 @@ fn au_postcode_ignores_a_leading_us_street_number() {
 }
 
 #[test]
+fn au_postcode_ignores_value_digits_of_non_address_kinds() {
+    // Regression: a stray 4-digit run in an Email / Username / Url / Person VALUE
+    // must NOT be read as an AU postcode — previously it geolocated the entity to a
+    // confident FALSE location. Only an Address carries a postcode in its value.
+    for kind in [
+        EntityKind::Email,
+        EntityKind::Username,
+        EntityKind::Url,
+        EntityKind::Person,
+    ] {
+        let e = Entity::new(kind.clone(), "handle2000", 0.5, "s");
+        assert!(
+            au_postcode(&e).is_none(),
+            "{kind:?} value digits must not be read as a postcode"
+        );
+    }
+    // A STRUCTURED postcode evidence attribute still resolves for any kind.
+    let mut u = Entity::new(EntityKind::Username, "someone", 0.5, "s");
+    u.add_evidence(Evidence::new("src", "sum").with_attr("postcode", "4000"));
+    assert_eq!(au_postcode(&u).as_deref(), Some("4000"));
+}
+
+#[test]
 fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
     // Subject's confirmed GPS near Woodford, QLD; a coarse 0.4 guess must NOT
     // anchor (only ≥0.60 confirmed fixes do).

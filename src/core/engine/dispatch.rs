@@ -702,6 +702,17 @@ impl super::ScanEngine {
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
+                // Re-stamp replayed entities to the CURRENT scan. The cache returns
+                // entities carrying the ARCHIVING scan's scan_id, and the
+                // observation-junction insert keys on entity.scan_id; without this
+                // the current scan's observation collides (INSERT OR IGNORE) with the
+                // archiving scan's row and is dropped, so the finding silently
+                // vanishes from this scan's read-back (entities_for_scan) while still
+                // being counted — a count-vs-list inconsistency.
+                let mut cached = cached;
+                for e in &mut cached {
+                    e.scan_id = cx.scan_id.to_owned();
+                }
                 let mr = ModuleResult { entities: cached };
                 // from_cache = true: a replay must not feed the circuit breaker's
                 // success path (no provider call was made).
@@ -842,6 +853,17 @@ impl super::ScanEngine {
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
+                // Re-stamp replayed entities to the CURRENT scan. The cache returns
+                // entities carrying the ARCHIVING scan's scan_id, and the
+                // observation-junction insert keys on entity.scan_id; without this
+                // the current scan's observation collides (INSERT OR IGNORE) with the
+                // archiving scan's row and is dropped, so the finding silently
+                // vanishes from this scan's read-back (entities_for_scan) while still
+                // being counted — a count-vs-list inconsistency.
+                let mut cached = cached;
+                for e in &mut cached {
+                    e.scan_id = cx.scan_id.to_owned();
+                }
                 let mr = ModuleResult { entities: cached };
                 // from_cache = true: a replay must not feed the circuit breaker's
                 // success path (no provider call was made).
@@ -964,6 +986,17 @@ impl super::ScanEngine {
             {
                 state.stats.cached += 1;
                 debug!(module = name, "cache hit — replaying archived entities");
+                // Re-stamp replayed entities to the CURRENT scan. The cache returns
+                // entities carrying the ARCHIVING scan's scan_id, and the
+                // observation-junction insert keys on entity.scan_id; without this
+                // the current scan's observation collides (INSERT OR IGNORE) with the
+                // archiving scan's row and is dropped, so the finding silently
+                // vanishes from this scan's read-back (entities_for_scan) while still
+                // being counted — a count-vs-list inconsistency.
+                let mut cached = cached;
+                for e in &mut cached {
+                    e.scan_id = cx.scan_id.to_owned();
+                }
                 let mr = ModuleResult { entities: cached };
                 // from_cache = true: a replay must not feed the circuit breaker's
                 // success path (no provider call was made).

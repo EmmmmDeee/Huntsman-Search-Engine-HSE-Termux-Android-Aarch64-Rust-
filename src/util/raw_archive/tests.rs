@@ -123,6 +123,34 @@ fn describe_url_derives_endpoint_and_query() {
 }
 
 #[test]
+fn describe_url_redacts_a_path_embedded_own_key() {
+    // IPQS/ABR-style: the operator's OWN key sits in the URL PATH, not the query.
+    // It must NEVER become the endpoint/query label (which lands in the archive
+    // filename, `_meta`, and every dossier / one-click debug bundle). Regression
+    // for the path-embedded-key leak the query-param CRED_PARAMS skip missed.
+    let own = crate::util::keys::own_api_keys();
+    let Some(key) = own.iter().next().cloned() else {
+        return; // no embedded/own keys in this build → nothing to assert
+    };
+    let (endpoint, value) = describe_url(&format!(
+        "https://www.ipqualityscore.com/api/json/ip/{key}/1.1.1.1"
+    ));
+    assert_ne!(
+        endpoint, key,
+        "a path-embedded API key must not become the endpoint label"
+    );
+    assert!(
+        !endpoint.contains(&key),
+        "endpoint must not contain the key"
+    );
+    assert_eq!(
+        (endpoint.as_str(), value.as_str()),
+        ("ip", "1.1.1.1"),
+        "the key segment is dropped; endpoint/value are the real ones around it"
+    );
+}
+
+#[test]
 fn records_in_window_recovers_full_responses_and_filters_by_time() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)

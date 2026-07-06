@@ -156,15 +156,28 @@ fn strip_inline_blocks(html: &str) -> String {
     for tag in ["svg", "style", "script"] {
         let open = format!("<{tag}");
         let close = format!("</{tag}>");
-        loop {
-            let lower = s.to_ascii_lowercase();
-            let Some(start) = lower.find(&open) else {
-                break;
-            };
+        // Lowercase ONCE per tag, not once per occurrence: collect every block's
+        // byte range in a single left-to-right scan of the lowercased copy, then
+        // splice them out in REVERSE so earlier offsets stay valid. The previous
+        // code recomputed `s.to_ascii_lowercase()` inside the loop for EVERY match,
+        // giving O(k·n) work — a crafted result body with k inline blocks could
+        // burn quadratic CPU on the async reactor. This is O(n) per tag.
+        let lower = s.to_ascii_lowercase();
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = lower[from..].find(&open) {
+            let start = from + rel;
             let end = match lower[start..].find(&close) {
-                Some(rel) => start + rel + close.len(),
-                None => s.len(),
+                Some(r) => start + r + close.len(),
+                None => s.len(), // unclosed block → drop to end-of-string
             };
+            ranges.push((start, end));
+            if end >= s.len() {
+                break;
+            }
+            from = end;
+        }
+        for (start, end) in ranges.into_iter().rev() {
             s.replace_range(start..end, " ");
         }
     }
