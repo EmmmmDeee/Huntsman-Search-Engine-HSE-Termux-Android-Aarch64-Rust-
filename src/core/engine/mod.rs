@@ -1220,13 +1220,7 @@ impl ScanEngine {
         for e in &mut out {
             e.corroboration = 0;
         }
-        out.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        out.truncate(MAX_ENTITIES);
-        out
+        rank_recalled_and_cap(out, MAX_ENTITIES)
     }
 
     /// Active gap-fill — pursue the corroborating pathway AU-063 only names.
@@ -1963,6 +1957,28 @@ pub(crate) use health::ModuleHealth;
 #[must_use]
 pub(crate) fn module_health_report() -> Vec<ModuleHealth> {
     health::unhealthy_modules()
+}
+
+/// Rank recalled entities strongest-first and cap to `max` (`recall_prior_entities`'s
+/// sort+truncate step, split out so it's directly testable). Deterministic uid
+/// tie-break (CONVENTIONS.md §5): the incoming `Vec`'s order inherits a `HashMap`'s
+/// randomised-per-process iteration order, and modules routinely stamp flat
+/// literal confidences (0.6, 0.7, 0.8, …), so exact ties at the cutoff are
+/// realistic, not contrived — without a tiebreak, two otherwise-identical
+/// recalls of the same target could truncate to a DIFFERENT set of surviving
+/// entities, not just a different display order. Mirrors the uid tiebreak
+/// already used by every sibling rank-then-truncate function in this file
+/// (`rank_enrichment_leverage` below, `rank_autonomous_targets`, the
+/// autonomous-cluster ranking).
+fn rank_recalled_and_cap(mut out: Vec<Entity>, max: usize) -> Vec<Entity> {
+    out.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out.truncate(max);
+    out
 }
 
 #[must_use]

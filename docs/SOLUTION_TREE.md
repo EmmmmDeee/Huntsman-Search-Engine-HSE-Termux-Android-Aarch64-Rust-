@@ -198,6 +198,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sensitive read-back (`scans … , id DESC`; `entity_facets … , e.kind ASC`;
   `scan_ids … , scan_id DESC`). *Closes:* **T1.1, T2.9**. Regression-tested
   (`latest_completed_scan_is_deterministic_on_same_second_ties`). ✅
+- **`[x]` SOL-RECALL-ORDER · uid tie-break for `recall_prior_entities`'s cap** →
+  **T2.15**: added the same `.then_with(uid.cmp)` tie-break its three siblings
+  (`rank_enrichment_leverage`, `rank_autonomous_targets`, the autonomous-cluster
+  ranking) already carried, extracted into a standalone `rank_recalled_and_cap`
+  so it's independently testable. Regression test proves 305
+  identically-confident entities fed forward vs. reversed truncate to the
+  identical 300-entity survivor set; red/green-verified. ✅
 - **`[x]` SOL-PANIC · Per-module panic containment** — `panic="unwind"` +
   `run_module_guarded` `catch_unwind` at the dispatch boundary → a panicking module
   degrades to zero results, never aborts `serve`. *Closes:* FTA **E3.1 / SPOF #2**.
@@ -1012,6 +1019,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[x]` |
+| SOL-RECALL-ORDER | T2.15 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -4180,3 +4188,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   including panics/cancellation); deferred as real design work, not a
   drop-in, tracked for a future cycle rather than force-fit here. Paired:
   `PROBLEM_TREE` T2.7 partial note + §8 — same commit.
+
+- **2026-07-05** — **New node SOL-RECALL-ORDER `[x]`, closing new
+  `PROBLEM_TREE` node T2.15: uid tie-break for `recall_prior_entities`'s
+  confidence-only sort.** A fresh five-angle survey (in-progress nodes,
+  §4b, two code-discovery sweeps, test-coverage) surfaced six independently
+  cross-checked candidates; picked this one over a same-size rival (an API
+  + SPA panel for the already-built module-health data) because it's
+  higher-leverage — a core reproducibility guarantee (which entities
+  survive a recall, not just their order) rather than a UI feature, and
+  the smaller change (one tiebreak clause + an extraction, vs. a new
+  handler/route/frontend panel). Personally re-verified against the
+  current source before implementing, per the loop's own
+  hypothesis-until-read discipline. `recall_prior_entities` collects prior-
+  scan entities into a `HashMap`, sorts by confidence alone, truncates to
+  300 — the same shape as three sibling ranking functions in the same
+  file, all three of which already had a uid tie-break this one lacked.
+  Fixed identically; extracted the sort+truncate into standalone
+  `rank_recalled_and_cap` (matching the siblings' already-standalone
+  shape) for direct testability. New regression test: 305 tied-confidence
+  entities, forward vs. reversed, must truncate to an identical 300-entity
+  set — red/green-verified (temporarily removing the tiebreak produced
+  different, partially-disjoint survivor sets between the two orders).
+  Both pre-existing recall tests pass unchanged. Gate green: fmt/clippy/
+  strict-rustdoc `cargo doc`/`cargo test` — 4606 total pass (+1). Paired:
+  `PROBLEM_TREE` new node T2.15 `[x]` + §8 — same commit.

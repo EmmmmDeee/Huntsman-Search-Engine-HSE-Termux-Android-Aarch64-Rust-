@@ -1594,6 +1594,44 @@ async fn recall_prior_entities_pulls_and_tags_prior_scan_findings() {
     );
 }
 
+/// CONVENTIONS.md §5 determinism: `recall_prior_entities`'s cap (`MAX_ENTITIES`
+/// = 300, matched here) sorts by confidence and truncates — the WHICH-SURVIVES
+/// question, not just display order. Modules routinely stamp flat literal
+/// confidences, so exact ties at the cutoff are realistic, and the entities'
+/// starting order (a `HashMap`'s randomised-per-process iteration order in the
+/// real caller) must not change which 300 survive. More than 300 identically-
+/// confident entities, fed in forward vs. reversed order, must truncate to the
+/// IDENTICAL surviving set.
+#[test]
+fn rank_recalled_and_cap_truncation_is_order_independent_on_ties() {
+    use crate::core::entity::{Entity, EntityKind};
+
+    let forward: Vec<Entity> = (0..305)
+        .map(|i| {
+            Entity::new(
+                EntityKind::Email,
+                format!("user{i}@example-real.com"),
+                0.7,
+                "s",
+            )
+        })
+        .collect();
+    let mut reversed = forward.clone();
+    reversed.reverse();
+
+    let a = rank_recalled_and_cap(forward, 300);
+    let b = rank_recalled_and_cap(reversed, 300);
+
+    assert_eq!(a.len(), 300);
+    assert_eq!(b.len(), 300);
+    let a_uids: Vec<&str> = a.iter().map(|e| e.uid.as_str()).collect();
+    let b_uids: Vec<&str> = b.iter().map(|e| e.uid.as_str()).collect();
+    assert_eq!(
+        a_uids, b_uids,
+        "the surviving 300 entities must be identical regardless of incoming order"
+    );
+}
+
 /// A FullName seed must recall prior intel even though the stored Person anchor
 /// is reformatted by name parsing: the `seed_uid` derives from the raw,
 /// un-title-cased input and misses, so the value-match fallback's token-set key

@@ -427,6 +427,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A scan recall could retain a different set of prior findings across
+  identical runs, not just reorder them.** When more than 300 prior-scan
+  entities are recalled, the results are ranked and capped; the ranking
+  compared confidence only, with no tie-break for equal values. Since
+  many sources stamp the same literal confidence, exact ties at the cutoff
+  are common — and without a tie-break, which entities survived the cap
+  depended on in-memory iteration order that varies from run to run. Two
+  identical scans of the same target against the same data could now
+  legitimately keep the same 300 findings every time.
 - **Export byte-determinism is now guaranteed as a general property, not
   just for one test fixture.** Every export format (JSON, CSV, GEXF, full
   dossier, debug bundle) was already required to be byte-reproducible so

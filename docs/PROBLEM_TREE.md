@@ -937,6 +937,39 @@ direct.**
   so neither hint reaches those surfaces yet; a pre-existing cross-surface
   gap, not introduced here, and out of this node's stated scope. T2.14
   closed `[~]`→`[x]`.
+- **`[x]` T2.15 · `recall_prior_entities`'s confidence-only sort had no uid
+  tie-break — which entities survive the cap, not just their order, could
+  differ across identical runs** — `core::engine::mod.rs`'s
+  `recall_prior_entities` merges a target's prior-scan entity graph into a
+  `HashMap<String, Entity>` keyed by uid, collects it via `.into_values()`
+  (inheriting the map's randomised-per-process iteration order), sorts
+  strongest-confidence-first, then truncates to `MAX_ENTITIES` (300). The
+  comparator ordered by `confidence` alone, with no further tie-break —
+  unlike its three siblings in the same file (`rank_enrichment_leverage`,
+  `rank_autonomous_targets`, the autonomous-cluster ranking), which all
+  already carry a `.then_with(uid.cmp)` tie-break. Modules routinely stamp
+  flat literal confidences (0.6, 0.7, 0.8, …), so exact ties at the
+  300-entity cutoff are realistic for any heavily-scanned recall target —
+  a direct `CONVENTIONS.md` §5 violation, and more consequential than a
+  cosmetic reordering: two identical `hse scan` invocations of the same
+  target against the same DB state could retain a *different set* of
+  recalled entities. **P1** (a core reproducibility guarantee, not
+  cosmetic — the same class T1.1/T2.9 already closed elsewhere, found
+  fresh in a function neither of those passes touched).
+  *Fixed (2026-07-05):* added the same `.then_with(|| a.uid.cmp(&b.uid))`
+  tie-break used by the three sibling functions. Extracted the sort+
+  truncate step into its own `rank_recalled_and_cap(out, max)` — mirroring
+  how the three siblings are already standalone, directly-testable
+  functions rather than bundled inline — so the fix is independently
+  unit-testable without a full recall pipeline. New regression test
+  constructs 305 identically-confident entities, feeds them through
+  forward and reversed, and asserts the surviving 300-entity set is
+  byte-identical; red/green-verified by temporarily removing the tiebreak
+  (failed — different orders produced disjoint-ish 300-entity survivor
+  sets) and restoring (passed). The two pre-existing `recall_prior_entities`
+  behavioural tests pass unchanged — the extraction is behaviour-preserving.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4606 total pass (+1).
 
 ---
 
@@ -5650,3 +5683,49 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]` impact.
   **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL `[ ]`→`[~]` + §4a + §5 —
   same commit.
+
+- **2026-07-05** — **New node T2.15, found and closed same-commit: a
+  previously-untracked determinism bug in `recall_prior_entities` — a
+  confidence-only sort with no uid tie-break, deciding WHICH entities
+  survive the 300-entity cap, not just their display order.** Surfaced by
+  a fresh five-angle backlog survey (in-progress nodes, §4b gap analysis,
+  two code-discovery sweeps, a test-coverage sweep), independently
+  cross-checked against the real code before being reported, then
+  personally re-verified against the current source before implementation
+  — the loop's own "treat any claimed root cause as a hypothesis" rule.
+  Read directly: `recall_prior_entities` merges a target's prior-scan
+  entity graph into a `HashMap<String, Entity>`, collects it via
+  `.into_values()` (a randomised-per-process iteration order), sorts by
+  confidence alone, then truncates to `MAX_ENTITIES` (300) — the exact
+  same rank-then-truncate shape as three sibling functions in the same
+  file (`rank_enrichment_leverage`, `rank_autonomous_targets`, the
+  autonomous-cluster ranking), all three of which already carry a
+  `.then_with(uid.cmp)` tie-break that this one lacked. Modules routinely
+  stamp flat literal confidences, so exact ties at the cutoff are
+  realistic, not contrived: two identical `hse scan` invocations of the
+  same target against the same DB state could retain a genuinely
+  *different set* of recalled entities, purely from HashMap iteration-
+  order randomness — a direct `CONVENTIONS.md` §5 violation, and more
+  consequential than the ordering-only bugs T1.1/T2.9 already closed
+  (this changes scan content, not just its display order). Fixed with the
+  same tie-break the siblings already use; extracted the sort+truncate
+  step into a standalone `rank_recalled_and_cap` (mirroring how the three
+  siblings are already separately-testable functions, unlike
+  `recall_prior_entities` itself) so the fix is independently unit-tested
+  without needing a full recall pipeline. New regression test: 305
+  identically-confident entities, fed forward vs. reversed, must truncate
+  to the byte-identical 300-entity survivor set — red/green-verified by
+  temporarily removing the tiebreak (failed, producing disjoint survivor
+  sets between the two orders) and restoring (passed). Both pre-existing
+  `recall_prior_entities` behavioural tests pass unchanged — the
+  extraction is behaviour-preserving, not a refactor-and-hope. A rival
+  survey candidate (exposing the already-built module-health data via a
+  new API endpoint + SPA panel) was confirmed real but deliberately not
+  picked this cycle: it is a larger surface (new handler, route, and
+  frontend JS) than this one-line-plus-extraction fix, and this bug is
+  higher-leverage — a core reproducibility guarantee, not a UI feature.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` — 4606 total pass (+1). No identity/PII,
+  architecture-guard, or `#![forbid(unsafe_code)]` impact. **Paired:**
+  `SOLUTION_TREE` new node SOL-RECALL-ORDER `[x]` + capability table + §5
+  — same commit.
