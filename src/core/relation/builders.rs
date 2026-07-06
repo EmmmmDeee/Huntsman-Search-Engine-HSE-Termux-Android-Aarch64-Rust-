@@ -338,7 +338,7 @@ pub fn derive_co_ownership(
     relations: &[Relation],
     scan_id: &str,
 ) -> Vec<Relation> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::{BTreeMap, HashMap, HashSet};
 
     if entities.is_empty() {
         return Vec::new();
@@ -375,7 +375,14 @@ pub fn derive_co_ownership(
 
     // ── Source A: shared registrant ──────────────────────────────────────────
     {
-        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+        // BTreeMap, not HashMap: the groups are iterated below to emit edges into
+        // `out`, whose order is preserved through `collapse_to_max_confidence` and
+        // persisted (autoincrement `id`); `relations_for_scan` then reads back
+        // `ORDER BY kind, id`, so a HashMap's hash-seed group order would make the
+        // persisted SameOperator edge order vary across runs on identical input.
+        // Sorted-key iteration keeps this builder deterministic by construction,
+        // as its doc-contract ("deterministic (stable, deduped)") requires.
+        let mut groups: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for r in relations
             .iter()
             .filter(|r| r.kind == RelationKind::RegisteredBy)
@@ -415,7 +422,14 @@ pub fn derive_co_ownership(
 
     // ── Source B: shared dedicated IP ────────────────────────────────────────
     {
-        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
+        // BTreeMap, not HashMap: the groups are iterated below to emit edges into
+        // `out`, whose order is preserved through `collapse_to_max_confidence` and
+        // persisted (autoincrement `id`); `relations_for_scan` then reads back
+        // `ORDER BY kind, id`, so a HashMap's hash-seed group order would make the
+        // persisted SameOperator edge order vary across runs on identical input.
+        // Sorted-key iteration keeps this builder deterministic by construction,
+        // as its doc-contract ("deterministic (stable, deduped)") requires.
+        let mut groups: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
         for r in relations
             .iter()
             .filter(|r| r.kind == RelationKind::ResolvesTo)

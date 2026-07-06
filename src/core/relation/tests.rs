@@ -1398,6 +1398,68 @@ fn co_ownership_shared_registrant_links_two_domains() {
 }
 
 #[test]
+fn co_ownership_emits_edges_in_deterministic_group_order() {
+    // Determinism by construction: source A groups domains by registrant uid and
+    // emits one SameOperator edge per group. Those edges enter `out` in group-
+    // iteration order, which is preserved through `collapse_to_max_confidence`,
+    // persisted (autoincrement `id`), and read back by `relations_for_scan` as
+    // `ORDER BY kind, id` — i.e. insertion order. A `HashMap` would therefore leak
+    // hash-seed group order into the persisted SameOperator edge order, so the same
+    // scan on byte-identical input would serialise its relations differently across
+    // runs. Grouping by `BTreeMap` iterates registrant uids in sorted order, making
+    // the edge sequence a fixed function of the input. This pins that sequence.
+    let domains: Vec<Entity> = (0..12)
+        .map(|i| ent(EntityKind::Domain, &format!("site-{i:02}.example"), 0.8))
+        .collect();
+    let registrants: Vec<Entity> = (0..6)
+        .map(|k| {
+            ent(
+                EntityKind::Organisation,
+                &format!("Registrant {k} Holdings Pty Ltd"),
+                0.9,
+            )
+        })
+        .collect();
+    // Registrant k registers domains 2k and 2k+1.
+    let mut relations = Vec::new();
+    for (k, r) in registrants.iter().enumerate() {
+        relations.push(reg_edge(&domains[2 * k], r));
+        relations.push(reg_edge(&domains[2 * k + 1], r));
+    }
+    let mut all: Vec<Entity> = domains.clone();
+    all.extend(registrants.iter().cloned());
+
+    let rels = derive_co_ownership(&all, &relations, "s");
+    assert_eq!(rels.len(), 6, "one SameOperator edge per registrant group");
+    assert!(rels.iter().all(|r| r.kind == RelationKind::SameOperator));
+
+    // Expected sequence: registrant groups in ascending-uid order (BTreeMap key
+    // order), each mapped to the canonical (min,max) pair of its two domains.
+    let mut keyed: Vec<(String, (String, String))> = registrants
+        .iter()
+        .enumerate()
+        .map(|(k, r)| {
+            let a = domains[2 * k].uid.clone();
+            let b = domains[2 * k + 1].uid.clone();
+            let pair = if a <= b { (a, b) } else { (b, a) };
+            (r.uid.clone(), pair)
+        })
+        .collect();
+    keyed.sort_by(|x, y| x.0.cmp(&y.0));
+    let expected: Vec<(String, String)> = keyed.into_iter().map(|(_, p)| p).collect();
+
+    let actual: Vec<(String, String)> = rels
+        .iter()
+        .map(|r| (r.from_uid.clone(), r.to_uid.clone()))
+        .collect();
+    assert_eq!(
+        actual, expected,
+        "SameOperator edges must be emitted in sorted-registrant-uid order \
+         (deterministic by construction), not hash-seed order"
+    );
+}
+
+#[test]
 fn co_ownership_proxy_registrant_excluded() {
     let dom_a = ent(EntityKind::Domain, "alpha-site.com", 0.8);
     let dom_b = ent(EntityKind::Domain, "beta-site.org", 0.8);

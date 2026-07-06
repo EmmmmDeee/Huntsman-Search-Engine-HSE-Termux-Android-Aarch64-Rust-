@@ -370,6 +370,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The persisted relation graph is now byte-reproducible across runs.** The
+  co-ownership builder emitted `SameOperator` edges in hash-map iteration order,
+  which was persisted and read back in insertion order, so two scans of the same
+  target on identical input could serialise their relations in different orders.
+  Grouping is now ordered by construction (`BTreeMap`), so the edge order is a
+  fixed function of the input. Regression test
+  `co_ownership_emits_edges_in_deterministic_group_order`.
 - **Temporal breach-cluster correlation (AU-019) now measures exact calendar
   days.** The day gap between two breach dates was approximated as
   `year*365 + month*30 + day`, which ignores month lengths and leap years, so

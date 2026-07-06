@@ -1240,6 +1240,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   got wrong. **P2** (a correctness defect that mis-fires a HIGH-severity
   correlation at the cluster boundary — corrupts the intelligence product, not a
   crash or PII leak).
+- **`[x]` T2.37 · `core::relation::builders::derive_co_ownership` leaks
+  `HashMap` group-iteration order into the persisted `SameOperator` relation
+  order** — surfaced by a "most faulty file" correctness pass into the largest
+  relation-building file, then fully traced through the persistence path before
+  acting. Sources A (shared registrant) and B (shared dedicated IP) build a
+  `groups: HashMap<&str, Vec<&str>>` keyed by registrant/IP uid and iterate it
+  with `for (_, mut domains) in groups` to emit `SameOperator` edges into `out`.
+  Intra-group order is sorted (`domains.sort_unstable()`) and the global
+  `emitted` set fixes the edge *set*, but the *cross-group* emission order is
+  `HashMap` hash-seed order. That order survives to output:
+  `collapse_to_max_confidence` preserves first-occurrence input order (its own
+  doc), `derive_all_within` returns it, the engine persists `derived` in order
+  (`engine/mod.rs` — no sort), the SQLite autoincrement `id` therefore encodes
+  it, and `relations_for_scan` reads `ORDER BY kind, id` — i.e. insertion order.
+  So two scans on byte-identical input serialise their `SameOperator` edges in
+  different orders, breaking the reproducibility charter and contradicting the
+  builder's own doc-contract ("deterministic (stable, deduped)"). Unlike the
+  entity path (storage `ORDER BY confidence, uid`) nothing downstream re-sorts
+  relations of the same kind. → **Solution:** make the two `groups` maps
+  `BTreeMap`, so cross-group iteration is by sorted key — deterministic by
+  construction, no separate sort, mirroring T2.35. The edge set is unchanged;
+  only its order becomes reproducible. **P2** (byte-reproducibility of the
+  persisted relation graph — product correctness, not a crash; the set of edges
+  was already correct).
 
 ---
 
@@ -5591,3 +5615,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   still passes unchanged. Gate green: fmt/clippy/doc clean, full suite 0 failures
   (4419 lib tests). **P2** (mis-fires a HIGH-severity correlation at the cluster
   boundary — product correctness). **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **T2.37 (new): `derive_co_ownership` leaked `HashMap`
+  group-order into the persisted `SameOperator` relation order.** Selected by a
+  "most faulty file" correctness pass into the largest relation-builder file;
+  the candidate was independently re-traced through the whole persistence path
+  this cycle before acting. Sources A/B build `groups: HashMap<&str, Vec<&str>>`
+  and iterate `for (_, mut domains) in groups` — intra-group order is sorted and
+  the global `emitted` set fixes the edge *set*, but cross-group emission order
+  is hash-seed order, and it reaches output: `collapse_to_max_confidence`
+  preserves input order, the engine persists `derived` unsorted, autoincrement
+  `id` encodes it, and `relations_for_scan` reads `ORDER BY kind, id`
+  (insertion order). Verified end-to-end by reading each link (`builders.rs`,
+  `engine/mod.rs:708`, `storage/mod.rs:604`), not inferred. Fix: the two
+  `groups` maps are now `BTreeMap`, giving sorted-key cross-group iteration —
+  deterministic by construction (mirrors T2.35), edge set unchanged. Test delta:
+  `co_ownership_emits_edges_in_deterministic_group_order` — six registrant
+  groups, asserts the emitted edges follow ascending-registrant-uid order.
+  **Fail-before proven by running it:** reverted the two maps to `HashMap`, the
+  test failed with the six edges in scrambled hash-seed order (`left`) vs the
+  sorted order (`right`); restored `BTreeMap`, it passes. Gate green:
+  fmt/clippy/doc clean, full suite 0 failures (4420 lib tests). **P2**
+  (byte-reproducibility of the persisted relation graph). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

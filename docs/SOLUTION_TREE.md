@@ -875,6 +875,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.36**. ✅ 3 new boundary tests (Jan-31, non-leap Feb, leap Feb) that fail
   against the old approximation and pass against exact arithmetic; all prior
   `date_diff_days` tests unchanged.
+- **`[x]` SOL-COOWNER-DETERMINISM · `derive_co_ownership` emits `SameOperator`
+  edges in deterministic order** — surfaced by a "most faulty file" correctness
+  pass into the largest relation-builder file. Sources A/B iterated a
+  `groups: HashMap` to emit edges into `out`, and that hash-seed cross-group
+  order reached the persisted relation order (input order is preserved by
+  `collapse_to_max_confidence`, persisted unsorted, read back
+  `ORDER BY kind, id`), so byte-identical scans serialised their relations
+  differently — contradicting the builder's own "deterministic (stable,
+  deduped)" contract. Changed the two `groups` maps to `BTreeMap` (sorted-key
+  iteration by construction, mirroring SOL-HEXPM-DETERMINISM); edge set
+  unchanged. *Closes:* new node **T2.37**. ✅ 1 test
+  (`co_ownership_emits_edges_in_deterministic_group_order`), fail-before proven
+  by reverting to `HashMap` and observing the scrambled order.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -951,6 +964,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMAIL-DEGLUE | T2.34 | `[x]` |
 | SOL-HEXPM-DETERMINISM | T2.35 | `[x]` |
 | SOL-BREACH-DATE-EXACT | T2.36 | `[x]` |
+| SOL-COOWNER-DETERMINISM | T2.37 | `[x]` |
 
 ---
 
@@ -4105,3 +4119,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   guard) — fail against the old formula, pass against the fix; all prior tests
   unchanged. Gate green: fmt/clippy/doc clean, 4419 lib tests, 0 failures.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **SOL-COOWNER-DETERMINISM `[x]`: `derive_co_ownership`
+  emits SameOperator edges in deterministic order.** A "most faulty file"
+  correctness pass into the largest relation-builder file found sources A/B
+  iterating a `groups: HashMap` — hash-seed cross-group order that reached the
+  persisted relation order (preserved by `collapse_to_max_confidence`, persisted
+  unsorted, read back `ORDER BY kind, id`), so byte-identical scans serialised
+  their relations differently, contradicting the builder's "deterministic
+  (stable, deduped)" contract. Traced end-to-end (`builders.rs`,
+  `engine/mod.rs:708`, `storage/mod.rs:604`) before acting. Fix: the two
+  `groups` maps are now `BTreeMap` (sorted-key iteration by construction);
+  edge set unchanged. *Closes:* **T2.37** (`[ ]`→`[x]`). Test:
+  `co_ownership_emits_edges_in_deterministic_group_order` — fail-before proven by
+  reverting to `HashMap` and observing scrambled order. Gate green:
+  fmt/clippy/doc clean, 4420 lib tests, 0 failures. Paired: `PROBLEM_TREE` §8 —
+  same commit.
