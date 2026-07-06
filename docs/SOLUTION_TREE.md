@@ -4365,3 +4365,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   that one leg. Gate green: fmt/clippy `--all-targets -D warnings`/
   strict-rustdoc `cargo doc`/`cargo test` — 4617 total pass (+4). Paired:
   `PROBLEM_TREE` §3.2 T2.7 — same commit.
+
+- **2026-07-06** — **`cli::import::combined` fabricated-count fix: the
+  Combined Search aggregator importer double-counted `stats.breach_records`
+  for the export shape a real paid aggregator actually produces.** Reviewing
+  a real-world Combined Search export this cycle surfaced a structural shape
+  the existing `COMBINED` test fixture never covered: every module's results
+  repeated TWICE, once nested under `Modules:`, again verbatim under a
+  separate top-level `Results:` section keyed off the same underlying data.
+  Per-field entity dedup (`seen`) already prevented duplicate entities, but
+  `stats.breach_records` — the operator-facing "N breach" count in every
+  `hse import` summary — incremented once per record regardless of
+  repetition, silently doubling the reported total for this real shape. Same
+  fabricated-count bug class already fixed for `netlas`/`psbdmp`/
+  `pypi_user`/`rubygems_user`/`urlscan` this cycle, now in an importer. No
+  real third-party data touched a database: the auto-mode safety classifier
+  correctly declined an attempted `hse import` smoke-test against the
+  uploaded real export, so the bug was reproduced instead with a synthetic
+  fixture built to the identical structural shape (reusing the established
+  `jordanavery@gmail.com`/`Jordan Avery` placeholders). Fixed with a
+  record-level dedup keyed on identity fields (email/username/name/
+  password/hash/phone/ip/lastip/url/source), not the record's raw field
+  set — an initial raw-field-set attempt failed (still off by one) because
+  the LAST record in each occurrence absorbs whatever incidental trailing
+  metadata (attempt/retry/cooldown counters) happens to precede the next
+  `[N]` marker or EOF, which can legitimately differ between two otherwise-
+  identical copies of the same record. New regression test red/green-
+  verified (dedup check disabled → reported 4 instead of the true 2;
+  restored → correct). Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4618 total pass (+1). No
+  identity/PII impact — synthetic fixture only, no real data ever
+  persisted. Logged as a dated entry, not a new tracked node — same
+  precedent as the entries above: a contained, single-function fix.
+  Paired: `PROBLEM_TREE` §8 — same commit.

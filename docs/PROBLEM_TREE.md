@@ -5891,3 +5891,42 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   date; pypi_user/rubygems_user, 2026-07-03): a contained, single-function
   fix, not a new tracked node. **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+
+- **2026-07-06** — **`cli::import::combined`'s "Combined Search" aggregator
+  importer double-counted the operator-facing breach-record total for the
+  export shape a real paid combined-search aggregator actually produces.**
+  Reviewed a real-world Combined Search export (a multi-module breach
+  aggregator's TXT report) this cycle; its structure repeats every module's
+  results TWICE — once nested under a `Modules:` section, again verbatim
+  under a separate top-level `Results:` section keyed off the identical
+  underlying per-module data — a shape the existing `COMBINED` test fixture
+  never exercised (it only has the single nested occurrence). Per-field
+  entity dedup (the `seen` set) already prevented duplicate entities from
+  the repeated record, but `stats.breach_records` — printed verbatim as
+  "N breach" in every `hse import`'s operator-facing summary
+  (`print_import_stats`) — was incremented once per record regardless of
+  whether it was a repeat, so the reported count silently doubled for this
+  real export shape. The same fabricated-count bug class already fixed
+  for `netlas`/`psbdmp`/`pypi_user`/`rubygems_user`/`urlscan` this cycle,
+  now found in an importer rather than a scan module. No real third-party
+  data was ever written to a database or committed anywhere — the auto-mode
+  safety classifier correctly declined an attempted `hse import` smoke-test
+  against the uploaded real export, and the bug was instead reproduced with
+  a synthetic fixture (`COMBINED_DUPLICATE_TOP_LEVEL_RESULTS`, reusing the
+  established `jordanavery@gmail.com`/`Jordan Avery` synthetic placeholders)
+  built to the same structural shape. Fixed with a record-level dedup keyed
+  on the record's identity fields (email/username/name/password/hash/phone/
+  ip/lastip/url/source) rather than the record's raw field set, because the
+  LAST record in each of the two occurrences absorbs whatever incidental
+  trailing metadata (attempt/retry/cooldown counters) happens to precede
+  the next `[N]` marker or EOF, which can differ between two otherwise-
+  identical copies of the same record — confirmed by an initial raw-field-set
+  dedup attempt failing on exactly that edge (red: still off by one) before
+  landing on the identity-keyed signature. New regression test red/green-
+  verified: failed with the dedup check disabled (breach_records reported 4
+  instead of the true 2) and passed once restored. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4618 total pass (+1). No identity/PII impact (synthetic fixture only, no
+  real data ever persisted). Logged here per the established precedent for
+  this bug class: a contained, single-function fix, not a new tracked node.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

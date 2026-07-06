@@ -98,6 +98,19 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
     let mut entities = Vec::new();
     let mut stats = ImportStats::default();
     let mut seen = std::collections::HashSet::new();
+    // A real-world aggregator export echoes every module's results TWICE: once
+    // nested under "Modules:", again verbatim under a separate top-level
+    // "Results:" section keyed off the same underlying per-module data.
+    // Per-field entity dedup (`seen`, below) already keeps a repeated record
+    // from producing duplicate entities, but without this, `stats.breach_records`
+    // — and the operator-facing "N breach" summary line it feeds — would
+    // silently double-count every record in that common export shape. Keyed
+    // on identity fields only (not the raw record), because the LAST record
+    // in each occurrence absorbs whatever incidental trailing metadata
+    // (attempt/retry/cooldown counters) happens to precede the next `[N]`
+    // marker or EOF — which can differ in content between the two otherwise-
+    // identical copies, even though the record IS the same one.
+    let mut seen_records = std::collections::HashSet::new();
 
     for rec in split_records(body) {
         let get = |want: &str| -> Option<&str> {
@@ -125,6 +138,30 @@ pub(super) fn parse_combined_search(body: &str, sid: &str) -> (Vec<Entity>, Impo
             .iter()
             .any(|k| get(k).is_some());
         if !is_result {
+            continue;
+        }
+        // Skip a record whose identity fields exactly match one already
+        // processed — an aggregator's echoed "Results:" section repeats each
+        // module's records verbatim, so an identical identity signature is
+        // the whole record being repeated, not a coincidentally-similar new one.
+        let signature: Vec<Option<String>> = [
+            "email",
+            "username",
+            "name",
+            "full name",
+            "password",
+            "hash",
+            "password hash",
+            "phone",
+            "ip",
+            "lastip",
+            "url",
+            "source",
+        ]
+        .iter()
+        .map(|k| get(k).map(str::to_string))
+        .collect();
+        if !seen_records.insert(signature) {
             continue;
         }
 

@@ -433,6 +433,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Importing a real "Combined Search" aggregator export no longer doubles
+  the reported breach-record count.** That export format repeats every
+  module's results twice — once nested under a `Modules:` section, again
+  verbatim under a top-level `Results:` section — and the importer counted
+  each repeated record separately even though it correctly avoided creating
+  duplicate entities. The reported "N breach" total now reflects the true
+  number of distinct records, not double it.
 - **The debug bundle's "BEST AU LOCATION FIX" line no longer mislabels a
   coarse single-signal location estimate as an "AU-059" cross-seed
   synergy result.** The underlying computation returns one of two shapes —
