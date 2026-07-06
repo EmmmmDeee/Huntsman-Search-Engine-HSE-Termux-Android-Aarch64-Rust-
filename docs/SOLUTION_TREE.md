@@ -888,6 +888,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unchanged. *Closes:* new node **T2.37**. ✅ 1 test
   (`co_ownership_emits_edges_in_deterministic_group_order`), fail-before proven
   by reverting to `HashMap` and observing the scrambled order.
+- **`[x]` SOL-RUNCOUNT-CACHE · a cache replay no longer counts in `modules_run`**
+  — code-grounded discovery pass into the engine dispatch path.
+  `finalise_module_result` incremented `stats.run` unconditionally, but the
+  cache-hit path also increments `stats.cached` and calls it with
+  `from_cache=true`, so replays were double-counted in the operator-facing
+  `scan.modules_run` — contradicting the `ModuleStats::cached` doc ("Not counted
+  in `run`"). Guarded the increment with `if !from_cache` (a `from_cache=true`
+  result is always the `Ok(Ok)` replay branch, so real dispatches are unchanged);
+  mirrors the existing `!from_cache` circuit-breaker guard. *Closes:* new node
+  **T2.38**. ✅ 1 test (`cache_replay_is_not_counted_in_modules_run`),
+  fail-before proven by reverting the guard (`left: 1, right: 0`).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -965,6 +976,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HEXPM-DETERMINISM | T2.35 | `[x]` |
 | SOL-BREACH-DATE-EXACT | T2.36 | `[x]` |
 | SOL-COOWNER-DETERMINISM | T2.37 | `[x]` |
+| SOL-RUNCOUNT-CACHE | T2.38 | `[x]` |
 
 ---
 
@@ -4135,3 +4147,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   reverting to `HashMap` and observing scrambled order. Gate green:
   fmt/clippy/doc clean, 4420 lib tests, 0 failures. Paired: `PROBLEM_TREE` §8 —
   same commit.
+
+- **2026-07-06** — **SOL-RUNCOUNT-CACHE `[x]`: a cache replay no longer inflates
+  `modules_run`.** Code-grounded discovery pass into the engine dispatch path.
+  `finalise_module_result` did `stats.run += 1` unconditionally, but the
+  inter-scan-cache hit path already increments `stats.cached` and then calls it
+  with `from_cache=true`, so warm-cache re-scans double-counted replays in the
+  operator-facing `scan.modules_run`, contradicting the `ModuleStats::cached`
+  doc-invariant. Guarded with `if !from_cache`; `from_cache=true` is always the
+  `Ok(Ok)` replay branch, so error/timeout/needs-key/success dispatches are
+  unchanged (functional parity), mirroring the existing `!from_cache`
+  circuit-breaker guard. *Closes:* **T2.38** (`[ ]`→`[x]`). Test:
+  `cache_replay_is_not_counted_in_modules_run` — fail-before proven by reverting
+  the guard (`left: 1, right: 0`). Gate green: fmt/clippy/doc clean, 4421 lib
+  tests, 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

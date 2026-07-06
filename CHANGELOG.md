@@ -370,6 +370,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`modules_run` no longer counts cache replays.** On a re-scan served from the
+  inter-scan cache, each replayed module result was counted in both the `cached`
+  tally and the `modules_run` tally, over-reporting how many modules actually
+  executed. Cache replays now count only under `cached`, so `modules_run`
+  reflects live collection. Regression test
+  `cache_replay_is_not_counted_in_modules_run`.
 - **The persisted relation graph is now byte-reproducible across runs.** The
   co-ownership builder emitted `SameOperator` edges in hash-map iteration order,
   which was persisted and read back in insertion order, so two scans of the same

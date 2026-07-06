@@ -387,7 +387,16 @@ impl super::ScanEngine {
         attack_techniques: &'static [&'static str],
         from_cache: bool,
     ) {
-        state.stats.run += 1;
+        // A cache replay makes no provider call, so it is NOT a run: it is counted
+        // under `stats.cached` at the call site only. Counting it in `run` too would
+        // break the `ModuleStats::cached` invariant ("Not counted in `run`") and
+        // inflate the reported `scan.modules_run`. A `from_cache` result is always
+        // the `Ok(Ok(_))` success branch (the replay path), so real dispatches —
+        // including error/timeout/needs-key — still increment `run` exactly as
+        // before. Mirrors the `!from_cache` circuit-breaker guard below.
+        if !from_cache {
+            state.stats.run += 1;
+        }
         match result {
             Err(_) => {
                 state.stats.timed_out += 1;

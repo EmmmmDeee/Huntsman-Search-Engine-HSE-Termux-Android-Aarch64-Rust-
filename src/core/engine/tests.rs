@@ -947,6 +947,67 @@ async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
     );
 }
 
+#[tokio::test]
+async fn cache_replay_is_not_counted_in_modules_run() {
+    use crate::core::module::ModuleResult;
+    use crate::core::test_support::InMemoryStore;
+
+    // `ModuleStats::cached` documents cache replays as "Not counted in `run`", and
+    // `run` becomes the reported `scan.modules_run`. Drive the real
+    // `finalise_module_result` on both paths and prove the invariant: a
+    // `from_cache=true` replay leaves `run` untouched; a `from_cache=false` real
+    // dispatch increments it.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+
+    let target = Target::new(TargetKind::Email, "seed@gmail.com");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "run-count-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Email,
+    };
+    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+    };
+
+    // Cache replay: must NOT increment `run`.
+    engine.finalise_module_result(
+        &cx,
+        "test_run_count_cached",
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        true, // from_cache
+    );
+    assert_eq!(
+        state.stats.run, 0,
+        "a cache replay must not be counted in `run` (ModuleStats::cached invariant)"
+    );
+
+    // Real dispatch: MUST increment `run`.
+    engine.finalise_module_result(
+        &cx,
+        "test_run_count_real",
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        false, // real dispatch
+    );
+    assert_eq!(
+        state.stats.run, 1,
+        "a real dispatch must be counted in `run`"
+    );
+}
+
 fn free_active() -> StubModule {
     StubModule {
         name: "test_free",

@@ -1264,6 +1264,27 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   only its order becomes reproducible. **P2** (byte-reproducibility of the
   persisted relation graph — product correctness, not a crash; the set of edges
   was already correct).
+- **`[x]` T2.38 · `core::engine::dispatch::finalise_module_result` counts a
+  cache replay in `stats.run`, violating the `ModuleStats::cached` invariant and
+  inflating the reported `scan.modules_run`** — surfaced by a code-grounded
+  discovery pass into the engine dispatch path, confirmed by reading the exact
+  lines this cycle. `ModuleStats::cached` (`engine/mod.rs:120-122`) documents a
+  cache-replayed result as "Not counted in `run`", and `run` is applied verbatim
+  to the scan record (`scan.modules_run = stats.run`, `engine/mod.rs:643`). But
+  `finalise_module_result` incremented `state.stats.run += 1` **unconditionally**
+  (`dispatch.rs:390`), and the inter-scan-cache hit path
+  (`dispatch.rs:700-724`, mirrored at `841`) increments `state.stats.cached += 1`
+  and *then* calls `finalise_module_result(.., from_cache = true)` — so every
+  cache replay was counted in BOTH `cached` and `run`, over-reporting
+  `modules_run` by the number of replays on any re-scan with a warm cache. → **Solution:**
+  guard the increment with `if !from_cache`. A `from_cache = true` result is
+  always the `Ok(Ok(_))` replay branch, so real dispatches — success, error,
+  timeout, and needs-key skip — still increment `run` exactly as before; only the
+  cache double-count is removed. Mirrors the existing `!from_cache` circuit-breaker
+  guard (`dispatch.rs:457`). Functional parity: the sole consumer of `run` is
+  `scan.modules_run`; it becomes accurate, nothing else changes. **P3** (a
+  reported-count inaccuracy on cached re-scans — operator-facing metric, not a
+  wrong finding, crash, or PII leak).
 
 ---
 
@@ -5637,4 +5658,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   sorted order (`right`); restored `BTreeMap`, it passes. Gate green:
   fmt/clippy/doc clean, full suite 0 failures (4420 lib tests). **P2**
   (byte-reproducibility of the persisted relation graph). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **T2.38 (new): a cache replay was counted in `stats.run`,
+  inflating `scan.modules_run`.** Code-grounded discovery pass into the engine
+  dispatch path; each line read this cycle, not inferred. `ModuleStats::cached`
+  (`engine/mod.rs:120`) documents cache replays as "Not counted in `run`", yet
+  `finalise_module_result` ran `state.stats.run += 1` unconditionally
+  (`dispatch.rs:390`) while the cache-hit path (`dispatch.rs:703`/`843`) had
+  already done `state.stats.cached += 1` before calling it with
+  `from_cache = true` — so a warm-cache re-scan double-counted every replay in
+  the operator-facing `scan.modules_run` (`engine/mod.rs:643`). Fix: guard the
+  increment with `if !from_cache`; since `from_cache = true` is always the
+  `Ok(Ok(_))` replay branch, error/timeout/needs-key/success real dispatches
+  still count exactly as before (functional parity — only the double-count is
+  removed), mirroring the existing `!from_cache` circuit-breaker guard at
+  `dispatch.rs:457`. Test delta: `cache_replay_is_not_counted_in_modules_run`
+  drives the real `finalise_module_result` on both paths and asserts a
+  `from_cache=true` replay leaves `run == 0` while a `from_cache=false` dispatch
+  makes it `1`. **Fail-before proven by running it:** reverted the guard to the
+  unconditional increment, the test failed `left: 1, right: 0`; restored the
+  guard, it passes. Gate green: fmt/clippy/doc clean, full suite 0 failures
+  (4421 lib tests). **P3** (reported-count accuracy). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
