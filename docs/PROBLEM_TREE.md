@@ -5819,3 +5819,47 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `cargo test` — 4611 total pass (+1). No identity/PII, architecture-guard,
   or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+
+- **2026-07-06** — **Picked up the AU-059 mislabeling bug deferred by the
+  previous entry: `cli::export::renderers::render_debug_bundle`'s "BEST AU
+  LOCATION FIX" line unconditionally labelled every non-null
+  `extract_au_location_fix` result "(AU-059)" and read
+  `synergy_confidence`/`severity` via `.unwrap_or` defaults regardless of
+  which of the function's two JSON shapes actually fired, and omitted
+  `radius_km` entirely from both.** `extract_au_location_fix`
+  (`src/api/scan_export/mod.rs:237-313`) returns either a true AU-059
+  cross-seed synergy fix (≥2 AU person-anchored coordinates across ≥2
+  orthogonal source classes — has `synergy_confidence`/`severity`) or a
+  coarser single-signal fallback (fires whenever ANY AU location signal
+  exists, down to a hardcoded landline-area-code anchor — has
+  `confidence`/`basis` instead, no `synergy_confidence` field at all). The
+  buggy code read the absent `synergy_confidence` as a silently-defaulted
+  `0.00` and still printed "(AU-059)", overstating a single coarse signal
+  (possibly just a phone area code) as a corroborated multi-source fix.
+  Before patching, did a recursive sweep of every consumer of
+  `extract_au_location_fix`'s two-shape output to confirm the bug's exact
+  scope: `src/api/scan_export/mod.rs:197` (report.json's `best_location`)
+  and `src/api/scan_handlers/analysis.rs:169-170` (the `/location` API) both
+  pass the `Value` straight through with no destructuring — safe;
+  `src/web/spa.html`'s `renderLocation` (lines 2325-2353) already branches
+  correctly on `synergy_confidence != null` — safe, reference-quality;
+  `src/cli/export/renderers.rs`'s debug-bundle line was the only unsafe
+  consumer. Fixed by branching on `fix["synergy_confidence"].as_f64()`,
+  mirroring the dual-branch pattern `src/cli/scan/dossier.rs:602-630`
+  already uses for the same two shapes, and adding the previously-omitted
+  `radius_km` field to both branches. Two new regression tests in
+  `cli::export::tests` — one drives a real 2-class AU-059 synergy fix and
+  asserts the "(AU-059)" label plus a non-zero `synergy_conf` and the
+  `radius_km` field; the other drives a lone AU coordinate (below the
+  synergy gate) and asserts the "(single-signal)" label with no
+  `synergy_conf=` at all — both red/green-verified by temporarily
+  reverting to the old unconditional-AU-059 code (both failed for the
+  right reason: the synergy test on the missing `radius_km` field, the
+  single-signal test on the wrong "(AU-059)" label) and restoring (both
+  passed). Gate green: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc`/`cargo test` — 4613 total pass (+2). No identity/PII,
+  architecture-guard, or `#![forbid(unsafe_code)]` impact. Logged here per
+  the established precedent for this bug class (raw_archive, this same
+  date; pypi_user/rubygems_user, 2026-07-03): a contained, single-function
+  fix, not a new tracked node. **Paired:** `SOLUTION_TREE` §5 — same
+  commit.

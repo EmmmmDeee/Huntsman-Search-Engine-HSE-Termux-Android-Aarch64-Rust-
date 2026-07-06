@@ -243,6 +243,133 @@ fn debug_bundle_correlation_histogram_surfaces_a_dominant_rule() {
 }
 
 #[test]
+fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() {
+    // H2 (debug-bundle review, 2026-07-06): `render_debug_bundle` used to label
+    // EVERY non-null `extract_au_location_fix` result "(AU-059)" and read
+    // `synergy_confidence`/`severity` via `.unwrap_or` defaults, even when the
+    // JSON was actually the coarser single-signal fallback shape (which has no
+    // `synergy_confidence`/`severity` fields at all — those default to 0.0/"").
+    // This test drives the TRUE synergy shape: ≥2 AU person-anchored
+    // coordinates across ≥2 orthogonal source classes, so `au059_synergy_fix`
+    // fires for real and the rendered line must say "(AU-059)", include the
+    // `radius_km` the old code silently dropped, and carry a non-zero
+    // synergy_confidence/severity.
+    use crate::core::correlator::{Correlation, Severity};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("au059.db").to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-au059",
+        Target::new(TargetKind::Email, "au059@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+
+    let sighting = |source: &str, lat: f64, lon: f64, conf: f64| {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            conf,
+            "scan-au059",
+        );
+        e.tag("au-state:NSW");
+        e.tag("country:AU");
+        e.add_evidence(Evidence::new(source, "fixture"));
+        e
+    };
+    // Two orthogonal source classes (PhotoGps + WifiSensor) agreeing near Sydney.
+    let entities = vec![
+        sighting("exif_geo", -33.8688, 151.2093, 0.85),
+        sighting("wigle", -33.8700, 151.2100, 0.78),
+    ];
+    let uids: Vec<String> = entities.iter().map(|e| e.uid.clone()).collect();
+    store.upsert_entities_batch(&entities).unwrap();
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-059",
+            "AU cross-seed geo-synergy",
+            Severity::Medium,
+            "synergy fixture".to_string(),
+            uids,
+            "scan-au059",
+            0,
+        ))
+        .unwrap();
+
+    let out = render_debug_bundle(&store, "scan-au059").unwrap();
+    assert!(
+        out.contains("BEST AU LOCATION FIX (AU-059)"),
+        "a true multi-class synergy fix must be labelled AU-059: {out}"
+    );
+    assert!(
+        !out.contains("BEST AU LOCATION FIX (single-signal)"),
+        "must not ALSO render the single-signal label: {out}"
+    );
+    // Scope the radius check to the fix line itself — the unrelated exposure-index
+    // "geo : N fix(es) / M source(s) · spread NN km · ..." line also contains "km",
+    // so a bare `out.contains("km")` would pass even if the fix line omitted it.
+    let idx = out
+        .find("BEST AU LOCATION FIX (AU-059)")
+        .expect("AU-059 fix line must be present");
+    let fix_line = &out[idx..(idx + 300).min(out.len())];
+    assert!(
+        fix_line.contains(" km ·"),
+        "the fix line must include the radius_km field: {fix_line}"
+    );
+    assert!(
+        fix_line.contains("synergy_conf=") && !fix_line.contains("synergy_conf=0.00"),
+        "a real synergy fix must carry a non-zero synergy confidence: {fix_line}"
+    );
+}
+
+#[test]
+fn debug_bundle_single_signal_fallback_fix_is_not_mislabelled_au059() {
+    // The mirror case: a lone AU coordinate is below AU-059's ≥2-signal gate,
+    // so `extract_au_location_fix` returns the coarser single-signal fallback
+    // shape (`confidence`/`basis`, no `synergy_confidence`/`severity`). The
+    // pre-fix code still printed "(AU-059)" for this shape and read its
+    // (absent) `synergy_confidence` as a silently-defaulted 0.00 — overstating
+    // a single hardcoded/low-rigour signal as a corroborated cross-seed fix.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("single_signal.db").to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-single",
+        Target::new(TargetKind::Email, "single@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+
+    let mut coord = Entity::new(
+        EntityKind::Coordinates,
+        "-33.8688,151.2093",
+        0.85,
+        "scan-single",
+    );
+    coord.tag("au-state:NSW");
+    coord.tag("country:AU");
+    coord.add_evidence(Evidence::new("exif_geo", "fixture"));
+    store.upsert_entities_batch(&[coord]).unwrap();
+    // No AU-059 correlation stored — a lone coordinate never fires the rule.
+
+    let out = render_debug_bundle(&store, "scan-single").unwrap();
+    assert!(
+        out.contains("BEST AU LOCATION FIX (single-signal)"),
+        "a lone coordinate must fall back to the single-signal label: {out}"
+    );
+    assert!(
+        !out.contains("BEST AU LOCATION FIX (AU-059)"),
+        "a single-signal fix must NOT be mislabelled AU-059: {out}"
+    );
+    assert!(
+        out.contains("basis=confirmed coordinate"),
+        "the single-signal line must surface its basis: {out}"
+    );
+    assert!(
+        !out.contains("synergy_conf="),
+        "the single-signal shape has no synergy_confidence field to render: {out}"
+    );
+}
+
+#[test]
 fn debug_bundle_is_deterministic() {
     // DETERMINISM REQUIREMENT (evidence, not assertion): re-exporting the
     // same immutable stored scan must be byte-identical, so the artifact is

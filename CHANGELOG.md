@@ -427,6 +427,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The debug bundle's "BEST AU LOCATION FIX" line no longer mislabels a
+  coarse single-signal location estimate as an "AU-059" cross-seed
+  synergy result.** The underlying computation returns one of two shapes —
+  a true multi-source synergy fix (≥2 AU person-anchored coordinates
+  across ≥2 orthogonal source classes) or a coarser single-signal fallback
+  (down to a hardcoded landline-area-code anchor) — but the line always
+  printed "(AU-059)" and a `synergy_confidence` value even for the
+  fallback shape, which doesn't carry that field at all (it silently
+  defaulted to `0.00`). The line now labels each shape correctly and also
+  renders the `radius_km` field, which was previously omitted entirely.
 - **The dossier's "raw source records" section no longer reports empty for
   scans of a name, when purchased provider data actually exists.** Archived
   responses are looked up by matching the scan's target value against each

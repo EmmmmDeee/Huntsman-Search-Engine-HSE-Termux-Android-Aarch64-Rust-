@@ -4276,3 +4276,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   correlations without relations yet). Gate green: fmt/clippy/strict-
   rustdoc `cargo doc`/`cargo test` — 4611 total pass (+1). Paired:
   `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **AU-059 mislabeling fix (the bug deferred by the
+  entry above): `render_debug_bundle`'s "BEST AU LOCATION FIX" line
+  unconditionally printed "(AU-059)" and read `synergy_confidence`/
+  `severity` via `.unwrap_or` defaults for BOTH of `extract_au_location_fix`'s
+  two JSON shapes, and never rendered `radius_km` at all.** The function
+  (`src/api/scan_export/mod.rs:237-313`) returns a true AU-059 cross-seed
+  synergy fix (≥2 AU person-anchored coordinates, ≥2 orthogonal source
+  classes — carries `synergy_confidence`/`severity`) OR a coarser
+  single-signal fallback (fires on any AU location signal at all, down to
+  a hardcoded landline-area-code anchor — carries `confidence`/`basis`
+  instead, no `synergy_confidence`). Before writing the fix, recursively
+  swept every consumer of that two-shape output to confirm scope:
+  `scan_export::mod.rs:197` (report.json) and
+  `scan_handlers::analysis.rs:169-170` (the `/location` API) both pass the
+  `Value` straight through untouched — safe; `spa.html`'s `renderLocation`
+  already branches correctly on `synergy_confidence != null` — safe,
+  reference-quality; `cli::export::renderers.rs`'s debug-bundle line was
+  the only unsafe consumer. Fixed by branching on
+  `fix["synergy_confidence"].as_f64()`, mirroring the dual-branch pattern
+  `dossier.rs:602-630` already uses for these same two shapes, and adding
+  the previously-missing `radius_km` field to both branches. Two new
+  regression tests: one drives a real 2-class AU-059 synergy fix (asserts
+  the "(AU-059)" label, a non-zero `synergy_conf`, and the `radius_km`
+  field — scoped to the fix line itself so an unrelated "km" substring
+  elsewhere in the bundle can't false-pass it); the other drives a lone AU
+  coordinate below the synergy gate (asserts the "(single-signal)" label
+  and no `synergy_conf=` at all). Both red/green-verified by temporarily
+  reverting to the old unconditional-AU-059 code — both failed for the
+  right reason (missing `radius_km`; wrong "(AU-059)" label) — and
+  restoring (both passed). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4613 total pass (+2).
+  Logged as a dated entry, not a new tracked node — same precedent as the
+  entry above: a contained, single-function fix. Paired: `PROBLEM_TREE`
+  §8 — same commit.
