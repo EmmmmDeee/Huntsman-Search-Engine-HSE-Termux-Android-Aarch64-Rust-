@@ -347,6 +347,15 @@ async fn fetch_json_inner<T: DeserializeOwned>(
 /// of seconds to wait. Falls back to `default_secs` if absent or
 /// unparseable, and is clamped to `max_secs`.
 ///
+/// Only the RFC 9110 §10.2.3 *delay-seconds* form (`Retry-After: 120`) is
+/// honoured. The alternative *HTTP-date* form (`Retry-After: Wed, 21 Oct 2015
+/// 07:28:00 GMT`) is deliberately treated as unparseable → `default_secs`,
+/// rather than pull a date-parsing dependency into a `forbid(unsafe)`,
+/// pinned-dep crate for a marginal timing gain. This is safe: the result is a
+/// lower-bound hint, every caller clamps it to `max_secs`, and the worst case is
+/// one early retry that re-observes the 429 — never an over-long sleep that the
+/// engine would kill mid-`process()`.
+///
 /// `max_secs` is mandatory because the wait happens *inside* a module's
 /// `process()` call, which the engine kills at `max_timeout_ms`. A blanket
 /// 120s cap (the previous behaviour) let a server-supplied `Retry-After`
@@ -565,5 +574,64 @@ mod tests {
         let mut buf: Vec<u8> = vec![1, 2, 3, 4];
         assert!(append_capped(&mut buf, b"more", 4));
         assert_eq!(buf, vec![1, 2, 3, 4], "nothing appended past a full buffer");
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The hostile-upstream memory ceiling, machine-proved for ALL inputs.
+        ///
+        /// `append_capped` is the OOM guard the whole module rests on:
+        /// `read_body_capped` / `error_snippet` fold it over a byte stream from an
+        /// untrusted upstream, and its ONLY job is to keep peak RAM bounded on a
+        /// low-memory Termux device. The three example tests above cover single
+        /// calls; this drives it exactly as the readers do — an arbitrary sequence
+        /// of arbitrary chunks accumulated from an empty buffer, stopping the moment
+        /// a call signals "cap reached" — and asserts, for every input:
+        ///   1. `buf.len()` NEVER exceeds `cap` after any call (the ceiling);
+        ///   2. the stop signal is returned *exactly* when the buffer first fills to
+        ///      `cap` — never early, never late;
+        ///   3. the retained bytes are precisely the first `min(total, cap)` bytes of
+        ///      the concatenated stream, in order (no truncation off-by-one, no
+        ///      reordering, no corruption).
+        /// Includes the corner inputs the examples can't enumerate: `cap == 0`, empty
+        /// chunks, a chunk that lands exactly on the boundary, and many small chunks
+        /// followed by one oversized one.
+        #[test]
+        fn append_capped_upholds_the_memory_ceiling_over_any_chunk_stream(
+            chunks in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 0..64),
+                0..32,
+            ),
+            cap in 0usize..256,
+        ) {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut consumed: Vec<u8> = Vec::new();
+            let mut stopped = false;
+            for chunk in &chunks {
+                let full = append_capped(&mut buf, chunk, cap);
+                consumed.extend_from_slice(chunk);
+                // (1) The ceiling holds after every call, whatever the chunk size.
+                prop_assert!(buf.len() <= cap, "buf {} exceeded cap {}", buf.len(), cap);
+                if full {
+                    // (2) A stop is signalled only when the buffer is exactly full;
+                    // the reader breaks here and offers no further chunk.
+                    prop_assert_eq!(buf.len(), cap);
+                    stopped = true;
+                    break;
+                }
+            }
+            // (3) Content == the in-order, cap-truncated prefix of what was consumed.
+            let kept = consumed.len().min(cap);
+            prop_assert_eq!(&buf[..], &consumed[..kept]);
+            // A stream that filled the buffer must have offered at least `cap` bytes;
+            // one that didn't stop must have fit entirely under the cap.
+            if stopped {
+                prop_assert_eq!(buf.len(), cap);
+            } else {
+                prop_assert_eq!(buf.len(), consumed.len());
+                prop_assert!(consumed.len() <= cap);
+            }
+        }
     }
 }

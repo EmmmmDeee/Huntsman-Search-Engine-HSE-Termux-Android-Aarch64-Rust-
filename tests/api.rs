@@ -2275,14 +2275,9 @@ async fn keys_status_endpoint_refuses_non_loopback_peer() {
     let app = test_app("keys-status-lan");
     let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
     let mut req = get("/api/v1/keys/status");
-    req.extensions_mut()
-        .insert(axum::extract::ConnectInfo(lan));
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
     let resp = app.oneshot(req).await.unwrap();
-    assert_eq!(
-        resp.status(),
-        403,
-        "key-pool status must be loopback-only"
-    );
+    assert_eq!(resp.status(), 403, "key-pool status must be loopback-only");
 }
 
 #[tokio::test]
