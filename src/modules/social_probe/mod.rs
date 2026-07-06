@@ -326,7 +326,12 @@ impl Module for SocialProbe {
                 break;
             }
 
-            let url = platform.url_pattern.replace("{}", &slug);
+            // Percent-encode the substituted value so a handle with URL-significant
+            // characters can't break out of the path/query (matches the other
+            // presence probes); a plain alphanumeric handle is unchanged.
+            let url = platform
+                .url_pattern
+                .replace("{}", &crate::util::http::urlencode(&slug));
             checked_count += 1;
 
             let (code, body) = crate::util::curl::fetch_with_status(

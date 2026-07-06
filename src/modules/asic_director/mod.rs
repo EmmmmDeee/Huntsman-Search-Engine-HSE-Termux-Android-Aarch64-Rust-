@@ -194,9 +194,16 @@ fn extract_acn(text: &str) -> Option<String> {
 
 /// Rough company name extraction: text before the first digit run. Pure.
 fn extract_company_name(line: &str, acn: &str) -> String {
-    let name = if !acn.is_empty() {
-        // Strip the ACN from the line to get the company portion.
-        line.split(acn).next().unwrap_or(line)
+    // The company name is the text before the ACN. Splitting on the *normalised*
+    // digits-only `acn` ("123456789") misses the canonical space-grouped display
+    // form ("123 456 789") — which left the ENTIRE row as the company value — so
+    // fall back to cutting at the first digit of the trailing registration number.
+    let name = if acn.is_empty() {
+        line
+    } else if let Some(i) = line.find(acn) {
+        &line[..i]
+    } else if let Some(i) = line.find(|c: char| c.is_ascii_digit()) {
+        &line[..i]
     } else {
         line
     };

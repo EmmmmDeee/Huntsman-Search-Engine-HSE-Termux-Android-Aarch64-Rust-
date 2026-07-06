@@ -71,8 +71,14 @@ impl Module for BgpView {
                     return Ok(result);
                 };
                 let url = format!("https://api.bgpview.io/asn/{asn_num}/prefixes");
-                let resp: BgpPrefixResponse =
-                    crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
+                // BGPView returns 404 for an unknown ASN — a clean "not found", not a
+                // module failure. fetch_json_or_404 maps that to Ok(None); fetch_json
+                // would error on it and needlessly cool the provider off.
+                let Some(resp): Option<BgpPrefixResponse> =
+                    crate::util::http::fetch_json_or_404(&ctx.http, SRC, &url).await?
+                else {
+                    return Ok(result);
+                };
                 if let Some(data) = resp.data {
                     result.extend(asn_prefix_entities(
                         &data,
@@ -84,8 +90,11 @@ impl Module for BgpView {
             TargetKind::IpAddress => {
                 let ip = target.value.trim();
                 let url = format!("https://api.bgpview.io/ip/{ip}");
-                let resp: BgpIpResponse =
-                    crate::util::http::fetch_json(&ctx.http, SRC, &url).await?;
+                let Some(resp): Option<BgpIpResponse> =
+                    crate::util::http::fetch_json_or_404(&ctx.http, SRC, &url).await?
+                else {
+                    return Ok(result);
+                };
                 if let Some(data) = resp.data {
                     result.extend(ip_entities(&data, ip, &ctx.scan_id));
                 }

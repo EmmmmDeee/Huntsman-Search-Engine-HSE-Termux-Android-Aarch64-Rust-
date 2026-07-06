@@ -56,11 +56,30 @@ pub async fn add_and_validate(service: &str, key_value: &str, notes: Option<Stri
 
 pub async fn validate_key(service: &str, key: &str) -> Option<bool> {
     let sdef = find_service(service)?;
-    let result = validate_against_endpoint(sdef, key).await;
-    Some(result)
+    // Map the three-way probe outcome to the caller's Option<bool>: only a
+    // DEFINITIVE auth rejection (401/403) marks a key invalid. Indeterminate
+    // outcomes — transport failure, timeout, 429, 5xx, any non-auth status —
+    // return None so add_and_validate leaves the key Untested for a later re-probe
+    // instead of writing a sticky Invalid on a transient outage.
+    match validate_against_endpoint(sdef, key).await {
+        ProbeOutcome::Valid => Some(true),
+        ProbeOutcome::Rejected => Some(false),
+        ProbeOutcome::Indeterminate => None,
+    }
 }
 
-async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
+/// The three distinguishable outcomes of a key-validation probe. `Indeterminate`
+/// (transport failure, timeout, 429, 5xx, or any non-auth status) is deliberately
+/// NOT a rejection: only a definitive 401/403 proves a key bad. Conflating the two
+/// previously marked a valid key permanently Invalid on a transient outage.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ProbeOutcome {
+    Valid,
+    Rejected,
+    Indeterminate,
+}
+
+async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> ProbeOutcome {
     let timeout_ms = 10_000u64;
     let secs = (timeout_ms / 1000).to_string();
 
@@ -108,10 +127,18 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
         .ok()
         .and_then(std::result::Result::ok);
 
-    let Some(output) = output else { return false };
+    let Some(output) = output else {
+        return ProbeOutcome::Indeterminate;
+    };
     let code = String::from_utf8_lossy(&output.stdout);
-    let code = code.trim();
-    matches!(code, "200" | "201" | "204" | "301" | "302")
+    match code.trim() {
+        "200" | "201" | "204" | "301" | "302" => ProbeOutcome::Valid,
+        // A definitive auth rejection — the only outcome that proves the key bad.
+        "401" | "403" => ProbeOutcome::Rejected,
+        // Connect failure (curl writes "000"), rate-limit (429), 5xx, or any other
+        // status: the key's validity could not be determined, so don't condemn it.
+        _ => ProbeOutcome::Indeterminate,
+    }
 }
 
 /// Merge pool keys into an env-var map, filling any gaps.

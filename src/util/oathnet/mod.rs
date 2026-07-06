@@ -224,11 +224,14 @@ pub async fn search(
     // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
     // which false-positives on legitimate metadata fields like `session_quota`
     // and `recommended_quota`. Match only true exhaustion signals.
-    if body.contains("\"left_today\":0")
-        || body.contains("limit exceeded")
-        || body.contains("Daily quota exceeded")
-        || body.contains("quota exceeded")
-        || body.contains("\"is_unlimited\":false,\"left_today\":0")
+    // Detect quota exhaustion from STRUCTURALLY-SCOPED signals only. The former
+    // bare-phrase checks ("limit exceeded"/"Daily quota exceeded"/"quota exceeded")
+    // substring-matched the whole body, so a breach record whose free-text field
+    // contained one of those phrases both discarded the entire page AND latched the
+    // daily-quota kill for the rest of the scan. The `"left_today":0` JSON key/value
+    // is specific enough not to collide with payload text, and a genuine 429 is
+    // handled from the parsed envelope below.
+    if body.contains("\"left_today\":0") || body.contains("\"is_unlimited\":false,\"left_today\":0")
     {
         mark_quota_exhausted();
         return Ok(Vec::new());

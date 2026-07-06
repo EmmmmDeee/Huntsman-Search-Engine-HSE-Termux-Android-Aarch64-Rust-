@@ -176,7 +176,10 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         env_var: "HUNTSMAN_NETLAS_KEY",
         category: "infrastructure",
         test_url: "https://app.netlas.io/api/users/current/",
-        key_header: KeyPlacement::BearerAuth,
+        // netlas authenticates with an `X-API-Key` header (see modules/netlas/mod.rs
+        // and api_key_probe) — a `BearerAuth` probe would 401 a valid key and
+        // mis-report it invalid.
+        key_header: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 60,
     },
     ServiceDef {

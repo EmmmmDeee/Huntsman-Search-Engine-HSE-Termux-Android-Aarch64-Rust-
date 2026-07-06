@@ -395,3 +395,20 @@ fn parse_response_parses_valid_json_and_surfaces_malformed_json() {
         "malformed JSON-shaped body must still error (schema-drift signal)"
     );
 }
+
+#[test]
+fn parse_response_ignores_auth_marker_inside_data_payload() {
+    // Regression: a stealer/breach record whose captured content contains the
+    // literal "invalid_api_key" (routine in leaked config blobs and error dumps)
+    // must NOT be mistaken for an auth rejection — which previously latched
+    // KEY_INVALID, silently disabling SeekNow for the rest of the scan AND dropping
+    // this page of real results. The marker is only meaningful in the top-level
+    // error envelope, never in the data payload.
+    let body = r#"{"total":1,"results":[{"email":"a@x.com","note":"leaked config: invalid_api_key=xyz"}]}"#;
+    let v = parse_response(body).expect("a data payload must parse, not error");
+    assert!(
+        !v.is_null(),
+        "a record containing 'invalid_api_key' must survive, not be read as auth failure"
+    );
+    assert_eq!(v["total"], 1);
+}

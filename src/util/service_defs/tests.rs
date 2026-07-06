@@ -57,3 +57,15 @@ use super::*;
             other => panic!("see_know must authenticate with X-API-Key, got {other:?}"),
         }
     }
+
+    #[test]
+    fn netlas_validation_probe_uses_x_api_key_not_bearer() {
+        // The netlas module (modules/netlas/mod.rs) and api_key_probe both send an
+        // `X-API-Key` header, so the ServiceDef the validator reads must match — a
+        // `BearerAuth` probe would 401 a VALID netlas key and mis-report it invalid.
+        let def = find_service("netlas").expect("netlas service def present");
+        match &def.key_header {
+            KeyPlacement::Header(h) => assert_eq!(*h, "X-API-Key"),
+            other => panic!("netlas must authenticate with X-API-Key, got {other:?}"),
+        }
+    }

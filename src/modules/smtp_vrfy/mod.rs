@@ -394,6 +394,16 @@ async fn read_multiline(
     loop {
         buf.clear();
         read_line_timeout(reader, buf).await?;
+        // read_line_timeout returns Ok(()) with an EMPTY buffer on EOF (the peer
+        // closed the connection). Without treating that as terminal, this loop spins
+        // at 100% CPU forever when the server drops the link at/after the EHLO reply
+        // — the only other exit needs a 4+ char line whose 4th byte is a space. Turn
+        // an empty read into a hard error so the caller fails cleanly instead.
+        if buf.is_empty() {
+            return Err(std::io::Error::other(
+                "connection closed during multiline reply",
+            ));
+        }
         if buf.len() >= 4 && buf.as_bytes()[3] == b' ' {
             return Ok(());
         }

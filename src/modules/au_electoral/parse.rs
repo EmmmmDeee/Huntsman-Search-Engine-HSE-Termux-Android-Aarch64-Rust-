@@ -91,7 +91,10 @@ pub(super) fn strip_electoral_html(html: &str) -> String {
 fn extract_suburb_hint(window: &str) -> Option<String> {
     // A 4-digit postcode in range 2000..9999 indicates a suburb is nearby.
     let bytes = window.as_bytes();
-    for i in 0..bytes.len().saturating_sub(4) {
+    // `saturating_sub(3)` (not 4): a 4-digit postcode occupying the final 4 bytes of
+    // the window must still be examined — `saturating_sub(4)` skipped it. Matches the
+    // sibling au_property::extract_postcode bound.
+    for i in 0..bytes.len().saturating_sub(3) {
         if bytes[i].is_ascii_digit()
             && bytes[i + 1].is_ascii_digit()
             && bytes[i + 2].is_ascii_digit()
