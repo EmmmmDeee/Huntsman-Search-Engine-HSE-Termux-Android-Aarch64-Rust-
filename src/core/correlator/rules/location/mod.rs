@@ -313,7 +313,7 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
     use crate::util::geohash::haversine_km;
     use crate::util::geometry::{geo_footprint, point_in_convex_hull, weighted_centroid};
 
-    let parsed = person_anchored_coords(entities);
+    let mut parsed = person_anchored_coords(entities);
     // Need an established area (≥3) plus at least one candidate outlier.
     if parsed.len() < 4 {
         return Vec::new();
@@ -321,6 +321,17 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
     if distinct_geo_sources(&parsed) < 2 {
         return Vec::new();
     }
+
+    // Determinism: the greedy single-link clustering below compares each point
+    // only to its cluster's FOUNDING point (`parsed[cl[0]]`), so which point
+    // founds a cluster — and thus the dominant-area/outlier split — depends on
+    // iteration order. The live incremental pass feeds entities in HashMap
+    // (randomised) order while the finalise pass is deterministically ordered,
+    // so the same entity set could yield different dominant/outlier uid sets
+    // that both persist as distinct AU-053 rows (the containment dedup can't
+    // fold non-superset sets). Sort by uid first so identical entity sets always
+    // cluster identically — the exact guard AU-017/AU-027 already apply.
+    parsed.sort_by(|a, b| a.0.uid.cmp(&b.0.uid));
 
     // Cluster by 0.5° boxes (same locality grain as AU-017), tracking indices.
     let mut clusters: Vec<Vec<usize>> = Vec::new();

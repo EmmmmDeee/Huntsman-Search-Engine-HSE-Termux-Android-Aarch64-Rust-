@@ -107,10 +107,21 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
 
 /// `GET /api/v1/keys/status` — per-service key-pool health (counts by status,
 /// aggregate use/error totals, and the mean per-key health score) for the
-/// operator quota view. Never exposes key values. Reads the process-global pool.
-pub async fn keys_status() -> Json<Value> {
+/// operator quota view. Never exposes key values, but per-service key-pool
+/// inventory is still sensitive infrastructure metadata, so — exactly like the
+/// sibling `keys_pool_get` — it is **loopback-only**: under an operator-chosen
+/// LAN bind a non-loopback peer gets 403 rather than a map of which services
+/// hold keys and how healthy they are. Reads the process-global pool.
+pub async fn keys_status(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key pool status is loopback-only" })),
+        )
+            .into_response();
+    }
     let services = summarize_pool(&crate::util::key_pool::global_pool().snapshot());
-    Json(json!({ "count": services.len(), "services": services }))
+    Json(json!({ "count": services.len(), "services": services })).into_response()
 }
 
 pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {

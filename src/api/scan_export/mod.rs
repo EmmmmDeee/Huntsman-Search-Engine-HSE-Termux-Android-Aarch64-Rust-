@@ -421,10 +421,18 @@ pub(crate) fn csv_escape(s: &str) -> String {
     // open — a hostile API response with `first_name = "=cmd|'/c calc'!A1"`
     // could otherwise turn an exported scan CSV into RCE on the operator's
     // workstation. Prepend a single quote to defang per OWASP guidance.
+    //
+    // A leading apostrophe is ALSO guarded (doubled). Without that the escape
+    // isn't invertible: a genuine value like `'=hunter` would export unchanged
+    // as `'=hunter`, indistinguishable from a guarded `=hunter`, and the import
+    // reverse (`strip_csv_formula_guard`) would strip its real apostrophe. By
+    // escaping any leading `'` too, this is a clean bijection — export prepends
+    // `'` iff the first byte is a trigger OR `'`, and import strips exactly one
+    // leading `'` — so every value round-trips byte-for-byte at any nesting.
     let needs_formula_guard = s
         .as_bytes()
         .first()
-        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r'));
+        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r' | b'\''));
     let body = if needs_formula_guard {
         format!("'{s}")
     } else {

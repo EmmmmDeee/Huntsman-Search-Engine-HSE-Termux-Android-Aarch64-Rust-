@@ -4041,3 +4041,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4426 lib
   tests, +1), architecture suite green. Paired: `PROBLEM_TREE` §8 — same
   commit.
+- **2026-07-06** — **Fault-tree loop round 3 (FT.15–FT.19).** Third
+  adversarial fault-tree pass (all prior FT fixes excluded); the tree is
+  converging — 5 confirmed, independently-verified root-cause defects, all
+  fixed this commit: (FT.15) `scan_identities` ran an unbounded O(n²)
+  coreference resolution on the async reactor after offloading only the entity
+  read — an imported dossier could freeze a worker for minutes with OOM risk;
+  the compute now runs inside the same `spawn_blocking` closure as the read.
+  (FT.16) `rule_au_053_out_of_area_location` clustered coordinates in caller
+  iteration order, so the live (HashMap-ordered) and finalise passes produced
+  divergent, non-dedupable AU-053 rows; now sorts by uid first, matching
+  AU-017/AU-027. (FT.17) the CSV anti-formula-injection guard wasn't
+  invertible — a genuine leading-apostrophe value lost its apostrophe on
+  re-import; `csv_escape` now also guards a leading `'` and the importer strips
+  exactly one, a true bijection with a round-trip proptest. (FT.18) the
+  cross-scan module-stats ledger's unsynchronised read-modify-write lost
+  concurrent scan accumulations; now serialised by a process-global
+  poison-tolerant mutex. (FT.19) `GET /keys/status` leaked per-service
+  key-pool inventory to LAN peers under a non-loopback bind; now carries the
+  same loopback gate as the sibling `keys_pool_get`, with a non-loopback 403
+  test. Rejected candidates were not fabricated into fixes. Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0 failures
+  (4432 lib tests, +7; +1 API test), architecture suite green. Paired:
+  `PROBLEM_TREE` §8 — same commit.

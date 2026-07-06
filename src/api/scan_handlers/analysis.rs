@@ -301,15 +301,25 @@ pub async fn scan_identities(
         .unwrap_or(200)
         .clamp(1, 1000);
 
+    // Both the entity READ and the coreference COMPUTE run on the blocking pool.
+    // `resolve_coreferences` is an all-pairs O(n²) pass and `n` is unbounded: an
+    // imported breach/stealer dossier can seat 10^5+ identity entities, so running
+    // the compute inline on an async reactor worker would freeze one of Termux's
+    // two workers for minutes (health/SSE/cancel all stall) with real OOM risk.
+    // `limit` only truncates the OUTPUT, not the pairwise work, so it is no bound.
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
-    let entities = match loaded {
-        Ok(Ok(ents)) => ents,
+    let computed = tokio::task::spawn_blocking(move || {
+        store
+            .entities_for_scan(&id2)
+            .map(|entities| crate::core::coref::resolve_coreferences(&entities, min_score, limit))
+    })
+    .await;
+    let corefs = match computed {
+        Ok(Ok(corefs)) => corefs,
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
-    let corefs = crate::core::coref::resolve_coreferences(&entities, min_score, limit);
     (
         StatusCode::OK,
         Json(json!({

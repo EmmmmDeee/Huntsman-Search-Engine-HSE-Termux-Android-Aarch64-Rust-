@@ -298,17 +298,19 @@ fn kind_from_str(s: &str) -> Option<EntityKind> {
 
 /// Reconstruct entities from HSE's own CSV export, faithfully restoring each
 /// Reverse HSE's CSV anti-formula-injection guard. `api::scan_export::csv_escape`
-/// prepends a single apostrophe when a cell's first byte is one of `= + - @ TAB
-/// CR` (so Excel/LibreOffice render it as text, not a formula). HSE is the only
-/// source of that exact prefix, so an export→re-import round-trip must strip it
-/// back off — otherwise the value accretes an apostrophe every cycle, corrupting
-/// phone numbers, negative coordinates, etc. Pure.
+/// prepends a single apostrophe when a cell's first byte is a formula trigger
+/// (`= + - @ TAB CR`) OR is itself an apostrophe (so Excel/LibreOffice render it
+/// as text, not a formula). That escape is a bijection: it adds a `'` iff the
+/// first byte is a trigger or `'`, so its exact inverse is to strip a SINGLE
+/// leading `'`. HSE is the only source of that prefix, so an export→re-import
+/// round-trip restores the value byte-for-byte — otherwise it would accrete an
+/// apostrophe every cycle (or, for genuine leading-apostrophe values, LOSE one).
+///
+/// Stripping only on `'`+trigger (the previous rule) was NOT invertible: a
+/// genuine `'=hunter` exported unchanged and then had its real apostrophe
+/// stripped on import. Matching the export's full guard set closes that. Pure.
 fn strip_csv_formula_guard(v: &str) -> &str {
-    let b = v.as_bytes();
-    if b.first() == Some(&b'\'')
-        && b.get(1)
-            .is_some_and(|c| matches!(c, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r'))
-    {
+    if v.as_bytes().first() == Some(&b'\'') {
         &v[1..]
     } else {
         v
@@ -419,24 +421,72 @@ pub(super) async fn cmd_import_hse_csv(body: &str, output: &str) -> Result<()> {
 #[cfg(test)]
 mod formula_guard_tests {
     use super::strip_csv_formula_guard as strip;
+    use crate::api::scan_export::csv_escape;
 
     #[test]
-    fn strips_only_the_export_guard_apostrophe() {
-        // Reverses csv_escape's guard for every triggering byte (= + - @ TAB CR),
-        // so export→re-import round-trips value-for-value.
+    fn strip_removes_exactly_one_leading_apostrophe() {
+        // Guarded formula-trigger bytes: strip recovers the raw value.
         assert_eq!(strip("'=cmd|/c calc"), "=cmd|/c calc");
         assert_eq!(strip("'+61400000000"), "+61400000000");
         assert_eq!(strip("'-33.8688"), "-33.8688");
         assert_eq!(strip("'@handle"), "@handle");
         assert_eq!(strip("'\tTAB"), "\tTAB");
         assert_eq!(strip("'\rCR"), "\rCR");
-        // A leading apostrophe NOT followed by a trigger byte is left intact, so a
-        // value that genuinely starts with an apostrophe is preserved.
-        assert_eq!(strip("'hello"), "'hello");
+        // A doubled apostrophe (how a genuine leading-apostrophe value is now
+        // guarded) un-doubles to one — previously this whole class was corrupted.
+        assert_eq!(strip("''=hunter"), "'=hunter");
+        assert_eq!(strip("''hello"), "'hello");
+        assert_eq!(strip("'"), "");
+        // Interior apostrophes and plain values are untouched.
         assert_eq!(strip("O'Brien"), "O'Brien");
-        // Plain values (no leading apostrophe) are untouched.
         assert_eq!(strip("+61 400 000"), "+61 400 000");
         assert_eq!(strip("example.com"), "example.com");
         assert_eq!(strip(""), "");
+    }
+
+    #[test]
+    fn strip_inverts_csv_escape_for_representative_values() {
+        // The bug this repairs: a value that GENUINELY starts with an apostrophe
+        // used to lose it on re-import. csv_escape now guards leading `'` too, so
+        // the export→import pair is a true bijection. (None of these values carry
+        // a `, " \n \r`, so csv_escape emits only the apostrophe guard — no CSV
+        // quote-wrapping — which is exactly what strip inverts.)
+        for original in [
+            "=cmd|/c calc",
+            "+61400000000",
+            "-33.8688",
+            "@handle",
+            "\tTAB",
+            "plain value",
+            "example.com",
+            "",
+            "'=hunter", // was silently corrupted to "=hunter" before the fix
+            "'hello",
+            "''=x",
+            "'",
+        ] {
+            let escaped = csv_escape(original);
+            assert_eq!(
+                strip(&escaped),
+                original,
+                "round-trip failed for {original:?} (escaped {escaped:?})",
+            );
+        }
+    }
+
+    proptest::proptest! {
+        /// `strip_csv_formula_guard` is the exact inverse of `csv_escape`'s
+        /// formula guard. Excluding the four bytes that force csv_escape's CSV
+        /// quote-wrapping (`, " \n \r`), its output is purely the apostrophe
+        /// guard — so `strip(csv_escape(s)) == s` must hold for ALL such inputs,
+        /// including any number of leading apostrophes. This is the property the
+        /// old `'`+trigger-only strip violated for genuine apostrophe-led values.
+        #[test]
+        fn strip_inverts_csv_escape_when_no_csv_quoting(
+            s in "[^,\"\\n\\r]{0,64}"
+        ) {
+            let escaped = csv_escape(&s);
+            proptest::prop_assert_eq!(strip(&escaped), &s);
+        }
     }
 }

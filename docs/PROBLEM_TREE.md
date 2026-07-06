@@ -5509,3 +5509,50 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   regression. Logged for a focused follow-up. Gate green: fmt/clippy
   `-D warnings`/rustdoc clean, full suite 0 failures (4426 lib tests, +1),
   architecture suite green. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-06** — **Fault-tree loop round 3 (FT.15–FT.19 fixed).** Re-ran the
+  fault-tree workflow with all prior FT fixes excluded; **the tree is
+  converging** — a 16-agent adversarial pass surfaced 5 confirmed,
+  independently-verified root-cause defects (rejected candidates were NOT
+  fabricated into fixes). **All 5 fixed this commit:**
+  **`[x]` FT.15 (T6 reactor starvation / OOM, HIGH)**
+  `api/scan_handlers/analysis.rs:312` — `scan_identities` offloaded only the
+  entity READ via `spawn_blocking` but ran the O(n²) `coref::resolve_coreferences`
+  COMPUTE directly on the ~2-worker reactor. `n` is unbounded: `scan_import`
+  persists every parsed entity (a 16 MB dossier seats 10⁵⁺ identity entities),
+  and `limit` truncates only the OUTPUT, not the all-pairs work. A single
+  `GET /scans/{id}/identities` on an imported dossier freezes a reactor worker
+  for minutes (health/SSE/cancel stall) with real OOM risk. → Move the
+  `resolve_coreferences` call INSIDE the existing `spawn_blocking` closure so
+  both the read and the compute run off-reactor.
+  **`[x]` FT.16 (T2.9 non-deterministic clustering → duplicate correlation)**
+  `core/correlator/rules/location/mod.rs` — `rule_au_053_out_of_area_location`
+  greedily single-link clusters person-anchored coordinates in the caller's
+  iteration order (each point compared only to its cluster's founding point),
+  so the dominant-area/outlier split is order-dependent. The live incremental
+  pass feeds entities in HashMap (randomised) order while finalise is ordered,
+  so the same set yields different AU-053 uid sets that both persist (the
+  containment dedup can't fold non-supersets). → `parsed.sort_by(uid)` before
+  clustering — the exact guard AU-017/AU-027 already carry.
+  **`[x]` FT.17 (T5/E5.1 export→import corruption)** `cli/import/csv.rs` +
+  `api/scan_export::csv_escape` — the anti-formula-injection guard prepended a
+  `'` only on a leading trigger byte (`= + - @ TAB CR`), which was NOT
+  invertible: a value genuinely starting with `'` + trigger (e.g. `'=hunter`)
+  exported unchanged, indistinguishable from a guarded `=hunter`, and re-import
+  stripped its real apostrophe. → Make it a true bijection: `csv_escape` now
+  guards a leading `'` too (doubling it), and `strip_csv_formula_guard` strips
+  exactly one leading `'`. Round-trip proptest added over inputs free of CSV
+  quote-wrapping bytes.
+  **`[x]` FT.18 (T4/E4 lost-update race)** `util/diagnostics/ledger.rs` — the
+  cross-scan module-stats ledger did an unsynchronised read-modify-write, so
+  two concurrent `serve` scan completions clobbered each other's accumulated
+  stats (`atomic_file::write` gives crash durability, NOT accumulator
+  serialisation). → Guard the whole read+accumulate+write with a process-global
+  `LazyLock<Mutex<()>>` (poison-tolerant).
+  **`[x]` FT.19 (T2 information disclosure)** `api/settings_handlers/mod.rs` —
+  `keys_status` (`GET /keys/status`) had no loopback gate, leaking per-service
+  key-pool inventory to LAN peers under a non-loopback bind — inconsistent with
+  the sibling `keys_pool_get`, which gates exactly this data class. → Add the
+  same `ConnectInfo` + `is_loopback()` 403 guard; non-loopback 403 test added.
+  Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
+  0 failures (4432 lib tests, +7; +1 API 403 test), architecture suite green.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

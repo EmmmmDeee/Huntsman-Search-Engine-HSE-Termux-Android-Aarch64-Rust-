@@ -2251,12 +2251,38 @@ async fn keys_status_endpoint_returns_service_summary_shape() {
     // asserts the wire contract, not specific data: a `{ count, services[] }`
     // object with the two in sync. The per-service counting + value-free
     // guarantee are unit-tested in handlers::tests::summarize_pool_*.
+    // The endpoint is loopback-only (per-service pool inventory is sensitive
+    // infra metadata), so inject a loopback ConnectInfo like keys/pool does.
+    use std::net::SocketAddr;
     let app = test_app("keys-status");
-    let resp = app.oneshot(get("/api/v1/keys/status")).await.unwrap();
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/keys/status");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
     let j = body_json(resp).await;
     let services = j["services"].as_array().expect("services array");
     assert_eq!(j["count"].as_u64().unwrap() as usize, services.len());
+}
+
+#[tokio::test]
+async fn keys_status_endpoint_refuses_non_loopback_peer() {
+    // Per-service key-pool inventory (which services hold keys, how healthy)
+    // must not leak to a LAN peer under an operator-chosen non-loopback bind —
+    // the same guard keys/pool GET already enforces for this data class.
+    use std::net::SocketAddr;
+    let app = test_app("keys-status-lan");
+    let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/keys/status");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "key-pool status must be loopback-only"
+    );
 }
 
 #[tokio::test]
