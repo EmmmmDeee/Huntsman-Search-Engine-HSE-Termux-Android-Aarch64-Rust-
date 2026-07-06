@@ -528,7 +528,15 @@ impl Entity {
     /// is single-sourced and the two can never drift apart.
     #[inline]
     pub fn c_effective_with_source_count(&self, n: u32) -> f64 {
-        let n = f64::from(n);
+        // Floor the source count at 1: a lone observation IS one source, and
+        // [`Self::source_count`] already never yields 0. Guarding here makes this
+        // public method TOTAL — without it, `n = 0` drives `ln(0) = -inf` (and
+        // `γ^(n-1) = γ^-1`) and returns a value BELOW the base `confidence` (or a
+        // NaN when `confidence == 0`), violating the model's `C_eff ≥ confidence`,
+        // bounded-`[0,1]` invariant. At the floored `n = 1` both terms equal
+        // `confidence`, so corroboration can only ever ADD confidence, never
+        // subtract it.
+        let n = f64::from(n.max(1));
         let multiplicative = self.confidence * CORROBORATION_COEFF.mul_add(n.ln(), 1.0);
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
         let agreement = 1.0 - residual_doubt;
@@ -915,12 +923,29 @@ impl From<&Entity> for EntityRef {
 ///
 /// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
 pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
-    // digest 0.11 dropped the `io::Write` impl for hashers; feed the same bytes
-    // (`"<kind>:"`) via `update` so existing UIDs stay byte-identical.
+    // digest 0.11 dropped the `io::Write` impl for hashers. Stream the `Display`
+    // of `<kind>` straight into the hasher through [`HashWrite`] so the
+    // per-entity hot path (every `Entity::new`) allocates NO intermediate
+    // `String` — the previous `format!("{kind}:")` heap-allocated on every UID.
+    // The bytes hashed are byte-identical to that `format!`, so existing UIDs are
+    // unchanged.
+    use fmt::Write as _;
     let mut h = Sha256::new();
-    h.update(format!("{kind}:").as_bytes());
+    let _ = write!(HashWrite(&mut h), "{kind}:");
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
+}
+
+/// A [`fmt::Write`] shim that streams formatted text straight into a SHA-256
+/// hasher, so a value's `Display` can be hashed with no intermediate `String`
+/// allocation. `write_str` is infallible here (updating a hasher never fails).
+struct HashWrite<'a>(&'a mut Sha256);
+
+impl fmt::Write for HashWrite<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.update(s.as_bytes());
+        Ok(())
+    }
 }
 
 /// Pure-tracking URL query-parameter keys that are safe to drop during

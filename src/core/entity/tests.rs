@@ -1725,5 +1725,32 @@ mod prop {
             prop_assert!((ab.confidence - ba.confidence).abs() < 1e-12);
             prop_assert_eq!(ab.corroboration, ba.corroboration);
         }
+
+        /// `c_effective` is a well-behaved confidence model for EVERY source count:
+        /// it stays in `[0, 1]` and finite, is never below the base `confidence`
+        /// (corroboration only ever ADDS confidence — the `max(mult, agreement)`
+        /// design), is monotonic non-decreasing in the number of sources, and is
+        /// TOTAL — `n = 0` is floored to `1`, so no `ln(0)` / `γ^(-1)` NaN or
+        /// sub-base value can escape the public `c_effective_with_source_count`.
+        #[test]
+        fn c_effective_is_bounded_monotonic_and_at_least_confidence(
+            v in "[a-z]{1,12}", conf in 0.0f64..=1.0, n in 0u32..64,
+        ) {
+            let e = mk(&v, conf, 1);
+            let c_n = e.c_effective_with_source_count(n);
+            let c_n1 = e.c_effective_with_source_count(n + 1);
+            // Bounded and finite.
+            prop_assert!((0.0..=1.0).contains(&c_n), "c_eff out of range: {}", c_n);
+            prop_assert!(c_n.is_finite());
+            // Never below the base confidence (n floored at 1 ⇒ C_eff ≥ confidence).
+            prop_assert!(c_n + 1e-12 >= e.confidence, "c_eff {} < conf {}", c_n, e.confidence);
+            // n = 0 is the totality guard: identical to n = 1, never a NaN/sub-base.
+            prop_assert!(
+                (e.c_effective_with_source_count(0) - e.c_effective_with_source_count(1)).abs()
+                    < 1e-12
+            );
+            // Monotonic non-decreasing in the source count.
+            prop_assert!(c_n1 + 1e-12 >= c_n, "c_eff not monotonic: {} -> {}", c_n, c_n1);
+        }
     }
 }
