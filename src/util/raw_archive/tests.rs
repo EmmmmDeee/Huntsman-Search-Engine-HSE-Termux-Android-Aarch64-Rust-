@@ -194,6 +194,60 @@ fn records_in_window_recovers_full_responses_and_filters_by_time() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// A `FullName` seed (e.g. "Brett Lawnton") is archived under its raw,
+/// case-preserving value — `slug` deliberately keeps case for a legible
+/// filename (`slug_is_human_legible_and_filesystem_safe` above pins
+/// `slug("Jordan Avery", 80) == "Jordan_Avery"`) — but the dossier renderer
+/// builds its query set from `scan.target.value.to_lowercase()`
+/// (`cli::export::renderers`). Before this fix, the cheap filename
+/// pre-filter compared the two without normalising case, so it silently
+/// dropped every archived file for any target with an uppercase letter —
+/// i.e. virtually every Person/FullName scan — before the correct,
+/// already-case-insensitive `_meta.query` check two steps later was ever
+/// reached. This is what made a real "Brett Lawnton" scan's dossier report
+/// "RAW SOURCE RECORDS (0 responses)" despite the archive holding real,
+/// in-window, on-topic data.
+#[test]
+fn records_for_a_mixed_case_query_are_not_dropped_by_the_filename_prefilter() {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("hse_case_{}_{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write_file(
+        &dir.join(build_filename(
+            "oathnet",
+            "breach-search",
+            "Brett Lawnton",
+            1000,
+            1,
+        )),
+        &build_body(
+            "oathnet",
+            "breach-search",
+            "Brett Lawnton",
+            1000,
+            r#"{"data":{"items":[{"email":"brett.lawnton@gmail.com"}]}}"#,
+        ),
+    )
+    .unwrap();
+
+    // Mirrors renderers.rs's `scan.target.value.to_lowercase()` exactly.
+    let mut queries: std::collections::HashSet<String> = std::collections::HashSet::new();
+    queries.insert("Brett Lawnton".to_lowercase());
+
+    let got = records_filtered_dir(&dir, 900, 1100, Some(&queries));
+    assert_eq!(
+        got.len(),
+        1,
+        "an archived file for a mixed-case query must still be found when \
+         the caller's query set is lower-cased"
+    );
+    assert_eq!(got[0].query, "Brett Lawnton");
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 #[test]
 fn write_file_persists_individual_named_response_on_disk() {
     // End-to-end on a temp dir (no process-env mutation): an individually

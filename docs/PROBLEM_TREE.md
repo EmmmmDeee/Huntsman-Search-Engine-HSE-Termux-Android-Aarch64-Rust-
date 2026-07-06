@@ -5759,3 +5759,63 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   impact. Logged here per the established precedent for this bug class
   (pypi_user/rubygems_user, 2026-07-03): a contained, single-module fix,
   not a new tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **`raw_archive`'s cheap filename pre-filter silently
+  dropped every archived response for a target with any uppercase letter —
+  i.e. virtually every Person/FullName-seeded scan — before the correct,
+  already-case-insensitive `_meta.query` check further down was ever
+  reached.** Found by reading a real, operator-uploaded debug bundle for a
+  FullName scan ("Brett Lawnton") whose dossier showed "RAW SOURCE RECORDS
+  (0 responses)" despite the same bundle's ENTITIES section clearly
+  containing real `oathnet_pro` breach data — i.e. a paid provider's
+  response genuinely existed but the archive reported nothing, directly
+  contradicting the module's own stated operator policy ("data that is
+  paid for must be kept in absolute completeness... must always be
+  retained"). Investigated via a five-angle survey of the bundle
+  (module-error causes, this rendering gap, the wrong-identity gate, and
+  `relations: 0`); independently traced the write/read path myself:
+  `raw_archive::format::slug` deliberately preserves case (for a legible
+  filename — pinned by `slug_is_human_legible_and_filesystem_safe`), but
+  `cli::export::renderers` builds its query set via
+  `scan.target.value.to_lowercase()` before calling
+  `records_for_queries` — and `query::records_filtered_dir`'s cheap
+  filename pre-filter (`want_slugs`/`fq_slug`) compared the two without
+  normalising case, so a FullName like "Brett Lawnton" (archived under its
+  original case) could never match its own lower-cased query slug and was
+  dropped by `continue` before the file was ever opened. Fixed by
+  lower-casing both sides of that one comparison, bringing the cheap
+  pre-filter into agreement with the authoritative `_meta.query` check
+  two steps later (`query.to_lowercase()` vs. an already-lower-cased
+  set), which was already correct. New regression test archives a
+  mixed-case "Brett Lawnton" query and confirms it survives the
+  lower-cased query-set filter — red/green-verified by temporarily
+  reverting to the case-sensitive comparison (failed, exactly reproducing
+  the bundle's symptom) and restoring (passed). Checked the rest of
+  `raw_archive` for the same write/read case-asymmetry (`slug` has
+  exactly two call sites — the write-time filename builder and this one
+  read-time comparison — both now consistent). A related, adversarially
+  confirmed bug from the same bundle review — the debug bundle's "BEST AU
+  LOCATION FIX" line mislabels a single-signal fallback estimate as an
+  "AU-059" synergy result with fabricated zero/blank fields
+  (`src/cli/export/renderers.rs:388-399` vs. the correct branching pattern
+  already used in `src/cli/scan/dossier.rs:602-630`) — was fully diagnosed
+  with a precise proposed patch but deliberately deferred to a future
+  cycle, since only one unit of work ships per cycle and this fix (a
+  complete silent-data-loss bug affecting the archive's core promise) is
+  the higher-impact of the two. Also investigated and correctly ruled out
+  as non-bugs: `see_know`'s "curl exited 6" (traced the full request-
+  building path — the host is always the hardcoded `see-know.eu` literal,
+  never seed-derived; a genuine environmental DNS failure), `asic_persons`'s
+  "timeout" (its 12s budget sits within its AU sibling modules' range), the
+  28 `identity_mismatch` exclusions (the three-layer quarantine pipeline —
+  `TargetMatch` → `demote_to_candidate` → `is_wrong_identity_pivot` —
+  working exactly as designed), and this same bundle's `relations: 0`
+  (initially flagged as a possible anomaly given the rich person-centric
+  evidence present, but the scan's own `status: Running` field settles it:
+  the relation graph is built once at scan finalisation, while
+  correlations stream live during ingestion — an in-progress scan
+  correctly shows correlations without relations yet). Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/
+  `cargo test` — 4611 total pass (+1). No identity/PII, architecture-guard,
+  or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

@@ -43,8 +43,19 @@ pub(super) fn records_filtered_dir(
     let utc_lo = format_utc(start_unix);
     let utc_hi = (end_unix != u64::MAX).then(|| format_utc(end_unix));
     // Pre-slug the wanted queries once so the per-file check is a set lookup.
+    // Lower-cased: `slug` preserves case (deliberately, for a human-readable
+    // filename), but the caller's query set is already lower-cased (see
+    // `cli::export::renderers`'s `scan.target.value.to_lowercase()`) while an
+    // archived file's own slug keeps the ORIGINAL case it was written with
+    // (`raw_archive::record`'s `query` argument is never case-folded). A
+    // case-sensitive comparison between the two would silently drop every
+    // file for a target with any uppercase letter (a `FullName` seed like
+    // "Brett Lawnton" always has one) — exactly the class the authoritative
+    // `_meta.query` check two steps below already guards against by
+    // lower-casing both sides; this makes the cheap pre-filter agree with it
+    // instead of rejecting the file before that check is ever reached.
     let want_slugs: Option<std::collections::HashSet<String>> =
-        queries.map(|set| set.iter().map(|q| slug(q, 80)).collect());
+        queries.map(|set| set.iter().map(|q| slug(q, 80).to_lowercase()).collect());
 
     for entry in rd.flatten() {
         let filename = entry.file_name().to_string_lossy().into_owned();
@@ -66,7 +77,7 @@ pub(super) fn records_filtered_dir(
                 continue;
             }
             if let Some(want) = &want_slugs
-                && !want.contains(fq_slug)
+                && !want.contains(&fq_slug.to_lowercase())
             {
                 continue;
             }

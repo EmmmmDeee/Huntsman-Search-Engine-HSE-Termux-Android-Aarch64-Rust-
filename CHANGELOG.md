@@ -427,6 +427,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The dossier's "raw source records" section no longer reports empty for
+  scans of a name, when purchased provider data actually exists.** Archived
+  responses are looked up by matching the scan's target value against each
+  file's saved query, but the lookup compared them with different case
+  handling — so a target with any uppercase letter (virtually every scan
+  seeded by a person's name) could never match its own archived files, and
+  the dossier showed "0 responses" even though the paid data was safely on
+  disk the whole time.
 - **`urlscan` no longer understates a heavily-scanned target's real footprint
   as just the first page of results.** The module reported "N recent
   scan(s)" using only the capped page URLScan.io returned (5-10 results),

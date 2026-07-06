@@ -4233,3 +4233,46 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   a dated entry, not a new tracked node — matching the established
   precedent for this exact bug class (pypi_user/rubygems_user, 2026-07-03):
   a contained, single-module fix. Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **`raw_archive` case-sensitivity fix: the cheap filename
+  pre-filter silently dropped every archived response for a target with an
+  uppercase letter (virtually every Person/FullName scan).** Found by
+  reading a real operator-uploaded debug bundle (FullName "Brett Lawnton")
+  whose dossier reported "RAW SOURCE RECORDS (0 responses)" despite the
+  same bundle's ENTITIES section carrying real `oathnet_pro` breach data —
+  directly contradicting the module's own stated policy that paid-provider
+  data "must always be retained." Ran a five-angle survey of the bundle
+  (module errors, the AU-059 dossier line, the wrong-identity gate, and
+  `relations: 0`) before selecting this as the highest-impact confirmed
+  finding. Personally traced the write/read path: `format::slug`
+  deliberately preserves case for a legible filename, but
+  `cli::export::renderers` lower-cases its query set before calling
+  `records_for_queries`, and `query::records_filtered_dir`'s cheap
+  filename pre-filter compared the two case-sensitively — dropping the
+  file via `continue` before the already-correct, already-case-insensitive
+  `_meta.query` check further down was ever reached. Fixed by
+  lower-casing both sides of that one comparison. New regression test
+  (archives a mixed-case "Brett Lawnton" query, confirms it survives a
+  lower-cased query-set filter), red/green-verified by temporarily
+  reverting to the case-sensitive form (failed, exactly reproducing the
+  bundle's symptom). Checked `raw_archive` for other instances of the
+  same write/read case-asymmetry — `slug` has exactly two call sites
+  (write-time filename builder, this one read-time comparison), both now
+  consistent. A second, adversarially-confirmed bug from the same review —
+  the debug bundle's "BEST AU LOCATION FIX" line mislabels a single-signal
+  fallback estimate as an "AU-059" synergy result with fabricated
+  zero/blank fields, when `src/cli/scan/dossier.rs` already shows the
+  correct branching pattern to mirror — was fully diagnosed with a precise
+  proposed patch but deliberately deferred to a future cycle (one unit of
+  work per cycle; this fix is the higher-impact of the two, a complete
+  silent-data-loss bug vs. a mislabeled cosmetic line). Also correctly
+  ruled out as non-bugs from the same review: `see_know`'s DNS-resolution
+  failures (host is always hardcoded, never seed-derived), `asic_persons`'s
+  timeouts (in line with sibling AU modules), the 28 `identity_mismatch`
+  exclusions (the three-layer quarantine pipeline working as designed),
+  and this bundle's own `relations: 0` (the scan's `status: Running` field
+  explains it — relations are built once at finalisation, correlations
+  stream live during ingestion, so an in-progress scan correctly shows
+  correlations without relations yet). Gate green: fmt/clippy/strict-
+  rustdoc `cargo doc`/`cargo test` — 4611 total pass (+1). Paired:
+  `PROBLEM_TREE` §8 — same commit.
