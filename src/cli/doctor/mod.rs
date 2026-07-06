@@ -84,6 +84,23 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         println!("  {cost:<10} {count}");
     }
 
+    // ── Module health (T2.7 / SOL-HEALTH-SIGNAL) ───────────────────────
+    // Per-process failure streaks driven by real dispatch outcomes — quiet
+    // by default (a freshly-started or fully healthy process reports
+    // nothing extra), surfacing only sources actually worth investigating.
+    let unhealthy = crate::core::engine::module_health_report();
+    if unhealthy.is_empty() {
+        println!("\nModule health: no modules currently show a failure streak");
+    } else {
+        println!(
+            "\nModule health ({} with a failure streak this process):",
+            unhealthy.len()
+        );
+        for h in &unhealthy {
+            println!("  {}", format_module_health(h));
+        }
+    }
+
     let loaded = keys::load();
     let huntsman_keys = sorted_huntsman_keys(&loaded);
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
@@ -163,6 +180,28 @@ fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> V
         .collect();
     keys.sort_unstable();
     keys
+}
+
+/// Render one module's health line for the `hse doctor` report.
+///
+/// Pure over a [`crate::core::engine::ModuleHealth`] snapshot so it is
+/// unit-testable without touching real dispatch state.
+fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
+    match h.last_success_at {
+        Some(t) => format!(
+            "{:<20} {} consecutive failure{} (last succeeded {})",
+            h.name,
+            h.consecutive_failures,
+            if h.consecutive_failures == 1 { "" } else { "s" },
+            crate::util::timefmt::compact_utc(t),
+        ),
+        None => format!(
+            "{:<20} {} consecutive failure{} (never succeeded this process)",
+            h.name,
+            h.consecutive_failures,
+            if h.consecutive_failures == 1 { "" } else { "s" },
+        ),
+    }
 }
 
 /// Rank every unset `KNOWN_KEYS` env var by acquisition ROI, highest first.

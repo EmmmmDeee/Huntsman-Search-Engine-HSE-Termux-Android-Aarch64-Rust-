@@ -915,16 +915,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hints (scan-level 60s-and-zero-yield, per-module zero-entities) remain
   unrestored by design — both replaced by safer, differently-designed
   signals per the two entries above. **(§4a closed)**
-- **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
+- **`[~]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
   auto-flag a source "drifted" when `consecutive_failures ≥ N` or `parse_rate
   < threshold`. SOL-F1's `bstr`/aho-corasick rewrites underpin the parsers being
   stable enough to measure; each golden-fixture test (T2.7) becomes the
   acceptance criterion.
-  *Closes / powers:* **T2.7** per-source health signal gap (currently no solution
-  node). *Gap:* not yet started — implementation deferred until the golden-fixture
-  golden-fixture corpus (T2.7 parser rewrites) is in place. **(§4a)**
+  *Closes / powers:* **T2.7** per-source health signal gap.
+  *Delivered (2026-07-05):* the `last_success_at`/`consecutive_failures`
+  half — the part with NO golden-fixture dependency (unlike `parse_rate`,
+  which genuinely needs it). New `core::engine::health` (an in-process
+  `Mutex<HashMap>`, mirroring `circuit`'s shape but retaining history
+  across successes with wall-clock epoch time, since it answers a
+  different question than the retry-avoidance breaker). Wired into the
+  three real dispatch-outcome branches
+  (`dispatch::finalise_module_result`: timeout, hard error, success);
+  `MissingKey` correctly excluded (an opt-out isn't a failure). Exposed via
+  a new `hse doctor` "Module health" section — quiet by default, confirmed
+  with a real run on this process (prints "no modules currently show a
+  failure streak"). 9 new unit tests (6 in `health`, 3 in `cli::doctor`).
+  *Gap:* `parse_rate`/"drifted" auto-flagging (blocked on the golden-fixture
+  corpus) and the SPA health panel remain open — node stays `[~]`. **(§4a)**
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -1010,7 +1022,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[~]` |
 | SOL-FORENSIC | C7 | `[x]` |
-| SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
+| SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[~]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 
 ---
@@ -1035,7 +1047,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   delegates to `key_harvest::identify_api_key`, whose non-vendor paths
   (generic-hex, URL-param byte-slice under cap, user:pass, recursion) were the
   real uncovered surface; added a never-panics proptest + oversized-multibyte
-  regression test there. Golden-fixture/health-signal legs unchanged.
+  regression test there.
+  **Health-signal leg — achievable half delivered (2026-07-05):**
+  `last_success_at`/`consecutive_failures` (no golden-fixture dependency,
+  unlike `parse_rate`) now tracked by new `core::engine::health` and
+  surfaced in `hse doctor`. Golden-fixture/`parse_rate`/SPA-panel legs
+  remain open.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.
   §7 S4/SOL-REDACT's archived-body residual — off this queue 2026-07-02,
@@ -4137,3 +4154,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   credential, so per-scan task-local isolation would be semantically
   wrong), not a single-cycle drop-in. Paired: `PROBLEM_TREE` C7 `[~]`→`[x]`
   + §8 — same commit.
+
+- **2026-07-05** — **SOL-HEALTH-SIGNAL `[ ]`→`[~]`: delivered the
+  `last_success_at`/`consecutive_failures` half of T2.7's health signal.**
+  P→S pick: re-examined the node's own text and found it bundles two
+  signals with different prerequisites — `parse_rate` genuinely needs the
+  golden-fixture corpus (still infeasible), but the failure-streak signal
+  needs only the dispatch outcomes already classified in
+  `dispatch::finalise_module_result`. New `core::engine::health`
+  (process-global `Mutex<HashMap>`, deliberately distinct from the sibling
+  `circuit` breaker: `circuit` clears history on success and uses monotonic
+  time for retry-safety; `health` retains history with wall-clock time for
+  a durable "when did it last work" answer) wired into the three real
+  dispatch branches (timeout/error record failure, success stamps
+  `last_success_at` and clears the streak; `MissingKey` correctly excluded).
+  New `hse doctor` "Module health" section — quiet by default, verified
+  with a real run. 9 new unit tests. Gate green: fmt/clippy/strict-rustdoc
+  `cargo doc`/`cargo test` — 4605 total pass (+9). **S→P gap-refresh:**
+  §4a's T2.7 entry updated (health-signal leg's achievable half now
+  delivered; golden-fixture/`parse_rate`/SPA-panel legs remain). A rival
+  survey candidate — genuine `see_know` cross-scan `KEY_INVALID`
+  contamination under concurrent `hse serve` — was investigated further and
+  confirmed to need a new, correctly-paired concurrent-scan-count lifecycle
+  primitive to fix safely (increment/decrement across every exit path
+  including panics/cancellation); deferred as real design work, not a
+  drop-in, tracked for a future cycle rather than force-fit here. Paired:
+  `PROBLEM_TREE` T2.7 partial note + §8 — same commit.

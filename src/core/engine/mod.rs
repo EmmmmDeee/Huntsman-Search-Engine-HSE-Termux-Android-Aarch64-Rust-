@@ -32,6 +32,7 @@ mod circuit;
 mod dispatch;
 mod enrich;
 mod expansion;
+mod health;
 mod history;
 mod ledger;
 mod passes;
@@ -1952,6 +1953,16 @@ pub fn enrich_offline_geo(entities: &mut Vec<Entity>, scan_id: &str) {
             entities.push(derived);
         }
     }
+}
+
+pub(crate) use health::ModuleHealth;
+
+/// Every module currently showing a failure streak this process, worst-first
+/// (PROBLEM_TREE T2.7 / SOLUTION_TREE SOL-HEALTH-SIGNAL). Empty on a
+/// freshly-started or fully healthy process — the common case.
+#[must_use]
+pub(crate) fn module_health_report() -> Vec<ModuleHealth> {
+    health::unhealthy_modules()
 }
 
 #[must_use]

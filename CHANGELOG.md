@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse doctor` now reports per-module health: which sources are actively
+  failing this process, and when each last succeeded.** Previously there
+  was no way to see a scraper's health short of watching logs — a source
+  quietly failing every dispatch for hours looked the same as one that
+  just hadn't been dispatched yet. A new "Module health" section lists
+  any module currently showing a failure streak (worst first), each with
+  its consecutive-failure count and last-success time; it's silent by
+  default on a healthy process, so it only ever adds signal, never noise.
 - **`shodan` paid host lookup now surfaces the host classification tags.**
   Shodan's keyed `/shodan/host/{ip}` response returns the same top-level
   `tags` array (`compromised`, `malware`, `honeypot`, `self-signed`,

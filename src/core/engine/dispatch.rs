@@ -397,6 +397,7 @@ impl super::ScanEngine {
                 // A timeout carries no message to classify, so it's a soft
                 // failure: trips only after a streak (one slow round is transient).
                 super::circuit::record_soft_failure(name);
+                super::health::record_failure(name);
                 warn!(module = name, "timeout");
                 self.emit(
                     cx.scan_id,
@@ -439,6 +440,7 @@ impl super::ScanEngine {
                 // Feed the breaker: a rate-limit/quota message trips immediately;
                 // any other hard error counts toward the soft streak.
                 super::circuit::record_error(name, &e.to_string());
+                super::health::record_failure(name);
                 warn!(module = name, error = %e, "module error");
                 self.emit(
                     cx.scan_id,
@@ -453,6 +455,7 @@ impl super::ScanEngine {
                 // reachable — clear any failure streak so a recovered source is
                 // trusted again immediately.
                 super::circuit::record_success(name);
+                super::health::record_success(name);
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
                     if let Some(min) = cx.opts.min_confidence

@@ -77,3 +77,44 @@ use super::*;
         );
         assert_eq!(ranked.len(), keys::KNOWN_KEYS.len() - 1);
     }
+
+    use crate::core::engine::ModuleHealth;
+
+    #[test]
+    fn module_health_line_names_the_module_and_streak() {
+        let h = ModuleHealth {
+            name: "hackertarget",
+            consecutive_failures: 3,
+            last_success_at: None,
+        };
+        let line = format_module_health(&h);
+        assert!(line.contains("hackertarget"));
+        assert!(line.contains('3'));
+        assert!(line.contains("never succeeded this process"));
+    }
+
+    #[test]
+    fn module_health_line_singular_for_one_failure() {
+        let h = ModuleHealth {
+            name: "crtsh",
+            consecutive_failures: 1,
+            last_success_at: None,
+        };
+        assert!(
+            format_module_health(&h).contains("1 consecutive failure "),
+            "must not pluralize a single failure"
+        );
+    }
+
+    #[test]
+    fn module_health_line_reports_last_success_time_when_present() {
+        let h = ModuleHealth {
+            name: "urlscan",
+            consecutive_failures: 2,
+            last_success_at: Some(1_700_000_000),
+        };
+        let line = format_module_health(&h);
+        assert!(line.contains("last succeeded"));
+        assert!(!line.contains("never succeeded"));
+        assert!(line.contains("20231114T221320Z"));
+    }

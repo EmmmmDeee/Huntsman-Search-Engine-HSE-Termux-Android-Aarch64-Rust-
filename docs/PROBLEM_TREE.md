@@ -451,6 +451,31 @@ direct.**
   lives (`identify_api_key`, which also serves `oathnet_pro` stealer
   harvesting). The golden-fixture/health-signal legs (T2.14's sibling,
   SOL-HEALTH-SIGNAL) remain fully open.
+  *Partial (2026-07-05):* the health-signal leg's achievable half now
+  delivered. SOL-HEALTH-SIGNAL's own text bundles two signals with
+  genuinely different prerequisites — `parse_rate` needs the golden-fixture
+  corpus (still infeasible, per the notes above), but `last_success_at` +
+  `consecutive_failures` need only the dispatch outcomes the engine already
+  classifies (`dispatch::finalise_module_result`'s existing
+  timeout/error/success branches), with no golden-fixture dependency at
+  all — a real, evidence-based refinement of the earlier blanket "deferred
+  until golden-fixture corpus" note, not a re-litigation of it. New
+  `core::engine::health` module (mirroring `core::engine::circuit`'s
+  process-global shape, but deliberately distinct: `circuit` is a
+  retry-avoidance breaker that clears history on success and uses monotonic
+  `Instant`; `health` retains history across successes using wall-clock
+  epoch seconds, since the two answer different questions — "is it safe to
+  retry right now" vs. "when did this source last actually work"). Wired
+  into `finalise_module_result`'s three real branches (timeout, hard error,
+  success — `MissingKey` is correctly excluded: an unconfigured provider
+  opting out is not a source failure). Surfaced in `hse doctor` as a new
+  "Module health" section, quiet by default (nothing printed beyond one
+  summary line on a healthy/fresh process — confirmed with a real run: `hse
+  doctor` on this session's process correctly printed "no modules currently
+  show a failure streak"). `parse_rate`/"drifted" auto-flagging and the SPA
+  panel remain open — T2.7 stays `[~]`, not `[x]`.
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL `[ ]`→`[~]` + §4a + §5 —
+  same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -5583,4 +5608,45 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `#![forbid(unsafe_code)]` impact. Gate green: fmt/clippy `--all-targets
   -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4596 total pass
   (+1). **Paired:** `SOLUTION_TREE` SOL-FORENSIC `[~]`→`[x]` + §4a + §5 —
+  same commit.
+
+- **2026-07-05** — **T2.7 / SOL-HEALTH-SIGNAL: delivered the health-signal
+  leg's achievable half — `last_success_at` + `consecutive_failures`
+  tracking, surfaced in `hse doctor`.** Selected after re-examining SOL-
+  HEALTH-SIGNAL's own text: it bundles two signals with genuinely different
+  prerequisites — `parse_rate` needs the golden-fixture corpus (still
+  infeasible per T2.7's own repeated confirmations), but
+  `last_success_at`/`consecutive_failures` need only the dispatch outcomes
+  `dispatch::finalise_module_result` already classifies, with zero
+  golden-fixture dependency. A rival candidate — the same survey's `see_know`
+  `KEY_INVALID`/`QUOTA_PROBED` cross-scan contamination under concurrent
+  `hse serve` — was investigated further this cycle and confirmed to
+  genuinely need a new "concurrent scan count" lifecycle primitive with
+  correct increment/decrement pairing across every exit path (success,
+  error, panic, cancellation) to fix safely; that risk profile is worse
+  than a single-cycle drop-in should carry, so it stays deferred, tracked
+  for a future cycle that can design the lifecycle hook properly. New
+  `core::engine::health` module: an in-process `Mutex<HashMap>`, deliberately
+  distinct from the sibling `core::engine::circuit` breaker it sits beside —
+  `circuit` clears all history on success and times cooldowns with monotonic
+  `Instant` (right for "is it safe to retry now"); `health` retains history
+  across successes using wall-clock epoch seconds (right for "when did this
+  source last actually work"). Wired into `finalise_module_result`'s three
+  real branches: timeout and hard-error record a failure, success stamps
+  `last_success_at` and clears the streak; `MissingKey` is correctly
+  excluded — an unconfigured optional provider opting out is not a failure
+  of the source. New `hse doctor` "Module health" section reports every
+  module with a nonzero failure streak, worst-first, ties broken by name for
+  deterministic output; quiet by default (a fresh/healthy process prints one
+  summary line, nothing per-module) — confirmed with a real run of `hse
+  doctor` on this session's own process. 9 new unit tests (6 in `health`,
+  covering independence across modules, the sort order, and that
+  `last_success_at` genuinely reflects a recorded success rather than an
+  untouched default; 3 in `cli::doctor` for the rendered line's wording).
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4605 total pass (+9). `parse_rate`/"drifted"
+  auto-flagging (blocked on the golden-fixture corpus) and the SPA health
+  panel remain open — T2.7 and SOL-HEALTH-SIGNAL both stay `[~]`, not `[x]`.
+  No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL `[ ]`→`[~]` + §4a + §5 —
   same commit.
