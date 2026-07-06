@@ -107,12 +107,24 @@ use super::*;
 
     #[test]
     fn module_cost_as_str_matches_serde() {
-        // The canonical identifier and the serde wire form must agree —
-        // as_str exists so dependency.rs/the API need no second mapping, and
-        // this pin stops the two from drifting (same guard ModuleCategory has).
-        for cost in [ModuleCost::Free, ModuleCost::KeyGated, ModuleCost::Paid] {
+        // DRIFT GUARD. `as_str` exists so dependency.rs / the API need no second
+        // ModuleCost→string mapping; the canonical identifier and the serde wire
+        // form must therefore never diverge. `EVERY` is walked by an arm-less
+        // `match` (no `_`), so ADDING A VARIANT fails to compile here until the
+        // author lists it — the runtime loop then proves as_str == serde for the
+        // whole set. Without this an added `ModuleCost` whose `as_str()` typo'd
+        // (e.g. "sub" vs serde "subscription") would ship undetected.
+        const EVERY: &[ModuleCost] = &[ModuleCost::Free, ModuleCost::KeyGated, ModuleCost::Paid];
+        for &cost in EVERY {
+            match cost {
+                ModuleCost::Free | ModuleCost::KeyGated | ModuleCost::Paid => {}
+            }
             let json = serde_json::to_string(&cost).unwrap();
-            assert_eq!(json.trim_matches('"'), cost.as_str());
+            assert_eq!(
+                json.trim_matches('"'),
+                cost.as_str(),
+                "{cost:?}: as_str() diverged from its serde snake_case form",
+            );
         }
     }
 
@@ -222,15 +234,60 @@ use super::*;
 
     #[test]
     fn module_category_as_str_round_trips_serde() {
-        for cat in [
+        // DRIFT GUARD (was NON-EXHAUSTIVE: only 4 of 14 variants). `as_str` is
+        // the canonical machine-readable identifier and MUST equal the serde
+        // wire form for EVERY variant — the API emits one and the SPA parses the
+        // other. `EVERY` is walked by an arm-less `match` (no `_`), so adding a
+        // `ModuleCategory` variant fails to compile here until it is listed; the
+        // runtime body then proves, for the whole set: (1) as_str() == the serde
+        // snake_case form, and (2) that form deserializes back to the same
+        // variant. A typo'd new arm (e.g. `People => "person"` vs serde
+        // "people") is now caught in CI instead of silently shipping.
+        const EVERY: &[ModuleCategory] = &[
             ModuleCategory::DnsRecon,
             ModuleCategory::Breach,
+            ModuleCategory::Infrastructure,
+            ModuleCategory::Search,
             ModuleCategory::Geo,
+            ModuleCategory::Social,
+            ModuleCategory::Email,
+            ModuleCategory::Phone,
+            ModuleCategory::Corporate,
+            ModuleCategory::Threat,
+            ModuleCategory::Sensor,
+            ModuleCategory::People,
+            ModuleCategory::Web,
             ModuleCategory::Other,
-        ] {
+        ];
+        for &cat in EVERY {
+            // Compile-time tripwire: NO `_` arm, so a new variant breaks this
+            // match until the author extends EVERY above.
+            match cat {
+                ModuleCategory::DnsRecon
+                | ModuleCategory::Breach
+                | ModuleCategory::Infrastructure
+                | ModuleCategory::Search
+                | ModuleCategory::Geo
+                | ModuleCategory::Social
+                | ModuleCategory::Email
+                | ModuleCategory::Phone
+                | ModuleCategory::Corporate
+                | ModuleCategory::Threat
+                | ModuleCategory::Sensor
+                | ModuleCategory::People
+                | ModuleCategory::Web
+                | ModuleCategory::Other => {}
+            }
             let json = serde_json::to_string(&cat).unwrap();
             // serde-snake_case strips quotes
             let body = json.trim_matches('"');
-            assert_eq!(body, cat.as_str());
+            assert_eq!(
+                body,
+                cat.as_str(),
+                "{cat:?}: as_str() diverged from its serde snake_case form",
+            );
+            // Full round-trip: the wire form must deserialize back to `cat`.
+            let back: ModuleCategory = serde_json::from_str(&json).unwrap();
+            assert_eq!(back, cat, "{cat:?} did not round-trip through serde");
         }
     }
