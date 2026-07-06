@@ -5468,3 +5468,44 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   reachable) — not fabricated into fixes. Gate green: fmt/clippy `-D warnings`
   clean, rustdoc (private items) clean, full suite 0 failures (4425 lib tests,
   +3), architecture suite green. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-06** — **Fault-tree loop round 2 (FT.9–FT.13 fixed; FT.14
+  deferred).** Re-ran the 11-branch fault-tree workflow with FT.1–FT.8 and all
+  prior session fixes excluded; **6 branches came back empty** (the tree is
+  converging), 6 defects confirmed. **5 fixed this commit:**
+  **`[x]` FT.9 (T2 stored XSS→RCE, HIGH)** `web/spa.html:1573` — the
+  autonomous-scan "selected seed" value was interpolated into a `toast()`
+  message WITHOUT `esc()`; `toast()`→`alertify.notify()` renders via
+  `innerHTML`, and the CSP retains inline event handlers, so a hostile entity
+  value (`<img onerror=…>`) executes same-origin and can drive
+  `/api/v1/update/trigger` (binary-replace RCE). → `esc()` the kind+value, like
+  every other SPA render site.
+  **`[x]` FT.10 (T6 unbounded scan, OOM)** `cli/radar.rs` — the `hse radar`
+  Phase-3 pivot (and the sweep) built `ScanOptions` via `..Default::default()`,
+  so `max_entities: None` — the one scan entry point missing the entity ceiling
+  every `hse scan`/API/live path carries. A fan-out pivot on the multi-day
+  radar loop grows the frontier unbounded in RAM → OOM/SIGKILL. → Set
+  `max_entities: Some(DEFAULT_MAX_ENTITIES)` on sweep + pivot and
+  `.clamp_depth()` the pivot.
+  **`[x]` FT.11 (T5 import data-loss)** `cli/import` — `detect_import_format`'s
+  `trim_start` does not strip a UTF-8 BOM (U+FEFF is not whitespace), so a
+  BOM-prefixed CSV/JSON export (Excel/Windows) misrouted to the wrong parser
+  and dropped every entity. → Strip the BOM in the detector AND at both body
+  entry points (`cmd_import` / `entities_from_upload`) so detection and the
+  parser both see clean text. Regression test added.
+  **`[x]` FT.12 / FT.13 (T1.2/T2.2 reactor-blocking)**
+  `api/scan_handlers/diagnostics.rs` (`scan_audit`'s event-log read) and
+  `core.rs` (`scan_events_history`) ran synchronous SQLite event-log reads on
+  the ~2-worker async reactor, unlike their `spawn_blocking` siblings. → Wrap
+  both in `spawn_blocking`.
+  **`[-]` FT.14 (T5 false subject-location) — CONFIRMED but DEFERRED.**
+  `core::geo_family::subject_fixes` accepts any `Coordinates` ≥ 0.60 as a
+  GPS-grade subject anchor, so a coarse `ip_geo` city coordinate can vote the
+  subject's confirmed location. The obvious fix (reuse the correlator's
+  `is_infrastructure_geo` gate) is **too broad**: `ANCHORING_GEO_SOURCES` omits
+  the live-sensor GPS sources (`signal_radar`/`device_sensors`), so it would
+  wrongly exclude a real device GPS fix — the exact case that arm exists for on
+  a radar/sensor scan. A correct fix needs a device-sensor-origin bypass and a
+  ~10-test fixture reconciliation; deferred rather than shipped rushed with a
+  regression. Logged for a focused follow-up. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4426 lib tests, +1),
+  architecture suite green. **Paired:** `SOLUTION_TREE` §5 — same commit.

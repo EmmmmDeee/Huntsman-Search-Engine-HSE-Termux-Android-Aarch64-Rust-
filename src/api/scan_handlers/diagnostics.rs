@@ -21,8 +21,17 @@ pub async fn scan_audit(
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let entities = match tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await {
-        Ok(Ok(e)) => e,
+    // Both the entities read AND the event-log read are synchronous SQLite — run
+    // them together off the ~2-worker reactor. The event-log read was the residual
+    // on-reactor gap (the entities read was already offloaded).
+    let loaded = tokio::task::spawn_blocking(move || {
+        let entities = store.entities_for_scan(&id2)?;
+        let events = store.events_for_scan(&id2).unwrap_or_default();
+        Ok::<_, crate::core::error::Error>((entities, events))
+    })
+    .await;
+    let (entities, events) = match loaded {
+        Ok(Ok(pair)) => pair,
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
@@ -31,9 +40,7 @@ pub async fn scan_audit(
         .map(crate::audit::AuditEntity::from_entity)
         .collect();
     let mut signals = engine_health_signals();
-    if let Ok(events) = s.store.events_for_scan(&id) {
-        crate::audit::fold_events(&mut signals, &events);
-    }
+    crate::audit::fold_events(&mut signals, &events);
     let report = crate::audit::audit(&normalised, signals);
     Json(report.to_json()).into_response()
 }

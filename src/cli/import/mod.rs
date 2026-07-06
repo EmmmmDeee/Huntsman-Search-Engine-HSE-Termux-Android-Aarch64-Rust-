@@ -53,6 +53,14 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // breach/dossier export saved under any other name (or none) was mis-routed
     // to the JSON parser and rejected as "invalid JSON" — silently dropping a
     // legitimate import the UI accepted fine.
+    // A UTF-8 BOM (U+FEFF) is NOT whitespace, so the detector's `trim_start` leaves
+    // it in place and a BOM-prefixed CSV/JSON export (common from Excel / Windows
+    // tools) misroutes to the wrong parser → every entity silently dropped. Strip it
+    // once so BOTH detection and the parser below see clean text.
+    let body = body
+        .strip_prefix('\u{feff}')
+        .map(str::to_string)
+        .unwrap_or(body);
     match detect_import_format(path, &body) {
         ImportFormat::OathnetHtml => cmd_import_html(&body, output).await,
         ImportFormat::OathnetJson => {
@@ -111,7 +119,11 @@ pub(crate) enum ImportFormat {
 /// there is no file (the web upload). Pure — no I/O — so the whole detection
 /// matrix is unit-tested directly.
 pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
-    let head = body.trim_start();
+    // A UTF-8 BOM (U+FEFF) is NOT whitespace, so `trim_start` won't drop it; strip
+    // it first so a BOM-prefixed export is classified by its real first token rather
+    // than misrouted. (The cmd_import / entities_from_upload callers also strip it
+    // from the body they hand the PARSER, since serde_json etc. reject a leading BOM.)
+    let head = body.trim_start_matches('\u{feff}').trim_start();
     // HTML first (by content or the `.html` hint).
     if path.ends_with(".html") || head.starts_with("<!") || head.starts_with("<html") {
         return ImportFormat::OathnetHtml;
@@ -191,6 +203,10 @@ pub(crate) async fn entities_from_upload(
 ) -> Result<(Vec<crate::core::entity::Entity>, &'static str)> {
     // Same content-based detector the CLI dispatches on (no path → content only),
     // so the browser upload and `hse import` can never disagree on a file's format.
+    // Strip a leading UTF-8 BOM (U+FEFF) — not whitespace, so the detector's
+    // trim_start misses it — before both detection and parsing, or a BOM-prefixed
+    // upload misroutes and silently drops every entity.
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let (mut entities, label) = match detect_import_format("", body) {
         ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), "oathnet-html"),
         ImportFormat::OathnetJson => {

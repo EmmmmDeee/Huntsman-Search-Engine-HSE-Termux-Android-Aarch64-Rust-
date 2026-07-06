@@ -829,8 +829,13 @@ pub async fn scan_events_history(
     if let Some(resp) = super::scan_missing(&s, &id) {
         return resp;
     }
-    match s.store.events_for_scan(&id) {
-        Ok(events) => ok_list("events", events),
-        Err(e) => internal_error(&e),
+    // Off-reactor: the per-scan event log can be large and the read is synchronous
+    // SQLite (matches the sibling entity/report handlers' spawn_blocking).
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
+        Ok(Ok(events)) => ok_list("events", events),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }

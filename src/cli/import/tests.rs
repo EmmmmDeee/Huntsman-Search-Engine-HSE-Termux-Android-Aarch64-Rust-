@@ -47,6 +47,26 @@ fn detect_import_format_is_content_based_not_extension_gated() {
     );
 }
 
+#[test]
+fn detect_import_format_ignores_a_leading_utf8_bom() {
+    // Regression: a UTF-8 BOM (U+FEFF) is not whitespace, so `trim_start` left it in
+    // place and a BOM-prefixed export (common from Excel / Windows exporters) was
+    // misrouted to the wrong parser and silently dropped every entity. It must now
+    // detect by its real first token.
+    assert_eq!(
+        detect_import_format("", "\u{feff}{\"exportInfo\":{}}"),
+        ImportFormat::OathnetJson
+    );
+    assert_eq!(
+        detect_import_format("", "\u{feff}<!doctype html><html></html>"),
+        ImportFormat::OathnetHtml
+    );
+    assert_eq!(
+        detect_import_format("table.csv", "\u{feff}a,b,c\n1,2,3"),
+        ImportFormat::DehashedCsv
+    );
+}
+
 /// The upload dispatcher parses UNTRUSTED text from the web endpoint, so it
 /// must never panic — not on truncation, not on a multibyte codepoint landing
 /// next to a structural marker (`@`, `->`, `•`, `:`, a section header), not on

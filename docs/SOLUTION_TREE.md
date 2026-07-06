@@ -4023,3 +4023,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4425
   lib tests, +3), architecture suite green. Paired: `PROBLEM_TREE` §8 — same
   commit.
+- **2026-07-06** — **Fault-tree loop round 2 (FT.9–FT.13; FT.14 deferred).**
+  Second fault-tree pass (FT.1–FT.8 + prior fixes excluded); 6 of 11 branches
+  came back empty — the tree is converging. 5 defects fixed this commit: a
+  stored XSS→RCE in the SPA autonomous-scan toast (now `esc()`s the seed like
+  every other render site), the `hse radar` pivot/sweep running without the
+  entity ceiling every other scan path carries (now `max_entities:
+  Some(DEFAULT_MAX_ENTITIES)` + `clamp_depth`, closing an on-device OOM), a
+  UTF-8-BOM misroute that dropped every entity on a BOM-prefixed import (BOM
+  now stripped in the detector and at both body entry points), and two
+  residual reactor-blocking event-log reads (`scan_audit`, `scan_events_history`
+  → `spawn_blocking`). One confirmed defect — a coarse `ip_geo` coordinate
+  anchoring the subject's location — was DEFERRED (FT.14): the obvious
+  `is_infrastructure_geo` gate would wrongly exclude legitimate live-sensor GPS
+  fixes, so it needs a device-sensor bypass + fixture reconciliation, logged
+  for a focused follow-up rather than shipped with a regression. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4426 lib
+  tests, +1), architecture suite green. Paired: `PROBLEM_TREE` §8 — same
+  commit.
