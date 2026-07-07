@@ -200,3 +200,78 @@ use super::*;
         // A genuinely-absent scan still errors loudly.
         assert!(resolve_scan_id(&store, "no-such-scan").is_err());
     }
+
+    // ── resolve_scan_preset (max sweep is the default; --fast opts down) ─────
+
+    /// Build the preset flags with every narrowing flag off — the raw `hse scan`
+    /// baseline — then let the caller flip `full` / `fast`.
+    fn preset_flags(full: bool, fast: bool) -> ScanPresetFlags {
+        ScanPresetFlags {
+            full,
+            fast,
+            recursive: false,
+            max_roi: false,
+            expand_all_identities: false,
+            gate_speculative: false,
+            include_infra: false,
+        }
+    }
+
+    #[test]
+    fn bare_scan_defaults_to_the_full_sweep() {
+        // No preset flags → the widest recall: deep recursion, no pruning, the
+        // wrong-identity gate lifted, infra surfaced, speculative fan-out kept.
+        let p = resolve_scan_preset(preset_flags(false, false));
+        assert!(p.recursive, "default sweep pins MAX_DEPTH recursion");
+        assert!(!p.max_roi, "default sweep never ROI-prunes");
+        assert!(p.expand_all_identities, "default sweep lifts the namesake gate");
+        assert!(!p.gate_speculative, "default sweep keeps speculative fan-out");
+        assert!(p.include_infra, "default sweep surfaces platform-infra");
+    }
+
+    #[test]
+    fn explicit_full_matches_the_default_sweep() {
+        let bare = resolve_scan_preset(preset_flags(false, false));
+        let full = resolve_scan_preset(preset_flags(true, false));
+        assert_eq!(full.recursive, bare.recursive);
+        assert_eq!(full.max_roi, bare.max_roi);
+        assert_eq!(full.expand_all_identities, bare.expand_all_identities);
+        assert_eq!(full.gate_speculative, bare.gate_speculative);
+        assert_eq!(full.include_infra, bare.include_infra);
+    }
+
+    #[test]
+    fn fast_opts_down_to_the_curated_precision_preset() {
+        // `--fast` re-gates identity expansion, hides infra, and turns on ROI
+        // pruning + speculative gating for a quicker, cleaner run.
+        let p = resolve_scan_preset(preset_flags(false, true));
+        assert!(!p.expand_all_identities, "--fast re-gates namesakes");
+        assert!(!p.include_infra, "--fast hides platform-infra");
+        assert!(p.max_roi, "--fast prunes for speed");
+        assert!(p.gate_speculative, "--fast gates speculative fan-out");
+        assert!(!p.recursive, "--fast leaves recursion to --depth/--recursive");
+    }
+
+    #[test]
+    fn full_wins_when_combined_with_fast() {
+        // `--full --fast` re-forces the sweep (full is the explicit max).
+        let p = resolve_scan_preset(preset_flags(true, true));
+        assert!(p.expand_all_identities);
+        assert!(p.include_infra);
+        assert!(p.recursive);
+        assert!(!p.max_roi, "full re-forced → no pruning");
+    }
+
+    #[test]
+    fn explicit_narrowing_flags_are_honoured_on_top_of_fast() {
+        // A `--fast` run that also passes `--expand-all-identities` /
+        // `--include-infra` keeps those on — the preset only ever ADDS intent.
+        let f = ScanPresetFlags {
+            expand_all_identities: true,
+            include_infra: true,
+            ..preset_flags(false, true)
+        };
+        let p = resolve_scan_preset(f);
+        assert!(p.expand_all_identities, "explicit flag overrides --fast gating");
+        assert!(p.include_infra, "explicit flag overrides --fast infra hiding");
+    }

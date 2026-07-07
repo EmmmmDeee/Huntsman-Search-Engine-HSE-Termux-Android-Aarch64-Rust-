@@ -178,6 +178,7 @@ pub async fn run() -> Result<()> {
             depth,
             recursive,
             full,
+            fast,
             auto,
             min_expand_confidence,
             max_entities,
@@ -197,45 +198,52 @@ pub async fn run() -> Result<()> {
             include_infra,
         } => {
             let value = resolve_seed(value, keys::default_seed())?;
-            // `--full` is the no-compromise preset: force every module on (drop
-            // the free/passive filters and any allowlist), deep recursion, and
-            // no ROI pruning. It composes by overriding the narrowing flags.
+            // Max sweep is the DEFAULT: a bare `hse scan` runs the widest recall
+            // (every applicable module, MAX_DEPTH recursion, no ROI pruning, the
+            // wrong-identity gate lifted, platform-infra surfaced). `--fast` opts
+            // DOWN to the curated, precision-first preset; `--full` is an explicit
+            // alias for the default (and re-forces the sweep after `--fast`). The
+            // narrowing flags (`--free-only` / `--passive-only` / `--modules` /
+            // `--max-roi`) are honoured as-is in EITHER mode, composing on top.
+            let preset = resolve_scan_preset(ScanPresetFlags {
+                full,
+                fast,
+                recursive,
+                max_roi,
+                expand_all_identities,
+                gate_speculative,
+                include_infra,
+            });
             scan::cmd_scan(scan::ScanCmd {
                 kind,
                 value,
-                modules: if full { None } else { modules },
+                modules,
                 exclude,
                 throttle_ms: throttle,
                 min_confidence,
-                free_only: free_only && !full,
-                passive_only: passive_only && !full,
+                free_only,
+                passive_only,
                 module_timeout_ms: timeout,
                 depth,
-                recursive: recursive || full,
+                recursive: preset.recursive,
                 auto,
                 min_expand_confidence,
                 max_entities,
                 max_wall_time_secs: max_wall_time,
                 max_concurrent,
                 adaptive,
-                max_roi: max_roi && !full,
+                max_roi: preset.max_roi,
                 convex_budget,
                 // AU-focused regional searching is on unless explicitly disabled.
                 regional_search: !no_regional,
                 min_marginal_yield,
                 expansion_strategy,
                 seeknow_scan_cap,
-                // `--full` is the no-compromise preset: maximise recall, so the
-                // wrong-identity gate is lifted alongside the other narrowing
-                // filters it already drops.
-                expand_all_identities: expand_all_identities || full,
-                gate_speculative,
+                expand_all_identities: preset.expand_all_identities,
+                gate_speculative: preset.gate_speculative,
                 profile,
                 output,
-                // `--full` is the no-compromise preset: it also restores
-                // platform-infra entities, matching the flag's documented
-                // "implied by --full" behaviour.
-                include_infra: include_infra || full,
+                include_infra: preset.include_infra,
             })
             .await
         }
@@ -379,6 +387,58 @@ fn resolve_seed(cli_value: Option<String>, default_seed: Option<String>) -> Resu
                     .to_string(),
             )
         })
+}
+
+/// The raw scan-preset flags as parsed from the CLI, before the sweep/fast
+/// resolution. Grouped into a struct so [`resolve_scan_preset`] stays a pure,
+/// unit-testable mapping instead of a tangle of booleans in the command arm.
+struct ScanPresetFlags {
+    full: bool,
+    fast: bool,
+    recursive: bool,
+    max_roi: bool,
+    expand_all_identities: bool,
+    gate_speculative: bool,
+    include_infra: bool,
+}
+
+/// The resolved preset fields fed into [`scan::ScanCmd`].
+struct ScanPreset {
+    recursive: bool,
+    max_roi: bool,
+    expand_all_identities: bool,
+    gate_speculative: bool,
+    include_infra: bool,
+}
+
+/// Resolve the scan preset. **Max sweep is the default**: a bare `hse scan` runs
+/// the widest recall — MAX_DEPTH recursion, no ROI pruning, the wrong-identity
+/// gate lifted, and platform-infra surfaced. `--fast` opts DOWN to the curated,
+/// precision-first preset (identity gate back on, infra hidden, ROI convergence-
+/// pruning + speculative-expansion gating on) for a quicker, cleaner run. `--full`
+/// is an explicit alias for the default sweep and re-forces it when combined with
+/// `--fast`. An explicit narrowing flag (e.g. `--max-roi`, `--gate-speculative`,
+/// `--expand-all-identities`, `--include-infra`) is always honoured on top of
+/// either mode, so `flag || …` only ever *adds* the preset's intent.
+fn resolve_scan_preset(f: ScanPresetFlags) -> ScanPreset {
+    // Sweep unless the operator explicitly asked for `--fast`; `--full` forces it
+    // (so `--full --fast` re-forces the complete sweep). Every dimension resolves
+    // through `sweep` so the two modes stay internally consistent.
+    let sweep = f.full || !f.fast;
+    ScanPreset {
+        // Sweep pins MAX_DEPTH recursion (the depth resolver additionally clamps
+        // the expand floor ≤0.40, a no-op at the 0.20 default).
+        recursive: f.recursive || sweep,
+        // Fast mode (`!sweep`) ROI-prunes for speed; the sweep never prunes.
+        max_roi: f.max_roi || !sweep,
+        // The default sweep lifts the wrong-identity/namesake gate for maximum
+        // recall; fast mode leaves it gated unless explicitly overridden.
+        expand_all_identities: f.expand_all_identities || sweep,
+        // Fast mode gates speculative permutation fan-out for a cleaner set.
+        gate_speculative: f.gate_speculative || !sweep,
+        // The default sweep surfaces platform-infra; fast mode hides it.
+        include_infra: f.include_infra || sweep,
+    }
 }
 
 // ─── Inline commands (small enough not to warrant their own file) ───────────

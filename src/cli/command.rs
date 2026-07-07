@@ -79,10 +79,12 @@ pub enum Command {
         /// an explicit --depth.
         #[arg(short = 'R', long)]
         recursive: bool,
-        /// COMPLETE scan — the no-compromise preset. Auto-detects the seed kind,
-        /// runs EVERY module (overrides --free-only/--passive-only/--modules),
-        /// expands to MAX_DEPTH (3) at the Probable floor, and disables ROI
-        /// pruning so nothing is skipped. The single "get everything" option.
+        /// COMPLETE scan — now the DEFAULT. A bare `hse scan` already runs the
+        /// full sweep: every applicable module, MAX_DEPTH (3) recursion at the
+        /// comprehensive floor, ROI pruning off, the wrong-identity gate lifted,
+        /// and platform-infra surfaced. This flag is kept as an explicit alias for
+        /// that default (and to force the sweep back on after `--fast`). Opt DOWN
+        /// to the lighter, precision-first run with `--fast`.
         #[arg(
             short = 'F',
             long,
@@ -90,6 +92,14 @@ pub enum Command {
             visible_alias = "everything"
         )]
         full: bool,
+        /// FAST scan — the lighter, precision-first opt-out from the default full
+        /// sweep. Re-gates identity expansion (namesake quarantine back on), hides
+        /// platform-infra, and turns on ROI convergence-pruning + speculative-
+        /// expansion gating for a quicker, cleaner run. Compose with `--depth 1`
+        /// for an even shallower pass; `--free-only` / `--passive-only` / `--modules`
+        /// still apply as independent narrowing flags on top.
+        #[arg(long, visible_alias = "quick")]
+        fast: bool,
         /// Automatically select optimal expansion depth based on seed type
         /// and available API keys. Uses expected-value analysis to determine
         /// the depth where marginal yield justifies the cost.
