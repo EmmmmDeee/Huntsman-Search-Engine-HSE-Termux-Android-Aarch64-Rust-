@@ -2626,3 +2626,82 @@ fn identity_aware_ranking_honours_exclude_per_member() {
         "an all-excluded identity is gone, so the loop converges"
     );
 }
+
+/// Direct coverage of the entity-admission drop-filter policy, extracted from
+/// `finalise_module_result` into the pure `admission_rejection` so it is testable
+/// in isolation (previously every filter was exercised only end-to-end). One case
+/// per filter proves the reason string, plus the load-bearing ordering.
+#[test]
+fn admission_rejection_covers_every_drop_filter_and_order() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::TargetKind;
+
+    let ent = |k: EntityKind, v: &str, c: f64| Entity::new(k, v, c, "adm-test");
+    // Identity seed so the incidental-infra gate is active (infrastructure-seeded
+    // scans are exempt from it — there the infra IS the subject).
+    let seed = TargetKind::FullName;
+
+    // A clean, confident identity finding is admitted (no gate trips).
+    assert_eq!(
+        admission_rejection(seed, Some(0.3), &ent(EntityKind::Person, "Jane Smith", 0.9)),
+        None,
+        "a clean identity finding must be admitted",
+    );
+
+    // One representative per drop-filter, each yielding its reason string.
+    assert_eq!(
+        admission_rejection(seed, Some(0.5), &ent(EntityKind::Email, "jane@ok.com", 0.1)),
+        Some("below_min_confidence"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::IpAddress, "198.18.0.1", 0.9)),
+        Some("bogus_ip"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Domain, "example.com", 0.9)),
+        Some("placeholder_artifact"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Email, "@gmail", 0.9)),
+        Some("fragment_value"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Phone, "+1240893", 0.9)),
+        Some("implausible_phone"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Email, "admin@bendigobank.com.au", 0.9)
+        ),
+        Some("incidental_infra"),
+        "a role mailbox on an identity scan is incidental infrastructure",
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Organisation, "p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+        "a Cyrillic-spoofed value is a homoglyph",
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Person, "ZonJZRJHHWD", 0.9)),
+        Some("gibberish_value"),
+    );
+
+    // ORDER is load-bearing: an entity that trips MULTIPLE gates reports the
+    // FIRST (cheapest / most-decisive) — a below-confidence bogus IP is rejected
+    // as below_min_confidence, not bogus_ip.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            Some(0.5),
+            &ent(EntityKind::IpAddress, "198.18.0.1", 0.1)
+        ),
+        Some("below_min_confidence"),
+        "the earliest gate in the chain wins",
+    );
+}

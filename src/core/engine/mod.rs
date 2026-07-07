@@ -52,7 +52,7 @@ use dispatch::{DispatchCx, DispatchState};
 // the tests that stayed in this file, so the bridge is test-only.
 #[cfg(test)]
 use dispatch::{
-    dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
+    admission_rejection, dispatch_key, log_module_dispatch, module_skip_reason, run_module_guarded,
     target_distinct_sources,
 };
 use enrich::{
