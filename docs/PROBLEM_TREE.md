@@ -1160,6 +1160,144 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   domains_deterministically` test still passing unmodified. **P2** (a
   correctness gap that could permanently wedge an operator-facing status
   endpoint and block all future self-updates, not a crash or PII leak).
+- **`[x]` T2.34 · `core::entity`'s public `c_effective_with_source_count(0)`
+  broke its own bounded/floor invariant** — a "bring the most-referenced file
+  (372/788 files) to 10/10" pass found the internal caller always floors the
+  corroboration count at 1 before calling in, but the *public* method took the
+  count as given: at `n = 0` the `multiplicative` term's `ln(0)` intermediate
+  drives the whole computation **below** the base confidence (0.385 for
+  confidence 0.6) — violating the model's documented "C_eff ≥ confidence,
+  bounded `[0,1]`" contract for any external caller passing a real source
+  count. *Correction (2026-07-07 verification pass): at `confidence = 0` the
+  same `n = 0` path does NOT return `NaN` as the shipped code comment and an
+  earlier draft of this node both claimed — `ln(0) = -inf` makes the
+  `multiplicative` intermediate `0.0 * -inf = NaN`, but the function's final
+  `multiplicative.max(agreement)` uses `f64::max`, which discards a `NaN`
+  operand in favour of the other (finite) one, so the returned value is
+  finite (`0.0`) even at `confidence = 0`. The verified, sole failure mode is
+  the sub-base-confidence result — sufficient on its own to justify the fix.*
+  → **Solution:** float the same n≥1 floor into the public method, making it
+  total. A property test now asserts C_eff is bounded `[0,1]` and finite, never
+  below base confidence, monotonic non-decreasing in source count, and equal at
+  `n=0`/`n=1`. **P2** (public-API totality gap on the entity/confidence model
+  every module and the correlator depend on, not a crash — no caller currently
+  passes 0).
+- **`[x]` T2.35 · `core::scan`'s `sanitise_target_input` was non-idempotent on
+  an invisible/format char adjacent to a wrapping quote, leaking the quotes**
+  — the same 10/10 pass on the second-most-referenced file (`TargetKind`
+  366/`Target` 362 files) found `strip_invisible` ran *after* the quote/
+  separator unwrap loop, so an invisible char (e.g. U+200B, routine in
+  rich-text/chat copy-paste) sitting between a surrounding quote and the string
+  edge made the first/last char not the quote — the unwrap loop skipped it,
+  `strip_invisible` then removed the invisible char, and the quotes were left
+  on the stored value (exactly the leak the function exists to prevent):
+  `sanitise("\u{200b}\"x\"")` → `"\"x\""`, but re-sanitising that result →
+  `"x"` — non-idempotent, and the quoted value could poison stored targets and
+  mis-route `TargetKind::detect`. → **Solution:** strip invisibles *first*, so
+  the unwrap loop reaches a true fixed point. Added proptest properties
+  (`sanitise_target_input` is idempotent; `TargetKind::detect`/`detect_kind`
+  are total; `Target::validate` is total over every `(kind, value)`) plus
+  explicit regression cases for the invisible-adjacent-quote input. **P2** (a
+  real input-poisoning/idempotence bug on the universal target-intake path, not
+  a crash).
+- **`[x]` T2.36 · `Error::Http`'s `#[from] reqwest::Error` Display could leak
+  the request URL (API key + target PII in the query string) past the
+  redaction chokepoint** — reqwest 0.12's `Error` Display appends
+  `for url (<url>)`, and several HSE modules (`shodan`/`hunter_io`/`hlr_cnam`/
+  `cell_intel`/…) carry the API key and/or target PII directly in the query
+  string. Safety rested entirely on every module author routing through the
+  `send_tagged`/`without_url()` redaction helper instead of a bare `?` on a
+  `reqwest::Error` — but `#[from]` made the *unsafe* bare-`?` path compile
+  silently, so one missed helper call anywhere would leak a credential straight
+  into the `ModuleError` SSE event, the persisted dossier, and the downloadable
+  verbose log. → **Solution:** `Error::Http` is now `Http(String)` with a
+  manual `From<reqwest::Error>` that strips the URL via `without_url()` before
+  storing, making the *safe* path the default even for code that bypasses the
+  util helpers — non-breaking (bare-`?` sites keep compiling, now redacted).
+  Added `http_conversion_strips_url_so_credentials_and_pii_dont_leak` (offline
+  regression) and `every_variant_display_is_pinned` (an arm-less `match`, no
+  `_`, forcing a Display assertion for every `Error` variant — Storage and Http
+  were previously untested). **P1** (a live credential/PII-leak vector gated
+  only by author discipline, on a security-critical shared type — not yet
+  observed to have leaked in practice, since no current call site propagates a
+  bare `reqwest::Error` via `?` (verified: several modules call `reqwest`
+  directly but all handle the `Result` explicitly rather than propagating it),
+  but the type itself made the unsafe path the path of least resistance for
+  any future one).
+- **`[x]` T2.37 · `ScanOptions`'s operator-supplied numeric knobs reached
+  resource/comparison sites unbounded** — `ScanOptions` deserialises from
+  operator API/CLI input and threads through the engine; three knobs reached
+  their consume site with no clamp: (1) **`max_concurrent`** (HIGH) reached
+  `Semaphore::new(cx.opts.max_concurrent)` raw in `dispatch.rs` — tokio's
+  `Semaphore::new` **panics** above `MAX_PERMITS` (`usize::MAX >> 3`), so a
+  deserialized value could crash the scan task; (2) **`throttle_ms`** (LOW)
+  fed an uninterruptible inter-module `sleep()` not raced against
+  cancellation, so an extreme value could hold a scan past its own wall-time
+  watchdog (which only sets the cancel flag, it doesn't pre-empt a sleep); (3)
+  **`min_expand_confidence`/`min_confidence`/`min_marginal_yield`** (LOW) were
+  consumed via bare `<` comparisons — a CLI `--min-confidence nan`/`inf`
+  (`clap`'s `f64::from_str` accepts both) silently inverted the filter (`NaN`
+  makes every `x < floor` comparison false — filter disabled, everything
+  expands; `+inf` makes it always true). → **Solution:** bounded
+  `effective_*()` accessors mirroring the existing `clamp_depth` discipline —
+  `effective_max_concurrent()` clamps to a new `MAX_CONCURRENT = 64`,
+  `effective_throttle_ms()` clamps to `THROTTLE_CEILING_MS = 30_000`, and the
+  three `effective_min_*()` accessors coerce only the meaningless non-finite
+  case to the product default/`None` (finite-but-unusual values still pass
+  through — operator intent is preserved). Also consolidated the
+  `ExpansionStrategy` drift tests into one compile-forced arm-less `match` (a
+  5th variant would previously skip a hardcoded 4-variant array), and fixed
+  doc drift on `seeknow_scan_cap` (claimed clamp "200"/fallback "24"; actual
+  500/300). **P1** (operator-reachable panic + a silent, fully-invertible
+  scan-quality filter — CLI `--min-confidence` accepts float text unchecked).
+  *Correction + extension (2026-07-07, found by an adversarial verification
+  pass on this same reconciliation cycle's own draft):* two follow-up gaps
+  confirmed and closed in the same commit as this reconciliation. **(a)** the
+  original fix only routed the ENGINE's dispatch-loop `c_eff <
+  min_expand_confidence` gate through `effective_min_expand_confidence()`;
+  `api/scan_handlers/intel.rs`'s `GET /scans/{id}/leads` handler still passed
+  the raw field to `core::leads::recommend` — now also routed through the
+  accessor. **(b)** that alone wasn't sufficient: JSON has no NaN/Infinity
+  token, so a non-finite `ScanOptions` field silently serialises to `null` on
+  persist and then fails to deserialize back into the required `f64`,
+  **permanently 500ing every subsequent read of that scan** — not just
+  `/leads`, every `GET /scans/{id}/...` sub-resource — which is a more severe
+  failure than the original filter-inversion finding (confirmed empirically: a
+  NaN-carrying `ScanOptions` persisted via `Store::upsert_scan` then read back
+  via `Store::get_scan` reproduces exactly this). → new
+  `ScanOptions::sanitized()` replaces every non-finite field with its
+  `effective_*()` value; `Scan::with_options()` — the single chokepoint every
+  CLI/API/live construction path shares — now calls it before storing, so an
+  invalid value can never reach persistence regardless of how many read sites
+  exist. 3 new tests: `sanitized_replaces_every_non_finite_field_with_its_
+  effective_value`, `scan_with_options_sanitizes_before_storing_so_
+  persistence_cannot_be_corrupted` (fail-before confirmed: reverted the
+  `with_options`/`sanitized()` bodies in turn; both failed against the
+  unfixed code), and the API-level
+  `scan_leads_coerces_a_non_finite_expansion_floor_to_the_safe_default`.
+  *Also corrected:* 659bcc6's own "+3 tests" gate-line figure undercounted a
+  removed test (`expansion_strategy_from_str_accepts_every_variant`, folded
+  into a consolidated replacement) — the real net delta was +2; `gap_register`
+  corrected to match.
+- **`[ ]` T2.38 · `core/engine/mod.rs` still carries two unit-seamless god
+  functions after the ranking-API extraction** — the out-of-scan-loop
+  ranking/enrichment API (leverage ranking, autonomous-sweep planning, offline
+  geo-enrichment, ~500 LOC / 21% of the file) was moved verbatim into
+  `engine::ranking` (2432 → 1930 LOC), closing the file's worst architectural
+  inconsistency (mixed in-loop orchestration and out-of-loop pure APIs) — but
+  the per-scan orchestrator itself still contains `finalise_scan` (~427 LOC)
+  and `run_expansion` (~472 LOC), the least unit-covered part of the file (only
+  end-to-end scan tests exercise their internals, unlike `dispatch.rs`'s
+  `admission_rejection`/`replay_cached_result`, which gained direct unit tests
+  when extracted). → **Solution (sketched, not started):** the same
+  extract-then-test sequence the dispatch refactor and the ranking-API move
+  both used — add unit seams (pure free functions for the internally
+  cohesive sub-steps) first, verify each is independently testable, *then*
+  decompose the two god functions around those seams; decomposing first
+  without seams risks moving the untested-ness rather than fixing it. **P3**
+  (a maintainability/testability debt on a hot, already-covered-end-to-end
+  path — not a defect; explicitly flagged as the next scoped refactor by the
+  commit that did the adjacent extraction).
 
 ---
 
@@ -1598,6 +1736,26 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   explicitly-set `HSE_PREBUILT` (`$2=0` passed by `maybe_use_prebuilt` when
   `HSE_PREBUILT` is set — user nominated the path, lower risk).
   **Paired:** `SOLUTION_TREE` SOL-INSTALL-INTEGRITY `[x]` + §3/§4/§5 — same commit.
+- **S6 · `[x]` P2 (MED) — env-var base-URL overrides could silently redirect a
+  key-bearing request (fixed 2026-07-06/07 reconciliation, SOL-BASEURL-HARDEN).**
+  The paid-provider `CurlClient` path deliberately skips the private-IP SSRF pin
+  on the assumption its request host is a hardcoded, trusted provider base — an
+  assumption two escape hatches broke: `HUNTSMAN_SEEKNOW_BASE` and
+  `HUNTSMAN_OATHNET_BASE` let an operator (or anything that can set the process
+  environment) redirect a key-bearing request — the API key rides the auth
+  header, target PII rides the query — to any host: a look-alike domain that
+  harvests the key, or an internal/metadata address, with no signal it had
+  happened. ✅ **Fixed:** `util::endpoint_override::{classify, resolve}` — a pure,
+  unit-tested policy plus a thin env-reading wrapper — now gates both
+  call-sites: refuses a non-`https` override (a key must never travel
+  cleartext), refuses private/reserved/local hosts (restoring the SSRF pin the
+  curl path otherwise skips), allows a divergent *public* host (legitimate
+  self-hosting) but emits a loud `WARN` so a redirect can never be silent, and
+  falls back to the built-in default on anything unparseable. 7 tests cover the
+  policy, including the look-alike-domain and cloud-metadata SSRF cases.
+  **Paired:** `SOLUTION_TREE` SOL-BASEURL-HARDEN `[x]` + §3/§4/§5 — recorded in
+  the 2026-07-07 documentation-reconciliation commit (code shipped `ee45d63`,
+  gate green at the time: fmt/clippy/doc clean, full suite passing).
 - **Verified clean (no finding):** argv-only command construction (no shell);
   `KeyPool` rotation is `Mutex`-guarded (no TOCTOU/overspend on the pool itself); no
   key value logged at info/debug (only `key_tail` last-4); `settings.json` is toggles
@@ -5556,3 +5714,122 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
   0 failures (4432 lib tests, +7; +1 API 403 test), architecture suite green.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-07 — Documentation-reconciliation cycle: 19 real, already-gated
+  commits (2026-07-06/07) had shipped with zero paired gap-register/changelog
+  entries (16 of the 19 also carried no paired tree entries at all) — this
+  cycle's ORIENT step found the record, not the code, was the most faulty
+  artifact.** Per SELECT step 1 ("an in-progress node/dirty tree left by a
+  prior cycle — finish it, no new work"): `git log` since the last
+  `gap_register.md`/`CHANGELOG.md` touch (`00bb087`, "Cycle 45") showed
+  `docs/gap_register.md` and `CHANGELOG.md` frozen there while 19 further
+  commits landed on `main` — 3 fault-tree rounds that *did* pair
+  `PROBLEM_TREE`/`SOLUTION_TREE` (FT.1–19, already logged above) but never
+  touched the register/changelog, plus 16 more commits (two "bring to 10/10"
+  hardening passes closing `T2.34`/`T2.35`, the `Error::Http` redaction fix
+  closing `T2.36`, the `ScanOptions` validation fix closing `T2.37`, a
+  10-defect API-integration repair, an SSRF-adjacent base-URL hardening fix
+  closing §7 `S6`, an identity-metadata update, 7 proof/drift-guard additions,
+  and 2 pure engine refactors) that updated **none** of the four
+  record-keeping surfaces. Each commit was individually real, gated (own
+  fmt/clippy/doc/test run, confirmed from its own message), and non-
+  overlapping — this was a bookkeeping gap, not a code defect — but an
+  inaccurate tree is exactly the failure mode this loop's own doctrine (§0 of
+  `SOLUTION_TREE`) exists to prevent: the next cycle reads these trees to pick
+  its unit of work, and 19 undocumented commits risk a future cycle
+  re-investigating closed ground or missing that `T2.38` (below) is the real
+  open thread. Verified every claim below against the actual commit
+  diff/message (`git show`), not the commit's own prose alone, before writing
+  it down. **A 9-agent adversarial verification pass on this same
+  reconciliation's own first draft — before it shipped — caught six real
+  inaccuracies**, corrected in place rather than shipped wrong: a false "or
+  NaN" claim on `T2.34` (the code path in question actually returns a finite,
+  merely sub-base-confidence value — `f64::max` discards the `NaN` operand;
+  the shipped source comment carried the same error and is corrected in this
+  commit too); imprecise wording on `T2.36`'s "every call site uses the
+  helper" (the real reason no leak occurred is that no call site propagates
+  the error via `?`, not universal helper adoption); a wrong LOC figure on
+  `SOL-ENGINE-DISPATCH-DEDUP` (~90 claimed, ~140 measured); two overclaimed
+  "closed with a regression test" sentences on the FT.1–8/FT.15–19
+  `gap_register` rows (only 4-of-8 and 2-of-5 respectively have direct test
+  coverage); and — the one that changed code, not just prose — `T2.37`'s fix
+  was genuinely incomplete (see its node body above for the two follow-up
+  gaps closed in this same commit). This is the loop's own "measure twice"
+  discipline applied to itself: a documentation-only cycle is not exempt from
+  the no-unmeasured-claims rule just because no product code was touched (and
+  in this case the verification pass *did* surface a real, fixed defect).
+  Reconciled this same commit:
+  **New closed nodes** (added retroactively, code already shipped/gated):
+  **`T2.34`** (core::entity `c_effective_with_source_count(0)` floor bug,
+  `cc90b56`), **`T2.35`** (core::scan `sanitise_target_input` idempotence bug,
+  `f72b606`), **`T2.36`** (`Error::Http` URL/credential leak via `#[from]`,
+  `407478c`), **`T2.37`** (`ScanOptions` unbounded operator knobs —
+  `Semaphore::new` panic risk + NaN filter inversion, `659bcc6`), and **§7
+  `S6`** (base-URL override SSRF/key-redirection, `ee45d63`) — full detail
+  in their own node bodies above.
+  **New open node `T2.38`** (engine god-function debt `finalise_scan`/
+  `run_expansion`, explicitly deferred by `eb0e8ac`'s own commit message) —
+  the one genuinely still-open thread this reconciliation surfaced; see its
+  node body and the refreshed `SOLUTION_TREE` §4a.
+  **Batch findings, logged here (no individual node — mirrors the FT.x
+  convention for a many-small-findings-in-one-commit shape):** `7ce5780`
+  "Repair ten confirmed API-integration defects" — **API.1** `see_know`
+  latched `KEY_INVALID` (disabling the provider scan-wide) on any payload
+  field merely *containing* the substring "invalid_api_key" instead of
+  reading the top-level error envelope, a silent-data-loss false positive;
+  now parses the body first and checks only the envelope + credits meter.
+  **API.2** `oathnet` had the identical class from free-text quota-phrase
+  substring matching; narrowed to the JSON-scoped `left_today:0` + parsed
+  429. **API.3** `ip_registry` `?`-propagated either of two partial sources
+  (RDAP/BGPView) as total failure instead of merging partial successes.
+  **API.4** `bgpview` treated a 404 (unknown ASN/IP — a legitimate empty
+  result) as a module error, cooling the circuit breaker off `see_know`/
+  `oathnet`-style; now `fetch_json_or_404`. **API.5** `smtp_vrfy`'s
+  `read_multiline` treated an EOF empty-read as "continue," busy-looping at
+  100% CPU when the peer closed at/after EHLO; now a hard error. **API.6**
+  `key_pool` validation couldn't distinguish a definitive 401/403 rejection
+  from an indeterminate outcome (timeout/429/5xx/connect-fail), so a
+  transient outage could permanently mark a valid key Invalid. **API.7**
+  `social_probe` interpolated the handle into a URL unencoded. **API.8**
+  `service_defs` declared `netlas`'s auth as `BearerAuth` when the module
+  and `api_key_probe` both use `X-API-Key`, so the key validator probed the
+  wrong header. **API.9** `asic_director` didn't cut the company name at
+  the ACN when the registry rendered it space-grouped ("123 456 789"),
+  returning the whole row. **API.10** `au_electoral` had an off-by-one that
+  skipped a postcode landing in the final 4 bytes of the scan window.
+  Regression tests added for API.1 (payload-marker handling) and API.8
+  (auth declaration). All ten are provider-integration robustness fixes
+  (silent data loss / false circuit-breaker trips / a CPU busy-loop /
+  wrong parsed output), not crashes or PII leaks — collectively **P2**.
+  **Proof/drift-guard hardening, F.3 foundation tier, no product-code
+  change** (`05749ca`, `6e1ef9e`, `a66c6f6`, `91e1bd6`, `aa8ca26`,
+  `9033750`, `f795f89`): compile-forced (arm-less `match`, no `_`)
+  exhaustive drift tripwires added for `ModuleCost`/`ModuleCategory`,
+  `EventKind`'s `event_type_str()`↔serde tag (only 1 of 15 variants was
+  previously pinned), and `RelationKind`'s `as_str()`↔serde tag (the
+  hardcoded 14-of-15 array had silently missed `SharesSecretWith`); a
+  property test proving `append_capped`'s OOM ceiling holds over arbitrary
+  chunk sequences; a compile-time `Send + Sync + 'static` assertion plus a
+  default-method-dispatch test locking `StoragePort`'s `dyn`-safety
+  contract; and a cross-thread visibility test for `CancelHandle`'s
+  cooperative-cancellation contract. Each closes a real "no silent drift"
+  gap on a wire/trait contract this codebase already treats as load-bearing
+  elsewhere — none found active drift, all now block future drift.
+  **Engine refactors** (`7fd6195`, `eb0e8ac`): pure, behaviour-preserving
+  restructuring of `core/engine/` — the per-target dispatcher's three
+  verbatim-duplicated blocks (`replay_cached_result`'s cache-hit path, the
+  8-stage `admission_rejection` drop-filter chain) were extracted into
+  single-sourced, now independently unit-tested functions; then the
+  ~500 LOC of out-of-scan-loop ranking/enrichment API (leverage ranking,
+  autonomous-sweep planning, offline geo-enrichment) was moved verbatim
+  into a new `engine::ranking` submodule, re-exported unchanged at every
+  call site. Both verified pure moves (`git diff` of the relocated ranges:
+  byte-identical); the remaining god-function debt is `T2.38` above.
+  **Identity metadata** (`59f320b`): `CLAUDE.md` updated to the operator's
+  current identity (Maren Korst); not a `PROBLEM_TREE`-tracked defect, noted
+  here only for commit-to-record traceability.
+  Gate for this commit: docs-only change to the four record-keeping
+  surfaces, no source touched; ran the full gate anyway per CLAUDE.md (no
+  behaviour to regress, but the loop's own contract doesn't carve out an
+  exception) — fmt/clippy `-D warnings`/rustdoc (private items) clean, full
+  suite green. **Paired:** `SOLUTION_TREE` §2/§3/§4/§5 + `gap_register.md` +
+  `CHANGELOG.md` — same commit.

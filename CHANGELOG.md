@@ -364,6 +364,100 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **An unauthenticated `GET /keys/status` leaked per-service key-pool
+  inventory to LAN peers under a non-loopback bind.** Now carries the same
+  loopback-only gate as the sibling `keys_pool_get` endpoint.
+- **A cross-scan module-stats ledger race could silently lose one scan's
+  accumulated stats when two scans finished concurrently.** The
+  read-modify-write is now serialised by a process-global mutex.
+- **CSV export→re-import wasn't a true round-trip: a value genuinely
+  starting with an apostrophe lost it on re-import.** The anti-formula-
+  injection guard (`= + - @` and control-char prefixes) is now a real
+  bijection, verified by a round-trip property test.
+- **Correlator rule AU-053 (out-of-area location) could produce different
+  results for the same data depending on entity iteration order**, causing
+  duplicate, non-deduplicable findings between a live scan and its own
+  finalise pass. Coordinates are now sorted before clustering.
+- **`GET /scans/{id}/identities` on a large imported dossier could freeze
+  a server worker for minutes (and risked OOM)** — the O(n²) coreference
+  resolution ran on the async reactor after only the database read was
+  offloaded. Both now run off-reactor together.
+- **A stored XSS in the SPA's autonomous-scan notification could execute
+  attacker-controlled script same-origin**, reachable by clicking a normal
+  autonomous-scan entity. The interpolated value is now escaped like every
+  other render site.
+- **`hse radar`'s pivot and sweep scans had no entity ceiling**, unlike
+  every other scan entry point — a long-running radar loop could grow its
+  frontier unbounded in RAM. Both now carry the same cap as `hse scan`.
+- **A UTF-8 BOM at the start of an imported CSV/JSON export (common from
+  Excel/Windows) misrouted to the wrong parser and silently dropped every
+  entity.** The BOM is now stripped before format detection.
+- **The operator's own harvested API key could leak into the raw archive,
+  dossier, and debug bundle filename** when the key appeared in the URL
+  *path* rather than the query string (affected IPQS, ABR). Path-embedded
+  keys are now excluded the same way query-string keys already were.
+- **A cache-replayed module result could carry the wrong scan ID**, causing
+  a finding to silently vanish from a re-scanned target while still being
+  counted in scan stats. Replayed entities are now re-stamped to the
+  current scan.
+- **The `typosquat` module's cross-target dedup set was never reset between
+  scans**, silently suppressing a repeat finding for any domain scanned
+  twice in the same `serve`/`live` session.
+- **A stray 4-digit run in an Email/Username/Url/Person value could be
+  misread as an Australian postcode**, producing a confident false
+  geolocation. The value-based postcode scan is now gated to Address
+  entities only; structured postcode evidence is unaffected.
+- **Cell-tower device IDs (`mcc-mnc-lac-cid`) could be mis-detected as
+  phone numbers**, silently dead-ending the cell-tower detection branch.
+  The cell-tower check now runs before the (less specific) phone check.
+- **A reactor-blocking synchronous report-JSON build could stall the
+  server's small worker pool**, unlike its `spawn_blocking` siblings; now
+  wrapped consistently.
+- **Ten API-integration defects** repaired across `see_know`, `oathnet`,
+  `ip_registry`, `bgpview`, `smtp_vrfy`, `key_pool`, `social_probe`,
+  `netlas`'s auth declaration, `asic_director`, and `au_electoral` — the
+  most significant: `see_know`/`oathnet` no longer disable a provider
+  scan-wide because a breach *payload field* happened to contain a quota/
+  auth-error phrase (false-positive data loss), `bgpview` now treats a 404
+  as a clean empty result instead of tripping the circuit breaker, and
+  `smtp_vrfy` no longer busy-loops at 100% CPU on a peer-closed connection.
+- **`core::entity`'s public `c_effective_with_source_count(0)` could return
+  a confidence value below its own documented floor.** Now floors at n=1
+  like the internal caller already did.
+- **`core::scan`'s `sanitise_target_input` was non-idempotent when an
+  invisible/zero-width character sat directly next to a wrapping quote**
+  (routine in pasted rich-text/chat seeds), leaving the quote characters on
+  the stored target value. Invisible characters are now stripped before
+  quote-unwrapping.
+- **`Error::Http` could leak the request URL — including the upstream API
+  key and target PII carried in the query string — into module-error
+  events, the dossier, and the downloadable log, for any code path that
+  used a bare `?` instead of the dedicated redaction helper.** The
+  conversion now redacts the URL unconditionally, so the safe path no
+  longer depends on author discipline.
+- **`ScanOptions`'s operator-supplied `max_concurrent` could crash a scan
+  task** (an unclamped value reaching tokio's `Semaphore::new`, which
+  panics above its internal permit ceiling), **and a non-finite
+  `--min-confidence` (`nan`/`inf`) could silently invert or disable
+  precision filtering** instead of being rejected. All five numeric knobs
+  now clamp through tested accessors before reaching their consume site.
+- **A scan created with a non-finite `--min-confidence`/`--min-expand-
+  confidence`/`--min-marginal-yield` value (`nan`/`inf`; only reachable via
+  the CLI, never the JSON API) became permanently unreadable once
+  persisted.** JSON has no NaN/Infinity token, so the value silently
+  serialised to `null` on save and then failed to deserialize back on every
+  subsequent read — `GET /scans/{id}` and every sub-resource, including the
+  web UI, would 500 forever, not just the endpoint that happened to compare
+  the raw value. `ScanOptions` is now sanitised to a safe finite value the
+  moment a scan's options are set, so the invalid state can never reach
+  storage.
+- **A paid-provider base-URL override (`HUNTSMAN_SEEKNOW_BASE`/
+  `HUNTSMAN_OATHNET_BASE`) could silently redirect a key-bearing request to
+  any host**, including a look-alike domain or an internal/cloud-metadata
+  address — the curl client path intentionally skips the private-IP SSRF
+  pin for what it assumes is a hardcoded, trusted base. Overrides are now
+  vetted (HTTPS-only, private/reserved/local hosts refused, a divergent
+  public host allowed but logged loudly).
 - **The self-update mechanism can no longer wedge itself into a permanent
   "applying" state.** Two sites that record the outcome of a triggered
   update (success → restarting, failure → error) silently did nothing if

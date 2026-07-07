@@ -764,6 +764,76 @@ async fn scan_leads_returns_ranked_actions() {
     );
 }
 
+#[tokio::test]
+async fn scan_leads_coerces_a_non_finite_expansion_floor_to_the_safe_default() {
+    // Regression (T2.37 residual, found by an adversarial verification pass on
+    // this same reconciliation cycle's own draft): a CLI `--min-confidence
+    // nan`/`inf` flag (`clap`'s `f64::from_str` accepts them; a JSON API
+    // request cannot carry a literal `NaN`/`Infinity` token at all) used to
+    // survive into a persisted `Scan`'s `ScanOptions` unchanged. That's worse
+    // than a bad comparison at one read site: JSON has no NaN/Infinity token,
+    // so `serde_json` silently serialises a non-finite `f64` as `null`, and
+    // `null` fails to deserialize back into the required `f64` field — every
+    // subsequent read of that scan (`GET /scans/{id}` and every sub-resource,
+    // not just `/leads`) would 500 forever. `Scan::with_options` now routes
+    // through `ScanOptions::sanitized()`, the single chokepoint every caller
+    // shares, so the invalid value can never reach storage. This end-to-end
+    // test additionally confirms that once the scan is safely persisted and
+    // read back, a low-confidence connection still correctly surfaces as an
+    // untapped lead (the coerced default floor, not a raw NaN comparison).
+    use huntsman_search_engine::core::scan::ScanOptions;
+
+    let (app, store) = test_app_with_store("leads_nan_floor");
+    let sid = "s-leads-nan-floor";
+    let opts = ScanOptions {
+        min_expand_confidence: f64::NAN,
+        ..ScanOptions::default()
+    };
+    store
+        .upsert_scan(
+            &Scan::new(sid, Target::new(TargetKind::FullName, "Nan Floor")).with_options(opts),
+        )
+        .unwrap();
+
+    let mut subject = Entity::new(EntityKind::Person, "Nan Floor", 0.9, sid);
+    subject.tag("subject");
+    // Well below the product default floor (0.20) so a correctly-coerced,
+    // finite floor unambiguously marks it untapped.
+    let low_conf = Entity::new(EntityKind::Email, "low@example.com", 0.05, sid);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&low_conf).unwrap();
+    store
+        .upsert_relation(&Relation::new(
+            subject.uid.as_str(),
+            low_conf.uid.as_str(),
+            RelationKind::IdentifiedBy,
+            0.5,
+            sid,
+        ))
+        .unwrap();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/leads")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let lead = json["leads"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|l| l["value"] == "low@example.com")
+        .unwrap_or_else(|| panic!("low-confidence connection missing from leads: {json}"));
+    assert!(
+        lead["reason"]
+            .as_str()
+            .is_some_and(|r| r.contains("not yet investigated")),
+        "a NaN-floor scan must still recognise a below-default-floor connection \
+         as untapped (floor coerced to the finite product default, not compared \
+         raw against NaN): {lead}"
+    );
+}
+
 // ── 6. Scan list ──────────────────────────────────────────────────────────
 
 #[tokio::test]

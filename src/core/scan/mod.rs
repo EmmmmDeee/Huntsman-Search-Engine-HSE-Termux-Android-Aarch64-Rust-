@@ -684,8 +684,13 @@ impl Scan {
         }
     }
 
+    /// Sets the scan's options, sanitising away any non-finite numeric field
+    /// first ([`ScanOptions::sanitized`]) — the single chokepoint every
+    /// caller shares, so a `NaN`/`±inf` value (reachable only via a CLI flag;
+    /// JSON API input cannot carry one) can never reach storage and
+    /// permanently break the persisted record's readability.
     pub fn with_options(mut self, options: ScanOptions) -> Self {
-        self.options = options;
+        self.options = options.sanitized();
         self
     }
 }

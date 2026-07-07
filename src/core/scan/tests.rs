@@ -1123,6 +1123,73 @@ fn effective_confidence_floors_coerce_non_finite_to_safe_defaults() {
 }
 
 #[test]
+fn sanitized_replaces_every_non_finite_field_with_its_effective_value() {
+    // `effective_*()` protects each in-memory READ site, but doesn't stop a
+    // ScanOptions that still CARRIES a non-finite field from being persisted —
+    // and unlike an in-memory read, a persist-then-reload round trip cannot
+    // survive one (JSON has no NaN/Infinity token; serde_json silently writes
+    // `null`, which then fails to deserialize back into these non-`Option<T>`-
+    // wrapped `f64` fields, permanently 500ing every future read of that scan).
+    // `sanitized()` is the one-shot fix applied at construction.
+    let bad = ScanOptions {
+        min_expand_confidence: f64::NAN,
+        min_confidence: Some(f64::INFINITY),
+        min_marginal_yield: Some(f64::NEG_INFINITY),
+        ..Default::default()
+    };
+    let clean = bad.sanitized();
+    assert!(
+        clean.min_expand_confidence.is_finite(),
+        "min_expand_confidence must be finite after sanitizing"
+    );
+    assert_eq!(
+        clean.min_expand_confidence,
+        crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE
+    );
+    assert_eq!(clean.min_confidence, None);
+    assert_eq!(clean.min_marginal_yield, None);
+
+    // A finite (even unusual) value survives sanitizing unchanged.
+    let fine = ScanOptions {
+        min_expand_confidence: 0.9,
+        min_confidence: Some(0.1),
+        min_marginal_yield: Some(0.0),
+        ..Default::default()
+    }
+    .sanitized();
+    assert!((fine.min_expand_confidence - 0.9).abs() < 1e-9);
+    assert_eq!(fine.min_confidence, Some(0.1));
+    assert_eq!(fine.min_marginal_yield, Some(0.0));
+}
+
+#[test]
+fn scan_with_options_sanitizes_before_storing_so_persistence_cannot_be_corrupted() {
+    // The chokepoint every `Scan::with_options` caller shares (CLI, API,
+    // live/radar) must never let a raw non-finite value through, regardless of
+    // which of the 3 float-carrying `ScanOptions` fields a `clap`-parsed
+    // `--min-*` flag targeted.
+    let opts = ScanOptions {
+        min_expand_confidence: f64::NAN,
+        ..Default::default()
+    };
+    let scan =
+        Scan::new("s-sanitize", Target::new(TargetKind::Email, "a@b.com")).with_options(opts);
+    assert!(
+        scan.options.min_expand_confidence.is_finite(),
+        "with_options must sanitize before storing, not just at read time"
+    );
+    assert_eq!(
+        scan.options.min_expand_confidence,
+        crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE
+    );
+    // The sanitized options must themselves round-trip through JSON — the
+    // property that was previously broken for a raw non-finite value.
+    let json = serde_json::to_string(&scan).expect("serialize");
+    let back: Scan = serde_json::from_str(&json).expect("a sanitized Scan must always deserialize");
+    assert!((back.options.min_expand_confidence - scan.options.min_expand_confidence).abs() < 1e-9);
+}
+
+#[test]
 fn target_kind_canonical_str_matches_serde() {
     // CONVENTIONS.md §3: canonical_str is the persisted `scans.target_kind`
     // column, a scan_id hash input, and the event/API wire label — and its

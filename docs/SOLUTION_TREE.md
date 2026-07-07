@@ -834,6 +834,106 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes:* new node **T2.33**. ✅ 1 test
   (`set_phase_recovers_from_a_poisoned_mutex`, poisons a real `Mutex` via
   `catch_unwind`), fail-before confirmed.
+- **`[x]` SOL-ENTITY-10OF10 · `core::entity`'s public `c_effective_with_
+  source_count` floors `n` at 1, matching the internal caller** — the
+  most-referenced file in the codebase (372/788) had one public-API totality
+  gap: `n = 0` broke the "C_eff ≥ confidence, bounded `[0,1]`" contract.
+  Floored the public method the same way the internal caller already does;
+  also streamed `derive_uid`'s kind-prefix straight into the hasher via a
+  `fmt::Write` shim instead of `format!`-allocating it (byte-identical
+  hashed bytes, zero UID drift), and added a property test pinning the C_eff
+  bound/monotonicity/n=0-totality contract. *Closes:* new node **T2.34**.
+  ✅ 1 new proptest; full suite +1.
+- **`[x]` SOL-SCAN-10OF10 · `core::scan`'s `sanitise_target_input` strips
+  invisible characters before unwrapping quotes, restoring idempotence** —
+  the second-most-referenced file had a real bug: stripping invisibles
+  *after* the quote-unwrap loop let an invisible char adjacent to a
+  wrapping quote survive one round-trip with the quotes still attached.
+  Reordered to strip-then-unwrap, added proptest totality properties for
+  `sanitise_target_input`/`TargetKind::detect`/`Target::validate`, plus
+  explicit regression cases. *Closes:* new node **T2.35**. ✅ 3 new tests.
+- **`[x]` SOL-ERROR-HTTP-REDACT · `Error::Http` now redacts the URL by
+  construction, not by author discipline** — replaced the leaky
+  `#[from] reqwest::Error` (whose Display appends the request URL, which
+  routinely carries the API key + target PII) with `Http(String)` plus a
+  manual `From` impl that strips the URL via `without_url()` before
+  storing, so even a bare `?` on a `reqwest::Error` — bypassing the
+  `send_tagged` redaction helper every module is supposed to use — can no
+  longer leak a credential. *Closes:* new node **T2.36**. ✅ 2 new tests
+  (`http_conversion_strips_url_so_credentials_and_pii_dont_leak`, an
+  arm-less-`match` Display tripwire over all 8 `Error` variants).
+- **`[x]` SOL-SCANOPTS-VALIDATE · `ScanOptions`'s numeric knobs now clamp
+  through tested `effective_*()` accessors before reaching a
+  resource/comparison site** — `max_concurrent` (was a raw
+  `Semaphore::new` panic risk above `MAX_PERMITS`), `throttle_ms` (could
+  outlast the wall-time watchdog), and the three `min_*` confidence/yield
+  floors (NaN/inf from CLI text input could silently invert or disable the
+  filter) each gained a bounded accessor mirroring the existing
+  `clamp_depth` pattern; non-finite values coerce to the product default,
+  finite-but-unusual values pass through unchanged. Also consolidated the
+  `ExpansionStrategy` drift tests into one compile-forced arm-less `match`.
+  *Closes:* new node **T2.37**. ✅ 2 new tests (corrected from an overcounted
+  "+3" in the original gate line — a removed test folded into a consolidated
+  replacement), architecture suite green. **Extended 2026-07-07:** the
+  accessors alone left a second `min_expand_confidence` read site
+  (`api/scan_handlers/intel.rs`) unrouted, and — more seriously — didn't stop
+  a non-finite field from being *persisted* at all, which corrupts the stored
+  scan beyond repair (JSON has no NaN/Infinity token; `serde_json` writes
+  `null`, which then fails to deserialize back into the required `f64`,
+  500-ing every future read of that scan, confirmed empirically). New
+  `ScanOptions::sanitized()` plus `Scan::with_options()`
+  (the one construction chokepoint every CLI/API/live caller shares) closes
+  the class at its source. 3 more tests, 2 fail-before confirmed by reverting
+  `sanitized()` and `with_options()` in turn.
+- **`[x]` SOL-BASEURL-HARDEN · `util::endpoint_override` gates the two
+  paid-provider base-URL env overrides against SSRF and silent key
+  redirection** — `HUNTSMAN_SEEKNOW_BASE`/`HUNTSMAN_OATHNET_BASE` could
+  previously redirect a key-bearing request to any host, since the curl
+  client path intentionally skips the private-IP pin for what it assumes
+  is a hardcoded trusted base. A pure `classify()` policy (refuse
+  non-`https`, refuse private/reserved/local hosts, `WARN` loudly on any
+  divergent-but-public host, fall back to the built-in default on anything
+  unparseable) plus a thin `resolve()` wrapper now gates both call sites.
+  *Closes:* §7 **`S6`**. ✅ 7 new tests, incl. look-alike-domain and
+  cloud-metadata SSRF cases.
+- **`[x]` SOL-ENGINE-DISPATCH-DEDUP · the per-target dispatcher's three
+  verbatim-duplicated blocks are now single-sourced, unit-tested functions**
+  — extends **T2.5**'s earlier arg-bundling closure with a second pass on
+  the same file: `replay_cached_result()` (the cache-hit stats/re-stamp/
+  finalise block, previously byte-for-byte copied across the sequential
+  path and both concurrent phases — including the `scan_id` re-stamp
+  invariant `T5`/FT.2 depends on, which had to be hand-edited in three
+  synchronized places) and `admission_rejection()` (the 8-stage entity
+  drop-filter chain, lifted out of `finalise_module_result`'s inner loop
+  into a pure free function) are each now one function with one set of
+  tests — `finalise_module_result` drops from ~220 to ~140 raw LOC (~95
+  excluding blank/comment lines; corrected from the originating commit
+  message's "~90", which an adversarial verification pass on this
+  reconciliation's own draft measured against the actual diff hunk and found
+  overstated by roughly 50 lines), and the
+  drop-filter policy gains its first unit tests (one per filter + the
+  load-bearing ordering), net-new coverage of a surface previously
+  exercised only end-to-end. Pure, behaviour-preserving restructuring —
+  no `PROBLEM_TREE` node closed (a quality/testability improvement on an
+  already-`[x]` node, not a defect fix); logged in §5.
+- **`[x]` SOL-ENGINE-RANKING-SPLIT · the out-of-scan-loop ranking/
+  enrichment API now lives in `engine::ranking`, not mixed into the
+  per-scan orchestrator** — `engine/mod.rs` was a 2432-line file mixing the
+  per-scan round-loop with ~500 LOC (21%) of pure, independently-tested
+  APIs that never run inside that loop (cross-investigation leverage
+  ranking, autonomous-sweep planning, offline geo-enrichment) — consumed by
+  the CLI/API/dossier layers, not the engine. Moved verbatim into a new
+  submodule, re-exported so every existing call site is unchanged (`git
+  diff` of the relocated range: byte-identical). `engine/mod.rs`: 2432 →
+  1930 LOC. **Opens** the next-scoped item: **T2.38** (the two remaining
+  god functions, `finalise_scan`/`run_expansion`, need unit seams before
+  they can be safely decomposed the same way). Pure move, no `PROBLEM_TREE`
+  node closed; logged in §5.
+- **`[ ]` SOL-ENGINE-SEAMS · sketch only, not started** — add unit seams
+  (pure free functions for `finalise_scan`/`run_expansion`'s internally
+  cohesive sub-steps, gaining direct tests the way `admission_rejection`
+  did) before decomposing either god function — decomposing without seams
+  first would just relocate the untested-ness. *Targets:* **T2.38**.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -907,6 +1007,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SOURCEFORGE-ATTACK-COMPLETE | T2.31 | `[x]` |
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
+| SOL-ENTITY-10OF10 | T2.34 | `[x]` |
+| SOL-SCAN-10OF10 | T2.35 | `[x]` |
+| SOL-ERROR-HTTP-REDACT | T2.36 | `[x]` |
+| SOL-SCANOPTS-VALIDATE | T2.37 | `[x]` |
+| SOL-BASEURL-HARDEN | §7 S6 | `[x]` |
+| SOL-ENGINE-DISPATCH-DEDUP | T2.5 (quality follow-on) | `[x]` |
+| SOL-ENGINE-RANKING-SPLIT | T2.5 (quality follow-on) · opens T2.38 | `[x]` |
+| SOL-ENGINE-SEAMS | T2.38 | `[ ]` |
 
 ---
 
@@ -918,6 +1026,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.38** (new, 2026-07-07) — `core/engine/mod.rs`'s `finalise_scan`
+  (~427 LOC) and `run_expansion` (~472 LOC) remain unit-seamless god
+  functions after `SOL-ENGINE-RANKING-SPLIT` moved the file's other
+  architectural inconsistency out. SOL-ENGINE-SEAMS sketched (add pure-
+  function seams first, decompose second, mirroring how the dispatch
+  refactor extracted `admission_rejection`). Not yet started — the
+  highest-leverage open item this reconciliation cycle surfaced.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -1044,13 +1159,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
   SOL-BUDGET back in cycle 18 — SOL-ISOLATE's own text just never caught up to
-  that, corrected this cycle); T2.14 open (deferred noise design).
+  that, corrected this cycle); T2.14 open (deferred noise design); **T2.34
+  `[x]`** ✅ (SOL-ENTITY-10OF10); **T2.35 `[x]`** ✅ (SOL-SCAN-10OF10); **T2.36
+  `[x]`** ✅ (SOL-ERROR-HTTP-REDACT); **T2.37 `[x]`** ✅
+  (SOL-SCANOPTS-VALIDATE); **T2.38 `[ ]`** open (SOL-ENGINE-SEAMS sketched,
+  not started — the finalise_scan/run_expansion god-function debt).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
-  (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
+  (SOL-INSTALL-INTEGRITY, cycle 16); **S6 `[x]`** ✅ (SOL-BASEURL-HARDEN,
+  2026-07-07); S4 residual open (LOW).
 - **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; AU bounding precision, movement/timeline layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28; only AU-0xx rule-gap fill remains); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
@@ -4064,3 +4184,54 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4432 lib tests, +7; +1 API test), architecture suite green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-07 — Documentation-reconciliation cycle: paired write-up for 19
+  commits that shipped since the register/changelog last moved.** Full
+  rationale in `PROBLEM_TREE` §8 (same date) — summary here: `gap_register.md`
+  and `CHANGELOG.md` were frozen at "Cycle 45" (`00bb087`) while `main`
+  advanced 19 more commits, only 3 of which (the fault-tree rounds, FT.1–19)
+  had paired this tree at all (the other 16 had paired nothing). Landed this
+  commit: five new closed nodes — **SOL-ENTITY-10OF10** (T2.34),
+  **SOL-SCAN-10OF10** (T2.35), **SOL-ERROR-HTTP-REDACT** (T2.36),
+  **SOL-SCANOPTS-VALIDATE** (T2.37), **SOL-BASEURL-HARDEN** (§7 S6) — each
+  closing a real, independently-verified defect from a "bring to 10/10" pass,
+  an API-integration audit follow-on, or a security hardening fix (full detail
+  on each in §2 above and its `PROBLEM_TREE` node body); two closed quality
+  nodes — **SOL-ENGINE-DISPATCH-DEDUP** and **SOL-ENGINE-RANKING-SPLIT** —
+  pure, behaviour-preserving restructuring of `core/engine/` that closes no
+  `PROBLEM_TREE` node itself but extends the already-`[x]` T2.5 and opens the
+  one genuinely new gap this reconciliation found; and one new open node,
+  **T2.38** with sketch **SOL-ENGINE-SEAMS** (§4a), for the
+  `finalise_scan`/`run_expansion` god-function debt `SOL-ENGINE-RANKING-SPLIT`'s
+  own commit message flagged as the clearly-scoped next refactor. Also logged
+  (batch, no individual node, mirroring the FT.x convention): the 10-defect
+  API-integration repair (`7ce5780`) and the 7-commit proof/drift-guard
+  hardening pass (compile-forced exhaustive drift tripwires for
+  `ModuleCost`/`ModuleCategory`/`EventKind`/`RelationKind`, an `append_capped`
+  OOM property test, and `StoragePort`/`CancelHandle` contract-locking — no
+  product-code change in any of the seven). `gap_register.md` gained one row
+  per commit plus one meta row for this reconciliation itself (20 new rows,
+  newest at top); `CHANGELOG.md`'s `[Unreleased]` gained matching `Fixed`
+  entries for every behaviour-affecting item (the pure-test-hardening, the two
+  pure engine refactors, and the identity-metadata commits are noted in the
+  register but not changelogged, since none of them shipped user-visible
+  behaviour).
+  **A 9-agent adversarial verification pass on this reconciliation's own first
+  draft — run before any of it shipped — found six real inaccuracies**,
+  corrected in place: a false "or NaN" claim on `T2.34` (the unfloored path
+  actually returns a finite, merely sub-base-confidence value; `f64::max`
+  discards the `NaN` operand — the shipped source comment carried the same
+  error and is corrected in this commit too); imprecise phrasing on `T2.36`;
+  a wrong LOC figure on `SOL-ENGINE-DISPATCH-DEDUP` (~90 claimed, ~140
+  measured); two overclaimed test-coverage sentences on the FT.1–8/FT.15–19
+  `gap_register` rows; and — the one that changed code — `T2.37`'s original
+  fix was genuinely incomplete (see its `PROBLEM_TREE` node body: a second
+  unrouted read site, and a more severe persist-then-reload corruption bug
+  the verification pass found by testing the claim empirically, not just
+  reading the diff). This is the same "measure twice" discipline the loop
+  applies to code, applied to the loop's own documentation output — a
+  docs-only cycle is not exempt from "no unmeasured claims," and in this case
+  the check earned its cost by catching a real, now-fixed defect. Source
+  touched: `src/core/scan/{mod.rs,options.rs,tests.rs}`,
+  `src/api/scan_handlers/intel.rs`, `src/core/entity/mod.rs` (comment only),
+  `tests/api.rs`. Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite green. Paired: `PROBLEM_TREE` §8 — same commit.

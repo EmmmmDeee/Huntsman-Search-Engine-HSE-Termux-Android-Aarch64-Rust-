@@ -426,6 +426,31 @@ impl ScanOptions {
     pub fn effective_min_marginal_yield(&self) -> Option<f64> {
         self.min_marginal_yield.filter(|v| v.is_finite())
     }
+
+    /// Replaces every non-finite numeric field with its `effective_*()` value,
+    /// so the returned `ScanOptions` is always safe to persist.
+    ///
+    /// The three `effective_*()` accessors above protect each in-memory
+    /// consumption site, but they don't stop a `ScanOptions` that still
+    /// *carries* a `NaN`/`±inf` field from being written to storage — and
+    /// unlike an in-memory read, a persist-then-reload round trip cannot
+    /// survive one: JSON has no NaN/Infinity token, so `serde_json` silently
+    /// serialises a non-finite `f64` as `null`, and `null` then fails to
+    /// deserialize back into the (non-`Option`) `f64` field, permanently
+    /// breaking every subsequent read of that scan (`GET /scans/{id}` and
+    /// every sub-resource 500s, not just the one that happened to compare the
+    /// raw value). Call this once, at the single chokepoint every
+    /// `Scan::with_options` caller shares, so the invalid state can never
+    /// reach storage — the only realistic source of a non-finite value is a
+    /// CLI flag (`clap`'s `f64::from_str` accepts `"nan"`/`"inf"` text; a JSON
+    /// API request cannot carry a literal `NaN`/`Infinity` token at all).
+    #[must_use]
+    pub fn sanitized(mut self) -> Self {
+        self.min_expand_confidence = self.effective_min_expand_confidence();
+        self.min_confidence = self.effective_min_confidence();
+        self.min_marginal_yield = self.effective_min_marginal_yield();
+        self
+    }
 }
 
 impl Default for ScanOptions {

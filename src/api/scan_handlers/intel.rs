@@ -38,8 +38,11 @@ pub async fn scan_leads(
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
-    let leads =
-        crate::core::leads::recommend(&entities, &relations, scan.options.min_expand_confidence);
+    let leads = crate::core::leads::recommend(
+        &entities,
+        &relations,
+        scan.options.effective_min_expand_confidence(),
+    );
     ok_list("leads", leads)
 }
 

@@ -530,12 +530,16 @@ impl Entity {
     pub fn c_effective_with_source_count(&self, n: u32) -> f64 {
         // Floor the source count at 1: a lone observation IS one source, and
         // [`Self::source_count`] already never yields 0. Guarding here makes this
-        // public method TOTAL — without it, `n = 0` drives `ln(0) = -inf` (and
-        // `γ^(n-1) = γ^-1`) and returns a value BELOW the base `confidence` (or a
-        // NaN when `confidence == 0`), violating the model's `C_eff ≥ confidence`,
-        // bounded-`[0,1]` invariant. At the floored `n = 1` both terms equal
-        // `confidence`, so corroboration can only ever ADD confidence, never
-        // subtract it.
+        // public method TOTAL — without it, `n = 0` drives `ln(0) = -inf`, so
+        // `multiplicative` returns a value BELOW the base `confidence` (0.385 for
+        // confidence 0.6), violating the model's `C_eff ≥ confidence`,
+        // bounded-`[0,1]` invariant. (At `confidence == 0`, `multiplicative` itself
+        // becomes `NaN` via `0.0 * -inf`, but `f64::max` below discards a `NaN`
+        // operand in favour of the finite `agreement` term, so the unfloored
+        // function never actually surfaces `NaN` to a caller — the sub-base-
+        // confidence case is the one real, observable failure mode.) At the
+        // floored `n = 1` both terms equal `confidence`, so corroboration can only
+        // ever ADD confidence, never subtract it.
         let n = f64::from(n.max(1));
         let multiplicative = self.confidence * CORROBORATION_COEFF.mul_add(n.ln(), 1.0);
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
