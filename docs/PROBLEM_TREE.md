@@ -1320,6 +1320,36 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   function). *Remaining:* `run_expansion` (349 LOC) and `finalise_scan` (313
   LOC) are smaller but still multi-concern; further seams are candidates for
   a focused follow-up, not required to call this node meaningfully advanced.
+- **`[x]` T2.39 · `core/relation/builders.rs` was a 2023-line flat file — the
+  single largest file in the codebase — in direct violation of the project's
+  own `CONVENTIONS.md` §2 doctrine ("one module per file; hubs declare,
+  never house"; no size-based exceptions).** Independently re-verified it
+  was genuinely the highest-impact refactor target (largest file by real
+  line count, not just re-asserting an earlier survey) before touching
+  anything. It held three semantically distinct edge-derivation families —
+  infrastructure (DNS/WHOIS/hosting: `derive_structural`, `derive_
+  colocation`, `derive_resolution`, `derive_registration`, `derive_name_
+  lineage`, `derive_co_ownership`), identity (the person-centric graph: 10
+  builders + their damping constants), and consolidation (`derive_
+  canonical_identities`, `derive_profile_links`, `derive_coreferences`) —
+  that the file's own section-divider comment and `relation/mod.rs`'s own
+  doc-comment categorization had already conceptually pre-split, plus a
+  ~270-line static config table (`SOCIAL_MATCHERS`) with no orchestration
+  logic of its own. → **Solution:** split into `builders/{mod, infra,
+  identity, consolidation}.rs`, mirroring the already-successful
+  `core/engine/` satellite pattern (orchestration in the hub, mechanism in
+  satellites) and the `core/correlator/rules/{identity,geo}/` precedent
+  (split by semantic category, not arbitrary size). `builders/mod.rs` keeps
+  the pass-chain orchestration (`derive_all`, `derive_all_within`,
+  `DERIVE_BUDGET`, `collapse_to_max_confidence`) plus the three helpers that
+  genuinely cross family boundaries (`persons_by_name`, `sort_edges`,
+  `emit_pairwise`); each satellite holds only its own family's builders,
+  local-only helpers, and constants. Pure move — every function body is
+  byte-identical; only `pub` visibility (satellite functions had to become
+  `pub fn`, not `pub(super) fn`, to survive the two-hop re-export back
+  through `builders::` to `relation::` — `pub(super)` alone hits `E0364`)
+  and call-site `super::` prefixes on the three shared helpers changed.
+  **P3** (maintainability/architecture-consistency debt, not a defect).
 
 ---
 
@@ -6001,4 +6031,52 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   delivery meaningful. Gate green: fmt/clippy `-D warnings`/rustdoc (private
   items) clean, full suite 0 failures (4456 lib tests, +12; 97 API tests;
   31 architecture tests). **Paired:** `SOLUTION_TREE` §2/§4/§5 +
+  `gap_register.md` + `CHANGELOG.md` — same commit.
+- **2026-07-07 — new node T2.39 `[ ]`→`[x]`: `core/relation/builders.rs`
+  (2023 LOC, the single largest file in the codebase) split into
+  `builders/{mod, infra, identity, consolidation}.rs`.** Requested as a
+  follow-on "find and refactor the highest-impact file" task; independently
+  re-verified this file — not just re-asserting the prior cycle's own
+  "next highest-impact" claim — was genuinely the largest central file
+  (`wc -l` over `src/`) and a direct violation of `CONVENTIONS.md` §2
+  ("one module per file; hubs declare, never house"; no size-based
+  exceptions) before touching anything. The file's own section-divider
+  comment and `relation/mod.rs`'s own doc-comment already pre-categorised
+  its 21 `derive_*` builders into three families, so the split formalises a
+  boundary the original authors already understood rather than imposing an
+  arbitrary one: **infra** (6 builders — `derive_structural`, `derive_
+  colocation`, `derive_resolution`, `derive_registration`, `derive_name_
+  lineage`, `derive_co_ownership`), **identity** (10 builders — the
+  person-centric graph, plus its damping constants), **consolidation** (3
+  builders — `derive_canonical_identities`, `derive_profile_links`,
+  `derive_coreferences` — plus the ~270-line `SOCIAL_MATCHERS` static
+  table). `builders/mod.rs` keeps the pass-chain orchestration (`derive_
+  all`, `derive_all_within`, `DERIVE_BUDGET`, `collapse_to_max_confidence`)
+  plus the three helpers that genuinely cross family boundaries (`persons_
+  by_name`, `sort_edges`, `emit_pairwise`) — every other helper and
+  constant is family-local. Mirrors the already-successful `core/engine/`
+  satellite pattern (T2.38, above) and the pre-existing `core/correlator/
+  rules/{identity,geo}/` split-by-category precedent. Pure move: every
+  function body is byte-identical to the original; only visibility changed
+  (satellite `derive_*` functions had to stay `pub fn`, not `pub(super)
+  fn` — a `pub(super)` item hits `E0364 "private, and cannot be
+  re-exported"` when a second `pub use` tries to carry it back up through
+  `builders::` to `relation::`'s existing re-export list, confirmed by
+  first attempting `pub(super)` and hitting exactly that compiler error)
+  and three call sites gained a `super::` prefix on the shared helpers.
+  `relation/mod.rs`'s own `pub use builders::{...}` re-export list needed
+  no changes at all — every name it lists still resolves, unchanged.
+  Verified behaviour-preserving four ways: `cargo test` full suite 0
+  failures (4456 lib tests — no count change, pure move; 97 API; 31
+  architecture; the `collapse_to_max_confidence` test's `use super::
+  builders::collapse_to_max_confidence;` import at `relation/tests.rs:1741`
+  resolves unchanged); `hse selftest` 9/9; a live bounded scan (release
+  binary, `8.8.8.8`, `--depth 1 --free-only --max-wall-time 30`) that ran
+  the full seed→expansion→finalise pipeline through the new module
+  structure, producing 468 entities / 21 correlations with **zero panics
+  and zero ERROR-level log lines**; and `cargo fmt --check` / `cargo
+  clippy --all-targets --locked -D warnings` / strict-rustdoc (`--document-
+  private-items` + broken-intra-doc-link/bare-url/invalid-html-tag lints)
+  all clean, including the new `[super::identity]` intra-doc link in
+  `infra.rs`'s module header. **Paired:** `SOLUTION_TREE` §2/§4/§5 +
   `gap_register.md` + `CHANGELOG.md` — same commit.

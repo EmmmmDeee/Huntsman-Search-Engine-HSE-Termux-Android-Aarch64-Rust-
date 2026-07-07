@@ -364,6 +364,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Changed
+- **`core/relation/builders.rs` — the largest file in the codebase at 2023
+  lines — is now split into `builders/{mod, infra, identity,
+  consolidation}.rs`**, along the infrastructure/identity/consolidation
+  boundary the file's own comments already documented. Pure move — no
+  behaviour change (verified via the full test suite, `hse selftest`, and a
+  live scan) — internal maintainability/architecture-consistency only.
 - **The scan engine's two largest functions each get their highest-value
   internal refactor.** `run_expansion`'s per-candidate admission-and-scoring
   policy (8 gates + weight computation) is now a directly unit-tested pure

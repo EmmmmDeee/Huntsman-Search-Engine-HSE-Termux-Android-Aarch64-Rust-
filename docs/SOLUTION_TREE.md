@@ -983,6 +983,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `finalise_scan` (313 LOC) are smaller but still multi-concern; further
   seams are a legitimate follow-up, not required to call this delivery
   meaningful.
+- **`[x]` SOL-RELATION-BUILDERS-SPLIT · `core/relation/builders.rs`'s
+  2023-line flat file (the codebase's largest) is now `builders/{mod, infra,
+  identity, consolidation}.rs`, split along the boundary the file's own
+  section-divider comment and `relation/mod.rs`'s own doc comment already
+  documented.** *Targets:* **T2.39**. `builders/mod.rs` retains only the
+  pass-chain orchestration (`derive_all`, `derive_all_within`, `DERIVE_
+  BUDGET`, `collapse_to_max_confidence`) and the three helpers that
+  genuinely cross family boundaries (`persons_by_name`, `sort_edges`,
+  `emit_pairwise`); `infra.rs` holds the 6 DNS/WHOIS/hosting builders,
+  `identity.rs` the 10 person-centric builders + damping constants,
+  `consolidation.rs` the 3 identity-collapsing builders + the
+  `SOCIAL_MATCHERS` table. Mirrors **SOL-ENGINE-RANKING-SPLIT**'s shape
+  exactly (verbatim relocation, re-exported so every call site is
+  unchanged) and the pre-existing `core/correlator/rules/{identity,geo}/`
+  split-by-category precedent. Pure move — every function body is
+  byte-identical; the only real design decision was visibility: a
+  satellite `derive_*` needed plain `pub fn`, not `pub(super) fn`, to
+  survive re-export two hops up to `relation::`'s existing `pub use
+  builders::{...}` list (confirmed by first trying `pub(super)` and
+  hitting `E0364`; `core/engine/ranking.rs`'s already-`pub` items,
+  re-exported the same way, is the working precedent this followed once
+  found). Verified four ways: full suite green (4456 lib tests — no count
+  change; 97 API; 31 architecture; `relation/tests.rs:1741`'s `use super::
+  builders::collapse_to_max_confidence;` resolves unchanged), `hse
+  selftest` 9/9, a live bounded scan (`8.8.8.8`, depth 1, `--free-only`,
+  30 s wall-time cap) producing 468 entities / 21 correlations with zero
+  panics and zero ERROR-level log lines, and the full fmt/clippy/strict-
+  rustdoc gate clean. No `PROBLEM_TREE` node left open — T2.39 closes
+  `[x]` on delivery (unlike T2.38, this split had no natural remaining
+  sub-scope).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1064,6 +1094,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ENGINE-DISPATCH-DEDUP | T2.5 (quality follow-on) | `[x]` |
 | SOL-ENGINE-RANKING-SPLIT | T2.5 (quality follow-on) · opens T2.38 | `[x]` |
 | SOL-ENGINE-SEAMS | T2.38 | `[~]` |
+| SOL-RELATION-BUILDERS-SPLIT | T2.39 | `[x]` |
 
 ---
 
@@ -4340,3 +4371,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   warnings`/rustdoc (private items) clean, full suite 0 failures (4456 lib
   tests, +12; 97 API tests; 31 architecture tests). Paired: `PROBLEM_TREE`
   §8 — same commit.
+- **2026-07-07 — new node T2.39 `[ ]`→`[x]` via SOL-RELATION-BUILDERS-
+  SPLIT: `core/relation/builders.rs` (2023 LOC, the largest file in the
+  codebase) split into `builders/{mod, infra, identity, consolidation}.rs`.**
+  Full rationale in `PROBLEM_TREE` §8 (same date). Summary: the file's own
+  section-divider comment and `relation/mod.rs`'s own doc comment had
+  already pre-categorised its 21 `derive_*` builders into infra (6),
+  identity (10), consolidation (3) families — the split formalises that
+  existing boundary rather than imposing a new one, mirroring **SOL-ENGINE-
+  RANKING-SPLIT**'s verbatim-relocation shape and the pre-existing
+  `core/correlator/rules/{identity,geo}/` split-by-category precedent.
+  `builders/mod.rs` keeps the pass-chain orchestration plus the three
+  cross-family helpers (`persons_by_name`, `sort_edges`, `emit_pairwise`);
+  each satellite holds only its own family. Pure move — every function
+  body is byte-identical; satellite `derive_*` functions had to be plain
+  `pub fn` rather than `pub(super) fn` to survive the two-hop re-export
+  back through `builders::` to `relation::`'s existing `pub use` list
+  (`pub(super)` hits `E0364`, confirmed by trying it first).
+  `relation/mod.rs`'s own re-export list needed zero changes. Verified via
+  the full suite (4456 lib tests — no count change, pure move; 97 API; 31
+  architecture; `relation/tests.rs:1741`'s `collapse_to_max_confidence`
+  import resolves unchanged), `hse selftest` (9/9), and a live bounded scan
+  against the release binary (468 entities / 21 correlations, zero panics,
+  zero ERROR logs). Gate green: fmt/clippy `-D warnings`/strict rustdoc
+  (private items, incl. the new `infra.rs` intra-doc link) clean. Unlike
+  T2.38, this delivery leaves no natural remaining sub-scope — T2.39
+  closes `[x]` directly. Paired: `PROBLEM_TREE` §8 — same commit.
