@@ -1272,6 +1272,20 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   pursued this cycle to avoid scope creep into the import/parsing layer; both
   are legitimate candidates for a FUTURE cycle that scopes the prerequisite
   change as its own step first.
+  *Delivered (2026-07-07) — progress on (c): first-class `DateOfDeath`.* Cycle 27
+  left `death_date` (stamped by first-party `wikidata::builder`) bucketed as
+  `Generic`, and flagged "a symmetric `DateOfDeath` next to `DateOfBirth`" as the
+  open question. Verified a real defect, not just a missing label: `online_tenure`
+  excludes `DateOfBirth`/`Expiry` from presence but counted every `Generic`, so a
+  death date stretched the online-tenure span FORWARD to the death year — the
+  mirror of the birth-year over-count DOB exclusion already prevents. Added
+  `TimelineEventKind::DateOfDeath` (serde `date_of_death`, matching `as_str`),
+  routed `death_date` to it, and excluded it from presence symmetrically. The
+  death date still appears in the timeline (now correctly typed, not dropped);
+  only the tenure calculation no longer over-counts it. *Remaining on (c):* the
+  other `Generic`-bucketed keys (`verified_at`, `start_date`, …) do not share
+  DOB/DOD's exclude-from-presence property, so no further first-class split is
+  warranted there. (d) AU-0xx rule-gap fill unstarted.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -5579,3 +5593,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   proven failing before (helper undefined) and passing after. Gate green:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, 4454 lib tests (+3),
   0 failures. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-07** — **C1 progress on (c): first-class `TimelineEventKind::DateOfDeath`.**
+  ORIENT refuted the easier picks by reading source: a panic-risk unwrap sweep
+  (clean — the only non-test hits parse constant literals or are guard-bound), and
+  the tree-flagged three-way DOB-key vocabulary drift (benign — the lists nest
+  cleanly and no first-party module emits the divergent `dob` spelling). The real
+  unit, named in C1's own cycle-27 log: `death_date` (live, from `wikidata`)
+  bucketed as `Generic`, and `online_tenure` counts every `Generic` as presence —
+  so a death date stretched the online-tenure span forward to the death year,
+  the exact mirror of the birth-year over-count the `DateOfBirth` exclusion
+  already prevents (measured: `online_tenure_excludes_date_of_death` red before —
+  `latest_iso` was the 2020 death, not the 2015 breach). Added the symmetric
+  `DateOfDeath` variant (serde `date_of_death` == `as_str`, no drift), routed
+  `death_date` to it, excluded it from presence. The death still shows on the
+  timeline (correctly typed, not dropped); only tenure stops over-counting.
+  Parity: every `TimelineEventKind` site enumerated (`as_str` compile-forced,
+  `classify`, `online_tenure`, serde, sort tie-break); no consumer outside the
+  module. Test delta: 2 red→green (`online_tenure_excludes_date_of_death` +
+  `_none_for_a_death_only_footprint`) plus the `classify` assertion updated
+  `death_date` Generic→DateOfDeath. Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, 4456 lib tests (+2), 0 failures. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

@@ -11,6 +11,9 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Timeline now recognises a date of death as its own event kind**
+  (`TimelineEventKind::DateOfDeath`, wire form `date_of_death`). A `death_date`
+  (e.g. a Wikidata claim) previously showed as a generic `event`.
 - **Scan diagnostics now surface a scan-level latency hint** (`hse scan`
   DIAGNOSTICS block): a scan that ran longer than 60 s while ≥1 module dispatch
   returned nothing prints one `Latency: slow scan (Ns) with M zero-yield module
@@ -373,6 +376,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Online-tenure span no longer over-counts a date of death.** A `death_date`
+  was classified as a generic event and counted as "presence," so a subject's
+  reconstructed online tenure could stretch forward to their death year — years
+  in which they were not active. It is now excluded from presence symmetrically
+  with the date of birth (which is likewise excluded to avoid stretching tenure
+  back to the birth year). The death date still appears on the timeline itself.
 - **The self-update mechanism can no longer wedge itself into a permanent
   "applying" state.** Two sites that record the outcome of a triggered
   update (success → restarting, failure → error) silently did nothing if

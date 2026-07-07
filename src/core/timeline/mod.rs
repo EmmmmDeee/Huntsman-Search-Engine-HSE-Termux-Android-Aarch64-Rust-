@@ -44,6 +44,11 @@ pub enum TimelineEventKind {
     LastSeen,
     /// Person date of birth.
     DateOfBirth,
+    /// Person date of death — a lifecycle anchor like [`Self::DateOfBirth`] that
+    /// BOUNDS the footprint rather than dating online activity, so tenure
+    /// excludes it symmetrically (a death predates no presence and postdates all
+    /// of it).
+    DateOfDeath,
     /// Anything date-like we recognised but can't classify more precisely.
     Generic,
 }
@@ -66,6 +71,7 @@ impl TimelineEventKind {
             Self::FirstSeen => "first_seen",
             Self::LastSeen => "last_seen",
             Self::DateOfBirth => "date_of_birth",
+            Self::DateOfDeath => "date_of_death",
             Self::Generic => "event",
         }
     }
@@ -122,8 +128,8 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
         "first_seen" | "first_seen_iso" | "first_pulse_created" => FirstSeen,
         "last_seen" | "last_seen_iso" | "last_updated" | "last_update" | "updated" => LastSeen,
         "date_of_birth" | "birth_date" => DateOfBirth,
-        "start_date" | "review_date" | "end_date" | "date" | "timestamp" | "death_date"
-        | "verified_at" => Generic,
+        "death_date" => DateOfDeath,
+        "start_date" | "review_date" | "end_date" | "date" | "timestamp" | "verified_at" => Generic,
         _ => return None,
     };
     Some(kind)
@@ -192,7 +198,8 @@ pub struct OnlineTenure {
     pub latest_iso: String,
     /// Whole-year span from earliest to latest presence — the footprint's age.
     pub span_years: u32,
-    /// Presence events counted (everything except DOB and future expiries).
+    /// Presence events counted (everything except the DOB/date-of-death lifecycle
+    /// anchors and future expiries).
     pub event_count: usize,
     /// Distinct breach-exposure events — the depth of the subject's breach history.
     pub breach_count: usize,
@@ -202,10 +209,12 @@ pub struct OnlineTenure {
 /// timeline — the span and exposure depth of their digital footprint.
 ///
 /// Counts only **presence** events: a [`TimelineEventKind::DateOfBirth`] predates
-/// the online footprint (it would wrongly stretch tenure back to the birth year)
-/// and an [`TimelineEventKind::Expiry`] is a future resource event, so both are
-/// excluded; everything else (breach exposure, account creation, registration,
-/// first/last seen) dates the subject's actual presence. `span_years` is the
+/// the online footprint (it would wrongly stretch tenure back to the birth year),
+/// a [`TimelineEventKind::DateOfDeath`] postdates it (it would wrongly stretch
+/// tenure forward to the death year), and an [`TimelineEventKind::Expiry`] is a
+/// future resource event, so all three are excluded; everything else (breach
+/// exposure, account creation, registration, first/last seen) dates the subject's
+/// actual presence. `span_years` is the
 /// whole-year gap between the earliest and latest such event (mean Gregorian
 /// year). Pure and order-independent. `None` when the timeline carries no presence
 /// event at all — so a footprint dated only by a DOB reports no tenure rather than
@@ -217,7 +226,9 @@ pub fn online_tenure(events: &[TimelineEvent]) -> Option<OnlineTenure> {
         .filter(|e| {
             !matches!(
                 e.kind,
-                TimelineEventKind::DateOfBirth | TimelineEventKind::Expiry
+                TimelineEventKind::DateOfBirth
+                    | TimelineEventKind::DateOfDeath
+                    | TimelineEventKind::Expiry
             )
         })
         .collect();

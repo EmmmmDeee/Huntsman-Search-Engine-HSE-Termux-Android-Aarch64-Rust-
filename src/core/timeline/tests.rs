@@ -216,7 +216,7 @@ use super::*;
         // earliest report date. None matched before this fix.
         use TimelineEventKind::*;
         assert!(matches!(classify("birth_date"), Some(DateOfBirth)));
-        assert!(matches!(classify("death_date"), Some(Generic)));
+        assert!(matches!(classify("death_date"), Some(DateOfDeath)));
         assert!(matches!(classify("verified_at"), Some(Generic)));
         assert!(matches!(classify("first_pulse_created"), Some(FirstSeen)));
     }
@@ -367,6 +367,43 @@ use super::*;
             "Jo Citizen",
             "see_know",
             &[("date_of_birth", "1980-01-01")],
+        );
+        let events = reconstruct(&[p]);
+        assert!(online_tenure(&events).is_none());
+    }
+
+    #[test]
+    fn online_tenure_excludes_date_of_death() {
+        // Symmetric to the DOB exclusion: a death date is a lifecycle anchor, not
+        // online activity, so it must not stretch the online-tenure span FORWARD
+        // to the death year (before this fix `death_date` classified as `Generic`,
+        // which `online_tenure` counts as presence — a real over-count).
+        let p = entity_with_attrs(
+            EntityKind::Person,
+            "Jo Citizen",
+            "wikidata",
+            &[("breach_date", "2015-06-01"), ("death_date", "2020-03-10")],
+        );
+        let events = reconstruct(&[p]);
+        let t = online_tenure(&events).unwrap();
+        assert!(
+            t.latest_iso.starts_with("2015"),
+            "death 2020 excluded; latest presence is the 2015 breach, got {}",
+            t.latest_iso
+        );
+        assert_eq!(t.span_years, 0, "one presence event → zero span");
+        assert_eq!(t.breach_count, 1);
+    }
+
+    #[test]
+    fn online_tenure_none_for_a_death_only_footprint() {
+        // A death date alone is not online presence — no tenure, mirroring the
+        // DOB-only case rather than reporting a single-instant span.
+        let p = entity_with_attrs(
+            EntityKind::Person,
+            "Jo Citizen",
+            "wikidata",
+            &[("death_date", "2020-03-10")],
         );
         let events = reconstruct(&[p]);
         assert!(online_tenure(&events).is_none());

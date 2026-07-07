@@ -4084,3 +4084,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   per-module hint's noise decision (part b) stays deferred. Gate green:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, 4454 lib tests (+3),
   0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-07** — **P→S: SOL-CORR (C1) progress on (c) — first-class
+  `TimelineEventKind::DateOfDeath`.** Continued the in-progress C1 timeline work
+  from its own cycle-27 note. `death_date` (live, `wikidata::builder`) was bucketed
+  `Generic`, and `online_tenure` counts every non-DOB/Expiry kind as presence — so
+  a death date stretched the tenure span forward to the death year (measured red:
+  latest = 2020 death, not 2015 breach). Added the `DateOfDeath` variant symmetric
+  to `DateOfBirth` (serde `date_of_death` == `as_str`), routed `death_date` to it,
+  and excluded it from presence. Behaviour: the death still renders on the timeline
+  (now correctly typed), only tenure stops over-counting — strictly better, no
+  existing output dropped. 2 tests red→green + a `classify` assertion updated. Gate
+  green: fmt/clippy `-D warnings`/rustdoc (private items) clean, 4456 lib tests
+  (+2), 0 failures. Paired: `PROBLEM_TREE` §8 — same commit.
