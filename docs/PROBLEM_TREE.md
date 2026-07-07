@@ -660,7 +660,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -680,6 +680,13 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+  ✅ **Part a shipped (2026-07-07):** the scan-level "60s + zero-yield module"
+  hint is reinstated as `dossier::slow_scan_idle_hint` — event-sourced from the
+  caller's `ModuleDone` events (the same route SOL-ROI-HINT used), firing one
+  concise `Latency:` line only when `wall_time_ms > 60_000` AND ≥1 dispatch
+  yielded zero, so a fast or fully-productive scan stays quiet. 3 unit tests
+  (slow+idle → hint; fast → none; slow+productive → none). **Part b (the
+  per-module hint + its noise decision) stays open** — `[~]`.
 - **`[x]` T2.15 · Silent multi-row deserialize/read failures (storage layer)**
   — every multi-row reader in `storage/` (`list_scans`, `correlations_for_scan`,
   `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
@@ -5556,3 +5563,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
   0 failures (4432 lib tests, +7; +1 API 403 test), architecture suite green.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-07** — **T2.14 part a (`[ ]`→`[~]`): reinstated the scan-level
+  slow-scan zero-yield hint.** T2.13 removed two hints as unreachable dead code
+  because `analyse` builds `modules_by_yield` only from *emitted* entities, so a
+  module that ran and found nothing is structurally invisible to it (verified by
+  re-reading `analyse.rs:78-121`). The scan-level "60s + zero-yield module" hint
+  is now `dossier::slow_scan_idle_hint(wall_time_ms, events)` — event-sourced
+  from the caller's `ModuleDone` events (the CLI layer that legitimately holds
+  `StoragePort` access, which `util` may not), mirroring the ROI hint exactly.
+  Fires one `Latency:` line only when `wall_time_ms > 60_000` AND ≥1 dispatch
+  finished with `found: 0`; a fast or fully-productive scan stays quiet (no
+  per-module noise — that's part b, still deferred). Purely additive to the
+  DIAGNOSTICS block; no existing hint/output changed. Test delta: 3 red→green
+  (`slow_scan_with_idle_dispatches_emits_a_latency_hint` + two negatives),
+  proven failing before (helper undefined) and passing after. Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, 4454 lib tests (+3),
+  0 failures. **Paired:** `SOLUTION_TREE` §5 — same commit.

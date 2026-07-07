@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Scan diagnostics now surface a scan-level latency hint** (`hse scan`
+  DIAGNOSTICS block): a scan that ran longer than 60 s while ≥1 module dispatch
+  returned nothing prints one `Latency: slow scan (Ns) with M zero-yield module
+  dispatch(es) — --exclude the idle sources or lower --depth` line — the
+  latency-waste companion to the existing cost-waste ROI hint. Event-sourced
+  from the scan's own `ModuleDone` records, so it stays quiet for a fast or
+  fully-productive scan. Reinstates the scan-level half of the hint removed in
+  an earlier cleanup (PROBLEM_TREE T2.14 part a). Advisory only; no scan
+  behaviour changes.
 - **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
   is now proven against a real `git` subprocess, not just pure-logic tests.**
   A local origin+clone fixture pair (no network) exercises the actual

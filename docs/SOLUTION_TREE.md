@@ -578,7 +578,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -587,8 +587,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   given target kind (normal, not noteworthy), so a naive per-module
   reinstatement would flood the hints list with the opposite of signal.
   Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count.
+  ✅ **Scan-level hint shipped (2026-07-07, part a):** `dossier::slow_scan_idle_hint`
+  — event-sourced from `ModuleDone` events, one `Latency:` line when
+  `wall_time_ms > 60_000` AND ≥1 zero-yield dispatch; 3 unit tests. *Gap:* only
+  the per-module hint + its noise decision (part b) remains. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -881,7 +884,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -919,9 +922,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
-  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
-  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
-  Not yet started.
+  dead code: SOL-HINT-NOISE. **Part a done (2026-07-07):** the scan-level 60s
+  zero-yield hint is reinstated (`dossier::slow_scan_idle_hint`, event-sourced).
+  Residual = the per-module hint's cap/cost-gate/summarise noise decision (part b).
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4064,3 +4067,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4432 lib tests, +7; +1 API test), architecture suite green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-07** — **P→S: SOL-HINT-NOISE `[ ]`→`[~]` (T2.14 part a).** Selected
+  after ORIENT refuted three higher hypotheses by reading the exact source
+  (an "attack_techniques extend-vs-replace" guard — refuted: portscan/crates_io
+  deliberately *replace* the category default; a "missing `Entity::merge`
+  proptest" — refuted: `merge_signal_is_greatest_semantics` +
+  `merge_is_order_independent` already cover it; two "HashMap-order leak" correlator
+  finds — refuted: both are `BTreeMap`/`BTreeSet`, deterministic by construction).
+  The real, code-grounded unit: reinstate the scan-level slow-scan zero-yield hint
+  T2.13 removed. Root cause re-verified in `analyse.rs:78-121` — `modules_by_yield`
+  is built only from emitted entities, so a zero-yield module is invisible there;
+  the fix lives at the caller (`dossier::slow_scan_idle_hint`), event-sourced from
+  `ModuleDone` like SOL-ROI-HINT, firing one `Latency:` line only for a
+  `>60_000 ms` scan with ≥1 zero-yield dispatch. Purely additive; no existing
+  output changed. 3 tests red→green (helper undefined before). Residual: the
+  per-module hint's noise decision (part b) stays deferred. Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, 4454 lib tests (+3),
+  0 failures. Paired: `PROBLEM_TREE` §8 — same commit.

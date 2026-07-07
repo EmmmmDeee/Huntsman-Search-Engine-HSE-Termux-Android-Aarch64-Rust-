@@ -567,6 +567,44 @@ fn zero_yield_keyed_or_paid_modules(
     names
 }
 
+/// A scan is "slow" past this wall-time. 60 s matches the long-standing threshold
+/// of the scan-level hint T2.13 removed as unreachable — it keyed on `analyse`'s
+/// entity-only input, which cannot see a module that emitted nothing.
+const SLOW_SCAN_MS: u64 = 60_000;
+
+/// The scan-level "slow scan wasted dispatches" optimisation hint (PROBLEM_TREE
+/// T2.14 part a), reinstated at the caller layer where the dispatch record
+/// actually lives (`ModuleDone` events, via `StoragePort`) — the same event-
+/// sourced route the ROI hint already uses, since `util::diagnostics::analyse`
+/// builds `modules_by_yield` only from emitted entities and so is structurally
+/// blind to a module that ran and found nothing.
+///
+/// Returns `Some(hint)` only when the scan ran past [`SLOW_SCAN_MS`] AND at least
+/// one module dispatch finished with zero entities; otherwise `None`, so a fast
+/// scan or an all-productive slow scan stays quiet. Deliberately a single
+/// scan-level line, not per-module: a realistic scan dispatches dozens of modules
+/// that legitimately find nothing for a given seed kind, so per-module enumeration
+/// would flood the hints (that noise decision is T2.14 part b, still deferred).
+/// Pure and deterministic (a count over events), so it is unit-testable without a
+/// live scan.
+fn slow_scan_idle_hint(wall_time_ms: u64, events: &[crate::core::event::Event]) -> Option<String> {
+    use crate::core::event::EventKind;
+    if wall_time_ms <= SLOW_SCAN_MS {
+        return None;
+    }
+    let idle = events
+        .iter()
+        .filter(|ev| matches!(&ev.kind, EventKind::ModuleDone { found: 0, .. }))
+        .count();
+    (idle > 0).then(|| {
+        format!(
+            "slow scan ({:.0}s) with {idle} zero-yield module dispatch(es) — \
+             --exclude the idle sources or lower --depth to cut wall-time",
+            wall_time_ms as f64 / 1000.0
+        )
+    })
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -626,6 +664,11 @@ fn print_diagnostics(
             wasted.len(),
             wasted.join(",")
         );
+    }
+    // Scan-level latency companion to the ROI hint (T2.14 part a): a slow scan
+    // still spending wall-time on zero-yield dispatches.
+    if let Some(hint) = slow_scan_idle_hint(diag.wall_time_ms, &events) {
+        println!("  Latency: {hint}");
     }
     println!();
 
@@ -790,7 +833,8 @@ fn print_diagnostics(
 mod tests {
     use super::{
         DOSSIER_KIND_ORDER, confine_relations_to_visible, entities_header_line,
-        order_dossier_kinds, truncation_note, zero_yield_keyed_or_paid_modules,
+        order_dossier_kinds, slow_scan_idle_hint, truncation_note,
+        zero_yield_keyed_or_paid_modules,
     };
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
@@ -931,6 +975,51 @@ mod tests {
             zero_yield_keyed_or_paid_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
+    }
+
+    // ── slow_scan_idle_hint (PROBLEM_TREE T2.14 part a) ──────────────────────
+
+    fn done(module: &str, found: usize) -> Event {
+        Event::new(
+            "s",
+            EventKind::ModuleDone {
+                module: module.into(),
+                found,
+            },
+        )
+    }
+
+    /// A scan past the slow threshold that still carries zero-yield dispatches
+    /// gets one concise scan-level latency hint naming the wasted-dispatch count
+    /// and the wall-time — the scan-level companion to the per-cost ROI hint,
+    /// reinstated at the caller layer (the removed T2.13 hint was unreachable
+    /// inside `analyse`, whose entity-only input can't see a zero-yield module).
+    #[test]
+    fn slow_scan_with_idle_dispatches_emits_a_latency_hint() {
+        let events = vec![
+            done("shodan", 0),
+            done("hunter_io", 0),
+            done("search_engines", 4),
+        ];
+        let hint = slow_scan_idle_hint(61_000, &events).expect("slow scan with idle dispatches");
+        assert!(
+            hint.contains("2 zero-yield"),
+            "counts the idle dispatches: {hint}"
+        );
+        assert!(hint.contains("61s"), "names the wall-time: {hint}");
+    }
+
+    /// Under the slow threshold, an idle dispatch is unremarkable — stay quiet so
+    /// a fast scan never accretes advisory noise.
+    #[test]
+    fn a_fast_scan_emits_no_latency_hint() {
+        assert!(slow_scan_idle_hint(30_000, &[done("shodan", 0)]).is_none());
+    }
+
+    /// A slow but fully-productive scan wasted no dispatch — nothing to advise on.
+    #[test]
+    fn a_slow_but_fully_productive_scan_emits_no_latency_hint() {
+        assert!(slow_scan_idle_hint(120_000, &[done("shodan", 2)]).is_none());
     }
 
     #[test]
