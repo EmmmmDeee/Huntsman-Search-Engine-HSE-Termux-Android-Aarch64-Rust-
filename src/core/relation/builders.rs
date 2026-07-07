@@ -1,3 +1,69 @@
+//! Relation builders — turn a scan's flat entity set into the typed attribution
+//! graph.
+//!
+//! Each `derive_*` function is one pure, self-contained pass over `&[Entity]`
+//! (some also reading the edges built so far) that emits the [`Relation`] edges of
+//! one kind. [`derive_all`] runs them in dependency order to produce the whole
+//! graph the correlator, dossier, and force-graph consume; nothing here touches
+//! storage, the network, or global state.
+//!
+//! # Two families
+//!
+//! * **Infrastructure** — [`derive_structural`], [`derive_colocation`],
+//!   [`derive_resolution`], [`derive_registration`], [`derive_co_ownership`]:
+//!   reconstruct the subdomain / hosting / DNS / WHOIS graph. Mostly empty for a
+//!   person-centric scan.
+//! * **Identity** — [`derive_kinship`], [`derive_residency`],
+//!   [`derive_co_residence`], [`derive_co_mention`], [`derive_handles`],
+//!   [`derive_profile_links`], [`derive_canonical_identities`], and peers: bind
+//!   the subject to their identifiers, accounts, places, and associates — the
+//!   high-value edges that keep a 500-entity person scan from persisting as an
+//!   unconnected pile of nodes.
+//!
+//! # The builder contract
+//!
+//! Every builder holds to the same invariants, so the graph is reproducible and
+//! no false edge fires:
+//!
+//! * **Deterministic edge set.** Given the same entities, a builder emits the same
+//!   set of edges with the same [`Relation::id`]s. (Each `Relation` carries a
+//!   wall-clock `observed_at`, so the values aren't bit-identical across calls, but
+//!   the edge set and ids are.)
+//! * **Closed endpoints.** An edge only connects two entities both present in the
+//!   passed set, so every endpoint UID resolves.
+//! * **Canonical direction + dedup.** A symmetric tie is oriented smaller-UID →
+//!   larger and emitted once, so direction and multiplicity don't depend on input
+//!   order.
+//! * **Grounded confidence.** Confidence is carried from the endpoints
+//!   (`min(from, to)`), *damped* for the softer signals (a fingerprint-ownership or
+//!   surname-kinship lead is scaled below a structural certainty) so a candidate
+//!   never masquerades as a fact.
+//! * **Bounded.** Every group-based pass caps its group size, so a pathological
+//!   entity set can't trigger an unbounded O(n²) pairing.
+//!
+//! # Shared machinery
+//!
+//! Most builders are a thin adapter over one of two primitives, so the pairing,
+//! direction, dedup, and ordering logic lives in one place:
+//!
+//! * [`emit_pairwise`] — clique → symmetric pairwise edges: a builder assembles the
+//!   entity groups it judges related (already filtered to its own rules) and this
+//!   emits one canonically-directed, deduplicated edge per distinct pair.
+//! * [`link_by_shared_attribute`] — the "pivot on a shared selector" engine: link
+//!   distinct entities whose evidence carries the same value for a distinctive
+//!   attribute, skipping crowd-shared (non-individuating) values.
+//!
+//! # Aggregation
+//!
+//! [`derive_all`] / [`derive_all_within`] run the ~19 passes in dependency order
+//! (structural / resolution / registration first, then the inference passes that
+//! consume them), wall-clock-bounded by [`DERIVE_BUDGET`] so a huge graph finalises
+//! with a partial-but-coherent edge set rather than being SIGKILLed with nothing.
+//! [`collapse_to_max_confidence`] then folds the duplicate edges several passes
+//! legitimately emit for the same pair down to the single strongest, so the
+//! highest-trust edge wins regardless of emit order or the persistence conflict
+//! policy.
+
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::relation::types::{Relation, RelationKind, domain_key};
 
@@ -338,161 +404,145 @@ pub fn derive_co_ownership(
     relations: &[Relation],
     scan_id: &str,
 ) -> Vec<Relation> {
-    use std::collections::{HashMap, HashSet};
+    use std::collections::HashMap;
 
     if entities.is_empty() {
         return Vec::new();
     }
 
     let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
-    let mut out: Vec<Relation> = Vec::new();
-    // Global dedup so the same pair emitted by A, B, or C produces one edge.
-    let mut emitted: HashSet<(String, String)> = HashSet::new();
+    // Three independent co-ownership signals, each producing groups of domains one
+    // operator controls. `emit_pairwise` links each group into its `SameOperator`
+    // clique and, because all three signals feed ONE call, dedups a pair surfaced by
+    // more than one signal down to a single edge (the shared cross-source guard).
+    let groups = co_owned_by_shared_registrant(&by_uid, relations)
+        .into_iter()
+        .chain(co_owned_by_dedicated_ip(&by_uid, relations))
+        .chain(co_owned_by_analytics_id(entities));
+    emit_pairwise(groups, RelationKind::SameOperator, scan_id, |a, b| {
+        a.confidence.min(b.confidence)
+    })
+}
 
-    let mut push_pair = |a_uid: &str, b_uid: &str, out: &mut Vec<Relation>| {
-        let (from, to) = if a_uid <= b_uid {
-            (a_uid, b_uid)
-        } else {
-            (b_uid, a_uid)
-        };
-        let key = (from.to_string(), to.to_string());
-        if emitted.contains(&key) {
-            return;
-        }
-        emitted.insert(key);
-        let conf = by_uid
-            .get(from)
-            .map_or(0.5, |e| e.confidence)
-            .min(by_uid.get(to).map_or(0.5, |e| e.confidence));
-        out.push(Relation::new(
-            from,
-            to,
-            RelationKind::SameOperator,
-            conf,
-            scan_id,
-        ));
-    };
+/// Source A — domains sharing a real (non-proxy) WHOIS registrant are one owner's.
+/// Groups the `RegisteredBy` edges by registrant, keeping only a plausible personal
+/// portfolio (2..=20 distinct domains) so a bulk registrar's thousands never pair.
+fn co_owned_by_shared_registrant<'a>(
+    by_uid: &std::collections::HashMap<&str, &'a Entity>,
+    relations: &[Relation],
+) -> Vec<Vec<&'a Entity>> {
+    use std::collections::HashMap;
 
-    // ── Source A: shared registrant ──────────────────────────────────────────
+    let mut groups: HashMap<&str, Vec<&'a Entity>> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::RegisteredBy)
     {
-        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
-        for r in relations
-            .iter()
-            .filter(|r| r.kind == RelationKind::RegisteredBy)
+        let (Some(dom), Some(reg)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        if dom.kind != EntityKind::Domain
+            || !matches!(reg.kind, EntityKind::Organisation | EntityKind::Email)
         {
-            let (Some(dom), Some(reg)) = (
-                by_uid.get(r.from_uid.as_str()),
-                by_uid.get(r.to_uid.as_str()),
-            ) else {
-                continue;
-            };
-            if dom.kind != EntityKind::Domain
-                || !matches!(reg.kind, EntityKind::Organisation | EntityKind::Email)
-            {
-                continue;
-            }
-            if crate::util::domains::is_proxy_registrant(&reg.value, reg.kind == EntityKind::Email)
-            {
-                continue;
-            }
-            let members = groups.entry(r.to_uid.as_str()).or_default();
-            if !members.contains(&r.from_uid.as_str()) {
-                members.push(r.from_uid.as_str());
-            }
+            continue;
         }
-        for (_, mut domains) in groups {
-            if domains.len() < 2 || domains.len() > 20 {
-                continue;
-            }
-            domains.sort_unstable();
-            for i in 0..domains.len() {
-                for j in (i + 1)..domains.len() {
-                    push_pair(domains[i], domains[j], &mut out);
-                }
-            }
+        if crate::util::domains::is_proxy_registrant(&reg.value, reg.kind == EntityKind::Email) {
+            continue;
+        }
+        let members = groups.entry(r.to_uid.as_str()).or_default();
+        if !members.iter().any(|e| e.uid == dom.uid) {
+            members.push(dom);
         }
     }
+    groups
+        .into_values()
+        .filter(|domains| (2..=20).contains(&domains.len()))
+        .collect()
+}
 
-    // ── Source B: shared dedicated IP ────────────────────────────────────────
+/// Source B — domains resolving to the same DEDICATED IP are co-hosted by one
+/// operator. Excludes CDN/anycast and non-routable IPs (shared by the world), and
+/// gates on 2..=[`MAX_CO_HOSTED_REGISTRABLE`] *distinct registrable* domains so mere
+/// subdomains of one site (`www.` + `api.` on the same host) don't fire.
+fn co_owned_by_dedicated_ip<'a>(
+    by_uid: &std::collections::HashMap<&str, &'a Entity>,
+    relations: &[Relation],
+) -> Vec<Vec<&'a Entity>> {
+    use std::collections::HashMap;
+
+    let mut groups: HashMap<&str, Vec<&'a Entity>> = HashMap::new();
+    for r in relations
+        .iter()
+        .filter(|r| r.kind == RelationKind::ResolvesTo)
     {
-        let mut groups: HashMap<&str, Vec<&str>> = HashMap::new();
-        for r in relations
-            .iter()
-            .filter(|r| r.kind == RelationKind::ResolvesTo)
-        {
-            let (Some(dom), Some(ip)) = (
-                by_uid.get(r.from_uid.as_str()),
-                by_uid.get(r.to_uid.as_str()),
-            ) else {
-                continue;
-            };
-            if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
-                continue;
-            }
-            if crate::core::validation::is_cdn_edge_ip(&ip.value)
-                || crate::core::validation::is_non_routable_ip(&ip.value)
-            {
-                continue;
-            }
-            let members = groups.entry(r.to_uid.as_str()).or_default();
-            if !members.contains(&r.from_uid.as_str()) {
-                members.push(r.from_uid.as_str());
-            }
+        let (Some(dom), Some(ip)) = (
+            by_uid.get(r.from_uid.as_str()),
+            by_uid.get(r.to_uid.as_str()),
+        ) else {
+            continue;
+        };
+        if dom.kind != EntityKind::Domain || ip.kind != EntityKind::IpAddress {
+            continue;
         }
-        for (_, mut domains) in groups {
+        if crate::core::validation::is_cdn_edge_ip(&ip.value)
+            || crate::core::validation::is_non_routable_ip(&ip.value)
+        {
+            continue;
+        }
+        let members = groups.entry(r.to_uid.as_str()).or_default();
+        if !members.iter().any(|e| e.uid == dom.uid) {
+            members.push(dom);
+        }
+    }
+    groups
+        .into_values()
+        .filter(|domains| {
             if domains.len() < 2 {
-                continue;
+                return false;
             }
-            domains.sort_unstable();
             let mut registrables: Vec<String> = domains
                 .iter()
-                .filter_map(|u| by_uid.get(u))
                 .filter_map(|e| crate::util::domains::registrable_domain(&e.value))
                 .collect();
             registrables.sort_unstable();
             registrables.dedup();
-            if registrables.len() < 2 || registrables.len() > MAX_CO_HOSTED_REGISTRABLE {
-                continue;
-            }
-            for i in 0..domains.len() {
-                for j in (i + 1)..domains.len() {
-                    push_pair(domains[i], domains[j], &mut out);
-                }
-            }
-        }
-    }
+            (2..=MAX_CO_HOSTED_REGISTRABLE).contains(&registrables.len())
+        })
+        .collect()
+}
 
-    // ── Source C: shared web-analytics ID ────────────────────────────────────
-    {
-        let domain_by_value: HashMap<&str, &Entity> = entities
+/// Source C — domains carrying the same web-analytics / tag-manager id (a
+/// per-property account) are one owner's. Reads each `TrackingId`'s `source_domain`
+/// evidence and groups the present domains it was seen on (≥2).
+fn co_owned_by_analytics_id(entities: &[Entity]) -> Vec<Vec<&Entity>> {
+    use std::collections::HashMap;
+
+    let domain_by_value: HashMap<&str, &Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain)
+        .map(|e| (e.value.as_str(), e))
+        .collect();
+    let mut groups: Vec<Vec<&Entity>> = Vec::new();
+    for tid in entities.iter().filter(|e| e.kind == EntityKind::TrackingId) {
+        let mut sources: Vec<&str> = tid
+            .evidence
             .iter()
-            .filter(|e| e.kind == EntityKind::Domain)
-            .map(|e| (e.value.as_str(), e))
+            .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
             .collect();
-        for tid in entities.iter().filter(|e| e.kind == EntityKind::TrackingId) {
-            let mut sources: Vec<&str> = tid
-                .evidence
-                .iter()
-                .filter_map(|ev| ev.attributes.get("source_domain").map(String::as_str))
-                .collect();
-            sources.sort_unstable();
-            sources.dedup();
-            let matching: Vec<&str> = sources
-                .iter()
-                .filter_map(|s| domain_by_value.get(s).map(|e| e.uid.as_str()))
-                .collect();
-            if matching.len() < 2 {
-                continue;
-            }
-            for i in 0..matching.len() {
-                for j in (i + 1)..matching.len() {
-                    push_pair(matching[i], matching[j], &mut out);
-                }
-            }
+        sources.sort_unstable();
+        sources.dedup();
+        let matching: Vec<&Entity> = sources
+            .iter()
+            .filter_map(|s| domain_by_value.get(s).copied())
+            .collect();
+        if matching.len() >= 2 {
+            groups.push(matching);
         }
     }
-
-    out
+    groups
 }
 
 // ── Identity relations ───────────────────────────────────────────────────────
