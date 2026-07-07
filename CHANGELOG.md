@@ -363,6 +363,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   export (`best_location`), so the web/JSON surface carries the same headline fix
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
+### Changed
+- **The scan engine's two largest functions each get their highest-value
+  internal refactor.** `run_expansion`'s per-candidate admission-and-scoring
+  policy (8 gates + weight computation) is now a directly unit-tested pure
+  function; `finalise_scan`'s cross-scan pathway-learning and corroboration-
+  boost passes move into a new `engine::finalise` module as named functions.
+  No behaviour change (verified via the full test suite, `hse selftest`, and
+  a live scan) — internal readability/testability only.
+
 ### Fixed
 - **Four Australian registry modules (`asic_banned_orgs`,
   `asic_business_names`, `asic_persons`, `au_unclaimed`) were silently

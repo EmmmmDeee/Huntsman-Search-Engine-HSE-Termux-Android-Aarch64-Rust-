@@ -949,11 +949,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   god functions, `finalise_scan`/`run_expansion`, need unit seams before
   they can be safely decomposed the same way). Pure move, no `PROBLEM_TREE`
   node closed; logged in §5.
-- **`[ ]` SOL-ENGINE-SEAMS · sketch only, not started** — add unit seams
-  (pure free functions for `finalise_scan`/`run_expansion`'s internally
-  cohesive sub-steps, gaining direct tests the way `admission_rejection`
-  did) before decomposing either god function — decomposing without seams
-  first would just relocate the untested-ness. *Targets:* **T2.38**.
+- **`[~]` SOL-ENGINE-SEAMS · add unit seams before decomposing either god
+  function** — decomposing without seams first would just relocate the
+  untested-ness. *Targets:* **T2.38**.
+  *Delivered (2026-07-07) — the highest-value seam on each function:*
+  **`run_expansion`**'s per-candidate admission-and-scoring chain (8 gates +
+  the 5-factor dispatch-weight computation) is now `expansion::
+  gate_and_score_candidate` — a pure function taking a new `CandidateRoundCx`
+  bundle (mirrors `dispatch::DispatchCx`) and a `richness_for` closure so it
+  stays decoupled from `core::dependency::ModuleGraph`'s concrete type.
+  `Err(reason)` is the exact string the caller already passed to
+  `emit_excluded`, in the exact prior gate order — verified via 12 new direct
+  unit tests (one per gate + the load-bearing order contract + a
+  weight-scoring check), the same shape as `dispatch::
+  admission_rejection_covers_every_drop_filter_and_order`. A deliberate
+  mutation check (temporarily deleting one gate) confirmed the tests actually
+  catch a regression, not just exercise the happy path. `run_expansion`: 520
+  → 349 LOC.
+  **`finalise_scan`**'s two self-contained sub-passes moved into a new
+  sibling module `engine::finalise`: `apply_cross_scan_pathway_learning`
+  (the AU-065/AU-066 cross-scan credit block) and
+  `apply_corroboration_boosts` (the multipath/cross-scan re-persist block,
+  restructured as one function that preserves the original's `boosted_any`
+  short-circuit exactly rather than doing the filter/collect unconditionally).
+  These stay impure (real `StoragePort`/event I/O) so they don't gain new
+  unit tests the way the expansion seam did, but `finalise_scan` now reads as
+  two named calls instead of ~150 inline lines. `finalise_scan`: 444 → 313
+  LOC. Both extractions are pure moves, confirmed three ways: full suite
+  green (4456 lib tests, +12 — all new, none changed), `hse selftest` 9/9,
+  and a live bounded scan (`8.8.8.8`, depth 1, `--free-only`) producing 472
+  entities / 18 correlations / 15 relations with zero panics and zero
+  ERROR-level log lines. *Remaining:* `run_expansion` (349 LOC) and
+  `finalise_scan` (313 LOC) are smaller but still multi-concern; further
+  seams are a legitimate follow-up, not required to call this delivery
+  meaningful.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1034,7 +1063,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BASEURL-HARDEN | §7 S6 | `[x]` |
 | SOL-ENGINE-DISPATCH-DEDUP | T2.5 (quality follow-on) | `[x]` |
 | SOL-ENGINE-RANKING-SPLIT | T2.5 (quality follow-on) · opens T2.38 | `[x]` |
-| SOL-ENGINE-SEAMS | T2.38 | `[ ]` |
+| SOL-ENGINE-SEAMS | T2.38 | `[~]` |
 
 ---
 
@@ -1046,13 +1075,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.38** (new, 2026-07-07) — `core/engine/mod.rs`'s `finalise_scan`
-  (~427 LOC) and `run_expansion` (~472 LOC) remain unit-seamless god
-  functions after `SOL-ENGINE-RANKING-SPLIT` moved the file's other
-  architectural inconsistency out. SOL-ENGINE-SEAMS sketched (add pure-
-  function seams first, decompose second, mirroring how the dispatch
-  refactor extracted `admission_rejection`). Not yet started — the
-  highest-leverage open item this reconciliation cycle surfaced.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -1126,6 +1148,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   both functions against real `git fetch`/`rev-list`/`log` output.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
+- **SOL-ENGINE-SEAMS** — the highest-value seam on each of `finalise_scan`
+  (444 → 313 LOC) and `run_expansion` (520 → 349 LOC) landed 2026-07-07
+  (`expansion::gate_and_score_candidate` gained 12 direct unit tests; the two
+  `engine::finalise` extractions stay impure but are now named/isolated).
+  *Remaining:* both functions are smaller but still multi-concern; further
+  seams (e.g. `finalise_scan`'s entity-persist-with-fallback block, `run_
+  expansion`'s per-round reconsideration pass) are legitimate follow-ups, not
+  required to call T2.38 meaningfully advanced.
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
   key-harvest `contains_excluded_context`, wigle `is_generic_ssid`, the
   **prefix-table `PrefixMatcher`** — 170 prefixes, `LeftmostFirst`, group map for
@@ -1187,8 +1217,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   that, corrected this cycle); T2.14 open (deferred noise design); **T2.34
   `[x]`** ✅ (SOL-ENTITY-10OF10); **T2.35 `[x]`** ✅ (SOL-SCAN-10OF10); **T2.36
   `[x]`** ✅ (SOL-ERROR-HTTP-REDACT); **T2.37 `[x]`** ✅
-  (SOL-SCANOPTS-VALIDATE); **T2.38 `[ ]`** open (SOL-ENGINE-SEAMS sketched,
-  not started — the finalise_scan/run_expansion god-function debt).
+  (SOL-SCANOPTS-VALIDATE); **T2.38 `[~]`** in progress (SOL-ENGINE-SEAMS: the
+  highest-value seam on each god function landed 2026-07-07 — `finalise_scan`
+  444→313 LOC, `run_expansion` 520→349 LOC — further seams remain optional).
 - **S.CORE sensor gate:** **SOL-SENSOR-GATE `[x]`** ✅ (cycle 24) — all six
   live-sensor modules now consistently gate on `Coordinates | MacAddress` and
   appear in `LOCAL_PASSIVE_MODULES`; non-geo scans receive zero phone-sensor
@@ -4285,3 +4316,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   warnings`/rustdoc (private items) clean, full suite 0 failures (4444 lib
   tests; 31 architecture tests, +1). Paired: `PROBLEM_TREE` §8 — same
   commit.
+- **2026-07-07 — SOL-ENGINE-SEAMS `[ ]`→`[~]`: the first unit seam on each
+  of T2.38's two god functions.** Full rationale in `PROBLEM_TREE` §8 (same
+  date). Summary: `expansion::gate_and_score_candidate` extracts
+  `run_expansion`'s entire per-candidate admission-and-scoring chain (8
+  gates + 5-factor weight computation, ~200 LOC) into a pure function —
+  520 → 349 LOC, +12 direct unit tests (one per gate, the gate-order
+  contract, a weight-scoring check), mutation-tested to confirm the suite
+  catches a real regression. New sibling module `engine::finalise` extracts
+  `finalise_scan`'s two self-contained sub-passes
+  (`apply_cross_scan_pathway_learning` for the AU-065/AU-066 cross-scan
+  credit logic; `apply_corroboration_boosts` for the multipath/cross-scan
+  re-persist, preserving the original's short-circuit exactly) — 444 → 313
+  LOC; these stay impure (real storage/event I/O) so no new unit tests, but
+  the function now reads as named steps. Both are pure moves: verified via
+  the full suite (4456 lib tests, +12), `hse selftest` (9/9), and a live
+  bounded scan against the release binary (472 entities / 18 correlations /
+  15 relations, zero panics, zero ERROR logs). Neither god function is fully
+  decomposed — this closes the highest-value SLICE of T2.38, matching the
+  node's own doctrine ("add unit seams first... mirroring how the dispatch
+  refactor extracted `admission_rejection`"), not the whole item; further
+  seams remain a legitimate follow-up. Gate green: fmt/clippy `-D
+  warnings`/rustdoc (private items) clean, full suite 0 failures (4456 lib
+  tests, +12; 97 API tests; 31 architecture tests). Paired: `PROBLEM_TREE`
+  §8 — same commit.

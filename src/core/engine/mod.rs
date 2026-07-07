@@ -32,6 +32,7 @@ mod circuit;
 mod dispatch;
 mod enrich;
 mod expansion;
+mod finalise;
 mod history;
 mod ledger;
 mod passes;
@@ -44,8 +45,8 @@ pub use ledger::DispatchLog;
 // `crate::core::engine::…` call sites in the CLI / API / dossier are unchanged.
 use passes::{
     consolidate_address_localities, flag_geo_discordant_namesakes, hot_inject_keys,
-    promote_breach_candidate_geo_corroborated, promote_cross_scan_corroborated,
-    promote_geo_corroborated_family, promote_multipath_corroborated,
+    promote_breach_candidate_geo_corroborated, promote_geo_corroborated_family,
+    promote_multipath_corroborated,
 };
 pub use ranking::{
     AutonomousPlan, AutonomousTarget, ClusteredTarget, DEFAULT_SWEEP_DIVERSITY, LeverageRanked,
@@ -72,6 +73,10 @@ use enrich::{
 use expansion::{
     apply_roi_cutoff, budget_check, cmp_expansion_candidates, correlation_key, visit_key,
 };
+// `promote_cross_scan_corroborated` now runs only inside `finalise`; this
+// bridge is test-only, for the tests that stayed in this file.
+#[cfg(test)]
+use passes::promote_cross_scan_corroborated;
 use timeout::resolve_timeout;
 // Used only by the dispatch-related tests retained in this file.
 #[cfg(test)]
@@ -763,154 +768,23 @@ impl ScanEngine {
                 );
             }
 
-            // ── Cross-scan pathway-template learning (C1 universal linking) ──
-            // Generalise this scan's confirmed connections into direction-
-            // canonical routes. A route a *prior* scan already proved is credited
-            // here as historically corroborated (the engine-level AU-065 finding —
-            // it is storage-dependent, so it can't be a pure correlator rule);
-            // then every route this scan produced is recorded, so a link learned
-            // once lifts every later scan. A *fragile* single-pathway link (the
-            // AU-063 gap) whose route shape is proven in ≥2 prior scans is the
-            // engine-level AU-066 finding: accumulated cross-scan knowledge is the
-            // orthogonal pathway that fills the gap, and its endpoints are queued
-            // (`xscan_boost`) for the conservative boost below. Best-effort: a
-            // storage hiccup never aborts a finalised scan.
-            let mut xscan_boost: HashMap<String, String> = HashMap::new();
-            if let (Ok(ents), Ok(rels)) = (
-                store.entities_for_scan(&scan.id),
-                store.relations_for_scan(&scan.id),
-            ) {
-                // The fragile single-route identity pairs (a<b) — exactly AU-063's
-                // notion of an uncorroborated link, via the shared detector so the
-                // gap the lead flags is the gap the engine fills.
-                let fragile: HashSet<(String, String)> =
-                    crate::core::correlator::single_route_identity_links(&ents, &rels)
-                        .into_iter()
-                        .map(|l| (l.a_uid, l.b_uid))
-                        .collect();
-                for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
-                    let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
-                    if prior >= 1 {
-                        let mut uids: std::collections::BTreeSet<String> =
-                            std::collections::BTreeSet::new();
-                        for (f, t) in &ct.pairs {
-                            uids.insert(f.clone());
-                            uids.insert(t.clone());
-                        }
-                        let c = crate::core::correlator::Correlation::new(
-                            "AU-065",
-                            "Cross-scan corroborated route",
-                            crate::core::correlator::Severity::Medium,
-                            format!(
-                                "the route [{}] connecting {} identity pair(s) here was \
-                                 confirmed in {} prior scan(s) — a historically proven \
-                                 attribution pattern, not a one-off",
-                                ct.template,
-                                ct.pairs.len(),
-                                prior,
-                            ),
-                            uids.into_iter().collect::<Vec<_>>(),
-                            scan.id.as_str(),
-                            crate::core::entity::unix_now(),
-                        );
-                        if store.upsert_correlation(&c).is_ok()
-                            && emitted_corr.insert(correlation_key(&c))
-                        {
-                            emitter.emit(
-                                &scan.id,
-                                EventKind::CorrelationFound { correlation: c },
-                            );
-                        }
-                    }
-                    // AU-066 — cross-scan route fills a single-pathway gap. A
-                    // fragile link whose route shape is proven in ≥2 PRIOR scans
-                    // (stricter than AU-065's ≥1, to keep the gap-fill conservative)
-                    // is corroborated by the proven attribution method itself: the
-                    // accumulated cross-scan pathway is the orthogonal route the
-                    // AU-063 gap was missing. Its endpoints are queued for the boost.
-                    if prior >= 2 {
-                        for (f, t) in &ct.pairs {
-                            if !fragile.contains(&(f.clone(), t.clone())) {
-                                continue; // only fragile (single-route) links are gaps to fill
-                            }
-                            let reason = format!(
-                                "the single-pathway link's route shape [{}] was independently \
-                                 confirmed in {prior} prior scans — the proven attribution method \
-                                 is the orthogonal pathway that fills the single-route gap",
-                                ct.template,
-                            );
-                            let c = crate::core::correlator::Correlation::new(
-                                "AU-066",
-                                "Cross-scan route fills single-pathway gap",
-                                crate::core::correlator::Severity::Medium,
-                                reason.clone(),
-                                vec![f.clone(), t.clone()],
-                                scan.id.as_str(),
-                                crate::core::entity::unix_now(),
-                            );
-                            if store.upsert_correlation(&c).is_ok()
-                                && emitted_corr.insert(correlation_key(&c))
-                            {
-                                emitter.emit(
-                                    &scan.id,
-                                    EventKind::CorrelationFound { correlation: c },
-                                );
-                            }
-                            xscan_boost
-                                .entry(f.clone())
-                                .or_insert_with(|| reason.clone());
-                            xscan_boost.entry(t.clone()).or_insert(reason);
-                        }
-                    }
-                    let _ = store.record_pathway_template(&ct.template);
-                }
-            }
+            // Cross-scan pathway-template learning (C1 universal linking, the
+            // engine-level AU-065/AU-066 findings) — see `finalise` module doc.
+            let xscan_boost = finalise::apply_cross_scan_pathway_learning(
+                store.as_ref(),
+                &emitter,
+                &scan.id,
+                &mut emitted_corr,
+            );
 
-            // ── Corroboration boosts: confirmed links strengthen the entities ──
-            // Two orthogonal corroboration signals feed back into the entity set so
-            // the scan's OUTPUT reflects what its own analysis established:
-            //   • multipath (C2): a link AU-062 proved via ≥2 edge-disjoint,
-            //     source-orthogonal IN-SCAN routes — robust to any one source going
-            //     dark (built on the SAME detector the rule uses).
-            //   • cross-scan (AU-066): a fragile single-route link whose route shape
-            //     is proven in ≥2 PRIOR scans — accumulated knowledge fills the gap.
-            // Both tag + evidence-stamp only the identity ENDPOINTS, are idempotent
-            // via their tags, and use unscored ("other") evidence sources so they
-            // never feed back to inflate the in-scan orthogonality measure.
-            // Best-effort and conditional: the single re-persist runs only when a
-            // boost actually fires and never aborts a finalised scan.
-            {
-                let mut boosted_any = false;
-                if let Ok(rels) = store.relations_for_scan(&scan.id) {
-                    boosted_any |= promote_multipath_corroborated(&mut entities, &rels) > 0;
-                }
-                boosted_any |= promote_cross_scan_corroborated(&mut entities, &xscan_boost) > 0;
-                if boosted_any {
-                    let boosted: Vec<Entity> = entities
-                        .iter_mut()
-                        .filter(|e| {
-                            e.has_tag("multipath-corroborated")
-                                || e.has_tag("cross-scan-corroborated")
-                        })
-                        .map(|e| {
-                            e.canonicalize_order();
-                            e.clone()
-                        })
-                        .collect();
-                    match store.upsert_entities_batch(&boosted) {
-                        Ok(n) => info!(
-                            scan_id = %scan.id,
-                            boosted = n,
-                            "corroboration-boosted identities re-persisted (confirmed links strengthened the scan)"
-                        ),
-                        Err(e) => warn!(
-                            scan_id = %scan.id,
-                            error = %e,
-                            "corroboration boost re-persist failed (non-fatal)"
-                        ),
-                    }
-                }
-            }
+            // Corroboration boosts: confirmed links strengthen the entities —
+            // see `finalise::apply_corroboration_boosts`.
+            finalise::apply_corroboration_boosts(
+                store.as_ref(),
+                &scan.id,
+                &mut entities,
+                &xscan_boost,
+            );
 
             // Persist the key pool to disk after every scan. Keys discovered
             // during this scan (from breach data, page bodies, entity values)
@@ -1500,199 +1374,28 @@ impl ScanEngine {
             // reserve up front so the push loop never re-grows on a large round.
             let mut next: Vec<(Target, f64, String)> = Vec::with_capacity(entity_map.len());
             // Seed identity normalised ONCE for the incidental-infra
-            // candidate-is-seed check below; it is invariant across the whole
-            // candidate loop, so computing `strip(&seed.value)` (a trim +
-            // lowercasing allocation) per entity was pure repeated work.
-            let strip = |s: &str| s.trim().trim_start_matches("www.").to_ascii_lowercase();
-            let seed_stripped = strip(&seed.value);
+            // candidate-is-seed check inside `gate_and_score_candidate`; it is
+            // invariant across the whole candidate loop, so computing it per
+            // entity would be pure repeated work.
+            let seed_stripped = expansion::strip_www(&seed.value);
+            let round_cx = expansion::CandidateRoundCx {
+                opts,
+                seed,
+                seed_stripped: &seed_stripped,
+                subject_identities: &subject_identities,
+                has_paid,
+            };
+            // Admission-and-scoring policy for every candidate this round lives
+            // in `expansion::gate_and_score_candidate` — a pure, directly
+            // unit-tested function (mirrors `dispatch::admission_rejection`).
+            // Only the visibility side effect (`emit_excluded`) and the
+            // successful-candidate accumulation stay here.
             for entity in entity_map.values() {
-                // Hoist the two pure-but-repeated scores: `c_effective()` is read
-                // up to four times below (the floor check, the wrong-identity gate,
-                // the strategy weight, the convex premium) and `source_count()`
-                // twice. Computing each once per candidate trims redundant work in
-                // the hottest expansion loop on the constrained target.
-                let c_eff = entity.c_effective();
-                if c_eff < opts.effective_min_expand_confidence() {
-                    self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
-                    continue;
-                }
-                let source_count = entity.source_count();
-                // Search-snippet recycling is the lowest-reliability discovery
-                // path: a value scraped from the *text* of whatever page a search
-                // engine returned for a recycled query — a Subway-directory
-                // "Austin, Texas", an unrelated contact email on a scraped page.
-                // At the relaxed deep/`--full` expansion floor these clear
-                // `min_expand_confidence` on a single source, so without this gate
-                // the recursion budget gets burned pivoting on strangers. The
-                // wrong-identity gate below can't catch them: it only covers
-                // Username/Person and is lifted entirely by
-                // `--expand-all-identities`. Record the lead, but don't pivot
-                // until a second, independent source corroborates it —
-                // corroboration lifts `source_count` past 1 and the entity
-                // expands normally on a later round.
-                if entity.is_uncorroborated_recycled() {
-                    self.emit_excluded(scan_id, entity, "uncorroborated_recycled");
-                    continue;
-                }
-                // ROI bundle: convergence-pruning. Once an entity has 2+
-                // corroborating sources at high confidence, further dispatch
-                // only re-confirms what we already know. Skip it.
-                if opts.max_roi && crate::core::roi::is_saturated(entity) {
-                    self.emit_excluded(scan_id, entity, "roi_saturated");
-                    continue;
-                }
-                // A kind with no external search target (Credential, Password,
-                // DeviceId, TrackingId, Other) cannot be pivoted on. Previously
-                // this was a silent `continue` — a black box. Record it so the
-                // logs show exactly why the entity was not expanded.
-                let Some(tk) = TargetKind::from_entity_kind(&entity.kind) else {
-                    self.emit_excluded(scan_id, entity, "non_pivotable_kind");
-                    continue;
-                };
-                // Speculative name-permutation gate — OPT-IN (`--gate-speculative`),
-                // OFF by default. name_intel's `firstname.lastname@provider` /
-                // handle guesses are frequently the subject's REAL identifiers, so
-                // by default the scan EXPANDS and validates them (the whole point of
-                // a name scan) — pivoting confirms which guesses are real. Only when
-                // the operator opts in (expecting heavy namesake collision and
-                // wanting a faster, tighter sweep) does an uncorroborated permutation
-                // stay a recorded-but-not-pivoted candidate until a reliable source
-                // confirms it. `--expand-all-identities` / `--full` force the
-                // exhaustive sweep regardless.
-                if opts.gate_speculative
-                    && !opts.expand_all_identities
-                    && entity.is_uncorroborated_name_permutation()
-                {
-                    self.emit_excluded(scan_id, entity, "uncorroborated_speculative");
-                    continue;
-                }
-                // Wrong-identity gate: an uncorroborated, non-verified
-                // Username/Person whose handle shares no overlap with the
-                // subject's confirmed identity is a different person. Recording it
-                // as a candidate is fine, but pivoting on it would search the web
-                // for a stranger and import their footprint. Verified or
-                // multi-source identities, and anything overlapping the subject,
-                // still expand — so genuine aliases are never lost.
-                if !opts.expand_all_identities
-                    && crate::core::scan::is_wrong_identity_pivot(
-                        &entity.kind,
-                        c_eff,
-                        source_count,
-                        &entity.value,
-                        &subject_identities,
-                    )
-                {
-                    self.emit_excluded(scan_id, entity, "identity_mismatch");
-                    continue;
-                }
-                // Never pivot on a non-routable / reserved / documentation IP
-                // (e.g. 192.0.2.1 scraped from a tutorial page, or a private
-                // 192.168.x surfaced by local sensors). No external OSINT source
-                // can resolve these, so expanding them only burns whole rounds
-                // on guaranteed-empty lookups and pollutes the graph with noise.
-                if tk == TargetKind::IpAddress
-                    && crate::core::validation::is_non_routable_ip(&entity.value)
-                {
-                    self.emit_excluded(scan_id, entity, "non_routable_ip");
-                    continue;
-                }
-                // Don't deep-expand *incidentally-discovered* haystack
-                // infrastructure — it maps a platform/CDN/provider's own estate,
-                // not the subject, and burns the round budget that should go to
-                // target-specific enrichment:
-                //   • a non-central DOMAIN — a mega/social platform
-                //     (twitter.com, …) or shared mail/DNS/registrar infra
-                //     (sendgrid.net, secureserver.net, ns*.dnsmadeeasy.com), whose
-                //     NS/MX/SOA fan out into dozens of generic provider domains;
-                //   • a CDN-edge IP — a Cloudflare/Fastly anycast address whose
-                //     reverse-IP lookup returns thousands of co-tenant strangers
-                //     (a real scan pulled 480+ co-hosted domains through two).
-                // Still expand when the candidate IS the seed (you're
-                // investigating that property itself).
-                {
-                    let candidate_is_seed =
-                        seed.kind == tk && seed_stripped == strip(&entity.value);
-                    let is_incidental_infra = match tk {
-                        // Freemail / social / shared CDN-DNS-registrar infra is
-                        // never the subject's own estate — expanding it maps the
-                        // provider, not the target. All consolidated in the
-                        // core-side `is_noncentral_domain` (mega + infra lists,
-                        // incl. freemail and ISP webmail) so the engine stays free
-                        // of any `util` import (core → modules → util only).
-                        TargetKind::Domain => {
-                            crate::core::scan::is_noncentral_domain(&entity.value)
-                        }
-                        TargetKind::IpAddress => {
-                            crate::core::validation::is_cdn_edge_ip(&entity.value)
-                        }
-                        _ => false,
-                    };
-                    if is_incidental_infra && !candidate_is_seed {
-                        self.emit_excluded(scan_id, entity, "incidental_infra");
-                        continue;
-                    }
-                }
-                let new_target = Target::new(tk, entity.value.clone());
-                let key = visit_key(&new_target);
-                if visited.insert(key) {
-                    let richness = self.graph.richness_for(tk);
-                    // Strategy weight × a non-saturating corroboration prior.
-                    // c_effective() clamps at 1.0, erasing the cross-correlation
-                    // signal for confident pivots; re-apply it on the ranking so
-                    // a lead confirmed by N independent sources is dispatched
-                    // ahead of an equally-confident single-source lead (its
-                    // dispatch is likelier to yield genuine children).
-                    let mut weight = crate::core::scan::expansion_weight_for_strategy(
-                        opts.expansion_strategy,
-                        tk,
-                        c_eff,
-                        &entity.value,
-                        has_paid,
-                        richness,
-                    ) * crate::core::scan::corroboration_prior(source_count);
-                    // Convex (optionality / barbell) budget allocation, opt-in:
-                    // multiply by a convexity premium for heavy-tailed upside over
-                    // per-kind dispatch cost, so the bounded budget favours cheap,
-                    // high-optionality identity leads over saturated infrastructure.
-                    // Neutral (×≈1) for the confident cheap core, so it only
-                    // re-sorts the uncertain tail and the expensive infra.
-                    if opts.convex_budget {
-                        weight *= crate::core::convex::optionality_multiplier(
-                            tk,
-                            source_count,
-                            c_eff,
-                            richness,
-                        );
-                    }
-                    // Geo-corroboration bonus: entities confirmed by anchoring
-                    // geo sources (self-reported address, photo GPS, registry
-                    // address, person-enrichment location) rank slightly ahead
-                    // of equal-weight entities with no person-anchored geo
-                    // signal. Each anchoring geo source contributes +2%, capped
-                    // at +10%, keeping the bonus sub-dominant to the confidence
-                    // and corroboration factors.
-                    let anchoring_geo_count = entity
-                        .corroborating_sources()
-                        .into_iter()
-                        .filter(|s| crate::core::correlator::is_anchoring_geo_source(s))
-                        .count();
-                    if anchoring_geo_count > 0 {
-                        weight *= 1.0 + (anchoring_geo_count as f64 * 0.02).min(0.10);
-                    }
-                    // Social-profile URL priority boost: a confirmed social-profile
-                    // URL crawl can complete the tracking-ID co-ownership pivot.
-                    // +15% nudges these above generic domain/IP targets at equal
-                    // confidence so the crawl fires within the wall-clock budget.
-                    // Sub-dominant to confidence and corroboration factors.
-                    if tk == TargetKind::Url && entity.has_tag("social-profile") {
-                        weight *= 1.15;
-                    }
-                    next.push((new_target, weight, entity.uid.clone()));
-                } else {
-                    // This exact target was already dispatched (or queued) this
-                    // scan. Skipping it prevents an infinite pivot cycle, but the
-                    // decision must be visible rather than a silent drop.
-                    self.emit_excluded(scan_id, entity, "already_dispatched_this_scan");
+                match expansion::gate_and_score_candidate(entity, &round_cx, visited, |tk| {
+                    self.graph.richness_for(tk)
+                }) {
+                    Ok(candidate) => next.push(candidate),
+                    Err(reason) => self.emit_excluded(scan_id, entity, reason),
                 }
             }
 

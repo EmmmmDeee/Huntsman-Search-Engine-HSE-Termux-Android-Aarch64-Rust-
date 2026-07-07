@@ -1279,7 +1279,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   removed test (`expansion_strategy_from_str_accepts_every_variant`, folded
   into a consolidated replacement) — the real net delta was +2; `gap_register`
   corrected to match.
-- **`[ ]` T2.38 · `core/engine/mod.rs` still carries two unit-seamless god
+- **`[~]` T2.38 · `core/engine/mod.rs` still carries two unit-seamless god
   functions after the ranking-API extraction** — the out-of-scan-loop
   ranking/enrichment API (leverage ranking, autonomous-sweep planning, offline
   geo-enrichment, ~500 LOC / 21% of the file) was moved verbatim into
@@ -1289,15 +1289,37 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   and `run_expansion` (~472 LOC), the least unit-covered part of the file (only
   end-to-end scan tests exercise their internals, unlike `dispatch.rs`'s
   `admission_rejection`/`replay_cached_result`, which gained direct unit tests
-  when extracted). → **Solution (sketched, not started):** the same
-  extract-then-test sequence the dispatch refactor and the ranking-API move
-  both used — add unit seams (pure free functions for the internally
-  cohesive sub-steps) first, verify each is independently testable, *then*
-  decompose the two god functions around those seams; decomposing first
-  without seams risks moving the untested-ness rather than fixing it. **P3**
-  (a maintainability/testability debt on a hot, already-covered-end-to-end
-  path — not a defect; explicitly flagged as the next scoped refactor by the
-  commit that did the adjacent extraction).
+  when extracted). → **Solution:** the same extract-then-test sequence the
+  dispatch refactor and the ranking-API move both used — add unit seams (pure
+  free functions for the internally cohesive sub-steps) first, verify each is
+  independently testable, *then* decompose the two god functions around those
+  seams; decomposing first without seams risks moving the untested-ness rather
+  than fixing it. **P3** (a maintainability/testability debt on a hot,
+  already-covered-end-to-end path — not a defect).
+  *Delivered (2026-07-07) — the first, highest-value seam on each function:*
+  **`run_expansion`**'s entire per-candidate admission-and-scoring chain (8
+  gates + the 5-factor dispatch-weight computation, ~200 LOC) — previously the
+  single largest untested block in the file — is now the pure
+  `expansion::gate_and_score_candidate`, unit-tested directly (12 new tests:
+  one per gate, the load-bearing gate-order contract, and the weight-scoring
+  factors), mirroring `dispatch::admission_rejection`'s shape exactly
+  (`Err(reason)` is the identical string the caller already passed to
+  `emit_excluded`). `run_expansion`: 520 → 349 LOC (−33%).
+  **`finalise_scan`**'s two self-contained sub-passes — the AU-065/AU-066
+  cross-scan pathway-template learning block and the multipath/cross-scan
+  corroboration-boost re-persist block, together ~150 LOC of the function's
+  least-approachable middle — moved into a new sibling module
+  `engine::finalise` as named, documented functions
+  (`apply_cross_scan_pathway_learning`, `apply_corroboration_boosts`). These
+  remain impure (real storage/event I/O — finalise is inherently a
+  persistence pass) so they don't gain the same direct unit-test win as the
+  expansion seam, but `finalise_scan` now reads as a sequence of named steps
+  instead of one 444-line block. `finalise_scan`: 444 → 313 LOC (−30%).
+  Both extractions are pure moves (verified: full suite green, unchanged
+  behaviour — no test needed new assertions beyond the 12 for the new pure
+  function). *Remaining:* `run_expansion` (349 LOC) and `finalise_scan` (313
+  LOC) are smaller but still multi-concern; further seams are candidates for
+  a focused follow-up, not required to call this node meaningfully advanced.
 
 ---
 
@@ -5926,3 +5948,57 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   count change, an existing test's loop grew; 31 architecture tests, +1).
   **Paired:** `SOLUTION_TREE` §2/§4/§5 + `gap_register.md` + `CHANGELOG.md`
   — same commit.
+- **2026-07-07 — T2.38 `[ ]`→`[~]`: the first, highest-value unit seam on
+  each of `core/engine/mod.rs`'s two remaining god functions.** Requested as
+  a general "find and refactor the highest-impact file" task; independently
+  re-verified `core/engine/mod.rs` was still the right target (largest
+  central file by real function-boundary measurement — `run_expansion` 520
+  LOC, `finalise_scan` 444 LOC — not just trusting the prior cycle's own
+  conclusion) before touching anything.
+  **`run_expansion`:** the per-candidate admission-and-scoring chain (8
+  gates — confidence floor, recycled-snippet, ROI-saturation, non-pivotable
+  kind, speculative-permutation, wrong-identity, non-routable-IP,
+  incidental-infra — plus the 5-factor dispatch-weight computation) was the
+  single largest untested block in the file, reachable only through
+  end-to-end scan tests. Extracted verbatim into
+  `expansion::gate_and_score_candidate`, a pure function taking a new
+  `CandidateRoundCx` bundle (mirrors `dispatch::DispatchCx`) and a
+  `richness_for` closure (keeps the module decoupled from
+  `core::dependency::ModuleGraph`'s concrete type) — `Err(reason)` is the
+  identical string the caller already passed to `emit_excluded`, in the
+  identical gate order; `Ok` carries the same `(Target, weight, parent_uid)`
+  triple. 12 new direct unit tests: one per gate, the load-bearing
+  gate-ordering contract (an entity tripping multiple gates must report the
+  *first*), and a weight-scoring check — mirroring `dispatch::
+  admission_rejection_covers_every_drop_filter_and_order`'s shape exactly.
+  A deliberate mutation check (temporarily deleted the recycled-snippet gate,
+  confirmed exactly one test failed, restored it) proved the tests catch a
+  real regression, not just the happy path. `run_expansion`: 520 → 349 LOC
+  (−33%).
+  **`finalise_scan`:** its two most self-contained sub-passes — the
+  AU-065/AU-066 cross-scan pathway-template learning block (~100 LOC) and
+  the multipath/cross-scan corroboration-boost re-persist block (~45 LOC) —
+  moved into a new sibling module `engine::finalise` as named, documented
+  functions (`apply_cross_scan_pathway_learning`, split further into
+  `emit_au065`/`emit_au066_and_queue_boost`; `apply_corroboration_boosts`,
+  which preserves the original's `boosted_any` short-circuit exactly rather
+  than doing the filter/collect unconditionally). These remain impure (real
+  `StoragePort`/event I/O — finalise is inherently a persistence pass), so
+  they don't gain the same direct-unit-test win, but `finalise_scan` now
+  reads as two named calls instead of ~150 inline lines. `finalise_scan`:
+  444 → 313 LOC (−30%).
+  Both extractions are pure moves — no behaviour change. Verified three
+  independent ways beyond the unit suite: `hse selftest` (9/9, incl.
+  `storage.correlator`'s DB round-trip through the correlator finalise runs
+  through); and a real, live, bounded scan (release binary, `8.8.8.8`,
+  `--depth 1 --free-only --max-wall-time 30`) that exercised the full
+  seed→expansion→gap-fill→finalise pipeline end-to-end, producing 472
+  entities / 18 correlations / 15 relations with **zero panics and zero
+  ERROR-level log lines**. *Remaining:* both functions are smaller but still
+  multi-concern; further seams (`finalise_scan`'s entity-persist-with-
+  fallback block, `run_expansion`'s per-round reconsideration pass) are
+  legitimate follow-ups for a future cycle, not required to call this
+  delivery meaningful. Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4456 lib tests, +12; 97 API tests;
+  31 architecture tests). **Paired:** `SOLUTION_TREE` §2/§4/§5 +
+  `gap_register.md` + `CHANGELOG.md` — same commit.
