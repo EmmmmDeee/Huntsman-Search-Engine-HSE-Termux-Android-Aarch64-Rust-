@@ -1502,7 +1502,7 @@ impl ScanEngine {
                 // twice. Computing each once per candidate trims redundant work in
                 // the hottest expansion loop on the constrained target.
                 let c_eff = entity.c_effective();
-                if c_eff < opts.min_expand_confidence {
+                if c_eff < opts.effective_min_expand_confidence() {
                     self.emit_excluded(scan_id, entity, "below_min_expand_confidence");
                     continue;
                 }
@@ -1825,7 +1825,7 @@ impl ScanEngine {
             }
 
             let floor = opts
-                .min_marginal_yield
+                .effective_min_marginal_yield()
                 .unwrap_or(crate::core::roi::DEFAULT_MIN_MARGINAL_YIELD);
             if crate::core::roi::should_terminate_adaptive(
                 opts.max_roi,

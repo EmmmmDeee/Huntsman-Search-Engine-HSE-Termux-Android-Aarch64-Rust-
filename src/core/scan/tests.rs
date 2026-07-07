@@ -1029,6 +1029,100 @@ fn expansion_strategy_default_is_geo_converge() {
 }
 
 #[test]
+fn effective_max_concurrent_clamps_operator_input() {
+    // `max_concurrent` is deserialised straight from API/CLI input into the
+    // engine's `Semaphore::new`, which PANICS above `Semaphore::MAX_PERMITS`.
+    // `effective_max_concurrent()` is the single chokepoint that bounds it, so a
+    // config value can neither crash the scan nor defeat the gentle-pacing
+    // default. 0 (sequential) passes through; in-range values are unchanged; an
+    // absurd value — including the `usize::MAX` that would otherwise panic
+    // Semaphore::new — is clamped to MAX_CONCURRENT.
+    let mk = |n: usize| ScanOptions {
+        max_concurrent: n,
+        ..Default::default()
+    };
+    assert_eq!(mk(0).effective_max_concurrent(), 0, "sequential preserved");
+    assert_eq!(
+        mk(2).effective_max_concurrent(),
+        2,
+        "gentle default unchanged"
+    );
+    assert_eq!(
+        mk(MAX_CONCURRENT).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "at the ceiling"
+    );
+    assert_eq!(
+        mk(MAX_CONCURRENT + 1).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "above the ceiling clamps"
+    );
+    assert_eq!(
+        mk(usize::MAX).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "the Semaphore::new-panicking value is bounded"
+    );
+}
+
+#[test]
+fn effective_throttle_ms_clamps_to_ceiling() {
+    // throttle_ms is an UNINTERRUPTIBLE inter-module sleep; an extreme value
+    // would hold a scan past its wall-time watchdog. 0 (no throttle) and in-range
+    // values pass through; anything above the ceiling is bounded.
+    let mk = |n: u64| ScanOptions {
+        throttle_ms: n,
+        ..Default::default()
+    };
+    assert_eq!(mk(0).effective_throttle_ms(), 0, "no throttle preserved");
+    assert_eq!(mk(250).effective_throttle_ms(), 250, "in-range unchanged");
+    assert_eq!(
+        mk(THROTTLE_CEILING_MS).effective_throttle_ms(),
+        THROTTLE_CEILING_MS
+    );
+    assert_eq!(
+        mk(u64::MAX).effective_throttle_ms(),
+        THROTTLE_CEILING_MS,
+        "a units-confused huge throttle is bounded to the ceiling"
+    );
+}
+
+#[test]
+fn effective_confidence_floors_coerce_non_finite_to_safe_defaults() {
+    // A CLI `--min-confidence nan` / `--min-expand-confidence inf` parses via
+    // clap's f64::from_str (which accepts nan/inf), and a non-finite threshold
+    // silently inverts the < comparison — NaN makes it always-false (filter
+    // disabled / expand everything), +inf always-true (expand nothing). The
+    // effective_* accessors coerce ONLY the meaningless non-finite case; a finite
+    // value (even an unusual one) is left exactly as the operator set it.
+    let with = |f: f64| ScanOptions {
+        min_expand_confidence: f,
+        min_confidence: Some(f),
+        min_marginal_yield: Some(f),
+        ..Default::default()
+    };
+    // Finite values pass through untouched (operator intent preserved).
+    let ok = with(0.42);
+    assert!((ok.effective_min_expand_confidence() - 0.42).abs() < 1e-9);
+    assert_eq!(ok.effective_min_confidence(), Some(0.42));
+    assert_eq!(ok.effective_min_marginal_yield(), Some(0.42));
+    // Non-finite collapses to the safe default (expand floor) / None (filters).
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let b = with(bad);
+        assert_eq!(
+            b.effective_min_expand_confidence(),
+            crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
+            "non-finite expand floor -> product default"
+        );
+        assert_eq!(
+            b.effective_min_confidence(),
+            None,
+            "non-finite drop filter -> disabled (None), never inverted"
+        );
+        assert_eq!(b.effective_min_marginal_yield(), None);
+    }
+}
+
+#[test]
 fn target_kind_canonical_str_matches_serde() {
     // CONVENTIONS.md §3: canonical_str is the persisted `scans.target_kind`
     // column, a scan_id hash input, and the event/API wire label — and its
@@ -1060,30 +1154,34 @@ fn scan_status_as_str_matches_serde() {
 }
 
 #[test]
-fn expansion_strategy_round_trips_json() {
-    for s in [
+fn expansion_strategy_every_variant_round_trips_as_str_serde_and_from_str() {
+    // DRIFT GUARD (was a hardcoded 4-variant array a 5th variant would skip).
+    // `as_str` is the single wire form shared by serde, the CLI
+    // `--expansion-strategy` arg, and `FromStr`, so all three must agree for
+    // EVERY variant. `EVERY` is walked by an arm-less `match` (no `_`): adding an
+    // `ExpansionStrategy` variant fails to compile here until it is listed, then
+    // the loop proves as_str == serde, serde round-trips, and FromStr(as_str)
+    // round-trips for the whole set — the compile-forced exhaustiveness the
+    // sibling `target_kind_canonical_str_matches_serde` gets from ALL_TARGET_KINDS.
+    const EVERY: &[ExpansionStrategy] = &[
         ExpansionStrategy::GeoConverge,
         ExpansionStrategy::BreadthFirst,
         ExpansionStrategy::DepthFirst,
         ExpansionStrategy::RichestFirst,
-    ] {
+    ];
+    for &s in EVERY {
+        match s {
+            ExpansionStrategy::GeoConverge
+            | ExpansionStrategy::BreadthFirst
+            | ExpansionStrategy::DepthFirst
+            | ExpansionStrategy::RichestFirst => {}
+        }
         let json = serde_json::to_string(&s).unwrap();
-        assert_eq!(json.trim_matches('"'), s.as_str());
+        assert_eq!(json.trim_matches('"'), s.as_str(), "as_str vs serde: {s:?}");
         let back: ExpansionStrategy = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, s);
-    }
-}
-
-#[test]
-fn expansion_strategy_from_str_accepts_every_variant() {
-    for s in [
-        ExpansionStrategy::GeoConverge,
-        ExpansionStrategy::BreadthFirst,
-        ExpansionStrategy::DepthFirst,
-        ExpansionStrategy::RichestFirst,
-    ] {
+        assert_eq!(back, s, "serde round-trip: {s:?}");
         let parsed: ExpansionStrategy = s.as_str().parse().unwrap();
-        assert_eq!(parsed, s);
+        assert_eq!(parsed, s, "FromStr(as_str) round-trip: {s:?}");
     }
 }
 

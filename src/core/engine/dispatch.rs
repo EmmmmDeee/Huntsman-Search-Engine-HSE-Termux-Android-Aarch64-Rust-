@@ -459,7 +459,7 @@ impl super::ScanEngine {
                 }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
-                    if let Some(min) = cx.opts.min_confidence
+                    if let Some(min) = cx.opts.effective_min_confidence()
                         && entity.confidence < min
                     {
                         // Visible like every other admission drop ("never a
@@ -728,8 +728,8 @@ impl super::ScanEngine {
                 if ctx.cancel.is_cancelled() {
                     return Ok(());
                 }
-                if cx.opts.throttle_ms > 0 {
-                    sleep(Duration::from_millis(cx.opts.throttle_ms)).await;
+                if cx.opts.effective_throttle_ms() > 0 {
+                    sleep(Duration::from_millis(cx.opts.effective_throttle_ms())).await;
                 }
                 continue;
             }
@@ -781,8 +781,8 @@ impl super::ScanEngine {
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
-            if cx.opts.throttle_ms > 0 {
-                sleep(Duration::from_millis(cx.opts.throttle_ms)).await;
+            if cx.opts.effective_throttle_ms() > 0 {
+                sleep(Duration::from_millis(cx.opts.effective_throttle_ms())).await;
             }
         }
         Ok(())
@@ -918,7 +918,13 @@ impl super::ScanEngine {
         // index-iteration pattern as Phase 1 — Arc::clone moves to the
         // single spawn site below, instead of being paid for every
         // candidate during candidate-list construction.
-        let sem = Arc::new(Semaphore::new(cx.opts.max_concurrent));
+        // `effective_max_concurrent()` bounds the operator-supplied value to
+        // `MAX_CONCURRENT`: a raw `max_concurrent` reaches here straight from
+        // API/CLI input, and `Semaphore::new` panics above `MAX_PERMITS`, so the
+        // clamp is what stops a config value from crashing the scan (and from
+        // defeating the gentle-pacing default). The `== 0` sequential branch above
+        // is unaffected (the clamp preserves 0).
+        let sem = Arc::new(Semaphore::new(cx.opts.effective_max_concurrent()));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = cx.scan_id.into();
         // Share one context across all spawned modules in this round instead of
@@ -1020,7 +1026,7 @@ impl super::ScanEngine {
             let ctx = Arc::clone(&ctx_shared);
             let emitter = self.emitter.clone();
             let sid = Arc::clone(&scan_id_arc);
-            let throttle_ms = cx.opts.throttle_ms;
+            let throttle_ms = cx.opts.effective_throttle_ms();
             let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
             // Capture the producing module's ATT&CK Reconnaissance techniques
             // before the spawn: `module` is unavailable at the join site (only a

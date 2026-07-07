@@ -149,12 +149,14 @@ pub struct ScanOptions {
     // ── SeekNow per-scan budget override (v1.1+) ───────────────────────────
     /// Per-scan budget cap for SeekNow (`see-know.eu`) API queries.
     /// `None` falls back to the env-tunable
-    /// `HUNTSMAN_SEEKNOW_SCAN_CAP` (default 24). Setting this on a
+    /// `HUNTSMAN_SEEKNOW_SCAN_CAP` (default 300 — the `BUDGET` static in
+    /// `util::see_know::budget`). Setting this on a
     /// scan-by-scan basis lets the operator burn a larger slice of the
     /// 5000/day quota on a specific high-value target — e.g. raise
     /// to 80 for an investigative scan, drop to 6 for a wide passive
-    /// recce. Values above 200 are clamped to 200 to preserve the
-    /// session ceiling.
+    /// recce. Values above 500 are clamped to 500 (see
+    /// `core::engine`'s `cap.min(500)`) so a single scan cannot blow the
+    /// per-session ceiling.
     #[serde(default)]
     pub seeknow_scan_cap: Option<u32>,
 
@@ -281,6 +283,37 @@ impl std::str::FromStr for ExpansionStrategy {
 /// or lower the ceiling.
 pub const MAX_DEPTH: u32 = 3;
 
+/// Hard ceiling on operator-requested module concurrency, applied where
+/// `max_concurrent` is consumed via [`ScanOptions::effective_max_concurrent`].
+///
+/// Two independent reasons this bound must exist:
+/// 1. **Safety.** `max_concurrent` is deserialised straight from API/CLI input
+///    into `tokio::sync::Semaphore::new`, which **panics** if the permit count
+///    exceeds `Semaphore::MAX_PERMITS` (`usize::MAX >> 3`). An unbounded config
+///    value (`{"max_concurrent": 18446744073709551615}`) would crash the scan
+///    task rather than run it.
+/// 2. **Pacing.** The product default is a deliberately gentle `2`; even a
+///    well-formed large value defeats the on-device rate-limit / link protection
+///    with no benefit past the per-target module count (a few dozen).
+///
+/// `64` is generous headroom for a power user with a fast link while keeping
+/// both failure modes impossible. `0` (fully sequential dispatch) is preserved
+/// by the clamp (`0.min(64) == 0`).
+pub const MAX_CONCURRENT: usize = 64;
+
+/// Ceiling on the operator-supplied inter-module throttle, applied via
+/// [`ScanOptions::effective_throttle_ms`].
+///
+/// `throttle_ms` is consumed as an **uninterruptible** `sleep(from_millis(..))`
+/// between dispatches, and the wall-time watchdog only *sets the cancel flag*
+/// (polled at loop tops, never mid-sleep). So an extreme `throttle_ms` (a typo,
+/// or seconds-vs-millis confusion) would hold a scan long past its own
+/// `max_wall_time_secs` bound — defeating the "fallback bound that actually
+/// bounds" the watchdog exists to guarantee. `30_000` ms is already an extreme
+/// deliberate throttle; beyond it is never intent. `0` (no throttle) passes
+/// through unchanged.
+pub const THROTTLE_CEILING_MS: u64 = 30_000;
+
 /// Default recursive-expansion depth for the `hse scan` product surface when
 /// the operator gives neither an explicit `--depth` nor `--auto`/`--recursive`.
 /// Defaults to the full [`MAX_DEPTH`] so the standard scan is **comprehensive by
@@ -337,6 +370,61 @@ impl ScanOptions {
             self.depth = MAX_DEPTH;
         }
         self
+    }
+
+    /// The effective concurrent-module cap: the operator's `max_concurrent`
+    /// bounded to [`MAX_CONCURRENT`]. This is the single chokepoint the engine
+    /// uses to size its dispatch `Semaphore`, so an operator-supplied value can
+    /// neither panic `Semaphore::new` (which aborts above `Semaphore::MAX_PERMITS`)
+    /// nor defeat the gentle-pacing default with an absurd concurrency. `0`
+    /// (sequential dispatch) passes through unchanged.
+    #[must_use]
+    pub fn effective_max_concurrent(&self) -> usize {
+        self.max_concurrent.min(MAX_CONCURRENT)
+    }
+
+    /// The effective inter-module throttle, bounded to [`THROTTLE_CEILING_MS`] so
+    /// an operator's extreme value cannot hold a scan past its own wall-time
+    /// watchdog (the throttle sleep is not raced against cancellation). `0`
+    /// (no throttle) passes through.
+    #[must_use]
+    pub fn effective_throttle_ms(&self) -> u64 {
+        self.throttle_ms.min(THROTTLE_CEILING_MS)
+    }
+
+    /// The effective expansion floor: `min_expand_confidence` coerced to a
+    /// **finite** value. A non-finite input — a CLI `--min-expand-confidence nan`
+    /// / `inf` (clap's `f64::from_str` accepts them; serde-json rejects bare NaN)
+    /// — would otherwise make the `c_eff < floor` gate always-false (NaN → expand
+    /// everything) or always-true (+∞ → expand nothing), silently subverting the
+    /// filter. It collapses to the product default instead. A finite value
+    /// (including a deliberately unusual one) is left exactly as the operator set
+    /// it — only the meaningless non-finite case is corrected.
+    #[must_use]
+    pub fn effective_min_expand_confidence(&self) -> f64 {
+        if self.min_expand_confidence.is_finite() {
+            self.min_expand_confidence
+        } else {
+            DEFAULT_MIN_EXPAND_CONFIDENCE
+        }
+    }
+
+    /// The effective base-confidence drop filter: `min_confidence` with a
+    /// non-finite value coerced to `None`. A NaN threshold would make the
+    /// `confidence < min` drop always-false and silently DISABLE the filter; it
+    /// collapses to `None` (no filter — what omitting the field means), never a
+    /// silently-inverted one. Finite thresholds pass through unchanged.
+    #[must_use]
+    pub fn effective_min_confidence(&self) -> Option<f64> {
+        self.min_confidence.filter(|v| v.is_finite())
+    }
+
+    /// The effective adaptive-termination floor: `min_marginal_yield` with a
+    /// non-finite value coerced to `None` (falls back to the ROI default),
+    /// guarding the same NaN-comparison-inversion class as the confidence floors.
+    #[must_use]
+    pub fn effective_min_marginal_yield(&self) -> Option<f64> {
+        self.min_marginal_yield.filter(|v| v.is_finite())
     }
 }
 
