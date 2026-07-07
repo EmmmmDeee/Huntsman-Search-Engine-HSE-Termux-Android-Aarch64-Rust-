@@ -90,8 +90,12 @@ use crate::core::entity::Evidence;
             "contact_enrich",
             "gleif_lei",
             "asic_director",
+            "asic_banned_orgs",
+            "asic_business_names",
+            "asic_persons",
             "au_electoral",
             "au_people",
+            "au_unclaimed",
             "ahpra",
             "acnc_charities",
         ] {

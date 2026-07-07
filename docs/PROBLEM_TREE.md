@@ -1308,7 +1308,12 @@ Each node: **current → target → solution**. Everything here is built on §3.
 primitives. AU bias and an offensive (active-collection) posture throughout.
 
 - **`[~]` C1 · Correlation & identity depth — *the Maltego-without-graphs play***.
-  *Current:* 61 native rules + deterministic GREATEST-merge identity. *Target:*
+  *Current:* 108 native rules (96 entity rules + 12 relation rules — corrected
+  2026-07-07, was quoted "61" since cycle 26; verified by direct count:
+  `grep -rhoE "fn rule_au_[0-9]+" src/core/correlator/rules/ | sort -u | wc -l`
+  = 108, and the `RULES`/`RELATION_RULES` dispatch tables in
+  `core/correlator/mod.rs` sum to the same 96+12) + deterministic
+  GREATEST-merge identity. *Target:*
   out-link-analyse Maltego by delivering the *conclusion*, not a canvas.
   → **Solution:** (a) **transitive identity resolution** — if A↔B and B↔C share
   selectors, emit A↔C with decayed confidence (closure over the merge graph,
@@ -1403,6 +1408,35 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   pursued this cycle to avoid scope creep into the import/parsing layer; both
   are legitimate candidates for a FUTURE cycle that scopes the prerequisite
   change as its own step first.
+  *Delivered (2026-07-07) — a concrete instance of (d)'s "AU-0xx rule-gap
+  fill," found by a direct audit rather than more discovery talk:*
+  `core::correlator::rules::source_family` — the classifier AU-062
+  (multipath corroboration) and AU-063 (corroboration gap) use to measure
+  CROSS-family agreement (independent confirmation is stronger than two
+  sources in the same family) — whitelists `asic_director` into the
+  `identity_registry` family but not its three sibling ASIC registry
+  lookups or the unclaimed-money registry, so all four silently fell to
+  `"other"` (excluded from family-diversity counting) despite being the
+  exact same class of authoritative identity/business registry the
+  surrounding code comment already documents fixing for `asic_director`
+  itself. Confirmed by direct read of `mod.rs:434-453` and each module's
+  own doc comment (`src/modules/asic_banned_orgs/mod.rs`,
+  `asic_business_names/mod.rs`, `asic_persons/mod.rs`,
+  `src/modules/au_unclaimed/mod.rs`) before touching anything — not from a
+  filename guess. → Added `asic_banned_orgs`, `asic_business_names`,
+  `asic_persons`, `au_unclaimed` to the `identity_registry` needle list.
+  Verified none of the four collides with an earlier bucket's needles
+  (breach/code/forum/social/presence/search/email_intel), so this is a
+  pure addition — no existing source's classification changes (confirmed:
+  the full 421-test correlator suite passes unchanged). Also corrected the
+  stale rule-count this node quotes (see above: 61 → 108, itself found
+  while investigating this gap) and closed the matching drift in
+  `README.md` (was "74 correlator rules (AU-001 through AU-086...)"),
+  adding a permanent drift guard (`core::correlator::total_rule_count()` +
+  `readme_correlator_rule_count_matches_dispatch_tables` in
+  `tests/architecture.rs`) so the count can't silently rot again the way it
+  did for over 10 cycles. (d) remains C1's only open thread — this closes
+  one concrete instance the audit surfaced, not the general category.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -5833,3 +5867,62 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   exception) — fmt/clippy `-D warnings`/rustdoc (private items) clean, full
   suite green. **Paired:** `SOLUTION_TREE` §2/§3/§4/§5 + `gap_register.md` +
   `CHANGELOG.md` — same commit.
+- **2026-07-07 — C1: closed one concrete AU-0xx correlator rule-gap instance
+  (`source_family`'s identity-registry undercount) + corrected a ~10-cycle
+  stale rule-count drift (61 → 108).** ORIENT found no dirty tree from the
+  prior (docs-reconciliation) cycle; working tree was clean, branch in sync
+  with its remote. SELECT: no P0/P1/P2 node was actionable — T2.7 and T2.14
+  remain correctly blocked on design/external-fetch decisions per repeated
+  prior-cycle findings (not re-litigated); of the in-progress (`[~]`) nodes
+  (F.1/F.2/F.3/C1/C3/C4/C5), a research pass across C1/C5 candidates found
+  C1's "further AU-0xx rule-gap fill" note (§4a) had no *named* gap on
+  record — cycle 30 had already searched and come up empty-handed for a
+  mechanical slice — so this cycle ran a fresh, narrower audit: every
+  module's own doc comment against `rules::source_family`'s
+  `identity_registry` needle list, rather than the broader `EntityKind`
+  sweep cycle 30 tried. Found `asic_director` (already whitelisted) has
+  three sibling ASIC registry modules (`asic_banned_orgs`,
+  `asic_business_names`, `asic_persons`) plus `au_unclaimed` (Australian
+  unclaimed-money register) that are the identical class of authoritative
+  identity/business registry — confirmed by reading each module's own
+  `mod.rs` doc comment, not inferred from the name — yet all four fell to
+  `"other"`, the catch-all `source_family` itself documents as "excluded
+  from family-diversity counts." This silently under-counted AU-062
+  (multipath corroboration) and AU-063 (corroboration gap)'s cross-family
+  agreement signal for any scan where one of these four modules fired
+  alongside a genuinely independent source (a breach DB, a social
+  platform) — exactly the "two authoritative registers agreeing" case
+  AU-088 already treats as Critical-tier evidence, just not counted toward
+  the *diversity* measure these two sibling rules use. → Added all four to
+  the needle list (`core/correlator/rules/mod.rs`); verified none collides
+  with an earlier bucket's needles (breach/code/forum/social/presence/
+  search/email_intel), so this is a pure, non-reclassifying addition —
+  confirmed by the full 421-test correlator suite passing unchanged
+  otherwise. **Also found while investigating:** this same C1 node's own
+  "Current: 61 native rules" figure (quoted since cycle 26) had drifted
+  from the real, directly-counted 108 (96 entity + 12 relation rules,
+  verified against both the `RULES`/`RELATION_RULES` dispatch tables and a
+  raw `fn rule_au_NNN` count agreeing exactly) — and `README.md`
+  independently quoted a *different* stale figure ("74 correlator rules
+  (AU-001 through AU-086...)"), confirming the two hand-maintained copies
+  had drifted apart, not just aged together. Corrected both, and — per
+  `docs/CONVENTIONS.md` §6 ("any number that exists in prose AND in code
+  gets a test tying the prose to the live value") — added a permanent
+  guard: new `core::correlator::total_rule_count()` (public accessor) +
+  `readme_correlator_rule_count_matches_dispatch_tables` in
+  `tests/architecture.rs`, mirroring the existing
+  `readme_module_overview_count_matches_registry` pattern exactly, so this
+  count cannot silently rot again the way it did for roughly 10 cycles.
+  Tests: extended
+  `source_family_covers_registry_scanners_and_registries`'s
+  `identity_registry` loop with the 4 new module names (fail-before
+  confirmed: reverted `mod.rs`'s needle-list addition, the extended test
+  failed with `asic_banned_orgs is an identity/business registry: left
+  "other", right "identity_registry"`); added
+  `readme_correlator_rule_count_matches_dispatch_tables` (fail-before
+  confirmed: failed against the unfixed "74" README line before the
+  README correction). Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, full suite 0 failures (4444 lib tests — no net
+  count change, an existing test's loop grew; 31 architecture tests, +1).
+  **Paired:** `SOLUTION_TREE` §2/§4/§5 + `gap_register.md` + `CHANGELOG.md`
+  — same commit.

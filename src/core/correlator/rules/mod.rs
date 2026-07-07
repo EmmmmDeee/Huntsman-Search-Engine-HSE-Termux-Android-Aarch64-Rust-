@@ -446,8 +446,16 @@ pub(in crate::core) fn source_family(source: &str) -> &'static str {
         "contact_enrich",
         "gleif_lei",
         "asic_director",
+        // asic_director's three sibling ASIC registry lookups + the unclaimed-
+        // money registry — the same "falling to other" gap as asic_director
+        // itself, found by a direct audit of every registered module name
+        // against this list.
+        "asic_banned_orgs",
+        "asic_business_names",
+        "asic_persons",
         "au_electoral",
         "au_people",
+        "au_unclaimed",
         "ahpra",
         "acnc",
     ]) {

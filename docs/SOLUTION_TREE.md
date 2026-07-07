@@ -427,6 +427,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   evidence names. Updated the two exhaustive `RelationKind` matches in
   `core::network` the new variant forced. *Remaining:* only further AU-0xx
   rule-gap fill — the last of C1's four sub-items.
+  *Delivered (2026-07-07) — one concrete AU-0xx rule-gap instance, found by
+  direct audit:* `rules::source_family` (the family classifier AU-062/AU-063
+  use for cross-service corroboration strength) whitelisted `asic_director`
+  into `identity_registry` but not its three sibling ASIC registry lookups
+  (`asic_banned_orgs`, `asic_business_names`, `asic_persons`) or
+  `au_unclaimed` — all four fell to `"other"` and were silently excluded from
+  family-diversity counting, the same drift class the surrounding code
+  comment already documents fixing once for the infra-scanner group. Added
+  all four to the needle list (verified none collides with an earlier
+  bucket — pure addition, the 421-test correlator suite is unchanged
+  otherwise) plus a `source_family_covers_registry_scanners_and_registries`
+  loop extension, fail-before confirmed. Also corrected the rule-count this
+  node's parent (`PROBLEM_TREE` C1) quotes — "61" had drifted from the real
+  108 since cycle 26 — and added a permanent guard
+  (`core::correlator::total_rule_count()` +
+  `readme_correlator_rule_count_matches_dispatch_tables`) so `README.md`'s
+  own count can't rot again. *Remaining:* AU-0xx rule-gap fill stays open in
+  general (this closed one found instance, not the category); `Ssid`/`Cidr`
+  correlator engagement remain legitimate future candidates per cycle 30's
+  investigation (both need a prerequisite import/parsing change first).
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -1059,8 +1079,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **C1** — `[~]` (SOL-CORR), corrected stale note (found cycle 27, 2026-07-05):
   this bullet previously read "none started," but C1/SOL-CORR has been
   in-progress since cycle 26 (`identity_paths` + CONNECTIONS) and advanced
-  again this cycle (timeline `classify` widened). *Remaining:* further AU-0xx
-  rule-gap fill; the "controller behind reused secrets" link facet.
+  again this cycle (timeline `classify` widened). The "controller behind
+  reused secrets" link facet delivered cycle 28 (`SharesSecretWith`); the
+  `source_family` identity-registry gap (4 ASIC/unclaimed-money modules
+  falling to `"other"`) delivered 2026-07-07. *Remaining:* further AU-0xx
+  rule-gap fill (general category, not exhausted by the one instance just
+  closed) — `Ssid`/`Cidr` correlator engagement are the two named candidates,
+  both blocked on a prerequisite import/parsing change (cycle 30 finding).
 - **C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
@@ -1171,7 +1196,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); **S6 `[x]`** ✅ (SOL-BASEURL-HARDEN,
   2026-07-07); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; AU bounding precision, movement/timeline layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28; only AU-0xx rule-gap fill remains); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; AU bounding precision, movement/timeline layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, `source_family` identity-registry gap closed 2026-07-07 [108 rules, corrected from a stale "61"]; general AU-0xx rule-gap fill remains, `Ssid`/`Cidr` the two named candidates); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -4235,3 +4260,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `src/api/scan_handlers/intel.rs`, `src/core/entity/mod.rs` (comment only),
   `tests/api.rs`. Gate green: fmt/clippy `-D warnings`/rustdoc (private
   items) clean, full suite green. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-07 — SOL-CORR advances C1 with one concrete AU-0xx rule-gap
+  instance; corrected a ~10-cycle-stale rule-count drift.** Full rationale
+  in `PROBLEM_TREE` §8 (same date). Summary: `rules::source_family`'s
+  `identity_registry` needle list whitelisted `asic_director` but not its
+  three sibling ASIC registry modules or `au_unclaimed`, so all four
+  silently fell to `"other"` and were excluded from the cross-family
+  corroboration-strength measure AU-062/AU-063 rely on — confirmed by
+  reading each module's own doc comment before adding it, not inferred.
+  Added all four; verified the addition is pure (no needle collision with
+  an earlier bucket, full 421-test correlator suite unchanged otherwise).
+  Also corrected the C1 node's own "61 native rules" figure (real count:
+  108, directly verified two ways) and `README.md`'s independently-stale
+  "74 correlator rules" line, then closed the gap for good with a new
+  `core::correlator::total_rule_count()` accessor +
+  `readme_correlator_rule_count_matches_dispatch_tables` (mirrors
+  `readme_module_overview_count_matches_registry` exactly) — the same
+  `docs/CONVENTIONS.md` §6 no-silent-drift discipline this codebase already
+  applies to the module count. Tests: extended
+  `source_family_covers_registry_scanners_and_registries`'s
+  `identity_registry` loop (4 new names, fail-before confirmed) + new
+  `readme_correlator_rule_count_matches_dispatch_tables` (fail-before
+  confirmed against the unfixed "74" line). Gate green: fmt/clippy `-D
+  warnings`/rustdoc (private items) clean, full suite 0 failures (4444 lib
+  tests; 31 architecture tests, +1). Paired: `PROBLEM_TREE` §8 — same
+  commit.

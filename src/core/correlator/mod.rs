@@ -533,6 +533,16 @@ fn evaluate_relation_rules_on(
     out
 }
 
+/// Total number of dispatched correlator rules (entity + relation), the live
+/// value backing README.md's hand-maintained "N correlator rules" figure —
+/// tied to it by `readme_correlator_rule_count_matches_dispatch_tables` in
+/// `tests/architecture.rs`, the same no-silent-drift pattern as
+/// `modules::registry().len()` for the module count.
+#[must_use]
+pub fn total_rule_count() -> usize {
+    RULES.len() + RELATION_RULES.len()
+}
+
 #[cfg(test)]
 mod tests;
 

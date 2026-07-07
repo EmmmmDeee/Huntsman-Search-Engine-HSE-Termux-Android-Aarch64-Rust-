@@ -1637,6 +1637,25 @@ fn readme_module_overview_count_matches_registry() {
     );
 }
 
+/// The README's "N correlator rules" figure is hand-maintained and had
+/// drifted (stated as "74" while the live dispatch tables held 108, a ~34
+/// rule undercount accumulated since the figure was last corrected 59→61 in
+/// an earlier cycle and never revisited as more rules shipped). Tie it to
+/// `core::correlator::total_rule_count()` — the same no-silent-drift guard as
+/// `readme_module_overview_count_matches_registry`.
+#[test]
+fn readme_correlator_rule_count_matches_dispatch_tables() {
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist");
+    let n = huntsman_search_engine::core::correlator::total_rule_count();
+    let needle = format!("{n} correlator rules");
+    assert!(
+        readme.contains(&needle),
+        "README must cite the live correlator rule count ({n}); update \
+         README.md's \"N correlator rules\" line after adding/removing a rule"
+    );
+}
+
 /// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
 /// compiled binary must carry NO AI / ML / LLM / cloud-inference / vector /
 /// embedding dependency, so every runtime capability is deterministic Rust that

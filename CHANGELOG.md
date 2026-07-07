@@ -364,6 +364,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Four Australian registry modules (`asic_banned_orgs`,
+  `asic_business_names`, `asic_persons`, `au_unclaimed`) were silently
+  excluded from the correlator's cross-family corroboration measure**,
+  understating confirmation strength on any scan where one of them
+  corroborated an independent source. They now classify as
+  `identity_registry`, matching their already-whitelisted sibling
+  `asic_director`.
+- **The correlator rule count quoted in `README.md` and `PROBLEM_TREE.md`
+  had drifted to two different stale figures ("74" and "61") against the
+  real, directly-counted 108.** Both corrected; a new drift-guard test
+  ties the README figure to the live dispatch tables going forward.
 - **An unauthenticated `GET /keys/status` leaked per-service key-pool
   inventory to LAN peers under a non-loopback bind.** Now carries the same
   loopback-only gate as the sibling `keys_pool_get` endpoint.
