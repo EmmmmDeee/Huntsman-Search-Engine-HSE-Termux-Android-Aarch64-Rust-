@@ -152,6 +152,22 @@ pub trait StoragePort: Send + Sync {
     }
 }
 
+/// Compile-time proof that `StoragePort` stays usable as `Arc<dyn StoragePort>`.
+///
+/// The entire boundary design (and ~11 call sites: `AppState.store` shared across
+/// `tokio` tasks, the engine, the correlator, the CLI composition roots) depends
+/// on `StoragePort` being **dyn-compatible** (object-safe) AND
+/// `dyn StoragePort: Send + Sync + 'static`. A method that broke dyn-compatibility
+/// — a generic type parameter, a `-> Self` return, an `impl Trait` argument, a
+/// `const` fn — or a supertrait change that dropped `Send`/`Sync` would otherwise
+/// fail far away at a `Arc<dyn StoragePort>` use site with an opaque error. This
+/// assertion localises that guarantee to the trait definition: adding such a
+/// method fails to compile right here, next to the doc that explains why.
+const _: fn() = || {
+    fn assert_dyn_send_sync_static<T: ?Sized + Send + Sync + 'static>() {}
+    assert_dyn_send_sync_static::<dyn StoragePort>();
+};
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
