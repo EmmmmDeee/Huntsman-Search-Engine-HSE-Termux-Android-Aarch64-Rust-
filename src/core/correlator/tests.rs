@@ -5472,18 +5472,62 @@ fn au053_ignores_infrastructure_and_needs_an_established_area() {
 #[test]
 fn severity_as_canonical_matches_serde() {
     // CONVENTIONS.md §3 pin. as_canonical feeds the persisted
-    // `correlations.severity` column AND the SQL ORDER BY CASE in
-    // `correlations_for_scan` hard-codes these exact strings, so a drift
-    // between as_canonical and the serde wire form would silently desync the
-    // stored value from the query that ranks it.
-    for sev in [
+    // `correlations.severity` column AND the SQL `ORDER BY CASE` in
+    // `correlations_for_scan` hard-codes these exact strings in this exact ORDER,
+    // so a drift between as_canonical, the serde wire form, and the weight/Ord
+    // ranking would silently desync the stored value from the query that ranks it
+    // (and the in-memory `rank_and_sort` from the persisted order).
+    //
+    // `EVERY` is walked by an arm-less `match` (no `_`): adding a Severity variant
+    // fails to compile until it is listed — the compile-forced guard a hardcoded
+    // array lacks. (RelationKind::SharesSecretWith silently slipped exactly this
+    // way, staying unpinned until the array-based test was made exhaustive.)
+    const EVERY: &[Severity] = &[
         Severity::Low,
         Severity::Medium,
         Severity::High,
         Severity::Critical,
-    ] {
+    ];
+    for &sev in EVERY {
+        match sev {
+            Severity::Low | Severity::Medium | Severity::High | Severity::Critical => {}
+        }
         let json = serde_json::to_string(&sev).unwrap();
-        assert_eq!(json.trim_matches('"'), sev.as_canonical(), "{sev:?}");
+        assert_eq!(
+            json.trim_matches('"'),
+            sev.as_canonical(),
+            "as_canonical vs serde: {sev:?}"
+        );
+        // Display is the deliberately UPPERCASE human form — never the wire form.
+        assert_eq!(
+            sev.to_string(),
+            sev.as_canonical().to_uppercase(),
+            "Display vs as_canonical: {sev:?}"
+        );
+        // The persisted string must deserialise back to the same variant.
+        let back: Severity = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, sev, "serde round-trip: {sev:?}");
+    }
+
+    // The three ranking representations must encode ONE order: declaration order
+    // (EVERY) == weight() ascending == Ord ascending. `rank_and_sort` ranks by
+    // `weight()` and tie-breaks by the derived `Ord`, and the SQL `ORDER BY CASE`
+    // mirrors it — so a variant whose weight or Ord disagreed with its position
+    // would make the persisted and in-memory rankings diverge. Pin strict
+    // monotonic agreement across every consecutive pair.
+    for pair in EVERY.windows(2) {
+        assert!(
+            pair[0].weight() < pair[1].weight(),
+            "weight order must match declaration: {:?} !< {:?}",
+            pair[0],
+            pair[1]
+        );
+        assert!(
+            pair[0] < pair[1],
+            "Ord must match declaration: {:?} !< {:?}",
+            pair[0],
+            pair[1]
+        );
     }
 }
 
