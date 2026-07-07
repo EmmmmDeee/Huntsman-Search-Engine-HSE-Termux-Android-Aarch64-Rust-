@@ -37,6 +37,22 @@ impl CancelHandle {
     }
 }
 
+/// Compile-time proof that `CancelHandle` stays `Send + Sync + 'static`.
+///
+/// These bounds are load-bearing, not incidental: the engine shares one handle
+/// across `tokio` tasks — `ModuleContext` (which owns a `CancelHandle`) is
+/// `Arc`-wrapped and moved into `set.spawn(async move { … })` in
+/// `core::engine::dispatch` — and the operator's cancel controller lives on a
+/// different task from the polling modules. A future field that is not
+/// `Send`/`Sync`/`'static` (an `Rc`, a `RefCell`, a borrowed reference) would
+/// silently break cancellation across tasks, or fail to compile far away at the
+/// spawn site with an opaque error. This assertion localises that guarantee to
+/// the type it belongs to, turning any regression into an error right here.
+const _: fn() = || {
+    fn assert_send_sync_static<T: Send + Sync + 'static>() {}
+    assert_send_sync_static::<CancelHandle>();
+};
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
