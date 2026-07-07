@@ -393,45 +393,11 @@ impl Module for Wigle {
 
         // ── SSID intelligence: extract names and business identifiers ──
         // Named-looking SSIDs ("Smith-Family") → identity leads.
-        let mut ssid_names: Vec<String> = body
-            .results
-            .iter()
-            .filter_map(|net| {
-                let ssid = net.ssid.as_deref()?.trim();
-                if ssid.is_empty() || ssid.len() < 4 || ssid.starts_with("DIRECT-") {
-                    return None;
-                }
-                if is_generic_ssid(ssid) {
-                    return None;
-                }
-                let parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
-                (parts.len() >= 2
-                    && parts[0].len() >= 3
-                    && parts[0].starts_with(|c: char| c.is_ascii_uppercase()))
-                .then(|| ssid.to_string())
-            })
-            .collect();
-        ssid_names.sort();
-        ssid_names.dedup();
-
-        if !ssid_names.is_empty() {
-            let top_ssids: Vec<&str> = ssid_names.iter().take(10).map(String::as_str).collect();
-            let mut ssid_ev = Evidence::new(
-                SRC,
-                format!(
-                    "{} named WiFi network(s) near {}",
-                    top_ssids.len(),
-                    target.value
-                ),
-            )
-            .with_attr("named_ssids", top_ssids.join(", "));
-            if let Some(ref t) = most_recent {
-                ssid_ev = ssid_ev.with_attr("most_recent", t);
-            }
-            // Attach to the coordinates entity's evidence
-            if let Some(first) = result.entities.first_mut() {
-                first.add_evidence(ssid_ev);
-            }
+        if let Some(ssid_ev) =
+            named_ssid_evidence(&body.results, &target.value, most_recent.as_deref())
+            && let Some(first) = result.entities.first_mut()
+        {
+            first.add_evidence(ssid_ev);
         }
 
         // ── Top MAC addresses (AP BSSIDs) + each AP's OWN observed position ──
@@ -585,6 +551,59 @@ fn wifi_ap_entities(
         }
     }
     out
+}
+
+/// Extract named/business-identifier SSIDs ("Smith-Family") from a WiGLE
+/// result set and build one summarising evidence record. Returns `None` when
+/// no SSID passes the name-shape filter. **Pure** (no I/O) so the headline
+/// count is unit-tested directly.
+///
+/// The evidence headline states the TRUE count of matching SSIDs, while the
+/// `named_ssids` attribute lists only the first 10 (bounded attribute size)
+/// — the two must stay distinct, or an operator with more than 10 named
+/// networks nearby would be told a false, truncated total.
+fn named_ssid_evidence(
+    results: &[Network],
+    target_value: &str,
+    most_recent: Option<&str>,
+) -> Option<Evidence> {
+    let mut ssid_names: Vec<String> = results
+        .iter()
+        .filter_map(|net| {
+            let ssid = net.ssid.as_deref()?.trim();
+            if ssid.is_empty() || ssid.len() < 4 || ssid.starts_with("DIRECT-") {
+                return None;
+            }
+            if is_generic_ssid(ssid) {
+                return None;
+            }
+            let parts: Vec<&str> = ssid.split(['-', '_', ' ']).collect();
+            (parts.len() >= 2
+                && parts[0].len() >= 3
+                && parts[0].starts_with(|c: char| c.is_ascii_uppercase()))
+            .then(|| ssid.to_string())
+        })
+        .collect();
+    ssid_names.sort();
+    ssid_names.dedup();
+
+    if ssid_names.is_empty() {
+        return None;
+    }
+
+    let top_ssids: Vec<&str> = ssid_names.iter().take(10).map(String::as_str).collect();
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "{} named WiFi network(s) near {target_value}",
+            ssid_names.len()
+        ),
+    )
+    .with_attr("named_ssids", top_ssids.join(", "));
+    if let Some(t) = most_recent {
+        ev = ev.with_attr("most_recent", t);
+    }
+    Some(ev)
 }
 
 pub(super) fn is_generic_ssid(s: &str) -> bool {

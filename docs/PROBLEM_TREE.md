@@ -5930,3 +5930,39 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   real data ever persisted). Logged here per the established precedent for
   this bug class: a contained, single-function fix, not a new tracked node.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **`wigle`'s "named WiFi network(s)" evidence headline
+  reported the 10-item attribute-string cap as if it were the true count of
+  named/business-identifier SSIDs found near a target — the same
+  fabricated-count bug class already fixed this arc in `netlas`/`psbdmp`/
+  `pypi_user`/`rubygems_user`/`urlscan`/`threatfox`, now found via a fresh
+  code-grounded discovery pass in a module none of those prior sweeps
+  touched.** `src/modules/wigle/mod.rs`'s SSID-intelligence block built the
+  full deduped `ssid_names: Vec<String>` (every named/business-shaped SSID
+  matching the filter), then truncated it to `top_ssids` (first 10, for the
+  bounded `named_ssids` attribute string) — but the evidence *headline text*
+  read `top_ssids.len()` instead of `ssid_names.len()`, so a location with
+  more than 10 named networks nearby (a dense urban WiFi environment — the
+  exact case the module's own `density` classification already flags as
+  "dense-urban" at ≥50 total networks) was told "10 named WiFi network(s)"
+  regardless of the true count, silently discarding every named network past
+  the 10th from the reported total. Confirmed genuinely uncaught: `grep` of
+  `wigle/tests.rs` for `named_ssid`/`top_ssids`/`ssid_names` returned zero
+  matches — the whole SSID-naming block was inline in the async, network-
+  calling `process()` method with no pure seam, so nothing exercised it.
+  Fixed by extracting the block into a new pure `named_ssid_evidence(results,
+  target_value, most_recent) -> Option<Evidence>` (mirroring the file's own
+  established `wifi_ap_entities` pure-function pattern immediately above it),
+  behaviour-preserving except for the one-line count fix (`ssid_names.len()`
+  in the headline; `top_ssids` stays truncated to 10 for the attribute string
+  only — the two must never be conflated again). New regression test builds
+  14 distinct named SSIDs and asserts the headline states "14", not "10";
+  red/green-verified by temporarily reverting the extracted function's count
+  back to `top_ssids.len()` (failed: "10 named WiFi network(s)" for 14 true
+  matches) and restoring (passed). A second test confirms the `None` short-
+  circuit when nothing matches the name-shape filter. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4369
+  total pass (+2). No identity/PII impact, no architecture-guard change, no
+  `#![forbid(unsafe_code)]` impact. Logged here per the established
+  precedent for this bug class: a contained, single-function fix, not a new
+  tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.

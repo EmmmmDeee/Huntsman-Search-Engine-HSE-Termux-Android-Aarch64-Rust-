@@ -440,6 +440,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   each repeated record separately even though it correctly avoided creating
   duplicate entities. The reported "N breach" total now reflects the true
   number of distinct records, not double it.
+- **`wigle` no longer understates the number of named WiFi networks found
+  near a target.** The evidence headline reported the 10-item cap used for
+  the attribute string's sample list as if it were the true count — a
+  dense-WiFi location with, say, 40 named networks nearby was always shown
+  as having exactly 10, regardless of the real number. The headline now
+  states the true count; only the listed sample stays capped at 10.
 - **The debug bundle's "BEST AU LOCATION FIX" line no longer mislabels a
   coarse single-signal location estimate as an "AU-059" cross-seed
   synergy result.** The underlying computation returns one of two shapes —

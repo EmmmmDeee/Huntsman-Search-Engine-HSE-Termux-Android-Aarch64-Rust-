@@ -4398,3 +4398,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   persisted. Logged as a dated entry, not a new tracked node — same
   precedent as the entries above: a contained, single-function fix.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-06** — **`wigle` fabricated-count fix: the "named WiFi
+  network(s)" evidence headline reported the 10-item attribute-string cap
+  as the true count of named/business-identifier SSIDs found.** Found by a
+  fresh code-grounded discovery pass targeting exactly this bug class
+  (fabricated/capped counts reported as true totals) in a module none of
+  the prior sweeps this arc had touched. `src/modules/wigle/mod.rs` built
+  the full deduped `ssid_names: Vec<String>`, truncated it to `top_ssids`
+  (first 10, for the bounded `named_ssids` attribute string), but the
+  headline text read `top_ssids.len()` instead of `ssid_names.len()` — so
+  a dense-WiFi location with more than 10 named networks nearby (the exact
+  scenario the module's own `density` classification already flags at
+  ≥50 total networks) was told "10 named WiFi network(s)" regardless of
+  the true count. Confirmed genuinely uncaught: the whole SSID-naming block
+  was inline in the async, network-calling `process()` method with no pure
+  seam, and `grep` of `wigle/tests.rs` found zero references to
+  `named_ssid`/`top_ssids`/`ssid_names`. Fixed by extracting a new pure
+  `named_ssid_evidence(results, target_value, most_recent) ->
+  Option<Evidence>`, mirroring the file's own established `wifi_ap_entities`
+  pure-function pattern immediately above it — behaviour-preserving except
+  for the one-line count fix (headline now reads `ssid_names.len()`;
+  `top_ssids` stays truncated to 10 for the attribute string only). New
+  regression test (14 distinct named SSIDs, asserts headline states "14"
+  not "10") red/green-verified by temporarily reverting the count back to
+  `top_ssids.len()` (failed: printed "10" for 14 true matches) and
+  restoring (passed). A second test covers the `None` short-circuit when
+  nothing matches the name-shape filter. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4369 total pass (+2). No identity/PII impact, no architecture-guard
+  change. Logged as a dated entry, not a new tracked node — same
+  precedent as the entries above: a contained, single-function fix.
+  Paired: `PROBLEM_TREE` §8 — same commit.
