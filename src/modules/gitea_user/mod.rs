@@ -180,8 +180,25 @@ impl Module for GiteaUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Code-repository profile — T1593.003; real name/email — T1589.002.
-        &["T1589.002", "T1593.003"]
+        // Code-repository profile — T1593.003 for the Username itself, not
+        // the Social-Media default (T1593.001) its category implies. This
+        // REPLACED the whole default array instead of substituting just
+        // that one technique — the same gap already fixed for the sibling
+        // "profile lookup" modules (github_user/dockerhub_user/
+        // codewars_user/mastodon_user/sourceforge_user/bitbucket_user/
+        // rubygems_user/gitlab_user/cpan_user). `build_entities` also
+        // constructs a Person (`full_name`) and an Address/Coordinates
+        // (`location`) — each needs its own technique so the
+        // `attack:<ID>` provenance tag core::engine::dispatch stamps on
+        // every admitted entity actually matches what collected it. No
+        // `Organisation` entities are built here, so T1591.002 does not
+        // apply.
+        &[
+            "T1589.002", // Email Addresses — public email + bio-extracted emails
+            "T1589.003", // Employee Names — Person from the real `full_name` field
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from `location`
+            "T1593.003", // Code Repositories — Username via the Gitea.com profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[

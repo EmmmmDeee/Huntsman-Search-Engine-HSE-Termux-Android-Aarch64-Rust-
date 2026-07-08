@@ -918,6 +918,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `T1591.001`, `T1593.003`. *Closes:* new node **T2.38**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-GITEA-ATTACK-COMPLETE · `gitea_user`'s `attack_techniques()`
+  now declares all four techniques `build_entities` actually earns** —
+  continuing the scoped-sweep list T2.38 left open. Like `gitlab_user`/
+  `cpan_user`, the existing `T1589.002` (Email Addresses) claim is genuine
+  (public `email` field AND `description`-embedded emails both become real
+  `EntityKind::Email` entities) — a pure omission, not a fabrication:
+  `build_entities` also constructs a `Person` (real `full_name`, needs
+  T1589.003) and an `Address`/`Coordinates` (`location`, needs T1591.001),
+  both real, already-unit-tested paths, neither credited. No
+  `Organisation` entities are built here, so T1591.002 correctly does not
+  apply. Declared the precise, complete set: `T1589.002`, `T1589.003`,
+  `T1591.001`, `T1593.003`. *Closes:* new node **T2.39**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -996,6 +1010,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-RUBYGEMS-ATTACK-COMPLETE | T2.36 | `[x]` |
 | SOL-GITLAB-ATTACK-COMPLETE | T2.37 | `[x]` |
 | SOL-CPAN-ATTACK-COMPLETE | T2.38 | `[x]` |
+| SOL-GITEA-ATTACK-COMPLETE | T2.39 | `[x]` |
 
 ---
 
@@ -1015,12 +1030,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-RUBYGEMS-ATTACK-COMPLETE, closing T2.36, see §5). `gitlab_user`'s
   pure-omission instance **delivered 2026-07-08** (SOL-GITLAB-ATTACK-COMPLETE,
   closing T2.37, see §5). `cpan_user`'s pure-omission instance **delivered
-  2026-07-08** (SOL-CPAN-ATTACK-COMPLETE, closing T2.38, see §5). **20
-  remaining, deliberately left for future cycles** (one unit at a time by
-  design): attack-mapping-completeness cluster (12, same
-  replace-instead-of-extend shape as `bitbucket_user`/T2.34): `gitea_user`/
-  `codeberg_user` (missing T1589.003/T1591.001 each), `huggingface_user`
-  (missing T1589.002/T1589.003/T1591.002, largest remaining gap),
+  2026-07-08** (SOL-CPAN-ATTACK-COMPLETE, closing T2.38, see §5).
+  `gitea_user`'s pure-omission instance **delivered 2026-07-08**
+  (SOL-GITEA-ATTACK-COMPLETE, closing T2.39, see §5). **19 remaining,
+  deliberately left for future cycles** (one unit at a time by design):
+  attack-mapping-completeness cluster (11, same replace-instead-of-extend
+  shape as `bitbucket_user`/T2.34): `codeberg_user` (missing
+  T1589.003/T1591.001), `huggingface_user` (missing
+  T1589.002/T1589.003/T1591.002, largest remaining gap),
   `hexpm_user`/`launchpad_user`/`pypi_user`/`bluesky_user` (missing
   T1589.003 alone), `devto` (missing T1589.003/T1591.001),
   `crates_io`/`npm_author` (missing
@@ -1205,7 +1222,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, 2026-07-08); **T2.36 `[x]`** ✅
   (SOL-RUBYGEMS-ATTACK-COMPLETE, 2026-07-08); **T2.37 `[x]`** ✅
   (SOL-GITLAB-ATTACK-COMPLETE, 2026-07-08); **T2.38 `[x]`** ✅
-  (SOL-CPAN-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-CPAN-ATTACK-COMPLETE, 2026-07-08); **T2.39 `[x]`** ✅
+  (SOL-GITEA-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4510,3 +4528,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4454
   lib tests, +1), architecture suite green (30/30). **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-GITEA-ATTACK-COMPLETE: closes T2.39, continuing the
+  scoped-sweep list T2.38 left open.** `gitea_user` was another
+  pure-omission instance, like `gitlab_user`/`cpan_user`: its existing
+  `T1589.002` (Email Addresses) claim is genuine — `build_entities`
+  extracts BOTH the public `email` field AND `description`-embedded emails
+  (`profile_kit::bio_emails`) into real `EntityKind::Email` entities,
+  confirmed by direct read — but its override `&["T1589.002", "T1593.003"]`
+  omitted two real, already-unit-tested construction paths: a `Person`
+  from the real `full_name` field (T1589.003) and an `Address`/
+  `Coordinates` from `location` (T1591.001). No `Organisation` entities
+  are built here, so T1591.002 correctly does not apply. Declared the
+  precise, complete set: `T1589.002`, `T1589.003`, `T1591.001`,
+  `T1593.003`. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override first).
+  No `tests/architecture.rs` cross-module pin referenced `gitea_user`.
+  **§4a's attack-mapping-completeness cluster now 11, down from 12**
+  (`codeberg_user`, `huggingface_user`, `hexpm_user`, `devto`, `crates_io`,
+  `npm_author`, `stackoverflow_user`, `steam_profile`, `launchpad_user`,
+  `pypi_user`, `bluesky_user` remain, deliberately deferred to future
+  one-at-a-time cycles). Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, full suite 0 failures (4455 lib tests, +1),
+  architecture suite green (30/30). **Paired:** `PROBLEM_TREE` §8 — same
+  commit.

@@ -364,6 +364,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`gitea_user`'s ATT&CK mapping no longer omits two techniques it actually
+  has.** Its override declared only `T1589.002` (Email Addresses, genuine —
+  public + description-extracted emails) and `T1593.003` (Code
+  Repositories), silently omitting `T1589.003` (Employee Names, for the
+  `Person` it builds from the real `full_name` field) and `T1591.001`
+  (Determine Physical Locations, for the `Address`/`Coordinates` it builds
+  from `location`). Now declares the precise, complete set. Regression
+  test `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`cpan_user`'s ATT&CK mapping no longer omits two techniques it actually
   has.** Its override declared only `T1589.002` (Email Addresses, genuine —
   public + biography-extracted emails) and `T1593.003` (Code Repositories),
