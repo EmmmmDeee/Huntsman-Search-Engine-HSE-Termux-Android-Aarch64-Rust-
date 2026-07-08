@@ -111,9 +111,10 @@ mod tests {
     #[test]
     fn au_061_corroborates_only_family_in_the_subjects_area() {
         use crate::core::entity::Evidence;
-        // Subject's confirmed GPS fix near Woodford, QLD.
+        // Subject's confirmed on-device GPS fix near Woodford, QLD.
         let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
         gps.tag("geoint");
+        gps.tag("device-sensor");
         // Same-surname family, all `family-candidate`, postcode in value or evidence.
         let mut near_addr = Entity::new(EntityKind::Address, "QLD 4518, Australia", 0.32, "s");
         near_addr.tag("family-candidate"); // Beerwah (45xx) — ~40 km
@@ -156,6 +157,7 @@ mod tests {
         use crate::core::entity::Evidence;
         let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s"); // Brisbane
         gps.tag("geoint");
+        gps.tag("device-sensor");
         let mut subject = Entity::new(EntityKind::Person, subject_full_name, 0.8, "s");
         subject.tag("subject");
         let cand = |given: &str, pc: &str| {
@@ -216,6 +218,7 @@ mod tests {
         // counted toward AU-061's "shared surname" claim (a false evidentiary basis).
         let mut gps = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.9, "s");
         gps.tag("geoint");
+        gps.tag("device-sensor");
         let mut subject = Entity::new(EntityKind::Person, "Dana Bamford", 0.8, "s");
         subject.tag("subject");
         let cand = |name: &str, pc: &str| {

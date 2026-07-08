@@ -918,6 +918,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **`ANCHORING_GEO_SOURCES` allowlist omissions (new, 2026-07-08, found closing
+  FT.14)** — `wifi_intel` (live on-device WiFi survey + WiGLE lookup, same
+  mechanism as the allowlisted `wigle`), `cell_intel`/`cell_local` (live
+  on-device cell-tower survey, same first-party-sensor spirit as
+  `signal_radar`/`device_sensors`), `mls` (Mozilla-Location-Service-style
+  BSSID geolocation, its own doc calls it a third corroboration source
+  alongside the allowlisted `wigle`/`mylnikov`), `qld_cadastre` (its own doc
+  calls itself "the coordinate-keyed complement to `au_property`," which is
+  allowlisted), and `employer_pivot` (workplace address, same conceptual
+  bucket as the allowlisted business-registry sources) all look like
+  oversights rather than deliberate exclusions from `is_anchoring_geo_source`
+  given their kinship to already-listed siblings. Not yet started — widening
+  the allowlist changes AU-052/053/059's admissible footprint too, so each
+  needs its own field-level verification (mirroring the T2.27-32
+  `attack_techniques()` sweep's "one module at a time" discipline), not a
+  batch add.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -4037,7 +4053,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   anchoring the subject's location — was DEFERRED (FT.14): the obvious
   `is_infrastructure_geo` gate would wrongly exclude legitimate live-sensor GPS
   fixes, so it needs a device-sensor bypass + fixture reconciliation, logged
-  for a focused follow-up rather than shipped with a regression. Gate green:
+  for a focused follow-up rather than shipped with a regression — **closed
+  2026-07-08, see below.** Gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4426 lib
   tests, +1), architecture suite green. Paired: `PROBLEM_TREE` §8 — same
   commit.
@@ -4064,3 +4081,37 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4432 lib tests, +7; +1 API test), architecture suite green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08** — **SOL-SUBJECT-ANCHOR (new): closes FT.14 — `subject_fixes`
+  now agrees with the correlator's own person-anchor gate instead of trusting
+  a bare confidence score.** New `core::geo_family::is_subject_anchor_coord`:
+  a `Coordinates` entity anchors the subject only via (1) the `device-sensor`
+  tag (on-device GPS/network telemetry, bypasses the confidence floor — the
+  bypass round-2 identified as missing from a naive `is_infrastructure_geo`
+  reuse), or (2) `confidence >= SUBJECT_FIX_MIN` AND a
+  `corroborating_sources()` member the correlator's own
+  `is_anchoring_geo_source` already recognises as person-anchoring. Reuses
+  the existing `pub(crate)` re-export at `correlator::mod` rather than
+  duplicating the allowlist — one classifier for `is_infrastructure_geo`
+  (AU-052/053/059), the engine's expansion-ranking bonus, and now
+  `subject_fixes`, so the three can never silently disagree on which sources
+  locate the person. A full audit of every `Coordinates`-constructing module
+  found the fix closes the same bug class in `ip_geo`, `ip2location`,
+  `netlas`, `geo_intel`, `overpass`, `opencellid`/`cell_intel`/`cell_local`,
+  `mls`, `wifi_intel`, `employer_pivot`, `au_geo`/`qld_cadastre`, and
+  `wikidata`'s P625 claim — all reach or exceed `SUBJECT_FIX_MIN` without
+  being genuine person-anchors — while every allowlisted source
+  (`geocode`/`photon`/`exif_geo`/`wigle`/`mylnikov`/`opencorporates`/
+  `gleif_lei`/`asic_director`/…) and every `device-sensor`-tagged fix keeps
+  anchoring unchanged. **New P→S gap logged, deliberately not fixed here**
+  (§4a): `wifi_intel`, `cell_intel`, `mls`, `qld_cadastre`, and
+  `employer_pivot` look like `ANCHORING_GEO_SOURCES` omissions rather than
+  deliberate exclusions given their kinship to already-listed siblings
+  (`wigle`, `au_property`) — widening that allowlist changes AU-052/053/059
+  too, a distinct change needing its own review, not folded in here. Test
+  delta: +1 (fail-before confirmed by reverting the new gate to the bare
+  confidence check in place). Six pre-existing test fixtures (three files)
+  standing in for "a confirmed GPS fix" with no evidence source were updated
+  to carry the `device-sensor` tag `signal_radar`/`device_sensors` actually
+  apply. Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean,
+  full suite 0 failures (4443 lib tests), architecture suite green (30/30).
+  **Paired:** `PROBLEM_TREE` §8 — same commit.

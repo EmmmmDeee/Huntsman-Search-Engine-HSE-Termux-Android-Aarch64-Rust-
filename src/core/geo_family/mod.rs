@@ -101,12 +101,44 @@ pub struct SubjectFix {
     pub coord: (f64, f64),
 }
 
+/// Whether a `Coordinates` entity is trustworthy enough to anchor the
+/// SUBJECT's own location — confidence alone is not enough, since a coarse
+/// third-party geolocation lookup can reach [`SUBJECT_FIX_MIN`] as easily as a
+/// real fix. Two independent, non-circular routes:
+///
+/// 1. **On-device telemetry** (`device-sensor`, the tag `signal_radar` /
+///    `device_sensors` apply to every `termux-location` GPS/network fix): the
+///    phone reporting its OWN position is categorically more reliable than any
+///    third-party inference, so this bypasses the confidence floor entirely —
+///    a low-accuracy network fix still beats a coarse IP guess.
+/// 2. **A genuine person-anchoring source** at or above [`SUBJECT_FIX_MIN`]:
+///    at least one of the entity's [`Entity::corroborating_sources`] must pass
+///    [`is_anchoring_geo_source`](crate::core::correlator::is_anchoring_geo_source)
+///    — the correlator's own allowlist of sources that locate the *person*
+///    (a geocoded address, a photo's GPS, an observed Wi-Fi AP, …), not an
+///    IP/WHOIS/host-scan lookup. Without this check, `ip_geo`'s "fixed
+///    connection" city-level guess, `geo_intel`'s ipapi.co/freeipapi.com
+///    lookups, `ip2location`, `censys`, `netlas`, and `overpass`'s map-feature
+///    points all reach or exceed [`SUBJECT_FIX_MIN`] while being explicitly
+///    documented (`coarse_provider_coords`'s own doc comment; the
+///    `ANCHORING_GEO_SOURCES` allowlist) as NOT sightings of the subject —
+///    any one of them could silently become "the subject's confirmed
+///    location" and drag a same-surname stranger a city away into "confirmed
+///    family."
+fn is_subject_anchor_coord(e: &Entity) -> bool {
+    e.has_tag("device-sensor")
+        || (e.confidence >= SUBJECT_FIX_MIN
+            && e.corroborating_sources()
+                .iter()
+                .any(|s| crate::core::correlator::is_anchoring_geo_source(s)))
+}
+
 /// The subject's confirmed location(s), with provenance — the anchor every
 /// family-candidate's distance is measured against. Two free, offline sources:
 ///
-/// 1. a confirmed `Coordinates` fix — high confidence (≥ [`SUBJECT_FIX_MIN`], a
-///    GPS/sensor reading) OR one the scan name-matched to the subject
-///    (`exact-name-match`); and
+/// 1. a confirmed `Coordinates` fix ([`is_subject_anchor_coord`]: on-device
+///    telemetry, or a confirmed person-anchoring source at high confidence)
+///    OR one the scan name-matched to the subject (`exact-name-match`); and
 /// 2. the subject's OWN address locality — an `Address` tagged `exact-name-match`
 ///    (a register/directory record whose owner name exactly matched the subject),
 ///    resolved offline to its postcode-region centroid.
@@ -122,7 +154,7 @@ pub fn subject_fixes(entities: &[Entity]) -> Vec<SubjectFix> {
     for e in entities {
         let coord = match e.kind {
             EntityKind::Coordinates
-                if e.confidence >= SUBJECT_FIX_MIN || e.has_tag("exact-name-match") =>
+                if is_subject_anchor_coord(e) || e.has_tag("exact-name-match") =>
             {
                 crate::util::geohash::parse_coords(&e.value)
             }

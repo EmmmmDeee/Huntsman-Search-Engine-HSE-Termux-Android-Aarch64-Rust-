@@ -51,9 +51,10 @@ fn consolidate_address_localities_folds_postcode_variants_codebase_wide() {
 fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     use crate::core::entity::{Classification, Entity, EntityKind, Evidence};
 
-    // Subject's confirmed GPS near Woodford, QLD.
+    // Subject's confirmed on-device GPS near Woodford, QLD.
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.tag("device-sensor");
     // A single-source (QLD register) family-candidate near the subject.
     let mut erik = Entity::new(EntityKind::Person, "Erik Moreau", 0.32, "s");
     erik.tag("family-candidate");
@@ -120,9 +121,10 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
 fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
-    // Subject's confirmed GPS in Brisbane.
+    // Subject's confirmed on-device GPS in Brisbane.
     let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     gps.tag("geoint");
+    gps.tag("device-sensor");
 
     // A same-name breach candidate in the same metro (South Brisbane 4101, ~2 km).
     let mut near = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
@@ -315,9 +317,10 @@ fn promote_cross_scan_corroborated_lifts_queued_endpoints_idempotently() {
 fn flag_geo_discordant_namesakes_is_surname_aware_and_tag_only() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
-    // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
+    // Subject's confirmed on-device GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.tag("device-sensor");
     // Far (Perth, ~3600 km) COMMON-surname candidate → a likely namesake.
     let mut common = Entity::new(EntityKind::Person, "Curt Smith", 0.32, "s");
     common.tag("family-candidate");
@@ -386,6 +389,7 @@ fn namesake_flagging_uses_the_subject_surname() {
 
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.tag("device-sensor");
     // A far family-candidate Address (no name of its own) in Perth, WA.
     let mut far = Entity::new(EntityKind::Address, "WA 6000, Australia", 0.32, "s");
     far.tag("family-candidate");

@@ -5497,7 +5497,7 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `core.rs` (`scan_events_history`) ran synchronous SQLite event-log reads on
   the ~2-worker async reactor, unlike their `spawn_blocking` siblings. → Wrap
   both in `spawn_blocking`.
-  **`[-]` FT.14 (T5 false subject-location) — CONFIRMED but DEFERRED.**
+  **`[x]` FT.14 (T5 false subject-location) — CONFIRMED, DEFERRED, closed 2026-07-08 (see below).**
   `core::geo_family::subject_fixes` accepts any `Coordinates` ≥ 0.60 as a
   GPS-grade subject anchor, so a coarse `ip_geo` city coordinate can vote the
   subject's confirmed location. The obvious fix (reuse the correlator's
@@ -5556,3 +5556,75 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
   0 failures (4432 lib tests, +7; +1 API 403 test), architecture suite green.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08** — **FT.14 closed (T5 false subject-location): `subject_fixes`
+  no longer treats a bare confidence score as proof of the subject's location.**
+  Picked up FT.14 exactly as the 2026-07-06 round-2 entry deferred it — the
+  only fault-tree finding left open, confirmed but explicitly not shipped
+  rushed. `core::geo_family::subject_fixes`'s `Coordinates` arm accepted ANY
+  entity with `confidence >= SUBJECT_FIX_MIN` (0.60) as a GPS-grade anchor for
+  family-geo-corroboration, regardless of what produced it. Verified against
+  real code, not assumption: `ip_geo`'s own "fixed connection" branch sits at
+  **exactly** 0.60 (`ip_geo/mod.rs`'s `geo_conf` `else` arm) despite its own
+  comment admitting free IP-geo APIs "routinely miss residential geolocation
+  by 30–80 km even for 'fixed' connections" — so a same-suburb IP guess could
+  silently become "the subject's confirmed location" and drag an unrelated
+  same-surname stranger into "corroborated family," or worse, promote a breach
+  candidate/quarantine a real relative on a wrong footing. The naive
+  `is_infrastructure_geo` reuse the round-2 note rejected as "too broad" was
+  confirmed still wrong: that gate's `ANCHORING_GEO_SOURCES` allowlist omits
+  `signal_radar`/`device_sensors`, so it would have wrongly excluded a genuine
+  on-device GPS fix — exactly the live-sensor case `hse radar` depends on. →
+  **Solution:** new `is_subject_anchor_coord` gate with two independent,
+  non-circular routes: (1) the `device-sensor` tag (already applied by both
+  `signal_radar` and `device_sensors`' `gps.rs` to every on-device fix, and
+  already the exact gate `rule_au_103_device_self_location` uses for the same
+  distinction) bypasses the confidence floor entirely — first-party telemetry
+  is trusted regardless of its own accuracy-derived confidence; (2) otherwise,
+  confidence `>= SUBJECT_FIX_MIN` AND at least one
+  `Entity::corroborating_sources()` must pass the correlator's own
+  `is_anchoring_geo_source` (already `pub(crate)`-reexported from
+  `correlator::mod`, so no visibility change needed) — the SAME allowlist
+  `is_infrastructure_geo`/AU-052/053/059 and the engine's ranking bonus already
+  trust, so `subject_fixes` now agrees with every other consumer instead of
+  being the one confidence-only outlier. A full call-site audit of every
+  `EntityKind::Coordinates` construction across `src/modules/` (~100+ files,
+  cross-checked independently) confirmed every currently-anchoring allowlisted
+  source (`geocode`, `photon`, `exif_geo`, `wigle`, `mylnikov`, `opencorporates`,
+  `gleif_lei`, `asic_director`, …) keeps anchoring unchanged, while several more
+  non-allowlisted coarse/third-party sources besides `ip_geo` were confirmed
+  reaching the same threshold and are now correctly excluded too:
+  `ip2location` (0.62), `netlas` (0.60), `geo_intel`'s ipapi.co/freeipapi.com
+  paths (0.62/0.68), `overpass`'s map-feature summary point (0.70, already
+  documented non-anchoring in its own file), `opencellid`/`cell_intel`/
+  `cell_local` (0.65–0.85 tiers, third-party cell-tower database lookups),
+  `mls` (0.60–0.85), `wifi_intel` (0.80, WiGLE-database BSSID lookup),
+  `employer_pivot` (0.60–0.80, the subject's EMPLOYER'S address, not their
+  own — already excluded from `is_infrastructure_geo`'s footprint today, so
+  this closes a pre-existing cross-consumer inconsistency rather than opening
+  one), `au_geo`/`qld_cadastre` (0.85/0.78, both re-stamp an ALREADY-anchored
+  coordinate with administrative/cadastral metadata rather than minting an
+  independent fix — no signal lost), and `wikidata`'s P625 claim (0.65, a
+  structured birthplace/HQ fact, not necessarily current residence). None of
+  these are regressions: each was already treated as non-person-anchoring by
+  `is_infrastructure_geo` for AU-052/053/059 and the engine's ranking bonus —
+  `subject_fixes` was the one place still relying on bare confidence.
+  **Deliberately out of scope** (would touch the correlator's own
+  `ANCHORING_GEO_SOURCES` and its blast radius on AU-052/053/059, a distinct
+  change needing its own review): `wifi_intel`, `cell_intel`, `mls`,
+  `qld_cadastre`, and `employer_pivot` are plausibly under-declared in that
+  allowlist given their kinship to already-listed siblings (`wigle`,
+  `au_property`, business-registry sources) — logged as a real, code-grounded
+  candidate for a future cycle, not fixed here. Six test fixtures across three
+  files (`geo_family/tests.rs`, `engine/tests.rs`,
+  `correlator/rules/geo/mod.rs`) that stood in for "a confirmed GPS fix" with
+  a bare `Entity::new` + `"geoint"` tag and no evidence source were updated to
+  also tag `"device-sensor"`, matching what `signal_radar`/`device_sensors`
+  actually emit — the correlator's own "Erik Avery" integration fixture
+  already used this exact tag+source shape, confirming it as the realistic
+  pattern rather than a test-only fiction. Test delta: +1
+  (`a_coarse_ip_derived_fix_never_anchors_the_subject_even_at_high_confidence`,
+  fail-before confirmed by reverting `is_subject_anchor_coord` to the bare
+  `confidence >= SUBJECT_FIX_MIN` check in place — the new test panicked;
+  restored, it passed). Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4443 lib tests), architecture suite
+  green (30/30). **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -87,10 +87,11 @@ fn au_postcode_ignores_value_digits_of_non_address_kinds() {
 
 #[test]
 fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
-    // Subject's confirmed GPS near Woodford, QLD; a coarse 0.4 guess must NOT
-    // anchor (only ≥0.60 confirmed fixes do).
+    // Subject's confirmed on-device GPS near Woodford, QLD; a coarse 0.4 guess
+    // must NOT anchor (only a genuine device/person-anchored fix does).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.tag("device-sensor");
     let weak = Entity::new(EntityKind::Coordinates, "-20.0,145.0", 0.4, "s");
 
     let subject = subject_locations(&[gps.clone(), weak.clone()]);
@@ -126,10 +127,50 @@ fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
 }
 
 #[test]
+fn a_coarse_ip_derived_fix_never_anchors_the_subject_even_at_high_confidence() {
+    // `ip_geo`'s own "fixed connection" city-level guess reaches EXACTLY
+    // SUBJECT_FIX_MIN (0.60, see `ip_geo::mod::geo_conf`'s `else` branch) —
+    // confidence alone must not be enough to anchor, since a free IP-geo API
+    // routinely misses residential geolocation by tens of km even for "fixed"
+    // connections (the module's own doc comment). Un-tagged, un-sourced this
+    // would have anchored under the old confidence-only gate.
+    let mut ip_fix = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.60, "s");
+    ip_fix.tag("geoint");
+    ip_fix.add_evidence(Evidence::new("ip_geo", "fixed-connection geolocation"));
+    assert!(
+        subject_locations(&[ip_fix.clone()]).is_empty(),
+        "a bare IP-geo lookup must not anchor the subject even at SUBJECT_FIX_MIN confidence"
+    );
+
+    // The same coordinate, this time genuinely person-anchored (a geocoded home
+    // address), DOES anchor at the identical confidence and value.
+    let mut geocoded = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.60, "s");
+    geocoded.tag("geoint");
+    geocoded.add_evidence(Evidence::new("geocode", "forward geocode"));
+    assert_eq!(
+        subject_locations(&[geocoded]).len(),
+        1,
+        "a genuine person-anchoring source at the same confidence still anchors"
+    );
+
+    // And a device-sensor fix anchors even BELOW SUBJECT_FIX_MIN — on-device
+    // telemetry is trusted regardless of its own accuracy-derived confidence.
+    let mut weak_gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.30, "s");
+    weak_gps.tag("geoint");
+    weak_gps.tag("device-sensor");
+    assert_eq!(
+        subject_locations(&[weak_gps]).len(),
+        1,
+        "a low-accuracy on-device fix still anchors — it is first-party telemetry, not third-party inference"
+    );
+}
+
+#[test]
 fn discordant_namesake_is_the_far_complement_of_corroboration() {
-    // Subject's confirmed GPS near Woodford, QLD (Brisbane catchment).
+    // Subject's confirmed on-device GPS near Woodford, QLD (Brisbane catchment).
     let mut gps = Entity::new(EntityKind::Coordinates, "-26.815,152.814", 0.9, "s");
     gps.tag("geoint");
+    gps.tag("device-sensor");
     let subject = subject_locations(&[gps]);
 
     // A same-surname candidate in Perth, WA (~3600 km) — shares the name, but a

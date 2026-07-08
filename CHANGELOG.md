@@ -364,6 +364,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **A coarse IP-geolocation guess can no longer masquerade as the subject's
+  confirmed physical location.** `subject_fixes` (the shared anchor behind
+  family geo-corroboration, AU-061, and the engine's namesake/promotion
+  passes) treated any `Coordinates` entity with confidence ≥ 0.60 as a
+  GPS-grade fix regardless of source — `ip_geo`'s own "fixed connection"
+  city-level guess sits at exactly that threshold, so it could silently
+  become "the subject's location" and corroborate an unrelated same-surname
+  stranger as confirmed family. Now requires either an on-device sensor fix
+  (`signal_radar`/`device_sensors`, trusted regardless of its own
+  accuracy-derived confidence) or a source the correlator's own
+  person-anchor allowlist already recognises — closing the same gap in
+  `ip2location`, `netlas`, `geo_intel`, `overpass`, `opencellid`,
+  `cell_intel`/`cell_local`, `mls`, `wifi_intel`, `employer_pivot`,
+  `au_geo`/`qld_cadastre`, and Wikidata's coordinate claim, none of which are
+  genuine sightings of the subject. Regression test
+  `a_coarse_ip_derived_fix_never_anchors_the_subject_even_at_high_confidence`.
 - **The self-update mechanism can no longer wedge itself into a permanent
   "applying" state.** Two sites that record the outcome of a triggered
   update (success → restarting, failure → error) silently did nothing if
