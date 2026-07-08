@@ -400,7 +400,14 @@ pub fn derive_co_ownership(
                 members.push(r.from_uid.as_str());
             }
         }
-        for (_, mut domains) in groups {
+        // Stable iteration order: registrants by uid (mirrors the correlator's
+        // own twin logic for this exact grouping, `rules::org`'s AU-109).
+        let mut registrant_uids: Vec<&str> = groups.keys().copied().collect();
+        registrant_uids.sort_unstable();
+        for reg_uid in registrant_uids {
+            let Some(mut domains) = groups.remove(reg_uid) else {
+                continue;
+            };
             if domains.len() < 2 || domains.len() > 20 {
                 continue;
             }
@@ -439,7 +446,14 @@ pub fn derive_co_ownership(
                 members.push(r.from_uid.as_str());
             }
         }
-        for (_, mut domains) in groups {
+        // Stable iteration order: dedicated IPs by uid (same rationale as
+        // Source A above).
+        let mut ip_uids: Vec<&str> = groups.keys().copied().collect();
+        ip_uids.sort_unstable();
+        for ip_uid in ip_uids {
+            let Some(mut domains) = groups.remove(ip_uid) else {
+                continue;
+            };
             if domains.len() < 2 {
                 continue;
             }

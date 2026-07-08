@@ -850,6 +850,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `Organisation` entities are built here). *Closes:* new node **T2.34**. ✅ 1
   test (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by reverting just the function body in place.
+- **`[x]` SOL-CO-OWNERSHIP-ORDER-DETERMINISM · `derive_co_ownership`'s two
+  `HashMap` groupings (shared registrant, shared dedicated IP) no longer
+  leak iteration order into the persisted `SameOperator` relation
+  sequence** — the 5th instance of the `web_crawler`/T2.25 bug class, found
+  by the same discovery sweep that surfaced T2.34, and the first in the
+  relation-derivation layer. Every sibling `derive_*` builder in the same
+  file ends with `sort_edges(&mut out)`; `derive_co_ownership` was the one
+  exception, and the correlator's own twin logic for this exact grouping
+  (`rules::org`'s AU-109/AU-110) already sorts group keys before iterating —
+  `derive_co_ownership` never received the same fix. Measured the leak
+  directly: a test feeding the identical logical input (3 registrant + 3
+  dedicated-IP groups) in forward vs. reversed order returned the same 6
+  relations in different orders against the unfixed code. Mirrored
+  `rules::org`'s exact pattern at both sites: collect+sort the group keys,
+  then iterate the sorted order and `.remove()` each group — no change to
+  pair membership, confidence, or the global dedup. *Closes:* new node
+  **T2.35**. ✅ 1 test
+  (`co_ownership_multi_group_emission_order_is_independent_of_input_order`),
+  fail-before confirmed. Relation (107)/engine (115)/correlator (422) suites
+  unaffected.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -924,6 +944,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
 | SOL-BITBUCKET-ATTACK-COMPLETE | T2.34 | `[x]` |
+| SOL-CO-OWNERSHIP-ORDER-DETERMINISM | T2.35 | `[x]` |
 
 ---
 
@@ -937,25 +958,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
 - **Multi-angle discovery sweep (2026-07-08, closing T2.34) — 24 further
   candidates found and independently adversarially verified against the
-  actual code; ALL deliberately left for future cycles (one unit at a time
-  by design).** Attack-mapping-completeness cluster (15 remaining after
-  `bitbucket_user`/T2.34, same replace-instead-of-extend shape):
-  `gitlab_user` (missing T1589.003/T1591.001/T1591.002), `cpan_user`/
-  `gitea_user`/`codeberg_user` (missing T1589.003/T1591.001 each),
-  `huggingface_user` (missing T1589.002/T1589.003/T1591.002, largest
-  remaining gap), `hexpm_user`/`launchpad_user`/`pypi_user`/`bluesky_user`
-  (missing T1589.003 alone), `devto` (missing T1589.003/T1591.001),
-  `rubygems_user` (fabricated T1589.002 + missing T1589.003, a second
-  over-claim instance like `bitbucket_user`), `crates_io`/`npm_author`
-  (missing T1589.003/T1589.002 respectively; also pinned stale in
+  actual code.** The determinism leak (`derive_co_ownership`) **delivered
+  2026-07-08** (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, closing T2.35, see §5).
+  **23 remaining, deliberately left for future cycles** (one unit at a time
+  by design): attack-mapping-completeness cluster (15, same
+  replace-instead-of-extend shape as `bitbucket_user`/T2.34): `gitlab_user`
+  (missing T1589.003/T1591.001/T1591.002), `cpan_user`/`gitea_user`/
+  `codeberg_user` (missing T1589.003/T1591.001 each), `huggingface_user`
+  (missing T1589.002/T1589.003/T1591.002, largest remaining gap),
+  `hexpm_user`/`launchpad_user`/`pypi_user`/`bluesky_user` (missing
+  T1589.003 alone), `devto` (missing T1589.003/T1591.001), `rubygems_user`
+  (fabricated T1589.002 + missing T1589.003, a second over-claim instance
+  like `bitbucket_user`), `crates_io`/`npm_author` (missing
+  T1589.003/T1589.002 respectively; also pinned stale in
   `tests/architecture.rs`), `stackoverflow_user` (replace-instead-of-extend
   dropped T1589.003), `steam_profile` (no override at all, inherits the
   bare Social default, missing T1591.001 for its location-derived Address).
-  Other angles: a determinism leak in
-  `core::relation::builders::derive_co_ownership` (two `HashMap<&str,
-  Vec<&str>>` groupings iterated without sorting first, unlike every sibling
-  `derive_*` in the same file and the correlator's own twin in
-  `rules/org.rs`); `asic_persons` silently drops the CKAN `total` field
+  Other angles: `asic_persons` silently drops the CKAN `total` field
   `acnc_charities`/`au_unclaimed` both already capture; `core::attack::
   TACTIC_ID`/`TACTIC_NAME` are `pub const` with zero references anywhere;
   `util::key_pool::pool::KeyPool::set_environment` has zero call sites
@@ -1128,7 +1147,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-SOURCEFORGE-ATTACK-COMPLETE, 2026-07-05); **T2.32 `[x]`** ✅
   (SOL-NAMEINTEL-ATTACK-COMPLETE, 2026-07-05); **T2.33 `[x]`** ✅
   (SOL-UPDATE-POISON-CONSISTENT, 2026-07-05); **T2.34 `[x]`** ✅
-  (SOL-BITBUCKET-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-BITBUCKET-ATTACK-COMPLETE, 2026-07-08); **T2.35 `[x]`** ✅
+  (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by

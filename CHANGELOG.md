@@ -364,6 +364,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`derive_co_ownership`'s two `HashMap` groupings (shared registrant, shared
+  dedicated IP) no longer leak Rust's randomised iteration order into
+  persisted `SameOperator` relations.** Both groupings iterated a
+  `HashMap<&str, Vec<&str>>` directly to emit pairwise relations, so two
+  runs over identical input could emit the same edges in a different
+  order — the same bug class already closed for `derive_reused_secret_link`/
+  `derive_password_reuse_group` and for the correlator's own `rules::org`
+  twin logic. Now sorts each map's keys before draining it, and sorts each
+  group's member domains before emitting pairs. Regression test
+  `co_ownership_multi_group_emission_order_is_independent_of_input_order`.
 - **`bitbucket_user`'s ATT&CK mapping no longer fabricates an Email-Addresses
   claim while omitting two techniques it actually has.** Its override
   claimed `T1589.002` (Email Addresses) although the module never

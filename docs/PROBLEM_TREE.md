@@ -1196,6 +1196,44 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `pypi_user`, `bluesky_user`. **P2** (a MITRE-provenance correctness gap:
   one fabricated technique claim plus two real omissions, not a crash or PII
   leak).
+- **`[x]` T2.35 · `core::relation::builders::derive_co_ownership` leaked
+  `HashMap` iteration order into the emitted `SameOperator` relation order at
+  two sites — the 5th instance of the `web_crawler`/T2.25 bug class found,
+  and the first in the relation-derivation layer rather than a module** —
+  the same multi-angle discovery sweep that surfaced T2.34 also flagged this
+  independently. Both "Source A: shared registrant" and "Source B: shared
+  dedicated IP" build a `HashMap<&str, Vec<&str>>` keyed by
+  registrant/IP uid, then iterated the map directly
+  (`for (_, mut domains) in groups`) to emit `SameOperator` relations — the
+  domains WITHIN each group were already `.sort_unstable()`-ed before
+  pairing, but the ORDER IN WHICH DIFFERENT GROUPS were visited depended on
+  the `HashMap`'s randomised iteration order, not a sorted key. Every other
+  `HashMap`-grouping `derive_*` function in the same file
+  (`derive_kinship`, `derive_regional_kinship`, `derive_identity_ownership`,
+  `derive_residency`, `derive_handles`, `derive_declared_associations`,
+  `derive_co_residence`, `derive_coreferences`, and the shared
+  `link_by_shared_attribute`/`emit_pairwise` helper) ends with a
+  `sort_edges(&mut out)` call — `derive_co_ownership` was the one function of
+  this shape that returned `out` directly. The correlator's own twin logic
+  for the identical grouping (`rules::org`'s AU-109/AU-110) already guards
+  this exact case ("Stable iteration order: registrants by uid" /
+  dedicated-IPs-by-uid, sorting the group keys before iterating) —
+  `derive_co_ownership` never received the same fix. Verified the leak is
+  real, not theoretical, by writing a test that feeds the identical logical
+  input (3 registrant groups + 3 dedicated-IP groups) in forward vs.
+  reversed entity/relation order: **confirmed empirically** the unfixed code
+  returns the same 6 relations in a different order between the two runs
+  (measured, not assumed). `collapse_to_max_confidence` — the final step of
+  `derive_all_within`, which calls `derive_co_ownership` — preserves
+  first-occurrence input order by its own documented design ("output order
+  comes from the input, not its iteration"), so the leak flows straight
+  through to the persisted/exported relation list uncorrected. →
+  **Solution:** mirrored `rules::org`'s exact established pattern at both
+  sites — collect `groups.keys()` into a `Vec`, `.sort_unstable()` it, then
+  iterate the sorted uids and `.remove()` each group from the map. No change
+  to which pairs qualify, their confidence, or the global dedup — only the
+  ORDER groups are visited. **P2** (a determinism/reproducibility bug in
+  persisted relation output, not a crash or PII leak).
 
 ---
 
@@ -5890,3 +5928,42 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   (private items) clean, full suite 0 failures (4450 lib tests, +1),
   architecture suite green (30/30). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+- **2026-07-08 — closed T2.35: `derive_co_ownership`'s two `HashMap`
+  groupings no longer leak iteration order into persisted `SameOperator`
+  relations.** Continued the gap-analysis queue `SOLUTION_TREE` §4a logged
+  last cycle from the same discovery sweep, per priority order (no
+  in-progress node; T2.7/T2.14 still need bigger design decisions).
+  Independently re-read `core::relation::builders::derive_co_ownership` in
+  full before touching code (treating the sweep's own finding as unproven):
+  confirmed both "Source A: shared registrant" and "Source B: shared
+  dedicated IP" build a `HashMap<&str, Vec<&str>>` and iterate it directly
+  (`for (_, mut domains) in groups`) with no key-sort, unlike every sibling
+  `derive_*` builder in the same file (all end in `sort_edges`) and the
+  correlator's own twin logic in `rules::org` (AU-109/AU-110, which already
+  sorts group keys — "Stable iteration order: registrants by uid" — before
+  iterating). Confirmed `collapse_to_max_confidence`
+  (`derive_all_within`'s final step) preserves first-occurrence input order
+  by design, so the leak reaches the persisted/exported relation list
+  uncorrected, not just an internal intermediate. **Measured the bug
+  directly, not assumed:** wrote a test constructing 3 registrant groups + 3
+  dedicated-IP groups, ran `derive_co_ownership` with the identical logical
+  input in forward vs. reversed entity/relation order against the UNFIXED
+  code — confirmed the two runs returned the identical 6 relations in
+  DIFFERENT orders (recorded verbatim in the test failure output before
+  fixing anything). → **Solution:** mirrored `rules::org`'s exact pattern at
+  both sites — `groups.keys().copied().collect()` into a `Vec`,
+  `.sort_unstable()`, then iterate the sorted uids and `.remove()` each
+  group. No change to pair membership, confidence, or the global dedup —
+  only group-visitation order. Full parity check: relation (107 tests),
+  engine (115), and correlator (422) suites all pass unchanged; the 5
+  pre-existing `derive_co_ownership` tests (shared-registrant,
+  proxy-exclusion, shared-IP, CDN-exclusion, tracking-ID, dedup-across-
+  sources) all still pass, confirming the SET of emitted relations is
+  unchanged. Test delta: +1
+  (`co_ownership_multi_group_emission_order_is_independent_of_input_order`,
+  fail-before confirmed by reverting just the two sort insertions in place —
+  the new test panicked with the exact same 6 relations reordered between
+  forward/reversed runs; restored, it passed). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4451
+  lib tests, +1), architecture suite green (30/30). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

@@ -1538,6 +1538,95 @@ fn co_ownership_same_pair_from_two_sources_emits_one_edge() {
     );
 }
 
+#[test]
+fn co_ownership_multi_group_emission_order_is_independent_of_input_order() {
+    // Three distinct registrant groups and three distinct dedicated-IP groups —
+    // enough groups that HashMap iteration order (unsorted keys) can plausibly
+    // reorder them differently depending on insertion order, unlike every
+    // sibling derive_* builder in this file (all end in sort_edges) and the
+    // correlator's own twin logic for this exact grouping (rules::org's AU-109/
+    // AU-110, which sorts group keys before iterating). Feeding the identical
+    // logical input in forward vs. reversed order must yield the identical
+    // emission order.
+    let dom_a1 = ent(EntityKind::Domain, "alpha-one.com", 0.8);
+    let dom_a2 = ent(EntityKind::Domain, "alpha-two.com", 0.8);
+    let reg_a = ent(EntityKind::Organisation, "Alpha Holdings Pty Ltd", 0.9);
+    let dom_b1 = ent(EntityKind::Domain, "beta-one.com", 0.8);
+    let dom_b2 = ent(EntityKind::Domain, "beta-two.com", 0.8);
+    let reg_b = ent(EntityKind::Organisation, "Beta Holdings Pty Ltd", 0.9);
+    let dom_c1 = ent(EntityKind::Domain, "gamma-one.com", 0.8);
+    let dom_c2 = ent(EntityKind::Domain, "gamma-two.com", 0.8);
+    let reg_c = ent(EntityKind::Organisation, "Gamma Holdings Pty Ltd", 0.9);
+    let dom_d1 = ent(EntityKind::Domain, "delta-one.com", 0.8);
+    let dom_d2 = ent(EntityKind::Domain, "delta-two.com", 0.8);
+    let ip_d = ent(EntityKind::IpAddress, "45.33.32.156", 0.9);
+    let dom_e1 = ent(EntityKind::Domain, "epsilon-one.com", 0.8);
+    let dom_e2 = ent(EntityKind::Domain, "epsilon-two.com", 0.8);
+    let ip_e = ent(EntityKind::IpAddress, "45.33.32.200", 0.9);
+    let dom_f1 = ent(EntityKind::Domain, "zeta-one.com", 0.8);
+    let dom_f2 = ent(EntityKind::Domain, "zeta-two.com", 0.8);
+    let ip_f = ent(EntityKind::IpAddress, "45.33.32.210", 0.9);
+
+    let entities = vec![
+        dom_a1.clone(),
+        dom_a2.clone(),
+        reg_a.clone(),
+        dom_b1.clone(),
+        dom_b2.clone(),
+        reg_b.clone(),
+        dom_c1.clone(),
+        dom_c2.clone(),
+        reg_c.clone(),
+        dom_d1.clone(),
+        dom_d2.clone(),
+        ip_d.clone(),
+        dom_e1.clone(),
+        dom_e2.clone(),
+        ip_e.clone(),
+        dom_f1.clone(),
+        dom_f2.clone(),
+        ip_f.clone(),
+    ];
+    let relations = vec![
+        reg_edge(&dom_a1, &reg_a),
+        reg_edge(&dom_a2, &reg_a),
+        reg_edge(&dom_b1, &reg_b),
+        reg_edge(&dom_b2, &reg_b),
+        reg_edge(&dom_c1, &reg_c),
+        reg_edge(&dom_c2, &reg_c),
+        resolves_edge(&dom_d1, &ip_d),
+        resolves_edge(&dom_d2, &ip_d),
+        resolves_edge(&dom_e1, &ip_e),
+        resolves_edge(&dom_e2, &ip_e),
+        resolves_edge(&dom_f1, &ip_f),
+        resolves_edge(&dom_f2, &ip_f),
+    ];
+
+    let mut rev_entities = entities.clone();
+    rev_entities.reverse();
+    let mut rev_relations = relations.clone();
+    rev_relations.reverse();
+
+    let r1 = derive_co_ownership(&entities, &relations, "s");
+    let r2 = derive_co_ownership(&rev_entities, &rev_relations, "s");
+    assert_eq!(
+        r1.len(),
+        6,
+        "one SameOperator edge per group (3 registrant + 3 IP)"
+    );
+    assert_eq!(r2.len(), 6);
+    let ids = |rels: &[Relation]| -> Vec<(String, String)> {
+        rels.iter()
+            .map(|r| (r.from_uid.clone(), r.to_uid.clone()))
+            .collect()
+    };
+    assert_eq!(
+        ids(&r1),
+        ids(&r2),
+        "emission order must not depend on entity/relation input order"
+    );
+}
+
 // ── derive_profile_links (SameIdentity structural edges) ────────────────────
 
 #[test]
