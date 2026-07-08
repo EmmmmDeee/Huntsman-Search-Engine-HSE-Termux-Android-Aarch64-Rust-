@@ -156,3 +156,32 @@ use super::*;
         // No redirect markers at all.
         assert!(GoogleUrlIter::new("plain html").next().is_none());
     }
+
+    /// Regression (real-execution derived): the EXACT 332-byte body Mojeek
+    /// returned with HTTP 403 in a live 8/8-run sweep. It is < 500 bytes, so the
+    /// old ordering returned `Unreachable` ("down") before `is_captcha_page` ran
+    /// — mislabelling an anti-bot *block* as a network failure. `is_captcha_page`
+    /// must now recognise it so `try_fetch` returns `Blocked`.
+    #[test]
+    fn mojeek_403_automated_queries_detected_as_block() {
+        let body = "<!DOCTYPE html><html><head><title>403 - Forbidden</title></head>\
+            <body><h1>403 - Forbidden</h1><h2>Sorry your network appears to be \
+            sending automated queries so we can't process your search at this \
+            time.</h2><h3>If you are seeing this in error please \
+            <a href=\"/about/contact?refr=403&q=example.com\">contact us</a>.</h3>\
+            </body></html>";
+        assert!(body.len() < 500, "fixture must exercise the short-body path");
+        assert!(
+            is_captcha_page(body),
+            "Mojeek 403 'sending automated queries' page must be detected as a block"
+        );
+    }
+
+    /// The other side of the reorder: a genuinely tiny/empty response that
+    /// matches no block signature must NOT be misread as a block (it stays
+    /// `Unreachable` in `try_fetch`).
+    #[test]
+    fn short_non_block_body_is_not_flagged() {
+        assert!(!is_captcha_page("<html><body>ok</body></html>"));
+        assert!(!is_captcha_page(""));
+    }

@@ -144,11 +144,20 @@ pub(super) async fn try_fetch(
         Some(b) => b,
         None => return FetchOutcome::Unreachable,
     };
-    if body.len() < 500 {
-        return FetchOutcome::Unreachable;
-    }
+    // Detect a recognised anti-bot / block page BEFORE the short-body guard.
+    // Some engines (Mojeek) answer with a small `403 … sending automated
+    // queries` page well under 500 bytes; checking length first mislabels that
+    // genuine *block* as `Unreachable` ("down"), telling the operator the
+    // engine is network-dead when it's actually serving an anti-bot wall.
+    // A short body matching NO block signature still falls through to
+    // `Unreachable` below, so genuinely truncated/empty responses are unchanged.
+    // Validated by a live 8-run sweep: mojeek returned HTTP 403 (332 bytes) in
+    // 8/8 runs — reclassified down→blocked here.
     if is_captcha_page(&body) {
         return FetchOutcome::Blocked;
+    }
+    if body.len() < 500 {
+        return FetchOutcome::Unreachable;
     }
     FetchOutcome::Body(body)
 }
@@ -209,6 +218,11 @@ pub(super) const BLOCK_PHRASE_SETS: &[&[&str]] = &[
     &["request unsuccessful", "incapsula"], // Imperva / Incapsula
     &["are not a robot"],
     &["verify you are human"],
+    // Mojeek 403 anti-bot page ("your network appears to be sending automated
+    // queries so we can't process your search"); also a historical Google block
+    // phrasing. Specific enough to stand alone — a real SERP does not announce
+    // that it is refusing automated queries.
+    &["sending automated queries"],
     &["enable javascript and cookies to continue"],
     &["access to this page has been denied"], // PerimeterX classic block page
 ];
