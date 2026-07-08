@@ -984,6 +984,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fixed this cycle) a fresh, not-yet-independently-measured
   `HashMap`-iteration-order candidate in the same `build_entities`'s
   cross-platform handle-pivot loop — see §4a.
+- **`[x]` SOL-DEVTO-ATTACK-COMPLETE · `devto`'s `attack_techniques()` now
+  declares all four techniques `build_entities` actually earns** —
+  continuing the scoped-sweep list T2.42 left open. Unlike the 9
+  code-hosting/package-registry siblings already fixed this session, Dev.to
+  genuinely IS a social/forum platform (same shape as `mastodon_user`), so
+  its existing T1593.001 (Social Media) claim is correct as-is, not a
+  substitution bug. Its existing T1589.002 (Email Addresses) claim is also
+  genuine (bio-extracted emails). But `build_entities` also constructs a
+  `Person` (real `name`, needs T1589.003) and an `Address`/`Coordinates`
+  (`location`, needs T1591.001), both real, already-unit-tested paths,
+  neither credited. No `Organisation` entities are built here, so
+  T1591.002 correctly does not apply. Declared the precise, complete set:
+  `T1589.002`, `T1589.003`, `T1591.001`, `T1593.001`. *Closes:* new node
+  **T2.43**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1066,6 +1082,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CODEBERG-ATTACK-COMPLETE | T2.40 | `[x]` |
 | SOL-HUGGINGFACE-ATTACK-COMPLETE | T2.41 | `[x]` |
 | SOL-HEXPM-ATTACK-COMPLETE | T2.42 | `[x]` |
+| SOL-DEVTO-ATTACK-COMPLETE | T2.43 | `[x]` |
 
 ---
 
@@ -1096,13 +1113,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (the largest remaining gap) **delivered 2026-07-08**
   (SOL-HUGGINGFACE-ATTACK-COMPLETE, closing T2.41, see §5). `hexpm_user`'s
   pure-omission instance (the smallest remaining gap) **delivered
-  2026-07-08** (SOL-HEXPM-ATTACK-COMPLETE, closing T2.42, see §5). **16
-  remaining, deliberately left for future cycles** (one unit at a time by
-  design): attack-mapping-completeness cluster (8, same
+  2026-07-08** (SOL-HEXPM-ATTACK-COMPLETE, closing T2.42, see §5).
+  `devto`'s pure-omission instance **delivered 2026-07-08**
+  (SOL-DEVTO-ATTACK-COMPLETE, closing T2.43, see §5) — its existing
+  T1593.001 (Social Media) claim was confirmed genuine (Dev.to really is
+  a social/forum platform, unlike the mis-declared-Social code-hosting
+  siblings). **15 remaining, deliberately left for future cycles** (one
+  unit at a time by design): attack-mapping-completeness cluster (7, same
   replace-instead-of-extend shape as `bitbucket_user`/T2.34, all
   independently re-verified 2026-07-08): `launchpad_user`/
-  `pypi_user`/`bluesky_user` (missing T1589.003 alone), `devto` (missing
-  T1589.003/T1591.001), `crates_io`/`npm_author` (missing
+  `pypi_user`/`bluesky_user` (missing T1589.003 alone), `crates_io`/`npm_author` (missing
   T1589.003/T1589.002 respectively; each carries a `tests/architecture.rs`
   pin — `attack_overrides_attribute_collection_modules_precisely` —
   asserting their exact technique array with a comment claiming "no
@@ -1299,7 +1319,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-GITEA-ATTACK-COMPLETE, 2026-07-08); **T2.40 `[x]`** ✅
   (SOL-CODEBERG-ATTACK-COMPLETE, 2026-07-08); **T2.41 `[x]`** ✅
   (SOL-HUGGINGFACE-ATTACK-COMPLETE, 2026-07-08); **T2.42 `[x]`** ✅
-  (SOL-HEXPM-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-HEXPM-ATTACK-COMPLETE, 2026-07-08); **T2.43 `[x]`** ✅
+  (SOL-DEVTO-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4717,3 +4738,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (private items) clean, full suite 0 failures (4458 lib tests, +1),
   architecture suite green (30/30). **Paired:** `PROBLEM_TREE` §8 — same
   commit.
+- **2026-07-08 — SOL-DEVTO-ATTACK-COMPLETE: closes T2.43, continuing the
+  scoped-sweep list T2.42 left open.** Independently re-read
+  `src/modules/devto/mod.rs` in full before touching anything, treating
+  the gap list's own note as unproven. Its override
+  `&["T1589.002", "T1593.001"]`: unlike the 9 code-hosting/package-registry
+  siblings already fixed this session, Dev.to genuinely IS a social/forum
+  platform (same shape as `mastodon_user`), so its existing T1593.001
+  (Social Media) claim is correct as-is — no substitution to T1593.003
+  needed. The T1589.002 (Email Addresses) claim is also genuine
+  (bio-extracted emails via `crate::util::extract::emails`). But
+  `build_entities` also constructs a `Person` from the real `name` field
+  (needs T1589.003) and an `Address`/`Coordinates` from `location` (needs
+  T1591.001), both real, already-unit-tested paths, neither credited. No
+  `Organisation` entities are built here, so T1591.002 correctly does not
+  apply. Declared the precise, complete set: `T1589.002`, `T1589.003`,
+  `T1591.001`, `T1593.001`. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override
+  first). No `tests/architecture.rs` cross-module pin referenced `devto`.
+  **§4a's attack-mapping-completeness cluster now 7, down from 8**
+  (`crates_io`, `npm_author`, `stackoverflow_user`, `steam_profile`,
+  `launchpad_user`, `pypi_user`, `bluesky_user` remain, deliberately
+  deferred to future one-at-a-time cycles). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4459
+  lib tests, +1), architecture suite green (30/30). **Paired:**
+  `PROBLEM_TREE` §8 — same commit.

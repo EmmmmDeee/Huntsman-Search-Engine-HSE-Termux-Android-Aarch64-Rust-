@@ -77,9 +77,22 @@ impl Module for DevTo {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Developer profile — may surface email/real-name from bio.
-        // T1589.002 for bio emails; T1593.001 for the platform account itself.
-        &["T1589.002", "T1593.001"]
+        // Dev.to genuinely IS a social/forum platform (like mastodon_user),
+        // so T1593.001 (Social Media) is the correct base technique — no
+        // substitution to T1593.003 needed, unlike the code-hosting
+        // siblings mis-declared Social (github_user/gitlab_user/etc.).
+        // But this override REPLACED the whole default array instead of
+        // extending it, silently dropping T1589.003 (Employee Names) even
+        // though a real name → Person is emitted below, and never adding
+        // T1591.001 for the Address/Coordinates this module also builds
+        // from `location` — the same under-declared-coverage gap already
+        // fixed for the sibling "profile lookup" modules.
+        &[
+            "T1589.002", // Email Addresses — emails extracted from the bio
+            "T1589.003", // Employee Names — Person from the real `name` field
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from `location`
+            "T1593.001", // Social Media — the Dev.to account itself
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -410,5 +423,43 @@ mod tests {
             Some("twitterhandle"),
             "must strip leading @ from twitter_username"
         );
+    }
+
+    #[test]
+    fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+        // build_entities constructs a Person (name) and an
+        // Address/Coordinates (location) in addition to the Email/Username
+        // the override already credits — the same under-declared-coverage
+        // gap already fixed for the sibling "profile lookup" modules
+        // (github_user/dockerhub_user/codewars_user/mastodon_user/
+        // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+        // cpan_user/gitea_user/codeberg_user/huggingface_user/hexpm_user).
+        // Unlike those code-hosting siblings, Dev.to genuinely IS a
+        // social/forum platform (like mastodon_user), so T1593.001 (Social
+        // Media) is the CORRECT base technique here, not a substitution to
+        // T1593.003.
+        let techniques = DevTo.attack_techniques();
+        assert!(
+            techniques.contains(&"T1589.002"),
+            "Email Addresses: emails extracted from the bio"
+        );
+        assert!(
+            techniques.contains(&"T1589.003"),
+            "Employee Names: Person from the real `name` field"
+        );
+        assert!(
+            techniques.contains(&"T1591.001"),
+            "Determine Physical Locations: Address/Coordinates from `location`"
+        );
+        assert!(
+            techniques.contains(&"T1593.001"),
+            "Social Media: Dev.to genuinely is a social/forum platform"
+        );
+        for id in techniques {
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "declared technique {id} must exist in the Reconnaissance catalogue"
+            );
+        }
     }
 }

@@ -1467,6 +1467,38 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `launchpad_user`, `pypi_user`, `bluesky_user` (8 left, down from 9).
   **P2** (a MITRE-provenance completeness gap: one real omission, not a
   crash or PII leak).
+- **`[x]` T2.43 · `devto`'s `attack_techniques()` omitted two real
+  techniques it has — a pure-omission instance of the T2.28 scoped-sweep
+  list** — continuing the scoped-sweep list T2.42 deliberately left open,
+  independently re-read `src/modules/devto/mod.rs` in full before
+  touching any code (treating the gap list's own "missing T1589.003/
+  T1591.001" note as unproven). Its override was
+  `&["T1589.002", "T1593.001"]` — unlike the code-hosting siblings
+  mis-declared Social (`github_user`/`gitlab_user`/`cpan_user`/
+  `gitea_user`/`codeberg_user`/`bitbucket_user`/`rubygems_user`/
+  `huggingface_user`/`hexpm_user`, all of which correctly substitute
+  T1593.003 for the Social-Media default), Dev.to genuinely IS a
+  social/forum platform (like `mastodon_user`), so keeping T1593.001 here
+  is correct, not a bug. The T1589.002 claim is also genuine:
+  `build_entities` extracts bio/`summary`-embedded emails via
+  `crate::util::extract::emails` into real `EntityKind::Email` entities,
+  confirmed by direct code read. But `build_entities` also demonstrably
+  constructs a `Person` from the real `name` field (needs T1589.003, via
+  `profile_kit::person_from_name`) and an `Address`/`Coordinates` from
+  `location` via `profile_kit::location_address`/`location_coordinates`
+  (needs T1591.001) — both real, already-unit-tested paths
+  (`emits_person_from_full_name`, `emits_address_from_location`), neither
+  credited. No `Organisation` entities are built here, so T1591.002
+  correctly does not apply. → **Solution:** declared the precise,
+  complete set — `T1589.002`, `T1589.003`, `T1591.001`, `T1593.001`.
+  **Remaining scoped-sweep candidates from the same list, still
+  deliberately not pursued:** `crates_io` (needs an `architecture.rs` pin
+  update alongside the fix), `npm_author` (same pin file, separate
+  assertion), `stackoverflow_user`, `steam_profile` (no override at all
+  yet — needs a new one added, not modified), `launchpad_user`,
+  `pypi_user`, `bluesky_user` (7 left, down from 8). **P2** (a
+  MITRE-provenance completeness gap: two real omissions, not a crash or
+  PII leak).
 
 ---
 
@@ -6466,3 +6498,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   a brand-new override, not a modification), `launchpad_user`,
   `pypi_user`, `bluesky_user` (8 left, down from 9). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08 — closed T2.43: `devto`'s `attack_techniques()` fixed —
+  added two real, previously-uncredited techniques (Employee Names,
+  Determine Physical Locations); confirmed the module's existing Social
+  Media (T1593.001) claim is genuine, unlike the code-hosting siblings
+  that needed T1593.003 substituted in.** Continued the scoped-sweep list
+  T2.42 left open, per priority order (no in-progress node; T2.7/T2.14
+  still need bigger design decisions). Selected `devto` as the next
+  candidate — next in documented queue order. Independently re-read
+  `src/modules/devto/mod.rs` in full before touching anything, treating
+  the gap list's own note as unproven. Its override was
+  `&["T1589.002", "T1593.001"]`: unlike the 9 code-hosting/package-registry
+  siblings already fixed this session (all of which needed T1593.001
+  substituted for T1593.003), Dev.to genuinely IS a social/forum platform
+  (the same shape as `mastodon_user`), so keeping T1593.001 here is
+  correct, not a bug — confirmed by direct read of the module's own doc
+  header describing it as "one of the largest developer blogging
+  platforms." The T1589.002 claim is also genuine: `build_entities`
+  extracts bio-embedded emails via `crate::util::extract::emails` into
+  real `EntityKind::Email` entities. But `build_entities` also
+  demonstrably constructs a `Person` from the real `name` field (needs
+  T1589.003) and an `Address`/`Coordinates` from `location` (needs
+  T1591.001), both real, already-unit-tested paths
+  (`emits_person_from_full_name`, `emits_address_from_location`), neither
+  credited. No `Organisation` entities are built here, so T1591.002
+  correctly does not apply. → **Solution:** declared the precise,
+  complete set — `T1589.002`, `T1589.003`, `T1591.001`, `T1593.001`. Test
+  delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.003` assertion; after the fix,
+  all 8 `devto` tests including this one pass). No `tests/architecture.rs`
+  pin references `devto` (confirmed by direct grep). Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
+  failures (4459 lib tests, +1), architecture suite green (30/30).
+  **Remaining scoped-sweep candidates, still deliberately not pursued:**
+  `crates_io` (needs an `architecture.rs` pin update alongside its fix),
+  `npm_author` (same pin file, separate assertion), `stackoverflow_user`,
+  `steam_profile` (needs a brand-new override, not a modification),
+  `launchpad_user`, `pypi_user`, `bluesky_user` (7 left, down from 8).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
