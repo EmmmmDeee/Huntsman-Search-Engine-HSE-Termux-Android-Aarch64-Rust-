@@ -41,6 +41,12 @@ use super::*;
 ///   module's two passes; the needles are retained here)
 /// - `fullcontact` — structured location from person-enrichment data-broker API
 /// - `breach_timezone` — timezone inferred from breach timestamp activity clustering
+/// - `wifi_intel` — the merged on-device Wi-Fi module's own BSSID→WiGLE
+///   resolution (formerly the standalone `bssid_locate`), mechanically
+///   identical to `wigle`'s lookup (same API, same trilateration, same
+///   confidence tier) — it was simply never carried over when the two
+///   modules merged (`docs/MODULES.md`: "`wifi_scan` + `bssid_locate` →
+///   `wifi_intel`")
 const ANCHORING_GEO_SOURCES: &[&str] = &[
     // Original five: direct GPS/geocode/wifi sightings
     "geocode",
@@ -48,6 +54,10 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     "exif_geo",
     "wigle",
     "mylnikov",
+    // `wifi_intel`'s own BSSID→WiGLE resolution — the same mechanism as
+    // `wigle` above, just self-triggered from an on-device AP survey instead
+    // of an externally-supplied MacAddress/Ssid target.
+    "wifi_intel",
     // Search-derived inline geocoding (known-city lookup from snippets)
     "search_engines",
     // Social profile bio and professional portal addresses

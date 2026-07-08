@@ -918,22 +918,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **`ANCHORING_GEO_SOURCES` allowlist omissions (new, 2026-07-08, found closing
-  FT.14)** — `wifi_intel` (live on-device WiFi survey + WiGLE lookup, same
-  mechanism as the allowlisted `wigle`), `cell_intel`/`cell_local` (live
+- **`ANCHORING_GEO_SOURCES` allowlist omissions (found closing FT.14,
+  2026-07-08).** **`wifi_intel` delivered same day** (SOL-WIFI-INTEL-ANCHOR,
+  see §5): independently re-verified as the identical `bssid_locate`→`wigle`
+  API mechanism the merge history (`docs/MODULES.md`) confirms it absorbed,
+  so it was added to the allowlist on that specific evidence, not by kinship
+  alone. *Remaining, still not started:* `cell_intel`/`cell_local` (live
   on-device cell-tower survey, same first-party-sensor spirit as
-  `signal_radar`/`device_sensors`), `mls` (Mozilla-Location-Service-style
-  BSSID geolocation, its own doc calls it a third corroboration source
-  alongside the allowlisted `wigle`/`mylnikov`), `qld_cadastre` (its own doc
-  calls itself "the coordinate-keyed complement to `au_property`," which is
-  allowlisted), and `employer_pivot` (workplace address, same conceptual
-  bucket as the allowlisted business-registry sources) all look like
-  oversights rather than deliberate exclusions from `is_anchoring_geo_source`
-  given their kinship to already-listed siblings. Not yet started — widening
-  the allowlist changes AU-052/053/059's admissible footprint too, so each
-  needs its own field-level verification (mirroring the T2.27-32
-  `attack_techniques()` sweep's "one module at a time" discipline), not a
-  batch add.
+  `signal_radar`/`device_sensors` — needs the same kind of direct-evidence
+  check `wifi_intel` got, not an assumption from the shared spirit), `mls`
+  (Mozilla-Location-Service-style BSSID geolocation, its own doc calls it a
+  third corroboration source alongside the allowlisted `wigle`/`mylnikov`),
+  `qld_cadastre` (its own doc calls itself "the coordinate-keyed complement to
+  `au_property`," which is allowlisted), and `employer_pivot` (workplace
+  address, same conceptual bucket as the allowlisted business-registry
+  sources). Each needs its own field-level verification (mirroring the
+  T2.27-32 `attack_techniques()` sweep's "one module at a time" discipline,
+  and `wifi_intel`'s own precedent of finding the direct merge-history
+  evidence rather than reasoning from kinship alone) — not a batch add.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -4115,3 +4117,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   apply. Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean,
   full suite 0 failures (4443 lib tests), architecture suite green (30/30).
   **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08** — **SOL-WIFI-INTEL-ANCHOR (new): `wifi_intel` added to
+  `ANCHORING_GEO_SOURCES`, closing the first of the 5 allowlist-omission gaps
+  §4a logged earlier the same day.** Independently re-verified rather than
+  trusting the earlier gap note: `wifi_intel::process()`'s BSSID-geolocation
+  phase calls the same `wigle::query_wigle_detail` trilateration endpoint the
+  standalone, already-allowlisted `wigle` module calls, and both modules share
+  the identical `Coordinates | MacAddress | Ssid` `accepts()` restriction —
+  `wigle`'s allowlist membership already covers this exact "self-triggered
+  WiFi triangulation" shape. `docs/MODULES.md`'s module-history table confirms
+  `wifi_intel` is the direct merge successor of a `bssid_locate` module that
+  did the identical resolution; `git log -S` over the allowlist file found
+  neither name was ever listed, so this was a plain omission carried through
+  the merge, not a regression caused by it. One-line addition to
+  `ANCHORING_GEO_SOURCES` (used by `is_infrastructure_geo` for
+  AU-052/053/059/AU-018 and the engine's expansion-ranking bonus) — no new
+  visibility, no new function, the existing single-sourced allowlist just
+  gained its rightful member. Full suite confirms no consumer regressed: the
+  two pre-existing `wifi_intel` references in `correlator/tests.rs` are
+  `MacAddress` entities (unaffected, since the source check only gates
+  `Coordinates`), and no test anywhere constructed a `wifi_intel`-sourced
+  `Coordinates` entity expecting exclusion. **§4a refreshed:** `cell_intel`/
+  `cell_local`/`mls`/`qld_cadastre`/`employer_pivot` remain open, each needing
+  its own field-level verification rather than a batch add. Test delta: +1
+  (`wifi_intel_bssid_resolution_is_person_anchoring_like_wigle`, fail-before
+  confirmed by reverting the allowlist addition in place). Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
+  failures (4444 lib tests), architecture suite green (30/30). **Paired:**
+  `PROBLEM_TREE` §8 — same commit.

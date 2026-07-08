@@ -5628,3 +5628,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   restored, it passed). Gate green: fmt/clippy `-D warnings`/rustdoc (private
   items) clean, full suite 0 failures (4443 lib tests), architecture suite
   green (30/30). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08** — **`wifi_intel`'s BSSID→WiGLE resolution closes the first of
+  5 `ANCHORING_GEO_SOURCES` gaps the FT.14 fix logged the same day.** Continued
+  the FT.14 arc's own follow-up list rather than a fresh discovery pass, per
+  the loop's own priority order (gap-analysis gap, none in-progress). Treated
+  the prior cycle's "looks like an oversight" characterisation as unproven and
+  independently re-verified `wifi_intel/mod.rs` line-by-line before touching
+  the allowlist: its `process()` runs a single `termux-wifi-scaninfo` on-device
+  survey, then for the top-5 strongest BSSIDs calls
+  `wigle::query_wigle_detail` — the SAME WiGLE trilateration endpoint the
+  standalone, already-allowlisted `wigle` module calls — and emits the
+  resulting `Coordinates` at confidence 0.80 tagged only `geoint`/`wifi-ap`/
+  `bssid-located` (no `device-sensor` tag, unlike `signal_radar`'s/
+  `device_sensors`' `termux-location` GPS fixes, which are a genuinely
+  different primitive — a raw OS location read, not a database lookup).
+  Confirmed via `docs/MODULES.md`'s own module-history table
+  ("`wifi_scan` + `bssid_locate` → `wifi_intel`") that `wifi_intel` is the
+  direct successor of a `bssid_locate` module that performed this exact
+  resolution — `git log -S"bssid_locate"` over the allowlist file found no
+  prior entry for either name, so this was never carried over at the merge,
+  not broken by it: a plain omission. Confirmed both modules share the
+  identical `Coordinates | MacAddress | Ssid` target-kind restriction
+  (`accepts()`), so `wigle`'s allowlist membership already covers the same
+  "self-triggered WiFi triangulation" use case `wifi_intel` needs — adding it
+  is consistent with, not an expansion of, the existing precedent. →
+  **Solution:** added `"wifi_intel"` to `ANCHORING_GEO_SOURCES` (used by
+  `is_infrastructure_geo` for AU-052/053/059/AU-018, and the engine's
+  expansion-ranking bonus). Full call-site check: no existing test constructs
+  a `wifi_intel`-sourced `Coordinates` entity expecting exclusion (the two
+  existing `wifi_intel` references in `correlator/tests.rs` are `MacAddress`
+  entities, unaffected — `is_infrastructure_geo`'s source check only applies
+  to `Coordinates`). Full suite green confirms no other consumer regressed.
+  **Deliberately left for future cycles** (§4a refreshed): `cell_intel`/
+  `cell_local`, `mls`, `qld_cadastre`, `employer_pivot` — each needs the same
+  direct-evidence verification this fix did, not a batch add from kinship
+  alone. Test delta: +1 (`wifi_intel_bssid_resolution_is_person_anchoring_like_wigle`,
+  fail-before confirmed: reverted the allowlist addition in place, the new
+  test panicked on `assert!(is_anchoring_geo_source("wifi_intel"))`; restored,
+  it passed). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4444 lib tests, +1), architecture suite green
+  (30/30). **Paired:** `SOLUTION_TREE` §5 — same commit.

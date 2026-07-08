@@ -138,3 +138,15 @@ use super::*;
         e.add_evidence(Evidence::new("wigle", "wifi sighting"));
         assert!(!is_infrastructure_geo(&e));
     }
+
+    #[test]
+    fn wifi_intel_bssid_resolution_is_person_anchoring_like_wigle() {
+        // `wifi_intel`'s own BSSID→WiGLE resolution is mechanically identical to
+        // the standalone `wigle` module's (same API, same trilateration) — it
+        // must anchor a person's footprint exactly like `wigle` does, not be
+        // silently treated as unanchored infrastructure geo.
+        assert!(is_anchoring_geo_source("wifi_intel"));
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.80, "s");
+        e.add_evidence(Evidence::new("wifi_intel", "BSSID aa:bb:cc:dd:ee:ff -> fix"));
+        assert!(!is_infrastructure_geo(&e));
+    }

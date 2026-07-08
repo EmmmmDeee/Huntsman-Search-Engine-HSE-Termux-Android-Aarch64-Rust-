@@ -364,6 +364,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`wifi_intel`'s on-device WiGLE BSSID resolution now counts as a
+  person-anchoring geo source, like the standalone `wigle` module it shares
+  its trilateration API with.** The correlator's `ANCHORING_GEO_SOURCES`
+  allowlist (used by `is_infrastructure_geo` for AU-052/053/059/AU-018, the
+  engine's expansion-ranking bonus, and `subject_fixes`' family
+  geo-corroboration) never listed `wifi_intel`, so its Coordinates output was
+  silently treated as unanchored infrastructure geo even though it calls the
+  identical WiGLE endpoint the allowlisted `wigle` module does, under the
+  identical target-kind restriction. Regression test
+  `wifi_intel_bssid_resolution_is_person_anchoring_like_wigle`.
 - **A coarse IP-geolocation guess can no longer masquerade as the subject's
   confirmed physical location.** `subject_fixes` (the shared anchor behind
   family geo-corroboration, AU-061, and the engine's namesake/promotion
