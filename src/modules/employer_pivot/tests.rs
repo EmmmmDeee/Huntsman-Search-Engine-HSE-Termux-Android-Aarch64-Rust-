@@ -186,10 +186,14 @@ fn accepts_email_and_domain_only() {
     assert!(!m.accepts(&Target::new(TargetKind::FullName, "Alice Smith")));
 }
 
-// ── is_role_email_local ──────────────────────────────────────────────────────
+// ── should_skip_pivot ─────────────────────────────────────────────────────────
 
 #[test]
-fn role_email_local_parts_are_blocked() {
+fn should_skip_pivot_blocks_every_previously_covered_role_local_part() {
+    // Parity with the old, independently-maintained is_role_email_local list
+    // (now consolidated onto util::domains::is_infrastructure_email) — every
+    // word it covered must still be blocked, including the two case variants
+    // ("noc"/"sysadmin"/"tech" newly merged into the shared list).
     let blocked = [
         "abuse",
         "admin",
@@ -213,31 +217,53 @@ fn role_email_local_parts_are_blocked() {
         "webmaster",
     ];
     for local in blocked {
+        let t = Target::new(TargetKind::Email, format!("{local}@acme.com.au"));
         assert!(
-            is_role_email_local(local),
-            "'{local}' must be classified as a role email local-part"
+            should_skip_pivot(&t, "acme.com.au"),
+            "'{local}@acme.com.au' must be skipped as a role/infrastructure email"
         );
     }
 }
 
 #[test]
-fn real_user_local_parts_not_blocked() {
-    for local in ["alice", "bob.smith", "haigen", "jdoe", "h.bamford"] {
-        assert!(
-            !is_role_email_local(local),
-            "'{local}' must NOT be classified as a role email local-part"
-        );
-    }
+fn should_skip_pivot_does_not_block_a_real_employee_email_or_business_domain() {
+    let email = Target::new(TargetKind::Email, "alice.smith@acmecorp.com.au");
+    assert!(!should_skip_pivot(&email, "acmecorp.com.au"));
+    let domain = Target::new(TargetKind::Domain, "acmecorp.com.au");
+    assert!(!should_skip_pivot(&domain, "acmecorp.com.au"));
 }
 
 #[test]
-fn role_email_check_is_case_sensitive() {
-    // The guard receives the raw local-part from target.value; callers that
-    // lowercase must do so before invoking. We do NOT lowercase inside the
-    // helper so RFC 5321 case-sensitive locals (rare but valid) are unaffected.
-    assert!(!is_role_email_local("Admin"));
-    assert!(!is_role_email_local("DNS"));
-    assert!(!is_role_email_local("Hostmaster"));
+fn should_skip_pivot_is_case_insensitive_unlike_the_old_helper() {
+    // The old is_role_email_local was deliberately case-sensitive; consolidating
+    // onto is_infrastructure_email (which lowercases before matching) is a
+    // strict improvement — a role mailbox does not stop being one because of
+    // its capitalisation, so this catches strictly more than before, never less.
+    let t = Target::new(TargetKind::Email, "Admin@acme.com.au");
+    assert!(should_skip_pivot(&t, "acme.com.au"));
+}
+
+#[test]
+fn should_skip_pivot_blocks_a_nameserver_domain_target() {
+    // The gap this fix closes: rdap_domain/whois both surface a scanned
+    // domain's own nameservers as first-class Domain entities
+    // (e.g. ns1.cloudflare.com), which — before this fix — had no guard at
+    // all and would scrape the NAMESERVER PROVIDER's contact page and
+    // attribute it to the scan subject.
+    let ns = Target::new(TargetKind::Domain, "ns1.cloudflare.com");
+    assert!(should_skip_pivot(&ns, "ns1.cloudflare.com"));
+    let registrar = Target::new(TargetKind::Domain, "godaddy.com");
+    assert!(should_skip_pivot(&registrar, "godaddy.com"));
+}
+
+#[test]
+fn should_skip_pivot_blocks_an_infra_provider_email_with_a_non_role_local_part() {
+    // A non-role local-part on an infrastructure-provider domain (the domain
+    // check, not the local-part check) must still be caught — the old
+    // is_role_email_local only ever inspected the local-part and would have
+    // let this through.
+    let t = Target::new(TargetKind::Email, "jane.doe@cloudflare.com");
+    assert!(should_skip_pivot(&t, "cloudflare.com"));
 }
 
 // ── module metadata ──────────────────────────────────────────────────────────

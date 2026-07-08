@@ -941,18 +941,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   wrong-identity gate covers only `Username`/`Person`, not `Email`/`Domain`,
   so no person-identity check backs this linkage beyond the generic
   expansion floor. This list is now off the open queue.
-- **`employer_pivot`'s `Domain`-target path has no person-linkage guard
-  (new, 2026-07-08, found refuting the allowlist candidate above).** Its
-  `Email`-target path excludes role-account local-parts
-  (`is_role_email_local`, added after an observed `dns@cloudflare.com` →
-  Cloudflare HQ misattribution), but a bare `Domain` target reaching this
-  module has no analogous check — only the engine's generic
-  confidence/corroboration expansion floor gates it, with no requirement
-  that the domain is genuinely tied to the subject as an employer. Not yet
-  started — a target-gating question distinct from the allowlist question it
-  was found alongside; needs its own scoped investigation (what would a
-  Domain-target person-linkage check even look for, since a bare domain
-  carries no local-part to check) rather than a rushed fix.
+- **`employer_pivot`'s `Domain`-target path had no person-linkage guard —
+  DELIVERED 2026-07-08 (SOL-EMPLOYER-PIVOT-INFRA-GUARD, see §5).** Found
+  refuting the allowlist candidate above; closed same day. A bare `Domain`
+  target reaching this module (e.g. a nameserver `rdap_domain`/`whois` both
+  surface as a first-class `Domain` entity) had no guard against being an
+  infrastructure provider, only the generic expansion floor. Fixed via a new
+  shared `util::domains::is_infra_provider_domain`, applied to BOTH target
+  kinds; the Email-path's independently-maintained `is_role_email_local` was
+  consolidated onto the single-sourced `is_infrastructure_email` in the same
+  commit (3 words — `noc`/`sysadmin`/`tech` — it had that the shared list was
+  missing were merged in, closing a second, smaller drift gap discovered
+  while comparing the two lists). Off the open queue.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -4219,4 +4219,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   working tree is still green (fmt/clippy/doc clean, full suite 0 failures,
   4445 lib tests, architecture suite 30/30 — unchanged from the prior
   commit, as expected for a no-code-change reconciliation). **Paired:**
+  `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-EMPLOYER-PIVOT-INFRA-GUARD (new): closes the
+  `employer_pivot` `Domain`-target gap this cycle's own earlier note found.**
+  Investigated what the missing check would even look for rather than
+  assuming a shape: found `rdap_domain::build_ns_entity` (0.80 confidence,
+  `rdap-ns`/`ns` tags) and `whois`'s nameserver loop (0.82, `whois-ns` tag)
+  both surface a scanned domain's own nameservers as first-class `Domain`
+  entities, comfortably above the default 0.50 expansion floor, with no
+  exclusion anywhere in `core` and the wrong-identity gate covering only
+  `Username`/`Person` (confirmed by direct read) — a concrete, reachable
+  vector for the exact "infra provider misattributed as the subject's
+  employer" bug the already-fixed `dns@cloudflare.com` case closed for
+  `Email` targets, but via `Domain` targets instead. `whois::process()`
+  already gates its own email emission through the single-sourced
+  `util::domains::is_infrastructure_email` (role local-part OR CDN/
+  registrar/cloud/ESP domain) — a strictly more capable check
+  `employer_pivot`'s own, independently-maintained `is_role_email_local`
+  (local-part only) never used. Extracted the domain-only half into new
+  `util::domains::is_infra_provider_domain` (reused internally by
+  `is_infrastructure_email` so the two can't drift), and wired it into a new
+  `employer_pivot::should_skip_pivot(target, domain)` applied to BOTH target
+  kinds. While consolidating, compared the two role-word lists field-by-field
+  and found `is_role_email_local`'s 20 words matched
+  `util::domains::is_role_localpart`'s EXCEPT `noc`/`sysadmin`/`tech` —
+  merged those 3 into the shared list (a second, smaller drift gap the
+  comparison surfaced, incidentally strengthening `whois`/`ripestat` too,
+  which share the same list) before switching `employer_pivot`'s `Email`
+  path onto `is_infrastructure_email` and deleting `is_role_email_local`.
+  Confirmed strictly no coverage loss (all 20 words re-verified covered) and
+  the switch is case-insensitive where the old helper was deliberately
+  case-sensitive — strictly more protective, never less. Full call-site
+  check: `whois`/`ripestat`/`rdap_domain` suites unaffected. Test delta: +6
+  net (removed 3 tests for the deleted function, added 5 `should_skip_pivot`
+  tests incl. the nameserver-target regression — fail-before confirmed by
+  reverting the new check in place — plus 2 new `util::domains` tests for
+  the extracted function and the 3 merged words). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4449
+  lib tests, +4), architecture suite green (30/30). **Paired:**
   `PROBLEM_TREE` §8 — same commit.

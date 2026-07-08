@@ -18,6 +18,13 @@
 //!
 //! Free, no API key required. Uses curl for resilience against
 //! aggressive TLS fingerprinting.
+//!
+//! [`should_skip_pivot`] bails out before any fetch on a domain that is
+//! consumer freemail, a social platform, or CDN/registrar/cloud/ESP
+//! infrastructure (a nameserver — `rdap_domain`/`whois` both surface a
+//! domain's own nameservers as first-class `Domain` entities — or a WHOIS
+//! abuse desk), or on an `Email` target with a role/automation local-part —
+//! none of these is the subject's own employer.
 
 use async_trait::async_trait;
 use std::collections::HashSet;
@@ -33,7 +40,9 @@ use crate::core::{
 };
 use crate::util::address_au;
 use crate::util::curl;
-use crate::util::domains::{is_freemail, is_social_platform};
+use crate::util::domains::{
+    is_freemail, is_infra_provider_domain, is_infrastructure_email, is_social_platform,
+};
 use crate::util::html::strip_html;
 
 const SRC: &str = "employer_pivot";
@@ -94,19 +103,7 @@ impl Module for EmployerPivot {
         let Some(domain) = domain_for_target(target) else {
             return Ok(result);
         };
-        if is_freemail(&domain) || is_social_platform(&domain) {
-            return Ok(result);
-        }
-        // RFC 2142 / conventional role/system email local-parts must not
-        // trigger an employer pivot: dns@cloudflare.com, hostmaster@, noc@,
-        // etc. are zone/abuse contacts, not real employees. Without this guard,
-        // SOA RNAME addresses (emitted by dns_intel) scrape the registrar's
-        // corporate contact pages and attribute infra-provider addresses to the
-        // scan subject (observed: dns@cloudflare.com → Cloudflare Sydney HQ).
-        if target.kind == TargetKind::Email
-            && let Some((local, _)) = target.value.rsplit_once('@')
-            && is_role_email_local(local)
-        {
+        if should_skip_pivot(target, &domain) {
             return Ok(result);
         }
 
@@ -334,30 +331,31 @@ fn extract_profile_urls(text: &str) -> Vec<String> {
         .collect()
 }
 
-fn is_role_email_local(local: &str) -> bool {
-    matches!(
-        local,
-        "abuse"
-            | "admin"
-            | "administrator"
-            | "billing"
-            | "dns"
-            | "hostmaster"
-            | "info"
-            | "legal"
-            | "marketing"
-            | "noc"
-            | "noreply"
-            | "no-reply"
-            | "postmaster"
-            | "privacy"
-            | "sales"
-            | "security"
-            | "support"
-            | "sysadmin"
-            | "tech"
-            | "webmaster"
-    )
+/// Whether `target` (with its already-derived `domain`) must be skipped
+/// before any network fetch.
+///
+/// Two independent guards, both against attributing an infrastructure
+/// provider's — not the subject's — contact details:
+///
+/// 1. The domain itself is a consumer freemail/social-platform host (not a
+///    business), or a CDN/registrar/cloud/ESP infrastructure provider
+///    ([`is_infra_provider_domain`]). Applies to BOTH target kinds this
+///    module accepts: a bare `Domain` target can itself be a nameserver —
+///    `rdap_domain`/`whois` both surface a domain's own nameservers as
+///    first-class `Domain` entities (`ns1.cloudflare.com`), which without
+///    this check would scrape Cloudflare's own contact page and attribute it
+///    to the scan subject.
+/// 2. For an `Email` target specifically, a role/automation local-part on an
+///    otherwise-plausible domain ([`is_infrastructure_email`]: `dns@`,
+///    `noc@`, `hostmaster@`, …) — RFC 2142 / conventional zone-abuse
+///    contacts, not real employees. Without this, a SOA RNAME address
+///    (emitted by `dns_intel`) scrapes the registrar's corporate contact
+///    pages (observed: `dns@cloudflare.com` → Cloudflare Sydney HQ).
+fn should_skip_pivot(target: &Target, domain: &str) -> bool {
+    if is_freemail(domain) || is_social_platform(domain) || is_infra_provider_domain(domain) {
+        return true;
+    }
+    target.kind == TargetKind::Email && is_infrastructure_email(&target.value)
 }
 
 fn canonical_address(a: &address_au::AuAddress) -> String {

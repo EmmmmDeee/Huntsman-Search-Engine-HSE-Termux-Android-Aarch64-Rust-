@@ -5758,3 +5758,53 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   tests, architecture suite 30/30 — unchanged from the prior commit, as
   expected for a no-code-change reconciliation). **Paired:** `SOLUTION_TREE`
   §5 — same commit.
+- **2026-07-08 — closed the `employer_pivot` `Domain`-target person-linkage
+  gap logged the same day.** Investigated what a "Domain-target linkage
+  check" would even look for (a bare domain has no local-part), rather than
+  assuming a shape and coding to it. Found the concrete, reachable vector:
+  `rdap_domain::build_ns_entity` (confidence 0.80, tags `rdap-ns`/`ns`) and
+  `whois`'s own nameserver loop (confidence 0.82, tag `whois-ns`) BOTH surface
+  a scanned domain's nameservers as first-class `Domain` entities — e.g.
+  `ns1.cloudflare.com` — comfortably above the default 0.50 expansion floor,
+  with no tag-based exclusion anywhere in `core`. Since the engine's
+  wrong-identity gate covers only `Username`/`Person` (confirmed by direct
+  read, not assumption), such an entity could become a pivot target
+  `employer_pivot` (which `accepts()` any `Domain`) would dispatch on,
+  scraping the NAMESERVER PROVIDER's contact page and attributing it to the
+  scan subject — a more direct instance of the exact bug class the
+  already-fixed `dns@cloudflare.com` SOA-RNAME case closed for the `Email`
+  path. → **Solution:** found the fix already existed in spirit —
+  `whois::process()` already gates its own contact-email emission through
+  `util::domains::is_infrastructure_email` (role local-part OR CDN/registrar/
+  cloud/ESP provider domain, e.g. `cloudflare.com`/`godaddy.com`/…), a
+  strictly more capable, single-sourced check `employer_pivot`'s own
+  `is_role_email_local` (local-part only, independently maintained) never
+  used. Extracted the domain-only half into a new
+  `util::domains::is_infra_provider_domain` (reused by `is_infrastructure_email`
+  itself, so the two can't drift) and applied it to `employer_pivot`'s shared
+  `domain` value for BOTH target kinds, closing the `Domain`-path gap this
+  cycle targets. While consolidating, compared the two role-word lists
+  field-by-field: `is_role_email_local`'s 20 words all matched
+  `util::domains::is_role_localpart`'s list EXCEPT `noc`/`sysadmin`/`tech`,
+  which were missing from the shared list — merged those 3 in (closing a
+  second, smaller drift gap the comparison surfaced, and incidentally
+  strengthening `whois`/`ripestat`'s own existing role-email gates, which
+  share the same list) before switching `employer_pivot` onto the shared
+  `is_infrastructure_email` for its `Email`-target path and deleting the
+  now-redundant `is_role_email_local`. Confirmed strictly no coverage loss:
+  all 20 original words re-verified covered post-switch, plus the switch is
+  case-insensitive where the old helper was deliberately (and, on reflection,
+  needlessly) case-sensitive — strictly more protective, never less, matching
+  this project's own "false positives are worse than missing coverage"
+  charter. Full call-site check: `whois`/`ripestat`/`rdap_domain` (the other
+  consumers of `util::domains`'s shared role/infra checks) all still pass
+  unchanged (no test in those suites exercises a `noc@`/`sysadmin@`/`tech@`
+  address surviving the gate). Test delta: +6 net across the two files
+  (removed 3 employer_pivot-local tests for the deleted function, added 5
+  wired-in `should_skip_pivot` tests incl. the nameserver-target regression,
+  fail-before confirmed by reverting the new `is_infra_provider_domain` check
+  in place — the nameserver test panicked; restored, it passed — plus 2 new
+  `util::domains` tests for the extracted function and the 3 merged words).
+  Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full
+  suite 0 failures (4449 lib tests, +4), architecture suite green (30/30).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

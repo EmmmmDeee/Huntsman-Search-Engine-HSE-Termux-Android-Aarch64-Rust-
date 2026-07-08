@@ -12,6 +12,12 @@ use super::*;
         assert!(is_infrastructure_email("jdoe@sendgrid.net"));
         // Subdomain of a provider.
         assert!(is_infrastructure_email("noc@mail.cloudflare.com"));
+        // Network-ops role local-parts on a NON-provider domain — these only
+        // became infrastructure once noc/sysadmin/tech were merged into
+        // is_role_localpart from employer_pivot's own role list.
+        assert!(is_infrastructure_email("noc@acmecorp.com.au"));
+        assert!(is_infrastructure_email("sysadmin@acmecorp.com.au"));
+        assert!(is_infrastructure_email("tech@acmecorp.com.au"));
         // Trailing dot / case tolerance.
         assert!(is_infrastructure_email("Abuse@Cloudflare.com."));
         // Genuine personal mail is NOT infrastructure.
@@ -38,6 +44,31 @@ use super::*;
         assert!(is_role_localpart("dns") && is_role_localpart("no-reply"));
         assert!(is_role_localpart("postmaster") && is_role_localpart("abuse"));
         assert!(!is_role_localpart("jordanavery") && !is_role_localpart("jane.doe"));
+    }
+
+    #[test]
+    fn role_localpart_covers_network_ops_words_merged_from_employer_pivot() {
+        // noc/sysadmin/tech were merged in from employer_pivot's own,
+        // independently-maintained role list when it was consolidated onto
+        // this single-sourced one.
+        assert!(is_role_localpart("noc"));
+        assert!(is_role_localpart("sysadmin"));
+        assert!(is_role_localpart("tech"));
+    }
+
+    #[test]
+    fn infra_provider_domain_detects_cdn_registrar_and_nameserver_domains() {
+        // Exact provider domain.
+        assert!(is_infra_provider_domain("cloudflare.com"));
+        assert!(is_infra_provider_domain("godaddy.com"));
+        // A nameserver is a subdomain of the provider — rdap_domain/whois both
+        // surface exactly this shape as a first-class Domain entity.
+        assert!(is_infra_provider_domain("ns1.cloudflare.com"));
+        // Trailing dot / case tolerance.
+        assert!(is_infra_provider_domain("Cloudflare.COM."));
+        // A genuine business domain is not infrastructure.
+        assert!(!is_infra_provider_domain("acmecorp.com.au"));
+        assert!(!is_infra_provider_domain(""));
     }
 
     #[test]

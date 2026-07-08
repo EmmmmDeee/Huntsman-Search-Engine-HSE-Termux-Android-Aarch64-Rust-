@@ -381,6 +381,12 @@ pub fn is_role_localpart(local: &str) -> bool {
         "registrar",
         "whois",
         "nic",
+        // Network/systems-operations desks (`noc@`, `sysadmin@`, `tech@`) —
+        // merged in from `employer_pivot`'s own, independently-maintained role
+        // list when it was consolidated onto this single-sourced one.
+        "noc",
+        "sysadmin",
+        "tech",
     ];
     ROLE.contains(&base.as_str())
 }
@@ -410,12 +416,24 @@ pub fn is_infrastructure_email(email: &str) -> bool {
     if is_freemail(domain) || is_freemail(&registrable) {
         return false;
     }
-    // Provider/infra mail domains: any registrable-domain match against the
-    // curated infra set. Kept here (util) so both whois and ripestat can gate
-    // emission without depending on `core`.
+    is_infra_provider_domain(domain)
+}
+
+/// True if `domain` (or a parent domain) is a CDN / cloud / registrar / DNS /
+/// ESP infrastructure provider ([`INFRA_MAIL`]) rather than a subject-
+/// controlled business domain — a nameserver, WHOIS abuse desk, or contact
+/// page on one of these resolves to the PROVIDER, never the subject who
+/// happens to use it. The domain-only half of [`is_infrastructure_email`],
+/// split out so a bare `Domain` target (not just a full email address) can be
+/// gated the same way — e.g. a nameserver `rdap_domain`/`whois` surfaces as
+/// its own `Domain` entity (`ns1.cloudflare.com`) is exactly this shape.
+#[must_use]
+pub fn is_infra_provider_domain(domain: &str) -> bool {
+    let domain = domain.trim().trim_end_matches('.').to_ascii_lowercase();
+    let registrable = registrable_domain(&domain).unwrap_or_else(|| domain.clone());
     INFRA_MAIL
         .iter()
-        .any(|d| registrable == *d || is_or_subdomain_of(domain, d))
+        .any(|d| registrable == *d || is_or_subdomain_of(&domain, d))
 }
 
 /// Registrable domains of CDN / cloud / registrar / DNS / ESP providers whose

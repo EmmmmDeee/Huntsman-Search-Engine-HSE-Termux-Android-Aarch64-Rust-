@@ -364,6 +364,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`employer_pivot` no longer scrapes a nameserver/registrar/CDN provider's
+  contact page and attributes it to the scan subject.** A scanned domain's
+  own nameservers surface as first-class `Domain` entities
+  (`rdap_domain`/`whois`, e.g. `ns1.cloudflare.com`) well above the
+  expansion floor, with nothing to stop `employer_pivot` — which accepts any
+  `Domain` target — from scraping the nameserver PROVIDER's own contact page
+  and attributing it as the subject's employer, the same misattribution
+  class an existing `Email`-path guard already prevented for
+  `dns@cloudflare.com`-style addresses. New shared
+  `util::domains::is_infra_provider_domain` closes the `Domain`-path gap;
+  the `Email`-path's own independently-maintained role-word list was
+  consolidated onto the single-sourced `is_infrastructure_email` in the same
+  change (adding `noc`/`sysadmin`/`tech`, which the shared list was missing).
+  Regression test `should_skip_pivot_blocks_a_nameserver_domain_target`.
 - **`mls` (Mozilla Location Service) BSSID triangulation now counts as a
   person-anchoring geo source, like the `wigle`/`mylnikov` peers its own doc
   comment names it alongside.** `ANCHORING_GEO_SOURCES` never listed `mls`,
