@@ -364,6 +364,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`rubygems_user`'s ATT&CK mapping no longer fabricates an Email-Addresses
+  claim while omitting the real Employee-Names technique it has.** Its
+  override claimed `T1589.002` (Email Addresses) although the module never
+  constructs an `Email` entity anywhere, while silently omitting
+  `T1589.003` (Employee Names, for the `Person` it builds from each name in
+  the `authors` field). Now declares the precise, complete set. Regression
+  test
+  `attack_techniques_covers_every_entity_kind_this_module_produces_and_no_more`.
 - **`derive_co_ownership`'s two `HashMap` groupings (shared registrant, shared
   dedicated IP) no longer leak Rust's randomised iteration order into
   persisted `SameOperator` relations.** Both groupings iterated a

@@ -870,6 +870,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`co_ownership_multi_group_emission_order_is_independent_of_input_order`),
   fail-before confirmed. Relation (107)/engine (115)/correlator (422) suites
   unaffected.
+- **`[x]` SOL-RUBYGEMS-ATTACK-COMPLETE · `rubygems_user`'s
+  `attack_techniques()` no longer fabricates an Email-Addresses claim while
+  omitting the real Employee-Names technique** — continuing the
+  `dockerhub_user`/T2.28 scoped-sweep list T2.34 left open, the 2nd genuine
+  over-claim instance in that list (matching the shape T2.34 fixed for
+  `bitbucket_user`). The override `&["T1589.002", "T1593.003"]` claimed
+  Email Addresses on a fabricated basis (`RgGem`/`build_entities` never
+  construct an `EntityKind::Email` anywhere) while omitting `T1589.003`
+  (Person from each name in the `authors` field, via
+  `profile_kit::person_from_name`, already unit-tested by
+  `emits_person_from_multi_word_author`). Independently read `npm_author`/
+  `crates_io` (both build the identical homepage/repository-derived
+  `Url`/`Domain`/cross-platform-`Username` pivot shape) to confirm the
+  established convention declares no dedicated technique for that pivot,
+  only for the registry `Username` itself — so no technique was invented
+  for `rubygems_user`'s own homepage/GitHub-pivot fields either. Declared
+  the precise set: `T1589.003`, `T1593.003` (dropping the fabricated
+  `T1589.002`). *Closes:* new node **T2.36**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces_and_no_more`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -945,6 +965,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
 | SOL-BITBUCKET-ATTACK-COMPLETE | T2.34 | `[x]` |
 | SOL-CO-OWNERSHIP-ORDER-DETERMINISM | T2.35 | `[x]` |
+| SOL-RUBYGEMS-ATTACK-COMPLETE | T2.36 | `[x]` |
 
 ---
 
@@ -960,16 +981,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   candidates found and independently adversarially verified against the
   actual code.** The determinism leak (`derive_co_ownership`) **delivered
   2026-07-08** (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, closing T2.35, see §5).
-  **23 remaining, deliberately left for future cycles** (one unit at a time
-  by design): attack-mapping-completeness cluster (15, same
-  replace-instead-of-extend shape as `bitbucket_user`/T2.34): `gitlab_user`
+  `rubygems_user`'s fabricated-claim instance **delivered 2026-07-08**
+  (SOL-RUBYGEMS-ATTACK-COMPLETE, closing T2.36, see §5). **22 remaining,
+  deliberately left for future cycles** (one unit at a time by design):
+  attack-mapping-completeness cluster (14, same replace-instead-of-extend
+  shape as `bitbucket_user`/T2.34): `gitlab_user`
   (missing T1589.003/T1591.001/T1591.002), `cpan_user`/`gitea_user`/
   `codeberg_user` (missing T1589.003/T1591.001 each), `huggingface_user`
   (missing T1589.002/T1589.003/T1591.002, largest remaining gap),
   `hexpm_user`/`launchpad_user`/`pypi_user`/`bluesky_user` (missing
-  T1589.003 alone), `devto` (missing T1589.003/T1591.001), `rubygems_user`
-  (fabricated T1589.002 + missing T1589.003, a second over-claim instance
-  like `bitbucket_user`), `crates_io`/`npm_author` (missing
+  T1589.003 alone), `devto` (missing T1589.003/T1591.001),
+  `crates_io`/`npm_author` (missing
   T1589.003/T1589.002 respectively; also pinned stale in
   `tests/architecture.rs`), `stackoverflow_user` (replace-instead-of-extend
   dropped T1589.003), `steam_profile` (no override at all, inherits the
@@ -1148,7 +1170,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-NAMEINTEL-ATTACK-COMPLETE, 2026-07-05); **T2.33 `[x]`** ✅
   (SOL-UPDATE-POISON-CONSISTENT, 2026-07-05); **T2.34 `[x]`** ✅
   (SOL-BITBUCKET-ATTACK-COMPLETE, 2026-07-08); **T2.35 `[x]`** ✅
-  (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, 2026-07-08); T2.7 open;
+  (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, 2026-07-08); **T2.36 `[x]`** ✅
+  (SOL-RUBYGEMS-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4358,4 +4381,52 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   subsystem finding was excluded as needing a design decision (T2.7/T2.14
   bucket). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4450 lib tests, +1), architecture suite
+  green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-CO-OWNERSHIP-ORDER-DETERMINISM: closes T2.35
+  (retroactively completing this §5 pairing — the prior commit's
+  `PROBLEM_TREE` §8 entry claimed it but this entry was omitted from that
+  commit; found and fixed as this cycle's first step, before any new work,
+  per the loop's own dirty-tree-finish-first rule).** `derive_co_ownership`'s
+  two `HashMap` groupings (shared registrant, shared dedicated IP) leaked
+  Rust's randomised iteration order into the persisted `SameOperator`
+  relation sequence — the 5th instance of the `web_crawler`/T2.25
+  determinism-leak class, and the first in the relation-derivation layer.
+  Every sibling `derive_*` builder in the same file ends with
+  `sort_edges(&mut out)`; this was the one exception, and the correlator's
+  own twin logic for the identical grouping (`rules::org`'s AU-109/AU-110)
+  already guarded this exact case. Measured the leak directly: a test
+  feeding the identical logical input in forward vs. reversed order
+  returned the same 6 relations in different orders against the unfixed
+  code. Mirrored `rules::org`'s exact pattern at both sites: sort the group
+  keys before iterating. Test: +1
+  (`co_ownership_multi_group_emission_order_is_independent_of_input_order`),
+  fail-before confirmed. Relation (107)/engine (115)/correlator (422) suites
+  unaffected. Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4451 lib tests, +1), architecture suite
+  green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-RUBYGEMS-ATTACK-COMPLETE: closes T2.36, continuing the
+  `dockerhub_user`/T2.28 scoped-sweep list T2.34 left open.** `rubygems_user`
+  was the 2nd genuine over-claim instance in that list (the same shape T2.34
+  fixed for `bitbucket_user`): its override `&["T1589.002", "T1593.003"]`
+  claimed Email Addresses on a fabricated basis (`RgGem`/`build_entities`
+  never construct an `EntityKind::Email` anywhere — confirmed by direct
+  read) while omitting `T1589.003` (Person from each name in `authors`, via
+  `profile_kit::person_from_name`, already unit-tested by
+  `emits_person_from_multi_word_author`). Independently read `npm_author`/
+  `crates_io` (identical homepage/repository-derived `Url`/`Domain`/
+  cross-platform-`Username` pivot shape) to confirm neither declares a
+  technique for that pivot, only for the registry `Username` itself, so no
+  technique was invented for `rubygems_user`'s own homepage/GitHub-pivot
+  fields. Declared the precise set: `T1589.003`, `T1593.003` (dropping the
+  fabricated `T1589.002`). Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces_and_no_more`,
+  fail-before confirmed by writing it against the unfixed override first).
+  No `tests/architecture.rs` cross-module pin referenced `rubygems_user`.
+  **§4a's attack-mapping-completeness cluster now 14, down from 15**
+  (`gitlab_user`, `cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`, `devto`, `crates_io`, `npm_author`,
+  `stackoverflow_user`, `steam_profile`, `launchpad_user`, `pypi_user`,
+  `bluesky_user` remain, deliberately deferred to future one-at-a-time
+  cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4452 lib tests, +1), architecture suite
   green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.

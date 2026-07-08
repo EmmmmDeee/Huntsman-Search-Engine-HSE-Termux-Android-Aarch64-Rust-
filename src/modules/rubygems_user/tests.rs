@@ -198,6 +198,35 @@ fn empty_gem_list_produces_only_header_entities() {
 }
 
 #[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces_and_no_more() {
+    // Mirrors the bitbucket_user regression: the override must declare the
+    // real technique for every entity kind `build_entities` actually
+    // constructs (T1589.003 for the Person built from `authors`), and must
+    // not fabricate a technique with no factual basis (`build_entities`
+    // never constructs an `EntityKind::Email` anywhere in this module, so
+    // T1589.002 — Email Addresses — does not belong here).
+    let techniques = RubygemsUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: a Person is built from the `authors` field"
+    );
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the Username is confirmed via the RubyGems profile itself"
+    );
+    assert!(
+        !techniques.contains(&"T1589.002"),
+        "Email Addresses is fabricated: no EntityKind::Email is ever built here"
+    );
+    for id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "declared technique {id} must exist in the Reconnaissance catalogue"
+        );
+    }
+}
+
+#[test]
 fn skips_platform_host_in_homepage() {
     let ents = build_entities(
         vec![gem(

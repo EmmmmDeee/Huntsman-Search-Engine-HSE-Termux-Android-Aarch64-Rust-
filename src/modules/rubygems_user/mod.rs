@@ -217,8 +217,19 @@ impl Module for RubygemsUser {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Package-registry profile — T1593.003; name from authors field — T1589.002.
-        &["T1589.002", "T1593.003"]
+        // Package-registry profile — T1593.003 for the Username itself. The
+        // previous "name from authors field — T1589.002" comment fabricated
+        // an Email-Addresses claim this module has no basis for: no
+        // `EntityKind::Email` is ever constructed anywhere in
+        // `build_entities` (the same category-label mix-up already found
+        // and fixed in `bitbucket_user`). The real names extracted from
+        // `authors` become `Person` entities, which is T1589.003 (Employee
+        // Names) — declared here instead. The homepage/source-code-URI
+        // pivots (`Url`/`Domain`/GitHub `Username`) mirror the same
+        // uncredited-pivot shape already established for `npm_author`/
+        // `crates_io` (no dedicated technique for a derived Url/Domain
+        // link), so no further addition is needed for them.
+        &["T1589.003", "T1593.003"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

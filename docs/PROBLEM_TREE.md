@@ -1234,6 +1234,40 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   to which pairs qualify, their confidence, or the global dedup — only the
   ORDER groups are visited. **P2** (a determinism/reproducibility bug in
   persisted relation output, not a crash or PII leak).
+- **`[x]` T2.36 · `rubygems_user`'s `attack_techniques()` fabricated an
+  Email-Addresses claim while omitting the real Employee-Names technique it
+  has — the 2nd genuine over-claim instance in the T2.28 scoped-sweep list
+  (the same shape T2.34 closed for `bitbucket_user`)** — continuing the
+  scoped-sweep list T2.34 deliberately left open, independently re-read
+  `src/modules/rubygems_user/mod.rs` in full before touching any code. Its
+  override was `&["T1589.002", "T1593.003"]` with a comment reading "name
+  from authors field — T1589.002" — but T1589.002 is Email Addresses
+  (confirmed against `core::attack::RECONNAISSANCE`'s catalogue), and
+  `build_entities` never constructs an `EntityKind::Email` anywhere in this
+  module (`RgGem` carries `name`/`authors`/`homepage_uri`/`source_code_uri`,
+  none of them an email field) — the same category-label mix-up as
+  `bitbucket_user`, not a real code path. Meanwhile `build_entities`
+  demonstrably constructs a `Person` from each comma-separated name in
+  `authors` (via `profile_kit::person_from_name`, already unit-tested by
+  `emits_person_from_multi_word_author`) — needing T1589.003 (Employee
+  Names), uncredited. Checked whether the homepage-derived `Url`/`Domain`
+  pivot or the GitHub-pivot `Username` need their own technique before
+  declaring the fix complete: `npm_author` and `crates_io` (both already
+  read in full to resolve this) build the identical shape — a derived
+  `Url`/`Domain`/cross-platform-`Username` pivot from a homepage or
+  repository link — and neither declares a technique for it, only for the
+  registry `Username` itself (T1593.003); matching that established
+  convention rather than inventing a new one. → **Solution:** declared the
+  precise set — `T1589.003` (Employee Names), `T1593.003` (Code
+  Repositories) — dropping the fabricated `T1589.002`. **Remaining
+  scoped-sweep candidates from the same list, still deliberately not
+  pursued** (one independently-verified module at a time by design):
+  `gitlab_user`, `cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`, `devto`, `crates_io`, `npm_author`,
+  `stackoverflow_user`, `steam_profile`, `launchpad_user`, `pypi_user`,
+  `bluesky_user`. **P2** (a MITRE-provenance correctness gap: one
+  fabricated technique claim plus a real omission, not a crash or PII
+  leak).
 
 ---
 
@@ -5967,3 +6001,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4451
   lib tests, +1), architecture suite green (30/30). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08 — closed T2.36: `rubygems_user`'s `attack_techniques()`
+  fixed — dropped a fabricated Email-Addresses claim, added the real
+  Employee-Names technique.** Continued the T2.34 scoped-sweep list from
+  `SOLUTION_TREE` §4a, per priority order (no in-progress node; T2.7/T2.14
+  still need bigger design decisions). Selected `rubygems_user` as the
+  single most faulty remaining instance: the gap list flagged it as "a
+  second over-claim instance like `bitbucket_user`," so independently
+  re-read `src/modules/rubygems_user/mod.rs` in full before touching
+  anything, treating that flag as unproven. Confirmed its override
+  `&["T1589.002", "T1593.003"]` (comment: "name from authors field —
+  T1589.002") is wrong on its face: T1589.002 is Email Addresses per
+  `core::attack::RECONNAISSANCE`, not a real-name technique, and
+  `RgGem`/`build_entities` confirm no `EntityKind::Email` is ever
+  constructed anywhere in this module — the claim was fabricated from the
+  identical category-label mix-up T2.34 found in `bitbucket_user`.
+  Meanwhile `build_entities` demonstrably constructs a `Person` from each
+  name in the `authors` field (via `profile_kit::person_from_name`, already
+  covered by the pre-existing `emits_person_from_multi_word_author` test),
+  needing T1589.003 (Employee Names), uncredited. Also independently read
+  `npm_author`/`crates_io` in full (both build the identical
+  homepage/repository-derived `Url`/`Domain`/cross-platform-`Username`
+  pivot shape) to confirm neither declares a technique for that pivot —
+  only for the registry `Username` itself — so no further addition beyond
+  T1589.003/T1593.003 was invented for `rubygems_user`'s own homepage/
+  GitHub-pivot fields. → **Solution:** declared the precise set —
+  `T1589.003`, `T1593.003` — dropping the fabricated `T1589.002`. Test
+  delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces_and_no_more`,
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.003` assertion; after the fix,
+  all 11 `rubygems_user` tests including this one pass). No
+  `tests/architecture.rs` pin references `rubygems_user` (confirmed by
+  direct grep, unlike `crates_io`/`npm_author`). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4452
+  lib tests, +1), architecture suite green (30/30). **Remaining
+  scoped-sweep candidates, still deliberately not pursued:** `gitlab_user`,
+  `cpan_user`, `gitea_user`, `codeberg_user`, `huggingface_user`,
+  `hexpm_user`, `devto`, `crates_io`, `npm_author`, `stackoverflow_user`,
+  `steam_profile`, `launchpad_user`, `pypi_user`, `bluesky_user` (14 left,
+  down from 15). **Paired:** `SOLUTION_TREE` §5 — same commit.
