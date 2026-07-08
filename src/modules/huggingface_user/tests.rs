@@ -111,6 +111,41 @@ fn emits_org_using_fullname_when_available() {
 }
 
 #[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // build_entities constructs a Person (fullname), an Email (email), and
+    // an Organisation (orgs[]) in addition to the Username the override
+    // already credits — the same under-declared-coverage gap already
+    // fixed for the sibling "profile lookup" modules
+    // (github_user/dockerhub_user/codewars_user/mastodon_user/
+    // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+    // cpan_user/gitea_user/codeberg_user). No `location` field exists on
+    // `HfUser`, so T1591.001 does not apply here.
+    let techniques = HuggingfaceUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1589.002"),
+        "Email Addresses: Email from the public `email` field"
+    );
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: Person from the real `fullname` field"
+    );
+    assert!(
+        techniques.contains(&"T1591.002"),
+        "Business Relationships: Organisation from `orgs[]` membership"
+    );
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the Username via the Hugging Face profile itself"
+    );
+    for id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "declared technique {id} must exist in the Reconnaissance catalogue"
+        );
+    }
+}
+
+#[test]
 fn empty_username_returns_no_entities() {
     let user = make_user("", None, None, None, None, vec![]);
     assert!(build_entities(user, "scan-hf-008").is_empty());

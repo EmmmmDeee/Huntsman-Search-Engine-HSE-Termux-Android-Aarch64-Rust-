@@ -157,8 +157,26 @@ impl Module for HuggingfaceUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Model/dataset registry profile lookup — Code Repositories (T1593.003).
-        &["T1593.003"]
+        // Model/dataset registry profile lookup — T1593.003 for the
+        // Username itself, not the Social-Media default (T1593.001) its
+        // category implies. This REPLACED the whole default array instead
+        // of substituting just that one technique — the same gap already
+        // fixed for the sibling "profile lookup" modules
+        // (github_user/dockerhub_user/codewars_user/mastodon_user/
+        // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+        // cpan_user/gitea_user/codeberg_user). `build_entities` also
+        // constructs a Person (`fullname`), an Email (`email`, when made
+        // public), and an Organisation (`orgs[]` membership) — each needs
+        // its own technique so the `attack:<ID>` provenance tag
+        // core::engine::dispatch stamps on every admitted entity actually
+        // matches what collected it. No `location` field exists on
+        // `HfUser`, so T1591.001 does not apply.
+        &[
+            "T1589.002", // Email Addresses — Email from the public `email` field
+            "T1589.003", // Employee Names — Person from the real `fullname` field
+            "T1591.002", // Business Relationships — Organisation from `orgs[]` membership
+            "T1593.003", // Code Repositories — Username via the Hugging Face profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[

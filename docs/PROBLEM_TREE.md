@@ -1400,6 +1400,36 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `launchpad_user`, `pypi_user`, `bluesky_user` (10 left, down from 11).
   **P2** (a MITRE-provenance completeness gap: two real omissions, not a
   crash or PII leak).
+- **`[x]` T2.41 · `huggingface_user`'s `attack_techniques()` omitted three
+  real techniques it has — a pure-omission instance of the T2.28
+  scoped-sweep list, the largest remaining gap in the queue** —
+  continuing the scoped-sweep list T2.40 deliberately left open,
+  independently re-read `src/modules/huggingface_user/mod.rs` in full
+  before touching any code (treating both the gap list's and last
+  cycle's verification sweep's own "missing T1589.002/T1589.003/T1591.002"
+  finding as unproven until re-confirmed directly). Its override was
+  `&["T1593.003"]` — the T1593.003 claim is genuine (a confirmed
+  Hugging Face profile Username, matching the established convention for
+  the sibling code/package-registry "profile lookup" modules). But
+  `build_entities` also demonstrably constructs a `Person` from the real
+  `fullname` field (needs T1589.003, via `profile_kit::person_from_name`),
+  an `Email` from the public `email` field when the user has made it
+  visible (needs T1589.002), and an `Organisation` for each
+  `orgs[]` membership (needs T1591.002) — all three real, already-unit-
+  tested paths (`emits_person_from_multi_word_fullname`,
+  `emits_email_when_public`, `emits_org_using_fullname_when_available`),
+  none credited. `HfUser` has no `location` field, so T1591.001 correctly
+  does not apply (unlike `codeberg_user`/`gitea_user`/`gitlab_user`/
+  `cpan_user`). → **Solution:** declared the precise, complete set —
+  `T1589.002`, `T1589.003`, `T1591.002`, `T1593.003`. **Remaining
+  scoped-sweep candidates from the same list, still deliberately not
+  pursued:** `hexpm_user`, `devto`, `crates_io` (needs an
+  `architecture.rs` pin update alongside the fix), `npm_author` (same pin
+  file, separate assertion), `stackoverflow_user`, `steam_profile` (no
+  override at all yet — needs a new one added, not modified),
+  `launchpad_user`, `pypi_user`, `bluesky_user` (9 left, down from 10).
+  **P2** (a MITRE-provenance completeness gap: three real omissions, not a
+  crash or PII leak).
 
 ---
 
@@ -6322,3 +6352,39 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   override, not a modification), `launchpad_user`, `pypi_user`,
   `bluesky_user` (10 left, down from 11). **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-08 — closed T2.41: `huggingface_user`'s `attack_techniques()`
+  fixed — added three real, previously-uncredited techniques (Email
+  Addresses, Employee Names, Business Relationships), the largest
+  remaining gap in the scoped-sweep queue.** Continued the scoped-sweep
+  list T2.40 left open, per priority order (no in-progress node; T2.7/
+  T2.14 still need bigger design decisions). Selected `huggingface_user`
+  as the next candidate — next in documented queue order. Independently
+  re-read `src/modules/huggingface_user/mod.rs` in full before touching
+  anything, treating both the gap list's and the prior cycle's 11-agent
+  verification sweep's finding as unproven until directly re-confirmed.
+  Its override was `&["T1593.003"]` — the T1593.003 claim is genuine (a
+  confirmed Hugging Face profile Username, same convention as the sibling
+  code/package-registry modules). But `build_entities` also demonstrably
+  constructs a `Person` from the real `fullname` field (needs T1589.003),
+  an `Email` from the public `email` field when made visible (needs
+  T1589.002), and an `Organisation` for each `orgs[]` membership (needs
+  T1591.002) — all three real, already-unit-tested paths
+  (`emits_person_from_multi_word_fullname`, `emits_email_when_public`,
+  `emits_org_using_fullname_when_available`), none credited. `HfUser` has
+  no `location` field, so T1591.001 correctly does not apply. →
+  **Solution:** declared the precise, complete set — `T1589.002`,
+  `T1589.003`, `T1591.002`, `T1593.003`. Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.002` assertion; after the fix,
+  all 9 `huggingface_user` tests including this one pass). No
+  `tests/architecture.rs` pin references `huggingface_user` (confirmed by
+  direct grep). Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4457 lib tests, +1), architecture
+  suite green (30/30). **Remaining scoped-sweep candidates, still
+  deliberately not pursued:** `hexpm_user`, `devto`, `crates_io` (needs an
+  `architecture.rs` pin update alongside its fix), `npm_author` (same pin
+  file, separate assertion), `stackoverflow_user`, `steam_profile` (needs
+  a brand-new override, not a modification), `launchpad_user`,
+  `pypi_user`, `bluesky_user` (9 left, down from 10). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

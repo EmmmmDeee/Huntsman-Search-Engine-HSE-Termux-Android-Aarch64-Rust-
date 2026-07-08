@@ -953,6 +953,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.40**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-HUGGINGFACE-ATTACK-COMPLETE · `huggingface_user`'s
+  `attack_techniques()` now declares all four techniques `build_entities`
+  actually earns — the largest remaining gap in the scoped-sweep queue**
+  — continuing the scoped-sweep list T2.40 left open. Its override
+  `&["T1593.003"]` was genuine (a confirmed Hugging Face profile
+  Username), but omitted a `Person` from the real `fullname` field
+  (T1589.003), an `Email` from the public `email` field (T1589.002), and
+  an `Organisation` for each `orgs[]` membership (T1591.002) — all three
+  real, already-unit-tested paths, none credited. `HfUser` has no
+  `location` field, so T1591.001 correctly does not apply. Declared the
+  precise, complete set: `T1589.002`, `T1589.003`, `T1591.002`,
+  `T1593.003`. *Closes:* new node **T2.41**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1033,6 +1047,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CPAN-ATTACK-COMPLETE | T2.38 | `[x]` |
 | SOL-GITEA-ATTACK-COMPLETE | T2.39 | `[x]` |
 | SOL-CODEBERG-ATTACK-COMPLETE | T2.40 | `[x]` |
+| SOL-HUGGINGFACE-ATTACK-COMPLETE | T2.41 | `[x]` |
 
 ---
 
@@ -1059,15 +1074,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   closing T2.40, see §5), preceded by an 11-agent independent verification
   sweep across the whole remaining candidate list that confirmed zero new
   fabrication instances beyond `bitbucket_user`/T2.34 and
-  `rubygems_user`/T2.36. **18 remaining, deliberately left for future
-  cycles** (one unit at a time by design): attack-mapping-completeness
-  cluster (10, same replace-instead-of-extend shape as
-  `bitbucket_user`/T2.34, all independently re-verified 2026-07-08):
-  `huggingface_user` (missing T1589.002/T1589.003/T1591.002 — genuinely
-  builds an `Organisation` from `orgs[]` membership — largest remaining
-  gap), `hexpm_user`/`launchpad_user`/`pypi_user`/`bluesky_user` (missing
-  T1589.003 alone), `devto` (missing T1589.003/T1591.001),
-  `crates_io`/`npm_author` (missing
+  `rubygems_user`/T2.36. `huggingface_user`'s pure-omission instance
+  (the largest remaining gap) **delivered 2026-07-08**
+  (SOL-HUGGINGFACE-ATTACK-COMPLETE, closing T2.41, see §5). **17
+  remaining, deliberately left for future cycles** (one unit at a time by
+  design): attack-mapping-completeness cluster (9, same
+  replace-instead-of-extend shape as `bitbucket_user`/T2.34, all
+  independently re-verified 2026-07-08): `hexpm_user`/`launchpad_user`/
+  `pypi_user`/`bluesky_user` (missing T1589.003 alone), `devto` (missing
+  T1589.003/T1591.001), `crates_io`/`npm_author` (missing
   T1589.003/T1589.002 respectively; each carries a `tests/architecture.rs`
   pin — `attack_overrides_attribute_collection_modules_precisely` —
   asserting their exact technique array with a comment claiming "no
@@ -1256,7 +1271,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-GITLAB-ATTACK-COMPLETE, 2026-07-08); **T2.38 `[x]`** ✅
   (SOL-CPAN-ATTACK-COMPLETE, 2026-07-08); **T2.39 `[x]`** ✅
   (SOL-GITEA-ATTACK-COMPLETE, 2026-07-08); **T2.40 `[x]`** ✅
-  (SOL-CODEBERG-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-CODEBERG-ATTACK-COMPLETE, 2026-07-08); **T2.41 `[x]`** ✅
+  (SOL-HUGGINGFACE-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4620,4 +4636,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `bluesky_user` remain, deliberately deferred to future one-at-a-time
   cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4456 lib tests, +1), architecture suite
+  green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-HUGGINGFACE-ATTACK-COMPLETE: closes T2.41, continuing
+  the scoped-sweep list T2.40 left open — the largest remaining gap in the
+  queue.** Independently re-read `src/modules/huggingface_user/mod.rs` in
+  full before touching anything, treating both the gap list's and the
+  prior cycle's verification sweep's finding as unproven until
+  re-confirmed directly. Its override `&["T1593.003"]` was genuine (a
+  confirmed Hugging Face profile Username), but `build_entities` also
+  demonstrably constructs a `Person` from the real `fullname` field
+  (needs T1589.003), an `Email` from the public `email` field when made
+  visible (needs T1589.002), and an `Organisation` for each `orgs[]`
+  membership (needs T1591.002) — all three real, already-unit-tested
+  paths, none credited. `HfUser` has no `location` field, so T1591.001
+  correctly does not apply. Declared the precise, complete set:
+  `T1589.002`, `T1589.003`, `T1591.002`, `T1593.003`. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override first).
+  No `tests/architecture.rs` cross-module pin referenced
+  `huggingface_user`. **§4a's attack-mapping-completeness cluster now 9,
+  down from 10** (`hexpm_user`, `devto`, `crates_io`, `npm_author`,
+  `stackoverflow_user`, `steam_profile`, `launchpad_user`, `pypi_user`,
+  `bluesky_user` remain, deliberately deferred to future one-at-a-time
+  cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4457 lib tests, +1), architecture suite
   green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
