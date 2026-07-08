@@ -78,9 +78,25 @@ impl Module for GitlabUser {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Code repository — T1593.003 Search Code Repositories.
-        // Also T1589.002 for any email discovered in bio.
-        &["T1589.002", "T1593.003"]
+        // A code-hosting profile — T1593.003 for the Username itself, not
+        // the Social-Media default (T1593.001) its category implies. This
+        // REPLACED the whole default array instead of substituting just
+        // that one technique — the same gap already fixed for the sibling
+        // "profile lookup" modules (github_user/dockerhub_user/
+        // codewars_user/mastodon_user/sourceforge_user/bitbucket_user/
+        // rubygems_user). `build_entities` also constructs a Person (real
+        // `name`), an Organisation (`organization`), and an
+        // Address/Coordinates (`location`) — each needs its own technique
+        // so the `attack:<ID>` provenance tag core::engine::dispatch
+        // stamps on every admitted entity actually matches what collected
+        // it.
+        &[
+            "T1589.002", // Email Addresses — emails extracted from the bio
+            "T1589.003", // Employee Names — Person from the real `name` field
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from `location`
+            "T1591.002", // Business Relationships — Organisation from `organization`
+            "T1593.003", // Code Repositories — Username via the GitLab profile itself
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -411,5 +427,43 @@ mod tests {
         let ents = build_entities(user, "scan-gl-007");
         assert_eq!(ents.len(), 1, "only Username when no optional fields");
         assert_eq!(ents[0].kind, EntityKind::Username);
+    }
+
+    #[test]
+    fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+        // build_entities constructs a Person (name), Organisation
+        // (organization), Address/Coordinates (location), and Email (bio) —
+        // the override must declare a technique for each, the same
+        // under-declared-coverage gap already fixed for the sibling
+        // "profile lookup" modules (github_user/dockerhub_user/
+        // codewars_user/mastodon_user/sourceforge_user/bitbucket_user/
+        // rubygems_user).
+        let techniques = GitlabUser.attack_techniques();
+        assert!(
+            techniques.contains(&"T1589.002"),
+            "Email Addresses: emails extracted from the bio"
+        );
+        assert!(
+            techniques.contains(&"T1589.003"),
+            "Employee Names: Person from the real `name` field"
+        );
+        assert!(
+            techniques.contains(&"T1591.001"),
+            "Determine Physical Locations: Address/Coordinates from `location`"
+        );
+        assert!(
+            techniques.contains(&"T1591.002"),
+            "Business Relationships: Organisation from `organization`"
+        );
+        assert!(
+            techniques.contains(&"T1593.003"),
+            "Code Repositories: the Username via the GitLab profile itself"
+        );
+        for id in techniques {
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "declared technique {id} must exist in the Reconnaissance catalogue"
+            );
+        }
     }
 }

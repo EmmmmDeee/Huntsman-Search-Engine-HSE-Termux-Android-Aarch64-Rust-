@@ -890,6 +890,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `T1589.002`). *Closes:* new node **T2.36**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces_and_no_more`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-GITLAB-ATTACK-COMPLETE · `gitlab_user`'s `attack_techniques()`
+  now declares all five techniques `build_entities` actually earns** —
+  continuing the scoped-sweep list T2.36 left open. Unlike T2.34/T2.36,
+  this instance's existing `T1589.002` (Email Addresses) claim is genuine
+  (bio emails really are extracted into `EntityKind::Email` entities) — a
+  pure omission, not a fabrication: `build_entities` also constructs a
+  `Person` (real `name`, needs T1589.003), an `Organisation`
+  (self-reported `organization`, needs T1591.002), and an
+  `Address`/`Coordinates` (`location`, needs T1591.001), all three real,
+  already-unit-tested paths, none credited. Declared the precise, complete
+  set: `T1589.002`, `T1589.003`, `T1591.001`, `T1591.002`, `T1593.003`.
+  *Closes:* new node **T2.37**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -966,6 +980,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-BITBUCKET-ATTACK-COMPLETE | T2.34 | `[x]` |
 | SOL-CO-OWNERSHIP-ORDER-DETERMINISM | T2.35 | `[x]` |
 | SOL-RUBYGEMS-ATTACK-COMPLETE | T2.36 | `[x]` |
+| SOL-GITLAB-ATTACK-COMPLETE | T2.37 | `[x]` |
 
 ---
 
@@ -982,11 +997,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   actual code.** The determinism leak (`derive_co_ownership`) **delivered
   2026-07-08** (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, closing T2.35, see §5).
   `rubygems_user`'s fabricated-claim instance **delivered 2026-07-08**
-  (SOL-RUBYGEMS-ATTACK-COMPLETE, closing T2.36, see §5). **22 remaining,
-  deliberately left for future cycles** (one unit at a time by design):
-  attack-mapping-completeness cluster (14, same replace-instead-of-extend
-  shape as `bitbucket_user`/T2.34): `gitlab_user`
-  (missing T1589.003/T1591.001/T1591.002), `cpan_user`/`gitea_user`/
+  (SOL-RUBYGEMS-ATTACK-COMPLETE, closing T2.36, see §5). `gitlab_user`'s
+  pure-omission instance **delivered 2026-07-08** (SOL-GITLAB-ATTACK-COMPLETE,
+  closing T2.37, see §5). **21 remaining, deliberately left for future
+  cycles** (one unit at a time by design): attack-mapping-completeness
+  cluster (13, same replace-instead-of-extend shape as
+  `bitbucket_user`/T2.34): `cpan_user`/`gitea_user`/
   `codeberg_user` (missing T1589.003/T1591.001 each), `huggingface_user`
   (missing T1589.002/T1589.003/T1591.002, largest remaining gap),
   `hexpm_user`/`launchpad_user`/`pypi_user`/`bluesky_user` (missing
@@ -1171,7 +1187,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-UPDATE-POISON-CONSISTENT, 2026-07-05); **T2.34 `[x]`** ✅
   (SOL-BITBUCKET-ATTACK-COMPLETE, 2026-07-08); **T2.35 `[x]`** ✅
   (SOL-CO-OWNERSHIP-ORDER-DETERMINISM, 2026-07-08); **T2.36 `[x]`** ✅
-  (SOL-RUBYGEMS-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-RUBYGEMS-ATTACK-COMPLETE, 2026-07-08); **T2.37 `[x]`** ✅
+  (SOL-GITLAB-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4430,3 +4447,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4452 lib tests, +1), architecture suite
   green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-GITLAB-ATTACK-COMPLETE: closes T2.37, continuing the
+  scoped-sweep list T2.36 left open.** `gitlab_user` was a pure-omission
+  instance, not a fabrication like T2.34/T2.36: its existing
+  `T1589.002` (Email Addresses) claim is genuine (bio emails really are
+  extracted via `profile_kit::bio_emails` into `EntityKind::Email` —
+  confirmed by direct read), but its override
+  `&["T1589.002", "T1593.003"]` omitted three real, already-unit-tested
+  construction paths: a `Person` from the real `name` field (T1589.003), an
+  `Organisation` from the self-reported `organization` field (T1591.002),
+  and an `Address`/`Coordinates` from `location` (T1591.001). Declared the
+  precise, complete set: `T1589.002`, `T1589.003`, `T1591.001`, `T1591.002`,
+  `T1593.003`. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override first).
+  No `tests/architecture.rs` cross-module pin referenced `gitlab_user`.
+  **§4a's attack-mapping-completeness cluster now 13, down from 14**
+  (`cpan_user`, `gitea_user`, `codeberg_user`, `huggingface_user`,
+  `hexpm_user`, `devto`, `crates_io`, `npm_author`, `stackoverflow_user`,
+  `steam_profile`, `launchpad_user`, `pypi_user`, `bluesky_user` remain,
+  deliberately deferred to future one-at-a-time cycles). Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
+  failures (4453 lib tests, +1), architecture suite green (30/30).
+  **Paired:** `PROBLEM_TREE` §8 — same commit.

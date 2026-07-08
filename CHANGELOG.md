@@ -364,6 +364,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`gitlab_user`'s ATT&CK mapping no longer omits three techniques it
+  actually has.** Its override declared only `T1589.002` (Email Addresses,
+  genuine — bio emails are extracted) and `T1593.003` (Code Repositories),
+  silently omitting `T1589.003` (Employee Names, for the `Person` it builds
+  from the real `name` field), `T1591.001` (Determine Physical Locations,
+  for the `Address`/`Coordinates` it builds from `location`), and
+  `T1591.002` (Business Relationships, for the `Organisation` it builds
+  from the self-reported `organization` field). Now declares the precise,
+  complete set. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`rubygems_user`'s ATT&CK mapping no longer fabricates an Email-Addresses
   claim while omitting the real Employee-Names technique it has.** Its
   override claimed `T1589.002` (Email Addresses) although the module never

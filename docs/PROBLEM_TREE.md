@@ -1268,6 +1268,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `bluesky_user`. **P2** (a MITRE-provenance correctness gap: one
   fabricated technique claim plus a real omission, not a crash or PII
   leak).
+- **`[x]` T2.37 · `gitlab_user`'s `attack_techniques()` omitted three real
+  techniques it has — a pure-omission instance of the T2.28 scoped-sweep
+  list, the same replace-instead-of-extend shape as `github_user`'s
+  original bug, not a fabrication like T2.34/T2.36** — continuing the
+  scoped-sweep list T2.36 deliberately left open, independently re-read
+  `src/modules/gitlab_user/mod.rs` in full before touching any code
+  (treating the gap list's own "missing T1589.003/T1591.001/T1591.002"
+  note as unproven). Its override was `&["T1589.002", "T1593.003"]` —
+  unlike `bitbucket_user`/`rubygems_user`, this T1589.002 claim is genuine:
+  `build_entities`'s bio-email branch (`profile_kit::bio_emails`) really
+  does construct `EntityKind::Email`, confirmed by the pre-existing
+  `emits_website_url_and_domain` fixture family and direct code read — so
+  no fabrication here, just under-declaration. `build_entities` also
+  demonstrably constructs a `Person` (real `name` field, needs T1589.003),
+  an `Organisation` (self-reported `organization` field, needs T1591.002),
+  and an `Address`/`Coordinates` (`location` field via
+  `profile_kit::location_address`/`location_coordinates`, needs
+  T1591.001) — all three real, already-unit-tested paths
+  (`emits_person_from_full_name`, `emits_organisation_from_org_field`,
+  `emits_address_from_location`), none credited. → **Solution:** declared
+  the precise, complete set — `T1589.002`, `T1589.003`, `T1591.001`,
+  `T1591.002`, `T1593.003`. **Remaining scoped-sweep candidates from the
+  same list, still deliberately not pursued:** `cpan_user`, `gitea_user`,
+  `codeberg_user`, `huggingface_user`, `hexpm_user`, `devto`, `crates_io`,
+  `npm_author`, `stackoverflow_user`, `steam_profile`, `launchpad_user`,
+  `pypi_user`, `bluesky_user` (13 left, down from 14). **P2** (a
+  MITRE-provenance completeness gap: three real omissions, not a crash or
+  PII leak).
 
 ---
 
@@ -6041,3 +6069,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `hexpm_user`, `devto`, `crates_io`, `npm_author`, `stackoverflow_user`,
   `steam_profile`, `launchpad_user`, `pypi_user`, `bluesky_user` (14 left,
   down from 15). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08 — closed T2.37: `gitlab_user`'s `attack_techniques()` fixed —
+  added three real, previously-uncredited techniques (Employee Names,
+  Determine Physical Locations, Business Relationships).** Continued the
+  scoped-sweep list T2.36 left open, per priority order (no in-progress
+  node; T2.7/T2.14 still need bigger design decisions). Selected
+  `gitlab_user` as the next candidate: independently re-read
+  `src/modules/gitlab_user/mod.rs` in full before touching anything,
+  treating the gap list's own note as unproven. Unlike T2.34/T2.36, this
+  instance's existing `T1589.002` claim is genuine — `build_entities`'s
+  bio-email branch really does construct `EntityKind::Email` via
+  `profile_kit::bio_emails`, confirmed by direct read — so this is a pure
+  omission, not a fabrication: `build_entities` also constructs a `Person`
+  (real `name` field, needs T1589.003), an `Organisation` (self-reported
+  `organization` field, needs T1591.002), and an `Address`/`Coordinates`
+  (`location` field, needs T1591.001), all three real, already-unit-tested
+  paths, none credited. → **Solution:** declared the precise, complete
+  set — `T1589.002`, `T1589.003`, `T1591.001`, `T1591.002`, `T1593.003`.
+  Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`, added
+  to `gitlab_user`'s inline `mod tests` block; fail-before confirmed:
+  written and run against the unfixed override first, it panicked on the
+  missing `T1589.003` assertion; after the fix, all 8 `gitlab_user` tests
+  including this one pass). No `tests/architecture.rs` pin references
+  `gitlab_user` (confirmed by direct grep). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4453
+  lib tests, +1), architecture suite green (30/30). **Remaining
+  scoped-sweep candidates, still deliberately not pursued:** `cpan_user`,
+  `gitea_user`, `codeberg_user`, `huggingface_user`, `hexpm_user`, `devto`,
+  `crates_io`, `npm_author`, `stackoverflow_user`, `steam_profile`,
+  `launchpad_user`, `pypi_user`, `bluesky_user` (13 left, down from 14).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
