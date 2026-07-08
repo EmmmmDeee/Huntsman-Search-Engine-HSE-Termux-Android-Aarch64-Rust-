@@ -95,6 +95,40 @@ fn invalid_account_returns_no_entities() {
 }
 
 #[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // build_entities constructs a Person from the multi-word
+    // display_name in addition to the Email/Username the override
+    // already credits — the same under-declared-coverage gap already
+    // fixed for the sibling "profile lookup" modules (github_user/
+    // dockerhub_user/codewars_user/mastodon_user/sourceforge_user/
+    // bitbucket_user/rubygems_user/gitlab_user/cpan_user/gitea_user/
+    // codeberg_user/huggingface_user/hexpm_user/devto/crates_io/
+    // npm_author/stackoverflow_user/steam_profile). No location field
+    // exists on `LpPerson`, so T1591.001 does not apply here; no
+    // Organisation entities are built either, so T1591.002 does not
+    // apply.
+    let techniques = LaunchpadUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1589.002"),
+        "Email Addresses: emails extracted from the bio"
+    );
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: Person from the multi-word `display_name` field"
+    );
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the Username via the Launchpad profile itself"
+    );
+    for id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "declared technique {id} must exist in the Reconnaissance catalogue"
+        );
+    }
+}
+
+#[test]
 fn empty_name_returns_no_entities() {
     let p = make_person("", None, None, None, true);
     assert!(build_entities(p, "scan-lp-007").is_empty());

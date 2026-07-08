@@ -128,8 +128,27 @@ impl Module for LaunchpadUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Code/package-hosting profile — T1593.003; bio may surface email — T1589.002.
-        &["T1589.002", "T1593.003"]
+        // Code/package-hosting profile — T1593.003 for the Username
+        // itself, not the Social-Media default (T1593.001) its category
+        // implies. This REPLACED the whole default array instead of
+        // substituting just that one technique — the same gap already
+        // fixed for the sibling "profile lookup" modules
+        // (github_user/dockerhub_user/codewars_user/mastodon_user/
+        // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+        // cpan_user/gitea_user/codeberg_user/huggingface_user/
+        // hexpm_user/devto/crates_io/npm_author/stackoverflow_user/
+        // steam_profile). `build_entities` also constructs a Person
+        // from the multi-word `display_name` field — it needs its own
+        // technique so the `attack:<ID>` provenance tag
+        // core::engine::dispatch stamps on every admitted entity
+        // actually matches what collected it. No location or
+        // Organisation fields exist on `LpPerson`, so T1591.001/
+        // T1591.002 do not apply.
+        &[
+            "T1589.002", // Email Addresses — emails extracted from the bio
+            "T1589.003", // Employee Names — Person from the multi-word `display_name` field
+            "T1593.003", // Code Repositories — Username via the Launchpad profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[

@@ -364,6 +364,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`launchpad_user`'s ATT&CK mapping no longer omits the one technique
+  it actually has.** Its override declared only `T1589.002` (Email
+  Addresses, genuine — bio-extracted emails) and `T1593.003` (Code
+  Repositories), silently omitting `T1589.003` (Employee Names, for the
+  `Person` it builds from the multi-word `display_name` field). Now
+  declares the precise, complete set. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`steam_profile` now declares an ATT&CK mapping at all.** It never
   overrode `attack_techniques()`, silently inheriting the bare
   Social-category default (`T1589.003`, `T1593.001`) — correct as far as
