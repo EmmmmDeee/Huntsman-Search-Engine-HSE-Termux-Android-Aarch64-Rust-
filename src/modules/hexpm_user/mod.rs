@@ -119,8 +119,26 @@ impl Module for HexpmUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Package registry profile lookup — Code Repositories (T1593.003).
-        &["T1593.003"]
+        // Package registry profile lookup — T1593.003 for the Username
+        // itself, not the Social-Media default (T1593.001) its category
+        // implies. This REPLACED the whole default array instead of
+        // substituting just that one technique — the same gap already
+        // fixed for the sibling "profile lookup" modules
+        // (github_user/dockerhub_user/codewars_user/mastodon_user/
+        // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+        // cpan_user/gitea_user/codeberg_user/huggingface_user).
+        // `build_entities` also constructs a Person (`full_name`) — it
+        // needs its own technique so the `attack:<ID>` provenance tag
+        // core::engine::dispatch stamps on every admitted entity actually
+        // matches what collected it. No Email/Organisation/Address/
+        // Coordinates fields exist on `HexUser`, so no other technique
+        // applies; the GitHub/Twitter handle pivots are derived
+        // cross-platform Usernames that, per established sibling
+        // convention, don't warrant their own technique.
+        &[
+            "T1589.003", // Employee Names — Person from the real `full_name` field
+            "T1593.003", // Code Repositories — Username via the hex.pm profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[EntityKind::Username, EntityKind::Person, EntityKind::Url];

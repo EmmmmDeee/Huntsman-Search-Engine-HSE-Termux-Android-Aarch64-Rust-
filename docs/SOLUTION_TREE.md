@@ -967,6 +967,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `T1593.003`. *Closes:* new node **T2.41**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-HEXPM-ATTACK-COMPLETE · `hexpm_user`'s `attack_techniques()`
+  now declares both techniques `build_entities` actually earns — the
+  smallest remaining gap in the scoped-sweep queue** — continuing the
+  scoped-sweep list T2.41 left open. Its override `&["T1593.003"]` was
+  genuine (a confirmed hex.pm profile Username), but omitted a `Person`
+  from the real `full_name` field (T1589.003), a real, already-unit-tested
+  path, uncredited. No Email/Organisation/Address/Coordinates fields exist
+  on `HexUser`; the GitHub/Twitter cross-platform handle pivots get no
+  separate technique, matching established sibling convention. Declared
+  the precise, complete set: `T1589.003`, `T1593.003`. *Closes:* new node
+  **T2.42**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
+  While reading this module, also surfaced (deliberately deferred, not
+  fixed this cycle) a fresh, not-yet-independently-measured
+  `HashMap`-iteration-order candidate in the same `build_entities`'s
+  cross-platform handle-pivot loop — see §4a.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1048,6 +1065,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GITEA-ATTACK-COMPLETE | T2.39 | `[x]` |
 | SOL-CODEBERG-ATTACK-COMPLETE | T2.40 | `[x]` |
 | SOL-HUGGINGFACE-ATTACK-COMPLETE | T2.41 | `[x]` |
+| SOL-HEXPM-ATTACK-COMPLETE | T2.42 | `[x]` |
 
 ---
 
@@ -1076,11 +1094,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fabrication instances beyond `bitbucket_user`/T2.34 and
   `rubygems_user`/T2.36. `huggingface_user`'s pure-omission instance
   (the largest remaining gap) **delivered 2026-07-08**
-  (SOL-HUGGINGFACE-ATTACK-COMPLETE, closing T2.41, see §5). **17
+  (SOL-HUGGINGFACE-ATTACK-COMPLETE, closing T2.41, see §5). `hexpm_user`'s
+  pure-omission instance (the smallest remaining gap) **delivered
+  2026-07-08** (SOL-HEXPM-ATTACK-COMPLETE, closing T2.42, see §5). **16
   remaining, deliberately left for future cycles** (one unit at a time by
-  design): attack-mapping-completeness cluster (9, same
+  design): attack-mapping-completeness cluster (8, same
   replace-instead-of-extend shape as `bitbucket_user`/T2.34, all
-  independently re-verified 2026-07-08): `hexpm_user`/`launchpad_user`/
+  independently re-verified 2026-07-08): `launchpad_user`/
   `pypi_user`/`bluesky_user` (missing T1589.003 alone), `devto` (missing
   T1589.003/T1591.001), `crates_io`/`npm_author` (missing
   T1589.003/T1589.002 respectively; each carries a `tests/architecture.rs`
@@ -1091,8 +1111,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   same commit), `stackoverflow_user` (replace-instead-of-extend dropped
   T1589.003), `steam_profile` (no override at all yet, inherits the bare
   Social default — needs a brand-new override added, not a modification —
-  missing T1591.001 for its location-derived Address/Coordinates).
-  Other angles: `asic_persons` silently drops the CKAN `total` field
+  missing T1591.001 for its location-derived Address/Coordinates). New
+  (2026-07-08, found while fixing T2.42): `hexpm_user::build_entities`'s
+  cross-platform handle-pivot loop (`for (platform, linked_handle) in
+  &user.handles`) iterates a `HashMap<String, String>` with no key sort
+  before pushing entities — the same shape as the
+  `derive_co_ownership`/T2.35 leak, but not yet independently measured
+  with a red→green test (unlike T2.35, which had one before it was
+  fixed). Other angles: `asic_persons` silently drops the CKAN `total` field
   `acnc_charities`/`au_unclaimed` both already capture; `core::attack::
   TACTIC_ID`/`TACTIC_NAME` are `pub const` with zero references anywhere;
   `util::key_pool::pool::KeyPool::set_environment` has zero call sites
@@ -1272,7 +1298,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-CPAN-ATTACK-COMPLETE, 2026-07-08); **T2.39 `[x]`** ✅
   (SOL-GITEA-ATTACK-COMPLETE, 2026-07-08); **T2.40 `[x]`** ✅
   (SOL-CODEBERG-ATTACK-COMPLETE, 2026-07-08); **T2.41 `[x]`** ✅
-  (SOL-HUGGINGFACE-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-HUGGINGFACE-ATTACK-COMPLETE, 2026-07-08); **T2.42 `[x]`** ✅
+  (SOL-HEXPM-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4661,3 +4688,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4457 lib tests, +1), architecture suite
   green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-HEXPM-ATTACK-COMPLETE: closes T2.42, continuing the
+  scoped-sweep list T2.41 left open — the smallest remaining gap in the
+  queue.** Independently re-read `src/modules/hexpm_user/mod.rs` in full
+  before touching anything, treating the gap list's own note as unproven.
+  Its override `&["T1593.003"]` was genuine (a confirmed hex.pm profile
+  Username), but `build_entities` also demonstrably constructs a `Person`
+  from the real `full_name` field (needs T1589.003), a real,
+  already-unit-tested path, uncredited. No Email/Organisation/Address/
+  Coordinates fields exist on `HexUser`; the GitHub/Twitter
+  cross-platform handle pivots get no separate technique, matching
+  established sibling convention. Declared the precise, complete set:
+  `T1589.003`, `T1593.003`. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override
+  first). No `tests/architecture.rs` cross-module pin referenced
+  `hexpm_user`. While reading this module, also surfaced (deliberately
+  deferred, not fixed this cycle to keep scope to one unit) that
+  `build_entities`'s cross-platform handle-pivot loop iterates
+  `user.handles: HashMap<String, String>` with no key sort before pushing
+  entities — the same shape as the `derive_co_ownership`/T2.35 leak, not
+  yet independently measured with a red→green test. **§4a's
+  attack-mapping-completeness cluster now 8, down from 9** (`devto`,
+  `crates_io`, `npm_author`, `stackoverflow_user`, `steam_profile`,
+  `launchpad_user`, `pypi_user`, `bluesky_user` remain, deliberately
+  deferred to future one-at-a-time cycles; the new `HashMap` finding is
+  also logged in §4a). Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, full suite 0 failures (4458 lib tests, +1),
+  architecture suite green (30/30). **Paired:** `PROBLEM_TREE` §8 — same
+  commit.

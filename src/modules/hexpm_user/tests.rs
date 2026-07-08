@@ -98,6 +98,35 @@ fn unknown_platform_handle_not_emitted() {
 }
 
 #[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // build_entities constructs a Person (full_name) in addition to the
+    // Username/Url the override already credits — the same
+    // under-declared-coverage gap already fixed for the sibling "profile
+    // lookup" modules (github_user/dockerhub_user/codewars_user/
+    // mastodon_user/sourceforge_user/bitbucket_user/rubygems_user/
+    // gitlab_user/cpan_user/gitea_user/codeberg_user/huggingface_user). No
+    // Email/Organisation/Address/Coordinates fields exist on `HexUser`, so
+    // no other technique applies; the GitHub/Twitter handle pivots are
+    // derived cross-platform Usernames that, per established sibling
+    // convention, don't warrant their own technique beyond T1593.003.
+    let techniques = HexpmUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: Person from the real `full_name` field"
+    );
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the Username via the hex.pm profile itself"
+    );
+    for id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "declared technique {id} must exist in the Reconnaissance catalogue"
+        );
+    }
+}
+
+#[test]
 fn empty_username_returns_no_entities() {
     let user = make_user("", None, vec![]);
     assert!(build_entities(user, "scan-hx-007").is_empty());
