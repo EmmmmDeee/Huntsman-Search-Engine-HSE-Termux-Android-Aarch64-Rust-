@@ -47,6 +47,10 @@ use super::*;
 ///   confidence tier) — it was simply never carried over when the two
 ///   modules merged (`docs/MODULES.md`: "`wifi_scan` + `bssid_locate` →
 ///   `wifi_intel`")
+/// - `mls` — Mozilla Location Service BSSID triangulation; its own doc
+///   comment names it "a third corroboration source alongside WiGLE and
+///   Mylnikov" for the identical `MacAddress`-seeded lookup those two
+///   already anchor with
 const ANCHORING_GEO_SOURCES: &[&str] = &[
     // Original five: direct GPS/geocode/wifi sightings
     "geocode",
@@ -58,6 +62,10 @@ const ANCHORING_GEO_SOURCES: &[&str] = &[
     // `wigle` above, just self-triggered from an on-device AP survey instead
     // of an externally-supplied MacAddress/Ssid target.
     "wifi_intel",
+    // Mozilla Location Service — the third BSSID-triangulation corroboration
+    // source alongside `wigle`/`mylnikov` above (identical `MacAddress`-only
+    // `accepts()`, identical "BSSID → crowd-sourced position database" shape).
+    "mls",
     // Search-derived inline geocoding (known-city lookup from snippets)
     "search_engines",
     // Social profile bio and professional portal addresses

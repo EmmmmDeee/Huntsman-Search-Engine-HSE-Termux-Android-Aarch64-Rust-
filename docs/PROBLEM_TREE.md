@@ -5668,3 +5668,47 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   it passed). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4444 lib tests, +1), architecture suite green
   (30/30). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08** — **`mls` joins `ANCHORING_GEO_SOURCES` (2nd of the 5 gaps);
+  `cell_intel`/`cell_local` REFUTED as the same gap's 3rd candidate — the
+  opposite of what the note assumed.** Continued the FT.14 follow-up list per
+  the loop's priority order (gap-analysis gap, nothing in-progress),
+  investigating candidates in the order logged. Treated both notes as
+  unproven per the loop's own doctrine and read the actual modules before
+  touching code. **`mls` — confirmed, delivered:** `modules/mls/mod.rs`'s own
+  doc comment states outright "HSE uses MLS as a third corroboration source
+  alongside WiGLE and Mylnikov," and `accepts()` restricts it to
+  `TargetKind::MacAddress` — the identical BSSID-only contract `wigle`
+  (`Coordinates | MacAddress | Ssid`) and `mylnikov` (`MacAddress`) already
+  anchor with; all three do "BSSID → crowd-sourced position database" via a
+  different provider (WiGLE / Mylnikov / Mozilla Location Service). No
+  existing test references `"mls"` as a source anywhere outside its own
+  module. → Added `"mls"` to `ANCHORING_GEO_SOURCES`. **`cell_intel`/
+  `cell_local` — investigated, REFUTED:** the prior note's premise ("same
+  first-party-sensor spirit as `signal_radar`/`device_sensors`") did not
+  survive a direct read. `cell_intel::process()`'s own doc comment: "A
+  `Coordinates` entity via OpenCelliD or MCC centroid fallback" — the
+  on-device `termux-telephony-cellinfo` call only discovers WHICH cell towers
+  are visible (a `DeviceId` sighting); the actual `Coordinates` VALUE comes
+  from querying the OpenCelliD database (`query_opencellid`, the identical
+  API the standalone, already-excluded `opencellid` module queries) or, on a
+  miss, an MCC→country-centroid fallback (a whole country's geographic
+  centre — barely a location at all). `cell_local.rs`'s own doc comment: it
+  is explicitly "Local OpenCelliD database query" — an offline cache of the
+  SAME third-party database, gated on an existing `Coordinates` TARGET
+  (`accepts(): TargetKind::Coordinates`), so it enriches an already-anchored
+  point rather than minting an independent one (the same "coordinate-keyed
+  enrichment, no signal lost by excluding it" shape as `au_geo`/
+  `qld_cadastre` from the FT.14 fix). Neither module is a first-party device
+  fix; both are the same third-party cell-tower-database lookup the FT.14 fix
+  already correctly excluded under the name `opencellid` — adding them would
+  reopen the identical bug class that fix closed. No code change for this
+  half; §4a corrected to record the refutation rather than leave a stale,
+  now-disproven note. Test delta: +1
+  (`mls_bssid_triangulation_is_person_anchoring_like_wigle_and_mylnikov`,
+  fail-before confirmed: reverted the allowlist addition in place, the new
+  test panicked on `assert!(is_anchoring_geo_source("mls"))`; restored, it
+  passed). **Deliberately left for future cycles:** `qld_cadastre`,
+  `employer_pivot` — each needs its own direct-evidence verification, not a
+  batch add. Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4445 lib tests, +1), architecture suite green
+  (30/30). **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -364,6 +364,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`mls` (Mozilla Location Service) BSSID triangulation now counts as a
+  person-anchoring geo source, like the `wigle`/`mylnikov` peers its own doc
+  comment names it alongside.** `ANCHORING_GEO_SOURCES` never listed `mls`,
+  so its Coordinates output was silently treated as unanchored infrastructure
+  geo despite resolving the identical `MacAddress`-only BSSID lookup `wigle`
+  and `mylnikov` already anchor with, just via a different crowd-sourced
+  position database. Regression test
+  `mls_bssid_triangulation_is_person_anchoring_like_wigle_and_mylnikov`.
 - **`wifi_intel`'s on-device WiGLE BSSID resolution now counts as a
   person-anchoring geo source, like the standalone `wigle` module it shares
   its trilateration API with.** The correlator's `ANCHORING_GEO_SOURCES`

@@ -150,3 +150,19 @@ use super::*;
         e.add_evidence(Evidence::new("wifi_intel", "BSSID aa:bb:cc:dd:ee:ff -> fix"));
         assert!(!is_infrastructure_geo(&e));
     }
+
+    #[test]
+    fn mls_bssid_triangulation_is_person_anchoring_like_wigle_and_mylnikov() {
+        // `mls`'s own doc comment names it "a third corroboration source
+        // alongside WiGLE and Mylnikov" for the identical MacAddress-seeded
+        // BSSID lookup those two already anchor with — it must anchor a
+        // person's footprint the same way, not be silently treated as
+        // unanchored infrastructure geo.
+        assert!(is_anchoring_geo_source("mls"));
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.75, "s");
+        e.add_evidence(Evidence::new(
+            "mls",
+            "Mozilla Location Service: BSSID aa:bb:cc:dd:ee:ff -> coordinates",
+        ));
+        assert!(!is_infrastructure_geo(&e));
+    }

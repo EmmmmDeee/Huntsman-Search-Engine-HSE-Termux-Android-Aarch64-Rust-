@@ -919,23 +919,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
 - **`ANCHORING_GEO_SOURCES` allowlist omissions (found closing FT.14,
-  2026-07-08).** **`wifi_intel` delivered same day** (SOL-WIFI-INTEL-ANCHOR,
-  see §5): independently re-verified as the identical `bssid_locate`→`wigle`
-  API mechanism the merge history (`docs/MODULES.md`) confirms it absorbed,
-  so it was added to the allowlist on that specific evidence, not by kinship
-  alone. *Remaining, still not started:* `cell_intel`/`cell_local` (live
-  on-device cell-tower survey, same first-party-sensor spirit as
-  `signal_radar`/`device_sensors` — needs the same kind of direct-evidence
-  check `wifi_intel` got, not an assumption from the shared spirit), `mls`
-  (Mozilla-Location-Service-style BSSID geolocation, its own doc calls it a
-  third corroboration source alongside the allowlisted `wigle`/`mylnikov`),
+  2026-07-08).** **`wifi_intel` delivered 2026-07-08** (SOL-WIFI-INTEL-ANCHOR):
+  independently re-verified as the identical `bssid_locate`→`wigle` API
+  mechanism the merge history (`docs/MODULES.md`) confirms it absorbed, so it
+  was added to the allowlist on that specific evidence, not by kinship alone.
+  **`mls` delivered 2026-07-08** (SOL-MLS-ANCHOR, see §5): its own doc comment
+  names it "a third corroboration source alongside WiGLE and Mylnikov" for the
+  identical `MacAddress`-only lookup those two already anchor with —
+  independently confirmed via `accepts()` (both restricted to
+  `TargetKind::MacAddress`) before adding. **`cell_intel`/`cell_local`
+  REFUTED, 2026-07-08 (see §5):** the original note assumed "same
+  first-party-sensor spirit as `signal_radar`/`device_sensors`," but direct
+  code reading found the opposite — both modules resolve their `Coordinates`
+  via the SAME OpenCelliD database the already-excluded standalone
+  `opencellid` module queries (`cell_intel` calls it live, `cell_local` reads
+  an offline cache of it), or an even coarser MCC→country-centroid fallback;
+  neither is a first-party device fix, so adding them would reopen the exact
+  `ip_geo`/`opencellid` bug class the FT.14 fix closed. Not a gap — closed by
+  refutation, no allowlist change. *Remaining, still not started:*
   `qld_cadastre` (its own doc calls itself "the coordinate-keyed complement to
-  `au_property`," which is allowlisted), and `employer_pivot` (workplace
+  `au_property`," which is allowlisted) and `employer_pivot` (workplace
   address, same conceptual bucket as the allowlisted business-registry
   sources). Each needs its own field-level verification (mirroring the
   T2.27-32 `attack_techniques()` sweep's "one module at a time" discipline,
-  and `wifi_intel`'s own precedent of finding the direct merge-history
-  evidence rather than reasoning from kinship alone) — not a batch add.
+  and this arc's own precedent of finding direct evidence — positive OR
+  negative — rather than reasoning from kinship alone) — not a batch add.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -4145,3 +4153,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
   failures (4444 lib tests), architecture suite green (30/30). **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08** — **SOL-MLS-ANCHOR (new): `mls` joins `ANCHORING_GEO_SOURCES`
+  — the 2nd of the 5 gaps logged closing FT.14. Also refutes the 3rd
+  candidate, `cell_intel`/`cell_local`.** `modules/mls/mod.rs`'s own doc
+  comment states it is used "as a third corroboration source alongside WiGLE
+  and Mylnikov," and independently confirmed `accepts()` restricts it to
+  `TargetKind::MacAddress` — the identical BSSID-only contract `wigle`/
+  `mylnikov` already anchor with; all three resolve a BSSID against a
+  different crowd-sourced position database (WiGLE / Mylnikov / Mozilla
+  Location Service). One-line allowlist addition, no test anywhere relied on
+  `mls` being excluded. **`cell_intel`/`cell_local` investigated and
+  REFUTED**, not delivered: the §4a note's premise (kinship with
+  `signal_radar`/`device_sensors`) did not survive reading the actual code —
+  `cell_intel`'s own doc comment shows its `Coordinates` value comes from the
+  SAME OpenCelliD database the already-excluded `opencellid` module queries
+  (or an even coarser MCC-centroid fallback), and `cell_local` is explicitly
+  an offline cache of that same database, gated on an EXISTING `Coordinates`
+  target (enrichment of an already-anchored point, not an independent fix —
+  same shape as `au_geo`/`qld_cadastre` from the FT.14 fix). Neither is a
+  first-party device fix; allowlisting them would reopen the exact
+  `ip_geo`/`opencellid` bug class FT.14 closed. §4a corrected in place to
+  record the refutation. Test delta: +1
+  (`mls_bssid_triangulation_is_person_anchoring_like_wigle_and_mylnikov`,
+  fail-before confirmed by reverting the allowlist addition in place — the
+  new test panicked on `assert!(is_anchoring_geo_source("mls"))`; restored,
+  it passed). Full correlator/engine/geo_family suites confirm no consumer
+  regressed. **§4a refreshed:** only `qld_cadastre`/`employer_pivot` remain
+  open on this list. Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4445 lib tests), architecture suite
+  green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
