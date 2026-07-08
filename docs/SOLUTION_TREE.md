@@ -1107,6 +1107,41 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   node **T2.48**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-ATTACK-ENTERPRISE-MATRIX · `core::attack` now vendors the
+  complete MITRE ATT&CK Enterprise matrix, not just a curated Reconnaissance
+  slice** — user-directed capability expansion, not a scoped-sweep item:
+  the user asked to "incorporate the complete MITRE [ATT&CK matrix] or
+  better," confirmed via `AskUserQuestion` to mean all 15 tactics, even
+  though HSE's own modules only ever perform Reconnaissance-tactic
+  techniques. Sourced from live `attack.mitre.org` tactic pages rather than
+  training memory — fetched all 15 tactics, independently re-fetched 3 with
+  a stricter prompt and confirmed byte-identical results, and cross-checked
+  every tactic's own stated technique count against the transcribed count
+  (zero mismatches across all 15). Surfaced a genuine, current MITRE
+  taxonomy change absent from training data in the process: `TA0005` is now
+  "Stealth" and a new `TA0112` "Defense Impairment" tactic has replaced the
+  classic single "Defense Evasion" — confirmed via the same
+  independent-refetch method, not assumed. Added new `pub const TACTICS`
+  (15 entries) and `pub const ATTACK` (697 technique/sub-technique entries,
+  each carrying every `Tactic::id` it's filed under), plus new
+  `tactic()`/`enterprise_technique()` lookups. Fixed the pre-existing
+  `RECONNAISSANCE` completeness gap in the same pass (33 → 46 entries — the
+  true, complete TA0043 subset, including the entire previously-missing
+  `T1598` "Phishing for Information" family), while leaving `technique()`'s
+  Reconnaissance-only contract and all ~25+ existing call sites — including
+  both ATT&CK-related `tests/architecture.rs` guards — completely unchanged:
+  broadening `technique()` itself to the full matrix would have silently
+  weakened the guard that a module claiming a technique from a tactic HSE
+  can't perform should fail, not resolve. *Closes:* new node **T2.49**. ✅
+  5 tests (`tactics_are_well_formed_and_unique`,
+  `attack_catalogue_is_well_formed_and_sorted`,
+  `enterprise_technique_looks_up_any_tactic`,
+  `reconnaissance_is_exactly_the_ta0043_subset_of_attack` — the drift guard
+  pinning `RECONNAISSANCE` as exactly `ATTACK`'s TA0043 subset —
+  `phishing_for_information_family_is_catalogued`), fail-before confirmed
+  genuinely: `technique("T1598")` returned `None` against the untouched
+  original `mod.rs` (throwaway probe test run before any edit), `Some(...)`
+  after.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1195,6 +1230,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-STACKOVERFLOW-ATTACK-COMPLETE | T2.46 | `[x]` |
 | SOL-STEAMPROFILE-ATTACK-COMPLETE | T2.47 | `[x]` |
 | SOL-LAUNCHPAD-ATTACK-COMPLETE | T2.48 | `[x]` |
+| SOL-ATTACK-ENTERPRISE-MATRIX | T2.49 | `[x]` |
 
 ---
 
@@ -1249,7 +1285,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-STEAMPROFILE-ATTACK-COMPLETE, closing T2.47, see §5) — the first
   fix in this arc adding a new override rather than widening one.
   `launchpad_user`'s pure-omission instance **delivered 2026-07-08**
-  (SOL-LAUNCHPAD-ATTACK-COMPLETE, closing T2.48, see §5). **10
+  (SOL-LAUNCHPAD-ATTACK-COMPLETE, closing T2.48, see §5). The catalogue
+  itself — not just per-module mappings — then gained the complete MITRE
+  ATT&CK Enterprise matrix (15 tactics, 697 techniques), a user-directed
+  capability expansion beyond the scoped-sweep list, **delivered
+  2026-07-08** (SOL-ATTACK-ENTERPRISE-MATRIX, closing T2.49, see §5), which
+  also closed the pre-existing `RECONNAISSANCE` completeness gap (33 → 46
+  entries) in the same pass. **10
   remaining, deliberately left for future cycles** (one unit at a time by
   design): attack-mapping-completeness cluster (2, same
   replace-instead-of-extend shape as `bitbucket_user`/T2.34, all
@@ -1263,7 +1305,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   with a red→green test (unlike T2.35, which had one before it was
   fixed). Other angles: `asic_persons` silently drops the CKAN `total` field
   `acnc_charities`/`au_unclaimed` both already capture; `core::attack::
-  TACTIC_ID`/`TACTIC_NAME` are `pub const` with zero references anywhere;
+  TACTIC_ID`/`TACTIC_NAME` are still `pub const` with zero references
+  anywhere (unaffected by the enterprise-matrix expansion — a separate,
+  pre-existing gap);
   `util::key_pool::pool::KeyPool::set_environment` has zero call sites
   (every sibling mutator is wired into `hse keys`); 3 newer-clippy-toolchain
   lints (`rules::location`'s redundant `fix.uids.clone()`;
@@ -1448,7 +1492,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-NPMAUTHOR-ATTACK-COMPLETE, 2026-07-08); **T2.46 `[x]`** ✅
   (SOL-STACKOVERFLOW-ATTACK-COMPLETE, 2026-07-08); **T2.47 `[x]`** ✅
   (SOL-STEAMPROFILE-ATTACK-COMPLETE, 2026-07-08); **T2.48 `[x]`** ✅
-  (SOL-LAUNCHPAD-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-LAUNCHPAD-ATTACK-COMPLETE, 2026-07-08); **T2.49 `[x]`** ✅
+  (SOL-ATTACK-ENTERPRISE-MATRIX, 2026-07-08 — complete ATT&CK Enterprise
+  matrix vendored, 15 tactics/697 techniques, `RECONNAISSANCE` completeness
+  gap also closed 33→46); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -5050,4 +5097,60 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   deferred to future one-at-a-time cycles). Gate green: fmt/clippy
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4464 lib tests, +1), architecture suite green (30/30). **Paired:**
+  `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-ATTACK-ENTERPRISE-MATRIX: closes T2.49. User
+  interrupted the scoped-sweep loop mid-cycle: "Incorporate the complete
+  MITRE [ATT&CK matrix] or better."** Clarified via `AskUserQuestion`
+  before acting, since the module's own doc comment explicitly stated it
+  "deliberately avoids vendoring" the full ATT&CK corpus — a prior design
+  decision, not an oversight — and the user confirmed: the full Enterprise
+  matrix, all tactics, even though HSE's modules only ever perform
+  Reconnaissance-tactic techniques. Sourced the matrix from the live
+  `attack.mitre.org` tactic pages rather than training memory, per the
+  loop's "no invented findings" law: fetched all 15 tactics independently
+  (`pipeline`, no barrier needed — each fetch is independent), then
+  cross-checked 3 of them with an independent, stricter re-fetch prompt
+  (`parallel`, barrier appropriate for comparing against the primaries) and
+  confirmed byte-identical technique lists; also verified every tactic's
+  own stated technique count against the actual transcribed count — zero
+  mismatches across all 15. This surfaced a genuine, current MITRE
+  taxonomy change absent from training data: `TA0005` is now "Stealth" and
+  a new `TA0112` "Defense Impairment" tactic has replaced the classic
+  single "Defense Evasion" — confirmed via the same independent-refetch
+  method rather than assumed to be a model error. Generated all 758 Rust
+  struct literals (15 tactics + 697 techniques + 46 Reconnaissance) from
+  the verified JSON programmatically rather than hand-transcribing, to
+  eliminate transcription-error risk at this data volume; caught and fixed
+  one generation bug before compiling (Python's default `json.dumps`
+  emitted a `ä` escape for "Process Doppelgänging" (T1055.013) — valid
+  JSON, invalid Rust string-literal syntax — fixed by regenerating with
+  `ensure_ascii=False`). Added new `pub const TACTICS` (15) and
+  `pub const ATTACK` (697, each technique carrying every tactic id it's
+  filed under — 145 dual/multi-filed, none within TA0043) plus
+  `tactic()`/`enterprise_technique()` lookups. Fixed the pre-existing
+  `RECONNAISSANCE` completeness gap in the same pass (33 → 46 entries,
+  including the entire previously-missing `T1598` "Phishing for
+  Information" family), while leaving `technique()`'s Reconnaissance-only
+  contract and all ~25+ existing call sites (module tests,
+  `cli/export/renderers.rs`, `cli/scan/dossier.rs`, both ATT&CK-related
+  `tests/architecture.rs` guards, `core/module/mod.rs`) completely
+  unchanged — broadening `technique()` itself would have silently weakened
+  the guard that a module claiming a technique from a tactic HSE can't
+  perform should fail, not resolve. Test: +5
+  (`tactics_are_well_formed_and_unique`,
+  `attack_catalogue_is_well_formed_and_sorted`,
+  `enterprise_technique_looks_up_any_tactic`,
+  `reconnaissance_is_exactly_the_ta0043_subset_of_attack` — the drift
+  guard pinning `RECONNAISSANCE` as exactly `ATTACK`'s TA0043 subset —
+  `phishing_for_information_family_is_catalogued`), fail-before confirmed
+  genuinely: wrote a throwaway probe test asserting
+  `technique("T1598") == None`, ran it against the untouched original
+  `mod.rs` and confirmed it passed (i.e. the gap was real), then reverted
+  the probe before applying the fix. Gate green: fmt/clippy `-D warnings`
+  (`cargo fmt --all` reformatted the generated struct literals to one
+  field per line, matching project style for this data volume)/rustdoc
+  (private items) clean, full suite 0 failures (4469 lib tests, +5),
+  architecture suite green (30/30, both ATT&CK guards unchanged in
+  behaviour). `TACTIC_ID`/`TACTIC_NAME` remain unwired — a separate,
+  pre-existing gap (§4a), deliberately still out of scope. **Paired:**
   `PROBLEM_TREE` §8 — same commit.

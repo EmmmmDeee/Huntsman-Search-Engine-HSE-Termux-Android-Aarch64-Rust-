@@ -1700,6 +1700,58 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   deliberately not pursued:** `pypi_user`, `bluesky_user` (2 left, down
   from 3). **P2** (a MITRE-provenance completeness gap: one real
   omission, not a crash or PII leak).
+- **`[x]` T2.49 · `core::attack` vendored only a curated, Reconnaissance-only
+  slice of MITRE ATT&CK — 33 of the tactic's own 46 techniques/sub-techniques
+  (missing the entire `T1598` "Phishing for Information" family and 8 others),
+  and zero representation of ATT&CK's other 14 tactics, by explicit prior
+  design ("deliberately avoids vendoring" the full corpus).** User-directed
+  capability expansion (2026-07-08): "Incorporate the complete MITRE [ATT&CK
+  matrix] or better," explicitly confirmed via `AskUserQuestion` to mean the
+  full Enterprise matrix — all tactics — not merely completing the
+  Reconnaissance subset, even though HSE's own collection modules will only
+  ever perform Reconnaissance-tactic techniques. Sourced the matrix from the
+  live, authoritative `attack.mitre.org` tactic pages rather than training
+  memory (the loop's "no invented findings" law applies to external reference
+  data too): fetched all 15 tactics independently, then re-fetched 3 of them
+  with an independent, stricter prompt and confirmed byte-identical technique
+  lists, and cross-checked every tactic's own stated technique count against
+  the actual transcribed count — zero mismatches across all 15. This
+  transcription itself surfaced a real, current MITRE taxonomy change absent
+  from training data: `TA0005` is now "Stealth" and a new `TA0112` "Defense
+  Impairment" tactic has replaced the classic single "Defense Evasion" —
+  confirmed via the same independent-refetch method, not assumed. →
+  **Solution:** vendored the complete matrix as new `pub const TACTICS`
+  (15 entries) and `pub const ATTACK` (697 technique/sub-technique entries,
+  each carrying every `Tactic::id` it's filed under — 145 are dual/multi-filed,
+  none within TA0043), plus new `tactic()`/`enterprise_technique()` lookups.
+  Fixed the pre-existing `RECONNAISSANCE` completeness gap in the same pass
+  (33 → 46 entries — the true, complete TA0043 subset), while leaving
+  `technique()`'s contract (Reconnaissance-only resolution) and every one of
+  its ~25+ existing call sites — including both ATT&CK-related
+  `tests/architecture.rs` guards — completely unchanged: broadening
+  `technique()` itself to the full matrix would have silently weakened the
+  guard that a module claiming a technique from a tactic HSE can't perform
+  should fail, not resolve. A new drift-guard test
+  (`reconnaissance_is_exactly_the_ta0043_subset_of_attack`) pins that
+  `RECONNAISSANCE` is *exactly* `ATTACK`'s TA0043-tagged subset — nothing
+  missing, nothing extra — so the two catalogues can never diverge. Test
+  delta: +5 in `core::attack::tests` (`tactics_are_well_formed_and_unique`,
+  `attack_catalogue_is_well_formed_and_sorted`,
+  `enterprise_technique_looks_up_any_tactic`,
+  `reconnaissance_is_exactly_the_ta0043_subset_of_attack`,
+  `phishing_for_information_family_is_catalogued`). Fail-before confirmed
+  genuinely, not simulated: `technique("T1598")` returns `None` against the
+  untouched original 233-line `mod.rs` (proven via a throwaway probe test run
+  before any edit), `Some("Phishing for Information")` after. Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items, `-D
+  rustdoc::broken_intra_doc_links -D rustdoc::bare_urls -D
+  rustdoc::invalid_html_tags`) clean, full suite 0 failures (4469 lib tests,
+  +5; 30/30 architecture, both ATT&CK guards unchanged in behaviour and
+  green). `core::attack::TACTIC_ID`/`TACTIC_NAME`
+  remain unwired (zero call sites) — a separate, pre-existing gap, still
+  deliberately out of scope for this cycle (tracked in `SOLUTION_TREE` §4a).
+  **P2/CAP** (a user-directed completeness + capability expansion, not a
+  defect fix). **Paired:** `SOLUTION_TREE` §5 — same commit.
 
 ---
 
@@ -6956,3 +7008,34 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite green (30/30). **Remaining scoped-sweep candidates, still
   deliberately not pursued:** `pypi_user`, `bluesky_user` (2 left, down
   from 3). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08 — closed T2.49: `core::attack` now vendors the complete
+  MITRE ATT&CK Enterprise matrix (15 tactics, 697 techniques/sub-techniques),
+  not just a curated Reconnaissance slice — a user-directed capability
+  expansion ("Incorporate the complete MITRE [ATT&CK matrix] or better"),
+  confirmed via `AskUserQuestion` to mean the full matrix, all tactics.**
+  Sourced from live `attack.mitre.org` tactic pages, not training memory:
+  fetched all 15 tactics, independently re-fetched 3 with a stricter prompt
+  and confirmed byte-identical results, and cross-checked every tactic's own
+  stated technique count against the transcribed count (zero mismatches).
+  This surfaced a genuine, current MITRE taxonomy change absent from
+  training data — `TA0005` is now "Stealth" with a new `TA0112` "Defense
+  Impairment" tactic, replacing the classic single "Defense Evasion" —
+  confirmed, not assumed. Added new `pub const TACTICS` (15) and
+  `pub const ATTACK` (697, each technique carrying every tactic it's filed
+  under) plus `tactic()`/`enterprise_technique()` lookups. Fixed the
+  pre-existing `RECONNAISSANCE` completeness gap in the same pass (33 → 46
+  entries, including the entire previously-missing `T1598` "Phishing for
+  Information" family), while leaving `technique()`'s Reconnaissance-only
+  contract, all ~25+ existing call sites, and both ATT&CK-related
+  `tests/architecture.rs` guards completely unchanged — broadening
+  `technique()` itself would have silently weakened those guards. Added a
+  drift-guard test (`reconnaissance_is_exactly_the_ta0043_subset_of_attack`)
+  pinning that `RECONNAISSANCE` is exactly `ATTACK`'s TA0043 subset. Fail-
+  before proven genuinely: `technique("T1598")` returned `None` against the
+  untouched original `mod.rs` (probe test run before any edit), `Some(...)`
+  after. Test delta: +5 in `core::attack::tests`. Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4469
+  lib tests, +5), architecture suite green (30/30, both ATT&CK guards
+  unchanged). `TACTIC_ID`/`TACTIC_NAME` remain unwired — a separate,
+  pre-existing gap, deliberately still out of scope. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

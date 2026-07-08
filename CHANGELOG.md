@@ -362,8 +362,35 @@ versions can include breaking changes; patch versions are bug-fix-only.
   precisely" answer. Pure and deterministic. Also wired into the API/JSON geo
   export (`best_location`), so the web/JSON surface carries the same headline fix
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
+- **`core::attack` now vendors the complete MITRE ATT&CK Enterprise matrix — all
+  15 tactics and all 697 techniques/sub-techniques — not just a curated
+  Reconnaissance-only slice.** New `pub const TACTICS` (15 entries) and
+  `pub const ATTACK` (697 entries, each technique carrying every tactic it's
+  filed under — 145 are dual/multi-filed) plus new `tactic()`/
+  `enterprise_technique()` lookup functions, transcribed from the live,
+  authoritative `attack.mitre.org` tactic pages and independently cross-checked
+  (byte-identical re-fetches of 3 tactics; per-tactic technique-count
+  verification; zero mismatches across all 15). The existing `technique()`
+  function, its Reconnaissance-only contract, and every existing call site
+  (module `attack_techniques()` overrides, `cli/export/renderers.rs`,
+  `cli/scan/dossier.rs`, both ATT&CK-related `tests/architecture.rs` guards)
+  are completely unchanged — this is purely additive. Regression tests
+  `tactics_are_well_formed_and_unique`, `attack_catalogue_is_well_formed_and_sorted`,
+  `enterprise_technique_looks_up_any_tactic`,
+  `reconnaissance_is_exactly_the_ta0043_subset_of_attack` (a drift guard pinning
+  `RECONNAISSANCE` as exactly `ATTACK`'s TA0043 subset).
 
 ### Fixed
+- **`core::attack::RECONNAISSANCE` was missing 13 real TA0043 techniques/
+  sub-techniques, including the entire `T1598` "Phishing for Information"
+  family.** The curated catalogue had 33 entries against the true 46 in
+  ATT&CK's own Reconnaissance tactic — zero stale/incorrect entries, purely
+  incompleteness. Fixed in the same pass as vendoring the complete Enterprise
+  matrix (see Added): `RECONNAISSANCE` is now the true, complete 46-entry
+  TA0043 subset, verified by a drift-guard test to be exactly `ATTACK`'s
+  TA0043-tagged entries. `technique("T1598")` returned `None` before this fix
+  and `Some("Phishing for Information")` after — proven against the untouched
+  original code with a throwaway probe test before any change was made.
 - **`launchpad_user`'s ATT&CK mapping no longer omits the one technique
   it actually has.** Its override declared only `T1589.002` (Email
   Addresses, genuine — bio-extracted emails) and `T1593.003` (Code
