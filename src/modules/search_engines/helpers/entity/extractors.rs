@@ -291,9 +291,13 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
     let mut seen_addr_keys: std::collections::HashSet<String> =
         addrs.iter().map(|a| a.to_lowercase()).collect();
     for place in AU_PLACES {
-        let place_lower = place.to_lowercase();
-        if let Some(pos) = lower.find(&place_lower) {
-            let after = &lower[pos + place_lower.len()..];
+        // `lower` is already fully lowercased and every AU_PLACES entry is ASCII,
+        // so an ASCII-case-insensitive scan for `place` finds the identical
+        // leftmost offset that `lower.find(&place.to_lowercase())` did — but
+        // without allocating a fresh lowercased String for each of the 97 places
+        // on every call, and with a NEON-accelerated scan instead of a naive one.
+        if let Some(pos) = crate::util::str_util::find_ascii_ci(&lower, place) {
+            let after = &lower[pos + place.len()..];
             let context: String = after.chars().take(60).collect();
             // Walk back to a char boundary; UTF-8 multi-byte chars
             // (e.g. '>' substitutes spanning 3 bytes) must not be split.

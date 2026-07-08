@@ -2,11 +2,15 @@
 //!
 //! Reaches the other helper groups and shared imports through `use super::*`.
 
+use std::borrow::Cow;
+
 use super::*;
 // Canonical char-boundary primitives live in the shared util layer so every
 // module that slices scraped HTML at an arithmetic offset reaches for the same
 // total helper instead of re-rolling (or partially guarding) its own.
-use crate::util::str_util::{ceil_char_boundary, floor_char_boundary};
+// `find_ascii_ci` is the zero-alloc, NEON-accelerated ASCII-case-insensitive
+// substring scanner used to guard the inline-block strip without a lowercased copy.
+use crate::util::str_util::{ceil_char_boundary, find_ascii_ci, floor_char_boundary};
 
 pub(in crate::modules::search_engines) fn extract_anchor_text(
     html: &str,
@@ -75,13 +79,32 @@ pub(in crate::modules::search_engines) fn extract_snippet_near(
 }
 
 pub(in crate::modules::search_engines) fn clean_snippet(s: &str) -> String {
-    let mut out = s
+    let out = s
         .replace("\\\"", "")
         .replace("\\n", " ")
         .replace("\\t", " ");
-    while out.contains("  ") {
-        out = out.replace("  ", " ");
-    }
+    // Collapse every run of ASCII spaces to one in a SINGLE pass. The former
+    // `while out.contains("  ") { out = out.replace("  ", " ") }` reallocated the
+    // whole string and re-scanned it on each pass — O(k·len) work and O(k)
+    // throwaway allocations for a run of k spaces. This is O(len) with one
+    // allocation and yields the identical fixpoint (no two adjacent spaces), and
+    // like the original touches only `' '`, leaving other whitespace intact.
+    let mut out = {
+        let mut collapsed = String::with_capacity(out.len());
+        let mut prev_space = false;
+        for c in out.chars() {
+            if c == ' ' {
+                if !prev_space {
+                    collapsed.push(' ');
+                }
+                prev_space = true;
+            } else {
+                collapsed.push(c);
+                prev_space = false;
+            }
+        }
+        collapsed
+    };
     // Remove Bing-style SERP ID artifacts: h="ID=SERP,1234.5"
     if let Some(start) = out.find("h=\"ID=SERP")
         && let Some(end) = out[start..].find('"').and_then(|first_q| {
@@ -147,10 +170,19 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
 /// never the visible result text a title/snippet wants, so dropping them before
 /// the tag scanner runs is both correct and what stops their stray `>`
 /// characters from corrupting the output.
-fn strip_inline_blocks(html: &str) -> String {
-    let lower0 = html.to_ascii_lowercase();
-    if !(lower0.contains("<svg") || lower0.contains("<style") || lower0.contains("<script")) {
-        return html.to_string();
+fn strip_inline_blocks(html: &str) -> Cow<'_, str> {
+    // Common case (no inline block): borrow the input untouched. The former guard
+    // allocated a full lowercased copy of `html` solely for three `contains`
+    // checks, then — on the no-block path — allocated the buffer AGAIN via
+    // `to_string()`. `find_ascii_ci` is a zero-alloc, NEON substring scan and
+    // `to_ascii_lowercase().contains(ascii_needle)` is exactly ASCII-CI matching,
+    // so this is byte-for-byte equivalent while turning two per-call full-buffer
+    // allocations into zero on the overwhelmingly common no-block path.
+    if find_ascii_ci(html, "<svg").is_none()
+        && find_ascii_ci(html, "<style").is_none()
+        && find_ascii_ci(html, "<script").is_none()
+    {
+        return Cow::Borrowed(html);
     }
     let mut s = html.to_string();
     for tag in ["svg", "style", "script"] {
@@ -181,7 +213,7 @@ fn strip_inline_blocks(html: &str) -> String {
             s.replace_range(start..end, " ");
         }
     }
-    s
+    Cow::Owned(s)
 }
 
 /// Extract the most relevant sentence fragment from a snippet by
