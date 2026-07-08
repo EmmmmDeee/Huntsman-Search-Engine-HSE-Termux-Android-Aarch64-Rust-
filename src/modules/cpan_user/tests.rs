@@ -137,6 +137,39 @@ fn extracts_email_from_biography() {
 }
 
 #[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // build_entities constructs a Person (name) and an Address/Coordinates
+    // (location) in addition to the Email/Username the override already
+    // credits — the same under-declared-coverage gap already fixed for the
+    // sibling "profile lookup" modules (github_user/dockerhub_user/
+    // codewars_user/mastodon_user/sourceforge_user/bitbucket_user/
+    // rubygems_user/gitlab_user).
+    let techniques = CpanUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1589.002"),
+        "Email Addresses: public emails + biography-extracted emails"
+    );
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: Person from the real `name` field"
+    );
+    assert!(
+        techniques.contains(&"T1591.001"),
+        "Determine Physical Locations: Address/Coordinates from `location`"
+    );
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the Username via the MetaCPAN/PAUSE profile itself"
+    );
+    for id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "declared technique {id} must exist in the Reconnaissance catalogue"
+        );
+    }
+}
+
+#[test]
 fn empty_pauseid_returns_no_entities() {
     let author = CpanAuthor {
         pauseid: String::new(),
