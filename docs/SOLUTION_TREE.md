@@ -919,31 +919,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
 - **`ANCHORING_GEO_SOURCES` allowlist omissions (found closing FT.14,
-  2026-07-08).** **`wifi_intel` delivered 2026-07-08** (SOL-WIFI-INTEL-ANCHOR):
-  independently re-verified as the identical `bssid_locate`→`wigle` API
-  mechanism the merge history (`docs/MODULES.md`) confirms it absorbed, so it
-  was added to the allowlist on that specific evidence, not by kinship alone.
-  **`mls` delivered 2026-07-08** (SOL-MLS-ANCHOR, see §5): its own doc comment
-  names it "a third corroboration source alongside WiGLE and Mylnikov" for the
-  identical `MacAddress`-only lookup those two already anchor with —
-  independently confirmed via `accepts()` (both restricted to
-  `TargetKind::MacAddress`) before adding. **`cell_intel`/`cell_local`
-  REFUTED, 2026-07-08 (see §5):** the original note assumed "same
-  first-party-sensor spirit as `signal_radar`/`device_sensors`," but direct
-  code reading found the opposite — both modules resolve their `Coordinates`
-  via the SAME OpenCelliD database the already-excluded standalone
-  `opencellid` module queries (`cell_intel` calls it live, `cell_local` reads
-  an offline cache of it), or an even coarser MCC→country-centroid fallback;
-  neither is a first-party device fix, so adding them would reopen the exact
-  `ip_geo`/`opencellid` bug class the FT.14 fix closed. Not a gap — closed by
-  refutation, no allowlist change. *Remaining, still not started:*
-  `qld_cadastre` (its own doc calls itself "the coordinate-keyed complement to
-  `au_property`," which is allowlisted) and `employer_pivot` (workplace
-  address, same conceptual bucket as the allowlisted business-registry
-  sources). Each needs its own field-level verification (mirroring the
-  T2.27-32 `attack_techniques()` sweep's "one module at a time" discipline,
-  and this arc's own precedent of finding direct evidence — positive OR
-  negative — rather than reasoning from kinship alone) — not a batch add.
+  2026-07-08) — CLOSED, all 5 candidates resolved.** `wifi_intel` delivered
+  (SOL-WIFI-INTEL-ANCHOR: identical `bssid_locate`→`wigle` API mechanism the
+  merge history confirms it absorbed). `mls` delivered (SOL-MLS-ANCHOR: its
+  own doc comment names it a third corroboration source alongside the
+  allowlisted `wigle`/`mylnikov`, identical `MacAddress`-only `accepts()`).
+  `cell_intel`/`cell_local` REFUTED (both resolve `Coordinates` via the same
+  OpenCelliD database the already-excluded `opencellid` queries, or an even
+  coarser MCC-centroid fallback — not first-party telemetry). `qld_cadastre`
+  REFUTED, 2026-07-08: `accepts()` restricted to `TargetKind::Coordinates`
+  only — it enriches an ALREADY-established coordinate with cadastral
+  metadata, never independently discovers or names-ties a location; the same
+  "coordinate-keyed enrichment" shape as `au_geo` from the FT.14 fix.
+  `employer_pivot` REFUTED, 2026-07-08: no allowlisted peer shares its
+  mechanism (unlike `wifi_intel`/`mls`) — the allowlisted business-registry
+  sources all derive their subject↔business link from a formal GOVERNMENT
+  REGISTER, while `employer_pivot` scrapes an arbitrary discovered `Email`-
+  domain/`Domain` target's public contact pages, a categorically weaker,
+  unverified linkage its own code comment documents a real misattribution
+  from (`dns@cloudflare.com` → Cloudflare's Sydney HQ). The engine's
+  wrong-identity gate covers only `Username`/`Person`, not `Email`/`Domain`,
+  so no person-identity check backs this linkage beyond the generic
+  expansion floor. This list is now off the open queue.
+- **`employer_pivot`'s `Domain`-target path has no person-linkage guard
+  (new, 2026-07-08, found refuting the allowlist candidate above).** Its
+  `Email`-target path excludes role-account local-parts
+  (`is_role_email_local`, added after an observed `dns@cloudflare.com` →
+  Cloudflare HQ misattribution), but a bare `Domain` target reaching this
+  module has no analogous check — only the engine's generic
+  confidence/corroboration expansion floor gates it, with no requirement
+  that the domain is genuinely tied to the subject as an employer. Not yet
+  started — a target-gating question distinct from the allowlist question it
+  was found alongside; needs its own scoped investigation (what would a
+  Domain-target person-linkage check even look for, since a bare domain
+  carries no local-part to check) rather than a rushed fix.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -4182,3 +4191,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   open on this list. Gate green: fmt/clippy `-D warnings`/rustdoc (private
   items) clean, full suite 0 failures (4445 lib tests), architecture suite
   green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — no code change.** Closed the FT.14 follow-up gap list's
+  last two candidates by direct-evidence refutation, and logged one new,
+  distinct, deliberately-deferred finding. **`qld_cadastre` REFUTED:**
+  `accepts()` is `TargetKind::Coordinates`-only and its own doc comment
+  states it emits no ownership link — it enriches an already-established
+  coordinate, the same "coordinate-keyed enrichment" shape the FT.14 fix
+  already excluded for `au_geo`; no independent signal, no allowlist change.
+  **`employer_pivot` REFUTED:** has no allowlisted mechanism-identical peer
+  (unlike `wifi_intel`/`mls`) — the allowlisted business-registry sources
+  all derive subject↔business linkage from a formal government register,
+  while `employer_pivot` scrapes an arbitrary discovered `Email`-domain/
+  `Domain` target's contact pages, a linkage its own code comment documents
+  a real past misattribution from (`dns@cloudflare.com` → Cloudflare's
+  Sydney HQ); the engine's wrong-identity gate covers only `Username`/
+  `Person`, leaving no person-identity check on this path at all. Allowing
+  it into `ANCHORING_GEO_SOURCES` risks reopening the exact bug class FT.14
+  closed via a different vector — refused. **New gap logged, deliberately
+  not fixed this cycle:** `employer_pivot`'s `Domain`-target path has no
+  analogue to its `Email`-path's role-account guard, so a bare, incidentally-
+  discovered domain gets no person-linkage check at all — a distinct
+  target-gating question, scoped for a future cycle rather than folded in
+  here to avoid scope creep on an unrelated design question (§4a). The
+  original 5-candidate gap list this cycle closes out is fully resolved: 2
+  delivered (`wifi_intel`, `mls`), 3 refuted (`cell_intel`/`cell_local`
+  together, `qld_cadastre`, `employer_pivot`). Gate re-run to confirm the
+  working tree is still green (fmt/clippy/doc clean, full suite 0 failures,
+  4445 lib tests, architecture suite 30/30 — unchanged from the prior
+  commit, as expected for a no-code-change reconciliation). **Paired:**
+  `PROBLEM_TREE` §8 — same commit.

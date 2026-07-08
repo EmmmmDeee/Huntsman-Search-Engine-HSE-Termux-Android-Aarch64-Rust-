@@ -5712,3 +5712,49 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   batch add. Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4445 lib tests, +1), architecture suite green
   (30/30). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08** — **Both remaining `ANCHORING_GEO_SOURCES` candidates
+  (`qld_cadastre`, `employer_pivot`) REFUTED — the FT.14 follow-up gap list
+  is now fully closed (2 delivered, 3 refuted); one new, distinct gap found
+  and deliberately deferred.** No code changed. Continued the gap-analysis
+  queue per priority order, reading each module directly rather than trusting
+  either the original speculative note or the "kinship" shorthand it used.
+  **`qld_cadastre` — REFUTED:** `accepts()` restricts it to
+  `TargetKind::Coordinates` ONLY, and its own doc comment states it is "the
+  coordinate-keyed complement to `au_property`... ownership itself is not
+  public, so this module deliberately emits none" — it only enriches an
+  ALREADY-ESTABLISHED coordinate with cadastral metadata (lot/plan/locality/
+  tenure), never independently discovers a location or ties one to a named
+  person. Structurally identical to `au_geo` (the FT.14 fix's own
+  "coordinate-keyed enrichment, no signal lost by excluding it" case) — not a
+  gap, correctly excluded already. **`employer_pivot` — REFUTED:** unlike
+  `wifi_intel`/`mls` (which matched an ALREADY-allowlisted peer's exact
+  mechanism), `employer_pivot` has no such peer — the allowlisted business-
+  registry sources (`abn_lookup`/`opencorporates`/`acnc_charities`/
+  `gleif_lei`/`asic_director`) all establish their subject↔business linkage
+  through a FORMAL GOVERNMENT REGISTER (director/proprietor/trustee/LEI-
+  holder, legally verified). `employer_pivot` instead scrapes an arbitrary
+  discovered `Email`-domain or bare `Domain` target's public contact pages —
+  a categorically weaker, unverified linkage. Its own code comment documents
+  a REAL, OBSERVED misattribution this already caused
+  (`dns@cloudflare.com` → Cloudflare's Sydney HQ wrongly attributed to the
+  scan subject) that required a role-email guard to partially contain.
+  Checked the engine's wrong-identity gate (`core/engine/mod.rs`'s expansion
+  loop): it explicitly covers only `Username`/`Person` kinds, NOT `Email`/
+  `Domain` — so an `employer_pivot`-derived address/coordinate carries no
+  person-identity verification beyond the generic confidence/corroboration
+  floor. Allowlisting it would risk reopening the exact "coarse/unverified
+  source treated as a confirmed subject fix" bug class FT.14 closed, via a
+  different vector. **New, distinct gap found (deliberately NOT fixed this
+  cycle, to avoid scope creep on an unrelated question):** the role-email
+  guard that protects `employer_pivot`'s `Email`-target path
+  (`target.kind == TargetKind::Email && is_role_email_local(local)`) has no
+  analogue for its `Domain`-target path — a `Domain` entity reaching this
+  module needs no person-identity relationship at all beyond the generic
+  expansion floor, so an incidentally-discovered, non-employer domain could
+  still have its contact address scraped and `employer-pivot`-tagged.
+  Logged for a future, independently-scoped cycle (a target-gating question,
+  not an `ANCHORING_GEO_SOURCES` one). Gate re-run to confirm the working
+  tree is still green (fmt/clippy/doc clean, full suite 0 failures, 4445 lib
+  tests, architecture suite 30/30 — unchanged from the prior commit, as
+  expected for a no-code-change reconciliation). **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
