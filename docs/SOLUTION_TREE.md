@@ -1035,6 +1035,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   array length. *Closes:* new node **T2.44**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-NPMAUTHOR-ATTACK-COMPLETE · `npm_author`'s
+  `attack_techniques()` now declares both techniques `build_entities`
+  actually earns — the second and final scoped-sweep fix touching
+  `tests/architecture.rs`'s ATT&CK pin, which is now fully accurate for
+  every module it references** — continuing the scoped-sweep list T2.44
+  left open. Its override `&["T1593.003"]` was genuine (a confirmed npm
+  registry profile Username), but omitted an `Email` from the
+  subject-owned author/publisher/maintainer record (T1589.002), a real,
+  already-unit-tested path, uncredited. No Person/Organisation/Address/
+  Coordinates fields exist on `Person`/`Package`; the Url/Domain pivots
+  get no separate technique, matching established sibling convention.
+  Declared the precise, complete set: `T1589.002`, `T1593.003`. Completed
+  the `attack_overrides_attribute_collection_modules_precisely` pin
+  update T2.44 began: `npm_author`'s assertion (left unchanged by T2.44)
+  is now widened to an exact `assert_eq!` against
+  `vec!["T1589.002", "T1593.003"]`. Confirmed the guard test failed first
+  before the pin update. No new adversarial Workflow review this cycle
+  (Ultracode is off), but re-confirmed by direct grep that no call site
+  of `attack_techniques()` assumes a fixed array length — the same
+  invariant T2.44's review established for the identical pin-split
+  shape. *Closes:* new node **T2.45**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1119,6 +1142,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HEXPM-ATTACK-COMPLETE | T2.42 | `[x]` |
 | SOL-DEVTO-ATTACK-COMPLETE | T2.43 | `[x]` |
 | SOL-CRATESIO-ATTACK-COMPLETE | T2.44 | `[x]` |
+| SOL-NPMAUTHOR-ATTACK-COMPLETE | T2.45 | `[x]` |
 
 ---
 
@@ -1159,16 +1183,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   in this arc that also required correcting a stale `tests/architecture.rs`
   pin, verified by an independent 3-lens Workflow adversarial review
   (factual-correctness/guard-integrity/parity, all CORRECT/NOT_WEAKENED/
-  PARITY_HOLDS) before recording. **14 remaining, deliberately left for
+  PARITY_HOLDS) before recording. `npm_author`'s pure-omission instance
+  **delivered 2026-07-08** (SOL-NPMAUTHOR-ATTACK-COMPLETE, closing T2.45,
+  see §5) — the second and final scoped-sweep fix touching the
+  `tests/architecture.rs` ATT&CK pin, which is now fully accurate for
+  every module it references. **13 remaining, deliberately left for
   future cycles** (one unit at a time by design): attack-mapping-completeness
-  cluster (6, same replace-instead-of-extend shape as `bitbucket_user`/T2.34,
+  cluster (5, same replace-instead-of-extend shape as `bitbucket_user`/T2.34,
   all independently re-verified 2026-07-08): `launchpad_user`/
-  `pypi_user`/`bluesky_user` (missing T1589.003 alone), `npm_author`
-  (missing T1589.002; still carries the `tests/architecture.rs`
-  `attack_overrides_attribute_collection_modules_precisely` pin —
-  `crates_io`'s half was unrolled and corrected 2026-07-08, `npm_author`'s
-  half deliberately left byte-for-byte unchanged pending its own fix — so
-  fixing it will touch that same test again, a separate assertion),
+  `pypi_user`/`bluesky_user` (missing T1589.003 alone),
   `stackoverflow_user` (replace-instead-of-extend dropped
   T1589.003), `steam_profile` (no override at all yet, inherits the bare
   Social default — needs a brand-new override added, not a modification —
@@ -1362,7 +1385,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-HUGGINGFACE-ATTACK-COMPLETE, 2026-07-08); **T2.42 `[x]`** ✅
   (SOL-HEXPM-ATTACK-COMPLETE, 2026-07-08); **T2.43 `[x]`** ✅
   (SOL-DEVTO-ATTACK-COMPLETE, 2026-07-08); **T2.44 `[x]`** ✅
-  (SOL-CRATESIO-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-CRATESIO-ATTACK-COMPLETE, 2026-07-08); **T2.45 `[x]`** ✅
+  (SOL-NPMAUTHOR-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4845,3 +4869,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4460 lib tests, +1), architecture suite
   green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-NPMAUTHOR-ATTACK-COMPLETE: closes T2.45, continuing
+  the scoped-sweep list T2.44 left open — the second and final
+  scoped-sweep fix touching `tests/architecture.rs`'s ATT&CK pin, now
+  fully accurate for every module it references.** Ultracode is off this
+  cycle. Independently re-read `src/modules/npm_author/mod.rs` in full
+  before touching anything, treating the gap list's own note as
+  unproven. Its override `&["T1593.003"]` was genuine (a confirmed npm
+  registry profile Username), but `build_entities` also constructs an
+  `Email` from the subject-owned author/publisher/maintainer record
+  (needs T1589.002), a real, already-unit-tested path
+  (`full_record_yields_username_email_and_urls` proves the positive
+  case, `co_maintainer_email_not_attributed_to_subject` proves a
+  mismatched co-maintainer's email is correctly excluded), uncredited.
+  No Person/Organisation/Address/Coordinates fields exist on
+  `Person`/`Package`; the Url/Domain pivots get no separate technique,
+  matching established sibling convention. Declared the precise,
+  complete set: `T1589.002`, `T1593.003`. Completed the
+  `attack_overrides_attribute_collection_modules_precisely` pin update
+  T2.44 began: `npm_author`'s assertion (left unchanged by T2.44) is now
+  widened to an exact `assert_eq!` against
+  `["T1589.002", "T1593.003"]`. Confirmed the guard test failed first
+  before the pin update. No new adversarial Workflow review this cycle,
+  but re-confirmed by direct grep that no call site of
+  `attack_techniques()` assumes a fixed array length — the same
+  invariant T2.44's review established for the identical pin-split
+  shape. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override
+  first). **`tests/architecture.rs`'s ATT&CK-override pin is now fully
+  accurate for every module it references — no remaining scoped-sweep
+  candidate touches it. §4a's attack-mapping-completeness cluster now 5,
+  down from 6** (`stackoverflow_user`, `steam_profile`,
+  `launchpad_user`, `pypi_user`, `bluesky_user` remain, deliberately
+  deferred to future one-at-a-time cycles). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures
+  (4461 lib tests, +1), architecture suite green (30/30). **Paired:**
+  `PROBLEM_TREE` §8 — same commit.

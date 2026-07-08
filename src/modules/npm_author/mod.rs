@@ -109,8 +109,28 @@ impl Module for NpmAuthor {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // npm author packages — ATT&CK Code Repositories (T1593.003).
-        &["T1593.003"]
+        // Package registry profile lookup — T1593.003 for the Username
+        // itself, not the Social-Media default (T1593.001) its category
+        // implies. This REPLACED the whole default array instead of
+        // substituting just that one technique — the same gap already
+        // fixed for the sibling "profile lookup" modules
+        // (github_user/dockerhub_user/codewars_user/mastodon_user/
+        // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+        // cpan_user/gitea_user/codeberg_user/huggingface_user/
+        // hexpm_user/devto/crates_io). `build_entities` also constructs
+        // an Email from the subject-owned author/publisher/maintainer
+        // record — it needs its own technique so the `attack:<ID>`
+        // provenance tag core::engine::dispatch stamps on every admitted
+        // entity actually matches what collected it. No
+        // Person/Organisation/Address/Coordinates fields exist on
+        // `Person`/`Package`, so no other technique applies; the
+        // Url/Domain pivots from package homepage/repository links get
+        // no separate technique, matching established sibling
+        // convention.
+        &[
+            "T1589.002", // Email Addresses — subject-owned email from author/publisher/maintainer records
+            "T1593.003", // Code Repositories — Username via the npm registry itself
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

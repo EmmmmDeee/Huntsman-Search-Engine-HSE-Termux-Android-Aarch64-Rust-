@@ -1559,6 +1559,55 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   not modified), `launchpad_user`, `pypi_user`, `bluesky_user` (6 left,
   down from 7). **P2** (a MITRE-provenance completeness gap: one real
   omission, not a crash or PII leak).
+- **`[x]` T2.45 · `npm_author`'s `attack_techniques()` omitted one real
+  technique it has — the second (and final) scoped-sweep fix requiring a
+  `tests/architecture.rs` pin update, completing the pin's split from
+  T2.44** — continuing the scoped-sweep list T2.44 deliberately left
+  open, independently re-read `src/modules/npm_author/mod.rs` in full
+  before touching any code (treating the gap list's own "missing
+  T1589.002; also pinned stale in `tests/architecture.rs`" note as
+  unproven). Its override was `&["T1593.003"]` — genuine (a confirmed npm
+  registry profile Username). But `build_entities` also demonstrably
+  constructs an `Email` from the subject-owned author/publisher/
+  maintainer record (needs T1589.002; the module's own doc header
+  advertises "frequently exposes the maintainer's real EMAIL") — a real,
+  already-unit-tested path (`full_record_yields_username_email_and_urls`,
+  which specifically asserts a subject-matched email is emitted while
+  `co_maintainer_email_not_attributed_to_subject` proves a mismatched
+  co-maintainer's email is excluded), uncredited. No Person/Organisation/
+  Address/Coordinates fields exist on `Person`/`Package`; the Url/Domain
+  pivots from package homepage/repository links get no separate
+  technique, matching established sibling convention. → **Solution:**
+  declared the precise, complete set — `T1589.002`, `T1593.003`. This
+  completes the `tests/architecture.rs`
+  `attack_overrides_attribute_collection_modules_precisely` pin update
+  T2.44 began: `npm_author`'s assertion (left byte-for-byte unchanged by
+  T2.44) is now widened to `vec!["T1589.002", "T1593.003"]` — the same
+  exact-literal `assert_eq!` style, never loosened to a subset/`contains`
+  check. **Confirmed the guard test itself fails first** before the pin
+  update (`left: ["T1589.002", "T1593.003"]` vs `right: ["T1593.003"]`),
+  proving the correction was genuinely needed. No new adversarial
+  Workflow review this cycle (Ultracode is off) — but the fix follows the
+  exact same reasoning already independently verified for `crates_io`'s
+  identical pin-split shape in T2.44, and every call site of
+  `attack_techniques()` was re-confirmed unaffected by direct grep (no
+  site assumes a fixed array length). Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.002` assertion; after the fix,
+  all 13 `npm_author` tests including this one pass, and the
+  previously-failing `attack_overrides_attribute_collection_modules_
+  precisely` guard test — confirmed to fail first, showing the exact
+  mismatched arrays — now passes). Gate green: fmt/clippy `-D warnings`/
+  rustdoc (private items) clean, full suite 0 failures (4461 lib tests,
+  +1), architecture suite green (30/30). **Remaining scoped-sweep
+  candidates, still deliberately not pursued:** `stackoverflow_user`,
+  `steam_profile` (no override at all yet — needs a new one added, not
+  modified), `launchpad_user`, `pypi_user`, `bluesky_user` (5 left, down
+  from 6) — **the `tests/architecture.rs` pin file is now fully
+  up-to-date for every module it references; no further scoped-sweep
+  candidate touches it.** **P2** (a MITRE-provenance completeness gap:
+  one real omission, not a crash or PII leak).
 
 ---
 
@@ -6659,3 +6708,47 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   override, not a modification), `launchpad_user`, `pypi_user`,
   `bluesky_user` (6 left, down from 7). **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+- **2026-07-08 — closed T2.45: `npm_author`'s `attack_techniques()` fixed
+  — added the one real, previously-uncredited technique (Email
+  Addresses); the second and final scoped-sweep fix touching the
+  `tests/architecture.rs` pin, which is now fully up to date.** Continued
+  the scoped-sweep list T2.44 left open, per priority order (no
+  in-progress node; T2.7/T2.14 still need bigger design decisions;
+  Ultracode is off this cycle). Selected `npm_author` as the next
+  candidate — next in documented queue order. Independently re-read
+  `src/modules/npm_author/mod.rs` in full before touching anything,
+  treating the gap list's own note as unproven. Its override was
+  `&["T1593.003"]` — genuine (a confirmed npm registry profile Username).
+  But `build_entities` also constructs an `Email` from the subject-owned
+  author/publisher/maintainer record (needs T1589.002), a real,
+  already-unit-tested path (`full_record_yields_username_email_and_urls`
+  proves the positive case; `co_maintainer_email_not_attributed_to_
+  subject` proves a mismatched co-maintainer's email is correctly
+  excluded, not just any email), uncredited. No Person/Organisation/
+  Address/Coordinates fields exist on `Person`/`Package`; the Url/Domain
+  pivots get no separate technique, matching established sibling
+  convention. → **Solution:** declared the precise, complete set —
+  `T1589.002`, `T1593.003`. Completed the `tests/architecture.rs` pin
+  update T2.44 began: `npm_author`'s assertion (left unchanged by T2.44,
+  since fixing it was a separate deferred unit) is now widened to
+  `vec!["T1589.002", "T1593.003"]`, same exact-literal `assert_eq!`
+  style. Confirmed the guard test failed first
+  (`left: ["T1589.002", "T1593.003"]` vs `right: ["T1593.003"]`) before
+  applying the pin update. Re-confirmed by direct grep that no call site
+  of `attack_techniques()` assumes a fixed array length (the same
+  invariant T2.44's Workflow adversarial review established for the
+  identical pin-split shape). Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.002` assertion; after the fix,
+  all 13 `npm_author` tests including this one pass, and the previously
+  red `attack_overrides_attribute_collection_modules_precisely` guard
+  test now passes). Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4461 lib tests, +1), architecture
+  suite green (30/30). **`tests/architecture.rs`'s ATT&CK-override pin is
+  now fully accurate for every module it references — no remaining
+  scoped-sweep candidate touches it.** **Remaining scoped-sweep
+  candidates, still deliberately not pursued:** `stackoverflow_user`,
+  `steam_profile` (needs a brand-new override, not a modification),
+  `launchpad_user`, `pypi_user`, `bluesky_user` (5 left, down from 6).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

@@ -420,15 +420,14 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             .unwrap_or_default()
     };
 
-    // Code repositories — NOT social media (T1593.001). `npm_author` is a
-    // pure package-registry lookup with no Person/Organisation/Address
-    // collection (its own separate Email-Addresses omission is tracked and
-    // deliberately deferred — see SOLUTION_TREE §4a), so Code Repositories
-    // alone is precise for it today.
+    // Code repositories — NOT social media (T1593.001). `npm_author` also
+    // collects a subject-owned email from author/publisher/maintainer
+    // records, so its precise set includes Email Addresses alongside Code
+    // Repositories (no Person/Organisation/Address collection exists here).
     assert_eq!(
         techniques("npm_author"),
-        vec!["T1593.003"],
-        "npm_author → Code Repositories"
+        vec!["T1589.002", "T1593.003"],
+        "npm_author → Code Repositories + Email Addresses"
     );
     assert!(
         !techniques("npm_author").contains(&"T1593.001"),

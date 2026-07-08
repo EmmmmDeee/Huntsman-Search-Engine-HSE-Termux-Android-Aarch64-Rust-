@@ -364,6 +364,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`npm_author`'s ATT&CK mapping no longer omits the one technique it
+  actually has.** Its override declared only `T1593.003` (Code
+  Repositories), silently omitting `T1589.002` (Email Addresses, for the
+  `Email` it builds from the subject-owned author/publisher/maintainer
+  record). Now declares the precise, complete set. Completes the
+  `tests/architecture.rs` pin correction started for `crates_io` — the
+  ATT&CK-override guard is now fully accurate for every module it
+  references. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`crates_io`'s ATT&CK mapping no longer omits the one technique it
   actually has.** Its override declared only `T1593.003` (Code
   Repositories), silently omitting `T1589.003` (Employee Names, for the
