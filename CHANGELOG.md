@@ -364,6 +364,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`steam_profile` now declares an ATT&CK mapping at all.** It never
+  overrode `attack_techniques()`, silently inheriting the bare
+  Social-category default (`T1589.003`, `T1593.001`) — correct as far as
+  it goes, but missing `T1591.001` (Determine Physical Locations) for the
+  `Address`/`Coordinates` it builds from the self-reported profile
+  `location`, geocoded via a real (non-stub) `city_coords` lookup. Now
+  declares the precise, complete set. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`stackoverflow_user`'s ATT&CK mapping no longer omits the one
   technique it actually has.** Its override declared only `T1591.001`
   (Determine Physical Locations, genuine — location-derived Address/

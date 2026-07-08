@@ -1075,6 +1075,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.46**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-STEAMPROFILE-ATTACK-COMPLETE · `steam_profile` gained its
+  first-ever `attack_techniques()` override — the first fix in this arc
+  that adds a new override rather than widening an existing one** —
+  continuing the scoped-sweep list T2.46 left open. The module never
+  declared its own override, silently inheriting the bare
+  Social-category default (`T1593.001`, `T1589.003`) — both genuinely
+  justified (a confirmed Steam profile `Url`/`Username`; a `Person` from
+  the real `realname` XML tag). But `extract_profile` also constructs an
+  `Address`/`Coordinates` from the self-reported `location` XML tag,
+  independently confirmed to route through a real, non-stub geocode
+  (`util::city_coords::city_coords`), needing `T1591.001`, never credited
+  because no override ever existed. No Email/Organisation fields exist
+  here, so `T1589.002`/`T1591.002` do not apply. Added a new, complete
+  override — `T1589.003`, `T1591.001`, `T1593.001` — extending the
+  inherited default rather than replacing it, the same doctrine every
+  prior scoped-sweep fix has followed. *Closes:* new node **T2.47**. ✅ 1
+  test (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed against the bare category default.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1161,6 +1179,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CRATESIO-ATTACK-COMPLETE | T2.44 | `[x]` |
 | SOL-NPMAUTHOR-ATTACK-COMPLETE | T2.45 | `[x]` |
 | SOL-STACKOVERFLOW-ATTACK-COMPLETE | T2.46 | `[x]` |
+| SOL-STEAMPROFILE-ATTACK-COMPLETE | T2.47 | `[x]` |
 
 ---
 
@@ -1210,15 +1229,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   closing T2.46, see §5), preceded by a 5-agent independent verification
   sweep across the whole remaining candidate list that confirmed zero
   new fabrication instances beyond `bitbucket_user`/T2.34 and
-  `rubygems_user`/T2.36. **12 remaining, deliberately left for future
-  cycles** (one unit at a time by design): attack-mapping-completeness
-  cluster (4, same replace-instead-of-extend shape as `bitbucket_user`/T2.34,
-  all independently re-verified 2026-07-08): `launchpad_user`/
-  `pypi_user`/`bluesky_user` (missing T1589.003 alone),
-  `steam_profile` (no override at all yet, inherits the bare Social
-  default — needs a brand-new override added, not a modification —
-  missing T1591.001 for its location-derived Address/Coordinates, driven
-  by a genuine non-stub `city_coords` geocode). New
+  `rubygems_user`/T2.36. `steam_profile` gained its first-ever
+  `attack_techniques()` override **delivered 2026-07-08**
+  (SOL-STEAMPROFILE-ATTACK-COMPLETE, closing T2.47, see §5) — the first
+  fix in this arc adding a new override rather than widening one. **11
+  remaining, deliberately left for future cycles** (one unit at a time by
+  design): attack-mapping-completeness cluster (3, same
+  replace-instead-of-extend shape as `bitbucket_user`/T2.34, all
+  independently re-verified 2026-07-08): `launchpad_user`/`pypi_user`/
+  `bluesky_user` (missing T1589.003 alone). New
   (2026-07-08, found while fixing T2.42): `hexpm_user::build_entities`'s
   cross-platform handle-pivot loop (`for (platform, linked_handle) in
   &user.handles`) iterates a `HashMap<String, String>` with no key sort
@@ -1410,7 +1429,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-DEVTO-ATTACK-COMPLETE, 2026-07-08); **T2.44 `[x]`** ✅
   (SOL-CRATESIO-ATTACK-COMPLETE, 2026-07-08); **T2.45 `[x]`** ✅
   (SOL-NPMAUTHOR-ATTACK-COMPLETE, 2026-07-08); **T2.46 `[x]`** ✅
-  (SOL-STACKOVERFLOW-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-STACKOVERFLOW-ATTACK-COMPLETE, 2026-07-08); **T2.47 `[x]`** ✅
+  (SOL-STEAMPROFILE-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4959,3 +4979,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
   clean, full suite 0 failures (4462 lib tests, +1), architecture suite
   green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-STEAMPROFILE-ATTACK-COMPLETE: closes T2.47,
+  continuing the scoped-sweep list T2.46 left open — the first fix in
+  this arc that adds a brand-new `attack_techniques()` override rather
+  than widening an existing one.** Independently re-read
+  `src/modules/steam_profile/mod.rs` in full before touching anything,
+  treating both the gap list's claim and the prior verification sweep's
+  finding as unproven until re-confirmed directly. Confirmed no
+  `attack_techniques()` override exists anywhere in the module, so it
+  silently inherits `core::module::Module`'s default —
+  `techniques_for_category(ModuleCategory::Social)` =
+  `["T1593.001", "T1589.003"]` — both genuinely justified (a confirmed
+  Steam profile `Url`/`Username`; a `Person` from the real `realname`
+  tag). But `extract_profile` also constructs an `Address`/`Coordinates`
+  from the self-reported `location` tag, independently confirmed to
+  route through a real, non-stub geocode
+  (`util::city_coords::city_coords`, a hardcoded CITIES table plus an
+  AU-postcode-centroid fallback — read the function body directly to
+  rule out a stub), needing T1591.001, never credited since no override
+  ever declared it. No Email/Organisation fields exist here, so
+  T1589.002/T1591.002 do not apply. Added a new, complete override —
+  `T1589.003`, `T1591.001`, `T1593.001` — extending the inherited default
+  rather than replacing it, the same doctrine every prior scoped-sweep
+  fix has followed. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed: written and run against the module before the
+  override existed, panicked on the missing T1591.001 assertion against
+  the bare category default). No `tests/architecture.rs` pin referenced
+  `steam_profile`. **§4a's attack-mapping-completeness cluster now 3,
+  down from 4** (`launchpad_user`, `pypi_user`, `bluesky_user` remain,
+  deliberately deferred to future one-at-a-time cycles). Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
+  failures (4463 lib tests, +1), architecture suite green (30/30).
+  **Paired:** `PROBLEM_TREE` §8 — same commit.

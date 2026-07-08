@@ -53,9 +53,29 @@ impl Module for SteamProfile {
     }
 
     fn category(&self) -> ModuleCategory {
-        // Gaming presence is social-media presence; the Social-category default
-        // ATT&CK technique is correct, so `attack_techniques()` derives from it.
+        // Gaming presence is social-media presence, so the Social category
+        // is correct.
         ModuleCategory::Social
+    }
+
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // This module never declared its own override, silently inheriting
+        // the bare Social-category default (T1593.001 Social Media,
+        // T1589.003 Employee Names) — correct as far as it goes (a
+        // confirmed Steam profile Url/Username, and a Person from the
+        // real `realname` field), but `extract_profile` also constructs
+        // an Address/Coordinates from the self-reported `location` tag
+        // (via a real, non-stub `util::city_coords::city_coords`
+        // geocode), which needs T1591.001 and was never credited — the
+        // same under-declared-coverage gap already fixed for the sibling
+        // "profile lookup" modules, just via a missing override instead
+        // of an incomplete one. No Email/Organisation fields exist here,
+        // so T1589.002/T1591.002 do not apply.
+        &[
+            "T1589.003", // Employee Names — Person from the real `realname` field
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from `location`
+            "T1593.001", // Social Media — Steam profile presence is the module's core mechanism
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

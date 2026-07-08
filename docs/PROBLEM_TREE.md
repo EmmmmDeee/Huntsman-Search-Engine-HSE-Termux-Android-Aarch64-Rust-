@@ -1645,6 +1645,39 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   added, not modified), `launchpad_user`, `pypi_user`, `bluesky_user` (4
   left, down from 5). **P2** (a MITRE-provenance completeness gap: one
   real omission, not a crash or PII leak).
+- **`[x]` T2.47 · `steam_profile` never declared its own
+  `attack_techniques()` override, silently inheriting the bare
+  Social-category default — the first fix in the scoped-sweep arc that
+  adds a brand-new override rather than widening an existing one** —
+  continuing the scoped-sweep list T2.46 deliberately left open,
+  independently re-read `src/modules/steam_profile/mod.rs` in full
+  before touching any code (treating both the gap list's own claim and
+  the prior cycle's verification sweep's finding as unproven until
+  re-confirmed directly). Confirmed no `attack_techniques()` function
+  exists anywhere in the `impl Module for SteamProfile` block, so it
+  inherits `core::module::Module`'s default trait impl —
+  `techniques_for_category(self.category())` — which for
+  `ModuleCategory::Social` is `["T1593.001", "T1589.003"]`. Those two
+  inherited IDs are genuinely justified: `extract_profile` constructs a
+  confirmed-Steam-profile `Url`/`Username` (Social Media, T1593.001) and
+  a `Person` from the real `realname` XML tag (Employee Names,
+  T1589.003) — but the module also demonstrably constructs an
+  `Address`/`Coordinates` from the self-reported `location` XML tag,
+  independently confirmed to route through a real, non-stub geocode
+  (`util::city_coords::city_coords`, a hardcoded CITIES table plus an
+  AU-postcode-centroid fallback, not a lookup that always returns
+  `None`) — needing T1591.001 (Determine Physical Locations), never
+  credited because no override ever existed to declare it. No
+  Email/Organisation fields exist here, so T1589.002/T1591.002 do not
+  apply. → **Solution:** added a new, complete `attack_techniques()`
+  override — `T1589.003`, `T1591.001`, `T1593.001` — extending the
+  inherited default rather than replacing it (the doctrine every other
+  scoped-sweep fix in this arc has followed, applied here for the first
+  time to a module that previously had no override at all). **Remaining
+  scoped-sweep candidates from the same list, still deliberately not
+  pursued:** `launchpad_user`, `pypi_user`, `bluesky_user` (3 left, down
+  from 4). **P2** (a MITRE-provenance completeness gap: one real
+  omission, not a crash or PII leak).
 
 ---
 
@@ -6834,4 +6867,42 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   deliberately not pursued:** `steam_profile` (needs a brand-new
   override, not a modification), `launchpad_user`, `pypi_user`,
   `bluesky_user` (4 left, down from 5). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+- **2026-07-08 — closed T2.47: `steam_profile` gained its first-ever
+  `attack_techniques()` override — Employee Names, Determine Physical
+  Locations, Social Media — the first fix in this arc that adds a new
+  override rather than widening an existing one.** Continued the
+  scoped-sweep list T2.46 left open, per priority order (no in-progress
+  node; T2.7/T2.14 still need bigger design decisions). Selected
+  `steam_profile` as the next candidate — next in documented queue
+  order. Independently re-read `src/modules/steam_profile/mod.rs` in
+  full before touching anything, treating both the gap list's claim and
+  the prior verification sweep's finding as unproven until re-confirmed.
+  Confirmed no `attack_techniques()` override exists anywhere in the
+  module, so it silently inherits `core::module::Module`'s default —
+  `techniques_for_category(ModuleCategory::Social)` =
+  `["T1593.001", "T1589.003"]` — both genuinely justified (a confirmed
+  Steam profile `Url`/`Username`; a `Person` from the real `realname`
+  tag). But `extract_profile` also constructs an `Address`/`Coordinates`
+  from the self-reported `location` tag, independently confirmed to
+  route through a real, non-stub geocode
+  (`util::city_coords::city_coords`, a hardcoded CITIES table plus an
+  AU-postcode-centroid fallback — read the function body directly to
+  rule out a stub), needing T1591.001, never credited since no override
+  ever declared it. No Email/Organisation fields exist here, so
+  T1589.002/T1591.002 do not apply. → **Solution:** added a new, complete
+  override — `T1589.003`, `T1591.001`, `T1593.001` — extending the
+  inherited default rather than replacing it, the same doctrine every
+  prior scoped-sweep fix has followed. Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the module before the
+  override existed, it panicked on the missing `T1591.001` assertion
+  against the bare category default; after adding the override, all 6
+  non-ignored `steam_profile` tests including this one pass). No
+  `tests/architecture.rs` pin references `steam_profile` (confirmed by
+  direct grep). Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4463 lib tests, +1), architecture
+  suite green (30/30). **Remaining scoped-sweep candidates, still
+  deliberately not pursued:** `launchpad_user`, `pypi_user`,
+  `bluesky_user` (3 left, down from 4). **Paired:** `SOLUTION_TREE` §5 —
   same commit.

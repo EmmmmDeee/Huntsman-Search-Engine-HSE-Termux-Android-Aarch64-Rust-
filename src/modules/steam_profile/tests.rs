@@ -103,6 +103,42 @@ fn is_free_social_module() {
     assert!(!m.accepts(&Target::new(TargetKind::Email, "a@b.com")));
 }
 
+#[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // extract_profile constructs an Address/Coordinates from the
+    // self-reported `location` tag (via a real, non-stub
+    // `util::city_coords::city_coords` geocode) in addition to the
+    // Person/Username/Url the bare Social-category default already
+    // credits — the same under-declared-coverage gap already fixed for
+    // the sibling "profile lookup" modules (github_user/dockerhub_user/
+    // codewars_user/mastodon_user/sourceforge_user/bitbucket_user/
+    // rubygems_user/gitlab_user/cpan_user/gitea_user/codeberg_user/
+    // huggingface_user/hexpm_user/devto/crates_io/npm_author/
+    // stackoverflow_user). Unlike those siblings, this module has no
+    // existing override at all — it silently inherited the bare default
+    // instead of ever declaring one, so this is the first fix in the
+    // arc that ADDS an override rather than widening one.
+    let techniques = SteamProfile.attack_techniques();
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: Person from the real `realname` field"
+    );
+    assert!(
+        techniques.contains(&"T1591.001"),
+        "Determine Physical Locations: Address/Coordinates from `location`"
+    );
+    assert!(
+        techniques.contains(&"T1593.001"),
+        "Social Media: Steam profile presence is the module's core mechanism"
+    );
+    for id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "declared technique {id} must exist in the Reconnaissance catalogue"
+        );
+    }
+}
+
 /// Live end-to-end proof against the REAL Steam community XML — no mock.
 /// Ignored by default (network + non-deterministic upstream); run with
 /// `cargo test -p huntsman-search-engine steam_profile_live -- --ignored --nocapture`.
