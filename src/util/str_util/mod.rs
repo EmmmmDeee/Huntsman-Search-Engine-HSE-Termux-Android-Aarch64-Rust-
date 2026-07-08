@@ -408,7 +408,25 @@ pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     if hb.len() < nb.len() {
         return None;
     }
-    (0..=hb.len() - nb.len()).find(|&i| hb[i..i + nb.len()].eq_ignore_ascii_case(nb))
+    // Only an offset whose byte equals the needle's first byte (in either ASCII
+    // case) can begin a match, so jump straight to those candidates with a SIMD
+    // byte search (NEON on Termux aarch64) instead of running `eq_ignore_ascii_case`
+    // at every offset — the naive scan's cost. `memchr` yields candidates in
+    // ascending order, so `.find` still returns the lowest matching offset,
+    // preserving the exact contract. `search` is bounded so a candidate always has
+    // room for the whole needle; `hb[i..i + nb.len()]` therefore never overruns.
+    let last = hb.len() - nb.len();
+    let search = &hb[..=last];
+    let n0 = nb[0];
+    let verify = |i: usize| hb[i..i + nb.len()].eq_ignore_ascii_case(nb);
+    let (lo, hi) = (n0.to_ascii_lowercase(), n0.to_ascii_uppercase());
+    if lo == hi {
+        // Caseless first byte (digit, punctuation, or non-ASCII): one byte class.
+        memchr::memchr_iter(n0, search).find(|&i| verify(i))
+    } else {
+        // ASCII letter: match either case of the first byte in a single pass.
+        memchr::memchr2_iter(lo, hi, search).find(|&i| verify(i))
+    }
 }
 
 #[cfg(test)]
