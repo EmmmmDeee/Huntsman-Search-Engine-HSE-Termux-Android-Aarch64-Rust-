@@ -364,6 +364,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`crates_io`'s ATT&CK mapping no longer omits the one technique it
+  actually has.** Its override declared only `T1593.003` (Code
+  Repositories), silently omitting `T1589.003` (Employee Names, for the
+  `Person` it builds from the real `name` field). Now declares the
+  precise, complete set. Also corrected a stale `tests/architecture.rs`
+  pin that asserted `crates_io`'s technique array alongside
+  `npm_author`'s with a comment claiming neither module collects a
+  `Person` — no longer true for `crates_io`; `npm_author`'s half of that
+  pin is left unchanged pending its own separate fix. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`devto`'s ATT&CK mapping no longer omits two techniques it actually
   has.** Its override declared only `T1589.002` (Email Addresses, genuine
   — bio-extracted emails) and `T1593.001` (Social Media, genuine — Dev.to

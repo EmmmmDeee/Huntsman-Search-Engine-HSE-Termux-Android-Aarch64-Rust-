@@ -1000,6 +1000,41 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **T2.43**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-CRATESIO-ATTACK-COMPLETE · `crates_io`'s `attack_techniques()`
+  now declares both techniques `build_entities` actually earns — the
+  first scoped-sweep fix that also required correcting a stale
+  `tests/architecture.rs` pin, verified by an independent 3-lens Workflow
+  adversarial review before recording/gating** — continuing the
+  scoped-sweep list T2.43 left open. Its override `&["T1593.003"]` was
+  genuine (a confirmed crates.io profile Username), but omitted a
+  `Person` from the real `name` field (T1589.003), a real,
+  already-unit-tested path, uncredited. No Email/Organisation/Address/
+  Coordinates fields exist on `CrateUser`; the GitHub username pivot
+  extracted from `url` gets no separate technique, matching the
+  `hexpm_user`/T2.42 precedent (identical Username+Person+Url shape).
+  Declared the precise, complete set: `T1589.003`, `T1593.003`. Also
+  unrolled `tests/architecture.rs`'s
+  `attack_overrides_attribute_collection_modules_precisely` test — which
+  pinned `crates_io` and `npm_author` together in one shared loop
+  asserting both equal `vec!["T1593.003"]` with a now-stale comment — into
+  two independent assertions: `crates_io`'s widened to an exact
+  `assert_eq!` against `vec!["T1589.003", "T1593.003"]` (never loosened
+  to a subset check), `npm_author`'s left byte-for-byte unchanged
+  (fixing it is a separate, still-deferred unit). Confirmed the guard
+  test itself failed first (`left: ["T1589.003", "T1593.003"]` vs
+  `right: ["T1593.003"]`) before the pin update, proving the correction
+  was genuinely needed. Because this was the arc's first edit to a
+  guarded cross-module pin, ran an independent Workflow adversarial
+  review (3 parallel agents — factual-correctness, guard-integrity,
+  parity) against the exact diff before proceeding, rather than trusting
+  a single read: all three returned a clean verdict (CORRECT /
+  NOT_WEAKENED / PARITY_HOLDS), with factual-correctness independently
+  confirming `npm_author`'s `build_entities` never constructs a `Person`
+  (its unchanged expectation is itself correct, not an oversight) and
+  parity confirming no call site of `attack_techniques()` assumes a fixed
+  array length. *Closes:* new node **T2.44**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1083,6 +1118,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HUGGINGFACE-ATTACK-COMPLETE | T2.41 | `[x]` |
 | SOL-HEXPM-ATTACK-COMPLETE | T2.42 | `[x]` |
 | SOL-DEVTO-ATTACK-COMPLETE | T2.43 | `[x]` |
+| SOL-CRATESIO-ATTACK-COMPLETE | T2.44 | `[x]` |
 
 ---
 
@@ -1118,17 +1154,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-DEVTO-ATTACK-COMPLETE, closing T2.43, see §5) — its existing
   T1593.001 (Social Media) claim was confirmed genuine (Dev.to really is
   a social/forum platform, unlike the mis-declared-Social code-hosting
-  siblings). **15 remaining, deliberately left for future cycles** (one
-  unit at a time by design): attack-mapping-completeness cluster (7, same
-  replace-instead-of-extend shape as `bitbucket_user`/T2.34, all
-  independently re-verified 2026-07-08): `launchpad_user`/
-  `pypi_user`/`bluesky_user` (missing T1589.003 alone), `crates_io`/`npm_author` (missing
-  T1589.003/T1589.002 respectively; each carries a `tests/architecture.rs`
-  pin — `attack_overrides_attribute_collection_modules_precisely` —
-  asserting their exact technique array with a comment claiming "no
-  Person/Organisation/Address collection" that is factually stale for
-  both; fixing either requires updating that pin's expected array in the
-  same commit), `stackoverflow_user` (replace-instead-of-extend dropped
+  siblings). `crates_io`'s pure-omission instance **delivered 2026-07-08**
+  (SOL-CRATESIO-ATTACK-COMPLETE, closing T2.44, see §5) — the first fix
+  in this arc that also required correcting a stale `tests/architecture.rs`
+  pin, verified by an independent 3-lens Workflow adversarial review
+  (factual-correctness/guard-integrity/parity, all CORRECT/NOT_WEAKENED/
+  PARITY_HOLDS) before recording. **14 remaining, deliberately left for
+  future cycles** (one unit at a time by design): attack-mapping-completeness
+  cluster (6, same replace-instead-of-extend shape as `bitbucket_user`/T2.34,
+  all independently re-verified 2026-07-08): `launchpad_user`/
+  `pypi_user`/`bluesky_user` (missing T1589.003 alone), `npm_author`
+  (missing T1589.002; still carries the `tests/architecture.rs`
+  `attack_overrides_attribute_collection_modules_precisely` pin —
+  `crates_io`'s half was unrolled and corrected 2026-07-08, `npm_author`'s
+  half deliberately left byte-for-byte unchanged pending its own fix — so
+  fixing it will touch that same test again, a separate assertion),
+  `stackoverflow_user` (replace-instead-of-extend dropped
   T1589.003), `steam_profile` (no override at all yet, inherits the bare
   Social default — needs a brand-new override added, not a modification —
   missing T1591.001 for its location-derived Address/Coordinates). New
@@ -1320,7 +1361,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-CODEBERG-ATTACK-COMPLETE, 2026-07-08); **T2.41 `[x]`** ✅
   (SOL-HUGGINGFACE-ATTACK-COMPLETE, 2026-07-08); **T2.42 `[x]`** ✅
   (SOL-HEXPM-ATTACK-COMPLETE, 2026-07-08); **T2.43 `[x]`** ✅
-  (SOL-DEVTO-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-DEVTO-ATTACK-COMPLETE, 2026-07-08); **T2.44 `[x]`** ✅
+  (SOL-CRATESIO-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4764,3 +4806,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4459
   lib tests, +1), architecture suite green (30/30). **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-CRATESIO-ATTACK-COMPLETE: closes T2.44, continuing
+  the scoped-sweep list T2.43 left open — the first fix in this arc that
+  also required correcting a stale `tests/architecture.rs` pin.**
+  Ultracode was on this cycle. Independently re-read
+  `src/modules/crates_io/mod.rs` in full before touching anything,
+  treating the gap list's own note as unproven. Its override
+  `&["T1593.003"]` was genuine (a confirmed crates.io profile Username),
+  but `build_entities` also constructs a `Person` from the real `name`
+  field (needs T1589.003), a real, already-unit-tested path, uncredited.
+  No Email/Organisation/Address/Coordinates fields exist on `CrateUser`;
+  the GitHub username pivot extracted from `url` gets no separate
+  technique, matching the `hexpm_user`/T2.42 precedent (identical
+  Username+Person+Url shape). Declared the precise, complete set:
+  `T1589.003`, `T1593.003`. Also unrolled `tests/architecture.rs`'s
+  `attack_overrides_attribute_collection_modules_precisely` test — which
+  pinned `crates_io` and `npm_author` together in one shared loop with a
+  now-stale comment — into two independent assertions: `crates_io`
+  widened to an exact `assert_eq!` against `["T1589.003", "T1593.003"]`
+  (never loosened to a subset check), `npm_author` left byte-for-byte
+  unchanged. Confirmed the guard test itself failed first
+  (`left: ["T1589.003", "T1593.003"]` vs `right: ["T1593.003"]`) before
+  the pin update. Because this was the arc's first edit to a guarded
+  cross-module pin, ran an independent Workflow adversarial review (3
+  parallel agents — factual-correctness, guard-integrity, parity) against
+  the exact diff before recording/gating: all three returned a clean
+  verdict (CORRECT / NOT_WEAKENED / PARITY_HOLDS); factual-correctness
+  independently confirmed `npm_author`'s `build_entities` never
+  constructs a `Person` (its unchanged expectation is itself correct);
+  parity confirmed no call site of `attack_techniques()` assumes a fixed
+  array length. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override
+  first). **§4a's attack-mapping-completeness cluster now 6, down from 7**
+  (`npm_author` — still carries the other half of the same pin,
+  `stackoverflow_user`, `steam_profile`, `launchpad_user`, `pypi_user`,
+  `bluesky_user` remain, deliberately deferred to future one-at-a-time
+  cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4460 lib tests, +1), architecture suite
+  green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.

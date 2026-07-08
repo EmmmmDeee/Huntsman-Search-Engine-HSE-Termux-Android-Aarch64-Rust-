@@ -420,21 +420,33 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             .unwrap_or_default()
     };
 
-    // Code repositories — NOT social media (T1593.001). `crates_io` and
-    // `npm_author` are pure package-registry lookups with no Person/
-    // Organisation/Address collection, so Code Repositories alone is precise
-    // for them.
-    for name in ["crates_io", "npm_author"] {
-        assert_eq!(
-            techniques(name),
-            vec!["T1593.003"],
-            "{name} → Code Repositories"
-        );
-        assert!(
-            !techniques(name).contains(&"T1593.001"),
-            "{name} must no longer claim Social Media"
-        );
-    }
+    // Code repositories — NOT social media (T1593.001). `npm_author` is a
+    // pure package-registry lookup with no Person/Organisation/Address
+    // collection (its own separate Email-Addresses omission is tracked and
+    // deliberately deferred — see SOLUTION_TREE §4a), so Code Repositories
+    // alone is precise for it today.
+    assert_eq!(
+        techniques("npm_author"),
+        vec!["T1593.003"],
+        "npm_author → Code Repositories"
+    );
+    assert!(
+        !techniques("npm_author").contains(&"T1593.001"),
+        "npm_author must no longer claim Social Media"
+    );
+    // `crates_io` is also Code Repositories rather than Social Media for its
+    // Username discovery, but — unlike `npm_author` — it additionally
+    // collects a real name (Person) from `user.name`, so its precise set
+    // includes Employee Names too.
+    assert_eq!(
+        techniques("crates_io"),
+        vec!["T1589.003", "T1593.003"],
+        "crates_io → Code Repositories + Employee Names"
+    );
+    assert!(
+        !techniques("crates_io").contains(&"T1593.001"),
+        "crates_io must no longer claim Social Media"
+    );
     // `github_user` is also Code Repositories rather than Social Media for its
     // Username discovery, but — unlike its two package-registry siblings
     // above — it additionally collects a real name (Person), published/gist/

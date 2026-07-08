@@ -137,6 +137,36 @@ use super::*;
     }
 
     #[test]
+    fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+        // build_entities constructs a Person from the real `name` field in
+        // addition to the Username/Url the override already credits — the
+        // same under-declared-coverage gap already fixed for the sibling
+        // "profile lookup" modules (github_user/dockerhub_user/
+        // codewars_user/mastodon_user/sourceforge_user/bitbucket_user/
+        // rubygems_user/gitlab_user/cpan_user/gitea_user/codeberg_user/
+        // huggingface_user/hexpm_user/devto). No Email/Organisation/
+        // Address/Coordinates fields exist on `CrateUser`, so no other
+        // technique applies; the GitHub username pivot extracted from
+        // `url` gets no separate technique, matching established sibling
+        // convention.
+        let techniques = CratesIo.attack_techniques();
+        assert!(
+            techniques.contains(&"T1589.003"),
+            "Employee Names: Person from the real `name` field"
+        );
+        assert!(
+            techniques.contains(&"T1593.003"),
+            "Code Repositories: the Username via the crates.io profile itself"
+        );
+        for id in techniques {
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "declared technique {id} must exist in the Reconnaissance catalogue"
+            );
+        }
+    }
+
+    #[test]
     fn placeholder_name_is_not_promoted_to_person() {
         // A template/placeholder full name must never be promoted to a Person
         // (the name is still recorded as a `name` attr on the username).

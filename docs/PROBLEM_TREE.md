@@ -1499,6 +1499,66 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `pypi_user`, `bluesky_user` (7 left, down from 8). **P2** (a
   MITRE-provenance completeness gap: two real omissions, not a crash or
   PII leak).
+- **`[x]` T2.44 · `crates_io`'s `attack_techniques()` omitted one real
+  technique it has — the first scoped-sweep fix that also required
+  updating a stale `tests/architecture.rs` pin in the same commit** —
+  continuing the scoped-sweep list T2.43 deliberately left open,
+  independently re-read `src/modules/crates_io/mod.rs` in full before
+  touching any code (treating the gap list's own "missing T1589.003;
+  also pinned stale in `tests/architecture.rs`" note as unproven). Its
+  override was `&["T1593.003"]` — genuine (a confirmed crates.io profile
+  Username). But `build_entities` also demonstrably constructs a `Person`
+  from the real `name` field (needs T1589.003, via
+  `profile_kit::person_from_name`) — a real, already-unit-tested path
+  (`full_record_yields_username_person_and_url`), uncredited. No
+  Email/Organisation/Address/Coordinates fields exist on `CrateUser`; the
+  GitHub username pivot extracted from `url` gets no separate technique,
+  matching established sibling convention (`hexpm_user`, T2.42, is the
+  nearest precedent: identical Username+Person+Url shape). →
+  **Solution:** declared the precise, complete set — `T1589.003`,
+  `T1593.003`. This is the first fix in the scoped-sweep list that also
+  required correcting `tests/architecture.rs`'s
+  `attack_overrides_attribute_collection_modules_precisely` test, which
+  pinned `crates_io` and `npm_author` together in one shared loop
+  asserting both equal `vec!["T1593.003"]` with a comment claiming "no
+  Person/Organisation/Address collection" — factually stale for
+  `crates_io` now that it declares T1589.003. Unrolled the shared loop
+  into two independent assertions: `crates_io`'s widened to
+  `vec!["T1589.003", "T1593.003"]` (an `assert_eq!` against the new exact
+  literal, not loosened to a subset/`contains` check), `npm_author`'s left
+  byte-for-byte unchanged at `vec!["T1593.003"]` since fixing it is a
+  separate, still-deferred unit. Given this was the arc's first edit to a
+  guarded cross-module pin file, ran an independent adversarial review
+  (Workflow tool, Ultracode was on: 3 parallel agents, each with a
+  distinct lens — factual-correctness, guard-integrity, parity) against
+  the exact diff before recording/gating. All three returned a clean
+  verdict: factual-correctness confirmed the `Person` construction line
+  and confirmed `npm_author`'s build_entities never constructs a `Person`
+  (so leaving it unchanged is itself correct, not an oversight);
+  guard-integrity confirmed the assertion style stayed an exact-literal
+  `assert_eq!` (not weakened to a looser check) and both `T1593.001`
+  negative-assertions remain enforced; parity enumerated every call site
+  of `attack_techniques()` (`core::module::mod.rs`'s `ModuleInfo::info`,
+  `core::engine::dispatch`'s 5 call sites incl. the actual `attack:<ID>`
+  tagging loop, `modules::mod.rs`'s `MODULE_TECHNIQUES` map,
+  `tests/architecture.rs`'s coverage guard) and confirmed none assumes a
+  fixed array length. Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.003` assertion; after the fix,
+  all 12 `crates_io` tests including this one pass, and the
+  previously-failing `attack_overrides_attribute_collection_modules_
+  precisely` guard test — confirmed to fail first, showing
+  `left: ["T1589.003", "T1593.003"]` vs `right: ["T1593.003"]` — now
+  passes). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4460 lib tests, +1), architecture suite
+  green (30/30). **Remaining scoped-sweep candidates, still deliberately
+  not pursued:** `npm_author` (needs the same `architecture.rs` pin file
+  touched again, separate assertion, missing T1589.002), `stackoverflow_
+  user`, `steam_profile` (no override at all yet — needs a new one added,
+  not modified), `launchpad_user`, `pypi_user`, `bluesky_user` (6 left,
+  down from 7). **P2** (a MITRE-provenance completeness gap: one real
+  omission, not a crash or PII leak).
 
 ---
 
@@ -6538,3 +6598,64 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `steam_profile` (needs a brand-new override, not a modification),
   `launchpad_user`, `pypi_user`, `bluesky_user` (7 left, down from 8).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08 — closed T2.44: `crates_io`'s `attack_techniques()` fixed —
+  added the one real, previously-uncredited technique (Employee Names).
+  The first scoped-sweep fix that also required correcting a stale
+  `tests/architecture.rs` pin, verified via an independent 3-lens
+  Workflow adversarial review before recording/gating.** Continued the
+  scoped-sweep list T2.43 left open, per priority order (no in-progress
+  node; T2.7/T2.14 still need bigger design decisions). Ultracode was on
+  this cycle. Selected `crates_io` as the next candidate — next in
+  documented queue order. Independently re-read
+  `src/modules/crates_io/mod.rs` in full before touching anything,
+  treating the gap list's own note as unproven. Its override was
+  `&["T1593.003"]` — genuine (a confirmed crates.io profile Username).
+  But `build_entities` also demonstrably constructs a `Person` from the
+  real `name` field (needs T1589.003), a real, already-unit-tested path
+  (`full_record_yields_username_person_and_url`), uncredited. No
+  Email/Organisation/Address/Coordinates fields exist on `CrateUser`; the
+  GitHub username pivot extracted from `url` gets no separate technique,
+  matching the `hexpm_user`/T2.42 precedent (identical
+  Username+Person+Url shape). → **Solution:** declared the precise,
+  complete set — `T1589.003`, `T1593.003`. Also unrolled
+  `tests/architecture.rs`'s `attack_overrides_attribute_collection_
+  modules_precisely` test — which pinned `crates_io` and `npm_author`
+  together in one shared loop asserting both equal `vec!["T1593.003"]`
+  with a now-stale "no Person/Organisation/Address collection" comment —
+  into two independent assertions: `crates_io`'s widened to
+  `vec!["T1589.003", "T1593.003"]` (still an `assert_eq!` against an
+  exact literal, never loosened to a subset check), `npm_author`'s left
+  byte-for-byte unchanged (fixing it is a separate, still-deferred unit).
+  **Confirmed the guard test itself fails first** before the pin update
+  (`left: ["T1589.003", "T1593.003"]` vs `right: ["T1593.003"]`), proving
+  the pin genuinely needed correcting, not just the module. Given this
+  was the arc's first edit to a guarded cross-module pin, ran an
+  independent adversarial review before recording (Workflow tool: 3
+  parallel agents, each a distinct lens on the exact diff) rather than
+  trusting my own read alone, per the hard constraint to never weaken a
+  guard: **factual-correctness** independently confirmed the `Person`
+  construction line and independently confirmed `npm_author`'s
+  `build_entities` never constructs a `Person` (so its unchanged
+  expectation is itself correct); **guard-integrity** confirmed the
+  assertion style stayed an exact-literal `assert_eq!` (not weakened to a
+  looser check) and both modules' `T1593.001` negative-assertions remain
+  enforced; **parity** enumerated every call site of
+  `attack_techniques()` (`ModuleInfo::info`, `core::engine::dispatch`'s 5
+  sites including the actual `attack:<ID>` tagging loop,
+  `MODULE_TECHNIQUES`, the coverage guard) and confirmed none assumes a
+  fixed array length. All three returned a clean verdict; no discrepancy
+  found. Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.003` assertion; after the fix,
+  all 12 `crates_io` tests including this one pass, and the previously
+  red `attack_overrides_attribute_collection_modules_precisely` guard
+  test now passes). Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4460 lib tests, +1), architecture
+  suite green (30/30). **Remaining scoped-sweep candidates, still
+  deliberately not pursued:** `npm_author` (needs the same
+  `architecture.rs` pin file touched again, separate assertion, missing
+  T1589.002), `stackoverflow_user`, `steam_profile` (needs a brand-new
+  override, not a modification), `launchpad_user`, `pypi_user`,
+  `bluesky_user` (6 left, down from 7). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.

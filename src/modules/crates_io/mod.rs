@@ -189,8 +189,26 @@ impl Module for CratesIo {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // crates.io author packages — ATT&CK Code Repositories (T1593.003).
-        &["T1593.003"]
+        // Package registry profile lookup — T1593.003 for the Username
+        // itself, not the Social-Media default (T1593.001) its category
+        // implies. This REPLACED the whole default array instead of
+        // substituting just that one technique — the same gap already
+        // fixed for the sibling "profile lookup" modules
+        // (github_user/dockerhub_user/codewars_user/mastodon_user/
+        // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+        // cpan_user/gitea_user/codeberg_user/huggingface_user/
+        // hexpm_user/devto). `build_entities` also constructs a Person
+        // from the real `name` field — it needs its own technique so the
+        // `attack:<ID>` provenance tag core::engine::dispatch stamps on
+        // every admitted entity actually matches what collected it. No
+        // Email/Organisation/Address/Coordinates fields exist on
+        // `CrateUser`, so no other technique applies; the GitHub username
+        // pivot extracted from `url` gets no separate technique, matching
+        // established sibling convention.
+        &[
+            "T1589.003", // Employee Names — Person from the real `name` field
+            "T1593.003", // Code Repositories — Username via the crates.io profile itself
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
