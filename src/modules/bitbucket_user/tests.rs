@@ -140,3 +140,37 @@ fn empty_nickname_returns_no_entities() {
     let user = make_user("", None, None, None, None, None);
     assert!(build_entities(user, "scan-bb-008").is_empty());
 }
+
+#[test]
+fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+    // Mirrors the github_user/dockerhub_user/codewars_user/mastodon_user/
+    // sourceforge_user regression: the override must not omit coverage for
+    // entity kinds `build_entities` actually constructs — every admitted
+    // entity's `attack:<ID>` provenance tag is sourced directly from this
+    // list (core::engine::dispatch). Also asserts T1589.002 is explicitly
+    // ABSENT: unlike those siblings, Bitbucket's API returns no bio/email
+    // field, so no `EntityKind::Email` is ever built here.
+    let techniques = BitbucketUser.attack_techniques();
+    assert!(
+        techniques.contains(&"T1593.003"),
+        "Code Repositories: the module's own username discovery mechanism"
+    );
+    assert!(
+        techniques.contains(&"T1589.003"),
+        "Employee Names: display_name becomes a Person entity"
+    );
+    assert!(
+        techniques.contains(&"T1591.001"),
+        "Determine Physical Locations: location becomes Address/Coordinates"
+    );
+    assert!(
+        !techniques.contains(&"T1589.002"),
+        "Email Addresses must not be claimed: no email field exists anywhere in BbUser"
+    );
+    for &id in techniques {
+        assert!(
+            crate::core::attack::technique(id).is_some(),
+            "{id} must be a catalogued Reconnaissance technique"
+        );
+    }
+}

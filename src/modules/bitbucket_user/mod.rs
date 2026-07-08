@@ -164,8 +164,23 @@ impl Module for BitbucketUser {
         ModuleCategory::Social
     }
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Code-repository profile — T1593.003; display_name → real identity — T1589.002.
-        &["T1589.002", "T1593.003"]
+        // Code-repository profile — T1593.003. `build_entities` also
+        // constructs a Person (`display_name`) and an Address/Coordinates
+        // (`location`) — the same under-declared-coverage gap fixed for the
+        // sibling "profile lookup" modules (`github_user`/`dockerhub_user`/
+        // `codewars_user`/`mastodon_user`/`sourceforge_user`). Unlike those
+        // siblings, Bitbucket's public API returns no bio/email field
+        // anywhere (`BbUser` has none, and no `EntityKind::Email` is ever
+        // built here) — the previous "display_name → real identity —
+        // T1589.002" comment conflated a real-NAME signal with the Email
+        // Addresses technique, which has no factual basis for this module
+        // and is dropped rather than kept. No `Organisation` entities are
+        // built here either, so T1591.002 does not apply.
+        &[
+            "T1589.003", // Employee Names — Person from display_name
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from location
+            "T1593.003", // Code Repositories — Username via the Bitbucket profile itself
+        ]
     }
     fn produces(&self) -> &'static [EntityKind] {
         const K: &[EntityKind] = &[

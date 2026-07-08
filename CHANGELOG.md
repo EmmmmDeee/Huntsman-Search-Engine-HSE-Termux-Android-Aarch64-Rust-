@@ -364,6 +364,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`bitbucket_user`'s ATT&CK mapping no longer fabricates an Email-Addresses
+  claim while omitting two techniques it actually has.** Its override
+  claimed `T1589.002` (Email Addresses) although the module never
+  constructs an `Email` entity anywhere, while silently omitting
+  `T1589.003` (Employee Names, for the `Person` it builds from
+  `display_name`) and `T1591.001` (Determine Physical Locations, for the
+  `Address`/`Coordinates` it builds from `location`). Now declares the
+  precise, complete set. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`employer_pivot` no longer scrapes a nameserver/registrar/CDN provider's
   contact page and attributes it to the scan subject.** A scanned domain's
   own nameservers surface as first-class `Domain` entities

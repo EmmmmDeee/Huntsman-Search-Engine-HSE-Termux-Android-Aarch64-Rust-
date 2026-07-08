@@ -1160,6 +1160,42 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   domains_deterministically` test still passing unmodified. **P2** (a
   correctness gap that could permanently wedge an operator-facing status
   endpoint and block all future self-updates, not a crash or PII leak).
+- **`[x]` T2.34 · `bitbucket_user`'s `attack_techniques()` both misattributed
+  a technique it has no basis for and omitted two it does — the 6th instance
+  of the `dockerhub_user`/T2.28 scoped-sweep list's replace-instead-of-extend
+  gap, and the first with a genuine over-claim, not just under-claim** — a
+  multi-angle discovery sweep re-surfaced the scoped future-sweep list
+  (`cpan_user`, `gitea_user`, `codeberg_user`, `huggingface_user`,
+  `hexpm_user`) plus several more modules of the identical shape never
+  previously catalogued (`gitlab_user`, `rubygems_user`, `devto`,
+  `crates_io`, `npm_author`, `stackoverflow_user`, `steam_profile`,
+  `launchpad_user`, `pypi_user`, `bluesky_user`), independently re-verified
+  before selecting the single most faulty instance rather than trusting the
+  sweep's own summaries. `bitbucket_user`'s override was
+  `&["T1589.002", "T1593.003"]` with a comment reading "display_name → real
+  identity — T1589.002" — but T1589.002 is Email Addresses, not a
+  real-identity technique, and `BbUser`'s own fields (nickname/display_name/
+  account_status/location/website/links) confirm no `EntityKind::Email` is
+  ever constructed anywhere in the module: the claim was fabricated from a
+  category-label mix-up, not a real code path. Meanwhile `build_entities`
+  demonstrably constructs `Person` (via `profile_kit::person_from_name` from
+  `display_name`, needs T1589.003) and `Address`/`Coordinates` (via
+  `profile_kit::location_address`/`location_coordinates` from `location`,
+  needs T1591.001) — both real, unit-tested code paths
+  (`emits_person_from_multi_word_display_name`,
+  `emits_address_from_location`), neither credited. → **Solution:** declared
+  the precise, complete set — `T1589.003` (Employee Names), `T1591.001`
+  (Determine Physical Locations), `T1593.003` (Code Repositories) — dropping
+  the fabricated `T1589.002` rather than keeping it alongside the missing
+  two (no `Organisation` entities are built here, so `T1591.002` correctly
+  does not apply). **Remaining scoped-sweep candidates deliberately not
+  pursued this cycle** (fixes one independently-verified module at a time by
+  design): `gitlab_user`, `cpan_user`, `gitea_user`, `codeberg_user`,
+  `huggingface_user`, `hexpm_user`, `devto`, `rubygems_user`, `crates_io`,
+  `npm_author`, `stackoverflow_user`, `steam_profile`, `launchpad_user`,
+  `pypi_user`, `bluesky_user`. **P2** (a MITRE-provenance correctness gap:
+  one fabricated technique claim plus two real omissions, not a crash or PII
+  leak).
 
 ---
 
@@ -5808,3 +5844,49 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full
   suite 0 failures (4449 lib tests, +4), architecture suite green (30/30).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08 — closed T2.34: `bitbucket_user`'s `attack_techniques()` fixed
+  (fabricated Email-Addresses claim dropped, two real omissions added).**
+  With the FT.14 follow-up list fully closed, no in-progress node, and
+  T2.7/T2.14 still needing bigger design decisions per established
+  precedent, ran a fresh multi-angle discovery pass (6 independent angles:
+  ATT&CK-mapping completeness, determinism leaks, silent data truncation,
+  unwired/dead code, newer-clippy-toolchain lints, silent error-swallowing;
+  25 findings survived independent adversarial verification against the
+  actual code). Selected `bitbucket_user` from the largest cluster
+  (attack-mapping completeness, 16 modules) as the single most faulty file:
+  unlike its 15 siblings, which only OMIT techniques, `bitbucket_user`'s
+  override actively CLAIMED `T1589.002` (Email Addresses) on a fabricated
+  basis — its own comment read "display_name → real identity — T1589.002,"
+  conflating a real-name signal with the wrong technique, while `BbUser`'s
+  struct fields confirm no `Email` entity is ever built anywhere in the
+  module. Independently re-verified every cited line before touching code
+  (per this loop's own doctrine of treating discovery findings as unproven):
+  confirmed `Person` (from `display_name`) and `Address`/`Coordinates` (from
+  `location`) are both real, already-unit-tested construction paths with no
+  matching technique credited. → **Solution:** replaced the two-element
+  fabricated/incomplete array with the precise, complete three-element set
+  (T1589.003, T1591.001, T1593.003), matching the exact fix shape already
+  applied to `github_user`/`dockerhub_user`/`codewars_user`/`mastodon_user`/
+  `sourceforge_user` (T2.27-T2.31). No `tests/architecture.rs` cross-module
+  pin referenced `bitbucket_user` (confirmed by direct grep — zero matches).
+  The discovery sweep's other 15 attack-mapping candidates
+  (`gitlab_user`/`cpan_user`/`gitea_user`/`codeberg_user`/`huggingface_user`/
+  `hexpm_user`/`devto`/`rubygems_user`/`crates_io`/`npm_author`/
+  `stackoverflow_user`/`steam_profile`/`launchpad_user`/`pypi_user`/
+  `bluesky_user`) plus 8 findings from the other 5 angles (a determinism
+  leak in `core::relation::builders::derive_co_ownership`'s HashMap
+  iteration; `asic_persons` silently dropping the CKAN `total` field;
+  `TACTIC_ID`/`TACTIC_NAME` unwired constants; `KeyPool::set_environment`
+  with zero call sites; 3 newer-clippy-toolchain-catchable lints; 2 silent
+  error-swallowing sites in `core::engine`/`api::scan_handlers`) are logged
+  in `SOLUTION_TREE` §4a as real, code-grounded, independently-verified
+  candidates for future cycles — one module/site at a time, by design; the
+  proxy-pool-subsystem finding was excluded as too large (needs a design
+  decision, matching T2.7/T2.14). Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed: reverted just the `attack_techniques()` function
+  body in place, the new test panicked on the missing `T1589.003` assertion;
+  restored, it passed). Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, full suite 0 failures (4450 lib tests, +1),
+  architecture suite green (30/30). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.

@@ -834,6 +834,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes:* new node **T2.33**. ✅ 1 test
   (`set_phase_recovers_from_a_poisoned_mutex`, poisons a real `Mutex` via
   `catch_unwind`), fail-before confirmed.
+- **`[x]` SOL-BITBUCKET-ATTACK-COMPLETE · `bitbucket_user`'s
+  `attack_techniques()` no longer fabricates a technique claim while
+  omitting two real ones** — a multi-angle discovery sweep re-surfaced the
+  `dockerhub_user`/T2.28 scoped-sweep list (5 modules) plus 10 more
+  previously-uncatalogued instances of the identical shape; independently
+  re-verified `bitbucket_user` as the single most faulty instance before
+  fixing it (the only one of the 16 with a genuine over-claim, not just an
+  omission): the override `&["T1589.002", "T1593.003"]` claimed Email
+  Addresses on a fabricated basis (no `Email` entity exists anywhere in
+  `BbUser`/`build_entities`) while omitting `T1589.003` (Person from
+  `display_name`) and `T1591.001` (Address/Coordinates from `location`),
+  both real, unit-tested construction paths. Declared the precise, complete
+  set: `T1589.003`, `T1591.001`, `T1593.003` (no `T1591.002`: no
+  `Organisation` entities are built here). *Closes:* new node **T2.34**. ✅ 1
+  test (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by reverting just the function body in place.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -907,6 +923,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SOURCEFORGE-ATTACK-COMPLETE | T2.31 | `[x]` |
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
+| SOL-BITBUCKET-ATTACK-COMPLETE | T2.34 | `[x]` |
 
 ---
 
@@ -918,6 +935,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **Multi-angle discovery sweep (2026-07-08, closing T2.34) — 24 further
+  candidates found and independently adversarially verified against the
+  actual code; ALL deliberately left for future cycles (one unit at a time
+  by design).** Attack-mapping-completeness cluster (15 remaining after
+  `bitbucket_user`/T2.34, same replace-instead-of-extend shape):
+  `gitlab_user` (missing T1589.003/T1591.001/T1591.002), `cpan_user`/
+  `gitea_user`/`codeberg_user` (missing T1589.003/T1591.001 each),
+  `huggingface_user` (missing T1589.002/T1589.003/T1591.002, largest
+  remaining gap), `hexpm_user`/`launchpad_user`/`pypi_user`/`bluesky_user`
+  (missing T1589.003 alone), `devto` (missing T1589.003/T1591.001),
+  `rubygems_user` (fabricated T1589.002 + missing T1589.003, a second
+  over-claim instance like `bitbucket_user`), `crates_io`/`npm_author`
+  (missing T1589.003/T1589.002 respectively; also pinned stale in
+  `tests/architecture.rs`), `stackoverflow_user` (replace-instead-of-extend
+  dropped T1589.003), `steam_profile` (no override at all, inherits the
+  bare Social default, missing T1591.001 for its location-derived Address).
+  Other angles: a determinism leak in
+  `core::relation::builders::derive_co_ownership` (two `HashMap<&str,
+  Vec<&str>>` groupings iterated without sorting first, unlike every sibling
+  `derive_*` in the same file and the correlator's own twin in
+  `rules/org.rs`); `asic_persons` silently drops the CKAN `total` field
+  `acnc_charities`/`au_unclaimed` both already capture; `core::attack::
+  TACTIC_ID`/`TACTIC_NAME` are `pub const` with zero references anywhere;
+  `util::key_pool::pool::KeyPool::set_environment` has zero call sites
+  (every sibling mutator is wired into `hse keys`); 3 newer-clippy-toolchain
+  lints (`rules::location`'s redundant `fix.uids.clone()`;
+  `rules::mod::entities_of_kind` and `relation::builders::
+  link_by_shared_attribute` both take `EntityKind`/`Option<EntityKind>` by
+  value when only ever compared by reference); 2 silent error-swallowing
+  sites (`core::engine::mod.rs`'s AU-065/066 pathway-template block discards
+  3 storage results with no tracing; `api::scan_handlers::core::scan_import`
+  swallows relation/correlation persistence failures with no logging,
+  unlike its own sibling handling elsewhere). The proxy-pool-subsystem
+  finding (harvested proxies never wired to any consumer) was excluded from
+  this list — assessed as needing a real design/policy decision, the same
+  "defer" bucket as T2.7/T2.14, not a mechanical fix.
 - **`ANCHORING_GEO_SOURCES` allowlist omissions (found closing FT.14,
   2026-07-08) — CLOSED, all 5 candidates resolved.** `wifi_intel` delivered
   (SOL-WIFI-INTEL-ANCHOR: identical `bssid_locate`→`wigle` API mechanism the
@@ -1074,7 +1127,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-MASTODON-ATTACK-COMPLETE, 2026-07-05); **T2.31 `[x]`** ✅
   (SOL-SOURCEFORGE-ATTACK-COMPLETE, 2026-07-05); **T2.32 `[x]`** ✅
   (SOL-NAMEINTEL-ATTACK-COMPLETE, 2026-07-05); **T2.33 `[x]`** ✅
-  (SOL-UPDATE-POISON-CONSISTENT, 2026-07-05); T2.7 open;
+  (SOL-UPDATE-POISON-CONSISTENT, 2026-07-05); **T2.34 `[x]`** ✅
+  (SOL-BITBUCKET-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4258,3 +4312,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4449
   lib tests, +4), architecture suite green (30/30). **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-BITBUCKET-ATTACK-COMPLETE: closes T2.34 via a
+  multi-angle discovery sweep (6 independent angles, 25 findings
+  independently adversarially verified against the actual code).** With the
+  FT.14 follow-up gap list fully closed and no in-progress node, ran a fresh
+  code-grounded discovery pass per the loop's own priority order. Selected
+  `bitbucket_user` from the largest cluster (attack-mapping completeness,
+  16 modules of the `dockerhub_user`/T2.28 replace-instead-of-extend shape)
+  as the single most faulty instance: unlike its 15 siblings, which only
+  OMIT techniques, `bitbucket_user` actively CLAIMED `T1589.002` (Email
+  Addresses) on a fabricated basis (`BbUser`/`build_entities` never
+  constructs an `Email` entity anywhere — confirmed by direct read, not the
+  sweep's summary alone) while omitting `T1589.003` (Person from
+  `display_name`) and `T1591.001` (Address/Coordinates from `location`),
+  both real, unit-tested paths. Declared the precise, complete set:
+  `T1589.003`, `T1591.001`, `T1593.003`. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by reverting the function body in place). No
+  `tests/architecture.rs` cross-module pin referenced `bitbucket_user`.
+  **§4a gains 24 further independently-verified candidates** from this same
+  sweep (15 more attack-mapping instances, a `derive_co_ownership`
+  determinism leak, `asic_persons`'s dropped CKAN `total` field, 2 unwired
+  items, 3 newer-clippy-toolchain lints, 2 silent-error-swallowing sites) —
+  all deliberately deferred to future one-at-a-time cycles; the proxy-pool
+  subsystem finding was excluded as needing a design decision (T2.7/T2.14
+  bucket). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4450 lib tests, +1), architecture suite
+  green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.
