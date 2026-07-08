@@ -293,3 +293,36 @@ use super::*;
             "deduped; bare scheme dropped"
         );
     }
+
+    #[test]
+    fn extract_urls_from_text_keeps_balanced_trailing_paren() {
+        // Regression (real-execution derived): a live `rust-lang.org` search
+        // produced BOTH the correct URL and a truncated duplicate missing the
+        // closing paren, because the trailing-punctuation trim stripped the
+        // balanced `)` of a Wikipedia disambiguation path. A matched `)` must
+        // be kept; only a DANGLING one (prose `(...)` wrapping) is stripped.
+        let urls = extract_urls_from_text(
+            "ref: https://en.wikipedia.org/wiki/Rust_(programming_language)",
+        );
+        assert_eq!(
+            urls,
+            vec!["https://en.wikipedia.org/wiki/Rust_(programming_language)".to_string()],
+            "balanced trailing ) is part of the URL and must be preserved"
+        );
+
+        // A DANGLING close paren from prose wrapping is still stripped.
+        let wrapped = extract_urls_from_text("(see https://example.com/path)");
+        assert_eq!(
+            wrapped,
+            vec!["https://example.com/path".to_string()],
+            "unbalanced ) from prose wrapping is trimmed"
+        );
+
+        // Balanced paren then sentence punctuation: keep the ), drop the period.
+        let sentence = extract_urls_from_text("End: https://ex.com/a_(b).");
+        assert_eq!(
+            sentence,
+            vec!["https://ex.com/a_(b)".to_string()],
+            "trailing sentence period trimmed; balanced ) kept"
+        );
+    }

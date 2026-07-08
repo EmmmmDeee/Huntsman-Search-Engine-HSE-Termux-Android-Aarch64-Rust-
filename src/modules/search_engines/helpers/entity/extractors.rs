@@ -630,6 +630,37 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
 /// relevance/username gates — this only finds the candidate URLs. De-duplicated,
 /// first-seen order, bounded to `MAX_SNIPPET_URLS` so a link-stuffed snippet
 /// can't balloon allocation. Pure.
+/// Trim trailing prose punctuation from a URL lifted out of free text, while
+/// keeping a trailing `)`/`]` that is BALANCED within the URL.
+///
+/// Sentence punctuation (`. , ! ? ; :`) and a DANGLING close bracket (a `)` with
+/// no matching `(` inside the candidate — the `(see https://x/y)` prose case) are
+/// stripped. A MATCHED close bracket is kept, so Wikipedia-style paths like
+/// `/wiki/Rust_(programming_language)` survive intact instead of being truncated
+/// to a broken `…_(programming_language` duplicate. Standard linkifier rule
+/// (GitHub/autolink use the same balance test). Pure.
+fn trim_trailing_url_punct(s: &str) -> &str {
+    let mut end = s.len();
+    loop {
+        let sub = &s[..end];
+        let Some(last) = sub.chars().next_back() else {
+            break;
+        };
+        let strip = match last {
+            '.' | ',' | '!' | '?' | ';' | ':' => true,
+            ')' => sub.matches(')').count() > sub.matches('(').count(),
+            ']' => sub.matches(']').count() > sub.matches('[').count(),
+            _ => false,
+        };
+        if strip {
+            end -= last.len_utf8();
+        } else {
+            break;
+        }
+    }
+    &s[..end]
+}
+
 pub(in crate::modules::search_engines) fn extract_urls_from_text(text: &str) -> Vec<String> {
     const MAX_SNIPPET_URLS: usize = 12;
     let mut out: Vec<String> = Vec::new();
@@ -647,10 +678,12 @@ pub(in crate::modules::search_engines) fn extract_urls_from_text(text: &str) -> 
                         )
                 })
                 .unwrap_or(cand.len());
-            // Trim trailing punctuation that commonly abuts a URL in prose.
-            let url = cand[..end].trim_end_matches(|c: char| {
-                matches!(c, '.' | ',' | ')' | ']' | '!' | '?' | ';' | ':')
-            });
+            // Trim trailing punctuation that commonly abuts a URL in prose,
+            // but keep a trailing `)`/`]` that is BALANCED inside the URL —
+            // Wikipedia-style paths (`/wiki/Rust_(programming_language)`,
+            // `_(disambiguation)`, `_(film)`) legitimately end in `)`. A blanket
+            // strip truncated those to a broken duplicate node.
+            let url = trim_trailing_url_punct(&cand[..end]);
             // Longer than the bare scheme, and not already collected.
             if url.len() > "https://".len() && !out.iter().any(|u| u == url) {
                 out.push(url.to_string());
