@@ -97,9 +97,19 @@ impl Module for StackoverflowUser {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Developer forum — T1593.001 Search Open Websites/Domains.
-        // May also surface location information — T1591.001.
-        &["T1591.001", "T1593.001"]
+        // Developer forum — T1593.001 Social Media is the genuinely correct
+        // base technique here (Stack Overflow really is a forum/social
+        // platform, unlike the code-hosting siblings mis-declared Social
+        // that need T1593.003 substituted in). This override correctly
+        // ADDED T1591.001 for the location-derived Address/Coordinates,
+        // but REPLACED the whole default array instead of substituting
+        // just the one technique, silently dropping T1589.003 (Employee
+        // Names) even though `build_entities` genuinely constructs a
+        // Person from the multi-word `display_name` below — the same
+        // under-declared-coverage gap already fixed for the sibling
+        // "profile lookup" modules. No Email/Organisation fields exist on
+        // `SoUser`, so T1589.002/T1591.002 do not apply.
+        &["T1589.003", "T1591.001", "T1593.001"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -402,5 +412,39 @@ mod tests {
         let ents = build_entities(user, "scan-so-006");
         assert_eq!(ents.len(), 1, "only Username when no optional fields");
         assert_eq!(ents[0].kind, EntityKind::Username);
+    }
+
+    #[test]
+    fn attack_techniques_covers_every_entity_kind_this_module_produces() {
+        // build_entities constructs a Person from the multi-word
+        // display_name in addition to the Address/Coordinates/Username
+        // the override already credits — the same under-declared-coverage
+        // gap already fixed for the sibling "profile lookup" modules
+        // (github_user/dockerhub_user/codewars_user/mastodon_user/
+        // sourceforge_user/bitbucket_user/rubygems_user/gitlab_user/
+        // cpan_user/gitea_user/codeberg_user/huggingface_user/hexpm_user/
+        // devto/crates_io/npm_author). No Email/Organisation fields exist
+        // on `SoUser`, so no other technique applies; the Domain/personal-
+        // site Url pivot from `website_url` gets no separate technique,
+        // matching established sibling convention.
+        let techniques = StackoverflowUser.attack_techniques();
+        assert!(
+            techniques.contains(&"T1589.003"),
+            "Employee Names: Person from the multi-word `display_name`"
+        );
+        assert!(
+            techniques.contains(&"T1591.001"),
+            "Determine Physical Locations: Address/Coordinates from `location`"
+        );
+        assert!(
+            techniques.contains(&"T1593.001"),
+            "Social Media: Stack Overflow genuinely is a developer forum"
+        );
+        for id in techniques {
+            assert!(
+                crate::core::attack::technique(id).is_some(),
+                "declared technique {id} must exist in the Reconnaissance catalogue"
+            );
+        }
     }
 }

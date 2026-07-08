@@ -364,6 +364,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`stackoverflow_user`'s ATT&CK mapping no longer omits the one
+  technique it actually has.** Its override declared only `T1591.001`
+  (Determine Physical Locations, genuine — location-derived Address/
+  Coordinates) and `T1593.001` (Social Media, genuine — Stack Overflow
+  really is a developer forum), silently omitting `T1589.003` (Employee
+  Names, for the `Person` it builds from the multi-word `display_name`
+  field). Now declares the precise, complete set. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
 - **`npm_author`'s ATT&CK mapping no longer omits the one technique it
   actually has.** Its override declared only `T1593.003` (Code
   Repositories), silently omitting `T1589.002` (Email Addresses, for the

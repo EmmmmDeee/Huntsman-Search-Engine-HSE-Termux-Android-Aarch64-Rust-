@@ -1058,6 +1058,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   shape. *Closes:* new node **T2.45**. ✅ 1 test
   (`attack_techniques_covers_every_entity_kind_this_module_produces`),
   fail-before confirmed by writing it against the unfixed override first.
+- **`[x]` SOL-STACKOVERFLOW-ATTACK-COMPLETE · `stackoverflow_user`'s
+  `attack_techniques()` now declares all three techniques
+  `build_entities` actually earns** — continuing the scoped-sweep list
+  T2.45 left open. Preceded by a 5-agent Workflow verification sweep
+  across the entire remaining candidate list, confirming zero new
+  fabrication instances beyond `bitbucket_user`/T2.34 and
+  `rubygems_user`/T2.36. Its override `&["T1591.001", "T1593.001"]` was
+  genuine (location-derived `Address`/`Coordinates`; Stack Overflow
+  really is a developer forum/social platform, the same shape already
+  verified for `mastodon_user`/`devto`), but omitted a `Person` from the
+  multi-word `display_name` field (T1589.003), a real, already-unit-tested
+  path, uncredited. No Email/Organisation fields exist on `SoUser`, so
+  T1589.002/T1591.002 correctly do not apply. Declared the precise,
+  complete set: `T1589.003`, `T1591.001`, `T1593.001`. *Closes:* new node
+  **T2.46**. ✅ 1 test
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`),
+  fail-before confirmed by writing it against the unfixed override first.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1143,6 +1160,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-DEVTO-ATTACK-COMPLETE | T2.43 | `[x]` |
 | SOL-CRATESIO-ATTACK-COMPLETE | T2.44 | `[x]` |
 | SOL-NPMAUTHOR-ATTACK-COMPLETE | T2.45 | `[x]` |
+| SOL-STACKOVERFLOW-ATTACK-COMPLETE | T2.46 | `[x]` |
 
 ---
 
@@ -1187,15 +1205,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **delivered 2026-07-08** (SOL-NPMAUTHOR-ATTACK-COMPLETE, closing T2.45,
   see §5) — the second and final scoped-sweep fix touching the
   `tests/architecture.rs` ATT&CK pin, which is now fully accurate for
-  every module it references. **13 remaining, deliberately left for
-  future cycles** (one unit at a time by design): attack-mapping-completeness
-  cluster (5, same replace-instead-of-extend shape as `bitbucket_user`/T2.34,
+  every module it references. `stackoverflow_user`'s pure-omission
+  instance **delivered 2026-07-08** (SOL-STACKOVERFLOW-ATTACK-COMPLETE,
+  closing T2.46, see §5), preceded by a 5-agent independent verification
+  sweep across the whole remaining candidate list that confirmed zero
+  new fabrication instances beyond `bitbucket_user`/T2.34 and
+  `rubygems_user`/T2.36. **12 remaining, deliberately left for future
+  cycles** (one unit at a time by design): attack-mapping-completeness
+  cluster (4, same replace-instead-of-extend shape as `bitbucket_user`/T2.34,
   all independently re-verified 2026-07-08): `launchpad_user`/
   `pypi_user`/`bluesky_user` (missing T1589.003 alone),
-  `stackoverflow_user` (replace-instead-of-extend dropped
-  T1589.003), `steam_profile` (no override at all yet, inherits the bare
-  Social default — needs a brand-new override added, not a modification —
-  missing T1591.001 for its location-derived Address/Coordinates). New
+  `steam_profile` (no override at all yet, inherits the bare Social
+  default — needs a brand-new override added, not a modification —
+  missing T1591.001 for its location-derived Address/Coordinates, driven
+  by a genuine non-stub `city_coords` geocode). New
   (2026-07-08, found while fixing T2.42): `hexpm_user::build_entities`'s
   cross-platform handle-pivot loop (`for (platform, linked_handle) in
   &user.handles`) iterates a `HashMap<String, String>` with no key sort
@@ -1386,7 +1409,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (SOL-HEXPM-ATTACK-COMPLETE, 2026-07-08); **T2.43 `[x]`** ✅
   (SOL-DEVTO-ATTACK-COMPLETE, 2026-07-08); **T2.44 `[x]`** ✅
   (SOL-CRATESIO-ATTACK-COMPLETE, 2026-07-08); **T2.45 `[x]`** ✅
-  (SOL-NPMAUTHOR-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
+  (SOL-NPMAUTHOR-ATTACK-COMPLETE, 2026-07-08); **T2.46 `[x]`** ✅
+  (SOL-STACKOVERFLOW-ATTACK-COMPLETE, 2026-07-08); T2.7 open;
   **T2.11 `[x]`** ✅ (2026-07-05: oathnet + found_keys/SOL-ISOLATE + LOW
   over-dispatch/SOL-LIVE-DISPATCH-BUDGET all closed; the one residual note
   (budget-static `reset_scan`-zeroing) was itself already accepted `[-]` by
@@ -4906,3 +4930,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4461 lib tests, +1), architecture suite green (30/30). **Paired:**
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-08 — SOL-STACKOVERFLOW-ATTACK-COMPLETE: closes T2.46,
+  continuing the scoped-sweep list T2.45 left open.** Ultracode was on
+  this cycle, so ran a 5-agent Workflow verification sweep first — one
+  independent agent per remaining candidate (`stackoverflow_user`,
+  `steam_profile`, `launchpad_user`, `pypi_user`, `bluesky_user`), each
+  tracing `build_entities` directly rather than trusting the gap list.
+  Result: all 5 confirmed pure omissions — no new fabrication instances
+  beyond `bitbucket_user`/T2.34 and `rubygems_user`/T2.36. The sweep also
+  independently re-confirmed `steam_profile` has no `attack_techniques()`
+  override at all (inherits the bare Social default) and that its
+  `location` field drives a genuine, non-stub `city_coords`-backed
+  `Coordinates` lookup. `stackoverflow_user` was another pure-omission
+  instance: its override `&["T1591.001", "T1593.001"]` was genuine
+  (location-derived `Address`/`Coordinates`; Stack Overflow really is a
+  developer forum/social platform, the same shape already verified for
+  `mastodon_user`/`devto`), but omitted a `Person` from the multi-word
+  `display_name` field (T1589.003), a real, already-unit-tested path,
+  uncredited. No Email/Organisation fields exist on `SoUser`, so
+  T1589.002/T1591.002 correctly do not apply. Declared the precise,
+  complete set: `T1589.003`, `T1591.001`, `T1593.001`. Test: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`,
+  fail-before confirmed by writing it against the unfixed override
+  first). No `tests/architecture.rs` cross-module pin referenced
+  `stackoverflow_user`. **§4a's attack-mapping-completeness cluster now
+  4, down from 5** (`steam_profile`, `launchpad_user`, `pypi_user`,
+  `bluesky_user` remain, deliberately deferred to future one-at-a-time
+  cycles). Gate green: fmt/clippy `-D warnings`/rustdoc (private items)
+  clean, full suite 0 failures (4462 lib tests, +1), architecture suite
+  green (30/30). **Paired:** `PROBLEM_TREE` §8 — same commit.

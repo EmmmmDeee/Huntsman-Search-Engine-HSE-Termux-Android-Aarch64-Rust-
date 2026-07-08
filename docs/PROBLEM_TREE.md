@@ -1608,6 +1608,43 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   up-to-date for every module it references; no further scoped-sweep
   candidate touches it.** **P2** (a MITRE-provenance completeness gap:
   one real omission, not a crash or PII leak).
+- **`[x]` T2.46 · `stackoverflow_user`'s `attack_techniques()` omitted
+  one real technique it has — a pure-omission instance of the T2.28
+  scoped-sweep list** — continuing the scoped-sweep list T2.45
+  deliberately left open. Ultracode was on this cycle: before selecting,
+  ran a 5-agent independent verification sweep (Workflow tool, one agent
+  per remaining candidate: `stackoverflow_user`, `steam_profile`,
+  `launchpad_user`, `pypi_user`, `bluesky_user`) to re-confirm the gap
+  list against the actual code — all 5 confirmed as pure omissions, zero
+  new fabrications (matching the same pattern established across every
+  fix in this arc since T2.36). The sweep also independently re-confirmed
+  `steam_profile`'s distinct shape: it has no `attack_techniques()`
+  override at all (inherits the bare Social-category default), needing a
+  brand-new override rather than a modification, and that its `location`
+  field drives a genuine `city_coords`-backed `Coordinates` lookup (not a
+  stub), justifying T1591.001. Selected `stackoverflow_user` per
+  established queue order (next in the documented list), then
+  independently re-read `src/modules/stackoverflow_user/mod.rs` in full
+  myself before touching any code (the workflow agent's finding informs
+  but does not replace direct verification). Its override was
+  `&["T1591.001", "T1593.001"]` — both genuine (location-derived
+  `Address`/`Coordinates`; Stack Overflow really is a developer
+  forum/social platform, matching the already-verified `mastodon_user`/
+  `devto` precedent of correctly keeping T1593.001 rather than
+  substituting T1593.003). But `build_entities` also demonstrably
+  constructs a `Person` from the multi-word `display_name` field (needs
+  T1589.003, via `profile_kit::person_from_name`) — a real,
+  already-unit-tested path (`emits_person_from_multi_word_display_name`),
+  uncredited. No Email/Organisation fields exist on `SoUser`, so
+  T1589.002/T1591.002 correctly do not apply; the Domain/personal-site
+  `Url` pivot from `website_url` gets no separate technique, matching
+  established sibling convention. → **Solution:** declared the precise,
+  complete set — `T1589.003`, `T1591.001`, `T1593.001`. **Remaining
+  scoped-sweep candidates from the same list, still deliberately not
+  pursued:** `steam_profile` (no override at all yet — needs a new one
+  added, not modified), `launchpad_user`, `pypi_user`, `bluesky_user` (4
+  left, down from 5). **P2** (a MITRE-provenance completeness gap: one
+  real omission, not a crash or PII leak).
 
 ---
 
@@ -6752,3 +6789,49 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `steam_profile` (needs a brand-new override, not a modification),
   `launchpad_user`, `pypi_user`, `bluesky_user` (5 left, down from 6).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-08 — closed T2.46: `stackoverflow_user`'s
+  `attack_techniques()` fixed — added the one real, previously-uncredited
+  technique (Employee Names). Preceded by a 5-agent Workflow verification
+  sweep confirming the entire remaining queue is free of new
+  fabrications.** Continued the scoped-sweep list T2.45 left open, per
+  priority order (no in-progress node; T2.7/T2.14 still need bigger
+  design decisions). Since Ultracode was on this cycle, ran a
+  Workflow-orchestrated verification pass first: 5 independent agents
+  (one per remaining candidate — `stackoverflow_user`, `steam_profile`,
+  `launchpad_user`, `pypi_user`, `bluesky_user`), each reading
+  `build_entities` line by line before reporting. All 5 confirmed as
+  pure omissions, zero new fabrications — consistent with every fix in
+  this arc since `bitbucket_user`/T2.34 and `rubygems_user`/T2.36 (the
+  only two genuine fabrications found this entire session). The sweep
+  also independently re-confirmed `steam_profile`'s distinct shape (no
+  `attack_techniques()` override at all — inherits the bare Social
+  default — needs a brand-new override, and its `location` field drives
+  a genuine, non-stub `city_coords`-backed `Coordinates` lookup,
+  justifying T1591.001). Selected `stackoverflow_user` — next in
+  documented queue order — then independently re-read
+  `src/modules/stackoverflow_user/mod.rs` in full myself before touching
+  any code (the workflow agent's finding informs but does not replace
+  direct verification). Its override was
+  `&["T1591.001", "T1593.001"]` — both genuine (location-derived
+  `Address`/`Coordinates`; Stack Overflow really is a developer
+  forum/social platform, the same shape already verified for
+  `mastodon_user`/`devto`, correctly keeping T1593.001 rather than
+  substituting T1593.003). But `build_entities` also demonstrably
+  constructs a `Person` from the multi-word `display_name` field (needs
+  T1589.003), a real, already-unit-tested path
+  (`emits_person_from_multi_word_display_name`), uncredited. No
+  Email/Organisation fields exist on `SoUser`, so T1589.002/T1591.002
+  correctly do not apply. → **Solution:** declared the precise, complete
+  set — `T1589.003`, `T1591.001`, `T1593.001`. Test delta: +1
+  (`attack_techniques_covers_every_entity_kind_this_module_produces`;
+  fail-before confirmed: written and run against the unfixed override
+  first, it panicked on the missing `T1589.003` assertion; after the fix,
+  all 9 `stackoverflow_user` tests including this one pass). No
+  `tests/architecture.rs` pin references `stackoverflow_user` (confirmed
+  by direct grep). Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4462 lib tests, +1), architecture
+  suite green (30/30). **Remaining scoped-sweep candidates, still
+  deliberately not pursued:** `steam_profile` (needs a brand-new
+  override, not a modification), `launchpad_user`, `pypi_user`,
+  `bluesky_user` (4 left, down from 5). **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
