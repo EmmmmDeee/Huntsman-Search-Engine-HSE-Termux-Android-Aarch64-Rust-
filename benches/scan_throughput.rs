@@ -96,12 +96,91 @@ fn bench_match_set_vs_linear(c: &mut Criterion) {
     group.finish();
 }
 
+/// `strip_inline_blocks` runs on every SERP title/snippet (three times per result
+/// via `strip_tags`). Its guard — "does any inline `<svg>`/`<style>`/`<script>`
+/// block exist?" — dominates the common (no-block) case. The old guard allocated
+/// a full lowercased copy of the body for three `contains` checks; the new one is
+/// three zero-alloc NEON `find_ascii_ci` scans with identical ASCII-CI semantics.
+/// This measures the two on a representative no-block snippet (the common path).
+fn bench_strip_inline_guard(c: &mut Criterion) {
+    let body = "<a href='https://example.org/p'>Jane Doe</a> — engineer at Acme, based in Brisbane. <span>Contact via profile.</span> ".repeat(14);
+
+    let mut group = c.benchmark_group("strip_inline_guard_noblock");
+    group.bench_function("old_lowercase_copy", |b| {
+        b.iter(|| {
+            let l = black_box(&body).to_ascii_lowercase();
+            l.contains("<svg") || l.contains("<style") || l.contains("<script")
+        });
+    });
+    group.bench_function("new_find_ascii_ci", |b| {
+        b.iter(|| {
+            find_ascii_ci(black_box(&body), "<svg").is_some()
+                || find_ascii_ci(black_box(&body), "<style").is_some()
+                || find_ascii_ci(black_box(&body), "<script").is_some()
+        });
+    });
+    group.finish();
+}
+
+/// `extract_addresses_from_text` scans the (already-lowercased) result text once
+/// per AU place name. The old code allocated a fresh lowercased `String` for each
+/// place on every call (~97 allocs/result); the new code drops that alloc and
+/// scans with NEON `find_ascii_ci`. Measured over a representative place set on a
+/// miss-heavy body (most places are absent from any given result) — the common case.
+fn bench_au_place_scan(c: &mut Criterion) {
+    let places: &[&str] = &[
+        "Brisbane",
+        "Sydney",
+        "Melbourne",
+        "Perth",
+        "Adelaide",
+        "Fitzroy",
+        "Collingwood",
+        "South Yarra",
+        "Prahran",
+        "Carlton",
+        "Brunswick",
+        "Newtown",
+        "Bondi",
+        "Parramatta",
+    ];
+    let lower = "lorem ipsum dolor sit amet, resume cafe naive elan. ".repeat(300);
+
+    let mut group = c.benchmark_group("au_place_scan_miss");
+    group.bench_function("old_per_place_to_lowercase", |b| {
+        b.iter(|| {
+            let mut hits = 0usize;
+            for p in places {
+                let pl = p.to_lowercase();
+                if black_box(&lower).find(&pl).is_some() {
+                    hits += 1;
+                }
+            }
+            hits
+        });
+    });
+    group.bench_function("new_find_ascii_ci", |b| {
+        b.iter(|| {
+            let mut hits = 0usize;
+            for p in places {
+                if find_ascii_ci(black_box(&lower), p).is_some() {
+                    hits += 1;
+                }
+            }
+            hits
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_find_ascii_ci,
     bench_fold_ascii_lower,
     bench_slugify,
     bench_geohash,
-    bench_match_set_vs_linear
+    bench_match_set_vs_linear,
+    bench_strip_inline_guard,
+    bench_au_place_scan
 );
 criterion_main!(benches);
