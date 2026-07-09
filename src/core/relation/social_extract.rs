@@ -325,8 +325,10 @@ fn extract_username_from_profile_url(url: &str) -> Option<String> {
             strip_suffix,
         } => {
             let path = parsed.path();
-            let segments: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
-            let seg = segments.get(index).copied()?;
+            // Index the filtered segments directly instead of collecting them into
+            // a throwaway `Vec` per social URL — `nth(index)` yields the same
+            // element `Vec::get(index)` did, without the heap allocation.
+            let seg = path.split('/').filter(|s| !s.is_empty()).nth(index)?;
             let seg = if strip_at {
                 seg.strip_prefix('@').unwrap_or(seg)
             } else {
