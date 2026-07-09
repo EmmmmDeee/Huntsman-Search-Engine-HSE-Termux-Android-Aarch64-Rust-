@@ -92,6 +92,7 @@ pub mod hse_api_key_comprehensive;
 pub mod hse_autonomous_batch_queries;
 pub mod hse_correlation_accuracy;
 pub mod hse_api_key_hardwire;
+pub mod hse_api_keys_comprehensive;
 
 pub mod service_defs;
 pub mod settings;
