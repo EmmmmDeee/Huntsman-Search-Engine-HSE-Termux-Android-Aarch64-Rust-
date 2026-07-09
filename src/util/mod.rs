@@ -65,6 +65,10 @@ pub mod exhaustive_api_expansion;
 pub mod adaptive_workflow_engine;
 pub mod exhaustive_autonomous_integration;
 
+// API Key Management (secure configuration for 50+ APIs)
+pub mod api_key_manager;
+pub mod api_configuration_helper;
+
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
