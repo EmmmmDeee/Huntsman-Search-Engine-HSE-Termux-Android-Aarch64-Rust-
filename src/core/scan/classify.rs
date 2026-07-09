@@ -97,14 +97,15 @@ pub(crate) fn is_noncentral_domain(domain: &str) -> bool {
 /// discovered alias back to the subject without a dictionary name-split.
 pub(crate) fn identity_norm(s: &str) -> String {
     // Take the email LOCAL-PART, then reduce to lowercase ASCII alphanumerics via
-    // the shared `fold_ascii_lower`. Crucially it FOLDS Latin diacritics to their
-    // base letter (`García` → `garcia`, `Müller` → `muller`, `Straße` → `strasse`)
-    // rather than DELETING the accented char. Deleting produced a token (`garca`)
-    // that no longer matched the unaccented spelling of the same name, silently
-    // under-merging accented / international identities — the very cross-identifier
-    // links this normaliser exists to find. Output charset is unchanged (`[a-z0-9]`).
+    // the shared `fold_ascii_lower` (in `core::text`, so this core normaliser needs
+    // no `util` import). Crucially it FOLDS Latin diacritics to their base letter
+    // (`García` → `garcia`, `Müller` → `muller`, `Straße` → `strasse`) rather than
+    // DELETING the accented char. Deleting produced a token (`garca`) that no longer
+    // matched the unaccented spelling of the same name, silently under-merging
+    // accented / international identities — the very cross-identifier links this
+    // normaliser exists to find. Output charset is unchanged (`[a-z0-9]`).
     let local = s.split('@').next().unwrap_or(s);
-    crate::util::str_util::fold_ascii_lower(local)
+    crate::core::text::fold_ascii_lower(local)
 }
 
 /// Minimum shared-substring length for two identities to be considered the same

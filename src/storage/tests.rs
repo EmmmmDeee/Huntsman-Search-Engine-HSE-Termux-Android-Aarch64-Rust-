@@ -261,10 +261,14 @@ fn delete_scan_entities_purges_folded_locality_variants() {
     let victim = Entity::new(EntityKind::Address, "Murrumbateman NSW", 0.55, "s-fold");
     store.upsert_entity(&survivor).unwrap();
     store.upsert_entity(&victim).unwrap();
-    assert_eq!(store.entities_for_scan("s-fold").unwrap().len(), 2, "both variants persisted");
+    assert_eq!(
+        store.entities_for_scan("s-fold").unwrap().len(),
+        2,
+        "both variants persisted"
+    );
 
     let removed = store
-        .delete_scan_entities("s-fold", &[victim.uid.clone()])
+        .delete_scan_entities("s-fold", std::slice::from_ref(&victim.uid))
         .unwrap();
     assert_eq!(removed, 1, "the victim's observation is removed");
 
@@ -282,7 +286,9 @@ fn delete_scan_entities_purges_folded_locality_variants() {
 
     // FTS orphan cleanup: a full-text search for the purged value returns nothing
     // (the stale posting was removed with the row, per delete_scan's invariant).
-    let hits = store.search_entities("Murrumbateman NSW", 10).unwrap_or_default();
+    let hits = store
+        .search_entities("Murrumbateman NSW", 10)
+        .unwrap_or_default();
     assert!(
         !hits.iter().any(|e| e.value == "Murrumbateman NSW"),
         "the purged variant must not survive in the FTS index"

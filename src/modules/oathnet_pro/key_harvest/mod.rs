@@ -1014,7 +1014,11 @@ fn is_uuid(value: &str) -> bool {
 fn emitted_service_names() -> std::collections::BTreeSet<&'static str> {
     let mut out = std::collections::BTreeSet::new();
     out.extend(KEY_PATTERNS.iter().map(|p| p.service));
-    out.extend(service_domains::API_SERVICE_DOMAINS.iter().map(|(_, svc)| *svc));
+    out.extend(
+        service_domains::API_SERVICE_DOMAINS
+            .iter()
+            .map(|(_, svc)| *svc),
+    );
     out.extend(osint_keys::OSINT_PROVIDERS.iter().map(|p| p.service));
     out
 }

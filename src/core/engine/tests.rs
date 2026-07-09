@@ -163,10 +163,17 @@ fn promote_breach_candidate_geo_corroborated_requires_same_place_and_same_surnam
 
     let get = |v: &str| ents.iter().find(|e| e.value == v).unwrap().clone();
     let near = get("matt@example.com");
-    assert!(!near.has_tag(crate::core::tags::CANDIDATE), "un-quarantined");
+    assert!(
+        !near.has_tag(crate::core::tags::CANDIDATE),
+        "un-quarantined"
+    );
     assert!(near.has_tag("breach-corroborated"));
     assert!(near.confidence >= 0.50, "lifted to Probable");
-    assert!(near.evidence.iter().any(|ev| ev.source == "geo_corroboration"));
+    assert!(
+        near.evidence
+            .iter()
+            .any(|ev| ev.source == "geo_corroboration")
+    );
 
     assert!(
         get("matt2@example.com").has_tag(crate::core::tags::CANDIDATE),

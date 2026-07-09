@@ -124,7 +124,6 @@ const ROI_TABLE: &[(&str, KeyRoi)] = &[
     ("intelx", KeyRoi::Multiplier),
     ("hudsonrock", KeyRoi::Multiplier),
     ("xposedornot", KeyRoi::Multiplier),
-
     // ── EXPANSION (explicit; same as the default, recorded for intent) ──
     // Many entities per target but no chain back to keys.
     ("opencorporates", KeyRoi::Expansion),
@@ -133,7 +132,6 @@ const ROI_TABLE: &[(&str, KeyRoi)] = &[
     ("opencellid", KeyRoi::Expansion),
     ("mailchimp", KeyRoi::Expansion),
     ("twilio", KeyRoi::Expansion),
-
     // ── TERMINAL ────────────────────────────────────────────────
     // Single-shot scoring or geolocation.
     ("abuseipdb", KeyRoi::Terminal),

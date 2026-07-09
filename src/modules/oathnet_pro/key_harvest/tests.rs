@@ -2296,7 +2296,7 @@ mod prop {
 /// correct in this direction.
 #[test]
 fn key_roi_non_default_tiers_name_only_emittable_services() {
-    use crate::util::key_roi::{roi_table, KeyRoi};
+    use crate::util::key_roi::{KeyRoi, roi_table};
     let emittable = emitted_service_names();
     let osint: std::collections::BTreeSet<&str> = crate::util::osint_providers::OSINT_SERVICES
         .iter()
@@ -2309,9 +2309,8 @@ fn key_roi_non_default_tiers_name_only_emittable_services() {
         if *tier == KeyRoi::Expansion {
             continue; // equals the default — a dead Expansion literal is harmless
         }
-        let real = emittable.contains(svc)
-            || osint.contains(svc)
-            || NON_HARVESTED_ALLOWLIST.contains(svc);
+        let real =
+            emittable.contains(svc) || osint.contains(svc) || NON_HARVESTED_ALLOWLIST.contains(svc);
         assert!(
             real,
             "key_roi tiers {svc:?} as {tier:?}, but no harvester table emits it and \

@@ -1181,10 +1181,13 @@ impl ScanEngine {
         // it explicitly for recall.)
         let mut merged: HashMap<String, Entity> = HashMap::new();
         for pid in prior.into_iter().take(MAX_PRIOR_SCANS) {
-            let ents = match self
-                .store
-                .entities_filtered(&pid, None, None, None, Some(MAX_ENTITIES))
-            {
+            let ents = match self.store.entities_filtered(
+                &pid,
+                None,
+                None,
+                None,
+                Some(MAX_ENTITIES),
+            ) {
                 Ok(e) => e,
                 Err(e) => {
                     warn!(scan_id, prior = %pid, error = %e, "recall: prior entities load failed");

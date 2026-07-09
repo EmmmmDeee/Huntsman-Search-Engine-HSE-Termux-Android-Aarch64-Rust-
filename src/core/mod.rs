@@ -42,6 +42,7 @@ pub mod scan;
 pub mod tags;
 #[cfg(test)]
 pub mod test_support;
+pub mod text;
 pub mod timeline;
 pub mod trust;
 pub mod validation;

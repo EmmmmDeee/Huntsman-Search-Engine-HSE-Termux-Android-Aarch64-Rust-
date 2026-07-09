@@ -2494,15 +2494,19 @@ impl StoragePort for CountingStore {
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         self.inner.entities_for_scan(scan_id)
     }
+    fn delete_scan_entities(&self, scan_id: &str, uids: &[String]) -> Result<usize> {
+        self.inner.delete_scan_entities(scan_id, uids)
+    }
     fn entities_filtered(
         &self,
         scan_id: &str,
         kind: Option<&str>,
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
+        limit: Option<usize>,
     ) -> Result<Vec<Entity>> {
         self.inner
-            .entities_filtered(scan_id, kind, min_confidence, value_contains)
+            .entities_filtered(scan_id, kind, min_confidence, value_contains, limit)
     }
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {
         self.inner.entity_facets(scan_id)

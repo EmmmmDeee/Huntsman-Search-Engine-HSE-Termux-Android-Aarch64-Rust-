@@ -2048,9 +2048,27 @@ fn au032_excludes_candidate_endpoints_not_in_confirmed_slice() {
     let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
     let cand = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
     let rels = vec![
-        Relation::new(c1.uid.clone(), c2.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
-        Relation::new(c2.uid.clone(), cand.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
-        Relation::new(cand.uid.clone(), c1.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+        Relation::new(
+            c1.uid.clone(),
+            c2.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        ),
+        Relation::new(
+            c2.uid.clone(),
+            cand.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        ),
+        Relation::new(
+            cand.uid.clone(),
+            c1.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        ),
     ];
     // `cand` is deliberately absent from the entity slice (it was quarantined).
     assert!(
@@ -2068,12 +2086,34 @@ fn au032_fires_when_third_node_is_confirmed() {
     let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
     let c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
     let rels = vec![
-        Relation::new(c1.uid.clone(), c2.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
-        Relation::new(c2.uid.clone(), c3.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
-        Relation::new(c3.uid.clone(), c1.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+        Relation::new(
+            c1.uid.clone(),
+            c2.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        ),
+        Relation::new(
+            c2.uid.clone(),
+            c3.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        ),
+        Relation::new(
+            c3.uid.clone(),
+            c1.uid.clone(),
+            RelationKind::CoLocatedWith,
+            0.9,
+            "s",
+        ),
     ];
     let r = rule_au_032_colocation_cluster(&[c1, c2, c3], &rels, "s", 0);
-    assert_eq!(r.len(), 1, "all three endpoints confirmed → the cluster fires");
+    assert_eq!(
+        r.len(),
+        1,
+        "all three endpoints confirmed → the cluster fires"
+    );
     assert_eq!(r[0].entity_uids.len(), 3);
 }
 
