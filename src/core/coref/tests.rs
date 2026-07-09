@@ -163,6 +163,64 @@ fn limit_caps_the_strongest_candidates() {
     assert_eq!(one[0].score, all[0].score, "the kept one is the strongest");
 }
 
+/// Two emails that share only a LOCAL-PART but sit on different domains are NOT
+/// the same mailbox — `john@gmail.com` vs `john@acme-corp.com`. They must not
+/// reach the 0.80 handle-equivalence tier (which is promoted straight into an
+/// `AliasOf` graph edge), so no promotable co-reference is emitted for the pair.
+#[test]
+fn different_domain_emails_do_not_handle_equivalence_merge() {
+    let a = Entity::new(EntityKind::Email, "john@gmail.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "john@acme-corp.com", 0.7, "s");
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert!(
+        out.iter().all(|c| !c.signals.contains(&"handle-equivalence")),
+        "different-domain emails must not fire handle-equivalence"
+    );
+    // And nothing reaches the 0.80 promotion threshold from the local-part alone.
+    assert!(
+        out.iter().all(|c| c.score < 0.80),
+        "a bare local-part collision must not reach the AliasOf promotion floor"
+    );
+}
+
+/// Role/generic local parts are the worst case for the domain-blind bug —
+/// `info@a.com` and `info@b.com` are unrelated companies. They must not merge.
+#[test]
+fn role_local_parts_across_domains_do_not_merge() {
+    let a = Entity::new(EntityKind::Email, "info@alpha.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "info@beta.com", 0.7, "s");
+    let out = resolve_coreferences(&[a, b], 0.80, 50);
+    assert!(out.is_empty(), "role emails on different domains must not co-refer at promotion score");
+}
+
+/// The tightening is domain-aware, not email-hostile: the SAME gmail mailbox
+/// spelled with dot-blindness on the `gmail.com`/`googlemail.com` alias pair
+/// still canonicalises together (`j.o.h.n@gmail.com` ≡ `john@googlemail.com`)
+/// and keeps firing handle-equivalence — the domain difference is folded away by
+/// `canonical_email`, exactly the case a naive domain-equality check would break.
+#[test]
+fn same_gmail_mailbox_spellings_still_merge() {
+    let a = Entity::new(EntityKind::Email, "j.o.h.n@gmail.com", 0.7, "s");
+    let b = Entity::new(EntityKind::Email, "john@googlemail.com", 0.7, "s");
+    let out = resolve_coreferences(&[a, b], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "same underlying gmail mailbox still co-refers");
+    assert!(out[0].signals.contains(&"handle-equivalence"));
+    assert!(out[0].score >= 0.80);
+}
+
+/// The cross-kind local-part bridge is preserved: an email's local part still
+/// links to a matching username regardless of the email's domain (this is the
+/// intended alias signal, e.g. AU-076).
+#[test]
+fn cross_kind_localpart_bridge_survives_the_tightening() {
+    let email = Entity::new(EntityKind::Email, "jsmith@acme-corp.com", 0.7, "s");
+    let user = Entity::new(EntityKind::Username, "jsmith", 0.7, "s");
+    let out = resolve_coreferences(&[email, user], DEFAULT_MIN_SCORE, 50);
+    assert_eq!(out.len(), 1, "email local ↔ username bridge must still fire");
+    assert!(out[0].signals.contains(&"handle-equivalence"));
+    assert!(out[0].score >= 0.80);
+}
+
 /// `noisy_or` is order-independent, monotone, and bounded in `0.0..=1.0`.
 #[test]
 fn noisy_or_is_bounded_and_order_independent() {

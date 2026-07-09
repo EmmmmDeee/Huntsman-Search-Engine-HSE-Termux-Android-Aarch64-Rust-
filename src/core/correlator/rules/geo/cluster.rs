@@ -88,10 +88,27 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
 ) -> Vec<Correlation> {
     use std::collections::{HashMap, HashSet};
 
-    // Undirected adjacency from CoLocatedWith edges only.
+    // The correlator runs over the quarantine-filtered (candidate-stripped)
+    // entity slice, but the persisted relation set is derived over the FULL
+    // entity set — `derive_colocation` links any Coordinates pair within
+    // `CO_LOCATION_KM` with no candidate filter, so candidate coordinates carry
+    // `CoLocatedWith` edges too. Build `by_uid` FIRST and confine the adjacency
+    // to edges whose BOTH endpoints are in the confirmed slice, exactly as
+    // `undirected_adjacency`'s `confine` guard and the other relation rules
+    // (AU-031/AU-070/AU-109/AU-110) do. Without this gate, quarantined stranger
+    // coordinates from a broad name search transitively fuse into a Medium
+    // "co-location cluster" — the stranger-fusion the quarantine exists to block
+    // — and pad the `COLOCATION_CLUSTER_MIN` threshold with non-target nodes.
+    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
+
+    // Undirected adjacency from CoLocatedWith edges only, confined to confirmed
+    // endpoints.
     let mut adj: HashMap<&str, Vec<&str>> = HashMap::new();
     for r in relations {
-        if r.kind == RelationKind::CoLocatedWith {
+        if r.kind == RelationKind::CoLocatedWith
+            && by_uid.contains_key(r.from_uid.as_str())
+            && by_uid.contains_key(r.to_uid.as_str())
+        {
             adj.entry(r.from_uid.as_str()).or_default().push(&r.to_uid);
             adj.entry(r.to_uid.as_str()).or_default().push(&r.from_uid);
         }
@@ -99,8 +116,6 @@ pub(in crate::core::correlator) fn rule_au_032_colocation_cluster(
     if adj.is_empty() {
         return Vec::new();
     }
-
-    let by_uid: HashMap<&str, &Entity> = entities.iter().map(|e| (e.uid.as_str(), e)).collect();
 
     // Connected components via DFS (stack). Iterate seed nodes in sorted order
     // so the emitted clusters are deterministic regardless of edge ordering.

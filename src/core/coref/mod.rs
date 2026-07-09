@@ -52,6 +52,7 @@
 
 use crate::core::entity::{Entity, EntityKind};
 use crate::core::relation::graph::is_identity_kind;
+use crate::core::resolve::canonical_email;
 use crate::core::scan::{identity_norm, identity_overlaps};
 
 /// Weight of an exact canonical-handle match — the strongest cross-kind tie.
@@ -95,7 +96,9 @@ pub struct CoReference {
 ///
 /// `a_is_person` / `b_is_person` enable the name-token tier, which only applies
 /// when one side is a `Person` (a multi-token legal name embedded in the other's
-/// handle). `norm_a` / `norm_b` are the pre-computed [`identity_norm`] forms.
+/// handle). `a_is_email` / `b_is_email` gate the domain-aware handle-equivalence
+/// tightening below. `norm_a` / `norm_b` are the pre-computed [`identity_norm`]
+/// forms.
 fn string_signal(
     raw_a: &str,
     raw_b: &str,
@@ -103,12 +106,35 @@ fn string_signal(
     norm_b: &str,
     a_is_person: bool,
     b_is_person: bool,
+    a_is_email: bool,
+    b_is_email: bool,
 ) -> Option<(f64, &'static str)> {
     if norm_a.is_empty() || norm_b.is_empty() {
         return None;
     }
     if norm_a == norm_b {
-        return Some((W_HANDLE_EQUIV, "handle-equivalence"));
+        // [`identity_norm`] keeps only the email LOCAL-PART, but a local-part is
+        // unique only WITHIN a domain: `john@gmail.com` and `john@acme-corp.com`
+        // are different mailboxes owned by (almost always) different people. A
+        // handle-equivalence firing is promoted straight into an `AliasOf` graph
+        // edge — `COREF_PROMOTE_MIN_SCORE == W_HANDLE_EQUIV` — so a bare local-part
+        // collision would forge a hard, cluster-feeding identity link. For an
+        // Email×Email pair require the FULL canonical mailbox to match instead
+        // (`canonical_email` still folds gmail dots/`+tags` and googlemail→gmail,
+        // so genuine same-mailbox spellings keep merging). Cross-kind ties
+        // (email local ↔ username / person) keep the local-part bridge — that is
+        // the intended alias signal, not a domain-scoped identifier.
+        let handle_equiv = if a_is_email && b_is_email {
+            matches!(
+                (canonical_email(raw_a), canonical_email(raw_b)),
+                (Some(ca), Some(cb)) if ca == cb
+            )
+        } else {
+            true
+        };
+        if handle_equiv {
+            return Some((W_HANDLE_EQUIV, "handle-equivalence"));
+        }
     }
     // Name-token match: a Person's every token (≥2 chars), of which there are ≥2,
     // is a substring of the OTHER side's canonical handle.
@@ -161,6 +187,7 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
         e: &'a Entity,
         norm: String,
         is_person: bool,
+        is_email: bool,
         sources: std::collections::HashSet<&'a str>,
     }
     let nodes: Vec<Node> = entities
@@ -170,6 +197,7 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
             e,
             norm: identity_norm(&e.value),
             is_person: e.kind == EntityKind::Person,
+            is_email: e.kind == EntityKind::Email,
             sources: e.corroborating_sources(),
         })
         .collect();
@@ -190,6 +218,8 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
                 &hi.norm,
                 lo.is_person,
                 hi.is_person,
+                lo.is_email,
+                hi.is_email,
             ) {
                 signals.push(label);
                 weights.push(w);

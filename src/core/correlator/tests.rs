@@ -2035,6 +2035,49 @@ fn au032_no_fire_on_pair() {
 }
 
 #[test]
+fn au032_excludes_candidate_endpoints_not_in_confirmed_slice() {
+    use crate::core::relation::{Relation, RelationKind};
+    // Two confirmed coordinates + a THIRD coordinate that was quarantined as a
+    // `candidate` and therefore stripped from the slice the correlator passes in
+    // (`confirmed_only`), yet still carries persisted CoLocatedWith edges — the
+    // relation set is derived over the full entity set. A triangle c1–c2–cand
+    // would form a 3-node component if the raw edges were walked, but the
+    // candidate must not count toward the cluster: only c1+c2 remain, below
+    // COLOCATION_CLUSTER_MIN, so nothing fires.
+    let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    let cand = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    let rels = vec![
+        Relation::new(c1.uid.clone(), c2.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+        Relation::new(c2.uid.clone(), cand.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+        Relation::new(cand.uid.clone(), c1.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+    ];
+    // `cand` is deliberately absent from the entity slice (it was quarantined).
+    assert!(
+        rule_au_032_colocation_cluster(&[c1, c2], &rels, "s", 0).is_empty(),
+        "a candidate coordinate absent from the confirmed slice must not pad a co-location cluster"
+    );
+}
+
+#[test]
+fn au032_fires_when_third_node_is_confirmed() {
+    use crate::core::relation::{Relation, RelationKind};
+    // Same three-node triangle as above, but now the third coordinate IS in the
+    // confirmed slice: the confinement gate lets a legitimate 3-node cluster fire.
+    let c1 = Entity::new(EntityKind::Coordinates, "-27.470000,153.020000", 0.9, "s");
+    let c2 = Entity::new(EntityKind::Coordinates, "-27.470500,153.020500", 0.8, "s");
+    let c3 = Entity::new(EntityKind::Coordinates, "-27.471000,153.021000", 0.7, "s");
+    let rels = vec![
+        Relation::new(c1.uid.clone(), c2.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+        Relation::new(c2.uid.clone(), c3.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+        Relation::new(c3.uid.clone(), c1.uid.clone(), RelationKind::CoLocatedWith, 0.9, "s"),
+    ];
+    let r = rule_au_032_colocation_cluster(&[c1, c2, c3], &rels, "s", 0);
+    assert_eq!(r.len(), 1, "all three endpoints confirmed → the cluster fires");
+    assert_eq!(r[0].entity_uids.len(), 3);
+}
+
+#[test]
 fn au032_ignores_non_colocation_edges() {
     use crate::core::relation::{Relation, RelationKind};
     // Three domains chained by SubdomainOf — not co-location → no cluster.

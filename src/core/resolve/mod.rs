@@ -262,7 +262,7 @@ fn canonicalise(e: &Entity) -> Option<(String, &'static str)> {
 /// mailboxes, so stripping dots universally would be a false merge. This is
 /// deliberately the conservative choice — only the documented Gmail rule drops
 /// dots.
-fn canonical_email(value: &str) -> Option<String> {
+pub(crate) fn canonical_email(value: &str) -> Option<String> {
     let lower = value.trim().to_lowercase();
     let (local, domain) = lower.split_once('@')?;
     if local.is_empty() || domain.is_empty() {
