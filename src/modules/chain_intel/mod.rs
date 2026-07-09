@@ -18,19 +18,22 @@
 //!     (potentially thousands of calls for a busy address), so `tx_count`/
 //!     `received` are left `None` rather than faked or capped-and-mislabelled,
 //!     same honesty discipline as the ETH path's missing "total received".
+//!   * DOGE — BlockCypher's `/v1/doge/main/addrs/<addr>/balance`: balance,
+//!     total received, and tx count, all directly reported (no summing
+//!     confirmed+mempool needed, unlike Esplora). `dogechain.info` — the more
+//!     commonly cited keyless DOGE source — returned 403 on every fetch
+//!     attempt during this module's extension, including its own docs page,
+//!     so it was rejected as unverifiable; BlockCypher was confirmed live and
+//!     reachable, and its response was checked against a real high-activity
+//!     address before wiring it in.
 //!
 //! Honesty is a hard requirement: an evidence field is emitted only when the
 //! source actually provides it (e.g. ETH reports no "total received" cheaply, so
-//! that attribute is simply absent rather than faked). DOGE/XMR are recognised
-//! by the classifier but have no wired free keyless explorer: DOGE's leading
-//! keyless candidate (dogechain.info) could not be confirmed reachable during
-//! this module's extension (every fetch attempt returned 403, including the
-//! docs page), so it was left unenriched rather than wired against an unverified
-//! source; XMR (Monero) is cryptographically unenrichable from a bare address —
-//! its whole design goal is that balances/activity are NOT observable without
-//! the private view key, so no explorer, free or paid, could ever answer this
-//! for a raw address string. One-to-two small JSON requests per chain;
-//! Termux-friendly.
+//! that attribute is simply absent rather than faked). XMR is recognised by the
+//! classifier but is cryptographically unenrichable from a bare address — its
+//! whole design goal is that balances/activity are NOT observable without the
+//! private view key, so no explorer, free or paid, could ever answer this for a
+//! raw address string. One-to-two small JSON requests per chain; Termux-friendly.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -94,6 +97,19 @@ struct SolBalanceResult {
     value: Option<u64>,
 }
 
+/// BlockCypher `/v1/doge/main/addrs/<addr>/balance` — reports amounts in the
+/// chain's base unit (koinu, 8 decimals — same convention as the
+/// Esplora-sourced BTC/LTC), and unlike Esplora, gives the netted balance and
+/// total received directly rather than requiring a funded-minus-spent
+/// subtraction.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct BlockcypherBalance {
+    balance: u64,
+    total_received: u64,
+    n_tx: u64,
+}
+
 /// Normalised enrichment for any chain — only the fields the source genuinely
 /// provides are `Some`, so the evidence never fabricates a value.
 struct Enrichment {
@@ -115,7 +131,7 @@ impl Module for ChainIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH/SOL, free)"
+        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH/SOL/DOGE, free)"
     }
 
     fn priority(&self) -> u8 {
@@ -158,6 +174,7 @@ impl Module for ChainIntel {
             "crypto_ltc" => enrich_esplora(ctx, "https://litecoinspace.org/api", addr, "LTC").await,
             "crypto_eth" => enrich_eth(ctx, addr).await,
             "crypto_sol" => enrich_sol(ctx, addr).await,
+            "crypto_doge" => enrich_doge(ctx, addr).await,
             // Recognised but no free keyless explorer wired — clean no-op.
             _ => None,
         };
@@ -319,6 +336,21 @@ async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
         balance: u128::from(balance),
         received: None,
         tx_count: None,
+        ens: None,
+    })
+}
+
+/// Dogecoin enrichment via BlockCypher (see module doc for why this source,
+/// not `dogechain.info`, was chosen).
+async fn enrich_doge(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+    let url = format!("https://api.blockcypher.com/v1/doge/main/addrs/{addr}/balance");
+    let b: BlockcypherBalance = fetch_json(&ctx.http, SRC, &url).await.ok()?;
+    Some(Enrichment {
+        unit: "DOGE",
+        decimals: 8,
+        balance: u128::from(b.balance),
+        received: Some(u128::from(b.total_received)),
+        tx_count: Some(b.n_tx),
         ens: None,
     })
 }

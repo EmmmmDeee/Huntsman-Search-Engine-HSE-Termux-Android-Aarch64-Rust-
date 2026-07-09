@@ -99,6 +99,37 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
 }
 
 #[test]
+fn blockcypher_doge_balance_deserialises_real_response() {
+    // Real response fetched live during this module's extension (a
+    // high-activity address, so all three fields are non-trivial).
+    let raw = r#"{"address":"DEgDVFa2DoW1533dxeDVdTxQFhMzs1pMke","total_received":3966353566733115617,"total_sent":1249953212756293574,"balance":2716400353976822043,"unconfirmed_balance":0,"final_balance":2716400353976822043,"n_tx":358,"unconfirmed_n_tx":0,"final_n_tx":358}"#;
+    let b: BlockcypherBalance = serde_json::from_str(raw).unwrap();
+    assert_eq!(b.balance, 2_716_400_353_976_822_043);
+    assert_eq!(b.total_received, 3_966_353_566_733_115_617);
+    assert_eq!(b.n_tx, 358);
+}
+
+#[test]
+fn doge_enrichment_reports_full_fields_like_esplora() {
+    // Unlike SOL, DOGE (via BlockCypher) gives received + tx_count directly,
+    // so it should behave exactly like the BTC/LTC Esplora path — full fields,
+    // never falling back to the funded/empty-only branch.
+    let e = Enrichment {
+        unit: "DOGE",
+        decimals: 8,
+        balance: 150_000_000,
+        received: Some(200_000_000),
+        tx_count: Some(3),
+        ens: None,
+    };
+    let ev = build_evidence("doge", &e);
+    assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 DOGE");
+    assert_eq!(ev.attributes.get("total_received").unwrap(), "2 DOGE");
+    assert_eq!(ev.attributes.get("tx_count").unwrap(), "3");
+    assert_eq!(ev.attributes.get("activity").unwrap(), "active");
+}
+
+#[test]
 fn accepts_only_crypto_address() {
     assert!(ChainIntel.accepts(&Target::new(TargetKind::CryptoAddress, "x")));
     assert!(!ChainIntel.accepts(&Target::new(TargetKind::Email, "a@b.com")));
