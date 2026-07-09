@@ -38,6 +38,7 @@
 //! same `Vec<Classified>`, in the same order. Safe to run on a low-RAM Termux device.
 
 use std::collections::HashSet;
+use std::fmt::Write as _;
 use std::sync::LazyLock;
 
 use regex::Regex;
@@ -195,8 +196,15 @@ pub fn extract(text: &str) -> Vec<Classified> {
 
     let push = |c: Classified, out: &mut Vec<Classified>, seen: &mut HashSet<String>| {
         // De-dup on the normalised pair so the same entity found by two locators (an
-        // email's host also matching the domain locator) is not double-counted.
-        let key = format!("{}\u{1}{}", c.kind, c.value.to_ascii_lowercase());
+        // email's host also matching the domain locator) is not double-counted. Built
+        // as one pre-sized buffer instead of two separate allocations (a
+        // `to_ascii_lowercase()` copy of `c.value`, then a `format!` combining it with
+        // `c.kind`) — `char::to_ascii_lowercase` folds identically to
+        // `str::to_ascii_lowercase` per character, so the key is byte-for-byte the same
+        // either way. Runs once per candidate `extract()` finds in a text blob.
+        let mut key = String::with_capacity(c.value.len() + 24);
+        let _ = write!(key, "{}\u{1}", c.kind);
+        key.extend(c.value.chars().map(|ch| ch.to_ascii_lowercase()));
         if seen.insert(key) {
             out.push(c);
         }

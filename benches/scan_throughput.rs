@@ -276,6 +276,63 @@ fn bench_href_scan(c: &mut Criterion) {
     group.finish();
 }
 
+/// `TargetKind::detect` runs on EVERY classified candidate across the whole
+/// scan (via `core::classifier::extract`/`classify` — the "every output is a
+/// valid input" re-injection loop). It used to allocate a full
+/// `to_ascii_lowercase()` copy of the value up front to run 3
+/// ASCII-case-insensitive checks (URL scheme, ASN prefix, company suffix);
+/// it now compares directly against the raw value's bytes with zero
+/// allocation. This isolates just that technique change (not the whole
+/// detection cascade, which both versions still have to walk) over a
+/// representative organisation-shaped value.
+fn bench_target_kind_detect_checks(c: &mut Criterion) {
+    const SUFFIXES: &[&str] = &[
+        " pty ltd",
+        " inc",
+        " llc",
+        " ltd",
+        " corp",
+        " corporation",
+        " gmbh",
+        " plc",
+    ];
+    let value = "Acme Consolidated Holdings Proprietary Limited Corporation";
+
+    let mut group = c.benchmark_group("target_kind_detect_checks");
+    group.bench_function("old_to_ascii_lowercase_then_match", |b| {
+        b.iter(|| {
+            let v = black_box(value);
+            let lower = v.to_ascii_lowercase();
+            let url = lower.starts_with("http://") || lower.starts_with("https://");
+            let asn = lower
+                .strip_prefix("as")
+                .is_some_and(|r| !r.is_empty() && r.chars().all(|c| c.is_ascii_digit()));
+            let org = SUFFIXES.iter().any(|s| lower.ends_with(s));
+            (url, asn, org)
+        });
+    });
+    group.bench_function("new_direct_byte_compare", |b| {
+        let starts_with_ci = |v: &str, prefix: &str| {
+            let pb = prefix.as_bytes();
+            v.len() >= pb.len() && v.as_bytes()[..pb.len()].eq_ignore_ascii_case(pb)
+        };
+        let ends_with_ci = |v: &str, suffix: &str| {
+            let sb = suffix.as_bytes();
+            v.len() >= sb.len() && v.as_bytes()[v.len() - sb.len()..].eq_ignore_ascii_case(sb)
+        };
+        b.iter(|| {
+            let v = black_box(value);
+            let url = starts_with_ci(v, "http://") || starts_with_ci(v, "https://");
+            let asn = v.len() > 2
+                && v.as_bytes()[..2].eq_ignore_ascii_case(b"as")
+                && v[2..].bytes().all(|b| b.is_ascii_digit());
+            let org = SUFFIXES.iter().any(|s| ends_with_ci(v, s));
+            (url, asn, org)
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_find_ascii_ci,
@@ -286,6 +343,7 @@ criterion_group!(
     bench_strip_inline_guard,
     bench_au_place_scan,
     bench_is_captcha_guard,
-    bench_href_scan
+    bench_href_scan,
+    bench_target_kind_detect_checks
 );
 criterion_main!(benches);

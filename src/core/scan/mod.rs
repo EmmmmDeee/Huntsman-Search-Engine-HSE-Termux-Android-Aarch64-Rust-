@@ -185,10 +185,18 @@ impl TargetKind {
             // Lax default; `Target::validate` rejects the empty value anyway.
             return Self::Username;
         }
-        let lower = v.to_ascii_lowercase();
+        // `detect` runs on every classified candidate across the whole scan (via
+        // `core::classifier::extract`/`classify`), so avoid allocating a full
+        // lowercased copy of `value` just to run 3 ASCII-case-insensitive checks
+        // below (the URL-scheme prefix, the ASN "as" prefix, and the company-suffix
+        // match) — each compares directly against `v`'s bytes instead.
+        let starts_with_ci = |prefix: &str| {
+            let pb = prefix.as_bytes();
+            v.len() >= pb.len() && v.as_bytes()[..pb.len()].eq_ignore_ascii_case(pb)
+        };
 
         // 1. URL — explicit scheme.
-        if lower.starts_with("http://") || lower.starts_with("https://") {
+        if starts_with_ci("http://") || starts_with_ci("https://") {
             return Self::Url;
         }
         // 2. Email — one '@', non-empty local + dotted host, no whitespace.
@@ -226,10 +234,12 @@ impl TargetKind {
         {
             return Self::Coordinates;
         }
-        // 6. ASN — "AS" + digits.
-        if let Some(rest) = lower.strip_prefix("as")
-            && !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit())
+        // 6. ASN — "AS" + digits (case-insensitive prefix, matched without an
+        // allocation; the two matched prefix bytes are each single-byte ASCII, so
+        // `v[2..]` always lands on a char boundary).
+        if v.len() > 2
+            && v.as_bytes()[..2].eq_ignore_ascii_case(b"as")
+            && v[2..].bytes().all(|b| b.is_ascii_digit())
         {
             return Self::Asn;
         }
@@ -283,7 +293,7 @@ impl TargetKind {
             return Self::TrackingId;
         }
         // 10. Free text → Organisation / Address / FullName / Username.
-        if has_company_suffix(&lower) {
+        if has_company_suffix(v) {
             return Self::Organisation;
         }
         if is_address_shaped(v) {
