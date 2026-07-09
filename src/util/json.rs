@@ -69,11 +69,18 @@ pub fn val_str_or_coerce(item: &Value, keys: &[&str]) -> Option<String> {
 #[must_use]
 pub fn scan_string_field(body: &str, key: &str) -> Vec<String> {
     let needle = format!("\"{key}\":\"");
+    // `memmem::Finder` (Teddy/NEON on aarch64) built once and reused across
+    // every match in the loop below, instead of std `str::find`'s scalar
+    // Two-Way scan repeated from scratch at each position — this can run over
+    // a whole paginated API response body with many matches.
+    let finder = memchr::memmem::Finder::new(needle.as_bytes());
     let mut out = Vec::new();
     let mut rest = body;
-    while let Some(pos) = rest.find(&needle) {
+    while let Some(pos) = finder.find(rest.as_bytes()) {
         rest = &rest[pos + needle.len()..];
-        let Some(end) = rest.find('"') else { break };
+        let Some(end) = memchr::memchr(b'"', rest.as_bytes()) else {
+            break;
+        };
         let val = &rest[..end];
         if !val.is_empty() {
             out.push(val.to_string());
