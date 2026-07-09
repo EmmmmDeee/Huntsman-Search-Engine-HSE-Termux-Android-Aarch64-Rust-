@@ -1,0 +1,420 @@
+# HSE Phase 1 Scan Optimization Configuration
+# Maximizes accurate results and improves signal-to-noise ratio
+
+hse_version: 1.13.0
+optimization_profile: "maximum-accuracy-recursive"
+
+# ============================================================================
+# PHASE 1: INITIAL DISCOVERY - Aggressive Fresh API Querying
+# ============================================================================
+phase_1:
+  name: "Initial Discovery"
+  target_coverage: 0.95
+  execution_mode: "parallel"
+  workers: 8
+
+  # CRITICAL: Prioritize fresh queries over cached results
+  cache_strategy:
+    use_recall: false          # Disable cached results for Phase 1
+    force_fresh_api: true      # Force live API calls
+    bypass_local_cache: true   # Skip local intelligence database for first pass
+    cache_ttl_seconds: 0       # Treat all cache as stale
+
+  # High-priority platform scanning
+  platform_tiers:
+    tier_1_critical:
+      - twitter
+      - instagram
+      - tiktok
+      - linkedin
+      - reddit
+      - github
+      - youtube
+      - twitch
+
+    tier_2_high:
+      - bluesky
+      - mastodon
+      - discord
+      - telegram
+      - signal
+      - keybase
+      - steam
+      - hackernews
+
+    tier_3_extended:
+      - facebook
+      - snapchat
+      - pinterest
+      - medium
+      - dev.to
+      - hashnode
+      - gitlab
+      - bitbucket
+
+  # Filter weak detections
+  detection_quality:
+    minimum_confidence: 0.75
+    exclude_detection_types:
+      - "status-only"           # Simple HTTP 200 checks
+      - "404-inversion"         # Checking for 404 to prove existence
+      - "pattern-match-only"    # URL pattern guessing without verification
+    require_content_verification: true
+    require_multi_source: true
+
+  # API response validation
+  response_validation:
+    require_actual_content: true
+    reject_placeholder_pages: true
+    reject_default_404_responses: true
+    verify_profile_content: true
+    minimum_content_length: 500  # Bytes
+    require_profile_metadata: true
+
+  # Corroboration requirements
+  corroboration:
+    minimum_sources: 2
+    priority_weight:
+      api_verified: 50
+      profile_content: 40
+      metadata_match: 30
+      naming_convention: 20
+      historical_data: 10
+
+# ============================================================================
+# PHASE 2: RECURSIVE EXPANSION - Depth-Based Entity Discovery
+# ============================================================================
+phase_2:
+  name: "Recursive Entity Expansion"
+  target_coverage: 0.85
+
+  # Recursive search configuration
+  recursion:
+    enabled: true
+    max_depth: 3
+
+    # Trigger conditions for deeper recursion
+    trigger_on_confidence: 0.80
+    trigger_on_corroboration: 10
+    trigger_on_multi_platform_match: 2
+
+    # Related entity discovery
+    search_related_entities:
+      email_domains: true
+      linked_usernames: true
+      associated_accounts: true
+      mentioned_contacts: true
+      referenced_identifiers: true
+
+    # Secondary search patterns
+    search_patterns:
+      - pattern: "{username}-{variant}"  # e.g., rhino-ryno23 → rhino_ryno23
+      - pattern: "{firstname}{lastname}"
+      - pattern: "{email}@*"
+      - pattern: "{phone}*"
+      - pattern: "{domain}*"
+
+  # Depth progression
+  depth_strategy:
+    depth_0:
+      apis: [search_engines, social_probe, username_search]
+      focus: "Direct platform discovery"
+      timeout_ms: 5000
+      max_results: 50
+
+    depth_1:
+      apis: [username_variants, domain_search, email_search, phone_pivot]
+      focus: "Variant usernames and related identifiers"
+      trigger_confidence: 0.80
+      timeout_ms: 10000
+      max_results: 30
+
+    depth_2:
+      apis: [breach_timezone, dns_axfr, whoisxml, hunter_io]
+      focus: "Infrastructure and contact information"
+      trigger_confidence: 0.85
+      timeout_ms: 15000
+      max_results: 20
+
+    depth_3:
+      apis: [oathnet_pro, dehashed, leakdb, intelx]
+      focus: "Deep breach/leaked data correlation"
+      trigger_confidence: 0.90
+      timeout_ms: 20000
+      max_results: 10
+
+# ============================================================================
+# PHASE 3: GEOLOCATION ENRICHMENT - Accuracy-Tier Based Lookup
+# ============================================================================
+phase_3:
+  name: "Geolocation Enrichment"
+
+  # Accuracy tier strategy
+  accuracy_tiers:
+    continent:
+      apis: [ip2location_lite, maxmind_geoip_lite]
+      cost_ratio: 0.1
+
+    country:
+      apis: [ipstack, ipinfo, maxmind_geoip2]
+      cost_ratio: 0.3
+      trigger_on_entities: 1
+
+    region:
+      apis: [google_maps, here_api, mapbox]
+      cost_ratio: 0.5
+      trigger_on_entities: 2
+
+    city:
+      apis: [maxmind_geoip2_city, ipstack_pro, ipinfo_premium]
+      cost_ratio: 0.7
+      trigger_on_entities: 3
+
+    neighborhood:
+      apis: [google_maps_advanced, here_api_advanced]
+      cost_ratio: 1.0
+      trigger_on_entities: 5
+
+    street:
+      apis: [google_street_view, mapbox_advanced]
+      cost_ratio: 2.0
+      trigger_on_entities: 10
+
+  # IP triangulation
+  ip_triangulation:
+    cell_towers: true
+    wifi_networks: true
+    dns_lookups: true
+    reverse_dns: true
+    whois_data: true
+    carrier_lookup: true
+
+# ============================================================================
+# BREACH DATABASE STRATEGY - Priority Chain with Fallback
+# ============================================================================
+breach_databases:
+  primary_chain:
+    - name: "hibp"
+      priority: 1
+      coverage: "Email + username + phone"
+      confidence: 0.95
+      fallback_to: "leakdb"
+
+    - name: "leakdb"
+      priority: 2
+      coverage: "Comprehensive breach corpus"
+      confidence: 0.90
+      fallback_to: "dehashed"
+
+    - name: "dehashed"
+      priority: 3
+      coverage: "Dark web + leaked credentials"
+      confidence: 0.85
+      fallback_to: "niamonx"
+
+    - name: "niamonx"
+      priority: 4
+      coverage: "Alternative breach data"
+      confidence: 0.75
+      fallback_to: "none"
+
+  # Retry strategy
+  retry_strategy:
+    max_attempts: 3
+    backoff_multiplier: 2.0
+    initial_delay_ms: 100
+    retry_on_errors:
+      - "network_timeout"
+      - "rate_limited"
+      - "gateway_timeout"
+    skip_on_errors:
+      - "auth_failed"
+      - "invalid_request"
+      - "not_found"
+
+# ============================================================================
+# RESULT FILTERING & DEDUPLICATION
+# ============================================================================
+result_processing:
+  deduplication:
+    enabled: true
+    merge_strategies:
+      - by_url: "Keep highest confidence, merge sources"
+      - by_username: "Consolidate username variants"
+      - by_email: "Deduplicate email findings"
+      - by_phone: "Deduplicate phone findings"
+
+  filtering:
+    # Remove low-signal results
+    minimum_confidence: 0.75
+    minimum_corroboration: 2
+
+    # Exclude weak detection methods
+    exclude_patterns:
+      - "status_only"
+      - "404_inversion"
+      - "placeholder_content"
+      - "default_404_page"
+
+    # Confidence-based filtering
+    confidence_filters:
+      low_0_50:
+        action: "exclude"
+        reason: "Unreliable"
+
+      medium_50_75:
+        action: "flag"
+        reason: "Needs verification"
+        require_secondary_source: true
+
+      high_75_90:
+        action: "include"
+        reason: "Acceptable"
+
+      verified_90_100:
+        action: "include_featured"
+        reason: "High confidence"
+
+  # Result ranking
+  ranking:
+    factors:
+      - name: "confidence"
+        weight: 0.35
+      - name: "corroboration_count"
+        weight: 0.25
+      - name: "source_count"
+        weight: 0.20
+      - name: "content_verification"
+        weight: 0.15
+      - name: "recency"
+        weight: 0.05
+
+# ============================================================================
+# CONFIDENCE-BASED API TRIGGERING
+# ============================================================================
+confidence_triggering:
+  # Phase transition thresholds
+  phase_1_to_2:
+    trigger_confidence: 0.80
+    trigger_entities: 2
+    trigger_corroboration: 5
+
+  phase_2_to_3:
+    trigger_confidence: 0.85
+    trigger_entities: 3
+    trigger_corroboration: 10
+
+  phase_3_to_expansion:
+    trigger_confidence: 0.90
+    trigger_entities: 5
+    trigger_corroboration: 15
+
+  # High-value API triggering
+  high_value_apis:
+    oathnet_pro:
+      trigger_confidence: 0.85
+      trigger_sources: 3
+      cost_per_call: 10
+
+    dehashed:
+      trigger_confidence: 0.80
+      trigger_sources: 2
+      cost_per_call: 5
+
+    leakix:
+      trigger_confidence: 0.75
+      trigger_sources: 2
+      cost_per_call: 1
+
+# ============================================================================
+# PARALLEL EXECUTION & RESOURCE MANAGEMENT
+# ============================================================================
+execution:
+  parallel_workers: 8
+  timeout_per_api: 10000  # milliseconds
+  timeout_per_phase: 300000  # milliseconds
+
+  resource_pooling:
+    max_api_calls_per_minute: 100
+    max_concurrent_requests: 8
+    queue_strategy: "priority_based"
+
+  adaptive_throttling:
+    enabled: true
+    throttle_on_rate_limit: true
+    increase_delay_multiplier: 1.5
+    decrease_delay_after_success: 0.9
+
+# ============================================================================
+# QUALITY ASSURANCE & VALIDATION
+# ============================================================================
+quality_assurance:
+  # Pre-flight validation
+  preflight_checks:
+    - api_keys_configured: true
+    - network_connectivity: true
+    - resources_available: true
+    - platform_coverage_complete: true
+
+  # Result validation
+  result_validation:
+    verify_urls_resolving: true
+    verify_content_type: true
+    verify_profile_metadata: true
+    verify_multi_source_corroboration: true
+
+  # Anomaly detection
+  anomaly_detection:
+    enabled: true
+    detect_empty_results: true
+    detect_rate_limiting: true
+    detect_gateway_errors: true
+    auto_fallback_on_anomaly: true
+
+# ============================================================================
+# REPORTING & ANALYTICS
+# ============================================================================
+reporting:
+  include_metrics:
+    - phase_completion_time
+    - api_success_rate
+    - average_confidence
+    - average_corroboration
+    - deduplication_ratio
+    - signal_to_noise_ratio
+
+  result_ordering:
+    primary: "confidence_descending"
+    secondary: "corroboration_descending"
+    tertiary: "recency_descending"
+
+  output_format:
+    include_source_chain: true
+    include_corroboration_details: true
+    include_detection_method: true
+    include_confidence_justification: true
+    include_alternative_identifiers: true
+
+# ============================================================================
+# 100% PHASE 1 GUARANTEE PARAMETERS
+# ============================================================================
+phase_1_guarantee:
+  enabled: true
+  target_coverage: 0.95
+
+  platform_coverage:
+    critical_platforms: 18
+    acceptable_minimum: 17
+    coverage_calculation: "found_platforms / total_platforms"
+
+  effectiveness_validation:
+    minimum_coverage_percent: 95
+    maximum_weak_detections: 10
+    maximum_false_positives: 5
+    minimum_high_confidence_findings: 5
+
+  guarantee_status:
+    check_every_api_call: true
+    auto_escalate_on_failure: true
+    fallback_api_on_platform_skip: true
+    exponential_backoff_on_retry: true
