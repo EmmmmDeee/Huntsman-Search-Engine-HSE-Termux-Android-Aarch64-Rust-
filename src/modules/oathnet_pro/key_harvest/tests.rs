@@ -2281,3 +2281,41 @@ mod prop {
         );
     }
 }
+
+/// Cross-registry drift guard: every service `util::key_roi` deliberately tiers
+/// as non-`Expansion` must be a real service name the harvester can EMIT (or a
+/// known non-harvested classification), else the ROI arm is dead — the exact
+/// failure the `xposed_or_not` typo produced (key_roi said `xposed_or_not`, the
+/// harvester emits `xposedornot`, so every found XposedOrNot key silently
+/// defaulted to Expansion). `Expansion` rows are skipped: they equal the default,
+/// so a misspelled Expansion literal is harmless and can never be "dead".
+///
+/// Lives here (not in `util::key_roi`) because the check needs the harvester's
+/// emit vocabulary and `util` must not depend on `modules`; this module already
+/// depends on `util::key_roi` (emit.rs calls `classify`), so the layering is only
+/// correct in this direction.
+#[test]
+fn key_roi_non_default_tiers_name_only_emittable_services() {
+    use crate::util::key_roi::{roi_table, KeyRoi};
+    let emittable = emitted_service_names();
+    let osint: std::collections::BTreeSet<&str> = crate::util::osint_providers::OSINT_SERVICES
+        .iter()
+        .map(|(s, _)| *s)
+        .collect();
+    // Services key_roi legitimately classifies that are neither harvested-key
+    // vendors nor OSINT providers — HSE-side utilities the harvester never emits.
+    const NON_HARVESTED_ALLOWLIST: &[&str] = &["sunrise_sunset"];
+    for (svc, tier) in roi_table() {
+        if *tier == KeyRoi::Expansion {
+            continue; // equals the default — a dead Expansion literal is harmless
+        }
+        let real = emittable.contains(svc)
+            || osint.contains(svc)
+            || NON_HARVESTED_ALLOWLIST.contains(svc);
+        assert!(
+            real,
+            "key_roi tiers {svc:?} as {tier:?}, but no harvester table emits it and \
+             it is not an OSINT provider — dead classification / spelling drift"
+        );
+    }
+}

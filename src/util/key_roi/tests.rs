@@ -66,6 +66,33 @@ use super::*;
         assert_eq!(classify("some_unknown_service"), KeyRoi::Expansion);
     }
 
+    /// Structural soundness of the classification table: no service is listed
+    /// twice (a duplicate would make the later row dead / ambiguous), no name is
+    /// empty, and the per-tier counts are locked so a mis-transcribed or dropped
+    /// row is caught rather than silently changing a classification.
+    #[test]
+    fn roi_table_is_structurally_sound() {
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for (name, _) in roi_table() {
+            assert!(!name.is_empty(), "empty service name in ROI_TABLE");
+            assert!(seen.insert(*name), "duplicate service {name:?} in ROI_TABLE");
+        }
+        let count = |tier: KeyRoi| roi_table().iter().filter(|(_, r)| *r == tier).count();
+        assert_eq!(count(KeyRoi::Multiplier), 47, "Multiplier count drifted");
+        assert_eq!(count(KeyRoi::Expansion), 6, "explicit Expansion count drifted");
+        assert_eq!(count(KeyRoi::Terminal), 12, "Terminal count drifted");
+    }
+
+    /// Every service in the table must classify() back to its listed tier — the
+    /// lookup and the data agree (guards the `find`/default wiring).
+    #[test]
+    fn classify_matches_the_table_for_every_listed_service() {
+        for (name, tier) in roi_table() {
+            assert_eq!(classify(name), *tier, "classify({name:?}) disagrees with ROI_TABLE");
+        }
+    }
+
     #[test]
     fn ord_prioritises_multiplier() {
         assert!(KeyRoi::Multiplier > KeyRoi::Expansion);

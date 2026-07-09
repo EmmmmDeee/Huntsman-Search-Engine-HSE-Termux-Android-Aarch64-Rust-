@@ -50,66 +50,128 @@ impl KeyRoi {
     }
 }
 
+/// Explicit ROI classification for known services.
+///
+/// Kept as an inspectable `const` table (rather than `match` arms) so a
+/// drift-guard can enumerate every classified service and assert each is a real
+/// service name the key-harvester can actually emit — the check that would have
+/// caught the `xposed_or_not` → `xposedornot` spelling drift, where a
+/// misspelled arm silently classified nothing. Each service names the value the
+/// harvester writes to `FoundKey.service` (NOT the HSE module id); a harvested
+/// XposedOrNot key is tagged `xposedornot`, so the underscored module id
+/// `xposed_or_not` (an evidence source elsewhere) must never appear here.
+///
+/// A service absent from this table falls through to `KeyRoi::Expansion` in
+/// [`classify`]. The `Expansion` rows below are therefore behaviourally
+/// identical to the default; they are listed explicitly to record intent (and so
+/// the guard treats them as known, deliberate classifications).
+const ROI_TABLE: &[(&str, KeyRoi)] = &[
+    // ── MULTIPLIER ──────────────────────────────────────────────
+    // Self-discovery: finding more OathNet keys directly scales our OathNet
+    // quota — each discovered key is a parallel daily-lookup pool.
+    ("oathnet", KeyRoi::Multiplier),
+    // OathNet competitors — same breach/stealer surface, separate quota pools.
+    ("see_know", KeyRoi::Multiplier),
+    ("snusbase", KeyRoi::Multiplier),
+    ("leakcheck", KeyRoi::Multiplier),
+    ("leakpeek", KeyRoi::Multiplier),
+    ("leak_lookup", KeyRoi::Multiplier),
+    ("hashes", KeyRoi::Multiplier),
+    ("psbdmp", KeyRoi::Multiplier),
+    ("ghostproject", KeyRoi::Multiplier),
+    ("scylla", KeyRoi::Multiplier),
+    ("weleakinfo", KeyRoi::Multiplier),
+    ("hackcheck", KeyRoi::Multiplier),
+    ("scrubd", KeyRoi::Multiplier),
+    ("nuclearleaks", KeyRoi::Multiplier),
+    ("breachforums", KeyRoi::Multiplier),
+    ("inteltechniques", KeyRoi::Multiplier),
+    ("breachdirectory", KeyRoi::Multiplier),
+    // Infrastructure → hostnames → web_crawler → leaked keys.
+    ("shodan", KeyRoi::Multiplier),
+    ("censys", KeyRoi::Multiplier),
+    ("securitytrails", KeyRoi::Multiplier),
+    ("fullhunt", KeyRoi::Multiplier),
+    ("binaryedge", KeyRoi::Multiplier),
+    ("passivetotal", KeyRoi::Multiplier),
+    ("onyphe", KeyRoi::Multiplier),
+    ("zoomeye", KeyRoi::Multiplier),
+    ("netlas", KeyRoi::Multiplier),
+    ("fofa", KeyRoi::Multiplier),
+    ("spyse", KeyRoi::Multiplier),
+    ("leakix", KeyRoi::Multiplier),
+    ("urlscan", KeyRoi::Multiplier),
+    // Domain/URL intelligence → more domains → more crawl surface.
+    ("virustotal", KeyRoi::Multiplier),
+    ("criminal_ip", KeyRoi::Multiplier),
+    ("whoisxml", KeyRoi::Multiplier),
+    ("builtwith", KeyRoi::Multiplier),
+    // Identity enumeration → more emails → new OathNet targets.
+    ("hunter", KeyRoi::Multiplier),
+    ("proxycurl", KeyRoi::Multiplier),
+    ("epieos", KeyRoi::Multiplier),
+    ("emailrep", KeyRoi::Multiplier),
+    ("seon", KeyRoi::Multiplier),
+    // Source-code key leaks.
+    ("github", KeyRoi::Multiplier),
+    ("gitlab", KeyRoi::Multiplier),
+    // Semantic search → URLs → web_crawler → leaked keys.
+    ("exa", KeyRoi::Multiplier),
+    // Breach-with-credentials services — directly contain creds for OTHER
+    // services, leading to more keys via key_harvest.
+    ("hibp", KeyRoi::Multiplier),
+    ("dehashed", KeyRoi::Multiplier),
+    ("intelx", KeyRoi::Multiplier),
+    ("hudsonrock", KeyRoi::Multiplier),
+    ("xposedornot", KeyRoi::Multiplier),
+
+    // ── EXPANSION (explicit; same as the default, recorded for intent) ──
+    // Many entities per target but no chain back to keys.
+    ("opencorporates", KeyRoi::Expansion),
+    ("abn", KeyRoi::Expansion),
+    ("wigle", KeyRoi::Expansion),
+    ("opencellid", KeyRoi::Expansion),
+    ("mailchimp", KeyRoi::Expansion),
+    ("twilio", KeyRoi::Expansion),
+
+    // ── TERMINAL ────────────────────────────────────────────────
+    // Single-shot scoring or geolocation.
+    ("abuseipdb", KeyRoi::Terminal),
+    ("greynoise", KeyRoi::Terminal),
+    ("ipqs", KeyRoi::Terminal),
+    ("ipinfo", KeyRoi::Terminal),
+    ("ip2location", KeyRoi::Terminal),
+    ("ipregistry", KeyRoi::Terminal),
+    ("ipquery", KeyRoi::Terminal),
+    ("numverify", KeyRoi::Terminal),
+    ("pulsedive", KeyRoi::Terminal),
+    ("threatfox", KeyRoi::Terminal),
+    ("sunrise_sunset", KeyRoi::Terminal),
+    ("c99", KeyRoi::Terminal),
+];
+
+/// The full explicit ROI classification table — every `(service, tier)` HSE
+/// deliberately assigns. Exposed so a cross-registry drift-guard (in
+/// `oathnet_pro::key_harvest`, which can reach both this and the harvester's
+/// emit vocabulary — a layering the reverse would violate) can assert every
+/// non-`Expansion` service here is really emittable.
+#[must_use]
+pub fn roi_table() -> &'static [(&'static str, KeyRoi)] {
+    ROI_TABLE
+}
+
 /// Classify a service by its key-discovery ROI tier.
 ///
 /// MULTIPLIER tier produces Domain/Url/Email entities that feed
 /// web_crawler, search_engines, or another OathNet round — each
-/// producing more keys.
+/// producing more keys. A service not in [`ROI_TABLE`] is assumed
+/// moderate value (`Expansion`).
+#[must_use]
 pub fn classify(service: &str) -> KeyRoi {
-    match service {
-        // ── MULTIPLIER ──────────────────────────────────────────────
-        // Self-discovery: finding more OathNet keys directly scales our
-        // OathNet quota. Each discovered key is a parallel daily-lookup
-        // pool that costs us nothing.
-        "oathnet"
-        // OathNet competitors — same breach/stealer surface, separate
-        // quota pools. Finding a see-know.eu or snusbase key means we
-        // get their daily quota for free.
-        | "see_know" | "snusbase" | "leakcheck" | "leakpeek" | "leak_lookup"
-        | "hashes" | "psbdmp" | "ghostproject" | "scylla" | "weleakinfo"
-        | "hackcheck" | "scrubd" | "nuclearleaks" | "breachforums"
-        | "inteltechniques" | "breachdirectory"
-        // Infrastructure → hostnames → web_crawler → leaked keys
-        | "shodan" | "censys" | "securitytrails" | "fullhunt" | "binaryedge"
-        | "passivetotal" | "onyphe" | "zoomeye" | "netlas" | "fofa"
-        | "spyse" | "leakix" | "urlscan"
-        // Domain/URL intelligence → more domains → more crawl surface
-        | "virustotal" | "criminal_ip" | "whoisxml" | "builtwith"
-        // Identity enumeration → more emails → new OathNet targets
-        | "hunter" | "proxycurl" | "epieos" | "emailrep" | "seon"
-        // Source-code key leaks
-        | "github" | "gitlab"
-        // Semantic search → URLs → web_crawler → leaked keys
-        | "exa"
-        // Breach-with-credentials services (these directly contain creds
-        // for OTHER services, leading to more keys). NOTE: these literals must
-        // match the canonical service name the key-harvester EMITS (the value in
-        // `FoundKey.service`), NOT the HSE module id — a harvested XposedOrNot key
-        // is tagged `xposedornot`, so the underscored module id `xposed_or_not`
-        // (used elsewhere as an evidence source) would never match here and the
-        // key would silently fall through to `Expansion`.
-        | "hibp" | "dehashed" | "intelx" | "hudsonrock" | "xposedornot"
-        => KeyRoi::Multiplier,
-
-        // ── EXPANSION ───────────────────────────────────────────────
-        // Many entities per target but no chain back to keys.
-        // (HIBP/Dehashed/IntelX/HudsonRock/XposedOrNot were promoted
-        // to Multiplier — breach data contains credentials for OTHER
-        // services, which yields more keys via key_harvest.)
-        "opencorporates" | "abn" | "wigle" | "opencellid"
-        | "mailchimp" | "twilio"
-        => KeyRoi::Expansion,
-
-        // ── TERMINAL ────────────────────────────────────────────────
-        // Single-shot scoring or geolocation
-        "abuseipdb" | "greynoise" | "ipqs" | "ipinfo"
-        | "ip2location" | "ipregistry" | "ipquery" | "numverify"
-        | "pulsedive" | "threatfox" | "sunrise_sunset" | "c99"
-        => KeyRoi::Terminal,
-
-        // Unknown services default to Expansion (assume moderate value)
-        _ => KeyRoi::Expansion,
-    }
+    ROI_TABLE
+        .iter()
+        .find(|(name, _)| *name == service)
+        .map_or(KeyRoi::Expansion, |(_, roi)| *roi)
 }
 
 #[cfg(test)]

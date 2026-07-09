@@ -1005,5 +1005,19 @@ fn is_uuid(value: &str) -> bool {
 // Detection is shape-anchored on the BEGIN header — strict enough
 // that a base64 blob in the body alone won't false-positive.
 
+/// Every canonical service name the harvester can emit into `FoundKey.service`,
+/// unioned across the three vendor tables (prefix-based `KEY_PATTERNS`,
+/// shape-based `OSINT_PROVIDERS`, domain-based `API_SERVICE_DOMAINS`). Exposed
+/// for the cross-registry drift-guard below, which asserts downstream ROI
+/// classification only names services that can actually be produced.
+#[cfg(test)]
+fn emitted_service_names() -> std::collections::BTreeSet<&'static str> {
+    let mut out = std::collections::BTreeSet::new();
+    out.extend(KEY_PATTERNS.iter().map(|p| p.service));
+    out.extend(service_domains::API_SERVICE_DOMAINS.iter().map(|(_, svc)| *svc));
+    out.extend(osint_keys::OSINT_PROVIDERS.iter().map(|p| p.service));
+    out
+}
+
 #[cfg(test)]
 mod tests;
