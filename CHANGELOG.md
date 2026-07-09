@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Scan diagnostics now flag a slow scan padded by wasted modules.** When a
+  scan runs longer than 60s and at least one dispatched module found nothing,
+  `hse scan`'s dossier and `--json` output carry a new optimization hint —
+  "scan exceeded 60s (Ns) with K zero-yield module(s): … — consider --exclude
+  or --adaptive to trim dispatch" — naming the worst offenders (bounded, so it
+  never floods). This is event-sourced (a module that finds nothing leaves no
+  entities, so the signal comes from the scan's `ModuleDone` events, not the
+  entity set). Reinstates a hint removed in an earlier cleanup as unreachable.
 - **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
   is now proven against a real `git` subprocess, not just pure-logic tests.**
   A local origin+clone fixture pair (no network) exercises the actual

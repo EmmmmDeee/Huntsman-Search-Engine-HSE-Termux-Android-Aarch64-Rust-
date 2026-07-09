@@ -660,7 +660,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[~]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -680,6 +680,21 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
   either hint).*
+  ✅ **Scan-level 60s hint delivered (cycle 29, 2026-07-09) via option (a):**
+  `analyse` now takes `events: &[core::event::Event]` (the plain `core` data
+  type the three callers already read from their `StoragePort` — NOT the
+  storage trait, so `util`'s layering is intact; the same coupling level as the
+  existing `entities: &[Entity]` arg). It emits ONE aggregate line, gated on
+  `wall_time_ms > 60_000` AND ≥1 `ModuleDone { found: 0 }` event: "scan exceeded
+  60s (Ns) with K zero-yield module(s): …". Bounded by construction (worst-5
+  names + "(+N more)"), so it can never flood. All 3 non-test callers
+  (`cli/scan`, `cli/scan/dossier`, `api/handlers`) pass their events; 13 test
+  callers pass `&[]`. Regression test
+  `analyse_flags_slow_scan_with_zero_yield_modules` (fires on a 61s scan with a
+  zero-yield module, silent at 60s and for a module that DID yield).
+  **Remaining `[~]`:** the per-module "returned 0 entities" hint — still deferred
+  pending the noise decision above (cap/cost-gate/bounded-count), its own
+  increment.
 - **`[x]` T2.15 · Silent multi-row deserialize/read failures (storage layer)**
   — every multi-row reader in `storage/` (`list_scans`, `correlations_for_scan`,
   `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
@@ -5556,3 +5571,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
   0 failures (4432 lib tests, +7; +1 API 403 test), architecture suite green.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-09** — **Cycle 29 (T2.14 `[ ]`→`[~]`): reinstated the scan-level
+  "slow scan with wasted modules" optimization hint, event-sourced.**
+  `util::diagnostics::analyse` lost this hint in T2.13 because a module that
+  runs and finds nothing emits no evidence, so it never appears in the
+  entity-derived `modules_by_yield` — the signal lives only in the scan's
+  `ModuleDone { found: 0 }` events, which `analyse` couldn't see. Chose option
+  (a): widen `analyse` to take `events: &[core::event::Event]` — the plain
+  `core` data type the three callers already read from their `StoragePort`, NOT
+  the storage trait (so `util`'s layering holds; identical coupling to the
+  existing `entities: &[Entity]` arg), single-sourcing the hint for both CLI
+  surfaces (dossier + `hse scan --json`) instead of duplicating it per caller.
+  The hint fires as ONE aggregate line, gated on `wall_time_ms > 60_000` AND
+  ≥1 zero-yield module, bounded to the worst-5 names + "(+N more)" — so a normal
+  scan's dozens of legitimately-empty modules can never flood it. All 3 non-test
+  callers pass their events; the dossier's duplicate event fetch was folded into
+  one. Regression test `analyse_flags_slow_scan_with_zero_yield_modules` (fires
+  at 61s, silent at 60s and for a module that yielded). The per-module
+  zero-yield hint stays deferred (`[~]`) pending its noise decision.
+  Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
+  0 failures (4504 lib tests, +1). **Paired:** `SOLUTION_TREE` §5 SOL-HINT-NOISE
+  `[ ]`→`[~]` — same commit.

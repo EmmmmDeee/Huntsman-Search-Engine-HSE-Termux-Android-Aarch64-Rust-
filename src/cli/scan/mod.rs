@@ -283,8 +283,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .and_then(|f| f.checked_sub(scan.started_at))
             .unwrap_or(0)
             .saturating_mul(1000);
-        let diag =
-            crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
+        let events = store.events_for_scan(&sid).unwrap_or_default();
+        let diag = crate::util::diagnostics::analyse(
+            &sid, kind_str, &cmd.value, wall_ms, &entities, &events,
+        );
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({

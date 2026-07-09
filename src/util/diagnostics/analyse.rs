@@ -67,13 +67,22 @@ pub fn read_adaptive_routing() -> AdaptiveRouting {
     }
 }
 
-/// Compute full diagnostics from a finalised scan's entity set.
+/// Compute full diagnostics from a finalised scan's entity set and dispatch log.
+///
+/// `events` is the scan's `ModuleDone`/… event stream (the caller reads it from
+/// its `StoragePort` and passes the plain slice — `util` takes the `core::event`
+/// data type, never the storage trait). It carries the one signal the entity set
+/// cannot: a module that ran and found nothing emits no evidence, so it is absent
+/// from `entities`/`modules_by_yield` entirely; only the `ModuleDone { found: 0 }`
+/// event records that it ran at all. That drives the scan-level slow-with-waste
+/// hint below.
 pub fn analyse(
     scan_id: &str,
     seed_kind: &str,
     seed_value: &str,
     wall_time_ms: u64,
     entities: &[Entity],
+    events: &[crate::core::event::Event],
 ) -> ScanDiagnostics {
     let mut by_source: HashMap<String, ModulePerformance> = HashMap::new();
     let mut source_conf: HashMap<String, Vec<f64>> = HashMap::new();
@@ -327,19 +336,15 @@ pub fn analyse(
 
     // Optimization hints based on what we observed.
     //
-    // Deliberately NOT here: a "module returned 0 entities" / "scan exceeded
-    // 60s with a zero-yield module" hint keyed on `entities_emitted == 0`.
-    // `modules_by_yield` is built (above) exclusively from emitted entities'
-    // evidence, so a module that ran and found nothing is never inserted at
-    // all — absent, not present-at-zero — and any such condition here would
-    // be unreachable dead code (PROBLEM_TREE T2.13 found and removed two:
-    // this one, and the dossier's now-fixed "ROI" hint, which reads the
-    // scan's own `ModuleDone` events instead, from the caller layer that has
-    // `StoragePort` access `util` may not depend on). A correct fix for a
-    // per-module zero-yield hint needs the same event-sourced approach AND a
-    // decision on noise (a realistic scan dispatches dozens of modules that
-    // legitimately find nothing for a given target) — real, but deferred as
-    // its own increment rather than force-fit here.
+    // The scan-level "slow scan with wasted modules" hint IS here now (T2.14),
+    // event-sourced: `modules_by_yield` is built (above) exclusively from emitted
+    // entities' evidence, so a module that ran and found nothing is absent from it
+    // entirely — only the `ModuleDone { found: 0 }` events record that it ran. So
+    // this reads `events`, not `entities`. It fires as ONE aggregate line, gated on
+    // a >60s wall time, so a normal scan's dozens of legitimately-empty modules
+    // never flood the hints. A per-module zero-yield hint (one line per empty
+    // module) is still deferred (PROBLEM_TREE T2.14): it needs an explicit noise
+    // decision (cap to worst-N, cost-gate, or bounded count) before it earns a line.
     let mut hints: Vec<String> = Vec::new();
     for perf in &modules_by_yield {
         if perf.mean_confidence < 0.35 && perf.entities_emitted > 10 {
@@ -371,6 +376,49 @@ pub fn analyse(
     if !geo.multi_source_convergence && geo.coordinates_count > 1 {
         hints.push("multiple coordinates but no two are within 5km — geo-convergence not achieved; consider raising depth".into());
     }
+
+    // Scan-level slow-with-waste hint (T2.14, event-sourced). Only fires when the
+    // scan was slow (>60s) AND at least one module ran but found nothing, so
+    // trimming dead modules would materially cut wall time. One aggregate line
+    // (bounded count, worst names capped) — never one-per-module — so it stays
+    // signal, not noise. Deterministic: names are sorted before the cap.
+    const SLOW_SCAN_MS: u64 = 60_000;
+    if wall_time_ms > SLOW_SCAN_MS {
+        use crate::core::event::EventKind;
+        let mut zero_yield: Vec<&str> = events
+            .iter()
+            .filter_map(|ev| match &ev.kind {
+                EventKind::ModuleDone { module, found: 0 } => Some(module.as_str()),
+                _ => None,
+            })
+            .collect();
+        zero_yield.sort_unstable();
+        zero_yield.dedup();
+        if !zero_yield.is_empty() {
+            const NAMES_SHOWN: usize = 5;
+            let shown = zero_yield
+                .iter()
+                .take(NAMES_SHOWN)
+                .copied()
+                .collect::<Vec<_>>()
+                .join(", ");
+            let more = zero_yield.len().saturating_sub(NAMES_SHOWN);
+            let suffix = if more > 0 {
+                format!(" (+{more} more)")
+            } else {
+                String::new()
+            };
+            hints.push(format!(
+                "scan exceeded {}s ({:.1}s) with {} zero-yield module(s): {}{} — consider --exclude or --adaptive to trim dispatch",
+                SLOW_SCAN_MS / 1000,
+                wall_time_ms as f64 / 1000.0,
+                zero_yield.len(),
+                shown,
+                suffix
+            ));
+        }
+    }
+
     if hints.is_empty() {
         hints
             .push("no optimization signals detected — pipeline is well-tuned for this seed".into());

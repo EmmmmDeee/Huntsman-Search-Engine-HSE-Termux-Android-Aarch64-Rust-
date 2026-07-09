@@ -141,12 +141,14 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
                         .and_then(|f| f.checked_sub(completed.started_at))
                         .unwrap_or(0)
                         .saturating_mul(1000);
+                    let events = store_clone.events_for_scan(&sid).unwrap_or_default();
                     crate::util::diagnostics::analyse(
                         &sid,
                         completed.target.kind.canonical_str(),
                         &completed.target.value,
                         wall_ms,
                         &entities,
+                        &events,
                     );
                 }
             }

@@ -578,17 +578,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[~]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
-  zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
-  (event-sourced, caller-side); the per-module "module X returned 0 entities"
-  hint needs a design decision first — fired correctly on real event data, a
-  realistic multi-module scan leaves dozens of modules at zero yield for any
-  given target kind (normal, not noteworthy), so a naive per-module
-  reinstatement would flood the hints list with the opposite of signal.
-  Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  zero-yield module" hint ✅ **delivered (cycle 29)** — event-sourced, but
+  single-sourced INSIDE `analyse` (option (a): the fn now takes
+  `events: &[core::event::Event]`, the plain `core` type the callers already
+  read from their `StoragePort`) rather than duplicated per caller like
+  SOL-ROI-HINT, so both CLI surfaces get it identically. One aggregate line,
+  gated on `>60s` wall time AND ≥1 zero-yield module, bounded to worst-5 names.
+  The per-module "module X returned 0 entities" hint still needs a design
+  decision first — fired correctly on real event data, a realistic multi-module
+  scan leaves dozens of modules at zero yield for any given target kind (normal,
+  not noteworthy), so a naive per-module reinstatement would flood the hints
+  list with the opposite of signal. Candidates: cap to worst-N, cost-gate like
+  SOL-ROI-HINT (`KeyGated`/`Paid`-only), or collapse to a bounded summary count.
+  *Gap:* per-module hint remaining. **(§4a)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -881,7 +885,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -4064,3 +4068,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4432 lib tests, +7; +1 API test), architecture suite green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-09** — **Cycle 29: SOL-HINT-NOISE `[ ]`→`[~]` — scan-level
+  slow-with-waste hint reinstated, event-sourced and single-sourced.**
+  `util::diagnostics::analyse` couldn't emit the "scan exceeded 60s with a
+  zero-yield module" hint T2.13 removed because an empty module leaves no
+  evidence, so it never appears in the entity-derived `modules_by_yield` — the
+  fact that it ran at all lives only in the scan's `ModuleDone { found: 0 }`
+  events. Chose option (a) over mirroring SOL-ROI-HINT's caller-side pattern:
+  widened `analyse` to take `events: &[core::event::Event]` (the plain `core`
+  data type — not the `StoragePort` trait, preserving `util` layering; same
+  coupling level as the existing `entities` arg), so the hint is computed once
+  and both CLI surfaces (dossier + `hse scan --json`) get it identically instead
+  of each caller re-deriving it. Fires as ONE aggregate line gated on
+  `wall_time_ms > 60_000` AND ≥1 zero-yield module, bounded to worst-5 names +
+  "(+N more)" so it can never flood. 3 non-test callers pass events (dossier's
+  duplicate fetch folded into one); 13 test callers pass `&[]`. Regression test
+  `analyse_flags_slow_scan_with_zero_yield_modules`. The per-module zero-yield
+  hint stays `[~]` pending its noise decision (cap-N / cost-gate / bounded
+  count). Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean,
+  full suite 0 failures (4504 lib tests, +1). Paired: `PROBLEM_TREE` §8 T2.14
+  `[ ]`→`[~]` — same commit.

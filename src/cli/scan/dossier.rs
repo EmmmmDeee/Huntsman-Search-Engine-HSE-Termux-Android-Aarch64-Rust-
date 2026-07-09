@@ -580,7 +580,8 @@ fn print_diagnostics(
         .and_then(|f| f.checked_sub(scan.started_at))
         .unwrap_or(0)
         .saturating_mul(1000);
-    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+    let events = store.events_for_scan(sid).unwrap_or_default();
+    let diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities, &events);
 
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
@@ -618,7 +619,6 @@ fn print_diagnostics(
     if let Some(note) = truncation_note(MODULES_SHOWN, diag.modules_by_yield.len()) {
         println!("{note}");
     }
-    let events = store.events_for_scan(sid).unwrap_or_default();
     let wasted = zero_yield_keyed_or_paid_modules(&events, &cost_by_module);
     if !wasted.is_empty() {
         println!(

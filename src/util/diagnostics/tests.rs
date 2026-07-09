@@ -11,7 +11,7 @@ fn ent(kind: EntityKind, val: &str, conf: f64, source: &str) -> Entity {
 
 #[test]
 fn analyse_empty_scan() {
-    let d = analyse("sid", "email", "x@y.com", 100, &[]);
+    let d = analyse("sid", "email", "x@y.com", 100, &[], &[]);
     assert_eq!(d.modules_by_yield.len(), 0);
     assert_eq!(d.geo_precision.coordinates_count, 0);
     assert!(!d.optimization_hints.is_empty());
@@ -25,7 +25,7 @@ fn analyse_ranks_modules_by_yield() {
         ent(EntityKind::Email, "e@f.com", 0.8, "modA"),
         ent(EntityKind::Username, "alice", 0.7, "modB"),
     ];
-    let d = analyse("sid", "email", "x@y.com", 100, &entities);
+    let d = analyse("sid", "email", "x@y.com", 100, &entities, &[]);
     assert_eq!(d.modules_by_yield[0].name, "modA");
     assert_eq!(d.modules_by_yield[0].entities_emitted, 3);
     assert_eq!(d.modules_by_yield[1].name, "modB");
@@ -41,7 +41,7 @@ fn entities_emitted_counts_entities_not_evidence_records() {
     let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.8, "test-scan-id");
     e.add_evidence(Evidence::new("modX", "first observation"));
     e.add_evidence(Evidence::new("modX", "second observation"));
-    let d = analyse("sid", "email", "x@y.com", 100, &[e]);
+    let d = analyse("sid", "email", "x@y.com", 100, &[e], &[]);
     let m = d
         .modules_by_yield
         .iter()
@@ -75,8 +75,8 @@ fn analyse_output_is_byte_reproducible() {
         v.as_object_mut().unwrap().remove("adaptive_routing");
         v
     };
-    let a = pure(analyse("sid", "email", "seed", 100, &entities));
-    let b = pure(analyse("sid", "email", "seed", 100, &entities));
+    let a = pure(analyse("sid", "email", "seed", 100, &entities, &[]));
+    let b = pure(analyse("sid", "email", "seed", 100, &entities, &[]));
     if a != b {
         for (k, av) in a.as_object().unwrap() {
             assert!(
@@ -90,7 +90,7 @@ fn analyse_output_is_byte_reproducible() {
     assert_eq!(a, b, "pure diagnostics must be byte-identical");
     // Guard the test's validity: the maps must carry several keys so order
     // actually matters.
-    let d = analyse("sid", "email", "seed", 100, &entities);
+    let d = analyse("sid", "email", "seed", 100, &entities, &[]);
     assert!(
         d.source_confidence.len() >= 3 && d.entity_kind_counts.len() >= 3,
         "expected multi-key maps for a meaningful reproducibility check"
@@ -104,7 +104,7 @@ fn analyse_computes_confidence_stats() {
         ent(EntityKind::Email, "b", 0.7, "src"),
         ent(EntityKind::Email, "c", 0.9, "src"),
     ];
-    let d = analyse("sid", "email", "x@y.com", 50, &entities);
+    let d = analyse("sid", "email", "x@y.com", 50, &entities, &[]);
     let s = &d.source_confidence["src"];
     assert_eq!(s.n, 3);
     assert!((s.mean - 0.7).abs() < 0.01);
@@ -127,7 +127,7 @@ fn analyse_geo_precision_counts() {
             .with_attr("addr_country", "Australia")
             .with_attr("addr_iso", "AU"),
     );
-    let d = analyse("sid", "name", "X", 100, &[c, a]);
+    let d = analyse("sid", "name", "X", 100, &[c, a], &[]);
     assert_eq!(d.geo_precision.coordinates_count, 1);
     assert_eq!(d.geo_precision.coords_with_geohash, 1);
     assert_eq!(d.geo_precision.coords_with_timezone, 1);
@@ -142,20 +142,66 @@ fn analyse_detects_cross_source_overlap() {
     e1.add_evidence(Evidence::new("modA", "ev"));
     let mut e2 = Entity::new(EntityKind::Email, "shared@x.com", 0.8, "sid");
     e2.add_evidence(Evidence::new("modB", "ev"));
-    let d = analyse("sid", "email", "x@y.com", 50, &[e1, e2]);
+    let d = analyse("sid", "email", "x@y.com", 50, &[e1, e2], &[]);
     assert_eq!(d.cross_source_overlap.len(), 1);
     assert_eq!(d.cross_source_overlap[0].sources.len(), 2);
 }
 
-/// Renamed from `analyse_emits_optimization_hints_for_zero_yield`: the name
-/// claimed to test zero-yield-module hint emission, but `analyse` has never
-/// been able to see a zero-yield module at all (T2.13) — this asserts the
-/// unconditional fallback hint that fires when the (real) hint conditions
-/// above find nothing to say, which is what an empty entity set exercises.
+/// The unconditional fallback hint fires when no real hint condition is met —
+/// an empty entity set with no events and a fast wall time exercises exactly that.
 #[test]
 fn analyse_falls_back_to_a_hint_when_nothing_else_fires() {
-    let d = analyse("sid", "email", "x@y.com", 100, &[]);
+    let d = analyse("sid", "email", "x@y.com", 100, &[], &[]);
     assert!(!d.optimization_hints.is_empty());
+}
+
+/// T2.14: a slow scan (>60s) that ran modules which found nothing earns the
+/// event-sourced slow-with-waste hint — the one signal the entity set can't carry
+/// (an empty module emits no evidence, so it never appears in `modules_by_yield`).
+#[test]
+fn analyse_flags_slow_scan_with_zero_yield_modules() {
+    use crate::core::event::{Event, EventKind};
+    let events = vec![
+        Event::new(
+            "sid",
+            EventKind::ModuleDone {
+                module: "shodan".into(),
+                found: 0,
+            },
+        ),
+        Event::new(
+            "sid",
+            EventKind::ModuleDone {
+                module: "censys".into(),
+                found: 3,
+            },
+        ),
+    ];
+    // 61s wall time, one zero-yield module (shodan) → the hint fires and names it.
+    let d = analyse("sid", "email", "x@y.com", 61_000, &[], &events);
+    let hint = d
+        .optimization_hints
+        .iter()
+        .find(|h| h.contains("zero-yield module"))
+        .expect("slow scan with a zero-yield module must emit the hint");
+    assert!(
+        hint.contains("shodan"),
+        "hint names the empty module: {hint}"
+    );
+    assert!(
+        !hint.contains("censys"),
+        "a module that DID find entities is not flagged: {hint}"
+    );
+
+    // Same events but a fast scan (<=60s) → no slow-scan hint (it is wall-gated).
+    let fast = analyse("sid", "email", "x@y.com", 60_000, &[], &events);
+    assert!(
+        !fast
+            .optimization_hints
+            .iter()
+            .any(|h| h.contains("zero-yield module")),
+        "the hint is gated on a >60s wall time"
+    );
 }
 
 #[test]
@@ -188,7 +234,7 @@ fn cluster_entities_collapses_name_variants() {
     e2.add_evidence(Evidence::new("see_know", "ev"));
     let mut e3 = Entity::new(EntityKind::Person, "Sarah Connor", 0.8, "sid");
     e3.add_evidence(Evidence::new("oathnet_pro", "ev"));
-    let d = analyse("sid", "name", "Jordan Meyer", 100, &[e1, e2, e3]);
+    let d = analyse("sid", "name", "Jordan Meyer", 100, &[e1, e2, e3], &[]);
     // First two should form a cluster; Sarah Connor stays singleton (skipped)
     assert!(!d.entity_clusters.is_empty());
     let cluster = &d.entity_clusters[0];
@@ -211,7 +257,7 @@ fn cluster_coordinates_groups_nearby_points() {
             .with_attr("geohash", "r3gx2f7")
             .with_attr("timezone", "Australia/Sydney"),
     );
-    let d = analyse("sid", "ip", "1.1.1.1", 100, &[e1, e2]);
+    let d = analyse("sid", "ip", "1.1.1.1", 100, &[e1, e2], &[]);
     assert_eq!(d.coordinate_clusters.len(), 1);
     assert_eq!(d.coordinate_clusters[0].member_count, 2);
     assert!(d.coordinate_clusters[0].diameter_km < 1.0);
@@ -288,7 +334,7 @@ fn fuzzy_cluster_drops_single_source_doublet() {
     e1.add_evidence(Evidence::new("oathnet_pro", "ev"));
     let mut e2 = Entity::new(EntityKind::Address, "Haigen Li, Pingan Asset", 0.3, "sid");
     e2.add_evidence(Evidence::new("oathnet_pro", "ev"));
-    let d = analyse("sid", "name", "Haigen Bamford", 100, &[e1, e2]);
+    let d = analyse("sid", "name", "Haigen Bamford", 100, &[e1, e2], &[]);
     // Identity-pollution candidate filtered out.
     let polluted = d
         .entity_clusters
@@ -306,7 +352,7 @@ fn fuzzy_cluster_keeps_triplet_from_single_source() {
     e2.add_evidence(Evidence::new("oathnet_pro", "ev"));
     let mut e3 = Entity::new(EntityKind::Person, "haigen bamford", 0.5, "sid");
     e3.add_evidence(Evidence::new("oathnet_pro", "ev"));
-    let d = analyse("sid", "name", "Haigen Bamford", 100, &[e1, e2, e3]);
+    let d = analyse("sid", "name", "Haigen Bamford", 100, &[e1, e2, e3], &[]);
     let found = d
         .entity_clusters
         .iter()
