@@ -185,6 +185,7 @@ use super::*;
                 .into_iter()
                 .map(|(id, provider)| (id.to_string(), provider.to_string()))
                 .collect(),
+            hydration_findings: Vec::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
             security_headers: Vec::new(),

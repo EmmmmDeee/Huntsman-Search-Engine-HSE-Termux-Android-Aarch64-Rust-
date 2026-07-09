@@ -16,13 +16,34 @@
 /// such a domain's expansion weight and (in the engine) to skip expanding one
 /// that was only *incidentally* discovered, so a person/profile scan doesn't
 /// burn rounds mapping a platform's own DNS/mail infrastructure.
-/// Registrable-suffix match: `d == m` or `d` ends with `.m` (www-stripped).
+/// Strip a leading `www.` ASCII-case-insensitively without allocating. Safe
+/// on any input: the match can only succeed if the first 4 bytes are
+/// literally the ASCII characters `w`/`W`, `w`/`W`, `w`/`W`, `.` (a
+/// multi-byte UTF-8 continuation byte can never satisfy that comparison), so
+/// the returned slice always starts on a real character boundary.
+fn strip_www_ci(d: &str) -> &str {
+    let b = d.as_bytes();
+    if b.len() >= 4 && b[..4].eq_ignore_ascii_case(b"www.") {
+        &d[4..]
+    } else {
+        d
+    }
+}
+
+/// Registrable-suffix match: `d == m` or `d` ends with `.m` (www-stripped),
+/// matched ASCII-case-insensitively against the raw value — zero allocation
+/// (every `list` entry, MEGA_DOMAINS/INFRA_DOMAINS, is lowercase ASCII, so
+/// this is equivalent to the old lowercase-then-compare approach). The
+/// suffix comparison runs on byte slices, not `&str`, so it never needs a
+/// char-boundary check regardless of where it cuts.
 fn matches_domain_suffix(domain: &str, list: &[&str]) -> bool {
-    let d = domain.trim().to_lowercase();
-    let d = d.strip_prefix("www.").unwrap_or(&d);
+    let d = strip_www_ci(domain.trim()).as_bytes();
     list.iter().any(|m| {
-        d == *m
-            || (d.len() > m.len() && d.as_bytes()[d.len() - m.len() - 1] == b'.' && d.ends_with(m))
+        let mb = m.as_bytes();
+        d.eq_ignore_ascii_case(mb)
+            || (d.len() > mb.len()
+                && d[d.len() - mb.len() - 1] == b'.'
+                && d[d.len() - mb.len()..].eq_ignore_ascii_case(mb))
     })
 }
 
@@ -35,15 +56,33 @@ pub(crate) fn is_mega_domain(domain: &str) -> bool {
 /// but is incidental to any subject — `ns10.dnsmadeeasy.com`,
 /// `cns1.secureserver.net`, `u123.sendgrid.net`, `ns-664.awsdns-19.net`, … map
 /// the provider's estate, not the target, so they are never worth deep-expanding.
-pub(crate) fn is_infra_domain(domain: &str) -> bool {
-    let d = domain.trim().to_lowercase();
-    let d = d.strip_prefix("www.").unwrap_or(&d);
-    // AWS Route 53 nameservers — ns-N.awsdns-NN.{com,net,org,co.uk} — whose root
-    // varies with the shard number, so a plain suffix list can't catch them.
-    if d.contains(".awsdns-") || d.starts_with("awsdns-") {
+/// ASCII-case-insensitive substring containment. `core` never imports `util`
+/// directly (see the `core_does_not_import_util_directly` architecture guard),
+/// so this doesn't reach for `util::str_util::find_ascii_ci`'s NEON scan —
+/// the domain strings here are a handful of bytes, never a scraped body, so a
+/// SIMD prefilter would buy nothing a plain scan doesn't already give.
+fn contains_ascii_ci(haystack: &[u8], needle: &[u8]) -> bool {
+    if needle.is_empty() {
         return true;
     }
-    matches_domain_suffix(d, INFRA_DOMAINS)
+    haystack.len() >= needle.len()
+        && (0..=haystack.len() - needle.len())
+            .any(|i| haystack[i..i + needle.len()].eq_ignore_ascii_case(needle))
+}
+
+pub(crate) fn is_infra_domain(domain: &str) -> bool {
+    let d = strip_www_ci(domain.trim());
+    // AWS Route 53 nameservers — ns-N.awsdns-NN.{com,net,org,co.uk} — whose root
+    // varies with the shard number, so a plain suffix list can't catch them.
+    // Both checks are ASCII-case-insensitive, matching the old
+    // lowercase-then-`contains`/`starts_with` behaviour, without allocating.
+    let db = d.as_bytes();
+    if contains_ascii_ci(db, b".awsdns-")
+        || (db.len() >= 7 && db[..7].eq_ignore_ascii_case(b"awsdns-"))
+    {
+        return true;
+    }
+    matches_domain_suffix(domain, INFRA_DOMAINS)
 }
 
 /// Either a mega/social platform or shared infrastructure — the haystack a lead

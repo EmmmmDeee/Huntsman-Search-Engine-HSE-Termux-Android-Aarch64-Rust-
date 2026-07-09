@@ -15,6 +15,7 @@ use super::*;
             emails: HashSet::new(),
             phones: HashSet::new(),
             tracking_ids: HashSet::new(),
+            hydration_findings: Vec::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
             security_headers: Vec::new(),
