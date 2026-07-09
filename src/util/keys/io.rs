@@ -81,46 +81,83 @@ pub fn load() -> HashMap<String, String> {
         );
     }
 
-    // Multi-key support: if an env var contains comma-separated values,
-    // load each into the pool for round-robin rotation. The first key
-    // stays in the env map for backward compat; extras go to the pool.
+    // Seed the rotation pool from every resolved key and health-select the active
+    // value per service, so per-key telemetry (rate-limit cooldowns, 401/403
+    // dead-key memory, load-spreading) applies to single operator keys too — not
+    // just CSV multi-value env vars.
     let pool = crate::util::key_pool::global_pool();
-    for svc in crate::util::key_pool::service_defs() {
-        // Avoid cloning the value in the common case (no comma / no rotation).
-        // Bind the entry once and clone only after confirming rotation is needed
-        // — a single map lookup with no fallible unwrap.
-        if let Some(raw) = map.get(svc.env_var)
-            && raw.contains(',')
-        {
-            let val = raw.clone();
-            let keys: Vec<&str> = val
-                .split(',')
-                .map(str::trim)
-                .filter(|k| !k.is_empty())
-                .collect();
-            if keys.len() > 1 {
-                map.insert(svc.env_var.to_string(), keys[0].to_string());
-                for k in &keys {
-                    let mut entry = crate::util::key_pool::KeyEntry::new(*k);
-                    entry.status = crate::util::key_pool::KeyStatus::Active;
-                    pool.add(svc.name, entry);
-                }
-                tracing::info!(
-                    service = svc.name,
-                    count = keys.len(),
-                    "loaded {} keys for rotation",
-                    keys.len()
-                );
-            }
-        }
-    }
+    resolve_through_pool(&mut map, &pool);
     // Fill any env var still missing a value from the pool. Single-sourced with
     // the pool's own gap-fill helper instead of re-inlining the
-    // skip-if-present-else-`next_key` loop (the two had drifted apart). A
-    // CSV-expanded service already has its env entry set above, so this skips it.
+    // skip-if-present-else-`next_key` loop (the two had drifted apart).
     crate::util::key_pool::merge_pool_into_env(&pool, &mut map);
 
     map
+}
+
+/// Seed `pool` from every key already resolved into `map` and, where warranted,
+/// replace a service's active value with a pool-selected one.
+///
+/// This is what makes [`crate::core::module::ModuleContext::report_key_exhausted`]
+/// more than a no-op for the common single-key case: previously only
+/// comma-separated multi-value env vars ever entered the pool, so a 401/403/429 on
+/// a lone operator key had no pool entry to mark and no memory survived the scan.
+/// Now every resolved key is seeded ([`crate::util::key_pool::KeyPool::add`] dedups
+/// by value and gates on `is_poolable_service`, so this is idempotent and can't
+/// bloat the pool).
+///
+/// Selection policy, chosen to add failover WITHOUT letting an unrelated pooled
+/// key shadow the operator's explicit choice (which would be non-deterministic
+/// under the process-global pool):
+/// - **One healthy key** — kept verbatim; the pool is not consulted for the value.
+/// - **More than one key** (CSV rotation) — routed through
+///   [`crate::util::key_pool::KeyPool::next_key`] for tier-ranked load-spreading.
+/// - **A sole key that is marked dead/exhausted** — routed through `next_key` so a
+///   healthy alternative (harvested or rotated in) takes over; if none is usable
+///   the env value is kept (fail-open — there is nothing better to switch to).
+pub(super) fn resolve_through_pool(
+    map: &mut HashMap<String, String>,
+    pool: &crate::util::key_pool::KeyPool,
+) {
+    use crate::util::key_pool::{KeyEntry, KeyStatus};
+    for svc in crate::util::key_pool::service_defs() {
+        let Some(raw) = map.get(svc.env_var) else {
+            continue;
+        };
+        let values: Vec<String> = raw
+            .split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .map(str::to_string)
+            .collect();
+        let Some(primary) = values.first().cloned() else {
+            continue;
+        };
+        for v in &values {
+            let mut entry = KeyEntry::new(v);
+            entry.status = KeyStatus::Active;
+            pool.add(svc.name, entry);
+        }
+        if values.len() > 1 {
+            tracing::info!(
+                service = svc.name,
+                count = values.len(),
+                "loaded {} keys for rotation",
+                values.len()
+            );
+        }
+        // A lone healthy key is authoritative — keep it exactly. Only rotate when
+        // there is a genuine choice (multi-key) or the sole key is unusable.
+        let primary_healthy = matches!(
+            pool.entry_status(svc.name, &primary),
+            None | Some(KeyStatus::Active)
+        );
+        if (values.len() > 1 || !primary_healthy)
+            && let Some(selected) = pool.next_key(svc.name)
+        {
+            map.insert(svc.env_var.to_string(), selected);
+        }
+    }
 }
 
 /// Proactively populate API keys before a scan starts:

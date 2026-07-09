@@ -886,6 +886,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[~]` |
+| SOL-KEY-POOL-SEED | KEY.1 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -4088,3 +4089,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   count). Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean,
   full suite 0 failures (4504 lib tests, +1). Paired: `PROBLEM_TREE` §8 T2.14
   `[ ]`→`[~]` — same commit.
+- **2026-07-09** — **SOL-KEY-POOL-SEED (new KEY program): pool-seed every
+  resolved key → KEY.1 `[ ]`→`[x]`.** The rotation pool (`key_pool/pool.rs`:
+  tier-ranked `next_key`, rate-limit cooldown, health scoring) was built but
+  under-fed — `keys/io.rs::load` only entered CSV multi-value env vars, so a lone
+  operator/embedded key never got a pool entry and `report_key_exhausted` had
+  nothing to mark. New pure `resolve_through_pool(map, pool)` seeds every resolved
+  key (`KeyPool::add` dedups + `is_poolable_service` gate = idempotent) and
+  health-selects per service: lone healthy key verbatim (deterministic — no
+  unrelated pooled key shadows the operator's choice under the global singleton),
+  multi-key → `next_key` load-spread, sole dead/exhausted key → failover
+  (fail-open when none usable). +3 tests against a local `KeyPool`. First phase of
+  the four-phase key-maximisation program (KEY.2 registration completeness, KEY.3
+  spend-every-key collectors, KEY.4 tier-into-dispatch + force-multiplier).
+  Paired: `PROBLEM_TREE` §8 KEY.1 — same commit. Gate green, 4507 lib tests (+3),
+  architecture 30/30.

@@ -1451,6 +1451,38 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   Schema snapshot test updated. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN
   `[ ]`→`[x]` + §3/§4/§5 — same commit.
 
+- **KEY · API-key functionality maximisation program** — *Problem:* a full
+  subsystem audit (2026-07-09) found HSE's key machinery is mostly *built but
+  under-wired* — the pool rotates/cools-down/ranks by tier, but the live pipeline
+  barely feeds it; several registered keys have no consuming module; several
+  consuming modules use unregistered keys; the ROI tier and the enterprise
+  force-multiplier table are dead weight. A multi-phase program to make every key
+  reachable, rotatable, validated, spent, and tier-weighted.
+  - **`[x]` KEY.1 · Seed the pool from every resolved key (rotation + dead-key
+    memory for single keys).** `keys/io.rs::load` only pooled CSV multi-value env
+    vars, so `report_key_exhausted` (`core/module/mod.rs:354`) was a no-op for the
+    common lone-key case — a 401/403/429 was forgotten and nothing rotated. →
+    New pure `resolve_through_pool(map, pool)` seeds every resolved key (idempotent
+    via `KeyPool::add`) and health-selects: lone healthy key verbatim, multi-key
+    load-spread, dead sole key fails over. **Delivered 2026-07-09**, +3 tests.
+    Paired `SOLUTION_TREE` SOL-KEY-POOL-SEED. **P2 (reliability)**
+  - **`[ ]` KEY.2 · Registration completeness.** Register the orphan consumer keys
+    (`NIAMONX`, `OSINTCAT`, `FULLCONTACT`, `GITHUB_TOKEN`, `ABUSECH`, `MLS`) into
+    `KNOWN_KEYS` + `service_defs` so they're configurable/validatable/rotatable;
+    audit every module `SRC` vs `ServiceDef.name` (e.g. `hunter_io`→`hunter`
+    mismatch breaks exhaustion routing); drop the dead `mls` `"test"` default.
+    Extend `hse doctor` to live-probe all registered keys, not just WiGLE. **P2**
+  - **`[ ]` KEY.3 · Spend every held key.** Build collector modules for the
+    keys HSE holds/validates but never spends — `FOFA`, `BuiltWith`,
+    `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`, `PassiveTotal`,
+    `Pulsedive` (one module per cycle, each with fixtures + ATT&CK mapping); add
+    `cache_ttl_secs` to stable-data keyed modules to stretch quota. **CAP-med**
+  - **`[ ]` KEY.4 · Make key tier matter.** Wire `key_roi::classify` (today only
+    logged/tagged/sorted) into dispatch ordering / expansion budget so Multiplier
+    keys run first and earn more expansion; wire the dormant
+    `enterprise_config` `API_KEY_PATTERNS.force_multiplier` so a *discovered*
+    provider key unlocks downstream modules mid-scan. **CAP-high**
+
 ---
 
 ## 5. Execution order (the queue)
@@ -5592,3 +5624,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
   0 failures (4504 lib tests, +1). **Paired:** `SOLUTION_TREE` §5 SOL-HINT-NOISE
   `[ ]`→`[~]` — same commit.
+- **2026-07-09** — **KEY.1 (new API-key maximisation program): seed the rotation
+  pool from every resolved key.** Subsystem audit found `key_pool` (tier-ranked
+  `next_key`, cooldown, health) was fully built but `keys/io.rs::load` only pooled
+  CSV multi-value env vars, making `report_key_exhausted` (`core/module/mod.rs:354`)
+  a no-op for lone operator/embedded keys — a 401/403/429 was forgotten, no
+  cross-scan dead-key memory, nothing to rotate to. New pure `resolve_through_pool`
+  seeds every resolved key (`KeyPool::add` dedups by value + gates on
+  `is_poolable_service` → idempotent, non-bloating) and health-selects the active
+  value: lone healthy key kept verbatim (deterministic under the process-global
+  pool), multi-key routed through `next_key` for load-spread, sole dead/exhausted
+  key fails over to a healthy alternative (fail-open when none usable). Tested
+  against a LOCAL `KeyPool` to avoid singleton contamination; +3 tests. KEY.1
+  `[ ]`→`[x]`. Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean,
+  full suite 0 failures (4507 lib tests, +3), architecture 30/30. **Paired:**
+  `SOLUTION_TREE` §5 SOL-KEY-POOL-SEED — same commit.

@@ -10,6 +10,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+- **Every configured API key now participates in rotation and dead-key
+  memory, not just comma-separated multi-key lists.** Previously a lone
+  operator/embedded key was never entered the rotation pool, so a 401/403/429
+  on it was silently forgotten — `report_key_exhausted` had nothing to mark and
+  no memory survived the scan. Now every resolved key is seeded into the pool
+  (idempotently), and a key that has been marked dead or rate-limited fails over
+  to a healthy alternative when one exists. A single healthy key is still used
+  verbatim, so nothing changes for the common case.
+
 ### Added
 - **Scan diagnostics now flag a slow scan padded by wasted modules.** When a
   scan runs longer than 60s and at least one dispatched module found nothing,

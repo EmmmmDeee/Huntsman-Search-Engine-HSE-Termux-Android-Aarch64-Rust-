@@ -362,6 +362,95 @@ fn pool_keys_fill_empty_env_slots() {
     let _ = map;
 }
 
+// The seed-and-health-select logic is tested against a LOCAL `KeyPool` (not the
+// process-global singleton), so these are deterministic and free of cross-test
+// pool/env contamination.
+
+#[test]
+fn resolve_through_pool_seeds_a_lone_key_and_keeps_it_verbatim() {
+    use super::io::resolve_through_pool;
+    use crate::util::key_pool::{KeyPool, KeyStatus};
+    use std::collections::HashMap;
+
+    let pool = KeyPool::new();
+    let mut map: HashMap<String, String> = [(
+        "HUNTSMAN_SHODAN_KEY".to_string(),
+        "operator-key-abc".to_string(),
+    )]
+    .into();
+
+    resolve_through_pool(&mut map, &pool);
+
+    // The lone healthy key is returned unchanged (deterministic — no unrelated
+    // pooled key can shadow the operator's explicit choice).
+    assert_eq!(
+        map.get("HUNTSMAN_SHODAN_KEY").map(String::as_str),
+        Some("operator-key-abc")
+    );
+    // ...but it IS now seeded into the pool, so report_key_exhausted has an entry
+    // to mark (the no-op this change fixes).
+    assert_eq!(
+        pool.entry_status("shodan", "operator-key-abc"),
+        Some(KeyStatus::Active),
+        "a single resolved key must be seeded into the rotation pool"
+    );
+}
+
+#[test]
+fn resolve_through_pool_fails_over_from_a_dead_sole_key() {
+    use super::io::resolve_through_pool;
+    use crate::util::key_pool::{KeyEntry, KeyPool, KeyStatus};
+    use std::collections::HashMap;
+
+    let pool = KeyPool::new();
+    // A healthy alternative already lives in the pool (e.g. harvested / rotated in).
+    let mut alt = KeyEntry::new("live-key");
+    alt.status = KeyStatus::Active;
+    pool.add("shodan", alt);
+    // The operator's configured key is known-dead.
+    let mut dead = KeyEntry::new("dead-key");
+    dead.status = KeyStatus::Active;
+    pool.add("shodan", dead);
+    pool.mark_status("shodan", "dead-key", KeyStatus::Invalid);
+
+    let mut map: HashMap<String, String> =
+        [("HUNTSMAN_SHODAN_KEY".to_string(), "dead-key".to_string())].into();
+    resolve_through_pool(&mut map, &pool);
+
+    // The dead sole key is skipped in favour of the healthy pooled alternative.
+    assert_eq!(
+        map.get("HUNTSMAN_SHODAN_KEY").map(String::as_str),
+        Some("live-key"),
+        "a dead configured key must fail over to a healthy pooled key"
+    );
+}
+
+#[test]
+fn resolve_through_pool_seeds_every_csv_key_for_rotation() {
+    use super::io::resolve_through_pool;
+    use crate::util::key_pool::{KeyPool, KeyStatus};
+    use std::collections::HashMap;
+
+    let pool = KeyPool::new();
+    let mut map: HashMap<String, String> =
+        [("HUNTSMAN_SHODAN_KEY".to_string(), "k1, k2 , k3".to_string())].into();
+    resolve_through_pool(&mut map, &pool);
+
+    for k in ["k1", "k2", "k3"] {
+        assert_eq!(
+            pool.entry_status("shodan", k),
+            Some(KeyStatus::Active),
+            "every CSV key must be pooled for rotation: {k}"
+        );
+    }
+    // The active value is one of the pooled keys (routed through next_key).
+    let active = map.get("HUNTSMAN_SHODAN_KEY").map(String::as_str).unwrap();
+    assert!(
+        ["k1", "k2", "k3"].contains(&active),
+        "active value must be a pooled key: {active}"
+    );
+}
+
 #[test]
 fn default_seed_precedence_env_wins_then_file_then_none() {
     use std::collections::HashMap;
