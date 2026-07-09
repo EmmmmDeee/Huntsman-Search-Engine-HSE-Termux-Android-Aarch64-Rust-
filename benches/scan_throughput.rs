@@ -216,6 +216,66 @@ fn bench_is_captcha_guard(c: &mut Criterion) {
     group.finish();
 }
 
+/// `HrefIter` enumerates every `href="…"` in a fetched page — driven over the
+/// whole raw HTML body of every response by `parse_results`. The old code scanned
+/// with std `str::find` (scalar Two-Way, no SIMD prefilter); the new code uses a
+/// cached `memmem::Finder` + `memchr` (Teddy/NEON on aarch64). This benches the
+/// two scanning strategies over a representative multi-link SERP body.
+fn bench_href_scan(c: &mut Criterion) {
+    use memchr::{memchr, memmem};
+    let body =
+        "<div class='result'><a href=\"https://example.org/page/one\">One</a> some snippet text here</div> "
+            .repeat(120);
+
+    let mut group = c.benchmark_group("href_scan");
+    group.bench_function("old_std_find", |b| {
+        b.iter(|| {
+            let mut rem: &str = black_box(&body);
+            let mut n = 0usize;
+            while let Some(idx) = rem.find("href=") {
+                rem = &rem[idx + 5..];
+                let q = match rem.as_bytes().first() {
+                    Some(&c @ (b'"' | b'\'')) => c,
+                    _ => continue,
+                };
+                rem = &rem[1..];
+                match rem.find(q as char) {
+                    Some(end) => {
+                        n += 1;
+                        rem = &rem[end + 1..];
+                    }
+                    None => break,
+                }
+            }
+            n
+        });
+    });
+    group.bench_function("new_memmem_memchr", |b| {
+        let finder = memmem::Finder::new(b"href=");
+        b.iter(|| {
+            let mut rem: &str = black_box(&body);
+            let mut n = 0usize;
+            while let Some(idx) = finder.find(rem.as_bytes()) {
+                rem = &rem[idx + 5..];
+                let q = match rem.as_bytes().first() {
+                    Some(&c @ (b'"' | b'\'')) => c,
+                    _ => continue,
+                };
+                rem = &rem[1..];
+                match memchr(q, rem.as_bytes()) {
+                    Some(end) => {
+                        n += 1;
+                        rem = &rem[end + 1..];
+                    }
+                    None => break,
+                }
+            }
+            n
+        });
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_find_ascii_ci,
@@ -225,6 +285,7 @@ criterion_group!(
     bench_match_set_vs_linear,
     bench_strip_inline_guard,
     bench_au_place_scan,
-    bench_is_captcha_guard
+    bench_is_captcha_guard,
+    bench_href_scan
 );
 criterion_main!(benches);

@@ -1,5 +1,8 @@
 //! Search-engine helpers — fetch + HTML parse primitives. Self-contained:
-//! depends only on `std`, so it needs nothing from the parent helper namespace.
+//! depends only on `std` and `memchr` (SIMD byte scanning), so it needs nothing
+//! from the parent helper namespace.
+
+use memchr::{memchr, memmem};
 
 // ─── Fetch + parse ──────────────────────────────────────────────────────────
 
@@ -98,8 +101,17 @@ impl<'a> Iterator for HrefIter<'a> {
     type Item = &'a str;
 
     fn next(&mut self) -> Option<Self::Item> {
+        // Cache the SIMD substring finder for `href=` once: building a
+        // memmem::Finder is not free, and `next` runs for every link on every
+        // fetched page's full HTML body. `memmem`/`memchr` are NEON-accelerated on
+        // aarch64; std's `str::find` uses scalar Two-Way with no SIMD prefilter.
+        // `href=` and the quote byte are ASCII, so the returned byte offsets equal
+        // std's and all `&str` slicing below stays char-boundary-safe.
+        static HREF_FINDER: std::sync::OnceLock<memmem::Finder<'static>> =
+            std::sync::OnceLock::new();
+        let finder = HREF_FINDER.get_or_init(|| memmem::Finder::new(b"href="));
         loop {
-            let idx = self.remaining.find("href=")?;
+            let idx = finder.find(self.remaining.as_bytes())?;
             self.remaining = &self.remaining[idx + 5..];
 
             let quote = match self.remaining.as_bytes().first()? {
@@ -107,7 +119,7 @@ impl<'a> Iterator for HrefIter<'a> {
                 _ => continue,
             };
             self.remaining = &self.remaining[1..];
-            let end = self.remaining.find(quote as char)?;
+            let end = memchr(quote, self.remaining.as_bytes())?;
             let href = &self.remaining[..end];
             self.remaining = &self.remaining[end + 1..];
 
