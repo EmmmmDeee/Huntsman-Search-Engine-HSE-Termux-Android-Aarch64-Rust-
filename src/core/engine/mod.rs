@@ -49,9 +49,8 @@ use passes::{
 };
 pub use ranking::{
     AutonomousPlan, AutonomousTarget, ClusteredTarget, DEFAULT_SWEEP_DIVERSITY, LeverageRanked,
-    autonomous_seed, autonomous_target_score, enrich_offline_geo, kind_pivot_value,
-    plan_autonomous_sweep, rank_autonomous_targets, rank_enrichment_leverage,
-    rank_identity_aware_targets,
+    autonomous_target_score, enrich_offline_geo, kind_pivot_value, plan_autonomous_sweep,
+    rank_enrichment_leverage, rank_identity_aware_targets,
 };
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator
@@ -701,10 +700,10 @@ impl ScanEngine {
             // so without this the stale variant double-counts the locality in the
             // geo rules and duplicates it in the dossier. Best-effort: a failure
             // here degrades to the pre-fix behaviour, never fails the scan.
-            if !folded_locality_uids.is_empty() {
-                if let Err(e) = store.delete_scan_entities(&scan.id, &folded_locality_uids) {
-                    warn!(scan_id = %scan.id, error = %e, "failed to purge folded address-locality variants");
-                }
+            if !folded_locality_uids.is_empty()
+                && let Err(e) = store.delete_scan_entities(&scan.id, &folded_locality_uids)
+            {
+                warn!(scan_id = %scan.id, error = %e, "failed to purge folded address-locality variants");
             }
 
             // Derive + persist the typed entity-relation edges (attribution

@@ -2264,65 +2264,6 @@ fn enrich_offline_geo_is_a_noop_without_geocodable_addresses() {
     );
 }
 
-/// Autonomous-operation seed selection: with no operator input, the platform
-/// picks the highest cross-investigation-leverage identifier that maps to a scan
-/// target — skipping any non-pivotable kind, and `None` only on an empty base.
-#[test]
-fn autonomous_seed_picks_the_highest_leverage_pivotable_identifier() {
-    use super::{LeverageRanked, autonomous_seed};
-    use crate::core::entity::EntityKind;
-    use crate::core::scan::TargetKind;
-    // Strongest-first, as rank_enrichment_leverage returns: the top pivotable wins.
-    let ranked = vec![
-        LeverageRanked {
-            entity_uid: "u1".into(),
-            kind: EntityKind::Email,
-            value: "a@b.com".into(),
-            cross_scan_degree: 5,
-        },
-        LeverageRanked {
-            entity_uid: "u2".into(),
-            kind: EntityKind::Phone,
-            value: "+61400000000".into(),
-            cross_scan_degree: 3,
-        },
-    ];
-    assert_eq!(
-        autonomous_seed(&ranked),
-        Some((TargetKind::Email, "a@b.com".to_string()))
-    );
-}
-
-#[test]
-fn autonomous_seed_skips_non_pivotable_kinds() {
-    use super::{LeverageRanked, autonomous_seed};
-    use crate::core::entity::EntityKind;
-    use crate::core::scan::TargetKind;
-    let ranked = vec![
-        LeverageRanked {
-            entity_uid: "u0".into(),
-            kind: EntityKind::Credential, // not a scan target
-            value: "secret".into(),
-            cross_scan_degree: 9,
-        },
-        LeverageRanked {
-            entity_uid: "u1".into(),
-            kind: EntityKind::Username,
-            value: "alice".into(),
-            cross_scan_degree: 2,
-        },
-    ];
-    assert_eq!(
-        autonomous_seed(&ranked),
-        Some((TargetKind::Username, "alice".to_string()))
-    );
-}
-
-#[test]
-fn autonomous_seed_is_none_on_an_empty_base() {
-    assert_eq!(super::autonomous_seed(&[]), None);
-}
-
 /// The composite autonomous priority must reward all three axes: stronger pivot
 /// kind, more cross-investigation leverage, and higher confidence — and none of
 /// them alone can top a target that is weak on the others.
@@ -2364,12 +2305,13 @@ fn autonomous_target_score_multiplies_pivot_leverage_and_confidence() {
     assert!((clamped - unit).abs() < 1e-9, "confidence clamps at 1.0");
 }
 
-/// `rank_autonomous_targets` classifies and orders the whole working set, honours
-/// the `exclude` set a continuous loop maintains, drops non-pivotable kinds, and
-/// truncates to `limit` — deterministically.
+/// The sweep planner classifies and orders the whole working set, honours the
+/// `exclude` set a continuous loop maintains, drops non-pivotable kinds, and
+/// truncates to `limit` — deterministically. At `diversity = 0` it is a pure
+/// composite-score ranking.
 #[test]
-fn rank_autonomous_targets_orders_excludes_and_truncates() {
-    use super::rank_autonomous_targets;
+fn plan_autonomous_sweep_orders_excludes_and_truncates() {
+    use super::plan_autonomous_sweep;
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::scan::TargetKind;
     use std::collections::HashSet;
@@ -2385,7 +2327,8 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     let degree_of = |_uid: &str| 2usize;
     let exclude = HashSet::new();
 
-    let ranked = rank_autonomous_targets(&entities, degree_of, &exclude, 10);
+    // diversity = 0 ⇒ pure composite-score order.
+    let ranked = plan_autonomous_sweep(&entities, degree_of, &exclude, 10, 0.0).queue;
     assert_eq!(
         ranked.len(),
         3,
@@ -2405,7 +2348,7 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     // Excluding the top UID removes it; the next-strongest becomes the head.
     let mut ex = HashSet::new();
     ex.insert(ranked[0].uid.clone());
-    let after = rank_autonomous_targets(&entities, degree_of, &ex, 10);
+    let after = plan_autonomous_sweep(&entities, degree_of, &ex, 10, 0.0).queue;
     assert_eq!(after.len(), 2, "the excluded target is gone");
     assert!(
         after.iter().all(|t| t.uid != ranked[0].uid),
@@ -2413,7 +2356,7 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
     );
 
     // `limit` caps the queue to the strongest candidates.
-    let top1 = rank_autonomous_targets(&entities, degree_of, &exclude, 1);
+    let top1 = plan_autonomous_sweep(&entities, degree_of, &exclude, 1, 0.0).queue;
     assert_eq!(top1.len(), 1);
     assert_eq!(top1[0].kind, TargetKind::Email);
 }
@@ -2423,7 +2366,7 @@ fn rank_autonomous_targets_orders_excludes_and_truncates() {
 /// budget on the single most-represented kind.
 #[test]
 fn plan_autonomous_sweep_interleaves_kinds_under_diversity() {
-    use super::{DEFAULT_SWEEP_DIVERSITY, plan_autonomous_sweep, rank_autonomous_targets};
+    use super::{DEFAULT_SWEEP_DIVERSITY, plan_autonomous_sweep};
     use crate::core::entity::{Entity, EntityKind};
     use crate::core::scan::TargetKind;
     use std::collections::HashSet;
@@ -2439,14 +2382,20 @@ fn plan_autonomous_sweep_interleaves_kinds_under_diversity() {
     let degree_of = |_uid: &str| 1usize;
     let exclude = HashSet::new();
 
-    // diversity = 0 ⇒ identical order to the pure ranker.
+    // diversity = 0 ⇒ pure composite-score order. With email pivot 1.0 and phone
+    // 0.95 at uniform degree, the scores are 0.9 / 0.855 / 0.85 / 0.8, so the phone
+    // (0.855) sits ahead of the two weaker emails: [Email, Phone, Email, Email].
     let flat = plan_autonomous_sweep(&entities, degree_of, &exclude, 10, 0.0);
-    let ranked = rank_autonomous_targets(&entities, degree_of, &exclude, 10);
     assert_eq!(flat.considered, 4);
     assert_eq!(flat.kinds_covered, 2, "email + phone represented");
     assert_eq!(
         flat.queue.iter().map(|t| t.kind).collect::<Vec<_>>(),
-        ranked.iter().map(|t| t.kind).collect::<Vec<_>>(),
+        vec![
+            TargetKind::Email,
+            TargetKind::Phone,
+            TargetKind::Email,
+            TargetKind::Email
+        ],
         "zero diversity must match pure score order"
     );
 
@@ -2572,10 +2521,12 @@ fn identity_aware_ranking_collapses_clusters_and_aggregates_leverage() {
     assert!(cluster.representative.score > solo.representative.score);
 }
 
-/// A singleton identity scores EXACTLY as `rank_autonomous_targets` would — the
-/// identity-aware ranker is a strict additive generalisation.
+/// A singleton identity scores EXACTLY as the pure per-selector sweep ranking
+/// (`plan_autonomous_sweep` at `diversity = 0`) would — the identity-aware ranker
+/// is a strict additive generalisation.
 #[test]
 fn identity_aware_ranking_matches_flat_ranking_for_singletons() {
+    use super::plan_autonomous_sweep;
     use crate::core::entity::{Entity, EntityKind};
     use std::collections::HashSet;
 
@@ -2588,7 +2539,7 @@ fn identity_aware_ranking_matches_flat_ranking_for_singletons() {
 
     // No relations → no clusters → every entity is its own singleton identity.
     let aware = rank_identity_aware_targets(&ents, &[], degree_of, &exclude, 10);
-    let flat = rank_autonomous_targets(&ents, degree_of, &exclude, 10);
+    let flat = plan_autonomous_sweep(&ents, degree_of, &exclude, 10, 0.0).queue;
     assert_eq!(aware.len(), flat.len());
     for (a, f) in aware.iter().zip(flat.iter()) {
         assert_eq!(a.representative.uid, f.uid, "same order");

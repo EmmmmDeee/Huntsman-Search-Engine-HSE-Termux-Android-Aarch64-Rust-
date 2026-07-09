@@ -90,29 +90,25 @@ pub struct CoReference {
     pub signals: Vec<&'static str>,
 }
 
+/// One side of a co-reference comparison — the canonical inputs
+/// [`string_signal`] reads for a single entity. `is_person` enables the name-token
+/// tier; `is_email` gates the domain-aware handle-equivalence tightening; `norm`
+/// is the pre-computed [`identity_norm`] form of `raw`.
+struct HandleSide<'a> {
+    raw: &'a str,
+    norm: &'a str,
+    is_person: bool,
+    is_email: bool,
+}
+
 /// The strongest string-similarity signal between two canonical handles, as
 /// `(weight, label)`, or `None` when the handles are unrelated. Tiers are
 /// mutually exclusive: an exact match never also counts as an overlap.
-///
-/// `a_is_person` / `b_is_person` enable the name-token tier, which only applies
-/// when one side is a `Person` (a multi-token legal name embedded in the other's
-/// handle). `a_is_email` / `b_is_email` gate the domain-aware handle-equivalence
-/// tightening below. `norm_a` / `norm_b` are the pre-computed [`identity_norm`]
-/// forms.
-fn string_signal(
-    raw_a: &str,
-    raw_b: &str,
-    norm_a: &str,
-    norm_b: &str,
-    a_is_person: bool,
-    b_is_person: bool,
-    a_is_email: bool,
-    b_is_email: bool,
-) -> Option<(f64, &'static str)> {
-    if norm_a.is_empty() || norm_b.is_empty() {
+fn string_signal(a: HandleSide<'_>, b: HandleSide<'_>) -> Option<(f64, &'static str)> {
+    if a.norm.is_empty() || b.norm.is_empty() {
         return None;
     }
-    if norm_a == norm_b {
+    if a.norm == b.norm {
         // [`identity_norm`] keeps only the email LOCAL-PART, but a local-part is
         // unique only WITHIN a domain: `john@gmail.com` and `john@acme-corp.com`
         // are different mailboxes owned by (almost always) different people. A
@@ -124,9 +120,9 @@ fn string_signal(
         // so genuine same-mailbox spellings keep merging). Cross-kind ties
         // (email local ↔ username / person) keep the local-part bridge — that is
         // the intended alias signal, not a domain-scoped identifier.
-        let handle_equiv = if a_is_email && b_is_email {
+        let handle_equiv = if a.is_email && b.is_email {
             matches!(
-                (canonical_email(raw_a), canonical_email(raw_b)),
+                (canonical_email(a.raw), canonical_email(b.raw)),
                 (Some(ca), Some(cb)) if ca == cb
             )
         } else {
@@ -146,10 +142,10 @@ fn string_signal(
             .collect();
         tokens.len() >= 2 && tokens.iter().all(|t| handle_norm.contains(t.as_str()))
     };
-    if (a_is_person && name_token(raw_a, norm_b)) || (b_is_person && name_token(raw_b, norm_a)) {
+    if (a.is_person && name_token(a.raw, b.norm)) || (b.is_person && name_token(b.raw, a.norm)) {
         return Some((W_NAME_TOKEN, "name-token-match"));
     }
-    if identity_overlaps(raw_a, raw_b) {
+    if identity_overlaps(a.raw, b.raw) {
         return Some((W_SUBSTRING, "substring-overlap"));
     }
     None
@@ -212,14 +208,18 @@ pub fn resolve_coreferences(entities: &[Entity], min_score: f64, limit: usize) -
             let mut weights: Vec<f64> = Vec::new();
 
             if let Some((w, label)) = string_signal(
-                &lo.e.value,
-                &hi.e.value,
-                &lo.norm,
-                &hi.norm,
-                lo.is_person,
-                hi.is_person,
-                lo.is_email,
-                hi.is_email,
+                HandleSide {
+                    raw: &lo.e.value,
+                    norm: &lo.norm,
+                    is_person: lo.is_person,
+                    is_email: lo.is_email,
+                },
+                HandleSide {
+                    raw: &hi.e.value,
+                    norm: &hi.norm,
+                    is_person: hi.is_person,
+                    is_email: hi.is_email,
+                },
             ) {
                 signals.push(label);
                 weights.push(w);

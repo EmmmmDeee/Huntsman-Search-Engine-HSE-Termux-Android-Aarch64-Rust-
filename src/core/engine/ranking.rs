@@ -10,9 +10,9 @@
 //! unchanged.
 //!
 //! Contents: cross-investigation leverage ranking ([`rank_enrichment_leverage`]),
-//! autonomous-sweep target ranking and planning ([`rank_autonomous_targets`],
-//! [`plan_autonomous_sweep`], [`rank_identity_aware_targets`]), and the offline
-//! geo-enrichment the import path applies ([`enrich_offline_geo`]).
+//! autonomous-sweep target ranking and planning ([`plan_autonomous_sweep`],
+//! [`rank_identity_aware_targets`]), and the offline geo-enrichment the import path
+//! applies ([`enrich_offline_geo`]).
 
 // Re-uses the parent orchestrator's imports (Entity, EntityKind, StoragePort, the
 // offline-geo helpers) rather than restating them — this module was lifted
@@ -117,28 +117,6 @@ pub fn rank_enrichment_leverage(
     out
 }
 
-/// Select the single best entity to investigate with **no operator input** — the
-/// autonomous-operation seed.
-///
-/// Given the leverage ranking ([`rank_enrichment_leverage`], strongest-first),
-/// pick the highest-leverage identifier that maps to a scan target. This is what
-/// lets the platform investigate on its own: rather than waiting for a seed, it
-/// reaches for the entity it already knows the most about across investigations —
-/// the one whose enrichment most empowers the rest of the intelligence base. Every
-/// cross-scan-candidate identifier (email / phone / username / full-name person /
-/// specific address / crypto) is a valid scan target, so in practice this is the
-/// top entry; the `find_map` only skips a (rare) non-pivotable kind. Pure and
-/// deterministic. `None` only when the local intelligence base holds no pivotable
-/// high-leverage identifier yet (a fresh install with no prior scans).
-#[must_use]
-pub fn autonomous_seed(
-    ranked: &[LeverageRanked],
-) -> Option<(crate::core::scan::TargetKind, String)> {
-    ranked.iter().find_map(|r| {
-        crate::core::scan::TargetKind::from_entity_kind(&r.kind).map(|tk| (tk, r.value.clone()))
-    })
-}
-
 /// Intrinsic pivot value of an identifier kind — how much investigative reach a
 /// scan seeded on it tends to unlock, independent of how many investigations have
 /// already touched it. The ordering encodes Interpol-style tradecraft: a unique
@@ -169,10 +147,11 @@ pub fn kind_pivot_value(kind: &crate::core::entity::EntityKind) -> f64 {
     }
 }
 
-/// One entity ranked as a candidate for fully autonomous investigation — the
-/// output of [`rank_autonomous_targets`]. Carries everything the
-/// no-operator-input scan loop needs to dispatch a scan and explain *why* this
-/// target was chosen, without re-deriving the score.
+/// One entity ranked as a candidate for fully autonomous investigation — an
+/// element of the queue produced by [`plan_autonomous_sweep`] /
+/// [`rank_identity_aware_targets`]. Carries everything the no-operator-input scan
+/// loop needs to dispatch a scan and explain *why* this target was chosen, without
+/// re-deriving the score.
 #[derive(Debug, Clone, PartialEq, serde::Serialize)]
 pub struct AutonomousTarget {
     /// SHA-256 UID of the chosen identifier.
@@ -213,53 +192,11 @@ pub fn autonomous_target_score(
     kind_pivot_value(kind) * leverage * c_eff.clamp(0.0, 1.0)
 }
 
-/// Rank entities for fully autonomous investigation — the multi-factor successor
-/// to [`autonomous_seed`] that a continuous, no-operator-input loop drives.
-///
-/// Unlike `autonomous_seed` (leverage-only, single pick), this scores every
-/// pivotable [`history::is_cross_scan_candidate`] identifier by
-/// [`autonomous_target_score`] (pivot-value × leverage × confidence), letting the
-/// platform *classify and prioritise* the whole working set, then work down it.
-/// `degree_of` supplies each UID's cross-investigation degree (typically
-/// [`StoragePort::observation_count`]); `exclude` holds UIDs already investigated
-/// this cycle, so the loop never re-seeds the same target and converges. Results
-/// are strongest-first, ties broken by UID for determinism, truncated to `limit`.
-/// Pure given `degree_of` — no I/O of its own.
-pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
-    entities: &[Entity],
-    degree_of: F,
-    exclude: &std::collections::HashSet<String>,
-    limit: usize,
-) -> Vec<AutonomousTarget> {
-    let mut out: Vec<AutonomousTarget> = entities
-        .iter()
-        .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
-        .filter_map(|e| {
-            let kind = crate::core::scan::TargetKind::from_entity_kind(&e.kind)?;
-            let degree = degree_of(&e.uid);
-            Some(AutonomousTarget {
-                uid: e.uid.clone(),
-                kind,
-                value: e.value.clone(),
-                score: autonomous_target_score(&e.kind, degree, e.c_effective()),
-                cross_scan_degree: degree,
-            })
-        })
-        .collect();
-    out.sort_by(|a, b| {
-        b.score
-            .partial_cmp(&a.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.uid.cmp(&b.uid))
-    });
-    out.truncate(limit);
-    out
-}
-
-/// Default diversity weight for [`plan_autonomous_sweep`]. `0.0` reproduces the
-/// pure score ordering of [`rank_autonomous_targets`]; larger values spread
-/// investigative effort across more identifier kinds. `0.5` balances "investigate
-/// the single strongest target" against "don't tunnel a whole budget on one kind".
+/// Default diversity weight for [`plan_autonomous_sweep`]. `0.0` reproduces a pure
+/// composite-score ordering (each pivotable selector ranked independently by
+/// [`autonomous_target_score`]); larger values spread investigative effort across
+/// more identifier kinds. `0.5` balances "investigate the single strongest target"
+/// against "don't tunnel a whole budget on one kind".
 pub const DEFAULT_SWEEP_DIVERSITY: f64 = 0.5;
 
 /// A diversity-aware autonomous investigation plan — the ordered queue the
@@ -277,7 +214,8 @@ pub struct AutonomousPlan {
 
 /// Build a diversity-aware autonomous investigation plan over `entities`.
 ///
-/// [`rank_autonomous_targets`] orders by raw composite score, so a base dominated
+/// A pure composite-score ordering ([`autonomous_target_score`] per selector)
+/// orders by raw score alone, so a base dominated
 /// by one kind (say a leaked list of forty emails) would have the loop burn its
 /// whole budget on emails before ever pivoting a phone or username. A real
 /// investigator spreads effort to maximise the breadth of leads developed per unit
@@ -288,7 +226,7 @@ pub struct AutonomousPlan {
 /// kind keeps its full score. `diversity = 0.0` reproduces pure score order; larger
 /// values interleave kinds harder.
 ///
-/// Same gates as [`rank_autonomous_targets`] — only pivotable
+/// Gated to only pivotable
 /// [`history::is_cross_scan_candidate`] identifiers, with `exclude` honoured so the
 /// continuous loop converges. Deterministic: ties broken by raw score then UID.
 /// Truncated to `limit`. Pure given `degree_of` — no I/O of its own. A negative
@@ -300,7 +238,7 @@ pub fn plan_autonomous_sweep<F: Fn(&str) -> usize>(
     limit: usize,
     diversity: f64,
 ) -> AutonomousPlan {
-    // 1) Score every eligible candidate once (same gate as rank_autonomous_targets).
+    // 1) Score every eligible pivotable, non-excluded candidate once.
     let mut pool: Vec<AutonomousTarget> = entities
         .iter()
         .filter(|e| !exclude.contains(&e.uid) && history::is_cross_scan_candidate(e))
@@ -392,10 +330,11 @@ pub struct ClusteredTarget {
 }
 
 /// Rank fully-autonomous investigation targets **by resolved identity, not by raw
-/// selector** — the people-centric successor to [`rank_autonomous_targets`] that
-/// consumes the co-reference graph.
+/// selector** — the people-centric target selector that consumes the co-reference
+/// graph.
 ///
-/// Where [`rank_autonomous_targets`] scores every selector independently, this
+/// Where a pure per-selector ranking ([`autonomous_target_score`]) scores every
+/// selector independently, this
 /// first resolves the identity clusters of the relation graph
 /// ([`crate::core::relation::resolve_identity_clusters`] — the same clustering the
 /// dossier and correlator use, now fed by the promoted co-reference edges), then
@@ -407,9 +346,9 @@ pub struct ClusteredTarget {
 /// ([`IDENTITY_BREADTH_WEIGHT`]) — so the person the platform knows the most about
 /// is investigated first.
 ///
-/// A singleton identity (an entity in no cluster) scores *exactly* as
-/// [`rank_autonomous_targets`] would (`ln 1 = 0` breadth bonus, degree unchanged),
-/// so this is a strict, additive generalisation. `exclude` is honoured per member
+/// A singleton identity (an entity in no cluster) scores *exactly* as the pure
+/// per-selector [`autonomous_target_score`] would (`ln 1 = 0` breadth bonus, degree
+/// unchanged), so this is a strict, additive generalisation. `exclude` is honoured per member
 /// (an all-excluded cluster yields nothing, so a continuous loop converges).
 /// Deterministic; strongest-first, UID tie-break, truncated to `limit`.
 pub fn rank_identity_aware_targets<F: Fn(&str) -> usize>(

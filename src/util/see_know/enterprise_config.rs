@@ -1,5 +1,5 @@
-/// Enterprise-hardcoded configuration for SeekNow integration.
-/// All calculations, thresholds, and parameters optimized for 15,000 daily credit plan.
+//! Enterprise-hardcoded configuration for SeekNow integration.
+//! All calculations, thresholds, and parameters optimized for 15,000 daily credit plan.
 
 /// Enterprise plan parameters (hardcoded).
 pub struct EnterprisePlan {
