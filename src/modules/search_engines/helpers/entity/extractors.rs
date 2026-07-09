@@ -80,6 +80,15 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
     ];
 
     let mut addrs = Vec::new();
+    // Lowercased dedup key for every address already pushed, by EITHER pass —
+    // a "City, State" mention frequently repeats within one page's combined
+    // title+snippet text (the same locality named in both the title and the
+    // body, or quoted in two adjacent sentence fragments), and without this
+    // the STATES pass below would push the identical string once per repeat.
+    // A real scan's evidence chain showed exactly this: the same search result
+    // recorded as its own "corroboration" of an address it had just emitted,
+    // because this pass alone provided two identical strings for one result.
+    let mut seen_addr_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for state in STATES {
         let mut search_from = 0;
         while let Some(pos) = text[search_from..].find(state) {
@@ -170,7 +179,9 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
                 continue;
             }
             let addr = format!("{city}, {state}");
-            addrs.push(addr);
+            if seen_addr_keys.insert(addr.to_lowercase()) {
+                addrs.push(addr);
+            }
         }
     }
 
@@ -285,11 +296,9 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
 
     // Lowercase the text once; the AU-place scan below only reads it.
     let lower = text.to_lowercase();
-    // Track lowercased addresses already emitted so the dedup check below is an
-    // O(1) set lookup instead of a fresh `to_lowercase()` over every prior addr
-    // on each candidate. Seeded with the first-pass (STATES) results.
-    let mut seen_addr_keys: std::collections::HashSet<String> =
-        addrs.iter().map(|a| a.to_lowercase()).collect();
+    // `seen_addr_keys` already carries every address the first (STATES) pass
+    // pushed, so it needs no re-seeding here — it's the same dedup set, shared
+    // across both passes.
     for place in AU_PLACES {
         // `lower` is already fully lowercased and every AU_PLACES entry is ASCII,
         // so an ASCII-case-insensitive scan for `place` finds the identical
