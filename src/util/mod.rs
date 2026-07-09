@@ -73,6 +73,8 @@ pub mod api_key_startup;
 pub mod api_key_health;
 pub mod api_key_orchestrator;
 pub mod api_key_integration_tests;
+pub mod api_key_config_validator;
+pub mod api_key_deployment;
 
 pub mod service_defs;
 pub mod settings;
