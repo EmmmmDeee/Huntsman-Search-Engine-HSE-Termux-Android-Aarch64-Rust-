@@ -9,7 +9,7 @@ use crate::core::{
 use crate::util::dns::shared_resolver;
 
 use super::SRC;
-use super::helpers::{soa_rname_to_email, verification_vendor};
+use super::helpers::{is_self_hosted_mx, soa_rname_to_email, verification_vendor};
 
 /// A / AAAA / MX / NS / SOA / TXT / DMARC — run concurrently via `tokio::join!`.
 ///
@@ -31,7 +31,9 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         resolver.txt_lookup(dmarc_name.as_str()),
     );
 
-    // A + AAAA
+    // A + AAAA. Also records whether the apex itself sits behind a major CDN —
+    // the trigger condition for the MX-based origin-unmasking pass below.
+    let mut apex_is_cdn_fronted = false;
     if let Ok(lookup) = ips {
         entities.extend(lookup.as_lookup().answers().iter().filter_map(|record| {
             let (ip_str, record_type, ip_version) = match &record.data {
@@ -39,6 +41,9 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                 RData::AAAA(aaaa) => (aaaa.0.to_string(), "AAAA", "6"),
                 _ => return None,
             };
+            if crate::core::validation::is_cdn_edge_ip(&ip_str) {
+                apex_is_cdn_fronted = true;
+            }
             let mut e = Entity::new(EntityKind::IpAddress, &ip_str, 0.95, &ctx.scan_id);
             e.tag(if record_type == "A" { "ipv4" } else { "ipv6" });
             e.add_evidence(
@@ -52,7 +57,9 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         }));
     }
 
-    // MX records
+    // MX records. Hostnames are also collected into `mx_hosts` for the
+    // origin-unmasking pass below (self-hosted mail bypasses the web CDN).
+    let mut mx_hosts: Vec<String> = Vec::new();
     if let Ok(lookup) = mxs {
         entities.extend(lookup.answers().iter().filter_map(|record| {
             let RData::MX(mx) = &record.data else {
@@ -63,6 +70,7 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
             if host.is_empty() {
                 return None;
             }
+            mx_hosts.push(host.clone());
             let mut e = Entity::new(EntityKind::Domain, &host, 0.85, &ctx.scan_id);
             e.tag("mx");
             e.add_evidence(
@@ -382,7 +390,102 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
         }
     }
 
+    // CDN origin-unmasking: only worth the extra lookups when the apex itself
+    // is CDN-fronted (nothing to unmask otherwise).
+    if apex_is_cdn_fronted && !mx_hosts.is_empty() {
+        entities.extend(mx_origin_candidates(&mx_hosts, domain, ctx).await);
+    }
+
     Ok(entities)
+}
+
+/// CDN origin-unmasking via self-hosted mail infrastructure.
+///
+/// When a domain's web presence sits behind a CDN, its mail delivery usually
+/// doesn't — MX records are essentially never proxied. Resolving a
+/// same-registrable-domain ("self-hosted", per [`is_self_hosted_mx`]) MX host
+/// to its own A/AAAA records and finding it *off* the CDN's published ranges
+/// is a real origin-adjacency signal: the mail server, and often the rest of
+/// the organisation's real infrastructure, lives at that address. Live-probed
+/// against Fastly-fronted `python.org` → `mail.python.org` resolves to a
+/// DigitalOcean IP, confirming the pattern (see [`is_self_hosted_mx`]'s doc
+/// comment for the full verification, including the third-party-provider
+/// false-positive case this guards against).
+///
+/// Hosts are deduplicated and sorted before the concurrent resolve, and hits
+/// are collected then sorted by IP before being turned into entities — the
+/// same "collect, then sort for determinism" discipline `brute_subdomains`
+/// uses, since `JoinSet::join_next` yields in network-completion order.
+async fn mx_origin_candidates(
+    mx_hosts: &[String],
+    domain: &str,
+    ctx: &ModuleContext,
+) -> Vec<Entity> {
+    let resolver = shared_resolver();
+    let mut hosts: Vec<String> = mx_hosts
+        .iter()
+        .filter(|h| is_self_hosted_mx(h, domain))
+        .cloned()
+        .collect();
+    hosts.sort_unstable();
+    hosts.dedup();
+    if hosts.is_empty() {
+        return Vec::new();
+    }
+
+    let mut set = tokio::task::JoinSet::new();
+    for host in hosts {
+        set.spawn(async move {
+            match resolver.lookup_ip(host.as_str()).await {
+                Ok(lookup) => {
+                    let ips: Vec<String> = lookup.iter().map(|ip| ip.to_string()).collect();
+                    Some((host, ips))
+                }
+                Err(_) => None,
+            }
+        });
+    }
+
+    let mut hits: Vec<(String, Vec<String>)> = Vec::new();
+    while let Some(join_result) = set.join_next().await {
+        if let Ok(Some(hit)) = join_result {
+            hits.push(hit);
+        }
+    }
+    hits.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+
+    let mut candidates: Vec<(String, String)> = Vec::new();
+    for (host, ips) in hits {
+        for ip in ips {
+            if !crate::core::validation::is_cdn_edge_ip(&ip) {
+                candidates.push((ip, host.clone()));
+            }
+        }
+    }
+    candidates.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+    candidates.dedup_by(|a, b| a.0 == b.0);
+
+    candidates
+        .into_iter()
+        .map(|(ip, mx_host)| {
+            let mut e = Entity::new(EntityKind::IpAddress, &ip, 0.55, &ctx.scan_id);
+            e.tag("origin-candidate");
+            e.tag("mx-derived");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Self-hosted mail exchanger {mx_host} for {domain} resolves off the \
+                         web CDN — possible true origin infrastructure"
+                    ),
+                )
+                .with_attr("record_type", "MX-A")
+                .with_attr("mx_host", &mx_host)
+                .with_attr("parent_domain", domain),
+            );
+            e
+        })
+        .collect()
 }
 
 /// CAA record inspection (RFC 8659).

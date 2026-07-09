@@ -453,8 +453,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress → Domain, subdomain enum + reverse-IP
   hostnames — was listed as remaining in error); ASN/BGP org/prefix pivots (`bgpview`
   + `ripestat` both present — also listed in error).
-  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
-  Cloudflare/CDN cert-hash origin-unmasking.
+  *Delivered (2026-07-09) — the MX leg of CDN-origin unmasking:* new
+  `dns_intel::helpers::is_self_hosted_mx` (pure, registrable-domain match) gates
+  a new `dns_intel::resolve::mx_origin_candidates` pass: when the apex resolves
+  to a CDN edge IP AND a same-registrable-domain MX host resolves off the CDN's
+  ranges, emit a tagged `origin-candidate`/`mx-derived` `IpAddress` (confidence
+  0.55 — a real but heuristic lead, evidenced with the MX host + parent domain).
+  Third-party mail providers (Google Workspace, Microsoft 365, Mimecast, …) are
+  excluded by construction — live-probed via Cloudflare DoH before any code was
+  written and confirmed they'd otherwise be a systematic false-positive class
+  (`ycombinator.com`/`signal.org`/`mozilla.org`'s Google-Workspace MX hosts have
+  nothing to do with those domains' own hosting). `python.org`
+  (Fastly-fronted) → `mail.python.org` → a DigitalOcean IP is the confirmed
+  true-positive pattern. 3 new tests, all pure (no network in CI):
+  `self_hosted_mx_matches_same_registrable_domain`,
+  `self_hosted_mx_rejects_third_party_mail_providers`,
+  `self_hosted_mx_handles_degenerate_input`.
+  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship); the
+  SPF/TXT and SSL-cert-hash (Censys/Shodan) origin-unmasking legs; the
+  direct-connect subdomain (`cpanel.`/`ftp.`/`dev.`) leg.
 - **`[x]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: `raw_archive`
   SQLite table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER
   NOT NULL, result_json TEXT NOT NULL`), keyed by `archive_key =
@@ -937,7 +954,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cadastre/property.
 - **C4** — `[~]` (SOL-NETINT). S→P audit cycle 20: `securitytrails`, `bgpview`, and
   `ripestat` were stale "remaining" notes — all three modules already registered.
-  *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
+  MX-based CDN-origin unmasking delivered 2026-07-09 (self-hosted-mail signal,
+  false-positive-guarded — see `PROBLEM_TREE`/§2 for the live-verification
+  detail). *Remaining:* passive-DNS history; SPF/TXT + SSL-cert-hash
+  origin-unmasking legs; direct-connect subdomain leg.
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
   delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
   radius + auto-sync still open).
@@ -4064,3 +4084,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4432 lib tests, +7; +1 API test), architecture suite green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-09** — **SOL-NETINT: MX leg of Cloudflare/CDN origin-unmasking
+  delivered (→ C4).** New pure `dns_intel::helpers::is_self_hosted_mx` +
+  `dns_intel::resolve::mx_origin_candidates`: a CDN-fronted domain's
+  same-registrable-domain ("self-hosted") MX host resolving off the CDN's
+  ranges is emitted as a tagged `origin-candidate`/`mx-derived` `IpAddress`.
+  Live DoH-verified against real domains before writing the logic: the
+  solution sketch's naive "any non-CDN MX IP" design would have been a
+  systematic false-positive generator against third-party mail providers
+  (Google Workspace/Microsoft 365/Mimecast) — confirmed via
+  `ycombinator.com`/`signal.org`/`mozilla.org`, all CDN-fronted with Google
+  Workspace mail. The same-registrable-domain gate closes that hole while
+  still catching the real pattern (`python.org` → Fastly-fronted,
+  self-hosted `mail.python.org` → a DigitalOcean IP). Reuses
+  `util::domains::registrable_domain` — no new vocabulary. 3 new pure tests
+  (no network dependency in CI). Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, full suite 0 failures (4492 lib tests, +3),
+  architecture suite green (96 integration + 30 arch). Paired: `PROBLEM_TREE`
+  §8 + §4 gap analysis refreshed — same commit.

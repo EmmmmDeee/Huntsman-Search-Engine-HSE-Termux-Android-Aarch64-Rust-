@@ -5,8 +5,8 @@ use super::{
     DnsIntel,
     constants::SUBDOMAINS,
     helpers::{
-        VERIFICATION_VENDORS, reverse_ip, soa_rname_to_email, unescape_dns_label,
-        verification_vendor,
+        VERIFICATION_VENDORS, is_self_hosted_mx, reverse_ip, soa_rname_to_email,
+        unescape_dns_label, verification_vendor,
     },
 };
 
@@ -154,6 +154,52 @@ fn verification_vendor_table_is_sound() {
          prefix above the generic stem:\n  {}",
         violations.join("\n  ")
     );
+}
+
+// -- MX origin-unmasking (self-hosted mail signal) ----------------------------
+
+#[test]
+fn self_hosted_mx_matches_same_registrable_domain() {
+    // Live-confirmed (2026-07-09): python.org is Fastly-fronted and self-hosts
+    // its own mail exchanger.
+    assert!(is_self_hosted_mx("mail.python.org", "python.org"));
+    // The apex itself is a valid (if unusual) MX target.
+    assert!(is_self_hosted_mx("python.org", "python.org"));
+    // A deeper self-hosted subdomain still shares the registrable domain.
+    assert!(is_self_hosted_mx(
+        "mx-dal-01.torproject.org",
+        "torproject.org"
+    ));
+    // AU multi-label suffix: registrable domain is `example.com.au`, not `com.au`.
+    assert!(is_self_hosted_mx("mail.example.com.au", "example.com.au"));
+}
+
+#[test]
+fn self_hosted_mx_rejects_third_party_mail_providers() {
+    // Live-confirmed (2026-07-09) false-positive case: ycombinator.com is
+    // CDN-fronted but its mail is Google Workspace — those Google IPs reveal
+    // nothing about ycombinator.com's own hosting.
+    assert!(!is_self_hosted_mx("aspmx.l.google.com", "ycombinator.com"));
+    // Microsoft 365 (eff.org's real MX).
+    assert!(!is_self_hosted_mx(
+        "eff-org.mail.protection.outlook.com",
+        "eff.org"
+    ));
+    // Mimecast (zendesk.com's secondary MX).
+    assert!(!is_self_hosted_mx(
+        "us-smtp-inbound-1.mimecast.com",
+        "zendesk.com"
+    ));
+    // A domain that merely shares a suffix, not the registrable domain, is
+    // NOT self-hosted (`haxx.se` != `curl.se`).
+    assert!(!is_self_hosted_mx("mail.haxx.se", "curl.se"));
+}
+
+#[test]
+fn self_hosted_mx_handles_degenerate_input() {
+    assert!(!is_self_hosted_mx("", "example.com"));
+    assert!(!is_self_hosted_mx("mail.example.com", ""));
+    assert!(!is_self_hosted_mx("localhost", "example.com"));
 }
 
 // -- Subdomain brute tests ----------------------------------------------------

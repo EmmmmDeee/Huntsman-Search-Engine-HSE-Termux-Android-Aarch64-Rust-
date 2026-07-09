@@ -1317,8 +1317,28 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   *Delivered (confirmed cycle 20 S→P audit):* `securitytrails`
   (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress→Domain, subdomain enum + reverse-IP
   hostnames); ASN/BGP org/prefix pivots (`bgpview` + `ripestat` both present).
+  *Delivered (2026-07-09) — the MX slice of Cloudflare/CDN origin-unmasking:*
+  `dns_intel::resolve_records` now emits a tagged `origin-candidate`
+  `IpAddress` when a CDN-fronted domain's **self-hosted** mail exchanger
+  (same registrable domain — `is_self_hosted_mx`) resolves off the CDN's
+  published ranges — mail delivery is essentially never proxied, so this is a
+  real origin-adjacency leak. Live DNS-probed (DoH) before writing the logic,
+  same discipline as an external-API parser: `python.org` (Fastly-fronted,
+  `is_cdn_edge_ip` matches `151.101.0.0/16`) self-hosts `mail.python.org`,
+  which resolves to a DigitalOcean IP off Fastly's ranges — confirmed true
+  positive. Also probed and **deliberately excluded**:
+  `ycombinator.com`/`signal.org`/`mozilla.org` (all CDN-fronted) route mail
+  through Google Workspace (`aspmx.l.google.com`), whose IPs are Google's, not
+  the target's — the naive "any non-CDN MX-resolved IP" design from this
+  bullet's original solution sketch would have flagged those as false leads,
+  so the same-registrable-domain gate was added specifically to close that
+  hole before any code shipped. 3 new tests
+  (`self_hosted_mx_matches_same_registrable_domain`,
+  `self_hosted_mx_rejects_third_party_mail_providers`,
+  `self_hosted_mx_handles_degenerate_input`).
   *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
-  Cloudflare/CDN cert-hash origin-unmasking.
+  the SPF/TXT and SSL-cert-hash (Censys/Shodan) origin-unmasking legs; the
+  direct-connect subdomain (`cpanel.`/`ftp.`/`dev.`) leg.
 - **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -5556,3 +5576,26 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
   0 failures (4432 lib tests, +7; +1 API 403 test), architecture suite green.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-09** — **C4 (NETINT depth): MX leg of Cloudflare/CDN origin-unmasking
+  delivered.** Capability-first per the standing loop's priority order: picked
+  the smallest real slice of §4's named-but-unstarted "Cloudflare
+  origin-unmasking" differentiator. Live DoH-probed real domains **before**
+  writing any logic and found this bullet's own naive solution sketch ("any
+  non-CDN-resolved MX IP is an origin candidate") would be a systematic
+  false-positive generator — most CDN-fronted domains outsource mail to Google
+  Workspace/Microsoft 365/Mimecast, whose IPs reveal nothing about the target's
+  hosting (`ycombinator.com`/`signal.org`/`mozilla.org` confirmed live). Cross-
+  checked the true-positive case too: `python.org` (Fastly-fronted) self-hosts
+  `mail.python.org`, resolving to a DigitalOcean IP off Fastly's ranges. →
+  new pure `dns_intel::helpers::is_self_hosted_mx` restricts the signal to
+  same-registrable-domain MX hosts (reusing `util::domains::registrable_domain`,
+  no new denylist invented); `dns_intel::resolve::mx_origin_candidates` emits a
+  tagged `origin-candidate`/`mx-derived` `IpAddress` (0.55 confidence) for a
+  self-hosted MX host resolving off `is_cdn_edge_ip`'s ranges, sort-before-emit
+  deterministic like `brute_subdomains`. Confirmed `tags::CANDIDATE` (export/
+  dossier quarantine tag) was NOT reusable here — it would have hidden the
+  finding — so a distinct string tag was used. No `attack_techniques()` change:
+  still passive DNS gathering, already `T1590.002`. Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4492 lib
+  tests, +3), architecture suite green (96 integration + 30 arch).
+  **Paired:** `SOLUTION_TREE` §5 + §4 gap analysis refreshed — same commit.

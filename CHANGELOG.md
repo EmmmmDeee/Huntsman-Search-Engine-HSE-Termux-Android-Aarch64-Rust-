@@ -11,6 +11,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`dns_intel` now unmasks a CDN-fronted domain's real infrastructure via its
+  self-hosted mail server (Cloudflare/CDN origin-unmasking, MX leg).** When a
+  domain's web presence resolves to a CDN edge IP, a same-registrable-domain
+  MX host (self-hosted mail — never proxied through a web CDN) that resolves
+  *off* the CDN's published ranges is emitted as a tagged
+  `origin-candidate`/`mx-derived` `IpAddress`. Third-party mail providers
+  (Google Workspace, Microsoft 365, Mimecast, …) are excluded by construction,
+  live-verified before the logic was written: `ycombinator.com`,
+  `signal.org`, and `mozilla.org` are all CDN-fronted but route mail through
+  Google, whose IPs say nothing about those domains' own hosting; `python.org`
+  (Fastly-fronted) self-hosts `mail.python.org`, which resolves to a
+  DigitalOcean IP — the confirmed true-positive pattern. New pure helper
+  `dns_intel::helpers::is_self_hosted_mx`. 3 new tests.
 - **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
   is now proven against a real `git` subprocess, not just pure-logic tests.**
   A local origin+clone fixture pair (no network) exercises the actual

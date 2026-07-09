@@ -77,6 +77,28 @@ pub(super) fn unescape_dns_label(s: &str) -> String {
     String::from_utf8_lossy(&out).into_owned()
 }
 
+/// True if `mx_host` shares `domain`'s registrable domain — i.e. self-hosted
+/// mail, as opposed to a third-party provider (Google Workspace, Microsoft
+/// 365, Mimecast, …). Mail delivery is essentially never proxied through a
+/// web CDN, so a same-registrable-domain MX host is a strong origin-adjacency
+/// signal when the web presence itself sits behind one — but only when the MX
+/// host is actually *part of* the target's own infrastructure. A live probe
+/// (2026-07-09) against real Cloudflare/Fastly-fronted sites confirmed both
+/// halves of this: `python.org` (Fastly-fronted) self-hosts `mail.python.org`,
+/// which resolves off Fastly's ranges — a genuine origin-adjacency lead. But
+/// `ycombinator.com`/`signal.org`/`mozilla.org` (also CDN-fronted) all route
+/// mail through Google Workspace (`aspmx.l.google.com`), whose IPs belong to
+/// Google and say nothing about the target's own hosting — flagging those
+/// would be a false lead. Restricting to same-registrable-domain MX hosts
+/// keeps the signal precise at the cost of recall (deliberate: this project's
+/// bar is "false positives are worse than missing coverage"). **Pure**.
+#[must_use]
+pub(super) fn is_self_hosted_mx(mx_host: &str, domain: &str) -> bool {
+    let mx_reg = crate::util::domains::registrable_domain(mx_host);
+    let domain_reg = crate::util::domains::registrable_domain(domain);
+    mx_reg.is_some() && mx_reg == domain_reg
+}
+
 /// Domain-ownership verification TXT prefixes → the vendor they prove a
 /// relationship with. A published verification record discloses which SaaS the
 /// organisation has onboarded — real OSINT for mapping its vendor/tech stack.
