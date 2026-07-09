@@ -1169,15 +1169,23 @@ impl ScanEngine {
         }
 
         // Pull each relevant prior scan's entity graph, dedup-merging across
-        // scans, then stamp/tag every node for this scan. `entities_filtered`
-        // (not `entities_for_scan`) bounds the pull: it applies a SQL `LIMIT` on
-        // the confidence-DESC preorder and skips the Rust relevance re-sort —
-        // both wasted here, since recall confidence-sorts and caps the merged
-        // set anyway. So a heavily-scanned prior target can't make scan start
-        // deserialise its entire historical graph on a 4 GB device.
+        // scans, then stamp/tag every node for this scan. `entities_filtered` with
+        // an explicit `Some(MAX_ENTITIES)` limit bounds the pull to the top-N by
+        // confidence IN SQL, so a heavily-scanned prior target can't make scan
+        // start deserialise its entire historical graph on a 4 GB device. This is
+        // lossless for the final result: the merged set is truncated to
+        // `MAX_ENTITIES` anyway, and since the per-scan pull limit equals that cap
+        // and the merge takes the MAX per-uid confidence, any entity below every
+        // prior scan's top-N is provably below the merged top-N too. (The bound
+        // was previously an internal `LIMIT` inside `entities_filtered`, removed
+        // when that function's UI caller needed the unbounded set — this restores
+        // it explicitly for recall.)
         let mut merged: HashMap<String, Entity> = HashMap::new();
         for pid in prior.into_iter().take(MAX_PRIOR_SCANS) {
-            let ents = match self.store.entities_filtered(&pid, None, None, None) {
+            let ents = match self
+                .store
+                .entities_filtered(&pid, None, None, None, Some(MAX_ENTITIES))
+            {
                 Ok(e) => e,
                 Err(e) => {
                     warn!(scan_id, prior = %pid, error = %e, "recall: prior entities load failed");

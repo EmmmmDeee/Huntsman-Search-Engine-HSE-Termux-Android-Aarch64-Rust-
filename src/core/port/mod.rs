@@ -63,12 +63,16 @@ pub trait StoragePort: Send + Sync {
     /// correlator reads the persisted scan, so they would otherwise double-count.
     /// Returns the number of observations removed.
     fn delete_scan_entities(&self, scan_id: &str, uids: &[String]) -> Result<usize>;
+    /// Filtered scan entities, confidence-DESC. `limit` bounds the SQL result
+    /// (top-N by confidence) — `Some(n)` for a memory-bounded read (recall),
+    /// `None` for the deliberately-unbounded UI/facets set.
     fn entities_filtered(
         &self,
         scan_id: &str,
         kind: Option<&str>,
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
+        limit: Option<usize>,
     ) -> Result<Vec<Entity>>;
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>>;
     fn get_entity(&self, uid: &str) -> Result<Option<Entity>>;

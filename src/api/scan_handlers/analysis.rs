@@ -88,7 +88,9 @@ pub async fn scan_entities_filter(
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
     match tokio::task::spawn_blocking(move || {
-        store.entities_filtered(&id2, kind.as_deref(), min_conf, q.as_deref())
+        // `None` limit: the UI facets/analysis view is deliberately unbounded so
+        // its count stays consistent with the facets endpoint (see the store fn).
+        store.entities_filtered(&id2, kind.as_deref(), min_conf, q.as_deref(), None)
     })
     .await
     {

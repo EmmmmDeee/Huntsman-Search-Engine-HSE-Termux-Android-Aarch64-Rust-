@@ -216,6 +216,38 @@ fn entities_for_scan_orders_deterministically_on_confidence_ties() {
 }
 
 #[test]
+fn entities_filtered_limit_returns_top_n_by_confidence() {
+    // Recall passes Some(MAX_ENTITIES) to bound the per-prior-scan pull IN SQL
+    // (memory safety); None (the UI path) stays unbounded. A limit must return
+    // the strict top-N by confidence, not an arbitrary N.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "s-lim");
+    for (v, c) in [("a", 0.9), ("b", 0.5), ("c", 0.7), ("d", 0.3), ("e", 0.8)] {
+        store
+            .upsert_entity(&Entity::new(EntityKind::Username, v, c, "s-lim"))
+            .unwrap();
+    }
+    let top3: Vec<String> = store
+        .entities_filtered("s-lim", None, None, None, Some(3))
+        .unwrap()
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    assert_eq!(top3, vec!["a", "e", "c"], "top-3 by confidence DESC");
+
+    // None is unbounded (all five).
+    assert_eq!(
+        store
+            .entities_filtered("s-lim", None, None, None, None)
+            .unwrap()
+            .len(),
+        5
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn delete_scan_entities_purges_folded_locality_variants() {
     // The two locality variants a scan checkpoints for one place (a bare suburb
     // and its postcode-qualified form) land as distinct rows. `consolidate_address_localities`
@@ -851,7 +883,7 @@ fn entities_filtered_by_kind() {
     store.upsert_entity(&email).unwrap();
     store.upsert_entity(&domain).unwrap();
     let results = store
-        .entities_filtered("filt-scan", Some("email"), None, None)
+        .entities_filtered("filt-scan", Some("email"), None, None, None)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, EntityKind::Email);
@@ -879,7 +911,7 @@ fn entities_filtered_returns_the_complete_result_not_a_capped_500() {
         store.upsert_entity(&e).unwrap();
     }
     let results = store
-        .entities_filtered("big-scan", Some("email"), None, None)
+        .entities_filtered("big-scan", Some("email"), None, None, None)
         .unwrap();
     assert_eq!(
         results.len(),
@@ -899,7 +931,7 @@ fn entities_filtered_by_kind_and_min_confidence() {
     store.upsert_entity(&low).unwrap();
     store.upsert_entity(&high).unwrap();
     let results = store
-        .entities_filtered("conf-scan", Some("email"), Some(0.5), None)
+        .entities_filtered("conf-scan", Some("email"), Some(0.5), None, None)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "high@example.com");
@@ -916,7 +948,7 @@ fn entities_filtered_by_kind_min_conf_and_value() {
     store.upsert_entity(&alice).unwrap();
     store.upsert_entity(&bob).unwrap();
     let results = store
-        .entities_filtered("val-scan", Some("email"), Some(0.1), Some("alice"))
+        .entities_filtered("val-scan", Some("email"), Some(0.1), Some("alice"), None)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "alice@example.com");
@@ -933,7 +965,7 @@ fn entities_filtered_min_confidence_without_kind() {
     store.upsert_entity(&low).unwrap();
     store.upsert_entity(&high).unwrap();
     let results = store
-        .entities_filtered("gap-scan", None, Some(0.5), None)
+        .entities_filtered("gap-scan", None, Some(0.5), None, None)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "hi.com");
@@ -950,7 +982,7 @@ fn entities_filtered_value_contains_without_kind() {
     store.upsert_entity(&alice).unwrap();
     store.upsert_entity(&bob).unwrap();
     let results = store
-        .entities_filtered("vc-scan", None, None, Some("alice"))
+        .entities_filtered("vc-scan", None, None, Some("alice"), None)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].value, "alice@example.com");
@@ -969,7 +1001,7 @@ fn entities_filtered_with_no_filters_returns_all() {
     store.upsert_entity(&e2).unwrap();
     store.upsert_entity(&e3).unwrap();
     let results = store
-        .entities_filtered("all-scan", None, None, None)
+        .entities_filtered("all-scan", None, None, None, None)
         .unwrap();
     assert_eq!(results.len(), 3, "all three entities should be returned");
     let _ = std::fs::remove_file(&path);

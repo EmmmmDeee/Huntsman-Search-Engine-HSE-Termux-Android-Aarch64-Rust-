@@ -138,8 +138,9 @@ impl StoragePort for InMemoryStore {
         kind: Option<&str>,
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
+        limit: Option<usize>,
     ) -> Result<Vec<Entity>> {
-        Ok(self
+        let mut out: Vec<Entity> = self
             .inner
             .lock()
             .entities
@@ -149,7 +150,19 @@ impl StoragePort for InMemoryStore {
             .filter(|e| min_confidence.is_none_or(|m| e.confidence >= m))
             .filter(|e| value_contains.is_none_or(|v| e.value.contains(v)))
             .cloned()
-            .collect())
+            .collect();
+        // Mirror Store::entities_filtered: confidence DESC, uid ASC (total order),
+        // then the optional top-N LIMIT.
+        out.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.uid.cmp(&b.uid))
+        });
+        if let Some(n) = limit {
+            out.truncate(n);
+        }
+        Ok(out)
     }
 
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {

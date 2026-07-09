@@ -840,8 +840,9 @@ impl crate::core::port::StoragePort for Store {
         kind: Option<&str>,
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
+        limit: Option<usize>,
     ) -> Result<Vec<Entity>> {
-        Store::entities_filtered(self, scan_id, kind, min_confidence, value_contains)
+        Store::entities_filtered(self, scan_id, kind, min_confidence, value_contains, limit)
     }
 
     fn entity_facets(&self, scan_id: &str) -> Result<Vec<(String, u64)>> {

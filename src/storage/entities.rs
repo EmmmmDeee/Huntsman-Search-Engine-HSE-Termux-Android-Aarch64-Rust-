@@ -324,6 +324,7 @@ impl super::Store {
         kind: Option<&str>,
         min_confidence: Option<f64>,
         value_contains: Option<&str>,
+        limit: Option<usize>,
     ) -> Result<Vec<Entity>> {
         let mut sql = String::from(
             "SELECT e.data_json FROM entities e \
@@ -341,16 +342,21 @@ impl super::Store {
         }
         if value_contains.is_some() {
             sql.push_str(&format!(" AND e.value LIKE ?{next_param} ESCAPE '\\'"));
-            let _ = next_param;
+            next_param += 1;
         }
-        // No LIMIT: the filtered set is a SUBSET of the canonical `entities_for_scan`
-        // (line ~210), which is itself unbounded — so the filtered query has no memory
-        // justification for a cap, and a silent `LIMIT 500` dropped the lowest-confidence
-        // matches past rank 500 with no total/flag/pagination (the facets endpoint still
-        // reported the true larger count, an observable inconsistency). `confidence DESC,
-        // uid ASC` is already a total deterministic order (uid tie-break), so the full
-        // result is deterministic.
+        // `confidence DESC, uid ASC` is a total deterministic order (uid tie-break),
+        // so a LIMIT below keeps the strict top-N by confidence.
         sql.push_str(" ORDER BY e.confidence DESC, e.uid ASC");
+        // Optional bound. `None` (the UI/facets path) stays unbounded: the filtered
+        // set is a SUBSET of the also-unbounded `entities_for_scan`, and a silent
+        // `LIMIT 500` there once dropped the lowest-confidence matches past rank 500
+        // while the facets endpoint still reported the true larger count (an
+        // observable inconsistency). `Some(n)` (recall) caps the per-prior-scan
+        // deserialisation so a heavily-scanned target's full historical graph can't
+        // OOM scan-start on a low-memory device.
+        if limit.is_some() {
+            sql.push_str(&format!(" LIMIT ?{next_param}"));
+        }
 
         let raw: Vec<String> = {
             let conn = self.conn.lock();
@@ -363,7 +369,8 @@ impl super::Store {
                     std::iter::once(scan_id.to_string())
                         .chain(kind.map(std::string::ToString::to_string))
                         .chain(min_confidence.map(|c| c.to_string()))
-                        .chain(like_pattern),
+                        .chain(like_pattern)
+                        .chain(limit.map(|l| l.to_string())),
                 ),
                 |r| r.get::<_, String>(0),
             )?;
