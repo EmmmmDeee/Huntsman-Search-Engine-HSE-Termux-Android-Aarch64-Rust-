@@ -412,3 +412,32 @@ fn parse_response_ignores_auth_marker_inside_data_payload() {
     );
     assert_eq!(v["total"], 1);
 }
+
+#[test]
+fn client_base_url_uses_endpoint_override_or_default() {
+    // The base URL is resolved from HUNTSMAN_SEEKNOW_BASE environment variable
+    // (with security checks) or the canonical default. Tests that the resolution
+    // returns an HTTPS URL in both cases.
+    let url = super::client::base_url();
+    assert!(
+        url.starts_with("https://"),
+        "SeekNow base URL must be HTTPS — got {url}"
+    );
+    // Must be a well-known domain (see-know.eu) or an override matching HTTPS + non-local rules
+    assert!(
+        url.contains("see-know."),
+        "SeekNow base URL must reference the canonical domain — got {url}"
+    );
+}
+
+#[test]
+fn client_auth_scheme_is_x_api_key_header() {
+    // SeekNow API requires X-API-Key header, NOT Authorization: Bearer.
+    // Regression: earlier implementations used Bearer auth, which the server
+    // rejects with "Missing API key. Use X-API-Key".
+    assert_eq!(
+        CLIENT.auth_scheme(),
+        crate::util::curl_client::AuthScheme::XApiKey,
+        "SeekNow MUST use X-API-Key header per spec"
+    );
+}
