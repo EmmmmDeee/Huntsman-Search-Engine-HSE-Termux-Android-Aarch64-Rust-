@@ -146,13 +146,18 @@ pub(super) fn humanise_name(s: &str) -> String {
     crate::util::str_util::title_case(&reordered.to_ascii_lowercase())
 }
 
-/// Case-insensitive alphanumeric tokens of at least 3 characters. Stricter
+/// Case-insensitive alphanumeric tokens of at least 3 **characters**. Stricter
 /// than the AU registers' 2-character floor (`asic_banned_orgs::name_tokens`)
 /// — OFAC's pool is global and dominated by common transliterated names, so a
 /// shorter token would collide far more often than in a national register.
+/// Measured via `chars().count()`, not `str::len()`: a byte-length check would
+/// let a single non-ASCII character (e.g. one CJK character, 3 bytes) through
+/// as if it were a 3-character token, silently weaker than the floor this
+/// function documents and the module's misattribution-risk mitigation relies
+/// on.
 pub(super) fn name_tokens(name: &str) -> Vec<String> {
     name.split(|c: char| !c.is_alphanumeric())
-        .filter(|t| t.len() >= 3)
+        .filter(|t| t.chars().count() >= 3)
         .map(str::to_ascii_lowercase)
         .collect()
 }

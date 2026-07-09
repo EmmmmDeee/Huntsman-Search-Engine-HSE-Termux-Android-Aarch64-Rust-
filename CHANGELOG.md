@@ -10,6 +10,33 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- **`sanctions_ofac` silently skipped screening short-particle names (e.g.
+  "Al Zawahiri") against the OFAC SDN list entirely, and separately could
+  drop a genuine Person/Organisation hit behind a run of non-emittable
+  Vessel/Aircraft records.** The `tokens.len() < 2` gate operated on tokens
+  already 3-char-floored, so a multi-word name collapsing to one surviving
+  token (a short particle like "Al"/"Bin"/"Le"/"De" dropped) was rejected
+  identically to a genuinely weak single-word query — new `has_enough_signal`
+  distinguishes the two. Separately, `MAX_HITS` was applied to raw matches
+  before non-emittable rows were filtered out; new `match_records` filters
+  first, caps second. Also fixed `name_tokens`'s 3-char floor to measure
+  Unicode characters, not UTF-8 bytes (a single CJK character silently
+  passed as a full token). Regression tests:
+  `has_enough_signal_rejects_a_bare_single_word_query`,
+  `has_enough_signal_accepts_a_multiword_query_that_collapses_to_one_token`,
+  `match_records_take_cap_applies_after_filtering_non_entities`,
+  `name_tokens_floor_counts_characters_not_bytes`, and 5 more.
+- **`web_crawler`'s Next.js/Nuxt hydration-JSON extraction gave up entirely
+  if the leftmost mention of a hydration marker wasn't a real `<script>` tag
+  — even when a genuine, well-formed hydration script with the same marker
+  existed later in the page** (e.g. a tutorial paragraph mentioning
+  `__NEXT_DATA__` in passing before the framework's own script tag).
+  `locate_hydration_json` now tries every marker occurrence in order instead
+  of stopping at the first. Regression tests:
+  `a_decoy_marker_mention_does_not_hide_a_real_later_hydration_script`,
+  `two_decoy_mentions_before_a_real_script_still_resolve_to_the_real_payload`.
+
 ### Added
 - **`dns_intel` now unmasks a CDN-fronted domain's real infrastructure via its
   self-hosted mail server (Cloudflare/CDN origin-unmasking, MX leg).** When a

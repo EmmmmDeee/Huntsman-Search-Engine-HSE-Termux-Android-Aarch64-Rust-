@@ -4102,3 +4102,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (private items) clean, full suite 0 failures (4492 lib tests, +3),
   architecture suite green (96 integration + 30 arch). Paired: `PROBLEM_TREE`
   §8 + §4 gap analysis refreshed — same commit.
+- **2026-07-09** — **SOL-VERIFY-CHECKPOINT-1: pacing-mandated adversarial
+  review of 28 tree-undocumented commits (→ T2.34).** 6 parallel review
+  clusters + 2-vote adversarial verify per finding, weighted toward new-
+  module/rewrite risk. 7/7 candidate findings survived verification. Closed
+  the 3 medium `sanctions_ofac`/`web_crawler` findings this commit by porting
+  `96f4326b` — a fix that already existed, tested, on the unmerged sibling
+  branch `origin/claude/eager-edison-Iv9La` — after independently
+  re-confirming each bug against this branch's own code (not trusting the
+  sibling commit's word alone): `has_enough_signal()` (a multi-word query
+  collapsing to one surviving token is not the same weak case as a bare
+  single-word query — `"Al Zawahiri"` → `["zawahiri"]` must still be
+  screened); `match_records()` (filter to emittable entities before applying
+  `MAX_HITS`, not after, so Vessel/Aircraft rows can't consume cap slots a
+  real Person/Organisation hit needed); `name_tokens`'s char-floor now
+  `chars().count()` not `str::len()` (a CJK character is 1 char / 3 bytes);
+  `web_crawler::hydration::locate_hydration_json` now tries every marker
+  occurrence (`try_locate_at()`) instead of giving up on the first. 9 ported
+  regression tests. Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4501 lib tests, +9), architecture
+  suite green (96 integration + 30 arch). The 4 remaining findings are new
+  open nodes (`PROBLEM_TREE` T2.35 HIGH, T2.36/T2.37/T2.38), not deferred —
+  next up. Paired: `PROBLEM_TREE` §8 — same commit.

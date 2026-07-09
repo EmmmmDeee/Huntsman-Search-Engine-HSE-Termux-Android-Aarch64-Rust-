@@ -122,3 +122,31 @@ fn marker_after_an_unrelated_closed_script_tag_is_not_treated_as_hydration_data(
         <div data-note='mentions id="__NEXT_DATA__" in passing'>{"email":"decoy2@example.com"}</div>"#;
     assert!(extract_hydration_entities(html).is_empty());
 }
+
+#[test]
+fn a_decoy_marker_mention_does_not_hide_a_real_later_hydration_script() {
+    // Regression: a page can genuinely mention the marker string in passing
+    // (a tutorial paragraph, doc comment, quoted example) BEFORE the
+    // framework's own real hydration script appears later in the same body.
+    // Anchoring on only the leftmost occurrence and giving up when it fails
+    // to validate would silently miss the real, later, perfectly valid
+    // script — this must fall through to the next candidate instead.
+    let html = r#"<p>This tutorial explains the id="__NEXT_DATA__" convention.</p>
+        <script id="__NEXT_DATA__" type="application/json">{"props":{"pageProps":{"email":"real@example.com"}}}</script>"#;
+    let found = extract_hydration_entities(html);
+    assert!(
+        found.iter().any(|c| c.kind == EntityKind::Email && c.value == "real@example.com"),
+        "expected the real later script's email to be found despite the earlier decoy mention, got {found:?}"
+    );
+}
+
+#[test]
+fn two_decoy_mentions_before_a_real_script_still_resolve_to_the_real_payload() {
+    // Same regression, hardened: multiple non-script mentions of the marker
+    // preceding the real tag must all be tried and skipped in turn.
+    let html = r#"<p>First mention: id="__NEXT_DATA__".</p>
+        <div data-note='Second mention: id="__NEXT_DATA__"'></div>
+        <script id="__NEXT_DATA__" type="application/json">{"contact":"multi-decoy@example.com"}</script>"#;
+    let found = extract_hydration_entities(html);
+    assert!(found.iter().any(|c| c.value == "multi-decoy@example.com"), "got {found:?}");
+}

@@ -1160,6 +1160,98 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   domains_deterministically` test still passing unmodified. **P2** (a
   correctness gap that could permanently wedge an operator-facing status
   endpoint and block all future self-updates, not a crash or PII leak).
+- **`[x]` T2.34 (three gaps in the 2026-07-09 untracked-commit batch, found by
+  adversarial verification, fixed by porting an unmerged sibling-branch fix)**
+  — `sanctions_ofac::process()`'s `tokens.len() < 2` gate operated on tokens
+  already 3-char-floored by `name_tokens`, so a genuine multi-word name with
+  a short particle (`"Al Zawahiri"` → `["zawahiri"]`, len 1) was silently
+  never queried against the OFAC list at all — exactly the demographic
+  (Arabic `Al`/`Bin`, French/Dutch `Le`/`De`, …) a global sanctions list is
+  dominated by. Separately, `MAX_HITS` was `.take()`n on the raw
+  filtered-record iterator BEFORE `build_entity` discarded non-emittable
+  Vessel/Aircraft rows, so those rows could consume cap slots a genuine
+  Person/Organisation hit further down the (shipping-heavy-program) list
+  needed, silently dropping it. Separately, `web_crawler::hydration::
+  locate_hydration_json` anchored on only the leftmost occurrence of a
+  `__NEXT_DATA__`/`__NUXT_DATA__` marker and gave up entirely if that one
+  failed its enclosing-`<script>`-tag validation, missing a real, later
+  hydration script whenever the page mentioned the marker string in passing
+  first (a tutorial paragraph, doc comment, quoted example). → Ported commit
+  `96f4326b` (`fix(sanctions_ofac,web_crawler): close 4 gaps found in a
+  critical review`), pre-existing on the unmerged sibling branch
+  `origin/claude/eager-edison-Iv9La` but never merged here: `has_enough_signal()`
+  (multi-word query surviving to one token ≠ a bare single-word query);
+  `match_records()` (filter to emittable entities first, cap second);
+  `name_tokens`'s 3-char floor now measured via `chars().count()` not
+  `str::len()` (a bonus 4th fix — a single CJK character is 3 UTF-8 bytes,
+  which silently passed the byte-length floor); `locate_hydration_json` now
+  tries every marker occurrence via `try_locate_at()`, falling through on
+  failure instead of giving up on the first. 9 ported regression tests, all
+  independently re-verified against this branch's actual code (not just the
+  sibling commit's own claim) before porting. Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4501
+  lib tests, +9), architecture suite green (96 integration + 30 arch).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **`[ ]` T2.35 (HIGH) — non-finite `min_expand_confidence` permanently bricks
+  a persisted scan.** `core/scan/options.rs:79`: `min_expand_confidence` is a
+  plain (non-`Option`) `f64`, never validated at intake — `--min-expand-
+  confidence nan`/`inf` on the CLI builds a `ScanOptions` carrying it
+  unchanged. `659bcc6f`'s `effective_min_expand_confidence()` guards the one
+  live-engine comparison site, but `run_with_ledger_inner` persists the raw
+  `Scan` (with the un-clamped options embedded) via `upsert_scan` at scan
+  start, before that guard ever runs. `serde_json::to_string` on a NaN/Inf
+  `f64` does not error — it silently writes JSON `null`; `#[serde(default)]`
+  only back-fills a *missing* key, not a `null` one, so the next
+  `serde_json::from_str::<Scan>` on that row is a hard type error. The scan
+  becomes permanently unreadable via `Store::get_scan` — breaking
+  `GET /scans/{id}`, `/leads`, `/timeline`, `/dossier`, `hse export`,
+  `hse diff`, `hse audit latest`, `hse scan status <id>` for that id forever,
+  while `list_scans` silently drops it with only a `tracing::warn!`. Exactly
+  the "no silent truncation/data loss" class this doctrine forbids, and the
+  precise adversarial vector `659bcc6f`'s own docs/tests call out — just not
+  closed at the write path. → Validate `min_expand_confidence` at CLI/
+  `ScanOptions` intake (reject or clamp non-finite before it ever reaches a
+  `Scan`), not only at the read-time comparison.
+- **`[ ]` T2.36 (medium) — `apply_roi_cutoff` reads the raw unclamped
+  `max_concurrent`, risking a `usize` overflow.** `core/engine/mod.rs:1717`
+  calls `apply_roi_cutoff(&mut next, visited, opts.max_concurrent)` — the one
+  consume site of `max_concurrent` in the round loop `659bcc6f` did NOT
+  switch to `effective_max_concurrent()` (only the `dispatch.rs` `Semaphore`
+  site was updated). That flows into `roi::top_k_for_round(max_concurrent) =
+  2 * max_concurrent.max(1) + 8`; `659bcc6f`'s own docstring literally cites
+  `max_concurrent: 18446744073709551615` as the dangerous value it exists to
+  stop. Under `overflow-checks` (dev/test profile) this panics
+  ("attempt to multiply with overflow"); in a release-style profile with
+  overflow checks off it silently wraps to a nonsensical small cutoff,
+  corrupting that round's ROI top-K without diagnostic. → Route this call
+  site through `effective_max_concurrent()` too.
+- **`[ ]` T2.37 (low) — `web_crawler`'s `produces()` under-declares what its
+  hydration-JSON path can emit.** `modules/web_crawler/mod.rs:112` lists only
+  `Email`/`Url`/`Domain`/`Phone`/`ApiKey`/`TrackingId`/`IpAddress`/`AbnAcn`/
+  `Username`, but `hydration.rs::extract_hydration_entities` runs
+  `core::classifier::extract` **unfiltered** on every JSON string leaf, which
+  can also yield `MacAddress` (a hyphenated all-digit ID matching the MAC
+  shape), `DeviceId` (an MCC-MNC-LAC-CID-shaped digit string), and `Person`
+  (the `FullName` residual for a sparse multi-token digit run) — none
+  declared. The sibling `core::classify_module`, which calls the identical
+  `classifier::extract`, already declares `MacAddress`/`DeviceId` for exactly
+  this reason. Not caught by `tests/architecture.rs`'s
+  `every_literal_constructed_entity_kind_is_declared_in_produces` guard,
+  which greps for literal `EntityKind::X` constructions — this path
+  constructs kinds dynamically via the shared classifier, a blind spot the
+  guard doesn't cover. → Add the missing kinds to `produces()`.
+- **`[ ]` T2.38 (low) — a `search_engines` regression test doesn't exercise
+  the fix it claims to guard.** `d3780fc0`'s
+  `extract_addresses_deduplicates_repeated_mentions_within_one_text`
+  (`helpers/entity/tests.rs:92`) passes identically whether the new
+  `seen_addr_keys` STATES-pass dedup check is present or reverted — for its
+  exact fixture, the second "Queensland" match is already rejected by the
+  pre-existing `city.len() > 40` guard (its `rfind(',')` walk-back spans the
+  sentence boundary) before it would ever reach the dedup insert. The
+  underlying fix is real for other input shapes (e.g. a locality repeated via
+  a symmetric "X, City, State" pattern twice), just not proven by this test.
+  → Replace/add a fixture where the duplicate genuinely reaches the dedup
+  check, so the test fails against a reverted fix.
 
 ---
 
@@ -5599,3 +5691,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4492 lib
   tests, +3), architecture suite green (96 integration + 30 arch).
   **Paired:** `SOLUTION_TREE` §5 + §4 gap analysis refreshed — same commit.
+- **2026-07-09** — **Pacing checkpoint: adversarial verification pass over 28
+  commits merged 2026-07-06→2026-07-09 with no tree/log pairing (T2.34).** Per
+  the standing loop's pacing directive, ran a 6-cluster parallel review +
+  adversarial 2-vote-per-finding verify workflow over every untracked commit,
+  weighted toward the highest-risk surface (new modules, byte-level rewrites).
+  7/7 candidate findings survived adversarial review, none fabricated. This
+  entry closes the 3 **medium** findings in `sanctions_ofac`/`web_crawler`
+  (T2.34, above) by porting an already-tested fix that existed on an unmerged
+  sibling branch (`96f4326b`) rather than re-deriving one — independently
+  re-verified against this branch's actual code before porting, not trusted
+  on the sibling commit's word alone. The remaining 4 findings are logged as
+  new open nodes for immediate follow-up, not deferred: **T2.35** (HIGH) —
+  non-finite `min_expand_confidence` permanently bricks a persisted scan's
+  storage record; **T2.36** (medium) — `apply_roi_cutoff` still reads the raw
+  unclamped `max_concurrent`, risking a `usize` multiply overflow;
+  **T2.37** (low) — `web_crawler`'s `produces()` under-declares what its
+  hydration-JSON path can emit; **T2.38** (low) — a `search_engines`
+  regression test doesn't actually exercise the fix it claims to guard.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

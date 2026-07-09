@@ -187,6 +187,39 @@ fn build_entity(rec: &SdnRecord, scan_id: &str) -> Option<Entity> {
     Some(e)
 }
 
+/// True if `tokens` (derived from `name`, whose whitespace-split word count is
+/// `word_count`) carry enough discriminating power to query the list at all.
+/// Rejects an empty token set (nothing left to match) and a genuinely
+/// single-word query that also yields a single token — too weak a
+/// discriminator against a global list (see the module doc's
+/// misattribution-risk note). A **multi-word** query that happens to collapse
+/// to one surviving token is NOT the same weak case — e.g. `name_tokens("Al
+/// Zawahiri")` drops the 2-character "Al" particle and returns just
+/// `["zawahiri"]`, but the querier supplied two distinguishing parts, so
+/// treating this identically to a bare one-word query would silently
+/// unscreen exactly the short-particle name shapes (Arabic "Al"/"El",
+/// Vietnamese "Vo"/"Le", etc.) common on this list. Pure, so it is
+/// unit-tested independent of the async `process` it gates.
+fn has_enough_signal(tokens: &[String], word_count: usize) -> bool {
+    !tokens.is_empty() && (tokens.len() >= 2 || word_count >= 2)
+}
+
+/// Match every SDN record whose name satisfies `tokens` and map it to an
+/// entity, capped at [`MAX_HITS`] — the cap is applied AFTER mapping to
+/// entities, not before, so a `Vessel`/`Aircraft` match (which [`build_entity`]
+/// maps to `None`) never consumes a cap slot that a real Person/Organisation
+/// hit further down the match list could have used. **Pure** — no network/IO,
+/// so it is unit-tested directly against a hand-built record list rather than
+/// only through the async `process` that fetches `records` over the network.
+fn match_records(records: &[SdnRecord], tokens: &[String], scan_id: &str) -> Vec<Entity> {
+    records
+        .iter()
+        .filter(|r| record_name_matches(&r.name, tokens))
+        .filter_map(|r| build_entity(r, scan_id))
+        .take(MAX_HITS)
+        .collect()
+}
+
 pub struct SanctionsOfac;
 
 #[async_trait]
@@ -239,22 +272,12 @@ impl Module for SanctionsOfac {
         let mut result = ModuleResult::new();
         let name = target.value.trim();
         let tokens = name_tokens(name);
-        if tokens.len() < 2 {
-            // A single-token query against a global list is far too weak a
-            // discriminator (see the module doc's misattribution-risk note).
+        if !has_enough_signal(&tokens, name.split_whitespace().count()) {
             return Ok(result);
         }
 
         let records = fetch_sdn_list(ctx).await;
-        for rec in records
-            .iter()
-            .filter(|r| record_name_matches(&r.name, &tokens))
-            .take(MAX_HITS)
-        {
-            if let Some(e) = build_entity(rec, &ctx.scan_id) {
-                result.push(e);
-            }
-        }
+        result.extend(match_records(&records, &tokens, &ctx.scan_id));
         Ok(result)
     }
 }
