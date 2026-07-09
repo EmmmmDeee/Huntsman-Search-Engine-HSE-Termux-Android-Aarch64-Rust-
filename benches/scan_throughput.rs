@@ -173,6 +173,49 @@ fn bench_au_place_scan(c: &mut Criterion) {
     group.finish();
 }
 
+/// `is_captcha_page` runs on the body of EVERY fetched response (the hottest
+/// path). The old detector allocated a full Unicode-`to_lowercase()` copy of the
+/// body just to match its all-ASCII vendor signatures case-insensitively; the new
+/// one runs an `ascii_ci` aho-corasick pass over the RAW body — same match, no
+/// allocation. Measured on a representative ~14 KB no-block body (the common case).
+fn bench_is_captcha_guard(c: &mut Criterion) {
+    use huntsman_search_engine::util::scan::MatchSet;
+    let sigs: &[&str] = &[
+        "challenges.cloudflare.com",
+        "/cdn-cgi/challenge-platform",
+        "cf-chl-",
+        "/recaptcha/api",
+        "g-recaptcha",
+        "grecaptcha",
+        "/sorry/index",
+        "hcaptcha.com",
+        "datadome",
+        "perimeterx",
+        "px-captcha",
+        "funcaptcha",
+        "arkoselabs",
+        "smartcaptcha",
+        "anomaly-modal",
+        "httpservice/retry",
+    ];
+    // ~14 KB of realistic result HTML with NO block signature (worst case: full scan).
+    let body = "Lorem ipsum dolor sit amet, café résumé. <div class='result'>… </div> ".repeat(200);
+    let cs = MatchSet::new(sigs);
+    let ci = MatchSet::new_ascii_ci(sigs);
+
+    let mut group = c.benchmark_group("is_captcha_guard_noblock");
+    group.bench_function("old_to_lowercase_then_match", |b| {
+        b.iter(|| {
+            let lower = black_box(&body).to_lowercase();
+            cs.is_match(&lower)
+        });
+    });
+    group.bench_function("new_ascii_ci_raw", |b| {
+        b.iter(|| ci.is_match(black_box(&body)));
+    });
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_find_ascii_ci,
@@ -181,6 +224,7 @@ criterion_group!(
     bench_geohash,
     bench_match_set_vs_linear,
     bench_strip_inline_guard,
-    bench_au_place_scan
+    bench_au_place_scan,
+    bench_is_captcha_guard
 );
 criterion_main!(benches);

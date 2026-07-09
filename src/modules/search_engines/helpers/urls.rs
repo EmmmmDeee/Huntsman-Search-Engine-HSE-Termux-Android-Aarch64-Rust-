@@ -216,26 +216,35 @@ pub(in crate::modules::search_engines) fn is_search_tooling_domain(domain: &str)
 }
 
 pub(in crate::modules::search_engines) fn is_tracking_url(url: &str) -> bool {
-    let lower = url.to_lowercase();
-    lower.contains("r.search.yahoo.com")
-        || lower.contains("duckduckgo.com/y.js")
-        || lower.contains("clickserve")
-        || lower.contains("ad.doubleclick")
-        || lower.contains("googleads")
-        || lower.contains("r.bing.com")
-        || lower.contains("th.bing.com")
-        || lower.contains("cc.bingj.com")
-        || lower.contains("yandex.com/clck")
-        || lower.contains("ecosia.org/newtab")
-        || lower.contains("dogpile.com/click")
-        || lower.contains("swisscows.com/api")
-        || lower.contains("/privacy-policy")
-        || lower.contains("/terms-of-use")
-        || lower.contains("/terms-of-service")
-        || lower.contains("guce.yahoo.com")
-        || lower.contains("guce.aol.com")
-        || lower.contains("advertising.yahoo.com")
-        || lower.contains("feedback.yahoo.com")
+    // One cached aho-corasick (Teddy/SIMD) pass over the raw URL instead of
+    // allocating a lowercased copy and running up to 19 separate `contains` scans.
+    // Every pattern is lowercase ASCII, so ASCII-case-insensitive matching is
+    // equivalent to the former `url.to_lowercase()` + `contains`, with no allocation.
+    static TRACKING: std::sync::LazyLock<crate::util::scan::MatchSet> =
+        std::sync::LazyLock::new(|| {
+            crate::util::scan::MatchSet::new_ascii_ci([
+                "r.search.yahoo.com",
+                "duckduckgo.com/y.js",
+                "clickserve",
+                "ad.doubleclick",
+                "googleads",
+                "r.bing.com",
+                "th.bing.com",
+                "cc.bingj.com",
+                "yandex.com/clck",
+                "ecosia.org/newtab",
+                "dogpile.com/click",
+                "swisscows.com/api",
+                "/privacy-policy",
+                "/terms-of-use",
+                "/terms-of-service",
+                "guce.yahoo.com",
+                "guce.aol.com",
+                "advertising.yahoo.com",
+                "feedback.yahoo.com",
+            ])
+        });
+    TRACKING.is_match(url)
 }
 
 pub(in crate::modules::search_engines) fn is_non_name_word(s: &str) -> bool {

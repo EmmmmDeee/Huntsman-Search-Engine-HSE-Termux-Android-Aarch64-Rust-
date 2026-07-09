@@ -234,21 +234,28 @@ pub(super) const BLOCK_PHRASE_SETS: &[&[&str]] = &[
 /// [`BLOCK_PHRASE_SETS`] must match. This is a strict superset of the old
 /// detector's coverage while cutting its false-positive surface.
 pub(super) fn is_captcha_page(body: &str) -> bool {
-    let lower = body.to_lowercase();
-    // First tier: any single high-confidence vendor signature. One cached
-    // aho-corasick pass over the lowercased body (the first `util::scan`/SOL-F1
-    // consumer) — byte-for-byte equivalent to the old
-    // `BLOCK_VENDOR_SIGNATURES.iter().any(|s| lower.contains(s))` (the signatures
-    // are already lowercase, so we match against `lower`), but a single
-    // Teddy/SIMD pass instead of N substring scans.
+    // First tier: any single high-confidence vendor signature, matched
+    // ASCII-case-insensitively against the RAW body in one cached aho-corasick
+    // (Teddy/SIMD) pass. Every signature is lowercase ASCII, so this is equivalent
+    // to the old `body.to_lowercase()` + case-sensitive match — but WITHOUT
+    // allocating a full Unicode-lowercased copy of every fetched body, the hottest
+    // allocation on the fetch path (this runs on every response, including the
+    // proxy path at :134 and the direct path at :156).
     static VENDOR_AC: std::sync::LazyLock<crate::util::scan::MatchSet> =
-        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(BLOCK_VENDOR_SIGNATURES));
-    if VENDOR_AC.is_match(&lower) {
+        std::sync::LazyLock::new(|| {
+            crate::util::scan::MatchSet::new_ascii_ci(BLOCK_VENDOR_SIGNATURES)
+        });
+    if VENDOR_AC.is_match(body) {
         return true;
     }
-    BLOCK_PHRASE_SETS
-        .iter()
-        .any(|set| set.iter().all(|tok| lower.contains(tok)))
+    // Second tier: an entire AND-set of lowercase-ASCII phrase tokens must be
+    // present. `find_ascii_ci` (memchr/NEON, PR #220) matches each token
+    // case-insensitively over the raw body — equivalent to `lower.contains(tok)`
+    // with no allocation.
+    BLOCK_PHRASE_SETS.iter().any(|set| {
+        set.iter()
+            .all(|tok| crate::util::str_util::find_ascii_ci(body, tok).is_some())
+    })
 }
 
 pub(super) fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchResult> {
