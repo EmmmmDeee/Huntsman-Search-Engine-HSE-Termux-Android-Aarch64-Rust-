@@ -95,6 +95,21 @@ use super::*;
     }
 
     #[test]
+    fn is_state_token_matches_exact_abbreviation_and_full_name_only() {
+        for tok in ["QLD", "qld", "NSW", "vic", "SA", "Tasmania", "queensland"] {
+            assert!(is_state_token(tok), "{tok:?} must be recognised");
+        }
+        // A whole-token match, never a substring: a real word/surname that merely
+        // CONTAINS a state name must not be mistaken for the state itself — this
+        // is exactly what makes is_state_token safe to use on a single isolated
+        // token (e.g. stripping a trailing state suffix from a parsed name) where
+        // state_code's free-text substring scan would be too permissive.
+        for tok in ["Queenslander", "Victorian", "Lawnton", "Sandgate", ""] {
+            assert!(!is_state_token(tok), "{tok:?} must NOT be recognised");
+        }
+    }
+
+    #[test]
     fn locality_key_folds_postcode_variants_but_keeps_streets_distinct() {
         // Same suburb, two granularities → one key.
         assert_eq!(

@@ -441,7 +441,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Delivered (cycle 20, 2026-06-18):* `austlii` — free AustLII court/legislation
   scraper; `FullName`/`Organisation` → `Url` (court-judgment) + `Organisation`
   (legal-footprint signal); Corporate-9; 125→126 modules, 93 free.
-  *Remaining:* GNAF/AusPost; fuller ASIC/ABR graph; state cadastre/property.
+  *Precision fix (2026-07-09) — SOL-QLD-NAME-PRECISION (T2.39):* real
+  full-capability scan evidence showed `qld_unclaimed`'s owner-name parser
+  fabricating `family-candidate` Person entities from businesses trading in
+  a suburb whose name collides with the seed's surname. Fixed at the
+  mechanism, not with a word list: the joint-owner `AND`/`&` splitter now
+  requires the WHOLE resulting group to pass the person-shape check (a
+  business name torn apart by the splitter almost never produces fragments
+  that ALL independently look like real names — a real 4-person joint
+  holding does), and a new `util::address_au::is_state_token` strips a
+  trailing AU state code the register appends directly to real owners'
+  names. Deliberately did NOT attempt the broader "detect any unregistered
+  trading name" problem a live 4-suburb sweep showed has no small,
+  finite pattern — logged as an open gap (§4a) with a sketched direction
+  (live ABR business-name cross-check via the already-registered
+  `abn_lookup`/`asic_director`/`opencorporates`) rather than forced into
+  this commit.
+  *Remaining:* GNAF/AusPost; fuller ASIC/ABR graph; state cadastre/property;
+  the broader unregistered-trading-name people-finding precision gap above.
 - **`[~]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
   discovery, ASN/BGP pivots, passive-DNS/cert-hash origin candidates; v4+**v6**
   `is_cdn_edge_ip` already demotes the noise.
@@ -935,6 +952,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.39-residual** (new, 2026-07-09) — the broader class of unregistered
+  AU trading names with no legal-form suffix and no shared textual pattern
+  (`"SPAR LAWNTON"`, `"TYREPLUS NUNDAH"`, `"ANDERSENS LAWNTON"`) still passes
+  `au_unclaimed`'s owner-name-to-Person parser as a fabricated family
+  member. A live 4-suburb sweep confirmed a curated word-list approach
+  would be unbounded and perpetually incomplete — the wrong shape of fix.
+  Sketched direction: cross-check a `family-candidate` Person's name
+  against the AU Business Register via the already-registered
+  `abn_lookup`/`asic_director`/`opencorporates` modules' live business-name
+  search, rather than any static dictionary. Not yet started — needs its
+  own scoping pass (a live-API design check) before implementation.
 - **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
   dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
   60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
@@ -4170,3 +4198,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   items) clean, full suite 0 failures (4507 lib tests, unchanged — a
   fixture edit), architecture suite green (96 integration + 30 arch).
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-09** — **SOL-QLD-NAME-PRECISION (T2.39) delivered — a
+  people-finding precision fix found via real product use, directed by a
+  focus on the people-finding/GEOINT/NETINT capability axes.** Ran a real
+  `hse scan --value "Brett Lawnton"` (full module set, default depth) and
+  read the dossier's own "Optimization Hints" section — which flagged
+  `qld_unclaimed` as a low mean-confidence "noisy source" — rather than
+  treating a large entity count as success on its face. Manual review found
+  businesses ("Lawnton Towing", "Lawnton Smash") tagged as `family-
+  candidate` Person entities because "Lawnton" is also a real QLD suburb.
+  Live-queried the actual QLD Public Trustee CKAN register directly to
+  confirm every fixture used in the fix's tests is real data, not invented.
+  Root-caused to two distinct mechanisms in `qld_helpers.rs`: the joint-
+  owner `AND`/`&` splitter tearing a single business name into fragments
+  that individually pass the person-shape check, and a trailing AU state
+  code the register appends to real owners' names corrupting the parsed
+  name. Fixed both at the mechanism (group-integrity check; new
+  `is_state_token` exact-match helper in `address_au`), NOT with a business-
+  name word list — a live 4-suburb sweep confirmed no small curated list
+  would close the broader problem, so that residual is logged (§4a,
+  T2.39-residual) rather than half-solved under time pressure. 5 new tests
+  — business-name fixtures are real register rows (companies, no PII
+  concern); person-name fixtures are fictional, built to match the real
+  register rows' confirmed shapes rather than reproducing the actual
+  individuals' names as permanent test data. Fail-before confirmed via a
+  stashed-source rebuild (compile error). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4510
+  lib tests, +3; +1 doctest), architecture suite green (96 integration + 30
+  arch). Paired: `PROBLEM_TREE` §8 — same commit.

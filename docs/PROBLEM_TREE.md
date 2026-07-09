@@ -1291,6 +1291,71 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   reverted to unconditional `addrs.push`, confirmed the new fixture fails;
   restored, confirmed it passes) before committing — not asserted from
   reading the code alone.
+- **`[x]` T2.39 — `au_unclaimed`'s QLD owner-name parser fabricated Person
+  entities from business names, corrupting the people-finding capability's
+  family/identity graph.** Found via real execution evidence: a full-
+  capability `hse scan` on a seed whose surname ("Lawnton") collides with a
+  real Queensland suburb of the same name surfaced dozens of `family-
+  candidate` "Person" entities that are actually businesses trading in that
+  suburb — live-verified directly against the real QLD Public Trustee CKAN
+  register (`data.qld.gov.au`, resource `872065ae-ddfd-4b5f-ad15-e1935dadd883`,
+  `q=Lawnton`) before writing any fix, per this project's live-verification
+  discipline. Two distinct, mechanically-precise defects in
+  `qld_helpers::owner_person_names`/`clean_person_name`, both confirmed
+  against real register rows:
+  1. The joint-owner `" AND "`/`"&"` splitter (designed for genuine joint
+     holdings — a real register row has this shape: two individuals sharing
+     a surname, e.g. `"<given> <surname> AND <given2> <surname>"`) blindly
+     fires on any owner string containing the word, including a business
+     name that merely contains it: real row `"LAWNTON TOWING AND RECOVERY"`
+     (a towing company — a business name, not a real individual) split into
+     `"LAWNTON TOWING"` (2 tokens — happened to pass `clean_person_name`'s
+     shape check) and `"RECOVERY"` (1 token — correctly rejected), keeping
+     the fragment that only *looked* like a name and fabricating a "family
+     member" who does not exist.
+  2. The register commonly appends the owner's home state directly to their
+     name with no separator (a real register row has the shape
+     `"<given> <middle> LAWNTON QLD"` — a genuine individual's name is
+     corrupted by this, so the exact real name is not reproduced here), and
+     the parser had no way to recognise this — the state token became part
+     of the "name", title-cased into a garbled `"... Lawnton Qld"` for a
+     genuine person.
+  → (1) require the WHOLE `AND`/`&`-split group to pass `clean_person_name`
+  before keeping ANY of it — a single failing sibling fragment is strong
+  evidence the owner string was one torn-apart business name, not multiple
+  people (this project's bar: false positives are worse than missing
+  coverage); a real 4-person joint holding (initials-style given names +
+  one hyphenated surname, also a real register-row shape) still splits
+  correctly since every fragment independently passes. (2) strip an exact
+  trailing AU state token before the shape checks, via a new
+  `util::address_au::is_state_token` — deliberately an EXACT whole-token
+  match (`STATES`/`STATE_NAMES`, already single-sourced in that module),
+  not `state_code`'s free-text substring scan, which would false-positive
+  on a real word/surname merely *containing* a state name (`"Queenslander"`
+  contains `"queensland"`).
+  *Deliberately NOT attempted this commit — logged as a real, open,
+  code-grounded gap, not silently absorbed into this fix:* a live sweep of
+  4 QLD suburb-name searches (`Lawnton`/`Nundah`/`Brisbane`/`Sandgate`)
+  surfaced a much broader class of unregistered/sole-trader trading names
+  with no recognisable legal-form suffix and no shared textual pattern —
+  `"LAWNTON SMASH"`, `"LAWNTON COUNTRY MARKET ME"`, `"SPAR LAWNTON"`,
+  `"TYREPLUS NUNDAH"`, `"ANDERSENS LAWNTON"`, `"THE SANDGATE PAWNBROKERS"`,
+  `"BRISBANE MOTOR AUCTIONS"` — that this fix does NOT catch (each is a
+  single, un-split segment that structurally still looks name-shaped).
+  Building a business/brand-word dictionary to catch these would be
+  unbounded and perpetually incomplete — the wrong shape of fix for this
+  codebase's small-curated-table convention. A more promising direction for
+  a future cycle: cross-check a `family-candidate` Person's name against
+  the AU Business Register via the already-registered `abn_lookup`/
+  `asic_director`/`opencorporates` modules' live business-name search
+  rather than any static word list — no solution node opened yet, this is
+  a scoping note for whoever picks it up next. 5 new tests (2 in
+  `au_unclaimed`, real register-row fixtures; 1 in `address_au` for
+  `is_state_token`'s exact-vs-substring distinction; the fixture rows are
+  the actual API responses, not invented). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4510
+  lib tests, +3; +1 doctest), architecture suite green (96 integration + 30
+  arch). **Paired:** `SOLUTION_TREE` §5 — same commit.
 
 ---
 
@@ -5825,3 +5890,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   failures (4507 lib tests, no count change — a fixture edit, not a new
   test), architecture suite green (96 integration + 30 arch). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-09** — **T2.39 fixed: `au_unclaimed`'s QLD owner-name parser no
+  longer fabricates Person entities from business names.** Directed to
+  prioritise people-finding/GEOINT/NETINT capability work, ran a real
+  full-capability `hse scan` (seed: a name whose surname collides with a
+  real QLD suburb) and read the resulting dossier's own "Optimization
+  Hints" (which flagged `qld_unclaimed` as a low-confidence "noisy
+  source") rather than taking the entity counts at face value — found
+  dozens of `family-candidate` Persons that were plainly businesses
+  ("Lawnton Towing", "Lawnton Smash"). Live-queried the real QLD Public
+  Trustee CKAN register directly (not assumed) to confirm the exact owning
+  rows and their shapes before writing a parser change. Two mechanically
+  precise fixes: (1) the `" AND "`/`"&"` joint-owner splitter now requires
+  the WHOLE resulting group to pass the person-name-shape check before
+  keeping any of it, so a business name torn in half by the splitter
+  (`"LAWNTON TOWING AND RECOVERY"` → a fragment that happened to look
+  name-shaped) is dropped in full rather than partially kept; (2) a new
+  `util::address_au::is_state_token` (exact whole-token match, deliberately
+  NOT `state_code`'s substring-safe-for-prose-but-not-for-this scan) strips
+  a trailing AU state code the register appends directly to real owners'
+  names (`"... LAWNTON QLD"` → a genuine person's name was being corrupted
+  to `"... Lawnton Qld"`). Explicitly scoped OUT of this fix and logged as
+  an open, code-grounded gap rather than silently absorbed: the broader
+  class of unregistered trading names with no recognisable pattern at all
+  (`"SPAR LAWNTON"`, `"TYREPLUS NUNDAH"`) — a live 4-suburb sweep confirmed
+  no small curated word list would close this without becoming an
+  unbounded, perpetually-incomplete dictionary; a live ABR business-name
+  cross-check (reusing the already-registered `abn_lookup`/
+  `asic_director`/`opencorporates` modules) is sketched as the more
+  promising direction for whoever picks this up next. 5 new tests: the
+  business-name fixtures are real register rows (companies, not
+  individuals — no PII concern); the person-name fixtures are fictional
+  names built to match the exact structural shapes of real register rows
+  confirmed during the live query, deliberately NOT the real individuals'
+  names themselves (this project's PII discipline extends to what gets
+  committed as a permanent test fixture, not only to what's queried live at
+  runtime). Fail-before confirmed via a stashed-source rebuild (compile
+  error — `is_state_token` didn't exist pre-fix). Gate green: fmt/clippy
+  `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4510
+  lib tests, +3; +1 doctest), architecture suite green (96 integration + 30
+  arch). **Paired:** `SOLUTION_TREE` §5 — same commit.

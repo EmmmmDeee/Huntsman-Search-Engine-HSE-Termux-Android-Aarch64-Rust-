@@ -133,14 +133,43 @@ pub(super) fn owner_person_names(owner: &str) -> Vec<String> {
         .replace(" AND ", " & ")
         .replace(" and ", " & ")
         .replace(['+', ';'], " & ");
-    let mut segments: Vec<String> = Vec::new();
+    let mut joint_segments: Vec<String> = Vec::new();
     for part in normalised.split('&') {
-        push_comma_segments(part.trim(), &mut segments);
+        push_comma_segments(part.trim(), &mut joint_segments);
     }
-    segments.extend(bracket_names);
 
     let mut out: Vec<String> = Vec::new();
-    for seg in &segments {
+    // A genuine multi-person joint holding (real register-row shapes:
+    // "<given> <surname> AND <given2> <surname>" sharing one surname, or an
+    // initials-style multi-owner chain) splits into fragments that EACH
+    // independently pass `clean_person_name`. A single business/trading
+    // name torn apart by the same "AND"/"&" splitter does not: "LAWNTON
+    // TOWING AND RECOVERY" (a real towing company, not two owners named
+    // "Lawnton Towing" and "Recovery") splits into "LAWNTON TOWING" (passes
+    // — it happens to be name-shaped) and "RECOVERY" (fails — one token).
+    // Requiring the WHOLE group to pass before keeping ANY of it means a
+    // single failing fragment correctly drops the fragment that only
+    // *looked* like a person, rather than fabricating a family member from
+    // half a business name — this project's bar is "false positives are
+    // worse than missing coverage". A single-segment owner (no "AND"/"&"
+    // present) has no group to distrust.
+    if joint_segments.len() > 1 {
+        let cleaned: Option<Vec<String>> = joint_segments
+            .iter()
+            .map(|s| clean_person_name(s))
+            .collect();
+        if let Some(names) = cleaned {
+            for name in names {
+                if !out.contains(&name) {
+                    out.push(name);
+                }
+            }
+        }
+    } else if let Some(name) = joint_segments.first().and_then(|s| clean_person_name(s)) {
+        out.push(name);
+    }
+
+    for seg in &bracket_names {
         if let Some(name) = clean_person_name(seg)
             && !out.contains(&name)
         {
@@ -175,8 +204,9 @@ fn push_comma_segments(part: &str, out: &mut Vec<String>) {
 }
 
 /// Validate and canonicalise one owner segment into a `Person` value, or `None` if
-/// it isn't a usable individual: strip leading honorifics, require 2–4 name-shaped
-/// tokens with at least one real (non-initial) word, exclude companies, title-case.
+/// it isn't a usable individual: strip leading honorifics and a trailing AU
+/// state suffix, require 2–4 name-shaped tokens with at least one real
+/// (non-initial) word, exclude companies, title-case.
 fn clean_person_name(raw: &str) -> Option<String> {
     let mut tokens: Vec<&str> = raw.split_whitespace().collect();
     while let Some(first) = tokens.first() {
@@ -186,6 +216,20 @@ fn clean_person_name(raw: &str) -> Option<String> {
         } else {
             break;
         }
+    }
+    // The register commonly appends the owner's home state to their name with
+    // no separator of its own ("PAUL CRICHTON LAWNTON QLD",
+    // "DJALINDA BURROUGHS LAWNTON QLD") — real, live-observed data, not a
+    // hypothetical. Left in place it becomes part of the "name"
+    // (title-cased to a garbled "... Lawnton Qld"), corrupting a genuine
+    // person's identity. `is_state_token` is an exact whole-token match
+    // (never a substring), so it cannot misfire on a real trailing word that
+    // merely contains a state name (e.g. a "Queenslander"-style surname).
+    if tokens
+        .last()
+        .is_some_and(|t| crate::util::address_au::is_state_token(t))
+    {
+        tokens.pop();
     }
     if !(2..=4).contains(&tokens.len()) {
         return None;

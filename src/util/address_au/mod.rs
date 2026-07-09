@@ -251,6 +251,33 @@ pub fn state_code(text: &str) -> Option<&'static str> {
     None
 }
 
+/// True if `token` — matched as a WHOLE token, never a substring — is an AU
+/// state/territory abbreviation (`"QLD"`) or full name (`"Queensland"`),
+/// case-insensitively. Unlike [`state_code`]'s free-text resolution (whose
+/// step 2 full-name match is a substring scan over prose — safe there, but
+/// not for gating a single already-tokenised word: "Queenslander" contains
+/// "queensland" as a substring without BEING the state), this is for a
+/// caller that already holds one isolated token and needs an exact yes/no —
+/// e.g. stripping a trailing state suffix a register appended to an owner's
+/// name (`"... LAWNTON QLD"`). Pure; no I/O.
+///
+/// ```
+/// use huntsman_search_engine::util::address_au::is_state_token;
+///
+/// assert!(is_state_token("QLD"));
+/// assert!(is_state_token("queensland"));
+/// assert!(!is_state_token("Queenslander")); // NOT the state — a real word/name
+/// assert!(!is_state_token("Lawnton"));
+/// ```
+#[must_use]
+pub fn is_state_token(token: &str) -> bool {
+    let up = token.trim().to_ascii_uppercase();
+    STATES.contains(&up.as_str())
+        || STATE_NAMES
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case(&up))
+}
+
 /// AU phone-number normaliser: returns E.164 form (`+61…`) when the
 /// input is a recognisable Australian number (08/02/03/04/07/13/1300/1800).
 ///

@@ -70,6 +70,87 @@ mod qld {
     }
 
     #[test]
+    fn owner_person_names_does_not_fabricate_a_person_from_half_a_business_name() {
+        // Shape confirmed against a real QLD Public Trustee register row
+        // (live-queried 2026-07-09, resource
+        // 872065ae-ddfd-4b5f-ad15-e1935dadd883, q=Lawnton): a towing
+        // company, not two people named "Lawnton Towing" and "Recovery"
+        // (names here are fictional test data — the register row itself is
+        // a company, not a person, so no individual's identity is involved).
+        // The " AND "->"&" joint-owner splitter (designed for genuine joint
+        // bank holdings) used to tear this into "LAWNTON TOWING" (which
+        // happens to be 2 name-shaped tokens, so it passed
+        // clean_person_name) and "RECOVERY" (1 token, rejected) -- keeping
+        // the half that merely LOOKED like a name and fabricating a "family
+        // member" who does not exist.
+        assert!(
+            owner_person_names("LAWNTON TOWING AND RECOVERY").is_empty(),
+            "a business name torn apart by the AND-splitter must not surface \
+             a fragment as a fabricated person"
+        );
+
+        // A genuine 4-person joint holding (fictional names, initials-style
+        // given names + a hyphenated surname — matching the shape of a real
+        // live-verified register row) must still split cleanly -- the
+        // all-or-nothing group check must not become an all-or-nothing
+        // OVER-correction that drops real joint owners.
+        assert_eq!(
+            owner_person_names(
+                "A B FOXGLEN AND C D MOCKRIDGE AND E F FOXGLEN-WREN AND G H TESTBOURNE"
+            ),
+            vec![
+                "A B Foxglen".to_string(),
+                "C D Mockridge".to_string(),
+                "E F Foxglen-wren".to_string(),
+                "G H Testbourne".to_string(),
+            ]
+        );
+
+        // A genuinely ambiguous mix (one bare given name with no surname of
+        // its own, matching a real live register row's shape) is
+        // conservatively dropped in full rather than guessed at -- this
+        // project's bar is "false positives are worse than missing
+        // coverage".
+        assert!(owner_person_names("MARCUS AND TAYLOR WRENFIELD AND HOLLOWDALE").is_empty());
+
+        // Two genuine individuals still split correctly (unaffected by the
+        // group-integrity check, since both sides independently pass).
+        assert_eq!(
+            owner_person_names("JORDAN WRENFIELD AND TAYLOR WRENFIELD"),
+            vec![
+                "Jordan Wrenfield".to_string(),
+                "Taylor Wrenfield".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn owner_person_names_strips_a_trailing_state_suffix_the_register_appends() {
+        // Shape confirmed against real QLD Public Trustee register rows
+        // (live-queried 2026-07-09) -- the register commonly appends the
+        // owner's home state directly to their name with no separating
+        // punctuation. Left in place this becomes part of the "name"
+        // (title-cased to a garbled "... Qld"), corrupting a genuine
+        // person's identity. Given names below are fictional test data;
+        // "Lawnton" is kept as the surname because it is the real AU
+        // suburb name whose collision with a surname is the phenomenon
+        // under test, not a real individual's identity.
+        assert_eq!(
+            owner_person_names("TAYLOR MORGAN LAWNTON QLD"),
+            vec!["Taylor Morgan Lawnton".to_string()]
+        );
+        assert_eq!(
+            owner_person_names("RILEY ASHWORTH LAWNTON QLD"),
+            vec!["Riley Ashworth Lawnton".to_string()]
+        );
+        // A genuine 2-token name is untouched when no state suffix is present.
+        assert_eq!(
+            owner_person_names("AVERY LAWNTON"),
+            vec!["Avery Lawnton".to_string()]
+        );
+    }
+
+    #[test]
     fn classifies_exact_person_vs_surname_only_family() {
         let recs = sample().result.unwrap().records;
         let curt = records_to_entities(&recs, 3, "Curt Avery", true, "s");

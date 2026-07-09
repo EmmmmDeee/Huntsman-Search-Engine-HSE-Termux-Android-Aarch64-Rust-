@@ -11,6 +11,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **`au_unclaimed`'s QLD register parser fabricated Person entities from
+  business names, found via a real full-capability scan.** A seed whose
+  surname collides with a real QLD suburb name (e.g. "Lawnton") surfaced
+  businesses trading in that suburb ("Lawnton Towing", "Lawnton Smash") as
+  `family-candidate` Person entities. Two live-verified defects fixed: the
+  joint-owner `AND`/`&` splitter (for genuine multi-person holdings) tore a
+  single business name into fragments, keeping the half that happened to
+  look name-shaped — now requires the WHOLE split group to pass before
+  keeping any of it. A trailing AU state code the register appends to real
+  owners' names (`"... LAWNTON QLD"`) was corrupting genuine names — new
+  `util::address_au::is_state_token` (an exact whole-token match, safe
+  where `state_code`'s substring scan is not) strips it. The broader class
+  of unregistered trading names with no recognisable pattern is logged as
+  an open gap, not silently absorbed. Regression tests:
+  `owner_person_names_does_not_fabricate_a_person_from_half_a_business_name`,
+  `owner_person_names_strips_a_trailing_state_suffix_the_register_appends`,
+  `is_state_token_matches_exact_abbreviation_and_full_name_only`.
 - **A `search_engines` regression test passed identically whether the fix it
   documented was present or reverted.** `extract_addresses_deduplicates_
   repeated_mentions_within_one_text`'s fixture never reached the
