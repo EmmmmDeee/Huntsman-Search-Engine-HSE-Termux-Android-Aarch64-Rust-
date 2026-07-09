@@ -9,6 +9,31 @@ fn accepts_org_and_fullname() {
 }
 
 #[test]
+fn abn_acn_search_is_restricted_to_australia() {
+    // An ABN/ACN is Australian by construction — it could never appear in a
+    // non-AU registry, so restricting the search saves quota.
+    let url = build_search_url(TargetKind::AbnAcn, "51824753556");
+    assert!(url.contains("/v0.4/companies/search"));
+    assert!(url.contains("jurisdiction_code=au"));
+}
+
+#[test]
+fn organisation_search_is_global() {
+    // No jurisdiction signal in a bare company name — search all ~140
+    // jurisdictions OpenCorporates indexes, not just AU.
+    let url = build_search_url(TargetKind::Organisation, "Globex Inc");
+    assert!(url.contains("/v0.4/companies/search"));
+    assert!(!url.contains("jurisdiction_code"));
+}
+
+#[test]
+fn full_name_search_uses_officer_endpoint_and_is_global() {
+    let url = build_search_url(TargetKind::FullName, "Jane Roe");
+    assert!(url.contains("/v0.4/officers/search"));
+    assert!(!url.contains("jurisdiction_code"));
+}
+
+#[test]
 fn module_metadata() {
     assert_eq!(OpenCorporates.name(), "opencorporates");
     // Government / public-records band (see priority() doc).

@@ -1,8 +1,20 @@
-//! OpenCorporates — Australian company and officer/director lookup.
+//! OpenCorporates — global company and officer/director lookup (~140
+//! jurisdictions), with an Australia-only restriction applied solely to
+//! `AbnAcn` targets.
 //!
 //! Two endpoints sharing the same auth:
-//!   * Company search:  `GET /v0.4/companies/search?q={name}&jurisdiction_code=au`
-//!   * Officer search:  `GET /v0.4/officers/search?q={name}&jurisdiction_code=au`
+//!   * Company search:  `GET /v0.4/companies/search?q={name}`
+//!   * Officer search:  `GET /v0.4/officers/search?q={name}`
+//!
+//! `jurisdiction_code=au` is appended ONLY for an `AbnAcn` target — an
+//! Australian Business/Company Number is Australian by construction, so it
+//! could never appear in a non-AU registry, and restricting the search saves
+//! API quota. `Organisation`/`FullName` targets carry no jurisdiction signal,
+//! so they search OpenCorporates' full index rather than assuming AU — the
+//! entity-mapping ([`build_company_entities`]/[`build_officer_entities`]) is
+//! already jurisdiction-agnostic: it mints the AU-specific `AbnAcn`/
+//! `country:AU` tag only when the response itself reports
+//! `jurisdiction_code == "au"`, regardless of what was searched.
 //!
 //! Auth:     Optional API Token (`HUNTSMAN_OPENCORP_KEY`). Free tier requires
 //!           a key since late 2023; without one all requests return 401.
@@ -148,6 +160,28 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     }
 
     out
+}
+
+/// Build the OpenCorporates search URL for `target_kind`/`query` (the auth
+/// token, if any, is appended separately by the caller). **Pure** — see the
+/// module doc for why `jurisdiction_code=au` is appended only for an `AbnAcn`
+/// target and omitted (searching all ~140 jurisdictions) for `Organisation`/
+/// `FullName`.
+pub(super) fn build_search_url(target_kind: TargetKind, query: &str) -> String {
+    let endpoint = if target_kind == TargetKind::FullName {
+        "officers"
+    } else {
+        "companies"
+    };
+    let jurisdiction_param = if target_kind == TargetKind::AbnAcn {
+        "&jurisdiction_code=au"
+    } else {
+        ""
+    };
+    format!(
+        "https://api.opencorporates.com/v0.4/{endpoint}/search?q={}{jurisdiction_param}&per_page={PER_PAGE}",
+        urlencode(query),
+    )
 }
 
 /// Officer search response: `/v0.4/officers/search`.
@@ -330,7 +364,7 @@ impl Module for OpenCorporates {
         "opencorporates"
     }
     fn description(&self) -> &'static str {
-        "OpenCorporates company/director search with Australian jurisdiction focus"
+        "OpenCorporates global company/director search (AU-restricted for AbnAcn lookups)"
     }
     fn priority(&self) -> u8 {
         // Government / public-records band (110-118): company registry, dispatched
@@ -384,19 +418,7 @@ impl Module for OpenCorporates {
         // organisation names and ABN/ACN numbers pivot through company search.
         let use_officer_search = target.kind == TargetKind::FullName;
 
-        let base = if use_officer_search {
-            format!(
-                "https://api.opencorporates.com/v0.4/officers/search?q={}&jurisdiction_code=au&per_page={PER_PAGE}",
-                urlencode(query),
-            )
-        } else {
-            format!(
-                "https://api.opencorporates.com/v0.4/companies/search?q={}&jurisdiction_code=au&per_page={PER_PAGE}",
-                urlencode(query),
-            )
-        };
-
-        let mut url = base;
+        let mut url = build_search_url(target.kind, query);
         if let Some(key) = ctx.key_opt(KEY_ENV) {
             url.push_str(&format!("&api_token={}", urlencode(key)));
         }
