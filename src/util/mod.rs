@@ -57,6 +57,9 @@ pub mod autonomous_validation;
 pub mod recursive_enhancement;
 pub mod recursive_validation;
 
+// Autonomous multi-API execution (intelligent orchestration of all 12 APIs)
+pub mod multi_api_autonomous_execution;
+
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
