@@ -75,6 +75,7 @@ pub mod api_key_orchestrator;
 pub mod api_key_integration_tests;
 pub mod api_key_config_validator;
 pub mod api_key_deployment;
+pub mod multi_service_key_pool;
 
 pub mod service_defs;
 pub mod settings;
@@ -84,6 +85,8 @@ pub mod str_util;
 pub mod surnames;
 pub mod target_match;
 pub mod termux;
+pub mod termux_integration;
+pub mod termux_web_service;
 pub mod threat;
 pub mod timefmt;
 pub mod uid;
