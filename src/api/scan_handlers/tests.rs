@@ -1,5 +1,5 @@
 use super::*;
-    use crate::core::scan::TargetKind;
+    use crate::core::scan::{ScanOptions, TargetKind};
 
     #[test]
     fn fold_expansion_signals_counts_exclusions_and_collects_stops() {
@@ -91,6 +91,34 @@ use super::*;
     }
 
     #[test]
+    fn build_scan_from_request_sanitizes_a_non_finite_min_expand_confidence() {
+        // Regression (PROBLEM_TREE T2.35): a JSON request body whose
+        // `options.min_expand_confidence` overflows to a non-finite value
+        // (e.g. an oversized number literal) used to reach `Scan::new(..).
+        // with_options(opts)` unsanitized, get persisted by `scan_create`'s
+        // own `upsert_scan` call BEFORE the engine ever runs, and then
+        // permanently fail to deserialize on every future `get_scan` (a
+        // plain, non-Option f64 can't round-trip JSON `null`, which is what
+        // `serde_json` silently serialises a non-finite float as). Every
+        // request-derived `Scan` must carry a finite value by construction.
+        for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let req = ScanRequest {
+                kind: Some(TargetKind::Domain),
+                value: "cloudflare.com".to_string(),
+                options: ScanOptions {
+                    min_expand_confidence: bad,
+                    ..Default::default()
+                },
+            };
+            let (scan, _) = build_scan_from_request(req).expect("valid domain should build");
+            assert!(
+                scan.options.min_expand_confidence.is_finite(),
+                "{bad} must not survive into the built Scan"
+            );
+        }
+    }
+
+    #[test]
     fn build_scan_from_request_auto_detects_omitted_kind() {
         // Unified scan: no kind supplied → detected from the value, and the
         // scan id keys off the *detected* kind (here, email).
@@ -136,7 +164,7 @@ use super::*;
             "client-supplied min_confidence must survive a profile overlay"
         );
         // The named profile's own tuning still takes effect (depth is clamped
-        // to MAX_DEPTH by `clamp_depth`, same as any other scan).
+        // to MAX_DEPTH by `sanitize`, same as any other scan).
         let investigate = crate::core::profiles::resolve_profile("investigate").unwrap();
         assert_eq!(scan.options.depth, crate::core::scan::MAX_DEPTH);
         assert_eq!(scan.options.max_entities, investigate.max_entities);

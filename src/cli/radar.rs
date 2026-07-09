@@ -215,7 +215,7 @@ pub(super) async fn cmd_radar(
                     max_entities: Some(crate::core::scan::DEFAULT_MAX_ENTITIES),
                     ..Default::default()
                 }
-                .clamp_depth();
+                .sanitize();
                 let pivot_scan =
                     Scan::new(pivot_sid.clone(), pivot_target.clone()).with_options(pivot_opts);
                 let pivot_keys = keys::load();

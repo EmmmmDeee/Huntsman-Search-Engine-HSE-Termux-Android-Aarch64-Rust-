@@ -201,7 +201,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         // `hse radar`-only). No CLI flag enables them here by design.
         allow_live_sensors: false,
     }
-    .clamp_depth();
+    .sanitize();
 
     // `--profile <name>` overlays a preset's tuning (depth / free-only / passive /
     // expansion threshold / concurrency / budgets / expansion strategy /
@@ -405,7 +405,7 @@ fn apply_named_profile(name: &str, options: ScanOptions) -> Result<ScanOptions, 
              investigate, fast, skiptrace)"
         )
     })?;
-    Ok(crate::core::profiles::apply_profile_overlay(options, p).clamp_depth())
+    Ok(crate::core::profiles::apply_profile_overlay(options, p).sanitize())
 }
 
 /// Strip platform/shared-infrastructure entities (cloud buckets, CDN IPs,

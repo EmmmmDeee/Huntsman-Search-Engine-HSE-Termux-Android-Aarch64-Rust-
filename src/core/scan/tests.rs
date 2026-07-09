@@ -63,22 +63,45 @@ fn options_default_is_inert() {
 }
 
 #[test]
-fn clamp_depth_enforces_max_depth() {
+fn sanitize_enforces_max_depth() {
     assert_eq!(MAX_DEPTH, 3);
     let over = ScanOptions {
         depth: 99,
         ..Default::default()
     };
-    assert_eq!(
-        over.clamp_depth().depth,
-        MAX_DEPTH,
-        "deep request is capped"
-    );
+    assert_eq!(over.sanitize().depth, MAX_DEPTH, "deep request is capped");
     let under = ScanOptions {
         depth: 2,
         ..Default::default()
     };
-    assert_eq!(under.clamp_depth().depth, 2, "in-range depth is untouched");
+    assert_eq!(under.sanitize().depth, 2, "in-range depth is untouched");
+}
+
+#[test]
+fn sanitize_coerces_non_finite_min_expand_confidence_to_the_default() {
+    // Regression: a plain (non-Option) f64 that stays non-finite all the way
+    // to persistence serialises as JSON `null` and then permanently fails to
+    // deserialize (Store::get_scan errors forever on that scan id) — see
+    // PROBLEM_TREE T2.35. `sanitize()` must be called before ANY
+    // user-controlled ScanOptions reaches a Scan that gets persisted, so this
+    // failure mode can no longer occur regardless of read-site ordering.
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let opts = ScanOptions {
+            min_expand_confidence: bad,
+            ..Default::default()
+        };
+        assert_eq!(
+            opts.sanitize().min_expand_confidence,
+            DEFAULT_MIN_EXPAND_CONFIDENCE,
+            "{bad} must coerce to the product default"
+        );
+    }
+    // A finite, even unusual, value is left exactly as the operator set it.
+    let opts = ScanOptions {
+        min_expand_confidence: 0.99,
+        ..Default::default()
+    };
+    assert!((opts.sanitize().min_expand_confidence - 0.99).abs() < 1e-9);
 }
 
 #[test]

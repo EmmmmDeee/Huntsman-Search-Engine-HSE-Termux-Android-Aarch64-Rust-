@@ -184,7 +184,7 @@ fn build_live_scan_options(cmd: &LiveCmd) -> Result<ScanOptions> {
         gate_speculative: cmd.gate_speculative,
         ..Default::default()
     }
-    .clamp_depth())
+    .sanitize())
 }
 
 /// Render one live event as a human-readable, **fully unredacted** structured

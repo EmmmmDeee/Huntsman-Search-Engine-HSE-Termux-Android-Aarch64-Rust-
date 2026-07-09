@@ -4124,3 +4124,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   suite green (96 integration + 30 arch). The 4 remaining findings are new
   open nodes (`PROBLEM_TREE` T2.35 HIGH, T2.36/T2.37/T2.38), not deferred —
   next up. Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-09** — **SOL-VERIFY-CHECKPOINT-1 continued: T2.35 (HIGH) fixed.**
+  `ScanOptions::clamp_depth` (already the single chokepoint every real
+  user-controlled construction site calls, confirmed by tracing all 8) is
+  renamed `sanitize` and widened to also coerce a non-finite
+  `min_expand_confidence` to the finite default, closing the gap the
+  existing read-time `effective_min_expand_confidence()` guard alone left
+  open (a `Scan` could still be PERSISTED with the raw non-finite value
+  before that guard ever ran, permanently bricking `Store::get_scan` for
+  that id). 3 new tests incl. a real `Store` round-trip. Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
+  failures (4504 lib tests, +3), architecture suite green (96 integration +
+  30 arch). Paired: `PROBLEM_TREE` §8 — same commit.

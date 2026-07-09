@@ -1732,3 +1732,32 @@ fn list_scans_drops_a_corrupt_row_end_to_end_without_erroring() {
     assert_eq!(scans[0].id, "scan-good");
     let _ = std::fs::remove_file(&path);
 }
+
+#[test]
+fn a_scan_carrying_a_sanitized_min_expand_confidence_round_trips_through_the_real_store() {
+    // Regression (PROBLEM_TREE T2.35): a non-finite `min_expand_confidence`
+    // reaching `upsert_scan` unsanitized serialises to JSON `null` (serde_json
+    // writes NaN/Inf as `null`, and this is a plain, non-Option f64), and the
+    // NEXT `get_scan` on that row then hard-fails to deserialize (`null` is
+    // not a valid `f64`) — permanently bricking that scan id. Every
+    // user-controlled `ScanOptions` construction site now calls `.sanitize()`
+    // before it ever reaches a `Scan`, so the value persisted here is always
+    // finite. This proves the real Store round-trip stays healthy end to end,
+    // not just that `sanitize()` returns a finite number in isolation.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    let target = Target::new(TargetKind::Email, "nan-repro@test.com");
+    let mut scan = Scan::new("scan-nan-repro", target);
+    scan.options = crate::core::scan::ScanOptions {
+        min_expand_confidence: f64::NAN,
+        ..Default::default()
+    }
+    .sanitize();
+    store.upsert_scan(&scan).expect("persist must succeed");
+    let fetched = store
+        .get_scan("scan-nan-repro")
+        .expect("a sanitized scan must remain readable forever")
+        .expect("the scan must exist");
+    assert!(fetched.options.min_expand_confidence.is_finite());
+    let _ = std::fs::remove_file(&path);
+}

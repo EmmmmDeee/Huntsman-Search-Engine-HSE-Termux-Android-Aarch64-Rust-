@@ -275,7 +275,7 @@ impl std::str::FromStr for ExpansionStrategy {
 }
 
 /// Hard ceiling on recursive expansion depth, enforced at every operator-input
-/// boundary (CLI / API / live) via [`ScanOptions::clamp_depth`]. The engine
+/// boundary (CLI / API / live) via [`ScanOptions::sanitize`]. The engine
 /// itself cannot infinite-loop regardless (per-target visited-set + entity
 /// budget + wall-time watchdog — see `tests/halting.rs`), but on a low-RAM
 /// Termux device each extra hop fans the frontier out roughly exponentially, so
@@ -356,11 +356,29 @@ pub const DEFAULT_MAX_ENTITIES: usize = 2500;
 pub const DEFAULT_MIN_EXPAND_CONFIDENCE: f64 = 0.20;
 
 impl ScanOptions {
-    /// Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
-    /// Applied at the CLI/API/live input boundaries — deliberately NOT inside
-    /// the engine core, whose halting proofs are driven at high depth on purpose.
+    /// Harden operator-supplied `ScanOptions` before they ever reach a `Scan`
+    /// that gets persisted or executed. Applied at every CLI/API/live input
+    /// boundary — deliberately NOT inside the engine core, whose halting
+    /// proofs are driven at high depth on purpose.
+    ///
+    /// Two independent corrections:
+    /// 1. Clamp `depth` to [`MAX_DEPTH`], warning once if it actually clamps.
+    /// 2. Coerce a non-finite `min_expand_confidence` (a CLI
+    ///    `--min-expand-confidence nan`/`inf`, or an oversized JSON number
+    ///    literal that overflows to infinity) to the finite product default.
+    ///    [`Self::effective_min_expand_confidence`] already does this at each
+    ///    *read* site so a NaN/±∞ floor can't invert the `c_eff < floor` gate
+    ///    — but that guard runs too late to prevent an earlier, more basic
+    ///    failure: `serde_json` silently serialises a non-finite `f64` as
+    ///    JSON `null`, and a plain (non-`Option`) `f64` field can't
+    ///    deserialise `null` back — so a `Scan` persisted before that
+    ///    read-time guard ever ran becomes permanently unreadable via
+    ///    `Store::get_scan`. Sanitising here, at construction, means every
+    ///    persisted `Scan` always carries a finite value, so this specific
+    ///    failure can no longer occur regardless of which read site (or none)
+    ///    happens to run first.
     #[must_use]
-    pub fn clamp_depth(mut self) -> Self {
+    pub fn sanitize(mut self) -> Self {
         if self.depth > MAX_DEPTH {
             tracing::warn!(
                 requested = self.depth,
@@ -368,6 +386,14 @@ impl ScanOptions {
                 "expansion depth clamped to MAX_DEPTH (Termux resource guard)"
             );
             self.depth = MAX_DEPTH;
+        }
+        if !self.min_expand_confidence.is_finite() {
+            tracing::warn!(
+                requested = self.min_expand_confidence,
+                default = DEFAULT_MIN_EXPAND_CONFIDENCE,
+                "non-finite min_expand_confidence coerced to the product default"
+            );
+            self.min_expand_confidence = DEFAULT_MIN_EXPAND_CONFIDENCE;
         }
         self
     }

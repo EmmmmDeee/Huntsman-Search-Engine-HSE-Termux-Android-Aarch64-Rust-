@@ -1192,7 +1192,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `-D warnings`/rustdoc (private items) clean, full suite 0 failures (4501
   lib tests, +9), architecture suite green (96 integration + 30 arch).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
-- **`[ ]` T2.35 (HIGH) — non-finite `min_expand_confidence` permanently bricks
+- **`[x]` T2.35 (HIGH) — non-finite `min_expand_confidence` permanently bricks
   a persisted scan.** `core/scan/options.rs:79`: `min_expand_confidence` is a
   plain (non-`Option`) `f64`, never validated at intake — `--min-expand-
   confidence nan`/`inf` on the CLI builds a `ScanOptions` carrying it
@@ -1212,6 +1212,22 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   closed at the write path. → Validate `min_expand_confidence` at CLI/
   `ScanOptions` intake (reject or clamp non-finite before it ever reaches a
   `Scan`), not only at the read-time comparison.
+  ✅ **Fixed (2026-07-09):** `ScanOptions::clamp_depth` — already the single
+  chokepoint every user-controlled construction site (`hse scan`, `hse live`,
+  the API's `build_scan_from_request`, `LiveSession::start`) calls before use
+  — renamed to `ScanOptions::sanitize` and widened to also coerce a
+  non-finite `min_expand_confidence` to the finite product default, reusing
+  the exact logic `effective_min_expand_confidence()` already established.
+  Every genuinely user-controlled construction site already called this one
+  method (confirmed by tracing all 8 real `ScanOptions { .. }` construction
+  sites; the 2 that don't — `radar.rs`'s sensor sweep, `provision.rs`'s
+  smoke-test options — hardcode the field, never expose it to input). A
+  persisted `Scan` can therefore no longer carry a non-finite value
+  regardless of read-site ordering. 4 new tests, including a real
+  `Store::upsert_scan`→`get_scan` round-trip proving the exact reviewer-
+  reproduced brick no longer occurs, and an API-layer test proving
+  `build_scan_from_request` sanitizes a NaN/Inf request before it ever
+  reaches a `Scan`.
 - **`[ ]` T2.36 (medium) — `apply_roi_cutoff` reads the raw unclamped
   `max_concurrent`, risking a `usize` overflow.** `core/engine/mod.rs:1717`
   calls `apply_roi_cutoff(&mut next, visited, opts.max_concurrent)` — the one
@@ -5709,4 +5725,25 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   **T2.37** (low) — `web_crawler`'s `produces()` under-declares what its
   hydration-JSON path can emit; **T2.38** (low) — a `search_engines`
   regression test doesn't actually exercise the fix it claims to guard.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-09** — **T2.35 (HIGH) fixed: non-finite `min_expand_confidence`
+  can no longer brick a persisted scan.** `ScanOptions::clamp_depth` — traced
+  to confirm it is genuinely the single chokepoint every user-controlled
+  `ScanOptions` construction site (`hse scan`, `hse live`, the API's
+  `build_scan_from_request`, `LiveSession::start`; the 2 non-callers hardcode
+  the field) already calls before use — renamed to `sanitize` and widened to
+  coerce a non-finite `min_expand_confidence` to the finite default, so the
+  value embedded in any `Scan` reaching `upsert_scan` is always finite
+  regardless of read-site ordering, closing the gap
+  `effective_min_expand_confidence()`'s read-time guard alone left open. 4
+  new tests: `sanitize_coerces_non_finite_min_expand_confidence_to_the_default`,
+  `build_scan_from_request_sanitizes_a_non_finite_min_expand_confidence`, and
+  a real `Store` round-trip
+  (`a_scan_carrying_a_sanitized_min_expand_confidence_round_trips_through_the_real_store`)
+  proving the reviewer-reproduced brick no longer occurs; confirmed fail-
+  before via a compile-error revert (the method didn't exist pre-fix — the
+  strongest possible "doesn't yet exist" signal for net-new capability).
+  Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full
+  suite 0 failures (4504 lib tests, +3), architecture suite green (96
+  integration + 30 arch).
   **Paired:** `SOLUTION_TREE` §5 — same commit.

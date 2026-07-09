@@ -11,6 +11,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **A non-finite `--min-expand-confidence nan`/`inf` (or an oversized API
+  request value) could permanently brick a persisted scan.** `serde_json`
+  silently serialises a non-finite `f64` as JSON `null`, and the plain
+  (non-`Option`) `min_expand_confidence` field can't deserialise `null`
+  back — so every future read of that scan (`GET /scans/{id}`, `hse
+  export`, `hse diff`, `hse audit latest`, …) failed forever. The existing
+  `effective_min_expand_confidence()` guard only protected the engine's
+  read-time comparison, not the earlier persist. `ScanOptions::clamp_depth`
+  — already the single call every user-controlled construction site made —
+  is renamed `sanitize` and now also coerces a non-finite
+  `min_expand_confidence` to the finite default before it ever reaches a
+  persisted `Scan`. Regression tests:
+  `sanitize_coerces_non_finite_min_expand_confidence_to_the_default`,
+  `build_scan_from_request_sanitizes_a_non_finite_min_expand_confidence`,
+  `a_scan_carrying_a_sanitized_min_expand_confidence_round_trips_through_the_real_store`.
 - **`sanctions_ofac` silently skipped screening short-particle names (e.g.
   "Al Zawahiri") against the OFAC SDN list entirely, and separately could
   drop a genuine Person/Organisation hit behind a run of non-emittable

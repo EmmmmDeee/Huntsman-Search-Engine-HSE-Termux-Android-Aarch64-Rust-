@@ -66,7 +66,7 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
         // `min_confidence`, `webhook_url`, …) the moment a profile was named.
         opts = crate::core::profiles::apply_profile_overlay(opts, profile_opts);
     }
-    let scan = Scan::new(sid, target.clone()).with_options(opts.clamp_depth());
+    let scan = Scan::new(sid, target.clone()).with_options(opts.sanitize());
     Ok((scan, target))
 }
 
