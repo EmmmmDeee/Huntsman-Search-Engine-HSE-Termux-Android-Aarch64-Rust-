@@ -77,6 +77,9 @@ pub mod api_key_config_validator;
 pub mod api_key_deployment;
 pub mod multi_service_key_pool;
 
+// Phase 7 comprehensive orchestration
+pub mod phase7_orchestration;
+
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
