@@ -351,7 +351,7 @@ impl MultiAgentCorrelationEngine {
     }
 
     /// Ensemble voting across all agents
-    fn ensemble_vote(
+    pub fn ensemble_vote(
         &self,
         source_id: &str,
         target_id: &str,

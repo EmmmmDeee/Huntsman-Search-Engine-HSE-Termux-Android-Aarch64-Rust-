@@ -10,6 +10,7 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use crate::util::hse_autonomous_batch_queries::{HseAutonomousBatchQueries, SeedType};
+use crate::util::hse_multi_agent_correlation::{MultiAgentCorrelationEngine, EntityNode};
 
 /// Scan phase
 #[derive(Debug, Clone, PartialEq)]
@@ -76,6 +77,7 @@ pub struct HseScanOrchestrator {
     pub resource_allocation: ResourceAllocation,
     pub confidence_threshold: f32,
     pub batch_query_engine: HseAutonomousBatchQueries,
+    pub multi_agent_engine: MultiAgentCorrelationEngine,
 }
 
 impl HseScanOrchestrator {
@@ -108,6 +110,7 @@ impl HseScanOrchestrator {
             },
             confidence_threshold: 0.60,
             batch_query_engine: HseAutonomousBatchQueries::new(),
+            multi_agent_engine: MultiAgentCorrelationEngine::new(),
         }
     }
 
@@ -414,6 +417,54 @@ impl HseScanOrchestrator {
             stats.total_cost_spent,
             stats.average_discovery_confidence * 100.0
         )
+    }
+
+    /// Add entity to multi-agent correlation engine for Phase 2-3 processing
+    pub fn add_entity_to_multi_agent_engine(&mut self, entity_id: &str, entity_type: &str, confidence: f32) {
+        let entity = EntityNode {
+            id: entity_id.to_string(),
+            entity_type: entity_type.to_string(),
+            canonical: entity_id.to_lowercase(),
+            confidence,
+            sources: vec![],
+            first_seen_ms: current_time_ms(),
+            last_seen_ms: current_time_ms(),
+            visit_count: 1,
+        };
+        self.multi_agent_engine.add_entity(entity);
+    }
+
+    /// Process correlation through multi-agent ensemble voting
+    pub fn process_multi_agent_correlation(
+        &mut self,
+        source_id: &str,
+        target_id: &str,
+        base_confidence: f32,
+        sources: &[String],
+        evidence_fields: &[String],
+    ) -> f32 {
+        self.multi_agent_engine.ensemble_vote(
+            source_id,
+            target_id,
+            base_confidence,
+            sources,
+            evidence_fields,
+        )
+    }
+
+    /// Get multi-agent correlation report for Phase 2-3
+    pub fn get_multi_agent_report(&self) -> String {
+        self.multi_agent_engine.get_correlation_report()
+    }
+
+    /// Compute transitive closure for entity linkage discovery
+    pub fn get_transitive_entities(&self, entity_id: &str, max_depth: u32) -> Vec<(String, u32, f32)> {
+        self.multi_agent_engine.compute_transitive_closure(entity_id, max_depth)
+    }
+
+    /// Find correlation cliques (highly interconnected entity groups)
+    pub fn find_entity_cliques(&self, min_interconnection: f32) -> Vec<Vec<String>> {
+        self.multi_agent_engine.find_cliques(min_interconnection)
     }
 }
 
