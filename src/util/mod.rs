@@ -83,6 +83,7 @@ pub mod phase7_orchestration;
 // HSE OSINT optimization
 pub mod hse_osint_apis;
 pub mod hse_geolocation_apis;
+pub mod hse_scan_orchestrator;
 
 pub mod service_defs;
 pub mod settings;
