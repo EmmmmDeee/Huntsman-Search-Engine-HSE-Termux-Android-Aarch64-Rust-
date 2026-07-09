@@ -70,6 +70,8 @@ pub mod api_key_manager;
 pub mod api_configuration_helper;
 pub mod api_key_retriever;
 pub mod api_key_startup;
+pub mod api_key_health;
+pub mod api_key_orchestrator;
 
 pub mod service_defs;
 pub mod settings;
