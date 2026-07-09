@@ -45,6 +45,12 @@ pub mod raw_archive;
 pub mod response_cache;
 pub mod scan;
 pub mod see_know;
+
+// Exhaustive multi-API orchestration (12+ paid APIs, intelligent chaining, unified workflows)
+pub mod multi_api_config;
+pub mod multi_api_orchestrator;
+pub mod multi_api_workflows;
+
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
