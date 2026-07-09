@@ -441,3 +441,33 @@ fn concurrent_vault_writes_never_corrupt_or_strand() {
         .count();
     assert_eq!(strays, 0, "no temp straggler after concurrent vault writes");
 }
+
+#[test]
+fn acquisition_status_covers_every_known_key_and_flags_embedded_defaults() {
+    let status = acquisition_status();
+    // One entry per recognised key, no more, no less.
+    assert_eq!(status.len(), KNOWN_KEYS.len());
+
+    // The five embedded-default keys must be reported zero-config (never
+    // "needs acquisition"), matching the HARDCODED single-source-of-truth.
+    for env in [
+        "HUNTSMAN_HIBP_KEY",
+        "HUNTSMAN_OATHNET_KEY",
+        "HUNTSMAN_WIGLE_USER",
+        "HUNTSMAN_WIGLE_TOKEN",
+        "HUNTSMAN_SEEKNOW_KEY",
+    ] {
+        let e = status
+            .iter()
+            .find(|e| e.env == env)
+            .unwrap_or_else(|| panic!("{env} missing from acquisition_status"));
+        assert!(e.has_embedded_default, "{env} should ship an embedded default");
+        assert!(!e.needs_acquisition(), "{env} is zero-config, must not need acquisition");
+    }
+
+    // A key with no embedded default and no env value must surface a signup
+    // hint so the operator knows where to obtain it (Shodan is the canary).
+    let shodan = status.iter().find(|e| e.env == "HUNTSMAN_SHODAN_KEY").unwrap();
+    assert!(!shodan.has_embedded_default);
+    assert!(shodan.signup.is_some(), "missing keys must point at a signup page");
+}

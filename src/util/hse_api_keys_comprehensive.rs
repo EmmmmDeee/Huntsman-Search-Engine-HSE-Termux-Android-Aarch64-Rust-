@@ -86,17 +86,24 @@ impl HseApiKeysComprehensive {
 
     /// Register all 46+ API module configurations
     fn register_all_modules(&mut self) {
-        // PHASE 1 CRITICAL (0-config, embedded defaults, must-have for Phase 1)
+        // PHASE 1 CRITICAL (0-config, embedded defaults, must-have for Phase 1).
+        // Key literals reference the single-source-of-truth in `util::keys` so an
+        // embedded default can never drift between this table and the canonical
+        // registry (a rotation in `keys::constants` propagates here automatically).
+        use crate::util::keys::{
+            HIBP_DEFAULT_KEY, OATHNET_DEFAULT_KEY, SEEKNOW_DEFAULT_KEY, WIGLE_DEFAULT_TOKEN,
+            WIGLE_DEFAULT_USER,
+        };
         self.register("HUNTSMAN_HIBP_KEY", "hibp", ApiExecutionPriority::Phase1Critical,
-            "breach", Some("42587552dce6424a87312941c8a2c3c5"), true, 60, 0.0, true);
+            "breach", Some(HIBP_DEFAULT_KEY), true, 60, 0.0, true);
         self.register("HUNTSMAN_OATHNET_KEY", "oathnet_pro", ApiExecutionPriority::Phase1Critical,
-            "breach", Some("1f8097bdbf7dc68619857861adbc4343ddb490a1d72ae890551409e4b47116f2"), true, 30, 10.0, true);
+            "breach", Some(OATHNET_DEFAULT_KEY), true, 30, 10.0, true);
         self.register("HUNTSMAN_SEEKNOW_KEY", "see_know", ApiExecutionPriority::Phase1Critical,
-            "orchestration", Some("seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb"), true, 50, 0.0, true);
+            "orchestration", Some(SEEKNOW_DEFAULT_KEY), true, 50, 0.0, true);
         self.register("HUNTSMAN_WIGLE_USER", "wigle", ApiExecutionPriority::Phase1Critical,
-            "geolocation", Some("AID4493a33e2df9d07ab9666a27c8aead17"), true, 100, 0.0, true);
+            "geolocation", Some(WIGLE_DEFAULT_USER), true, 100, 0.0, true);
         self.register("HUNTSMAN_WIGLE_TOKEN", "wifi_intel", ApiExecutionPriority::Phase1Critical,
-            "geolocation", Some("1aedb7ad0171ff3d6be5a844cca5d977"), true, 100, 0.0, true);
+            "geolocation", Some(WIGLE_DEFAULT_TOKEN), true, 100, 0.0, true);
 
         // PHASE 1 ESSENTIAL (High priority, Phase 1 core functionality)
         self.register("HUNTSMAN_DEHASHED_KEY", "dehashed", ApiExecutionPriority::Phase1Essential,

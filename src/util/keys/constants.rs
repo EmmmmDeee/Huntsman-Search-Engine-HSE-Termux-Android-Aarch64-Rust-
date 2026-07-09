@@ -121,6 +121,51 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
     })
 }
 
+/// Acquisition status of one recognised API key — powers the operator-facing
+/// "what's live / what still needs a key" checklist. Built from the canonical
+/// [`KNOWN_KEYS`] registry, the embedded-default table, the live environment,
+/// and [`signup_hint`], so it can never drift from what modules actually read.
+#[derive(Debug, Clone)]
+pub struct KeyAcquisition {
+    /// The `HUNTSMAN_*` env var the key is read from.
+    pub env: &'static str,
+    /// True when the build ships a zero-config embedded default for this key —
+    /// the module works without any operator action.
+    pub has_embedded_default: bool,
+    /// True when the operator has a non-empty value in the process environment
+    /// (their shell or `~/.huntsman.env`, which `populate_and_load` exports).
+    pub present_in_env: bool,
+    /// Provider + free-signup hint, or `None` when no signup page is known.
+    pub signup: Option<&'static str>,
+}
+
+impl KeyAcquisition {
+    /// A key needs operator acquisition when it has no embedded default AND is
+    /// not already set in the environment.
+    #[must_use]
+    pub fn needs_acquisition(&self) -> bool {
+        !self.has_embedded_default && !self.present_in_env
+    }
+}
+
+/// Report the acquisition status of every key in [`KNOWN_KEYS`]: whether it
+/// ships zero-config (embedded default), whether the operator has already
+/// configured it, and where to obtain it if not. Lets `hse doctor` (and any
+/// setup UI) print an exact, always-current "keys still needed" checklist
+/// without re-listing the key registry in a second place that could rot.
+#[must_use]
+pub fn acquisition_status() -> Vec<KeyAcquisition> {
+    KNOWN_KEYS
+        .iter()
+        .map(|&env| KeyAcquisition {
+            env,
+            has_embedded_default: HARDCODED.iter().any(|(k, _)| *k == env),
+            present_in_env: std::env::var(env).map(|v| !v.is_empty()).unwrap_or(false),
+            signup: signup_hint(env),
+        })
+        .collect()
+}
+
 /// Env var an operator may set — in their local `$HOME/.huntsman.env` (chmod
 /// 0600) or the shell — to a default scan seed, so `hse scan` / `hse live` can
 /// run without retyping `--value`.
@@ -151,15 +196,14 @@ pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow (see-know.eu) key — the current embedded default, supplied directly
-/// by the operator. NOT live-verified from this build environment: the sandbox
-/// this key was rotated in has its own outbound proxy policy that rejects
-/// `see-know.eu` (a `CONNECT` denial at the proxy, unrelated to the key or the
-/// operator's own device network), so a live probe could not be run here. The
-/// key still becomes the one embedded default via the rotation below; verify
-/// with `hse doctor` (or the next live scan's `see_know` module status) on the
-/// operator's own device, which has no such proxy restriction.
-pub const SEEKNOW_DEFAULT_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
+/// SeekNow (see-know.eu / see-know.icu) key — the current embedded default,
+/// supplied directly by the operator. LIVE-VERIFIED HTTP 200 against
+/// `https://see-know.icu/api/v1/search` (POST, `X-API-Key`). This is the same
+/// key the operator carries in their `~/.huntsman.env`; promoting it to the
+/// embedded default makes a fresh zero-config install work without an env file.
+/// The previous embedded default (`seek-fd18f1…`) tested DEAD (HTTP 401
+/// `invalid_api_key`) and has been moved to [`SEEKNOW_SUPERSEDED_KEY_5`].
+pub const SEEKNOW_DEFAULT_KEY: &str = "seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
 /// default. Was the prior embedded default (Enterprise plan, 5,000 daily
@@ -176,6 +220,11 @@ pub(super) const SEEKNOW_SUPERSEDED_KEY_3: &str =
 /// enterprise key above.
 pub(super) const SEEKNOW_SUPERSEDED_KEY_4: &str =
     "seek-b4a9cd56f7e95bc6ea30b17925f482514a07a52e7ab0961a";
+/// Prior embedded default (`seek-fd18f1…`), rotated out after testing DEAD
+/// (HTTP 401 `invalid_api_key`) against `see-know.icu` on 2026-07-09. Kept only
+/// so a stale env file carrying it upgrades in place to [`SEEKNOW_DEFAULT_KEY`].
+pub(super) const SEEKNOW_SUPERSEDED_KEY_5: &str =
+    "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
 
 /// API keys embedded in the build so a fresh install works zero-config.
 /// `ensure_hardcoded_keys` writes any that are absent from the env file.
@@ -199,6 +248,7 @@ pub(super) const SUPERSEDED: &[(&str, &str)] = &[
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_2),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_3),
     ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_4),
+    ("HUNTSMAN_SEEKNOW_KEY", SEEKNOW_SUPERSEDED_KEY_5),
 ];
 
 /// Resolve an API key: the context-supplied key when present and non-empty,

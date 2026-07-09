@@ -301,9 +301,12 @@ impl HseApiKeyHardwire {
         self.add_key(ApiKeyConfig {
             name: "SeekNow".to_string(),
             env_var: "HUNTSMAN_SEEKNOW_KEY".to_string(),
+            // Fall back to the single-source-of-truth embedded default rather than
+            // a re-declared literal, so a SeekNow key rotation in `keys::constants`
+            // can't leave this table pinned to a stale (and possibly dead) key.
             key_value: env::var("HUNTSMAN_SEEKNOW_KEY")
                 .ok()
-                .or_else(|| Some("seek-fdc8677a1c480a7bf59b866b81eda1f44b9944caf395c699".to_string())),
+                .or_else(|| Some(crate::util::keys::SEEKNOW_DEFAULT_KEY.to_string())),
             status: KeyStatus::NeedsValidation,
             priority: ApiPriority::Low,
             cost_per_call: 0.0,
