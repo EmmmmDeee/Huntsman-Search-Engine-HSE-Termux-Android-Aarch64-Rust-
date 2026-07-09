@@ -145,6 +145,11 @@ impl OrchestrationConfig {
             graceful_shutdown_timeout_seconds: 5,
         }
     }
+
+    /// Create lightweight configuration for testing
+    pub fn lightweight() -> Self {
+        Self::development()
+    }
 }
 
 impl ApiKeyOrchestrator {
@@ -366,7 +371,7 @@ impl ApiKeyOrchestrator {
     }
 
     /// Log orchestration event
-    fn log_event(&mut self, event_type: EventType, details: String, severity: EventSeverity) {
+    pub fn log_event(&mut self, event_type: EventType, details: String, severity: EventSeverity) {
         let event = OrchestrationEvent {
             event_type,
             timestamp_ms: current_time_ms(),
