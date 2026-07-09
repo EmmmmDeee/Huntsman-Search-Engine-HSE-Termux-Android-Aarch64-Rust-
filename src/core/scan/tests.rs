@@ -326,6 +326,20 @@ fn identity_norm_strips_to_email_local_and_alnum() {
     assert_eq!(identity_norm("the_real-matt"), "therealmatt");
 }
 
+/// Latin diacritics FOLD to their base letter (not dropped), so an accented name
+/// canonicalises to the same key as its unaccented spelling / handle — the
+/// international-identity under-merge fix. Previously `García` → `garca`, which
+/// matched neither `garcia` nor the handle `josegarcia`.
+#[test]
+fn identity_norm_folds_diacritics_to_ascii_base() {
+    assert_eq!(identity_norm("José García"), "josegarcia");
+    assert_eq!(identity_norm("García@example.com"), "garcia");
+    assert_eq!(identity_norm("Müller"), "muller");
+    assert_eq!(identity_norm("Straße"), "strasse");
+    // The unaccented handle and the accented name now share one key.
+    assert_eq!(identity_norm("josegarcia"), identity_norm("José García"));
+}
+
 #[test]
 fn is_mega_domain_matches_roots_subdomains_and_www() {
     for d in [
