@@ -183,7 +183,31 @@ pub fn identity_paths(
 
     // The canonical sorted adjacency, confined to confirmed nodes so a
     // dangling/quarantined edge is never walked (see [`sorted_confined_adjacency`]).
-    let adj = sorted_confined_adjacency(entities, relations);
+    let mut adj = sorted_confined_adjacency(entities, relations);
+
+    // Collapse parallel edges to the SAME neighbour down to the single STRONGEST
+    // one, so the shortest-path BFS below (which keeps the first edge it sees to
+    // each neighbour) records the best available link as the representative hop.
+    // Without this, the adjacency's smallest-kind-first order let a weak
+    // `AssociatedWith` edge shadow a strong `SameAs` between the same pair,
+    // understating the path's `min_confidence` — and, via AU-060's `MIN_CONF`
+    // floor and AU-067's clustering, silently suppressing a legitimate identity
+    // link. Reachability and hop counts are unaffected (the neighbour is still one
+    // hop away); only the representative edge's kind + confidence change to the
+    // strongest. `sorted_confined_adjacency` groups same-neighbour edges
+    // consecutively and ascending by confidence, so the strongest is the last of
+    // each run; a confidence tie keeps the smallest-kind edge (deterministic).
+    for edges in adj.values_mut() {
+        let mut best: Vec<(&str, RelationKind, f64)> = Vec::with_capacity(edges.len());
+        for &(nbr, kind, conf) in edges.iter() {
+            match best.last_mut() {
+                Some(last) if last.0 == nbr && conf > last.2 => *last = (nbr, kind, conf),
+                Some(last) if last.0 == nbr => {}
+                _ => best.push((nbr, kind, conf)),
+            }
+        }
+        *edges = best;
+    }
 
     // Identity endpoints in sorted UID order — each pair is computed once from
     // the smaller UID, fixing both orientation and shortest-path tie-breaks.
@@ -1244,15 +1268,20 @@ mod tests {
     }
 
     #[test]
-    fn parallel_edges_collapse_to_a_stable_label() {
-        // Two edges between the same pair, different kinds: the lexicographically
-        // smallest label (`belongs_to_domain` < `identified_by`) must win, both
-        // orderings.
+    fn parallel_edges_collapse_to_the_strongest_edge() {
+        // Two edges between the same pair, different kinds AND confidences: the
+        // STRONGEST (highest-confidence) edge must be the representative hop, so
+        // the path's `min_confidence` reflects the best available link. The old
+        // behaviour kept the lexicographically-smallest kind
+        // (`belongs_to_domain` < `identified_by`), which here would pick the WEAK
+        // 0.5 edge over the strong 0.9 one — understating the chain and, via
+        // AU-060's 0.50 floor, silently dropping a legitimate identity link.
+        // Deterministic regardless of input edge order.
         let email = ent(EntityKind::Email, "a@x.com");
         let person = ent(EntityKind::Person, "A");
         let forward = [
-            rel(&email, &person, RelationKind::IdentifiedBy, 0.9),
-            rel(&email, &person, RelationKind::BelongsToDomain, 0.5),
+            rel(&email, &person, RelationKind::IdentifiedBy, 0.9), // strong
+            rel(&email, &person, RelationKind::BelongsToDomain, 0.5), // weak
         ];
         let reverse = [
             rel(&email, &person, RelationKind::BelongsToDomain, 0.5),
@@ -1260,7 +1289,35 @@ mod tests {
         ];
         let pf = identity_paths(&[email.clone(), person.clone()], &forward, 4);
         let pr = identity_paths(&[email, person], &reverse, 4);
-        assert_eq!(pf, pr);
+        assert_eq!(pf, pr, "collapse is order-independent");
+        assert_eq!(
+            pf[0].steps[0].kind,
+            RelationKind::IdentifiedBy,
+            "the strongest parallel edge is the representative hop"
+        );
+        assert!(
+            (pf[0].min_confidence - 0.9).abs() < 1e-9,
+            "min_confidence reflects the STRONGEST parallel edge (0.9), not the weak one (0.5)"
+        );
+    }
+
+    #[test]
+    fn parallel_edges_of_equal_confidence_break_ties_by_smallest_kind() {
+        // When parallel edges tie on confidence, the representative is deterministic:
+        // the lexicographically-smallest kind (`belongs_to_domain` < `identified_by`).
+        let email = ent(EntityKind::Email, "b@x.com");
+        let person = ent(EntityKind::Person, "B");
+        let forward = [
+            rel(&email, &person, RelationKind::IdentifiedBy, 0.7),
+            rel(&email, &person, RelationKind::BelongsToDomain, 0.7),
+        ];
+        let reverse = [
+            rel(&email, &person, RelationKind::BelongsToDomain, 0.7),
+            rel(&email, &person, RelationKind::IdentifiedBy, 0.7),
+        ];
+        let pf = identity_paths(&[email.clone(), person.clone()], &forward, 4);
+        let pr = identity_paths(&[email, person], &reverse, 4);
+        assert_eq!(pf, pr, "tie-break is order-independent");
         assert_eq!(pf[0].steps[0].kind, RelationKind::BelongsToDomain);
     }
 
