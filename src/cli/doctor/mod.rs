@@ -98,7 +98,18 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     // optional providers, which skip cleanly rather than erroring. Ranked by
     // ROI tier (see `rank_unset_keys`) so the operator registers the keys that
     // unlock the most collection first, each with its free-signup hint.
-    let missing = rank_unset_keys(|k| loaded.contains_key(k));
+    // A key that ships a zero-config embedded default (HIBP / OathNet / SeekNow /
+    // WiGLE) is never "unset" from the operator's view — its module works with no
+    // action — even when the env file hasn't been populated with the default yet.
+    // Treat those as present so the "register these" list shows only keys that
+    // genuinely need acquisition (the canonical distinction `acquisition_status`
+    // draws via `has_embedded_default`).
+    let embedded_default: std::collections::HashSet<&'static str> = keys::acquisition_status()
+        .into_iter()
+        .filter(|a| a.has_embedded_default)
+        .map(|a| a.env)
+        .collect();
+    let missing = rank_unset_keys(|k| loaded.contains_key(k) || embedded_default.contains(k));
     if !missing.is_empty() {
         println!(
             "\nUnset keys ({}), ranked by acquisition value — modules needing \

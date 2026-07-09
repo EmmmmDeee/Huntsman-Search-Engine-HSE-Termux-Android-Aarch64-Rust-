@@ -1458,8 +1458,21 @@ impl ScanEngine {
             // so it can never itself stall a round.
             if entity_map.len() <= Self::INCREMENTAL_CORRELATE_MAX_ENTITIES {
                 let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                // Multipath corroboration (AU-062) needs the STRUCTURAL relation
+                // graph (BelongsToDomain / RegisteredBy / CoLocatedWith / …), not
+                // just the lineage `DerivedFrom` edges accumulated so far — two
+                // orthogonal, source-diverse pathways can't form from lineage
+                // alone, so feeding only `relations` here left this promotion a
+                // no-op until finalise (too late to expand the lead). Derive the
+                // structural edges over the current snapshot and union with lineage
+                // — the same in-flight full-graph build the gap-analysis pass uses
+                // — so a lead corroborated by multiple independent routes is
+                // actually re-promoted and expanded THIS round. Bounded: this arm
+                // only runs at ≤ INCREMENTAL_CORRELATE_MAX_ENTITIES (400) entities.
+                let mut round_relations = relations.clone();
+                round_relations.extend(crate::core::relation::derive_all(&snapshot, scan_id));
                 let promoted = promote_geo_corroborated_family(&mut snapshot)
-                    + promote_multipath_corroborated(&mut snapshot, relations.as_slice())
+                    + promote_multipath_corroborated(&mut snapshot, &round_relations)
                     + promote_breach_candidate_geo_corroborated(&mut snapshot);
                 if promoted > 0 {
                     for e in snapshot {
