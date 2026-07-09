@@ -117,28 +117,46 @@ pub(super) fn extract_hydration_entities(body: &str) -> Vec<Classified> {
 /// well under 150 bytes) — this is a generous margin, not a tight fit.
 const SCRIPT_BACKSCAN_WINDOW: usize = 512;
 
-/// Locate the first hydration `<script type="application/json" id="...">`
-/// tag's inner text, if present. Anchors on the `id="..."` marker itself
-/// (attribute order differs between frameworks — Next.js emits `id` first,
-/// Nuxt emits `type` first — so the marker, not a full tag prefix, is the
-/// stable anchor). Before accepting it, verifies the marker is genuinely
-/// inside a `<script>` opening tag — a bounded backward scan for the nearest
-/// `<script` with no intervening `>` (which would mean an earlier, unrelated
-/// tag already closed before the marker) — rather than assuming any bare
-/// occurrence of the id literal is a real hydration script; the id strings
-/// are highly specific, but this guards against a coincidental match (e.g.
-/// inside an HTML comment or an unrelated attribute value). Then scans
-/// FORWARD only: to the tag's own closing `>` (content start) and then to the
-/// next `</script` (content end). No full HTML tokenizer is needed for this
-/// narrow, well-defined shape: both frameworks' generated attribute values
-/// (ids, nonces, build hashes, payload URLs) never contain a literal `>`, so
-/// the first `>` after the marker is reliably the opening tag's close.
+/// Locate the hydration `<script type="application/json" id="...">` tag's
+/// inner text, if present. Tries EVERY occurrence of every marker in the
+/// document, in ascending byte-position order, falling through to the next
+/// candidate whenever one fails to validate — see [`try_locate_at`] for the
+/// per-candidate validation and extraction. A page can genuinely mention a
+/// marker string more than once without it being the real hydration payload
+/// (a tutorial paragraph or doc comment discussing `__NEXT_DATA__`, quoted in
+/// passing before the framework's own script tag); trying only the leftmost
+/// occurrence and giving up on failure would then miss a perfectly valid,
+/// later hydration script in the same page.
 fn locate_hydration_json(body: &str) -> Option<&str> {
-    let marker_pos = HYDRATION_MARKERS
+    let mut marker_positions: Vec<usize> = HYDRATION_MARKERS
         .iter()
-        .filter_map(|m| crate::util::str_util::find_ascii_ci(body, m))
-        .min()?;
+        .flat_map(|m| find_all_ascii_ci(body, m))
+        .collect();
+    marker_positions.sort_unstable();
+    marker_positions
+        .into_iter()
+        .find_map(|pos| try_locate_at(body, pos))
+}
 
+/// Attempt to extract hydration JSON on the assumption that a marker begins
+/// at `marker_pos`. Anchors on the `id="..."` marker itself (attribute order
+/// differs between frameworks — Next.js emits `id` first, Nuxt emits `type`
+/// first — so the marker, not a full tag prefix, is the stable anchor).
+/// Before accepting it, verifies the marker is genuinely inside a `<script>`
+/// opening tag — a bounded backward scan for the nearest `<script` with no
+/// intervening `>` (which would mean an earlier, unrelated tag already closed
+/// before the marker) — rather than assuming any bare occurrence of the id
+/// literal is a real hydration script; the id strings are highly specific,
+/// but this guards against a coincidental match (e.g. inside an HTML comment
+/// or an unrelated attribute value). Then scans FORWARD only: to the tag's
+/// own closing `>` (content start) and then to the next `</script` (content
+/// end). No full HTML tokenizer is needed for this narrow, well-defined
+/// shape: both frameworks' generated attribute values (ids, nonces, build
+/// hashes, payload URLs) never contain a literal `>`, so the first `>` after
+/// the marker is reliably the opening tag's close. Returns `None` — never
+/// panics — when this specific candidate doesn't validate, so the caller can
+/// try the next one.
+fn try_locate_at(body: &str, marker_pos: usize) -> Option<&str> {
     let window_start = crate::util::str_util::floor_char_boundary(
         body,
         marker_pos.saturating_sub(SCRIPT_BACKSCAN_WINDOW),
@@ -157,6 +175,20 @@ fn locate_hydration_json(body: &str) -> Option<&str> {
         crate::util::str_util::find_ascii_ci(&body[content_start..], "</script")? + content_start;
     let text = body.get(content_start..content_end)?.trim();
     (!text.is_empty()).then_some(text)
+}
+
+/// Every ASCII-case-insensitive occurrence offset of `needle` in `haystack`,
+/// in ascending order. Like [`find_last_ascii_ci`] but collecting every match
+/// instead of only the last.
+fn find_all_ascii_ci(haystack: &str, needle: &str) -> Vec<usize> {
+    let mut out = Vec::new();
+    let mut from = 0;
+    while let Some(rel) = crate::util::str_util::find_ascii_ci(&haystack[from..], needle) {
+        let pos = from + rel;
+        out.push(pos);
+        from = pos + 1;
+    }
+    out
 }
 
 /// Rightmost ASCII-case-insensitive occurrence of `needle` in `haystack` —

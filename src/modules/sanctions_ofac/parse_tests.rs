@@ -116,3 +116,17 @@ fn record_name_matches_requires_all_tokens_present() {
 fn record_name_matches_empty_tokens_never_matches() {
     assert!(!record_name_matches("ABBAS, Abu", &[]));
 }
+
+#[test]
+fn name_tokens_floor_counts_characters_not_bytes() {
+    // Regression: a single CJK character is 1 character but 3 UTF-8 bytes —
+    // `t.len() >= 3` (byte length) would wrongly keep it as a full token,
+    // silently weaker than the "3 characters" floor this function documents.
+    // A lone character must be dropped exactly like a 1-2 character ASCII
+    // token would be; the surrounding ASCII word still survives.
+    assert_eq!(name_tokens("王 Corp"), vec!["corp"]);
+    // Two 3-byte CJK characters (6 bytes) ARE 2 characters — still too short.
+    assert_eq!(name_tokens("王李 Corp"), vec!["corp"]);
+    // Three CJK characters (9 bytes, 3 characters) meets the floor.
+    assert_eq!(name_tokens("王李金"), vec!["王李金"]);
+}
