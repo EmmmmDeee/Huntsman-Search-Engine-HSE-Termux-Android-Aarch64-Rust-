@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **`web_crawler`'s `produces()` under-declared what its hydration-JSON
+  extraction path can emit.** `hydration.rs` runs `core::classifier::extract`
+  unfiltered on every JSON string leaf, which can genuinely classify as
+  `MacAddress`, `DeviceId`, or `Person` — none previously declared, silently
+  understating the module's real capability in `/api/v1/modules`/
+  `/api/v1/modules/graph`. Regression tests:
+  `hydration_json_can_classify_leaves_as_mac_device_and_person`,
+  `produces_declares_every_kind_the_hydration_path_can_emit`.
 - **The ROI expansion round's top-K cutoff still read the raw, unclamped
   `max_concurrent`, risking a `usize` multiply overflow.** `apply_roi_cutoff`
   was the one call site the `max_concurrent` validation effort missed when

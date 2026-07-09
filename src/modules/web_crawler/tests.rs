@@ -15,6 +15,23 @@ use super::*;
     }
 
     #[test]
+    fn produces_declares_every_kind_the_hydration_path_can_emit() {
+        // Regression (PROBLEM_TREE T2.37): produces() must list MacAddress,
+        // DeviceId, and Person alongside the other classifier-derived kinds —
+        // `hydration_json_can_classify_leaves_as_mac_device_and_person`
+        // (hydration_tests.rs) proves all three are genuinely reachable via
+        // extract_hydration_entities, not merely theoretical.
+        let kinds = WebCrawler.produces();
+        for k in [
+            crate::core::entity::EntityKind::MacAddress,
+            crate::core::entity::EntityKind::DeviceId,
+            crate::core::entity::EntityKind::Person,
+        ] {
+            assert!(kinds.contains(&k), "produces() must declare {k:?}");
+        }
+    }
+
+    #[test]
     fn link_iter_extracts_hrefs() {
         let html = concat!(
             r#"<a href="https://example.com/page1">Link 1</a>"#,

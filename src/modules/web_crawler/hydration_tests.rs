@@ -141,6 +141,33 @@ fn a_decoy_marker_mention_does_not_hide_a_real_later_hydration_script() {
 }
 
 #[test]
+fn hydration_json_can_classify_leaves_as_mac_device_and_person() {
+    // Regression (PROBLEM_TREE T2.37): `extract_hydration_entities` runs
+    // `core::classifier::extract` unfiltered on every JSON string leaf, so it
+    // can genuinely yield MacAddress/DeviceId/Person — not just the kinds
+    // `WebCrawler::produces()` used to declare. This proves each is really
+    // reachable through the hydration path (not merely theoretical), so the
+    // widened `produces()` isn't over-claiming.
+    let html = r#"<script id="__NEXT_DATA__" type="application/json">
+        {"deviceMac":"01-23-45-67-89-01","cellId":"234-15-1234-5678","note":"12345 67890 11223 44556"}
+        </script>"#;
+    let found = extract_hydration_entities(html);
+    assert!(
+        found.iter().any(|c| c.kind == EntityKind::MacAddress),
+        "expected a MAC-shaped hyphenated digit run to classify as MacAddress, got {found:?}"
+    );
+    assert!(
+        found.iter().any(|c| c.kind == EntityKind::DeviceId),
+        "expected an MCC-MNC-LAC-CID-shaped id to classify as DeviceId, got {found:?}"
+    );
+    assert!(
+        found.iter().any(|c| c.kind == EntityKind::Person),
+        "expected a sparse multi-token digit run to fall through to the FullName/Person \
+         residual, got {found:?}"
+    );
+}
+
+#[test]
 fn two_decoy_mentions_before_a_real_script_still_resolve_to_the_real_payload() {
     // Same regression, hardened: multiple non-script mentions of the marker
     // preceding the real tag must all be tried and skipped in turn.

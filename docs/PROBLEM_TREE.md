@@ -1249,7 +1249,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   underlying `top_k_for_round` math (`catch_unwind`-confirmed panic under
   `overflow-checks`), and the clamped `effective_max_concurrent()` value
   does not.
-- **`[ ]` T2.37 (low) — `web_crawler`'s `produces()` under-declares what its
+- **`[x]` T2.37 (low) — `web_crawler`'s `produces()` under-declares what its
   hydration-JSON path can emit.** `modules/web_crawler/mod.rs:112` lists only
   `Email`/`Url`/`Domain`/`Phone`/`ApiKey`/`TrackingId`/`IpAddress`/`AbnAcn`/
   `Username`, but `hydration.rs::extract_hydration_entities` runs
@@ -1264,6 +1264,12 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   which greps for literal `EntityKind::X` constructions — this path
   constructs kinds dynamically via the shared classifier, a blind spot the
   guard doesn't cover. → Add the missing kinds to `produces()`.
+  ✅ **Fixed (2026-07-09):** added `MacAddress`/`DeviceId`/`Person` to
+  `produces()`. Each is proven genuinely reachable (not a theoretical
+  over-declaration) by a new hydration-level test feeding exactly the shapes
+  described — a hyphenated MAC-shaped digit run, an MCC-MNC-LAC-CID cell-
+  tower id, and a sparse multi-token digit run — through the real
+  `extract_hydration_entities` path, plus a `produces()`-completeness test.
 - **`[ ]` T2.38 (low) — a `search_engines` regression test doesn't exercise
   the fix it claims to guard.** `d3780fc0`'s
   `extract_addresses_deduplicates_repeated_mentions_within_one_text`
@@ -5769,3 +5775,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
   failures (4505 lib tests, +1), architecture suite green (96 integration +
   30 arch). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-09** — **T2.37 (low) fixed: `web_crawler::produces()` now
+  declares every kind its hydration path can emit.** Added
+  `MacAddress`/`DeviceId`/`Person` — `hydration.rs` runs
+  `core::classifier::extract` unfiltered on every JSON string leaf, and
+  these three are genuinely reachable (a hyphenated MAC-shaped digit run, an
+  MCC-MNC-LAC-CID cell-tower id, a sparse multi-token digit run), matching
+  the sibling `core::classify_module`'s precedent for the identical
+  extraction function. Confirmed `tests/architecture.rs`'s
+  `every_literal_constructed_entity_kind_is_declared_in_produces` guard has
+  a genuine blind spot here (it greps for literal `EntityKind::X`
+  constructions; this path constructs kinds dynamically via the shared
+  classifier) rather than assuming the existing green suite meant nothing
+  was missing. 2 new tests: one proves each kind is reachable through the
+  real hydration path with concrete example inputs, the other pins
+  `produces()` completeness. Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, full suite 0 failures (4507 lib tests, +2),
+  architecture suite green (96 integration + 30 arch). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

@@ -4144,3 +4144,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full
   suite 0 failures (4505 lib tests, +1), architecture suite green (96
   integration + 30 arch). Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-09** — **SOL-VERIFY-CHECKPOINT-1 continued: T2.37 (low) fixed.**
+  `web_crawler::produces()` gains `MacAddress`/`DeviceId`/`Person`, each
+  proven reachable through the real hydration-JSON path (not a theoretical
+  over-declaration) with concrete example inputs, matching the sibling
+  `core::classify_module`'s existing precedent for the identical
+  `classifier::extract` call. Also documents a genuine blind spot in
+  `tests/architecture.rs`'s produces()-completeness guard (it only greps
+  literal `EntityKind::X` constructions; dynamic classifier-derived kinds
+  slip through). 2 new tests. Gate green: fmt/clippy `-D warnings`/rustdoc
+  (private items) clean, full suite 0 failures (4507 lib tests, +2),
+  architecture suite green (96 integration + 30 arch). Paired:
+  `PROBLEM_TREE` §8 — same commit.

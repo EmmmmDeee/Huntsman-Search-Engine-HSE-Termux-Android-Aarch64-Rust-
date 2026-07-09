@@ -125,6 +125,15 @@ impl Module for WebCrawler {
             EntityKind::IpAddress,
             EntityKind::AbnAcn,
             EntityKind::Username,
+            // A hyphen-separated all-digit hydration leaf can also classify as
+            // a MAC-shaped id, an MCC-MNC-LAC-CID-shaped cell-tower DeviceId,
+            // or (a sparse multi-token digit run) the `FullName` residual —
+            // `core::classifier::extract` is run unfiltered on every JSON
+            // string leaf, so these are real, reachable outputs, not just
+            // theoretical (PROBLEM_TREE T2.37).
+            EntityKind::MacAddress,
+            EntityKind::DeviceId,
+            EntityKind::Person,
         ];
         KINDS
     }
