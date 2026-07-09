@@ -79,6 +79,44 @@ use super::*;
         );
     }
 
+    #[test]
+    fn extract_addresses_deduplicates_repeated_mentions_within_one_text() {
+        // Found via a real scan's debug log: a single SERP result's combined
+        // title+snippet text mentioned the same locality twice (once in each),
+        // and the STATES pass (unlike the AU_PLACES pass, which already dedupes
+        // via `seen_addr_keys`) pushed the identical "City, State" string once
+        // per repeat. build.rs's per-result merge loop then recorded the SAME
+        // search result as its own "corroboration" of an address it had just
+        // emitted, inflating the entity's `corroboration` field with duplicate,
+        // non-independent evidence for a single result.
+        let addrs = extract_addresses_from_text(
+            "Autobarn Lawnton — 707 Gympie Road, Lawnton, Queensland. \
+             This designer townhouse is in the heart of Lawnton, Queensland.",
+        );
+        let count = addrs.iter().filter(|a| *a == "Lawnton, Queensland").count();
+        assert_eq!(
+            count, 1,
+            "a locality repeated twice in one text must be extracted once, got {addrs:?}"
+        );
+    }
+
+    #[test]
+    fn extract_addresses_states_and_au_places_passes_share_one_dedup_set() {
+        // Both passes independently derive "Brisbane, QLD" from this text: the
+        // STATES pass via the literal ", QLD" comma pattern, the AU_PLACES pass
+        // via its own "Brisbane" + nearby "qld" context scan. The AU_PLACES
+        // pass must not re-add the address the STATES pass already found —
+        // verified end-to-end (a shared, cross-pass dedup set), not just via
+        // the AU_PLACES-internal set alone.
+        let addrs =
+            extract_addresses_from_text("Now in Brisbane, QLD — Brisbane is home to the QLD Museum.");
+        let count = addrs.iter().filter(|a| *a == "Brisbane, QLD").count();
+        assert_eq!(
+            count, 1,
+            "STATES and AU_PLACES passes must not double-emit the same locality: {addrs:?}"
+        );
+    }
+
     // ── score_username ───────────────────────────────────────────────────────
 
     #[test]
