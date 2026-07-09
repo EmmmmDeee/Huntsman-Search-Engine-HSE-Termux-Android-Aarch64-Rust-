@@ -332,8 +332,9 @@ impl HsePhase1Guarantee {
     pub fn execute_phase1(&mut self) -> f32 {
         self.start_time_ms = current_time_ms();
 
-        for platform in &self.execution_plan.platforms {
-            self.execute_platform_search(platform);
+        let platforms = self.execution_plan.platforms.clone();
+        for platform in platforms {
+            self.execute_platform_search(&platform);
         }
 
         self.calculate_coverage();
