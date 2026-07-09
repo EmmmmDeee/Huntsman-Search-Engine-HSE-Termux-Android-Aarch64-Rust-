@@ -111,72 +111,89 @@ fn promote_geo_corroborated_family_lifts_only_in_area_relatives() {
     assert_eq!(promote_geo_corroborated_family(&mut lone), 0);
 }
 
-/// People-centric "return to old data": a same-name breach candidate whose
-/// locality resolves to the subject's confirmed metro is re-promoted out of
-/// namesake quarantine, while a same-name record in a different state stays a
-/// candidate — and the pass is non-circular (no confirmed fix → no promotion)
-/// and idempotent.
+/// People-centric "return to old data": a breach candidate whose locality
+/// resolves to the subject's confirmed metro AND whose own row name shares the
+/// subject's surname is re-promoted out of namesake quarantine. A same-surname
+/// record in a different state stays quarantined (geo gate); a SAME-metro record
+/// with a DIFFERENT surname also stays quarantined (name gate — the stranger the
+/// old geo-only pass wrongly fused onto the subject). The pass is non-circular
+/// (no confirmed fix → no promotion) and idempotent.
 #[test]
-fn promote_breach_candidate_geo_corroborated_lifts_same_place_same_name_records() {
+fn promote_breach_candidate_geo_corroborated_requires_same_place_and_same_surname() {
     use crate::core::entity::{Entity, EntityKind, Evidence};
 
-    // Subject's confirmed GPS in Brisbane.
+    // Named subject "Matt Avery" + a confirmed GPS fix in Brisbane. The Person
+    // gives the surname the promotion gates on; the GPS gives the location anchor.
+    let mut subject = Entity::new(EntityKind::Person, "Matt Avery", 0.9, "s");
+    subject.tag("subject");
     let mut gps = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.9, "s");
     gps.tag("geoint");
 
-    // A same-name breach candidate in the same metro (South Brisbane 4101, ~2 km).
-    let mut near = Entity::new(EntityKind::Email, "matt@example.com", 0.25, "s");
-    near.tag(crate::core::tags::CANDIDATE);
-    near.tag("breach");
-    near.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "4101"));
+    let breach_candidate = |email: &str, postcode: &str, row_name: &str| {
+        let mut e = Entity::new(EntityKind::Email, email, 0.25, "s");
+        e.tag(crate::core::tags::CANDIDATE);
+        e.tag("breach");
+        e.add_evidence(
+            Evidence::new("oathnet_pro", "breach row")
+                .with_attr("postcode", postcode)
+                .with_attr("breach_row_name", row_name),
+        );
+        e
+    };
 
-    // A same-name breach candidate in another state (Perth 6000) — a namesake.
-    let mut far = Entity::new(EntityKind::Email, "matt2@example.com", 0.25, "s");
-    far.tag(crate::core::tags::CANDIDATE);
-    far.tag("breach");
-    far.add_evidence(Evidence::new("oathnet_pro", "breach row").with_attr("postcode", "6000"));
+    // Same metro (South Brisbane 4101, ~2 km) AND same surname → promoted.
+    let near = breach_candidate("matt@example.com", "4101", "Matt Avery");
+    // Same surname but interstate (Perth 6000) → stays (geo gate).
+    let far = breach_candidate("matt2@example.com", "6000", "Matthew Avery");
+    // Same metro but a DIFFERENT surname → stays (name gate: a same-city stranger
+    // the old geo-only pass would have fused onto the subject).
+    let stranger = breach_candidate("parker@example.com", "4101", "Matt Parker");
+    // Same metro but NO row name → cannot confirm identity → stays quarantined.
+    let mut nameless = Entity::new(EntityKind::Email, "anon@example.com", 0.25, "s");
+    nameless.tag(crate::core::tags::CANDIDATE);
+    nameless.tag("breach");
+    nameless.add_evidence(Evidence::new("oathnet_pro", "row").with_attr("postcode", "4101"));
 
-    let mut ents = vec![gps, near, far];
+    let mut ents = vec![subject, gps, near, far, stranger, nameless];
     assert_eq!(
         promote_breach_candidate_geo_corroborated(&mut ents),
         1,
-        "only the same-metro breach record is re-promoted"
+        "only the same-metro, same-surname record is re-promoted"
     );
 
-    let near = ents.iter().find(|e| e.value == "matt@example.com").unwrap();
-    assert!(
-        !near.has_tag(crate::core::tags::CANDIDATE),
-        "un-quarantined out of candidate"
-    );
+    let get = |v: &str| ents.iter().find(|e| e.value == v).unwrap().clone();
+    let near = get("matt@example.com");
+    assert!(!near.has_tag(crate::core::tags::CANDIDATE), "un-quarantined");
     assert!(near.has_tag("breach-corroborated"));
     assert!(near.confidence >= 0.50, "lifted to Probable");
-    assert!(
-        near.evidence
-            .iter()
-            .any(|ev| ev.source == "geo_corroboration")
-    );
+    assert!(near.evidence.iter().any(|ev| ev.source == "geo_corroboration"));
 
-    let far = ents
-        .iter()
-        .find(|e| e.value == "matt2@example.com")
-        .unwrap();
     assert!(
-        far.has_tag(crate::core::tags::CANDIDATE),
-        "an interstate same-name namesake stays quarantined"
+        get("matt2@example.com").has_tag(crate::core::tags::CANDIDATE),
+        "an interstate same-surname namesake stays quarantined (geo gate)"
+    );
+    assert!(
+        get("parker@example.com").has_tag(crate::core::tags::CANDIDATE),
+        "a same-metro DIFFERENT-surname stranger stays quarantined (name gate)"
+    );
+    assert!(
+        get("anon@example.com").has_tag(crate::core::tags::CANDIDATE),
+        "a same-metro record with no row name cannot be confirmed → stays quarantined"
     );
 
     // Idempotent: a second pass promotes nothing new.
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut ents), 0);
 
     // Non-circular: with NO confirmed subject location, nothing is promoted even
-    // though the breach candidate carries a resolvable postcode.
-    let mut lone = vec![{
-        let mut e = Entity::new(EntityKind::Email, "x@y.com", 0.25, "s");
-        e.tag(crate::core::tags::CANDIDATE);
-        e.tag("breach");
-        e.add_evidence(Evidence::new("oathnet_pro", "row").with_attr("postcode", "4101"));
-        e
-    }];
+    // with a resolvable postcode and a matching name.
+    let mut lone = vec![
+        {
+            let mut p = Entity::new(EntityKind::Person, "Matt Avery", 0.9, "s");
+            p.tag("subject");
+            p
+        },
+        breach_candidate("x@y.com", "4101", "Matt Avery"),
+    ];
     assert_eq!(promote_breach_candidate_geo_corroborated(&mut lone), 0);
 }
 

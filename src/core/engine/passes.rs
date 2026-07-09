@@ -144,27 +144,44 @@ const BREACH_GEO_KM: f64 = 25.0;
 /// A name search returns breach/stealer rows for EVERY same-name person, so each
 /// is quarantined as a `candidate` (it might be a namesake, not the subject). When
 /// a later round independently confirms the subject's own location (a name-matched
-/// register address or a GPS fix — [`crate::core::geo_family::subject_locations`]), a same-name breach
+/// register address or a GPS fix — [`crate::core::geo_family::subject_locations`]), a breach
 /// candidate whose own locality resolves to within [`BREACH_GEO_KM`] of that fix
-/// is no longer ambiguous: the same name AND the same place is the subject. This
+/// AND whose own row name shares the subject's surname is no longer ambiguous:
+/// the same name AND the same place is the subject. This
 /// lifts it out of quarantine (drops `candidate`, raises confidence to Probable,
 /// stamps `breach-corroborated` + a geo-corroboration evidence record) so its
 /// identifiers (the leaked email/phone/address) enter correlation, expansion and
 /// the graded views instead of staying a hidden candidate.
 ///
+/// The surname gate is load-bearing, not decorative: a breach candidate is a row
+/// `TargetMatch` rejected as NOT the subject (it only loosely matched the name
+/// search), so locality alone would un-quarantine a same-metro STRANGER and fuse
+/// their leaked identifiers onto the subject. Matching the candidate's own
+/// `breach_row_name` (threaded from the source row) against
+/// [`crate::core::geo_family::subject_surname`] enforces the "same name" half the
+/// evidence asserts; a different surname, or no name at all, stays quarantined.
+///
 /// Conservative and non-circular by construction: the subject anchor comes ONLY
-/// from confirmed (non-candidate) locations, the radius is one metro, and
-/// `family-candidate` rows are left to [`promote_geo_corroborated_family`] /
-/// AU-061. Free, offline, idempotent (the `breach-corroborated` tag guards
-/// re-runs). Returns the number promoted.
+/// from confirmed (non-candidate) locations, the radius is one metro, the surname
+/// must match, and `family-candidate` rows are left to
+/// [`promote_geo_corroborated_family`] / AU-061. Free, offline, idempotent (the
+/// `breach-corroborated` tag guards re-runs). Returns the number promoted.
 pub(super) fn promote_breach_candidate_geo_corroborated(entities: &mut [Entity]) -> usize {
     use crate::core::entity::Evidence;
-    use crate::core::geo_family::{distance_to_subject, subject_locations};
+    use crate::core::geo_family::{distance_to_subject, subject_locations, subject_surname};
 
     let subject = subject_locations(entities);
     if subject.is_empty() {
         return 0; // no confirmed subject location → nothing to corroborate against
     }
+    // The promotion asserts "same NAME and same place". A breach candidate is a
+    // row `TargetMatch` REJECTED as not the subject (a namesake), so geo alone
+    // would un-quarantine a same-metro STRANGER. Require the subject's surname to
+    // be known, then match it against each candidate's own row name below; with
+    // no named subject there is no identity to confirm, so nothing is promoted.
+    let Some(surname) = subject_surname(entities) else {
+        return 0;
+    };
     let mut promoted = 0usize;
     for e in entities.iter_mut() {
         // Only un-promoted BREACH candidates; family-candidates are AU-061's job.
@@ -180,6 +197,20 @@ pub(super) fn promote_breach_candidate_geo_corroborated(entities: &mut [Entity])
         };
         if km > BREACH_GEO_KM {
             continue; // a different metro → still a possible namesake, stay quarantined
+        }
+        // Same PLACE — now require same NAME: the candidate's own breach-row name
+        // must share the subject's surname. This is what makes the promotion the
+        // "same name AND same place" its evidence claims — a same-metro namesake
+        // (different surname) or a row with no name stays quarantined, closing the
+        // stranger-fusion hole where locality alone lifted a non-target row.
+        let name_matches = e.evidence.iter().any(|ev| {
+            ev.attributes.get("breach_row_name").is_some_and(|n| {
+                crate::util::surnames::surname_of(n)
+                    .is_some_and(|s| s.eq_ignore_ascii_case(&surname))
+            })
+        });
+        if !name_matches {
+            continue;
         }
         // Same name AND same place: resolve the namesake doubt. Un-quarantine and
         // lift to Probable so the record's identifiers become first-class findings.

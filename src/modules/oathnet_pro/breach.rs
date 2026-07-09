@@ -290,9 +290,24 @@ pub(super) fn extract_breach_entities_with(
 ) {
     // Provenance: which provider + which exact API key returned this record
     // (the source database/website is already on the evidence per row).
-    let ev = breach_evidence(item)
+    let mut ev = breach_evidence(item)
         .with_attr("provider", "oathnet.org")
         .with_attr("api_key_origin", key_fp);
+    // Carry the row's OWN name on every entity extracted from it, so the
+    // geo-corroboration re-promotion (`promote_breach_candidate_geo_corroborated`)
+    // can enforce the "same name AND same place" its evidence text asserts. A
+    // breach candidate is a NON-target-matched (namesake) row, so promoting one
+    // on locality alone fuses a same-metro stranger's leaked identifiers onto the
+    // subject; the surname gate needs the row's name to reject that. Deliberately
+    // a dedicated key (NOT a `PERSON_NAME_ATTRS` key) so it feeds only the
+    // promotion gate and never the person-place relation builders.
+    if let Some(name) = val_str_or(item, &["full_name", "display_name", "name"]) {
+        let name = name.trim();
+        if name.len() >= 2 {
+            ev = ev.with_attr("breach_row_name", name);
+        }
+    }
+    let ev = ev;
 
     // `is_target_row` (computed once per row by the caller via `TargetMatch`)
     // decides whether this record belongs to the target. Breach databases hold
