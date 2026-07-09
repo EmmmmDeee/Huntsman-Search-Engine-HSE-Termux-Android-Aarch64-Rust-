@@ -139,11 +139,10 @@ impl CorrelationGraph {
         for i in 0..self.nodes.len() {
             for j in i + 1..self.nodes.len() {
                 if self.nodes[i].entity_type == self.nodes[j].entity_type {
-                    // Calculate similarity (placeholder: 0.95 if same ID, 0.8 if close match)
-                    let similarity = if self.nodes[i].entity_id == self.nodes[j].entity_id {
+                    let similarity = if self.nodes[i].entity_id.to_lowercase() == self.nodes[j].entity_id.to_lowercase() {
                         0.95
                     } else {
-                        0.8  // Fuzzy match
+                        0.8
                     };
                     if similarity >= DEDUPLICATION.merge_threshold {
                         candidates.push((

@@ -485,7 +485,7 @@ pub struct ApiFallback {
 pub const API_FALLBACKS: &[ApiFallback] = &[
     ApiFallback {
         api: "SeekNow",
-        fallback_apis: &["OathNet", "Leakix"],
+        fallback_apis: &["OathNet Pro", "Leakix"],
         strategy: FallbackStrategy::UseAlternativeMethod,
     },
     ApiFallback {
