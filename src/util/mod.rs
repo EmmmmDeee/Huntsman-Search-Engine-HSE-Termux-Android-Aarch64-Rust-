@@ -68,6 +68,8 @@ pub mod exhaustive_autonomous_integration;
 // API Key Management (secure configuration for 50+ APIs)
 pub mod api_key_manager;
 pub mod api_configuration_helper;
+pub mod api_key_retriever;
+pub mod api_key_startup;
 
 pub mod service_defs;
 pub mod settings;
