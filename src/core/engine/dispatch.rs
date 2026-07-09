@@ -1068,6 +1068,20 @@ impl super::ScanEngine {
                     },
                 );
 
+                // Politeness delay BEFORE hitting the upstream — the throttle
+                // exists to be polite to providers, i.e. to space out the CALLS.
+                // It must come before the fetch, not after: a spawned task's result
+                // is finalised by the drain loop (not inside the task, as the
+                // sequential path does before ITS throttle), so a throttle sitting
+                // between a completed fetch and the task's return is an abortable
+                // await that discards an already-fetched result when an operator
+                // cancel triggers `abort_all`. Before the fetch there is no result
+                // to lose, and the pacing is unchanged (consecutive fetches on a
+                // permit stay throttle_ms apart either way).
+                if throttle_ms > 0 {
+                    sleep(Duration::from_millis(throttle_ms)).await;
+                }
+
                 // `.instrument()` (not an ambient span) because a spawned task
                 // does NOT inherit the dispatcher's current span — without it the
                 // external HTTP logs from this concurrently-running module would
@@ -1082,10 +1096,6 @@ impl super::ScanEngine {
                             target = %target.value
                         ))
                         .await;
-
-                if throttle_ms > 0 {
-                    sleep(Duration::from_millis(throttle_ms)).await;
-                }
 
                 DispatchOutcome {
                     name,
