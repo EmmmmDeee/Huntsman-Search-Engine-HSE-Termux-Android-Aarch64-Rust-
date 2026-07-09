@@ -51,6 +51,7 @@ pub mod multi_api_config;
 pub mod multi_api_orchestrator;
 pub mod multi_api_workflows;
 pub mod multi_api_integration_tests;
+pub mod autonomous_validation;
 
 pub mod service_defs;
 pub mod settings;
