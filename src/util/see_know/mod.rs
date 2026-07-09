@@ -28,6 +28,13 @@ mod budget;
 mod client;
 mod endpoints;
 
+// Hardcoded enterprise configuration and orchestration
+pub mod enterprise_config;
+pub mod endpoint_matrix;
+pub mod force_multiplier;
+pub mod orchestration;
+pub mod monitoring;
+
 #[cfg(test)]
 mod tests;
 

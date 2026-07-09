@@ -10,31 +10,22 @@ use crate::util::budget::QuotaBudget;
 // (`api::handlers::stats`) keep working through the original path.
 pub use crate::util::budget::BudgetSnapshot;
 
+use super::enterprise_config::ENTERPRISE;
+
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
-/// The operator is on SeekNow's highest-tier plan. The exact daily limit
-/// is discovered at scan start by probing the `/credits` endpoint and used
-/// to set the scan cap dynamically via [`scale_scan_cap_from_daily`] — see
-/// that function's doc for the scaling formula. The static defaults below
-/// are only consulted when the probe fails or is not yet complete.
+/// Hardcoded for enterprise plan: 15,000 daily credits. Dynamically scaled at
+/// scan start by probing the `/credits` endpoint via [`scale_scan_cap_from_daily`].
 ///
-/// Scan cap (default 300, overridden at scan start by the quota probe,
-/// env `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime `ScanOptions::seeknow_scan_cap`):
-///   A full Username scan uses the 18-endpoint matrix (~10 calls per seed).
-///   The dynamic cap is set to `clamp(daily_limit / 20, 300, 2500)` so a
-///   larger plan yields proportionally more pivots per round. The cap is
-///   refreshed at each expansion-round boundary ([`refresh_round_budget`])
-///   so SeekNow participates in EVERY iteration.
+/// Scan cap: `clamp(daily_limit / 20, 300, 2500)` = 750 credits per scan for 15k plan.
+///   Refreshed at each expansion-round boundary so SeekNow participates in EVERY iteration.
 ///
-/// Session cap (default 100,000, env `HUNTSMAN_SEEKNOW_SESSION_CAP`):
-///   Set deliberately high so the server's own daily-quota enforcement is
-///   the real backstop — not an artificial local cap. On the highest plan
-///   this means all available quota can be consumed in one session without
-///   hitting the local ceiling first.
+/// Session cap: 100,000 (set high; server quota is the backstop).
+///   Allows consuming all available quota in one session on the 15k plan.
 pub(super) static BUDGET: QuotaBudget = QuotaBudget::new(
     "seeknow",
-    300,
-    100_000,
+    ENTERPRISE.scan_budget_floor,
+    ENTERPRISE.session_cap,
     "HUNTSMAN_SEEKNOW_SCAN_CAP",
     "HUNTSMAN_SEEKNOW_SESSION_CAP",
 );
