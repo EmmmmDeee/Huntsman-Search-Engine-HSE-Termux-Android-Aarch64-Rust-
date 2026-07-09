@@ -85,6 +85,7 @@ pub mod hse_osint_apis;
 pub mod hse_geolocation_apis;
 pub mod hse_scan_orchestrator;
 pub mod hse_phase1_guarantee;
+pub mod hse_phase1_integration_tests;
 
 pub mod service_defs;
 pub mod settings;
