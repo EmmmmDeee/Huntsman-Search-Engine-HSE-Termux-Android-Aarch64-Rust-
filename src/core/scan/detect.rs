@@ -91,8 +91,14 @@ pub(super) fn is_domain_shaped(v: &str) -> bool {
     }
 }
 
-/// `value` (already lowercased) ends with a recognised company-form suffix.
-pub(super) fn has_company_suffix(lower: &str) -> bool {
+/// `value` ends with a recognised company-form suffix, matched
+/// ASCII-case-insensitively directly against the raw (not pre-lowercased)
+/// value: every suffix here is ASCII, so comparing the tail bytes with
+/// `eq_ignore_ascii_case` is exactly equivalent to lowercasing the whole value
+/// first and calling `ends_with`, but without that allocation — this is the
+/// last check in `TargetKind::detect`'s cascade, so it runs on every
+/// classified candidate across the whole scan.
+pub(super) fn has_company_suffix(value: &str) -> bool {
     const SUFFIXES: &[&str] = &[
         " pty ltd",
         " pty. ltd.",
@@ -113,7 +119,11 @@ pub(super) fn has_company_suffix(lower: &str) -> bool {
         " s.a.",
         " b.v.",
     ];
-    SUFFIXES.iter().any(|s| lower.ends_with(s))
+    let vb = value.as_bytes();
+    SUFFIXES.iter().any(|s| {
+        let sb = s.as_bytes();
+        vb.len() >= sb.len() && vb[vb.len() - sb.len()..].eq_ignore_ascii_case(sb)
+    })
 }
 
 /// Street-address shape: a leading house number, then a space and an alphabetic
