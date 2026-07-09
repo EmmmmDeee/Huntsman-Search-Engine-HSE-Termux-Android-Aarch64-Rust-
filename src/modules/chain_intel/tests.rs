@@ -116,6 +116,43 @@ fn module_metadata_full() {
 }
 
 #[test]
+fn sol_balance_response_deserialises() {
+    // Realistic getBalance response shape (a `context` object precedes `value`
+    // in the real payload; this struct only needs `value`, so extra fields
+    // must not break deserialisation).
+    let raw = r#"{"jsonrpc":"2.0","result":{"context":{"apiVersion":"2.0.15","slot":123456789},"value":1500000000},"id":1}"#;
+    let resp: SolBalanceResp = serde_json::from_str(raw).unwrap();
+    assert_eq!(resp.result.unwrap().value, Some(1_500_000_000));
+}
+
+#[test]
+fn sol_balance_response_missing_result_degrades_cleanly() {
+    let resp: SolBalanceResp = serde_json::from_str(r#"{"jsonrpc":"2.0","id":1}"#).unwrap();
+    assert!(resp.result.is_none());
+}
+
+#[test]
+fn sol_style_enrichment_never_fabricates_tx_count_or_received() {
+    // SOL enrichment (no cheap authoritative tx count / total received —
+    // see enrich_sol's doc comment) reuses the exact same honesty path as
+    // ETH's missing total_received: both fields simply absent, never faked.
+    let e = Enrichment {
+        unit: "SOL",
+        decimals: 9,
+        balance: 1_500_000_000,
+        received: None,
+        tx_count: None,
+        ens: None,
+    };
+    let ev = build_evidence("sol", &e);
+    assert!(!ev.attributes.contains_key("total_received"));
+    assert!(!ev.attributes.contains_key("tx_count"));
+    assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 SOL");
+    // No tx_count and a positive balance -> "funded", not "active"/"dormant".
+    assert_eq!(ev.attributes.get("activity").unwrap(), "funded");
+}
+
+#[test]
 fn format_units_zero_and_minimal() {
     // Zero balance → "0" with any decimal scale.
     assert_eq!(format_units(0, 8), "0");

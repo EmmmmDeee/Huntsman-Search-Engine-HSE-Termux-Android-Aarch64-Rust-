@@ -11,12 +11,26 @@
 //!   * ETH/EVM — Blockscout v2 (`eth.blockscout.com`): balance, tx count, and
 //!     the reverse **ENS name** when set — an EVM address → human handle edge
 //!     that feeds the username/identity graph.
+//!   * SOL — the public Solana JSON-RPC (`api.mainnet-beta.solana.com`)'s
+//!     `getBalance` method: balance only (lamports). No cheap authoritative
+//!     "total transactions for this address" RPC method exists — getting an
+//!     exact count would mean fully paginating `getSignaturesForAddress`
+//!     (potentially thousands of calls for a busy address), so `tx_count`/
+//!     `received` are left `None` rather than faked or capped-and-mislabelled,
+//!     same honesty discipline as the ETH path's missing "total received".
 //!
 //! Honesty is a hard requirement: an evidence field is emitted only when the
 //! source actually provides it (e.g. ETH reports no "total received" cheaply, so
-//! that attribute is simply absent rather than faked). DOGE/SOL/XMR are
-//! recognised by the classifier but have no wired free keyless explorer, so the
-//! module returns cleanly for them. One-to-two small JSON GETs; Termux-friendly.
+//! that attribute is simply absent rather than faked). DOGE/XMR are recognised
+//! by the classifier but have no wired free keyless explorer: DOGE's leading
+//! keyless candidate (dogechain.info) could not be confirmed reachable during
+//! this module's extension (every fetch attempt returned 403, including the
+//! docs page), so it was left unenriched rather than wired against an unverified
+//! source; XMR (Monero) is cryptographically unenrichable from a bare address —
+//! its whole design goal is that balances/activity are NOT observable without
+//! the private view key, so no explorer, free or paid, could ever answer this
+//! for a raw address string. One-to-two small JSON requests per chain;
+//! Termux-friendly.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -28,7 +42,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json;
+use crate::util::http::{RequestBuilderExt, fetch_json};
 
 const SRC: &str = "chain_intel";
 
@@ -66,6 +80,20 @@ struct BlockscoutCounters {
     transactions_count: Option<String>,
 }
 
+/// Solana JSON-RPC `getBalance` response: `{"result":{"value":<lamports>}}`
+/// (plus a `context` object this module doesn't need).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SolBalanceResp {
+    result: Option<SolBalanceResult>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SolBalanceResult {
+    value: Option<u64>,
+}
+
 /// Normalised enrichment for any chain — only the fields the source genuinely
 /// provides are `Some`, so the evidence never fabricates a value.
 struct Enrichment {
@@ -87,7 +115,7 @@ impl Module for ChainIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH, free)"
+        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH/SOL, free)"
     }
 
     fn priority(&self) -> u8 {
@@ -129,6 +157,7 @@ impl Module for ChainIntel {
             "crypto_btc" => enrich_esplora(ctx, "https://blockstream.info/api", addr, "BTC").await,
             "crypto_ltc" => enrich_esplora(ctx, "https://litecoinspace.org/api", addr, "LTC").await,
             "crypto_eth" => enrich_eth(ctx, addr).await,
+            "crypto_sol" => enrich_sol(ctx, addr).await,
             // Recognised but no free keyless explorer wired — clean no-op.
             _ => None,
         };
@@ -259,6 +288,38 @@ async fn enrich_eth(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
         received: None, // Blockscout balance endpoint doesn't expose lifetime received.
         tx_count,
         ens: a.ens_domain_name.filter(|s| !s.is_empty()),
+    })
+}
+
+/// Solana enrichment via the public JSON-RPC's `getBalance` method — balance
+/// only; see the module doc for why `tx_count`/`received` are never populated
+/// for SOL rather than estimated from a bounded `getSignaturesForAddress` call.
+async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+    let resp = ctx
+        .http
+        .post("https://api.mainnet-beta.solana.com")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getBalance",
+            "params": [addr]
+        }))
+        .send_tagged(SRC)
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: SolBalanceResp = crate::util::http::json_decode(SRC, resp).await.ok()?;
+    let balance = body.result?.value?;
+    Some(Enrichment {
+        unit: "SOL",
+        decimals: 9,
+        balance: u128::from(balance),
+        received: None,
+        tx_count: None,
+        ens: None,
     })
 }
 
