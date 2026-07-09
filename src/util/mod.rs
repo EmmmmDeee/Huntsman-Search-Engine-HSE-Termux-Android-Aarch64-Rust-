@@ -80,21 +80,6 @@ pub mod multi_service_key_pool;
 // Phase 7 comprehensive orchestration
 pub mod phase7_orchestration;
 
-// HSE OSINT optimization
-pub mod hse_osint_apis;
-pub mod hse_geolocation_apis;
-pub mod hse_scan_orchestrator;
-pub mod hse_phase1_guarantee;
-pub mod hse_phase1_integration_tests;
-pub mod hse_scan_optimizer;
-pub mod hse_cross_correlation_engine;
-pub mod hse_api_key_comprehensive;
-pub mod hse_autonomous_batch_queries;
-pub mod hse_correlation_accuracy;
-pub mod hse_api_key_hardwire;
-pub mod hse_api_keys_comprehensive;
-pub mod hse_multi_agent_correlation;
-
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
