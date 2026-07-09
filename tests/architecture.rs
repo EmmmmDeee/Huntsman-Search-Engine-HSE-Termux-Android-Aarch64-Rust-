@@ -1165,7 +1165,16 @@ fn every_declared_module_is_registered() {
         })
         .collect();
 
-    let body = src.split_once("fn registry(").map_or("", |(_, b)| b);
+    // The `Arc::new(...)` instantiations live in the `MODULE_REGISTRY` static
+    // (built once, then cloned by `registry()` on every call — see its doc
+    // comment), so anchor on whichever of the two appears first in the file
+    // rather than only `fn registry(`.
+    let anchor = ["static MODULE_REGISTRY", "fn registry("]
+        .iter()
+        .filter_map(|marker| src.find(marker))
+        .min()
+        .unwrap_or(0);
+    let body = &src[anchor..];
 
     let missing: Vec<&String> = declared
         .iter()

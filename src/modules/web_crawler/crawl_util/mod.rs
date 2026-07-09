@@ -572,7 +572,10 @@ pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
 }
 
 pub(super) fn detect_frameworks(body: &str, found: &mut HashSet<&'static str>) {
-    let lower = body.to_lowercase();
+    // All search patterns below are lowercase ASCII, so `find_ascii_ci` against the
+    // RAW body (memchr/NEON, PR #220) is equivalent to the old `lower.contains(p)`
+    // — but without allocating a Unicode-lowercased copy of up to a 64 KB crawled
+    // body on every fetched page.
     let checks: &[(&str, &'static str)] = &[
         ("wp-content/", "WordPress"),
         ("wp-includes/", "WordPress"),
@@ -625,35 +628,36 @@ pub(super) fn detect_frameworks(body: &str, found: &mut HashSet<&'static str>) {
     ];
 
     for (pattern, name) in checks {
-        if lower.contains(pattern) {
+        if crate::util::str_util::find_ascii_ci(body, pattern).is_some() {
             found.insert(name);
         }
     }
 }
 
 pub(super) fn detect_page_types(body: &str, types: &mut HashSet<&'static str>) {
-    let lower = body.to_lowercase();
+    use crate::util::str_util::find_ascii_ci;
+    let has = |pat: &str| find_ascii_ci(body, pat).is_some();
 
-    if lower.contains("<form") {
+    if has("<form") {
         types.insert("has_forms");
 
-        if lower.contains("type=\"password\"") || lower.contains("type='password'") {
+        if has("type=\"password\"") || has("type='password'") {
             types.insert("login_form");
         }
-        if lower.contains("type=\"file\"") || lower.contains("type='file'") {
+        if has("type=\"file\"") || has("type='file'") {
             types.insert("file_upload");
         }
     }
 
-    if lower.contains("/admin") || lower.contains("administrator") || lower.contains("dashboard") {
+    if has("/admin") || has("administrator") || has("dashboard") {
         types.insert("admin_panel");
     }
 
-    if lower.contains("<script") {
+    if has("<script") {
         types.insert("javascript");
     }
 
-    if lower.contains("api-key") || lower.contains("apikey") || lower.contains("api_key") {
+    if has("api-key") || has("apikey") || has("api_key") {
         types.insert("api_reference");
     }
 }
