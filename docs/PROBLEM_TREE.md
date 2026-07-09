@@ -1270,7 +1270,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   described — a hyphenated MAC-shaped digit run, an MCC-MNC-LAC-CID cell-
   tower id, and a sparse multi-token digit run — through the real
   `extract_hydration_entities` path, plus a `produces()`-completeness test.
-- **`[ ]` T2.38 (low) — a `search_engines` regression test doesn't exercise
+- **`[x]` T2.38 (low) — a `search_engines` regression test doesn't exercise
   the fix it claims to guard.** `d3780fc0`'s
   `extract_addresses_deduplicates_repeated_mentions_within_one_text`
   (`helpers/entity/tests.rs:92`) passes identically whether the new
@@ -1282,6 +1282,15 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   a symmetric "X, City, State" pattern twice), just not proven by this test.
   → Replace/add a fixture where the duplicate genuinely reaches the dedup
   check, so the test fails against a reverted fix.
+  ✅ **Fixed (2026-07-09):** replaced the fixture with
+  `"Located in Brisbane, Queensland, Brisbane, Queensland"` — the comma
+  directly after the first "Queensland" gives the second mention's backward
+  city-scan a close, clean comma to land on, so it resolves to a short
+  "Brisbane" and genuinely reaches the dedup insert as a true duplicate.
+  Verified empirically both ways (`cargo test` with the dedup insert
+  reverted to unconditional `addrs.push`, confirmed the new fixture fails;
+  restored, confirmed it passes) before committing — not asserted from
+  reading the code alone.
 
 ---
 
@@ -5792,4 +5801,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   `produces()` completeness. Gate green: fmt/clippy `-D warnings`/rustdoc
   (private items) clean, full suite 0 failures (4507 lib tests, +2),
   architecture suite green (96 integration + 30 arch). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+- **2026-07-09** — **T2.38 (low) fixed — the last of the 4 confirmed findings
+  from this cycle's adversarial verification pass: a `search_engines` test
+  now genuinely exercises the fix it claims to guard.**
+  `extract_addresses_deduplicates_repeated_mentions_within_one_text`'s
+  original fixture never reached the `seen_addr_keys` dedup insert it was
+  meant to prove — the second mention's backward city-scan bled across a
+  sentence boundary and was rejected by an unrelated, earlier `city.len() >
+  40` guard first, so the test passed identically with the dedup check
+  reverted to an unconditional push. Replaced with
+  `"Located in Brisbane, Queensland, Brisbane, Queensland"`, engineered so
+  the second mention's `rfind(',')` backward scan lands on the comma
+  directly after the first state name (not the sentence start), resolving
+  to a clean short city and genuinely reaching the dedup check as a true
+  duplicate — verified empirically both ways (temporarily reverted the
+  dedup insert, confirmed the new fixture fails; restored, confirmed it
+  passes) before committing, the same discipline every fix in this cycle
+  used. **This closes out all 4 findings T2.34's adversarial verification
+  pass surfaced beyond the 3 fixed in that same commit** — 7/7 confirmed
+  findings from `SOL-VERIFY-CHECKPOINT-1` are now closed. Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
+  failures (4507 lib tests, no count change — a fixture edit, not a new
+  test), architecture suite green (96 integration + 30 arch). **Paired:**
   `SOLUTION_TREE` §5 — same commit.

@@ -4156,3 +4156,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (private items) clean, full suite 0 failures (4507 lib tests, +2),
   architecture suite green (96 integration + 30 arch). Paired:
   `PROBLEM_TREE` §8 — same commit.
+- **2026-07-09** — **SOL-VERIFY-CHECKPOINT-1 closed: T2.38 (low) fixed, all
+  7 confirmed findings now resolved.** Replaced
+  `extract_addresses_deduplicates_repeated_mentions_within_one_text`'s
+  fixture with one engineered so the duplicate mention's backward city-scan
+  genuinely reaches the `seen_addr_keys` dedup insert (the original fixture
+  was rejected earlier by an unrelated length guard, so it passed
+  regardless of the dedup fix). Verified empirically both ways before
+  committing. This closes the checkpoint opened by T2.34: 6 review clusters
+  → 7 candidate findings → 7/7 survived adversarial verification → 7/7 now
+  fixed across 4 commits (3 in T2.34's own commit, 1 each for T2.35/T2.36/
+  T2.37/T2.38). Gate green: fmt/clippy `-D warnings`/rustdoc (private
+  items) clean, full suite 0 failures (4507 lib tests, unchanged — a
+  fixture edit), architecture suite green (96 integration + 30 arch).
+  Paired: `PROBLEM_TREE` §8 — same commit.

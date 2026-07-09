@@ -89,11 +89,25 @@ use super::*;
         // search result as its own "corroboration" of an address it had just
         // emitted, inflating the entity's `corroboration` field with duplicate,
         // non-independent evidence for a single result.
-        let addrs = extract_addresses_from_text(
-            "Autobarn Lawnton — 707 Gympie Road, Lawnton, Queensland. \
-             This designer townhouse is in the heart of Lawnton, Queensland.",
-        );
-        let count = addrs.iter().filter(|a| *a == "Lawnton, Queensland").count();
+        //
+        // Regression (PROBLEM_TREE T2.38): the ORIGINAL fixture here
+        // ("...Lawnton, Queensland. ... Lawnton, Queensland.") does not
+        // actually exercise the STATES-pass `seen_addr_keys` dedup this test
+        // claims to guard — the second mention's backward city-scan
+        // (`rfind(',')`) bleeds across the sentence break and is rejected by
+        // the earlier `city.len() > 40` guard before it ever reaches the
+        // dedup insert, so the test passes identically with that insert
+        // reverted to an unconditional `addrs.push`. This fixture instead
+        // repeats "City, State" back-to-back with a comma directly after the
+        // first State ("...Brisbane, Queensland, Brisbane, Queensland"), so
+        // the second mention's backward scan lands on that adjacent comma and
+        // resolves to a clean, short "Brisbane" — genuinely reaching the
+        // dedup check as a true duplicate of the first. Verified empirically:
+        // this fixture yields 2 "Brisbane, Queensland" entries with the dedup
+        // insert reverted to unconditional, and 1 with it intact.
+        let addrs =
+            extract_addresses_from_text("Located in Brisbane, Queensland, Brisbane, Queensland");
+        let count = addrs.iter().filter(|a| *a == "Brisbane, Queensland").count();
         assert_eq!(
             count, 1,
             "a locality repeated twice in one text must be extracted once, got {addrs:?}"
@@ -364,3 +378,4 @@ use super::*;
             "trailing sentence period trimmed; balanced ) kept"
         );
     }
+

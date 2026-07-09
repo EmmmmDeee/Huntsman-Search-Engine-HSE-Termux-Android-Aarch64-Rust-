@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **A `search_engines` regression test passed identically whether the fix it
+  documented was present or reverted.** `extract_addresses_deduplicates_
+  repeated_mentions_within_one_text`'s fixture never reached the
+  `seen_addr_keys` dedup insert it was meant to prove — an unrelated,
+  earlier length guard rejected the duplicate first. Replaced with a
+  fixture engineered to genuinely reach the dedup check, verified
+  empirically both ways (fails reverted, passes fixed) before committing.
 - **`web_crawler`'s `produces()` under-declared what its hydration-JSON
   extraction path can emit.** `hydration.rs` runs `core::classifier::extract`
   unfiltered on every JSON string leaf, which can genuinely classify as
