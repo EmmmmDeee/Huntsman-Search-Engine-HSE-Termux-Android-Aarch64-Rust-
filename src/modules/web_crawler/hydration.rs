@@ -13,7 +13,9 @@
 //!   - **Nuxt 3/4** (the current default, `renderJsonPayloads: true`):
 //!     `<script type="application/json" id="__NUXT_DATA__">`, produced by
 //!     `devalue`'s JSON-safe `stringify()` — also directly valid JSON (as an
-//!     array in devalue's flattened wire format; see [`unflatten_hint`] below).
+//!     array in devalue's flattened wire format; the walk below treats it
+//!     opaquely — it collects string leaves wherever they sit in the tree
+//!     without needing to understand devalue's index-referencing scheme).
 //!
 //! Everything else that "looks similar" is explicitly OUT of scope because it
 //! is NOT pure JSON and a JSON parser would either fail outright or silently
