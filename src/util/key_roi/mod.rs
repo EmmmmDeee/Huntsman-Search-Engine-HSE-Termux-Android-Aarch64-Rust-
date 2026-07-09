@@ -82,8 +82,13 @@ pub fn classify(service: &str) -> KeyRoi {
         // Semantic search → URLs → web_crawler → leaked keys
         | "exa"
         // Breach-with-credentials services (these directly contain creds
-        // for OTHER services, leading to more keys)
-        | "hibp" | "dehashed" | "intelx" | "hudsonrock" | "xposed_or_not"
+        // for OTHER services, leading to more keys). NOTE: these literals must
+        // match the canonical service name the key-harvester EMITS (the value in
+        // `FoundKey.service`), NOT the HSE module id — a harvested XposedOrNot key
+        // is tagged `xposedornot`, so the underscored module id `xposed_or_not`
+        // (used elsewhere as an evidence source) would never match here and the
+        // key would silently fall through to `Expansion`.
+        | "hibp" | "dehashed" | "intelx" | "hudsonrock" | "xposedornot"
         => KeyRoi::Multiplier,
 
         // ── EXPANSION ───────────────────────────────────────────────
