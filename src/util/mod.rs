@@ -46,40 +46,6 @@ pub mod response_cache;
 pub mod scan;
 pub mod see_know;
 
-// Exhaustive multi-API orchestration (12+ paid APIs, intelligent chaining, unified workflows)
-pub mod multi_api_config;
-pub mod multi_api_orchestrator;
-pub mod multi_api_workflows;
-pub mod multi_api_integration_tests;
-pub mod autonomous_validation;
-
-// Autonomous recursion enhancement (fixes data loss in multi-depth scans)
-pub mod recursive_enhancement;
-pub mod recursive_validation;
-
-// Autonomous multi-API execution (intelligent orchestration of all 12 APIs)
-pub mod multi_api_autonomous_execution;
-
-// Exhaustive API expansion (50+ APIs with meta-orchestration)
-pub mod exhaustive_api_expansion;
-pub mod adaptive_workflow_engine;
-pub mod exhaustive_autonomous_integration;
-
-// API Key Management (secure configuration for 50+ APIs)
-pub mod api_key_manager;
-pub mod api_configuration_helper;
-pub mod api_key_retriever;
-pub mod api_key_startup;
-pub mod api_key_health;
-pub mod api_key_orchestrator;
-pub mod api_key_integration_tests;
-pub mod api_key_config_validator;
-pub mod api_key_deployment;
-pub mod multi_service_key_pool;
-
-// Phase 7 comprehensive orchestration
-pub mod phase7_orchestration;
-
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
@@ -88,8 +54,6 @@ pub mod str_util;
 pub mod surnames;
 pub mod target_match;
 pub mod termux;
-pub mod termux_integration;
-pub mod termux_web_service;
 pub mod threat;
 pub mod timefmt;
 pub mod uid;
