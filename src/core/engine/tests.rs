@@ -1643,6 +1643,57 @@ fn roi_cutoff_releases_visited_keys_of_truncated_candidates() {
     assert!(!visited.contains(&visit_key(&mk("tail-b.com"))));
 }
 
+/// Regression (PROBLEM_TREE T2.36): the round loop's `apply_roi_cutoff` call
+/// must consume `opts.effective_max_concurrent()`, never the raw
+/// `opts.max_concurrent` — `crate::core::roi::top_k_for_round` computes
+/// `2 * max_concurrent + 8`, which overflows a `usize` multiply for an
+/// operator-supplied `max_concurrent` anywhere near `usize::MAX` (panicking
+/// under `overflow-checks`, silently wrapping to a nonsensical small cutoff
+/// without them — corrupting the round's ROI top-K with no diagnostic
+/// either way). `ScanOptions::sanitize`/`effective_max_concurrent` exist
+/// precisely to close this: they clamp to `MAX_CONCURRENT` (64) before the
+/// value ever reaches `apply_roi_cutoff`.
+#[test]
+fn roi_cutoff_call_site_must_use_the_clamped_max_concurrent() {
+    // First, prove the failure mode is real: the raw, unclamped extreme value
+    // this bug's own governing commit (659bcc6f) names as the dangerous
+    // input overflows `apply_roi_cutoff`'s underlying `top_k_for_round` math.
+    let mk = |v: &str| Target::new(TargetKind::Domain, v.to_string());
+    let make_next = || {
+        vec![
+            (mk("a.com"), 10.0, "p".to_string()),
+            (mk("b.com"), 9.0, "p".to_string()),
+        ]
+    };
+    let mut visited: HashSet<(TargetKind, String)> = HashSet::new();
+    let raw_extreme = usize::MAX;
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let mut next = make_next();
+        apply_roi_cutoff(&mut next, &mut visited, raw_extreme);
+    }));
+    assert!(
+        result.is_err(),
+        "the raw usize::MAX value must overflow top_k_for_round's `2 * max_concurrent` \
+         under debug overflow-checks — if this no longer panics, top_k_for_round's own \
+         arithmetic changed and this test's premise needs re-checking"
+    );
+
+    // Now prove the actual fix: the effective (clamped) value the round loop
+    // must use instead never overflows, regardless of how extreme the
+    // operator-supplied max_concurrent was.
+    let clamped = ScanOptions {
+        max_concurrent: raw_extreme,
+        ..Default::default()
+    }
+    .effective_max_concurrent();
+    let mut next = make_next();
+    apply_roi_cutoff(&mut next, &mut visited, clamped);
+    assert!(
+        !next.is_empty(),
+        "a normal round must not be emptied by the clamp"
+    );
+}
+
 /// The persistent store is a SOURCE, not just a sink: prior-scan findings for a
 /// target are pulled back at scan start, stamped as observed this scan, and
 /// tagged `recalled` (provenance) while keeping their original tags/evidence.

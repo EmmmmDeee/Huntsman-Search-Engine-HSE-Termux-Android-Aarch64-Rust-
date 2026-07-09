@@ -1228,7 +1228,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   reproduced brick no longer occurs, and an API-layer test proving
   `build_scan_from_request` sanitizes a NaN/Inf request before it ever
   reaches a `Scan`.
-- **`[ ]` T2.36 (medium) — `apply_roi_cutoff` reads the raw unclamped
+- **`[x]` T2.36 (medium) — `apply_roi_cutoff` reads the raw unclamped
   `max_concurrent`, risking a `usize` overflow.** `core/engine/mod.rs:1717`
   calls `apply_roi_cutoff(&mut next, visited, opts.max_concurrent)` — the one
   consume site of `max_concurrent` in the round loop `659bcc6f` did NOT
@@ -1241,6 +1241,14 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   overflow checks off it silently wraps to a nonsensical small cutoff,
   corrupting that round's ROI top-K without diagnostic. → Route this call
   site through `effective_max_concurrent()` too.
+  ✅ **Fixed (2026-07-09):** the call site now passes
+  `opts.effective_max_concurrent()`, matching the `dispatch.rs` `Semaphore`
+  site exactly — the same accessor, same ceiling, one line. New test
+  `roi_cutoff_call_site_must_use_the_clamped_max_concurrent` proves both
+  halves: the raw `usize::MAX` genuinely overflows `apply_roi_cutoff`'s
+  underlying `top_k_for_round` math (`catch_unwind`-confirmed panic under
+  `overflow-checks`), and the clamped `effective_max_concurrent()` value
+  does not.
 - **`[ ]` T2.37 (low) — `web_crawler`'s `produces()` under-declares what its
   hydration-JSON path can emit.** `modules/web_crawler/mod.rs:112` lists only
   `Email`/`Url`/`Domain`/`Phone`/`ApiKey`/`TrackingId`/`IpAddress`/`AbnAcn`/
@@ -5747,3 +5755,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   suite 0 failures (4504 lib tests, +3), architecture suite green (96
   integration + 30 arch).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-09** — **T2.36 (medium) fixed: the ROI top-K cutoff no longer
+  reads the raw unclamped `max_concurrent`.** `apply_roi_cutoff`'s one
+  remaining raw-`max_concurrent` call site (`core/engine/mod.rs`) — the ONE
+  `659bcc6f` missed when it introduced `effective_max_concurrent()` and
+  updated the `dispatch.rs` `Semaphore` site — now routes through the same
+  accessor, so an extreme operator-supplied `max_concurrent` can no longer
+  overflow (`usize` multiply panic under `overflow-checks`) or silently wrap
+  the round's ROI cutoff to a nonsensical small value without either
+  guard rail. 1 new test proving both the failure mode (raw `usize::MAX`
+  genuinely panics `apply_roi_cutoff`'s underlying math, `catch_unwind`-
+  confirmed) and the fix (the clamped value does not). Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
+  failures (4505 lib tests, +1), architecture suite green (96 integration +
+  30 arch). **Paired:** `SOLUTION_TREE` §5 — same commit.

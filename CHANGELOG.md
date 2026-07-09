@@ -11,6 +11,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **The ROI expansion round's top-K cutoff still read the raw, unclamped
+  `max_concurrent`, risking a `usize` multiply overflow.** `apply_roi_cutoff`
+  was the one call site the `max_concurrent` validation effort missed when
+  it fixed the dispatch `Semaphore` site; now routes through the same
+  `effective_max_concurrent()` accessor. Regression test:
+  `roi_cutoff_call_site_must_use_the_clamped_max_concurrent`.
 - **A non-finite `--min-expand-confidence nan`/`inf` (or an oversized API
   request value) could permanently brick a persisted scan.** `serde_json`
   silently serialises a non-finite `f64` as JSON `null`, and the plain

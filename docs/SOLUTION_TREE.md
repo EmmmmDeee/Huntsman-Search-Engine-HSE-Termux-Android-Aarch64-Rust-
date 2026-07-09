@@ -4136,3 +4136,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0
   failures (4504 lib tests, +3), architecture suite green (96 integration +
   30 arch). Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-09** — **SOL-VERIFY-CHECKPOINT-1 continued: T2.36 (medium)
+  fixed.** `apply_roi_cutoff`'s one remaining raw-`max_concurrent` call site
+  now uses `effective_max_concurrent()`, matching the `dispatch.rs`
+  `Semaphore` site `659bcc6f` already fixed — a one-line change, the same
+  accessor pattern reused rather than a new guard invented. 1 new test.
+  Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full
+  suite 0 failures (4505 lib tests, +1), architecture suite green (96
+  integration + 30 arch). Paired: `PROBLEM_TREE` §8 — same commit.

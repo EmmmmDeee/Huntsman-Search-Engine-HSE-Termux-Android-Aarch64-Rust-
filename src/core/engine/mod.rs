@@ -1714,7 +1714,7 @@ impl ScanEngine {
             // a flood of low-weight domains from a single SERP and the
             // dampened mega-domain noise that survives top-K on a thin round.
             if opts.max_roi {
-                apply_roi_cutoff(&mut next, visited, opts.max_concurrent);
+                apply_roi_cutoff(&mut next, visited, opts.effective_max_concurrent());
             }
             let dispatched_this_round = next.len();
             let next: Vec<(Target, String)> = next.into_iter().map(|(t, _, p)| (t, p)).collect();
