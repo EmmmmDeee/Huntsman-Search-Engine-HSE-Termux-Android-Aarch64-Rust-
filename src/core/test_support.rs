@@ -118,6 +118,20 @@ impl StoragePort for InMemoryStore {
         Ok(ents)
     }
 
+    fn delete_scan_entities(&self, scan_id: &str, uids: &[String]) -> Result<usize> {
+        // One scan_id per entity in this mock, so removing a uid observed by this
+        // scan drops it from the scan view — matching the real store's effect.
+        let mut g = self.inner.lock();
+        let mut removed = 0usize;
+        for uid in uids {
+            if g.entities.get(uid).is_some_and(|e| e.scan_id == scan_id) {
+                g.entities.remove(uid);
+                removed += 1;
+            }
+        }
+        Ok(removed)
+    }
+
     fn entities_filtered(
         &self,
         scan_id: &str,

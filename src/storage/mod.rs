@@ -679,6 +679,67 @@ impl Store {
         Ok(true)
     }
 
+    /// Remove specific entity uids from one scan's view: delete their
+    /// `entity_observations` rows for `scan_id`, then FTS-safely drop any entity
+    /// left with no remaining observations (an orphan) — mirroring
+    /// [`Self::delete_scan`]'s cleanup, scoped to these uids. Used at finalise to
+    /// purge the stale rows of address-locality variants folded away in-memory by
+    /// `consolidate_address_localities` but already checkpointed to the store.
+    pub fn delete_scan_entities(&self, scan_id: &str, uids: &[String]) -> Result<usize> {
+        if uids.is_empty() {
+            return Ok(0);
+        }
+        let conn = self.conn.lock();
+        let tx = conn.unchecked_transaction()?;
+        let mut removed = 0usize;
+        {
+            let mut del_obs = tx.prepare_cached(
+                "DELETE FROM entity_observations WHERE scan_id = ?1 AND entity_uid = ?2",
+            )?;
+            for uid in uids {
+                removed += del_obs.execute(params![scan_id, uid])?;
+            }
+        }
+        // FTS sync: a contentless-external FTS5 index never observes a bare DELETE
+        // on its content table, so an orphaned row's text must be removed with an
+        // explicit 'delete' command BEFORE the row goes away (see `delete_scan`).
+        // Only the uids just unobserved here can have become orphans.
+        let orphans: Vec<(i64, String, String)> = {
+            let mut stmt = tx.prepare_cached(
+                "SELECT rowid, value, kind FROM entities e
+                 WHERE e.uid = ?1
+                   AND NOT EXISTS (SELECT 1 FROM entity_observations o WHERE o.entity_uid = e.uid)",
+            )?;
+            let mut acc = Vec::new();
+            for uid in uids {
+                let rows = stmt.query_map(params![uid], |r| {
+                    Ok((
+                        r.get::<_, i64>(0)?,
+                        r.get::<_, String>(1)?,
+                        r.get::<_, String>(2)?,
+                    ))
+                })?;
+                for row in rows {
+                    acc.push(row?);
+                }
+            }
+            acc
+        };
+        {
+            let mut del_fts = tx.prepare_cached(
+                "INSERT INTO entities_fts(entities_fts, rowid, value, kind)
+                 VALUES('delete', ?1, ?2, ?3)",
+            )?;
+            let mut del_ent = tx.prepare_cached("DELETE FROM entities WHERE rowid = ?1")?;
+            for (rowid, value, kind) in &orphans {
+                del_fts.execute(params![rowid, value, kind])?;
+                del_ent.execute(params![rowid])?;
+            }
+        }
+        tx.commit()?;
+        Ok(removed)
+    }
+
     /// Prune events older than `max_age_secs` and limit total rows to
     /// `max_rows`. Prevents unbounded database growth from long-running
     /// or repeated scans. Called automatically at startup.
@@ -767,6 +828,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>> {
         Store::entities_for_scan(self, scan_id)
+    }
+
+    fn delete_scan_entities(&self, scan_id: &str, uids: &[String]) -> Result<usize> {
+        Store::delete_scan_entities(self, scan_id, uids)
     }
 
     fn entities_filtered(

@@ -216,6 +216,55 @@ fn entities_for_scan_orders_deterministically_on_confidence_ties() {
 }
 
 #[test]
+fn delete_scan_entities_purges_folded_locality_variants() {
+    // The two locality variants a scan checkpoints for one place (a bare suburb
+    // and its postcode-qualified form) land as distinct rows. `consolidate_address_localities`
+    // folds them in-memory at finalise, but the finalise correlator reads the
+    // STORE — so the folded-away variant must be purged there too, or the geo
+    // rules double-count the single locality.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "s-fold");
+    let survivor = Entity::new(EntityKind::Address, "Murrumbateman NSW 2582", 0.6, "s-fold");
+    let victim = Entity::new(EntityKind::Address, "Murrumbateman NSW", 0.55, "s-fold");
+    store.upsert_entity(&survivor).unwrap();
+    store.upsert_entity(&victim).unwrap();
+    assert_eq!(store.entities_for_scan("s-fold").unwrap().len(), 2, "both variants persisted");
+
+    let removed = store
+        .delete_scan_entities("s-fold", &[victim.uid.clone()])
+        .unwrap();
+    assert_eq!(removed, 1, "the victim's observation is removed");
+
+    let after: Vec<String> = store
+        .entities_for_scan("s-fold")
+        .unwrap()
+        .into_iter()
+        .map(|e| e.value)
+        .collect();
+    assert_eq!(
+        after,
+        vec!["Murrumbateman NSW 2582".to_string()],
+        "only the survivor remains — the locality is no longer double-counted"
+    );
+
+    // FTS orphan cleanup: a full-text search for the purged value returns nothing
+    // (the stale posting was removed with the row, per delete_scan's invariant).
+    let hits = store.search_entities("Murrumbateman NSW", 10).unwrap_or_default();
+    assert!(
+        !hits.iter().any(|e| e.value == "Murrumbateman NSW"),
+        "the purged variant must not survive in the FTS index"
+    );
+
+    // Idempotent: a second purge removes nothing.
+    assert_eq!(
+        store.delete_scan_entities("s-fold", &[victim.uid]).unwrap(),
+        0
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn entities_for_scan_ranks_by_corroboration_and_demotes_shared_infra() {
     // Operator-facing ranking must surface the needle, not the haystack:
     //   * a finding confirmed by several DISTINCT sources outranks an

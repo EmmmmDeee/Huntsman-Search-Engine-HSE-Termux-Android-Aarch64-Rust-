@@ -55,6 +55,14 @@ pub trait StoragePort: Send + Sync {
     /// to per-entity `upsert_entity` if the batch rolls back.
     fn upsert_entities_batch(&self, entities: &[Entity]) -> Result<usize>;
     fn entities_for_scan(&self, scan_id: &str) -> Result<Vec<Entity>>;
+    /// Remove the given entity uids from this scan's view (delete their
+    /// `entity_observations` rows for `scan_id`) and clean up any entity left
+    /// with no remaining observations. Used at finalise to purge the stale rows
+    /// of address-locality variants folded away by `consolidate_address_localities`
+    /// — those variants were checkpointed pre-finalise, and the finalise
+    /// correlator reads the persisted scan, so they would otherwise double-count.
+    /// Returns the number of observations removed.
+    fn delete_scan_entities(&self, scan_id: &str, uids: &[String]) -> Result<usize>;
     fn entities_filtered(
         &self,
         scan_id: &str,

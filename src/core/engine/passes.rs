@@ -31,7 +31,12 @@ use crate::core::relation::Relation;
 /// form), with a lexicographic tie-break for determinism; only addresses sharing
 /// a [`crate::util::address_au::locality_key`] are merged, so a street address is
 /// never folded into a bare suburb.
-pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
+/// Returns the uids of the folded-away (less-specific) variants, so the caller
+/// can purge their now-stale rows from the store: those variants were persisted
+/// to the store by the pre-finalise round checkpoints, and the finalise
+/// correlator reads the store — leaving them there double-counts the one locality
+/// in the geo rules and duplicates it in the dossier. Empty when nothing folded.
+pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) -> Vec<String> {
     let mut groups: HashMap<String, Vec<usize>> = HashMap::new();
     for (i, e) in entities.iter().enumerate() {
         if e.kind == EntityKind::Address {
@@ -68,8 +73,10 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
         }
     }
     if folds.is_empty() {
-        return;
+        return Vec::new();
     }
+    // Capture the folded-away variants' uids before `absorb` consumes `folds`.
+    let folded_uids: Vec<String> = folds.iter().map(|(_, victim)| victim.uid.clone()).collect();
     for (survivor, victim) in folds {
         entities[survivor].absorb(victim);
     }
@@ -79,6 +86,7 @@ pub(super) fn consolidate_address_localities(entities: &mut Vec<Entity>) {
         idx += 1;
         keep
     });
+    folded_uids
 }
 
 /// Promote geo-corroborated family (free, offline, per scan).

@@ -580,7 +580,7 @@ impl ScanEngine {
             // AFTER every module (APIs included) and every expansion round has
             // contributed, folding such variants into the most-specific one. It is
             // the engine-level backstop to the per-module dedup in `search_engines`.
-            consolidate_address_localities(&mut entities);
+            let folded_locality_uids = consolidate_address_localities(&mut entities);
             // Free, offline cross-angle confirmation: a shared-surname
             // family-candidate whose postcode resolves into the subject's confirmed
             // area is corroborated by a SECOND independent signal (the subject's
@@ -694,6 +694,18 @@ impl ScanEngine {
             }
             scan.finished_at = Some(crate::core::entity::unix_now());
             store.upsert_scan(&scan)?;
+
+            // Purge the address-locality variants that `consolidate_address_localities`
+            // folded away in-memory but that earlier round checkpoints already
+            // persisted. The finalise correlator (below) reads the persisted scan,
+            // so without this the stale variant double-counts the locality in the
+            // geo rules and duplicates it in the dossier. Best-effort: a failure
+            // here degrades to the pre-fix behaviour, never fails the scan.
+            if !folded_locality_uids.is_empty() {
+                if let Err(e) = store.delete_scan_entities(&scan.id, &folded_locality_uids) {
+                    warn!(scan_id = %scan.id, error = %e, "failed to purge folded address-locality variants");
+                }
+            }
 
             // Derive + persist the typed entity-relation edges (attribution
             // graph): the lineage edges captured during expansion plus the
