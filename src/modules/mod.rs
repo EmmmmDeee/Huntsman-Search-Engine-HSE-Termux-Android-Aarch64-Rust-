@@ -140,6 +140,7 @@ pub mod rdap_domain;
 pub mod reddit_user;
 pub mod ripestat;
 pub mod rubygems_user;
+pub mod sanctions_ofac;
 pub mod search_engines;
 pub mod securitytrails;
 pub mod see_know;
@@ -455,6 +456,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(au_seifa::AuSeifa),
             Arc::new(acnc_charities::AcncCharities),
             Arc::new(gleif_lei::GleifLei),
+            Arc::new(sanctions_ofac::SanctionsOfac),
             Arc::new(acma_rrl::AcmaRrl),
             Arc::new(ahpra::Ahpra),
             Arc::new(hlr_cnam::HlrCnam),
