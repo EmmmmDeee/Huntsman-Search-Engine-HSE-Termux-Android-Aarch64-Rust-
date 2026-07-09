@@ -53,6 +53,10 @@ pub mod multi_api_workflows;
 pub mod multi_api_integration_tests;
 pub mod autonomous_validation;
 
+// Autonomous recursion enhancement (fixes data loss in multi-depth scans)
+pub mod recursive_enhancement;
+pub mod recursive_validation;
+
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;
