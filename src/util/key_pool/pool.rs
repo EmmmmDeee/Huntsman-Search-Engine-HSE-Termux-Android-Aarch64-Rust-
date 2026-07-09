@@ -260,7 +260,10 @@ impl KeyPool {
         }
 
         let mut indices = self.indices.lock();
-        let idx = indices.entry(lower.clone()).or_insert(0);
+        // `lower` is not read again after this point (the `entries` borrow above
+        // is tied to `data.services`, not to `lower`), so move it into the second
+        // map's key instead of cloning — one allocation per call instead of two.
+        let idx = indices.entry(lower).or_insert(0);
         let len = entries.len();
 
         let mut best: Option<usize> = None;
