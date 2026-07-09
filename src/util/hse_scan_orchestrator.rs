@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use crate::util::hse_autonomous_batch_queries::{HseAutonomousBatchQueries, SeedType};
 
 /// Scan phase
 #[derive(Debug, Clone, PartialEq)]
@@ -74,6 +75,7 @@ pub struct HseScanOrchestrator {
     pub phase_history: Vec<(ScanPhase, u64)>,
     pub resource_allocation: ResourceAllocation,
     pub confidence_threshold: f32,
+    pub batch_query_engine: HseAutonomousBatchQueries,
 }
 
 impl HseScanOrchestrator {
@@ -105,6 +107,7 @@ impl HseScanOrchestrator {
                 expansion_budget: 10,
             },
             confidence_threshold: 0.60,
+            batch_query_engine: HseAutonomousBatchQueries::new(),
         }
     }
 
@@ -323,6 +326,94 @@ impl HseScanOrchestrator {
             "github",
             "reddit",
         ]
+    }
+
+    /// Extract high-value seeds from discovered entities for autonomous batch processing
+    pub fn extract_seeds_for_batch_processing(&mut self) -> usize {
+        let mut seeds = Vec::new();
+
+        // Extract seeds from high-confidence correlations
+        for corr in self.correlations.values() {
+            if corr.source_count >= 2 && corr.confidence != ConfidenceLevel::Low {
+                let confidence = match corr.confidence {
+                    ConfidenceLevel::Low => 0.50,
+                    ConfidenceLevel::Medium => 0.70,
+                    ConfidenceLevel::High => 0.87,
+                    ConfidenceLevel::Verified => 0.95,
+                };
+
+                seeds.push((
+                    corr.entity_value.clone(),
+                    corr.correlation_type.clone(),
+                    confidence,
+                ));
+            }
+        }
+
+        // Submit seeds to batch query engine
+        if !seeds.is_empty() {
+            self.batch_query_engine.extract_seeds_from_results(seeds)
+        } else {
+            0
+        }
+    }
+
+    /// Get active batches from the autonomous query engine
+    pub fn get_active_batches_count(&self) -> usize {
+        self.batch_query_engine.get_active_batches().len()
+    }
+
+    /// Process batch query results and integrate findings into scan
+    pub fn integrate_batch_results(&mut self, batch_results: Vec<(String, String, f32)>) {
+        for (entity_value, source, confidence) in batch_results {
+            if confidence >= self.confidence_threshold {
+                self.record_entity(&entity_value, &source);
+                self.context.correlations_found += 1;
+            }
+        }
+    }
+
+    /// Check if Phase 2 expansion via batch queries should trigger
+    pub fn should_execute_batch_expansion(&self) -> bool {
+        // Trigger when:
+        // - Phase is Correlation or HighValue
+        // - At least 2 high-confidence entities exist
+        // - At least 1 active batch is ready
+        let high_conf_count = self
+            .correlations
+            .values()
+            .filter(|c| c.source_count >= 2)
+            .count();
+
+        (self.context.phase == ScanPhase::Correlation || self.context.phase == ScanPhase::HighValue)
+            && high_conf_count >= 2
+    }
+
+    /// Get batch query statistics for monitoring
+    pub fn get_batch_query_stats(&self) -> String {
+        let stats = self.batch_query_engine.get_statistics();
+        format!(
+            "Batch Query Statistics\n\
+             =====================\n\
+             Total Seeds Discovered: {}\n\
+             Seeds Queued: {}\n\
+             Seeds Processed: {}\n\
+             Batches Created: {}\n\
+             Batches Completed: {}\n\
+             Queries Executed: {}\n\
+             Entities Found: {}\n\
+             Total Cost: ${:.2}\n\
+             Avg Confidence: {:.1}%\n",
+            stats.total_seeds_discovered,
+            stats.seeds_queued,
+            stats.seeds_processed,
+            stats.batches_created,
+            stats.batches_completed,
+            stats.total_queries_executed,
+            stats.entities_found,
+            stats.total_cost_spent,
+            stats.average_discovery_confidence * 100.0
+        )
     }
 }
 

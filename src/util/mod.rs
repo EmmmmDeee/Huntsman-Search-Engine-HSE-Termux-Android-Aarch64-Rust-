@@ -89,6 +89,7 @@ pub mod hse_phase1_integration_tests;
 pub mod hse_scan_optimizer;
 pub mod hse_cross_correlation_engine;
 pub mod hse_api_key_comprehensive;
+pub mod hse_autonomous_batch_queries;
 
 pub mod service_defs;
 pub mod settings;
