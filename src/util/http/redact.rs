@@ -12,20 +12,26 @@
 /// replaces the value with `***` and preserves the surrounding
 /// delimiters so the error message still reads naturally.
 pub(crate) fn redact_credentials(text: &str) -> String {
+    // Each literal already carries its trailing `=` so the match loop below
+    // compares directly against these bytes — no `format!("{name}=")` needed
+    // (and no per-position, per-name heap allocation: the old code built that
+    // string fresh at EVERY cursor position for EVERY name, up to
+    // `text.len() * CREDENTIAL_PARAMS.len()` allocations for a body with no
+    // credential match at all).
     const CREDENTIAL_PARAMS: &[&str] = &[
-        "api_key",
-        "apiKey",
-        "access_token",
-        "accessToken",
-        "secret",
-        "token",
-        "auth",
+        "api_key=",
+        "apiKey=",
+        "access_token=",
+        "accessToken=",
+        "secret=",
+        "token=",
+        "auth=",
         // `key` deliberately masks ANY `key=<value>` that follows a query
         // boundary (the `preceded_by_boundary` check below stops it tripping on
         // mid-word matches like `monkey=`). We accept over-redacting a benign
         // `?key=…` rather than risk leaking a credential that rides as `?key=…`
         // — over-redaction in an error string is harmless; under-redaction leaks.
-        "key",
+        "key=",
     ];
     // Build on bytes, not chars: copying one byte at a time into a `String`
     // via `byte as char` would reinterpret every multi-byte UTF-8 sequence as
@@ -38,8 +44,7 @@ pub(crate) fn redact_credentials(text: &str) -> String {
     let bytes = text.as_bytes();
     'outer: while cursor < bytes.len() {
         for name in CREDENTIAL_PARAMS {
-            let needle_eq = format!("{name}=");
-            if bytes[cursor..].starts_with(needle_eq.as_bytes()) {
+            if bytes[cursor..].starts_with(name.as_bytes()) {
                 // Boundary check: the preceding char (if any) should be
                 // a query separator or whitespace — `apiKey=` mid-word
                 // (`monKey=`) shouldn't trip.
@@ -51,7 +56,7 @@ pub(crate) fn redact_credentials(text: &str) -> String {
                 if !preceded_by_boundary {
                     continue;
                 }
-                let val_start = cursor + needle_eq.len();
+                let val_start = cursor + name.len();
                 let mut end = val_start;
                 while end < bytes.len() {
                     let b = bytes[end];
