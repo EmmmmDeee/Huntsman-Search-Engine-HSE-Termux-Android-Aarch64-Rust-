@@ -1466,12 +1466,15 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
     via `KeyPool::add`) and health-selects: lone healthy key verbatim, multi-key
     load-spread, dead sole key fails over. **Delivered 2026-07-09**, +3 tests.
     Paired `SOLUTION_TREE` SOL-KEY-POOL-SEED. **P2 (reliability)**
-  - **`[ ]` KEY.2 · Registration completeness.** Register the orphan consumer keys
+  - **`[~]` KEY.2 · Registration completeness.** Register the orphan consumer keys
     (`NIAMONX`, `OSINTCAT`, `FULLCONTACT`, `GITHUB_TOKEN`, `ABUSECH`, `MLS`) into
     `KNOWN_KEYS` + `service_defs` so they're configurable/validatable/rotatable;
-    audit every module `SRC` vs `ServiceDef.name` (e.g. `hunter_io`→`hunter`
-    mismatch breaks exhaustion routing); drop the dead `mls` `"test"` default.
-    Extend `hse doctor` to live-probe all registered keys, not just WiGLE. **P2**
+    ✅ **SRC-vs-`ServiceDef.name` audit done (2026-07-10):** the only two
+    mismatches (`hunter_io`→`hunter`, `exa_search`→`exa`) are fixed with a
+    `KEY_SERVICE` const + drift-guard tests; all other ~25 keyed modules verified
+    matching. *Remaining:* register the 6 orphan keys, drop the dead `mls`
+    `"test"` default, extend `hse doctor` to live-probe all registered keys (not
+    just WiGLE). **P2**
   - **`[ ]` KEY.3 · Spend every held key.** Build collector modules for the
     keys HSE holds/validates but never spends — `FOFA`, `BuiltWith`,
     `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`, `PassiveTotal`,

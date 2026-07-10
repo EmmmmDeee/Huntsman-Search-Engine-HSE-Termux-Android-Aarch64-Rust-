@@ -10,6 +10,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- **Hunter.io and Exa key rotation now actually works.** Both modules reported
+  a rate-limited/dead key to the pool under their module name (`hunter_io`,
+  `exa_search`) instead of the canonical service name (`hunter`, `exa`), so the
+  pool mutation hit a phantom service and silently did nothing — the real key was
+  never marked and never rotated. Each module now reports under the canonical
+  service name, with a drift-guard test tying it to the `ServiceDef` for its key
+  env var so the mismatch cannot silently return.
+
 ### Changed
 - **Every configured API key now participates in rotation and dead-key
   memory, not just comma-separated multi-key lists.** Previously a lone

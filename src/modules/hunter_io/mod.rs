@@ -23,6 +23,12 @@ use crate::core::{
 
 const KEY_ENV: &str = "HUNTSMAN_HUNTER_KEY";
 const SRC: &str = "hunter_io";
+/// Canonical key-pool service name (the `ServiceDef.name` for `KEY_ENV`) — NOT
+/// the same as `SRC`/the module name. Key-pool mutations (`report_key_exhausted`,
+/// rotation) key on this; passing the module name `"hunter_io"` instead would mark
+/// a phantom service and silently break rotation/dead-key memory for the pooled
+/// `"hunter"` key. Kept honest by `key_service_matches_service_def` below.
+const KEY_SERVICE: &str = "hunter";
 
 pub struct HunterIo;
 
@@ -169,7 +175,8 @@ impl Module for HunterIo {
             .map_err(|e| Error::module(SRC, e.without_url().to_string()))?;
         // 401/403/429 → report_key_exhausted + Err; 404 → Ok(None) (domain
         // absent from Hunter); other non-2xx → Err via http_status_error.
-        let Some(resp) = crate::util::http::keyed_ok_or_404(SRC, key, ctx, resp).await? else {
+        let Some(resp) = crate::util::http::keyed_ok_or_404(KEY_SERVICE, key, ctx, resp).await?
+        else {
             return Ok(ModuleResult::new());
         };
 
@@ -184,7 +191,7 @@ impl Module for HunterIo {
                 .as_deref()
                 .or(first.id.as_deref())
                 .unwrap_or("api error");
-            ctx.report_key_exhausted(SRC, key, 200);
+            ctx.report_key_exhausted(KEY_SERVICE, key, 200);
             return Err(Error::module(SRC, format!("api 200 error: {detail}")));
         }
         let Some(data) = wrap.data else {

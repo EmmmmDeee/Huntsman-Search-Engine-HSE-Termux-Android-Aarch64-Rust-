@@ -59,7 +59,10 @@ fn mine_snippet_extracts_email() {
     assert_eq!(email.value, "sales@acme.com");
     assert!(email.has_tag("exa-search") && email.has_tag("web-scraped"));
     assert_eq!(
-        email.evidence[0].attributes.get("source_url").map(String::as_str),
+        email.evidence[0]
+            .attributes
+            .get("source_url")
+            .map(String::as_str),
         Some("https://example.com/page")
     );
 }
@@ -95,4 +98,20 @@ fn mine_snippet_email_lowercased() {
     let ents = snippets("Email ALICE@EXAMPLE.COM now.");
     let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
     assert_eq!(email.value, "alice@example.com");
+}
+
+/// Drift guard: the key-pool service name MUST equal the canonical
+/// `ServiceDef.name` for this module's key env var, or `report_key_exhausted`
+/// marks a phantom service and rotation/dead-key memory silently break.
+#[test]
+fn key_service_matches_service_def() {
+    let def = crate::util::service_defs::service_defs()
+        .iter()
+        .find(|d| d.env_var == KEY_ENV)
+        .unwrap_or_else(|| panic!("no ServiceDef registers {KEY_ENV}"));
+    assert_eq!(
+        def.name, KEY_SERVICE,
+        "KEY_SERVICE must equal the canonical ServiceDef.name for {KEY_ENV}"
+    );
+    assert!(crate::util::service_defs::is_poolable_service(KEY_SERVICE));
 }
