@@ -246,7 +246,7 @@ pub fn credential_likelihood(text: &str) -> f64 {
 
     // Credentials: high alphanumeric, some special chars, no spaces
     let composition_score = match (alphanumeric_ratio, special_chars, space_ratio) {
-        (a, _, s) if s > 0.1 => 0.0,      // Contains spaces (unlikely credential)
+        (_, _, s) if s > 0.1 => 0.0,      // Contains spaces (unlikely credential)
         (a, _, _) if a < 0.7 => 0.0,      // Too many unusual chars
         (a, _, _) if a >= 0.9 => 0.9,     // Pure alphanumeric (good credential)
         (a, sp, _) if a >= 0.8 && sp > 0.05 => 0.8, // Good mix with separators
