@@ -99,6 +99,7 @@ pub mod ip_whois_geo;
 pub mod ipinfo;
 pub mod ipqs;
 pub mod ipquery;
+pub mod key_discovery;
 pub mod keybase;
 pub mod launchpad_user;
 pub mod leakix;
@@ -408,6 +409,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(chain_intel::ChainIntel),
             // OSINT orchestration API modules
             Arc::new(seon::Seon),
+            Arc::new(key_discovery::KeyDiscoveryModule),
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),
             Arc::new(epieos::Epieos),
