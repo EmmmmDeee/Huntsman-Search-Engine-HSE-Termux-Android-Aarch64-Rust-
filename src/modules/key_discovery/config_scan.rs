@@ -3,6 +3,10 @@
 //! Detects common patterns where developers accidentally leak credentials:
 //! - Environment variable assignments (API_KEY=..., SECRET=...)
 //! - Configuration files (.env, .config, config.json, etc.)
+//! - Connection strings (mongodb://, postgresql://, mysql://, etc.)
+//! - Authorization headers (Bearer, Basic, AWS, etc.)
+//! - Database credentials (user:pass@ patterns)
+//! - Private key markers (-----BEGIN RSA PRIVATE KEY-----)
 //! - Logging output (API key in error messages, debug dumps)
 //! - Documentation (example keys, test credentials)
 //! - Version control (git history, commits with embedded keys)
@@ -20,7 +24,7 @@
 pub fn scan_config_for_credentials(text: &str) -> Vec<(String, String)> {
     let mut found = Vec::new();
 
-    // Simple line-based scanning for environment variable assignments
+    // Scan for environment variable assignments and key=value patterns
     for line in text.lines() {
         // Look for patterns like: API_KEY=value, SECRET=value, etc.
         if let Some(eq_pos) = line.find('=') {
@@ -35,6 +39,31 @@ pub fn scan_config_for_credentials(text: &str) -> Vec<(String, String)> {
                 }
             }
         }
+
+        // Detect connection strings (mongodb://, postgresql://, mysql://, etc.)
+        if let Some(cred) = extract_connection_string(line) {
+            found.push(cred);
+        }
+
+        // Detect Authorization headers
+        if let Some(cred) = extract_auth_header(line) {
+            found.push(cred);
+        }
+
+        // Detect database URLs with embedded credentials (user:pass@host patterns)
+        if let Some(cred) = extract_database_url_credentials(line) {
+            found.push(cred);
+        }
+
+        // Detect AWS credentials
+        if let Some(cred) = extract_aws_credentials(line) {
+            found.push(cred);
+        }
+
+        // Detect private key markers
+        if let Some(cred) = detect_private_key(line) {
+            found.push(cred);
+        }
     }
 
     // Deduplicate
@@ -42,6 +71,144 @@ pub fn scan_config_for_credentials(text: &str) -> Vec<(String, String)> {
     found.dedup();
 
     found
+}
+
+/// Extract credentials from connection strings
+fn extract_connection_string(line: &str) -> Option<(String, String)> {
+    let patterns = ["mongodb://", "postgresql://", "mysql://", "mariadb://", "redis://", "mongodb+srv://"];
+    for pattern in patterns.iter() {
+        if let Some(start) = line.find(pattern) {
+            // Extract from the protocol to the end of word boundary
+            let rest = &line[start..];
+            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ';')
+                .unwrap_or(rest.len());
+            let connection_string = &rest[..end];
+
+            // Check if it contains credentials (has @ and : before @)
+            if connection_string.contains('@') && connection_string.contains(':') {
+                // Extract just the password part after the : and before the @
+                if let Some(at_pos) = connection_string.find('@') {
+                    let before_at = &connection_string[..at_pos];
+                    if let Some(colon_pos) = before_at.rfind(':') {
+                        let password = &before_at[colon_pos + 1..];
+                        if !password.is_empty() && password.len() >= 8 && !is_redacted(password) {
+                            return Some((format!("{}_PASSWORD", pattern.trim_end_matches("://").to_uppercase()), password.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract credentials from Authorization headers
+fn extract_auth_header(line: &str) -> Option<(String, String)> {
+    let patterns = ["Authorization:", "X-API-Key:", "X-Auth-Token:", "X-Access-Token:"];
+    for pattern in patterns.iter() {
+        if let Some(start) = line.find(pattern) {
+            let after_pattern = &line[start + pattern.len()..];
+            let rest = after_pattern.trim_start();
+
+            // Skip Bearer, Basic, etc. prefixes
+            let token_start = if rest.starts_with("Bearer ") {
+                7
+            } else if rest.starts_with("Basic ") {
+                6
+            } else {
+                0
+            };
+
+            let rest = &rest[token_start..];
+
+            // Extract the token/credential value
+            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == ';' || c == '\n')
+                .unwrap_or(rest.len());
+            if end >= 10 {
+                let token = rest[..end].trim_matches(|c| c == '\'' || c == '"' || c == ' ');
+                if !token.is_empty() && !is_redacted(token) {
+                    return Some(((*pattern).trim_end_matches(':').to_uppercase().to_string(), token.to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract credentials from database URLs (user:pass@host)
+fn extract_database_url_credentials(line: &str) -> Option<(String, String)> {
+    // Look for user:password@host pattern
+    if let Some(at_pos) = line.find('@') {
+        let before_at = &line[..at_pos];
+        // Find the last colon before the @
+        if let Some(colon_pos) = before_at.rfind(':') {
+            let potential_pass = &before_at[colon_pos + 1..];
+            if !potential_pass.is_empty() && !is_redacted(potential_pass) && is_likely_credential(potential_pass) {
+                // Make sure this looks like a credentials pattern, not a timestamp or similar
+                if before_at.len() > 5 {
+                    return Some(("DATABASE_PASSWORD".to_string(), potential_pass.to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Extract AWS access key patterns
+fn extract_aws_credentials(line: &str) -> Option<(String, String)> {
+    // AWS access key pattern: AKIA followed by 16 alphanumeric characters
+    if let Some(start) = line.find("AKIA") {
+        let rest = &line[start..];
+        // Extract AKIA + alphanumeric chars (should be ~16 more after AKIA)
+        let mut byte_end = 0;
+        for (i, c) in rest.char_indices() {
+            if !c.is_ascii_alphanumeric() {
+                byte_end = i;
+                break;
+            }
+            byte_end = i + c.len_utf8();
+        }
+        if byte_end >= 20 {
+            let potential_key = &rest[..byte_end];
+            if !is_redacted(potential_key) {
+                return Some(("AWS_ACCESS_KEY_ID".to_string(), potential_key.to_string()));
+            }
+        }
+    }
+
+    // AWS secret key pattern: looking for SecretAccessKey= or aws_secret_access_key=
+    let secret_patterns = ["SecretAccessKey=", "aws_secret_access_key="];
+    for pattern in secret_patterns.iter() {
+        if let Some(start) = line.find(pattern) {
+            let rest = &line[start + pattern.len()..];
+            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+                .unwrap_or(rest.len());
+            if end >= 20 {
+                let secret = &rest[..end];
+                if !is_redacted(secret) {
+                    return Some(("AWS_SECRET_ACCESS_KEY".to_string(), secret.to_string()));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// Detect if a line contains a private key marker
+fn detect_private_key(line: &str) -> Option<(String, String)> {
+    let key_markers = [
+        "-----BEGIN RSA PRIVATE KEY-----",
+        "-----BEGIN OPENSSH PRIVATE KEY-----",
+        "-----BEGIN PRIVATE KEY-----",
+        "-----BEGIN EC PRIVATE KEY-----",
+        "-----BEGIN PGP PRIVATE KEY-----",
+    ];
+    for marker in key_markers.iter() {
+        if line.contains(marker) {
+            return Some(("PRIVATE_KEY".to_string(), marker.to_string()));
+        }
+    }
+    None
 }
 
 /// Check if a key name looks like it contains a credential
@@ -110,5 +277,43 @@ mod tests {
         assert!(should_scan_key("secret"));
         assert!(should_scan_key("password"));
         assert!(!should_scan_key("username"));
+    }
+
+    #[test]
+    fn detects_connection_strings() {
+        let text = "mongodb://user:password123@mongodb.example.com:27017/dbname";
+        let found = scan_config_for_credentials(text);
+        assert!(!found.is_empty(), "Should find MongoDB connection string");
+        assert!(found.iter().any(|(k, _)| k.contains("MONGODB")));
+    }
+
+    #[test]
+    fn detects_auth_headers() {
+        let text = "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9Token123456789";
+        let found = scan_config_for_credentials(text);
+        assert!(!found.is_empty(), "Should find Authorization header");
+        assert!(found.iter().any(|(k, _)| k.contains("AUTHORIZATION")));
+    }
+
+    #[test]
+    fn detects_api_secret_assignments() {
+        let text = "aws_secret_access_key=WJAG7ASD89fjkasdflj23kdasfljkasdflkasdjfDEADBEEF";
+        let found = scan_config_for_credentials(text);
+        assert!(!found.is_empty(), "Should find AWS secret via key assignment");
+    }
+
+    #[test]
+    fn detects_private_key_markers() {
+        let text = "-----BEGIN RSA PRIVATE KEY-----";
+        let found = scan_config_for_credentials(text);
+        assert!(!found.is_empty(), "Should find private key marker");
+        assert!(found.iter().any(|(k, _)| k.contains("PRIVATE_KEY")));
+    }
+
+    #[test]
+    fn detects_database_credentials() {
+        let text = "postgresql://admin:secretpassword123@db.example.com:5432/mydb";
+        let found = scan_config_for_credentials(text);
+        assert!(!found.is_empty(), "Should find database credentials");
     }
 }
