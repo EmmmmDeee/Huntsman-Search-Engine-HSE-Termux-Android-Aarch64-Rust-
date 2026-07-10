@@ -63,7 +63,7 @@ impl Module for KeyDiscoveryModule {
         ModuleCost::Free
     }
 
-    fn accepts(&self, target: &Target) -> bool {
+    fn accepts(&self, _target: &Target) -> bool {
         // This module runs on any target kind to monitor the pool state
         // and harvest statistics across all scans.
         true
