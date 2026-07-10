@@ -342,6 +342,27 @@ const _: () = assert!(DEFAULT_SCAN_DEPTH <= MAX_DEPTH);
 /// callers manage their own bounds.
 pub const DEFAULT_MAX_ENTITIES: usize = 2500;
 
+/// Default per-scan wall-time backstop, in seconds, scaled by expansion depth.
+///
+/// A bare `hse scan` previously passed `max_wall_time_secs = None` end-to-end, so
+/// the watchdog never spawned and a heavy comprehensive scan (depth = [`MAX_DEPTH`],
+/// ~70 accepting modules) could run effectively forever — the operator saw it
+/// "hang" with no output and killed it, which reads as "APIs aren't executing /
+/// recursion isn't happening". This is a SAFETY BACKSTOP, not a target: on cancel
+/// the engine still persists everything collected so far and prints an `Aborted`
+/// scan, so a bounded terminate-and-print always beats a silent runaway. The
+/// operator overrides with `--max-wall-time` (and `0` means unlimited). Generous
+/// so it never cuts off a legitimately-completing scan; the concurrency fixes
+/// make real scans finish in a fraction of these bounds.
+#[must_use]
+pub fn default_wall_for_depth(depth: u32) -> u64 {
+    match depth {
+        0..=1 => 240,
+        2 => 420,
+        _ => 600,
+    }
+}
+
 /// The comprehensive product expansion floor applied to CLI / API / web scans
 /// when the operator gives no explicit `--min-expand-confidence`: expand any
 /// entity whose effective confidence is at least 0.20, so the seed's own derived
@@ -500,12 +521,21 @@ fn default_request_max_entities() -> Option<usize> {
     Some(DEFAULT_MAX_ENTITIES)
 }
 
-/// Serde default for [`ScanOptions::max_concurrent`] — the product's gentle
-/// concurrency (2), matching `ScanOptions::default()` and the CLI flag default,
-/// so omitting the field inside an `options` object behaves identically to
-/// omitting the `options` object altogether.
+/// Serde default for [`ScanOptions::max_concurrent`], matching
+/// `ScanOptions::default()` and the CLI flag default, so omitting the field
+/// inside an `options` object behaves identically to omitting the `options`
+/// object altogether.
+///
+/// 8 — parity with the comprehensive shipping profiles (`investigate`/`deep`
+/// already run 8 on-device; `recommended`/`fast`/`lite` run 4). The default scan
+/// is comprehensive-by-default (depth = `MAX_DEPTH`) over ~70 accepting modules,
+/// almost all network-I/O-bound futures (one pending future + one socket per
+/// permit, not CPU/RAM), so the previous gentle value of 2 serialized the seed
+/// round so heavily that it never completed in a usable time and expansion never
+/// ran. The [`MAX_CONCURRENT`] clamp and the `== 0` sequential branch are
+/// unchanged, so a low-power device can still pin it back down.
 fn default_max_concurrent() -> usize {
-    2
+    8
 }
 
 /// Serde default for [`ScanOptions::regional_search`] — AU-focused on by default

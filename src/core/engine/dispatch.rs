@@ -854,19 +854,54 @@ impl super::ScanEngine {
     }
 
     /// Phase 1 of the concurrent dispatcher: run this target's **Paid** modules
-    /// synchronously, in priority order. Paid providers (oathnet_pro, dehashed,
-    /// intelx, …) discover API keys that `hot_inject_keys` folds into `ctx`, so
-    /// running them first lets the concurrently-spawned Phase 2 modules see those
-    /// keys. Mutates `state` (entity_map / stats / dedup ledger) in place; the
-    /// whole phase is best-effort per module, so it never returns an error.
+    /// CONCURRENTLY (bounded), in registry order. Paid providers (oathnet_pro,
+    /// dehashed, intelx, see_know, …) discover API keys that `hot_inject_keys`
+    /// folds into `ctx`, so this phase completes before the free/key-gated Phase 2
+    /// is spawned. Mutates `state` (entity_map / stats / dedup ledger) in place;
+    /// the whole phase is best-effort per module, so it never returns an error.
+    ///
+    /// Previously this was a strictly SERIAL loop: the slowest paid module
+    /// (`see_know` answers in 55–80s and always fires) ran to completion before
+    /// the next paid module started AND before any free module was spawned — so
+    /// on a default scan the paid phase alone could exceed the whole wall budget,
+    /// the seed round never finished, and expansion never ran. It now spawns the
+    /// paid modules into a `Semaphore`-bounded `JoinSet` (the exact
+    /// [`spawn_free_phase`](Self::spawn_free_phase) pattern), collapsing paid-phase
+    /// latency from Σ-timeouts to ~max-timeout. Concurrency is capped LOWER than
+    /// the free phase (`≤ 4`) because paid modules carry per-query quotas / rate
+    /// limits. The paid→free key cascade is preserved: keys a paid module
+    /// discovers land in the process-global `key_pool` regardless of task order,
+    /// and a single `hot_inject_keys` after the drain folds them all into `ctx`
+    /// before Phase 2 clones it.
     async fn run_paid_phase(
         &self,
         cx: &DispatchCx<'_>,
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        // Paid modules are heavier than free ones (per-query billing, tighter
+        // provider rate limits), so bound them below the free-phase width. `.max(1)`
+        // keeps the `== 0` sequential intent from starving the phase to a deadlock.
+        let paid_concurrency = cx.opts.effective_max_concurrent().clamp(1, 4);
+        let sem = Arc::new(Semaphore::new(paid_concurrency));
+        let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
+        let scan_id_arc: Arc<str> = cx.scan_id.into();
+        // Snapshot ctx once for all paid tasks this phase — like Phase 2, they take
+        // `&ModuleContext` (read-only). A paid module therefore does not see keys a
+        // sibling paid module discovers DURING this phase; that cross-dependency is
+        // rare, and the global pool + end-of-phase inject still deliver every key to
+        // Phase 2 (the cascade that actually matters).
+        let ctx_shared: Arc<ModuleContext> = Arc::new(ctx.clone());
+
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         for &idx in self.graph.modules_for(cx.target.kind) {
+            // Absorb any finished tasks so the `max_entities` gate below reads live.
+            while let Some(joined) = set.try_join_next() {
+                self.absorb_dispatch_outcome(cx, joined, state);
+            }
             let Some(module) = self.modules.get(idx) else {
                 continue;
             };
@@ -898,45 +933,81 @@ impl super::ScanEngine {
                 self.emit_skipped(cx.scan_id, name, "already dispatched for this target");
                 continue;
             }
-            // Inter-scan entity cache (C9): check before dispatching.
-            let ttl = module.cache_ttl_secs();
-            let cache_key = (ttl > 0).then(|| archive_key(name, cx.target));
-            if let Some(ref key) = cache_key
-                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
+            // Inter-scan entity cache (C9): a hit replays inline without spawning.
+            let ttl_secs = module.cache_ttl_secs();
+            let cache_key = if ttl_secs > 0 {
+                archive_key(name, cx.target)
+            } else {
+                String::new()
+            };
+            if ttl_secs > 0
+                && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(&cache_key)
             {
                 self.replay_cached_result(cx, &**module, cached, state);
-                super::hot_inject_keys(&mut ctx.keys);
                 continue;
             }
 
-            log_module_dispatch(name, cx.target);
-            self.emit(
-                cx.scan_id,
-                EventKind::ModuleStart {
-                    module: name.into(),
-                },
-            );
-            let result = run_module_guarded(
-                super::resolve_timeout(cx.opts, &**module),
-                name,
-                module.process(cx.target, ctx),
-            )
-            .instrument(tracing::info_span!(
-                "module",
-                module = name,
-                scan_id = cx.scan_id,
-                target = %cx.target.value
-            ))
-            .await;
-            // Inter-scan entity cache (C9): archive a successful result.
-            self.archive_if_eligible(cache_key.as_deref(), ttl, &result);
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), false);
-            // Hot-inject discovered keys so Phase 2 modules can use them.
-            // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
-            // cascade — their outputs feed web_crawler/search_engines, which
-            // discover MORE keys.
-            super::hot_inject_keys(&mut ctx.keys);
+            let Ok(permit) = Arc::clone(&sem).acquire_owned().await else {
+                break;
+            };
+            let module_arc: Arc<dyn Module> = Arc::clone(module);
+            let target = cx.target.clone();
+            let ctx_task = Arc::clone(&ctx_shared);
+            let emitter = self.emitter.clone();
+            let sid = Arc::clone(&scan_id_arc);
+            let throttle_ms = cx.opts.effective_throttle_ms();
+            let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
+            let attack_techniques = module.attack_techniques();
+            // MANDATORY: re-establish the foreign-key scan scope inside the task —
+            // tokio task-locals do NOT propagate across `spawn`, so without this a
+            // paid module's discovered keys / `ApiKey` entities land in the unscoped
+            // bucket and are dropped at drain (a silent data-loss regression).
+            let scope_sid = sid.to_string();
+            set.spawn(crate::util::found_keys::with_scan(scope_sid, async move {
+                let _permit = permit;
+                log_module_dispatch(name, &target);
+                emitter.emit(
+                    &sid,
+                    EventKind::ModuleStart {
+                        module: name.into(),
+                    },
+                );
+                if throttle_ms > 0 {
+                    sleep(Duration::from_millis(throttle_ms)).await;
+                }
+                let result = run_module_guarded(
+                    module_timeout_ms,
+                    name,
+                    module_arc.process(&target, &ctx_task),
+                )
+                .instrument(tracing::info_span!(
+                    "module",
+                    module = name,
+                    scan_id = %sid,
+                    target = %target.value
+                ))
+                .await;
+                DispatchOutcome {
+                    name,
+                    result,
+                    ttl_secs,
+                    cache_key,
+                    attack_techniques,
+                }
+            }));
         }
+
+        while let Some(joined) = set.join_next().await {
+            if ctx.cancel.is_cancelled() {
+                set.abort_all();
+            }
+            self.absorb_dispatch_outcome(cx, joined, state);
+        }
+        // Fold every key the paid providers discovered (persisted in the global
+        // key_pool regardless of task order) into `ctx` ONCE, so Phase 2's clone
+        // carries them. Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl,
+        // …) cascade — their outputs feed web_crawler/search_engines.
+        super::hot_inject_keys(&mut ctx.keys);
     }
 
     /// Phase 2 of the concurrent dispatcher: spawn this target's remaining (Free +

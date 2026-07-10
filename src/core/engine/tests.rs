@@ -2680,3 +2680,113 @@ fn admission_rejection_covers_every_drop_filter_and_order() {
         "the earliest gate in the chain wins",
     );
 }
+
+/// Paid stub that sleeps `sleep_ms` then emits one entity named after itself, so
+/// a test can prove both that it ran (its entity is present) and how long the
+/// PHASE took (concurrent ⇒ ~max sleep, serial ⇒ ~sum of sleeps).
+struct SleepyPaidModule {
+    name: &'static str,
+    sleep_ms: u64,
+}
+
+#[async_trait::async_trait]
+impl Module for SleepyPaidModule {
+    fn name(&self) -> &'static str {
+        self.name
+    }
+    fn priority(&self) -> u8 {
+        50
+    }
+    fn accepts(&self, _: &Target) -> bool {
+        true
+    }
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::Paid
+    }
+    fn produces(&self) -> &'static [EntityKind] {
+        const K: &[EntityKind] = &[EntityKind::Username];
+        K
+    }
+    async fn process(
+        &self,
+        _: &Target,
+        ctx: &ModuleContext,
+    ) -> crate::core::error::Result<crate::core::module::ModuleResult> {
+        tokio::time::sleep(std::time::Duration::from_millis(self.sleep_ms)).await;
+        let mut r = crate::core::module::ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Username, self.name, 0.9, &ctx.scan_id);
+        e.add_evidence(crate::core::entity::Evidence::new(self.name, "synthetic"));
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn paid_phase_runs_modules_concurrently() {
+    // Regression guard for the paid-phase parallelization: three Paid modules
+    // that each sleep 200ms must run CONCURRENTLY (~200ms wall), not serially
+    // (~600ms). Before the fix, run_paid_phase was a serial loop that awaited each
+    // paid module to completion — so see_know's 55–80s answer blocked every other
+    // module and the seed round never finished on a default scan.
+    use crate::core::test_support::InMemoryStore;
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(4096);
+    let modules: Vec<Arc<dyn Module>> = vec![
+        Arc::new(SleepyPaidModule {
+            name: "paid_a",
+            sleep_ms: 200,
+        }),
+        Arc::new(SleepyPaidModule {
+            name: "paid_b",
+            sleep_ms: 200,
+        }),
+        Arc::new(SleepyPaidModule {
+            name: "paid_c",
+            sleep_ms: 200,
+        }),
+    ];
+    let engine = ScanEngine::new(modules, store_port, bus.clone());
+    let opts = ScanOptions {
+        depth: 0,
+        max_concurrent: 4,
+        // Leave the process-global REGIONAL_SEARCH toggle at its default (false):
+        // the engine calls `set_regional(opts.regional_search)` at scan start, and
+        // a concurrently-running `search_engines::build_queries` test asserts the
+        // default geolocation-neutral query set. This test needs no regional
+        // augmentation, so keep it from polluting that shared global.
+        regional_search: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+    };
+    let start = std::time::Instant::now();
+    let _ = engine.run(scan, target, ctx).await;
+    let elapsed = start.elapsed();
+
+    // All three paid modules ran (their entities are present).
+    for n in ["paid_a", "paid_b", "paid_c"] {
+        assert!(
+            store.entity_values().iter().any(|v| v == n),
+            "paid module {n} must have run and emitted its entity"
+        );
+    }
+    // Concurrent, not serial: 3×200ms serial ≈ 600ms; concurrent ≈ 200ms. A 500ms
+    // ceiling is a wide margin that still fails the old serial behaviour.
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "paid phase must run concurrently (took {elapsed:?}, serial would be ~600ms)"
+    );
+}

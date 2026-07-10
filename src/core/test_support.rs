@@ -45,6 +45,17 @@ impl InMemoryStore {
     pub fn entity_count(&self) -> usize {
         self.inner.lock().entities.len()
     }
+
+    /// The values of all persisted entities — lets a test assert which specific
+    /// modules ran by the entities they emitted.
+    pub fn entity_values(&self) -> Vec<String> {
+        self.inner
+            .lock()
+            .entities
+            .values()
+            .map(|e| e.value.clone())
+            .collect()
+    }
 }
 
 impl StoragePort for InMemoryStore {

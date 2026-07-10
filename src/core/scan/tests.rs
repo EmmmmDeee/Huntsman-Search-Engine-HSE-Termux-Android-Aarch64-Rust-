@@ -57,9 +57,23 @@ fn options_default_is_inert() {
     assert!(!o.passive_only);
     assert_eq!(o.depth, 0);
     assert!((o.min_expand_confidence - 0.50).abs() < 1e-9);
-    // Gentle by default (2, not 4) so deep/everything scans don't flood the
-    // link or trip provider rate limits.
-    assert_eq!(o.max_concurrent, 2);
+    // 8 by default — parity with the comprehensive investigate/deep profiles.
+    // Most modules are network-I/O-bound, so a lower value serialized the
+    // ~70-module seed round so heavily it never completed and expansion never ran.
+    assert_eq!(o.max_concurrent, 8);
+}
+
+#[test]
+fn default_wall_for_depth_scales_and_is_bounded() {
+    use super::default_wall_for_depth;
+    // Monotonic non-decreasing with depth, and every value is a finite backstop.
+    assert_eq!(default_wall_for_depth(0), 240);
+    assert_eq!(default_wall_for_depth(1), 240);
+    assert_eq!(default_wall_for_depth(2), 420);
+    assert_eq!(default_wall_for_depth(MAX_DEPTH), 600);
+    // Deeper-than-MAX (clamped elsewhere, but the helper must still be bounded).
+    assert_eq!(default_wall_for_depth(99), 600);
+    assert!(default_wall_for_depth(0) <= default_wall_for_depth(MAX_DEPTH));
 }
 
 #[test]

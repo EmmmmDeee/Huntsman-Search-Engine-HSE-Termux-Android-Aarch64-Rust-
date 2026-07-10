@@ -184,7 +184,17 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         max_entities: cmd
             .max_entities
             .or(Some(crate::core::scan::DEFAULT_MAX_ENTITIES)),
-        max_wall_time_secs: cmd.max_wall_time_secs,
+        // Comprehensive-but-bounded: a bare `hse scan` used to pass `None` here,
+        // so the watchdog never spawned and a heavy depth-MAX_DEPTH scan could run
+        // forever (the operator's "it hangs / recursion never happens" report).
+        // Apply a depth-scaled backstop when none was given; on the timeout the
+        // engine persists what it has and prints an `Aborted` scan. An explicit
+        // `--max-wall-time 0` means unlimited (opt back into the old behaviour).
+        max_wall_time_secs: match cmd.max_wall_time_secs {
+            Some(0) => None,
+            Some(n) => Some(n),
+            None => Some(crate::core::scan::default_wall_for_depth(depth)),
+        },
         scan_tags: Vec::new(),
         notes: None,
         webhook_url: crate::core::webhook::webhook_url_from_env(),

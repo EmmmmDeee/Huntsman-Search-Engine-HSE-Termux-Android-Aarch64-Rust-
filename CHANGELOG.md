@@ -11,6 +11,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **Scan pipeline: scans now complete and recurse in usable time (ground-up
+  Phase 1).** A root-cause investigation found that a default `hse scan` could
+  not finish its seed round — so expansion (recursion) never ran and the scan
+  appeared to hang with no output. Three coupled fixes:
+  - *The paid-module phase now runs concurrently.* It was a strictly serial loop:
+    the slowest paid provider (`see_know` answers in 55–80s and always fires) ran
+    to completion before the next paid module started **and** before any free
+    module was spawned, so on a ~70-module scan the paid phase alone could exceed
+    the whole time budget. It now dispatches paid modules through a bounded
+    `Semaphore`/`JoinSet` (the same pattern the free phase already used, with the
+    same task-local scan-scope guard so discovered keys/entities aren't lost),
+    collapsing paid-phase latency from the sum of timeouts to roughly the slowest
+    one. The paid→free key cascade is preserved.
+  - *Default module concurrency raised 2 → 8.* The old gentle default serialized
+    the ~65-module free phase so heavily the round never finished; 8 matches the
+    comprehensive `investigate`/`deep` profiles and suits the network-I/O-bound
+    work. The `MAX_CONCURRENT` clamp and the `0` = sequential escape hatch are
+    unchanged.
+  - *A default wall-time backstop is applied.* A bare `hse scan` passed no
+    wall-time, so the watchdog never armed and a heavy scan could run
+    effectively forever. A depth-scaled default (240s at depth ≤1 → 600s at
+    `MAX_DEPTH`) now bounds it; on timeout the engine persists everything
+    collected and prints an `Aborted` scan instead of being killed with zero
+    output. `--max-wall-time` overrides; `--max-wall-time 0` means unlimited.
 - **SeekNow integration repointed to the live `see-know.icu` domain and its
   daily-quota parsing corrected.** The service had half-migrated: the runtime
   client already used `see-know.icu`, but the key-validation endpoint, signup

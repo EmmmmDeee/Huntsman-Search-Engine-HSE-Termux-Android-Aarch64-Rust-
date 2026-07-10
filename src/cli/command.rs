@@ -115,10 +115,12 @@ pub enum Command {
         /// Hard cap on total wall-time in seconds. Stops expansion when exceeded.
         #[arg(long)]
         max_wall_time: Option<u64>,
-        /// Modules to run in parallel per round. Default 2 (gentle — avoids
-        /// flooding the link / tripping rate limits). Raise it when the network
-        /// can take it; set 0 for fully sequential dispatch (low-power devices).
-        #[arg(long, default_value_t = 2)]
+        /// Modules to run in parallel per round. Default 8 (parity with the
+        /// comprehensive `investigate`/`deep` profiles) — most modules are
+        /// network-I/O-bound, so a low value serializes the ~70-module seed round
+        /// so heavily it never completes. Lower it on a constrained link; set 0
+        /// for fully sequential dispatch (low-power devices).
+        #[arg(long, default_value_t = 8)]
         max_concurrent: usize,
         /// Read ~/.huntsman/module_stats.json and skip modules with
         /// historical zero-yield rate ≥80% over ≥5 scans. Closes the
@@ -404,7 +406,7 @@ pub enum Command {
         #[arg(long)]
         max_wall_time: Option<u64>,
         /// Same as `scan --max-concurrent`.
-        #[arg(long, default_value_t = 2)]
+        #[arg(long, default_value_t = 8)]
         max_concurrent: usize,
         /// Same as `scan --max-roi`.
         #[arg(long)]
