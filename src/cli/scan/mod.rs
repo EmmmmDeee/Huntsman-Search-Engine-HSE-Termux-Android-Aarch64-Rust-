@@ -301,7 +301,10 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({
                 "scan": scan,
-                "entities": entities,
+                // Each entity carries its derived c_effective + classification
+                // (additive — every raw field is preserved via serde flatten), so
+                // a JSON consumer sees the precision band, not just raw confidence.
+                "entities": entities.iter().map(entity_view).collect::<Vec<_>>(),
                 "correlations": correlations,
                 "relations": relations,
                 "diagnostics": diag,
@@ -356,12 +359,37 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         } else {
             println!();
         }
+        // Partition confirmed leads from quarantined `candidate`-tagged ones
+        // (same-name strangers / speculative non-subject nodes the gates demoted),
+        // PRESERVING the storage sort order (is_incidental_infra then c_effective
+        // desc — re-sorting would drop that primary key). Separation, not
+        // suppression: both stay visible, but the operator can tell a real weak
+        // subject lead from a quarantined foreign node, which both otherwise read
+        // as bare `CANDIDATE`.
+        let (confirmed, quarantined): (Vec<&crate::core::entity::Entity>, Vec<_>) = entities
+            .iter()
+            .partition(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+        // Precision summary over the confirmed set (+ the quarantined count) so
+        // the confidence profile is visible at a glance (transparency).
+        use crate::core::entity::Classification;
+        let (mut n_verified, mut n_probable, mut n_candidate) = (0usize, 0usize, 0usize);
+        for e in &confirmed {
+            match e.classify() {
+                Classification::Verified => n_verified += 1,
+                Classification::Probable => n_probable += 1,
+                Classification::Candidate => n_candidate += 1,
+            }
+        }
+        println!(
+            "  precision: {n_verified} verified · {n_probable} probable · {n_candidate} candidate ({} quarantined non-subject)\n",
+            quarantined.len()
+        );
         println!(
             "{:<16} {:>6} {:>6}  {:<10} {:<26} VALUE",
             "KIND", "CONF", "C_EFF", "CLASS", "SOURCES"
         );
         println!("{}", "-".repeat(90));
-        for e in &entities {
+        let print_row = |e: &crate::core::entity::Entity| {
             let c_eff = e.c_effective();
             let class = e.classify();
             // Raw source names (not just a count) for at-a-glance traceability;
@@ -375,6 +403,18 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
                 e.kind, e.confidence, c_eff, class, sources, e.value
             );
             println!("{}", color_confidence(c_eff, &row, color));
+        };
+        for &e in &confirmed {
+            print_row(e);
+        }
+        if !quarantined.is_empty() {
+            println!(
+                "\n── SPECULATIVE / NON-SUBJECT (quarantined, {}) ──",
+                quarantined.len()
+            );
+            for &e in &quarantined {
+                print_row(e);
+            }
         }
         if !correlations.is_empty() {
             println!("\n{} correlations:\n", correlations.len());
@@ -505,6 +545,31 @@ fn new_adaptive_skips(existing: &[String], recommended: &[String]) -> Vec<String
 /// module name). Surfaced in the table view so results show their RAW sources,
 /// not just an evidence count. All distinct sources are listed (no truncation —
 /// the column is last on the row).
+/// Serialize-only view of an entity that ADDS the two derived precision fields
+/// the raw `Entity` serde schema omits — `c_effective()` (corroboration-adjusted
+/// confidence) and `classify()` (the VERIFIED/PROBABLE/CANDIDATE band) are
+/// methods, not fields, so a JSON consumer otherwise sees only the raw
+/// `confidence`. Flattening keeps every existing field, so this is additive (the
+/// persisted `Entity` schema, UID hashing, and round-trips are untouched). The
+/// CSV export already carries both; this brings the `-o json` surface to parity.
+#[derive(serde::Serialize)]
+struct EntityView<'a> {
+    #[serde(flatten)]
+    entity: &'a crate::core::entity::Entity,
+    /// Corroboration-adjusted effective confidence, rounded to 3 dp.
+    c_effective: f64,
+    /// The classification band derived from `c_effective`.
+    classification: crate::core::entity::Classification,
+}
+
+fn entity_view(e: &crate::core::entity::Entity) -> EntityView<'_> {
+    EntityView {
+        entity: e,
+        c_effective: (e.c_effective() * 1000.0).round() / 1000.0,
+        classification: e.classify(),
+    }
+}
+
 fn entity_source_labels(e: &crate::core::entity::Entity) -> String {
     let mut seen = std::collections::BTreeSet::new();
     for ev in &e.evidence {
@@ -534,6 +599,37 @@ mod tests {
     use super::*;
     use crate::core::entity::{Entity, EntityKind, Evidence};
     use std::cell::Cell;
+
+    #[test]
+    fn entity_view_adds_precision_fields_and_preserves_raw_fields() {
+        // The JSON view must ADD c_effective + classification while keeping every
+        // raw Entity field (flatten), so a consumer gets the precision band
+        // without losing anything.
+        let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.9, "scan");
+        e.add_evidence(Evidence::new("hibp", "breach"));
+        let v = serde_json::to_value(entity_view(&e)).unwrap();
+        // Added precision fields.
+        assert!(
+            v.get("c_effective")
+                .and_then(serde_json::Value::as_f64)
+                .is_some()
+        );
+        assert_eq!(
+            v.get("classification").and_then(serde_json::Value::as_str),
+            Some("VERIFIED"),
+            "0.9 confidence classifies VERIFIED"
+        );
+        // Raw fields preserved via flatten.
+        assert_eq!(
+            v.get("value").and_then(serde_json::Value::as_str),
+            Some("a@b.com")
+        );
+        assert_eq!(
+            v.get("kind").and_then(serde_json::Value::as_str),
+            Some("email")
+        );
+        assert!(v.get("confidence").is_some());
+    }
 
     #[test]
     fn unknown_module_names_flags_typos_and_removed_modules() {

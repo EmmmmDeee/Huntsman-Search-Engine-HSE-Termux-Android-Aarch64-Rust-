@@ -31,6 +31,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
     back into results by default. Enable with `hse config feature.cross_scan on`.
 
 ### Added
+- **Scan results: more presentable, higher precision & transparency (Phase 4).**
+  - *The default results table now separates confirmed leads from quarantined
+    ones and leads with a precision summary.* A `precision: N verified · N
+    probable · N candidate (N quarantined non-subject)` line gives the confidence
+    profile at a glance, and the quarantined `candidate`-tagged nodes (same-name
+    strangers / speculative non-subject leads the gates demoted) are printed under
+    a `── SPECULATIVE / NON-SUBJECT (quarantined, N) ──` divider instead of inline
+    — so a genuine weak subject lead and a foreign breach victim, which both read
+    as bare `CANDIDATE`, are now visually distinct. Separation, not suppression:
+    nothing is hidden, and the storage sort order is preserved.
+  - *`-o json` entities now carry `c_effective` and `classification`.* The raw
+    `Entity` serde schema exposes only `confidence`; the derived
+    corroboration-adjusted `c_effective` and its VERIFIED/PROBABLE/CANDIDATE band
+    are now serialized alongside (additive — every raw field preserved), bringing
+    the JSON surface to parity with the CSV export.
 - **Scan pipeline: recursion and lifecycle are now visible in the log (Phase 2
   verbosity).** Expansion decisions were emitted only as events (to the DB /
   SSE bus), never to the standard log — so an operator watching `hse scan` saw
