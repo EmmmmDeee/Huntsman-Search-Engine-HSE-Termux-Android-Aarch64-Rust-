@@ -60,6 +60,11 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_OSINTCAT_KEY",
     "HUNTSMAN_NIAMONX_KEY",
     "HUNTSMAN_FULLCONTACT_KEY",
+    // Developer platforms. The GitHub token is optional (it only raises the
+    // per-IP rate limit for github_user/_commits/_code_search), but registering
+    // it makes multi-token rotation, validation, and Settings visibility work —
+    // valuable given GitHub's aggressive unauthenticated rate limits.
+    "HUNTSMAN_GITHUB_TOKEN",
     // Breach / search multipliers — high-leverage paid pools the Settings
     // grid must surface so the operator can paste/rotate them in the UI.
     "HUNTSMAN_SEEKNOW_KEY",
@@ -128,6 +133,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_OSINTCAT_KEY" => "OSINTCat — https://www.osintcat.net",
         "HUNTSMAN_NIAMONX_KEY" => "Niamonx — https://niamonx.io",
         "HUNTSMAN_FULLCONTACT_KEY" => "FullContact — https://fullcontact.com",
+        "HUNTSMAN_GITHUB_TOKEN" => {
+            "GitHub — free personal access token at https://github.com/settings/tokens"
+        }
         _ => return None,
     })
 }

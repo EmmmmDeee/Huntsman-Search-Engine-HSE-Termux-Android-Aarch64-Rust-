@@ -20,15 +20,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   because a single-key probe can't supply a paired credential — WiGLE keeps its
   own dedicated account check. This turns `hse doctor` into a genuine one-stop
   key health check.
-- **Three previously-invisible provider keys are now registered.**
-  `HUNTSMAN_OSINTCAT_KEY`, `HUNTSMAN_NIAMONX_KEY`, and `HUNTSMAN_FULLCONTACT_KEY`
-  — read by their modules but absent from the key registry — now appear in the
-  Settings grid and `hse doctor`/`hse keys` so they can be pasted and managed.
-  OSINTCat is additionally registered as a poolable service (`hse keys services`),
-  so its key rotates, validates, and gets dead-key memory like the others; Niamonx
-  and FullContact are POST-only, so they are deliberately left unpooled (a
-  GET-based validator would mis-report a valid key), documented alongside the
-  same DeHashed exclusion.
+- **Previously-invisible provider keys are now registered.**
+  `HUNTSMAN_OSINTCAT_KEY`, `HUNTSMAN_GITHUB_TOKEN`, `HUNTSMAN_NIAMONX_KEY`, and
+  `HUNTSMAN_FULLCONTACT_KEY` — read by their modules but absent from the key
+  registry — now appear in the Settings grid and `hse doctor`/`hse keys` so they
+  can be pasted and managed. OSINTCat and the GitHub token are additionally
+  registered as poolable services (`hse keys services`), so they rotate,
+  validate (`GET /api/user`, `GET /user`), and get dead-key memory like the
+  others — GitHub multi-token rotation is especially useful given its aggressive
+  rate limits. Niamonx and FullContact are POST-only, so they are deliberately
+  left unpooled (a GET-based validator would mis-report a valid key), documented
+  alongside the same DeHashed exclusion.
 
 ### Fixed
 - **Hunter.io and Exa key rotation now actually works.** Both modules reported

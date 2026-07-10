@@ -381,6 +381,18 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         key_header: KeyPlacement::Header("x-api-key"),
         rate_limit_reset_secs: 60,
     },
+    // GitHub personal-access token — optional for github_user/_commits/
+    // _code_search (raises the rate limit). `Authorization: Bearer <token>`;
+    // GET /user is the canonical token check (200 valid / 401 invalid; curl's
+    // default User-Agent satisfies GitHub's UA requirement).
+    ServiceDef {
+        name: "github",
+        env_var: "HUNTSMAN_GITHUB_TOKEN",
+        category: "code",
+        test_url: "https://api.github.com/user",
+        key_header: KeyPlacement::BearerAuth,
+        rate_limit_reset_secs: 60,
+    },
     // Intentionally NOT registered (same reasoning as DeHashed above): `niamonx`
     // (POST `/breaches_search`, `X-API-Key` header) and `fullcontact` (POST
     // `/v3/person.enrich`, `Authorization: Bearer`) are POST-only, so the

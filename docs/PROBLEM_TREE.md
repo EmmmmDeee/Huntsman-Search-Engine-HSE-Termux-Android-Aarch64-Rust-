@@ -1483,9 +1483,11 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
     validates every configured key against its registered endpoint (live /
     REJECTED / unknown), concurrently, skipping composite-credential services
     (WiGLE, Censys/PassiveTotal BasicAuth) that a single-key probe can't supply;
-    verified live (`hibp`→live, bad `shodan`→REJECTED). *Remaining:*
-    `GITHUB_TOKEN` (optional/shared across 3 modules) and `ABUSECH` (shared with
-    threatfox) registration. **P2**
+    verified live (`hibp`→live, bad `shodan`→REJECTED). ✅ **GitHub token
+    registered (2026-07-10):** `name: "github"`, `BearerAuth`, `GET /user`
+    validation — enables multi-token rotation for GitHub's harsh rate limits;
+    live in `hse keys services`. *Remaining:* `ABUSECH` (shared with threatfox)
+    — KEY.2 essentially complete. **P2**
   - **`[ ]` KEY.3 · Spend every held key.** Build collector modules for the
     keys HSE holds/validates but never spends — `FOFA`, `BuiltWith`,
     `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`, `PassiveTotal`,
