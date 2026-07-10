@@ -26,6 +26,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `scan_cap=750`), and a `see_know`-only scan returns real data.
 
 ### Added
+- **A SeekNow API key leaked in the breach/stealer corpus is now auto-sourced
+  into the rotation pool.** The key-harvest prefix table recognised 80+ vendor
+  key formats but not SeekNow's own `seek-`+48-hex shape, so a raw SeekNow key
+  dumped in a stealer log or config was never identified as a key — even though
+  the domain router (`service_domains`) and `service_defs` were already wired to
+  pool a SeekNow credential found under its host. Added the `seek-` → `see_know`
+  pattern, closing the prefix-based half of the harvest: a leaked key now folds
+  straight into the same rotation pool, giving the failover path a real shot at a
+  second live enterprise key (double the 15k/day quota) when one turns up in the
+  data HSE already scans. The `see_know` service name is shared across the
+  matcher, the domain router, and the pool, so the sourced key rotates,
+  validates, and gets dead-key memory like any other.
 - **SeekNow (and every breach-rich provider) now extracts the data endpoints
   wrap one or two levels deep, and types pivots by value instead of field
   name.** Three future-proof extraction upgrades, verified live against

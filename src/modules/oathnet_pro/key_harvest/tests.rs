@@ -166,6 +166,28 @@ fn identify_api_key_still_accepts_real_high_entropy_key() {
 }
 
 #[test]
+fn identify_api_key_recognises_seeknow_and_routes_it_to_the_pool() {
+    // SeekNow's `seek-` + 48-hex format (a synthetic high-entropy key, not a live
+    // secret). A raw SeekNow key leaked in the breach/stealer corpus must be
+    // identified as `see_know` — the SAME poolable service name the domain router
+    // and `service_defs` use — so it folds straight into the rotation pool as a
+    // sourced key. This closes the prefix-based harvest half of "source more keys
+    // as you go" (the domain-based half is already wired in `service_domains`).
+    let candidate = "seek-a3f8c1d90b7e264f5a8c0e1d9f4b6a2c7e3d80f19b5c4a6e";
+    let (svc, matched) = identify_api_key(candidate).expect("seek- key must be identified");
+    assert_eq!(svc, "see_know");
+    assert_eq!(matched, candidate);
+    // The identified service must be poolable, or the harvest emit path silently
+    // drops it (`is_poolable_service` gate) and the key is never sourced.
+    assert!(
+        crate::util::service_defs::is_poolable_service(svc),
+        "see_know must be poolable so a harvested key actually enters rotation"
+    );
+    // A short `seek-…` phrase (below min_len) must NOT be mistaken for a key.
+    assert!(identify_api_key("seek-help-please").is_none());
+}
+
+#[test]
 fn fp_gate_drops_repeated_pattern_lookalikes() {
     // 36-char "github" PAT lookalike but with low entropy.
     let candidate = "ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";

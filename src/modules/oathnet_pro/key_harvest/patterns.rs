@@ -620,6 +620,20 @@ pub(super) const KEY_PATTERNS: &[KeyPattern] = &[
         service: "riskiq",
         min_len: 30,
     },
+    // SeekNow (see-know.icu) breach/stealer API keys are `seek-` + 48 lowercase
+    // hex chars (53 total; every embedded default and rotated-out key observed to
+    // date fits this exactly — see `keys::constants::SEEKNOW_*`). The `see_know`
+    // service is poolable (`service_defs`) and is the same name the domain router
+    // (`service_domains`) maps `see-know.icu` to, so a raw key harvested here folds
+    // straight into the same rotation pool as a stealer-log credential — a direct
+    // path to a second live enterprise key (double the 15k/day quota) when one
+    // leaks into the breach corpus. `min_len` 48 leaves comfortable margin under
+    // the real 53 while the entropy gate rejects a low-signal `seek-…` phrase.
+    KeyPattern {
+        prefix: "seek-",
+        service: "see_know",
+        min_len: 48,
+    },
     // ── Cloud / Infrastructure ─────────────────────────────────
     KeyPattern {
         prefix: "AZURE",
