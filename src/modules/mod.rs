@@ -35,6 +35,7 @@ pub mod bluesky_user;
 // `pub mod` as dead-at-runtime.
 pub(crate) mod breach_rich;
 pub mod breach_timezone;
+pub mod builtwith;
 pub mod cell_intel;
 pub mod cell_local;
 pub mod censys;
@@ -468,6 +469,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(ahpra::Ahpra),
             Arc::new(hlr_cnam::HlrCnam),
             Arc::new(fofa::Fofa),
+            Arc::new(builtwith::BuiltWith),
             Arc::new(netlas::Netlas),
             Arc::new(trove_au::TroveAu),
             Arc::new(austlii::AustLii),

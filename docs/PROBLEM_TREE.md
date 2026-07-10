@@ -1495,14 +1495,17 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
     registered (2026-07-10):** `name: "github"`, `BearerAuth`, `GET /user`
     validation — enables multi-token rotation for GitHub's harsh rate limits;
     live in `hse keys services`. ✅ **ABUSECH registered (2026-07-10):** `name: "abusech"`, `Auth-Key` header, `POST` test endpoint — enables URLhaus key validation & rotation. **KEY.2 COMPLETE.** **P2**
-  - **`[~]` KEY.3 · Spend every held key (phase 1: FOFA).** Build collector
-    modules for the keys HSE holds/validates but never spends — `FOFA`,
-    `BuiltWith`, `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`,
+  - **`[~]` KEY.3 · Spend every held key (phases 1–2 done: FOFA, BuiltWith).**
+    Build collector modules for the keys HSE holds/validates but never spends —
+    `FOFA`, `BuiltWith`, `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`,
     `PassiveTotal`, `Pulsedive` (one module per cycle, each with fixtures +
     ATT&CK mapping); add `cache_ttl_secs` to stable-data keyed modules to
-    stretch quota. **Delivered 2026-07-10:** FOFA infrastructure search module
+    stretch quota. **Delivered 2026-07-10:** ✅ FOFA infrastructure search module
     (IP/Domain targets → IP, Domain, Organisation entities; evidence w/ protocol/
-    port/title/OS; cache 48h). **P2 (capability)**
+    port/title/OS; cache 48h). ✅ BuiltWith technology-profile module (Domain
+    targets → tech-annotated Domain + owning Organisation, contact Emails/Phones
+    from the Meta block; cache 7d). Remaining: BreachDirectory, C99, BinaryEdge,
+    FullHunt, PassiveTotal, Pulsedive. **P2 (capability)**
   - **`[ ]` KEY.4 · Make key tier matter.** Wire `key_roi::classify` (today only
     logged/tagged/sorted) into dispatch ordering / expansion budget so Multiplier
     keys run first and earn more expansion; wire the dormant
@@ -1688,6 +1691,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
+- **2026-07-10** — **Executed KEY.3 phase 2: BuiltWith collector module.** Built
+  `modules/builtwith/mod.rs` — technology-profile lookup for Domain targets →
+  BuiltWith Domain API v21 (`?KEY&LOOKUP`). Emits a tech-annotated Domain
+  (deduplicated technology list as evidence) plus the owning Organisation
+  (CompanyName, falling back to the first registrant Name) and any contact
+  Emails/Phones from the `Meta` block — an infrastructure→identity bridge.
+  Cache 7d (tech stacks + registrant contacts change slowly; stretches the
+  per-lookup-billed quota). Added 5 unit tests (accepts-domain-only, tech+
+  contact emission w/ dedup, short-org/bad-contact rejection, name fallback,
+  empty response). Gate green: fmt/clippy `-D warnings`/doc clean, full suite 0
+  failures (+5 tests). **Paired:** `SOLUTION_TREE` SOL-KEY-FOFA (KEY.3 program)
+  — same commit. 6 remaining collector modules (BreachDirectory, C99,
+  BinaryEdge, FullHunt, PassiveTotal, Pulsedive).
 - **2026-07-10** — **Executed KEY.3 phase 1: FOFA collector module.** Built
   `modules/fofa/mod.rs` — infrastructure search targeting IP/Domain queries →
   FOFA API v1/search (base64-encoded queries) → IP, Domain, Organisation

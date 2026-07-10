@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **The three proactive credential-discovery modules now declare a request
+  budget above the engine default.** `key_discovery`,
+  `external_credential_discovery`, and `credential_entropy_analyzer` were
+  registered as non-passive modules but left `max_timeout_ms()` at the 3s
+  default, which the dispatcher's architecture guard flags as at risk of being
+  killed mid-request. They now budget explicitly (5s for the two local modules,
+  10s for the network-fanning external discovery). The five newly added modules
+  (these three plus `fofa` and `builtwith`) are also now listed in
+  `docs/MODULES.md` and reflected in the README/catalogue module counts, so the
+  documentation matches the live registry again.
 - **Every JSON API module now reports a clear reason when a response isn't JSON.**
   The two shared decode helpers (`json_scanned`/`json_decode`, used by ~40
   reqwest-based modules) surfaced the raw serde `expected value at line 1 column
@@ -54,16 +64,27 @@ versions can include breaking changes; patch versions are bug-fix-only.
     back into results by default. Enable with `hse config feature.cross_scan on`.
 
 ### Added
+- **BuiltWith technology-profile module (phase 2 of KEY.3 collector build).** Added
+  `modules/builtwith` — a key-gated collector that bridges a website's technology
+  fingerprint to its owner's identity. For a Domain target it queries the BuiltWith
+  Domain API v21 and emits a technology-annotated Domain (the deduplicated tech
+  stack as evidence) plus the owning Organisation (company name, falling back to
+  the first observed registrant name) and any contact Emails and Phones from the
+  response `Meta` block. Emails are lowercased and deduplicated, phone numbers are
+  gated on a minimum digit count, and the organisation on a minimum length. Cache
+  TTL 7 days (tech stacks and registrant contacts change slowly; the API is billed
+  per lookup). Wired into MODULE_REGISTRY at priority 74. Six collector modules
+  remain (BreachDirectory, C99, BinaryEdge, FullHunt, PassiveTotal, Pulsedive).
 - **FOFA infrastructure search module (phase 1 of KEY.3 collector build).** Added
   `modules/fofa` — a key-gated collector for infrastructure reconnaissance. Targets
   IP and Domain entities, queries FOFA API v1/search with base64-encoded filters
   (`ip="x.x.x.x"`/`host="domain.com"`), and surfaces IP, Domain, and Organisation
   entities carrying evidence (protocol, open_port, service_title, OS) from each
-  result. Cache TTL 48h (48,000 seconds) — symmetric with netlas and shodan for
-  stable-data stretching. Seven remaining collector modules planned (BuiltWith,
-  BreachDirectory, C99, BinaryEdge, FullHunt, PassiveTotal, Pulsedive) to close
-  the KEY.3 spend-every-held-key program. Wired into MODULE_REGISTRY with priority
-  78. This unlocks coverage from FOFA's 15k+/month paid quota.
+  result. Cache TTL 48h — symmetric with netlas and shodan for stable-data
+  stretching. Remaining collector modules planned (BuiltWith, BreachDirectory,
+  C99, BinaryEdge, FullHunt, PassiveTotal, Pulsedive) to close the KEY.3
+  spend-every-held-key program. Wired into MODULE_REGISTRY with priority 78. This
+  unlocks coverage from FOFA's paid quota.
 - **SeekNow now uses `/search/deep` as its primary universal query — ~2x the
   external-record coverage at the same 1-credit cost.** The see-know.icu API
   exposes a `POST /api/v1/search/deep` endpoint that queries the slow sources the

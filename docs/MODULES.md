@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (162 modules: 129 free · 28 key-gated · 5 paid)
+## Catalogue (167 modules: 132 free · 30 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -161,7 +161,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
 | `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
 
-### infrastructure (20)
+### infrastructure (25)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -185,6 +185,11 @@ records. The engine knows nothing else — every module is a one-file change.
 | `ip_registry` | ip_address, asn | free | no | 23 | ip_address, asn, email, url |
 | `urlscan` | ip_address, domain, url | free | no | 15 | ip_address |
 | `netlas` | ip_address, domain, email | key_gated | no | 79 | ip_address, email, domain, organisation, coordinates, address |
+| `fofa` | ip_address, domain | key_gated | no | 78 | ip_address, domain, organisation |
+| `builtwith` | domain | key_gated | no | 74 | domain, organisation, email, phone |
+| `key_discovery` | email, username, phone, full_name, ip_address, domain, url, asn, cidr, coordinates, address, organisation, abn_acn, mac_address, api_key, crypto_address, device_id, ssid, tracking_id | free | no | 180 | — |
+| `external_credential_discovery` | email, username, phone, full_name, ip_address, domain, url, asn, cidr, coordinates, address, organisation, abn_acn, mac_address, api_key, crypto_address, device_id, ssid, tracking_id | free | no | 170 | — |
+| `credential_entropy_analyzer` | email, username, phone, full_name, ip_address, domain, url, asn, cidr, coordinates, address, organisation, abn_acn, mac_address, api_key, crypto_address, device_id, ssid, tracking_id | free | no | 160 | — |
 
 ### web (7)
 

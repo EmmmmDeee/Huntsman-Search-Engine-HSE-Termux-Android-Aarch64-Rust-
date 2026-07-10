@@ -63,6 +63,13 @@ impl Module for KeyDiscoveryModule {
         ModuleCost::Free
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // A local key-pool state read completes near-instantly, but a
+        // non-passive module must budget above the engine's 3s default or the
+        // dispatcher treats it as at risk of being killed mid-request.
+        5_000
+    }
+
     fn accepts(&self, _target: &Target) -> bool {
         // This module runs on any target kind to monitor the pool state
         // and harvest statistics across all scans.

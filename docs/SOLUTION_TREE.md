@@ -895,7 +895,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-KEY-POOL-SEED | KEY.1 | `[x]` |
 | SOL-KEY-REG | KEY.2 | `[x]` |
-| SOL-KEY-FOFA | KEY.3 (phase 1) | `[~]` |
+| SOL-KEY-FOFA | KEY.3 (phases 1–2: FOFA, BuiltWith) | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -1071,6 +1071,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-07-10** — **SOL-KEY-FOFA (phase 2 of KEY.3 collector modules): BuiltWith
+  technology profile.** Built `modules/builtwith` — HTTP GET to
+  `api.builtwith.com/v21/api.json?KEY&LOOKUP` for Domain targets. Returns a
+  tech-annotated Domain (deduplicated technology list as evidence) plus the owning
+  Organisation (CompanyName → first registrant Name fallback) and contact Emails/
+  Phones from the `Meta` block — an infrastructure→identity bridge. Cache 7d TTL
+  (slow-changing data; per-lookup billed). 5 unit tests (accepts/emit-dedup/
+  reject/name-fallback/empty). Gate green: fmt/clippy `-D warnings`/doc/test 0
+  failures (+5). Wired in MODULE_REGISTRY (priority 74). Paired: `PROBLEM_TREE`
+  KEY.3 §8 — same commit. Next 6 modules (BreachDirectory, C99, BinaryEdge,
+  FullHunt, PassiveTotal, Pulsedive) to close KEY.3.
 - **2026-07-10** — **SOL-KEY-FOFA (phase 1 of KEY.3 collector modules): FOFA
   infrastructure search.** Built `modules/fofa` — base64-query HTTP POST to
   `fofa.info/api/v1/search` for IP/Domain targets. Returns IP, Domain, Organisation

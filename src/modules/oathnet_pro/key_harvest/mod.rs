@@ -802,8 +802,7 @@ pub fn extract_api_keys_from_item(
                 && let Some(score) = try_entropy_detect(field, &val)
             {
                 let pre = result.entities.len();
-                let source =
-                    format!("{field} (entropy-based, confidence={:.0}%)", score * 100.0);
+                let source = format!("{field} (entropy-based, confidence={:.0}%)", score * 100.0);
                 emit_key(
                     "behavioral_credential",
                     &val,

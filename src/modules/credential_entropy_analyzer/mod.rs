@@ -84,6 +84,13 @@ impl Module for CredentialEntropyAnalyzer {
         ModuleCost::Free
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // Local entropy computation completes near-instantly, but a non-passive
+        // module must budget above the engine's 3s default or the dispatcher
+        // treats it as at risk of being killed mid-request.
+        5_000
+    }
+
     fn accepts(&self, _target: &Target) -> bool {
         // Analyze all targets for behavioral credential signals
         true

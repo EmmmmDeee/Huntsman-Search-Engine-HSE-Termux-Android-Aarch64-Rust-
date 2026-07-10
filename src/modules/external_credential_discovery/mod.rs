@@ -58,6 +58,13 @@ impl Module for ExternalCredentialDiscovery {
         ModuleCost::Free
     }
 
+    fn max_timeout_ms(&self) -> u64 {
+        // Designed to fan out to public sources (GitHub, archive.org, cert
+        // transparency), so it needs a full network budget above the engine's
+        // 3s default rather than risk being killed mid-request.
+        10_000
+    }
+
     fn accepts(&self, _target: &Target) -> bool {
         // Runs on all target kinds to correlate against discovered entities
         true
