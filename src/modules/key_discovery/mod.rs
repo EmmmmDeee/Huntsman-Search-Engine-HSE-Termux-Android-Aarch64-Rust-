@@ -21,6 +21,8 @@
 //! and operationalize new API keys, turning key discovery into a fundamental,
 //! proactive capability of the scan architecture itself.
 
+mod config_scan;
+
 use async_trait::async_trait;
 
 use crate::core::{
