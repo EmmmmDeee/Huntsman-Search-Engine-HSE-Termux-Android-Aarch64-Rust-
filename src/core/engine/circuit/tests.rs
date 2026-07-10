@@ -98,3 +98,45 @@ use super::*;
         assert!(!is_rate_limited("404 not found"));
         assert!(!is_rate_limited(""));
     }
+
+    #[test]
+    fn is_rate_limited_does_not_misfire_on_timeouts_or_echoed_identifiers() {
+        // FALSE-POSITIVE REGRESSION: the old bare-substring vocabulary matched
+        // "exceeded" and "429"/"402" anywhere, so each of these hard-tripped the
+        // 600s cooldown and silently blackholed a HEALTHY provider for the rest of
+        // the scan. They must now fall through to the soft path.
+        assert!(
+            !is_rate_limited("operation timed out: deadline exceeded"),
+            "a transport timeout is not a rate limit"
+        );
+        assert!(
+            !is_rate_limited("no results for +61429551402"),
+            "an echoed phone number containing 429/402 is not a rate limit"
+        );
+        assert!(
+            !is_rate_limited("record: 4029 4000 0000 0002 credit card"),
+            "breach text mentioning 'credit card' is not a rate limit"
+        );
+        assert!(
+            !is_rate_limited("upstream deadline exceeded for id 1402934"),
+            "a digit run containing 402/429 is not a standalone status token"
+        );
+        // Genuine quota/limit signals still classify (co-located with a status word).
+        assert!(is_rate_limited("HTTP 429 Too Many Requests"));
+        assert!(is_rate_limited("monthly credit exhausted"));
+        assert!(is_rate_limited("API count exceeded"));
+    }
+
+    #[test]
+    fn timeout_and_echoed_identifier_take_the_soft_path_not_the_hard_cooldown() {
+        // End-to-end through record_error: ONE such error must not open the breaker
+        // (the 3-strike soft path owns transient failures), where the old code
+        // hard-tripped on the first occurrence.
+        let m = "t_timeout_is_soft";
+        record_error(m, "operation timed out: deadline exceeded");
+        assert!(!is_open(m), "a single timeout must not trip the breaker");
+
+        let p = "t_echoed_id_is_soft";
+        record_error(p, "no results for +61429551402");
+        assert!(!is_open(p), "an echoed identifier must not trip the breaker");
+    }

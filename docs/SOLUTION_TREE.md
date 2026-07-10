@@ -900,6 +900,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-PERSONA-PRECISION | T2.35 (kind-aware email persona keying) | `[x]` |
 | SOL-WHOIS-PROXY-REJECT | T2.36 (drop privacy-proxy registrants) | `[x]` |
 | SOL-MITRE-COVERAGE | T2.37 (scan-level ATT&CK coverage report) | `[x]` |
+| SOL-CIRCUIT-TOKEN | T2.38 (token-anchored rate-limit classification) | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -1075,6 +1076,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-07-10** — **SOL-CIRCUIT-TOKEN `[ ]`→`[x]` (closes T2.38): token-anchored rate-limit classification.** The breaker's `is_rate_limited` bare-substring vocabulary (`429`/`402`/`exceeded`/`credit`) hard-tripped a 600s cooldown on transport timeouts (`deadline exceeded`), echoed identifiers (`+61429551402`), and breach text (`credit card`), silently blackholing HEALTHY providers. Replaced with distinctive `QUOTA_PROSE` compounds + standalone-token `429`/`402` matching; uncaught errors fall to the 3-strike soft path. **S→P:** a reliability fix with no ATT&CK mapping (correctly), but it directly protects collection COVERAGE — the substrate the T2.37 coverage report measures. +2 regression tests. Paired: `PROBLEM_TREE` T2.38 §8 — same commit.
 - **2026-07-10** — **SOL-MITRE-COVERAGE `[ ]`→`[x]` (closes T2.37): the MITRE deliverable.** Turned the write-only `attack:<ID>` provenance into a scan-level ATT&CK Reconnaissance (TA0043) coverage/gap layer. Added pure `core::attack` primitives (`parent_id`/`is_subtechnique`/`subtechniques` — the hierarchy enabler — and `coverage(&[Entity]) -> CoverageReport`, a deterministic BTreeMap fold that rolls sub-technique hits up to parents and ignores uncatalogued tags), surfaced as a dossier coverage block. **⚑ enabler:** the parent/sub rollup unblocks the technique-diversity corroboration dimension (rank 12) — ATT&CK becomes a measurement of source independence, not just per-datum provenance. No STIX vendoring. +3 tests (incl. catalogue-integrity + shuffle-invariance). Paired: `PROBLEM_TREE` T2.37 §8 — same commit.
 - **2026-07-10** — **SOL-WHOIS-PROXY-REJECT `[ ]`→`[x]` (closes T2.36): reject privacy-proxy WHOIS registrants at the module.** `whoisxml::build_entities` minted `Domains By Proxy, LLC`/`REDACTED FOR PRIVACY`/`abuse@whoisguard.com` as full-confidence subject-attributed Org/Person/Email. **S→P reuse:** rather than a new predicate, reused the already-tested `util::domains::is_proxy_registrant` — the SAME single-source exclusion the correlator (AU-061) and relation `derive_co_ownership` apply downstream — as a per-FIELD guard, so the entity is never created (a GDPR-redacted name drops but a genuine org in the same record survives). No over-build: one predicate, three call sites. +2 tests. Gate green. Paired: `PROBLEM_TREE` T2.36 §8 — same commit.
 - **2026-07-10** — **SOL-PERSONA-PRECISION `[ ]`→`[x]` (closes T2.35): kind-aware email

@@ -1264,6 +1264,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   rolls_subtechniques_up`, `coverage_ignores_uncatalogued_tags_and_is_order_
   independent`. **CAP** (the named MITRE-enhancement deliverable). Precision queue
   item 4/20.
+- **`[x]` T2.38 · Circuit breaker hard-trips healthy providers on echoed digits / timeouts (600s false-negative blackhole)** — surfaced by the precision-discovery workflow (2026-07-10, ranked #4). `is_rate_limited` (`core/engine/circuit/mod.rs`) did a case-insensitive substring match over a vocabulary including the BARE tokens `429`, `402`, `exceeded`, and `credit`. So `deadline exceeded` (a transport timeout), an echoed phone `+61429551402` (contains `429` and `402`), or breach text `credit card` each one-shot the hard `RATE_LIMIT_COOLDOWN` (600s), silently dropping every subsequent finding that provider would have produced for the rest of the scan — a pure false-negative coverage loss. → **Solution:** replaced the bare vocabulary with (1) a curated set of distinctive `QUOTA_PROSE` compounds (no ambiguous lone word — `count exceeded`/`out of credit`/`credit exhausted` instead of bare `exceeded`/`credit`) and (2) `429`/`402` matched ONLY as a standalone token (split on non-alphanumerics), so a digit run merely containing them can't trip. Anything uncaught falls through to the existing 3-strike soft path (shorter `SOFT_COOLDOWN`, so a genuine quota wall still trips, just after a retry or two). New tests `is_rate_limited_does_not_misfire_on_timeouts_or_echoed_identifiers` and `timeout_and_echoed_identifier_take_the_soft_path_not_the_hard_cooldown` (both fail against the unfixed code); all pinned quota-prose positives preserved. **P2** (reliability — silent provider blackholing). Precision queue item 5/20.
 
 ---
 
@@ -1780,6 +1781,7 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
+- **2026-07-10** — **Executed T2.38 (new, precision queue item 5/20): stop the circuit breaker blackholing healthy providers on echoed digits / timeouts.** `is_rate_limited` substring-matched bare `429`/`402`/`exceeded`/`credit`, so `deadline exceeded`, an echoed phone `+61429551402`, or breach `credit card` each hard-tripped the 600s cooldown and silently dropped the provider's remaining findings. Replaced with distinctive `QUOTA_PROSE` compounds + standalone-token `429`/`402` matching; uncaught errors take the 3-strike soft path. +2 regression tests (verified to fail against unfixed code); all pinned quota positives kept. Gate green: fmt/clippy `-D warnings`/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` SOL-CIRCUIT-TOKEN — same commit. T2.38 `[ ]`→`[x]`.
 - **2026-07-10** — **Executed T2.37 (new, precision queue item 4/20): the MITRE
   deliverable — scan-level ATT&CK Reconnaissance coverage & gap report.** The
   `attack:<ID>` provenance tags were write-only (per-finding render, no
