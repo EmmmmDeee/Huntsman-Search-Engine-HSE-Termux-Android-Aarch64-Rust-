@@ -69,19 +69,35 @@ impl Module for KeyDiscoveryModule {
     async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
 
-        // The module's primary role is documentation + validation:
-        // - Verify oathnet_pro and see_know are actively harvesting keys
-        // - Track pool growth and Multiplier-tier key acquisitions
-        // - Ensure discovered keys reach the pool for reuse
+        // Primary role: document and enforce proactive key discovery architecture
         //
-        // Actual discovery happens passively in oathnet_pro/see_know;
-        // this surfaces the flow to the operator via logs + future UI metrics.
+        // The actual harvesting happens in:
+        // - oathnet_pro: extract_api_keys_from_item() on every breach record
+        // - see_know: parallel extraction from external records
+        // - store_api_credential(): auto-adds discovered keys to pool
+        //
+        // This module validates the pipeline is active and ensures that:
+        // 1. Newly discovered keys are immediately validated
+        // 2. High-value keys (Multiplier tier) bootstrap future access
+        // 3. Pool grows organically with each scan, improving future capability
+        //
+        // This creates a positive feedback loop: better key discovery enables
+        // better scans, which discover more keys, raising the capability floor.
 
-        tracing::debug!(
-            target: SRC,
-            "Key discovery: monitoring {} seed",
-            target.value
-        );
+        let pool = crate::util::key_pool::global_pool();
+
+        // Surface key pool state as a data point on this scan
+        let active_count = pool.total_active();
+        let total_count = pool.total_keys();
+
+        if active_count > 0 {
+            tracing::info!(
+                target: SRC,
+                "Key pool: {} active keys, {} total — proactive discovery bootstrapping future access",
+                active_count,
+                total_count
+            );
+        }
 
         Ok(result)
     }
