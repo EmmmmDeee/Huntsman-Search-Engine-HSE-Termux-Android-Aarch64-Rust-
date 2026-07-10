@@ -1,7 +1,7 @@
-//! Shared SeekNow (see-know.eu) API client — a direct OathNet competitor
+//! Shared SeekNow (see-know.icu) API client — a direct OathNet competitor
 //! with its own daily-lookup pool.
 //!
-//! Endpoint surface (all under `https://see-know.eu/api/v1`):
+//! Endpoint surface (all under `https://see-know.icu/api/v1`):
 //!
 //!   POST /search                — universal search: breach + stealer + external
 //!                                 records unified in one call, with
@@ -19,7 +19,7 @@
 //!   GET  /username/{github,reddit,social,tiktok,twitter,history}
 //!   GET  /credits               — remaining daily quota
 //!
-//! Auth: `X-API-Key: <key>` header (per the see-know.eu spec).
+//! Auth: `X-API-Key: <key>` header (per the see-know.icu spec).
 //!
 //! Quota model: 5000 daily lookups on premiumhq plan, resets at midnight UTC.
 //! Per-process budget mirrors the OathNet client's pattern.

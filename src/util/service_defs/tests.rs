@@ -46,7 +46,7 @@ use super::*;
 
     #[test]
     fn see_know_validation_probe_uses_x_api_key_not_bearer() {
-        // The see-know.eu server REJECTS `Authorization: Bearer` with "Missing API
+        // The see-know.icu server REJECTS `Authorization: Bearer` with "Missing API
         // key. Use X-API-Key" (see see_know/client.rs, AuthScheme::XApiKey). The
         // key-validation probe reads this ServiceDef, so it must send the same
         // header the real client does — otherwise a VALID see_know key is probed

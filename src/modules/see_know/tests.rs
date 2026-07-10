@@ -77,7 +77,7 @@ use crate::core::entity::Entity;
             "15551234567",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -148,7 +148,7 @@ use crate::core::entity::Entity;
             "ali.kareem",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -168,7 +168,7 @@ use crate::core::entity::Entity;
             "x",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -199,7 +199,7 @@ use crate::core::entity::Entity;
             "Ali Kareem",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -249,7 +249,7 @@ use crate::core::entity::Entity;
             "Ali Kareem",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -290,7 +290,7 @@ use crate::core::entity::Entity;
             "Ali Kareem",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -322,7 +322,7 @@ use crate::core::entity::Entity;
             "Ali Kareem",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -358,7 +358,7 @@ use crate::core::entity::Entity;
             "victim_login",
             "scan",
             "stealer",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -413,7 +413,7 @@ use crate::core::entity::Entity;
             "victim_login",
             "scan",
             "stealer",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -447,7 +447,7 @@ use crate::core::entity::Entity;
             "victim@example.com",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -485,7 +485,7 @@ use crate::core::entity::Entity;
             "x@y.com",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen2,
             &mut result2,
         );
@@ -527,7 +527,7 @@ use crate::core::entity::Entity;
             "x",
             "scan",
             "search",
-            "see-know.eu:test",
+            "see-know.icu:test",
             &mut seen,
             &mut result,
         );
@@ -787,7 +787,7 @@ use crate::core::entity::Entity;
         let before = result.entities.len();
         resolve_identity_pivots(
             "key",
-            "see-know.eu:test",
+            "see-know.icu:test",
             "seed",
             "t",
             &mut seen,

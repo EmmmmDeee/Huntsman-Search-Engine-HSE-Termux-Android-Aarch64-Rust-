@@ -2,7 +2,7 @@
 //! keyless API — no SeekNow key, real first-party sources.
 //!
 //! This is the free, self-owned emulation of SeekNow's paid `gaming/roblox`
-//! and `gaming/minecraft` endpoints. Where `see_know` pays see-know.eu for
+//! and `gaming/minecraft` endpoints. Where `see_know` pays see-know.icu for
 //! those lookups, this module queries the platforms directly:
 //!
 //! * **Roblox** — `POST users.roblox.com/v1/usernames/users` (exact username →

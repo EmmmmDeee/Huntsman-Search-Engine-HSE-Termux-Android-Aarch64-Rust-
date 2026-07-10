@@ -344,17 +344,19 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         key_header: KeyPlacement::QueryParam("api_token"),
         rate_limit_reset_secs: 60,
     },
-    // SeekNow (see-know.eu) — direct OathNet competitor with 5000 daily
-    // lookups on premiumhq tier. Auth: `X-API-Key: <key>` — the server REJECTS
-    // `Authorization: Bearer` with "Missing API key. Use X-API-Key" (see
-    // see_know/client.rs, which authenticates with AuthScheme::XApiKey), so the
-    // validation probe must send the same header or it mis-reports a valid key
-    // as invalid. /credits is a free introspection endpoint for validation.
+    // SeekNow (see-know.icu — the canonical domain as of 2026; the legacy
+    // see-know.icu no longer resolves) — direct OathNet competitor. Auth:
+    // `X-API-Key: <key>` — the server REJECTS `Authorization: Bearer` with
+    // "Missing API key. Use X-API-Key" (see see_know/client.rs, which
+    // authenticates with AuthScheme::XApiKey), so the validation probe must send
+    // the same header or it mis-reports a valid key as invalid. /credits is a
+    // free introspection endpoint for validation (200 with credits JSON for a
+    // valid key, 401 `invalid_api_key` for a bad one).
     ServiceDef {
         name: "see_know",
         env_var: "HUNTSMAN_SEEKNOW_KEY",
         category: "breach",
-        test_url: "https://see-know.eu/api/v1/credits",
+        test_url: "https://see-know.icu/api/v1/credits",
         key_header: KeyPlacement::Header("X-API-Key"),
         rate_limit_reset_secs: 17,
     },

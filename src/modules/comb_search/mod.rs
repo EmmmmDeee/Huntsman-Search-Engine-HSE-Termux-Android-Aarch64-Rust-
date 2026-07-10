@@ -2,7 +2,7 @@
 //! Breaches) index — no API key, real public source.
 //!
 //! This is the free, self-owned emulation of SeekNow's paid stealer/credential
-//! `/search` corpus. Where `see_know` queries the key-gated see-know.eu API,
+//! `/search` corpus. Where `see_know` queries the key-gated see-know.icu API,
 //! this module queries ProxyNova's free, keyless COMB endpoint
 //! (`https://api.proxynova.com/comb?query=<q>`) and parses the real
 //! `identity:secret` credential lines it returns. No mock, no simulation — the

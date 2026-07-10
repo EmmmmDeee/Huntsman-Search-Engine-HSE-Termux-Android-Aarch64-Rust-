@@ -1,4 +1,4 @@
-//! Public API endpoint functions for the SeekNow (see-know.eu) service.
+//! Public API endpoint functions for the SeekNow (see-know.icu) service.
 
 use serde_json::Value;
 
@@ -7,13 +7,13 @@ use crate::core::error::Result;
 use super::budget::{budget_try_increment, is_key_invalid};
 use super::client::{base_url, cache_get, cache_put, get_json, post_json, typed_cache_key};
 
-/// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
+/// Max records per the see-know.icu Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
-/// see-know.eu maximally, and one richer response costs the same budget slot as
+/// see-know.icu maximally, and one richer response costs the same budget slot as
 /// a thin one.
 pub(super) const SEARCH_LIMIT: u32 = 500;
 
-/// Build the `POST /api/v1/search` request body per the see-know.eu spec:
+/// Build the `POST /api/v1/search` request body per the see-know.icu spec:
 /// `{"query": <q>, "type": <t>?, "limit": <n>}`. An empty `query_type` omits
 /// `type` so the server auto-detects. Pure (JSON-escapes `query`) so it is
 /// unit-tested.
@@ -261,18 +261,32 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 ///
 /// Handles several observed response shapes:
 /// ```json
+/// {"plan":"enterprise","credits_remaining":15000,"credits_daily_limit":15000,"credits_used_today":0}
 /// {"credits_remaining": 4200, "daily_limit": 5000, "plan": "…"}
 /// {"data": {"credits_remaining": 4200, "daily_limit": 5000}}
 /// {"remaining": 4200, "total": 5000}
 /// {"credits": {"remaining": 4200, "daily": 5000}}
 /// ```
+///
+/// The live see-know.icu enterprise response is the FIRST shape:
+/// `credits_daily_limit` (not `daily_limit`). Reading only `daily_limit`/`total`/
+/// `daily` returned `None` for the daily cap, so
+/// [`super::budget::scale_scan_cap_from_daily`] never saw the real 15k/day
+/// ceiling and the scan cap fell back to the floor.
 pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
     let url = format!("{}/credits", base_url());
     // Direct HTTP call — no budget gate, no archive (meta-query, not paid data).
     let body = super::client::CLIENT.get(&url, key).await.ok()?;
     let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    parse_credits(&v)
+}
+
+/// Pure extractor for `(credits_remaining, daily_limit)` from a `/credits`
+/// response body, split out so the multi-shape field-walk is unit-testable
+/// without a live call. `daily_limit` is `None` when the response omits it.
+pub(super) fn parse_credits(v: &serde_json::Value) -> Option<(u32, Option<u32>)> {
     // Walk candidate shapes to find (remaining, daily_limit).
-    let root = if let Some(d) = v.get("data") { d } else { &v };
+    let root = if let Some(d) = v.get("data") { d } else { v };
     let inner = root.get("credits").unwrap_or(root);
 
     let remaining = inner
@@ -281,7 +295,8 @@ pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
         .and_then(serde_json::Value::as_u64)? as u32;
 
     let daily_limit = inner
-        .get("daily_limit")
+        .get("credits_daily_limit")
+        .or_else(|| inner.get("daily_limit"))
         .or_else(|| inner.get("total"))
         .or_else(|| inner.get("daily"))
         .and_then(serde_json::Value::as_u64)

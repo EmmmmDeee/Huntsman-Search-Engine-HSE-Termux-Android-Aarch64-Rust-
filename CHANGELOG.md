@@ -10,6 +10,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- **SeekNow integration repointed to the live `see-know.icu` domain and its
+  daily-quota parsing corrected.** The service had half-migrated: the runtime
+  client already used `see-know.icu`, but the key-validation endpoint, signup
+  hint, per-entity provenance labels, warning text, and docs still referenced
+  the retired `see-know.eu` (which no longer resolves) — so `hse doctor` and
+  `hse keys validate see_know` probed a dead host and reported the key as
+  unreachable. All references now point at `see-know.icu`. Separately, the
+  `/credits` parser only recognised `daily_limit`/`total`/`daily`, but the live
+  enterprise response uses `credits_daily_limit`, so the per-scan budget never
+  scaled to the real plan (15,000/day) and fell back to the floor. Verified
+  end-to-end against the live API: the key validates ACTIVE, `hse doctor` shows
+  `see_know live`, the scan cap now scales (`daily_limit=Some(15000)`,
+  `scan_cap=750`), and a `see_know`-only scan returns real data.
+
 ### Added
 - **`hse doctor` now live-probes every configured key, not just WiGLE.** A new
   "Key validation" section reports each configured key as `live`, `REJECTED`

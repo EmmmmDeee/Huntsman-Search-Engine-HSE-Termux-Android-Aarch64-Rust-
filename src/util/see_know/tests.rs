@@ -7,12 +7,44 @@ use super::client::{
     CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
     key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
-use super::endpoints::{SEARCH_LIMIT, build_search_body, extract_items};
+use super::endpoints::{SEARCH_LIMIT, build_search_body, extract_items, parse_credits};
 use crate::util::curl_client::AuthScheme;
 
 #[test]
+fn parse_credits_reads_the_live_icu_enterprise_shape() {
+    // The exact body see-know.icu returns for an enterprise key. The daily cap is
+    // `credits_daily_limit` — the field the old parser (daily_limit/total/daily)
+    // missed, leaving scale_scan_cap_from_daily blind to the 15k/day ceiling.
+    let live = json!({
+        "plan": "enterprise",
+        "credits_remaining": 15000,
+        "credits_daily_limit": 15000,
+        "credits_used_today": 0,
+        "resets_at": "2026-07-11T00:00:00.000Z"
+    });
+    assert_eq!(parse_credits(&live), Some((15000, Some(15000))));
+
+    // Legacy/alternate shapes still parse (back-compat).
+    assert_eq!(
+        parse_credits(&json!({"credits_remaining": 4200, "daily_limit": 5000})),
+        Some((4200, Some(5000)))
+    );
+    assert_eq!(
+        parse_credits(&json!({"data": {"credits_remaining": 100, "total": 500}})),
+        Some((100, Some(500)))
+    );
+    // Remaining present, no daily field → daily_limit None (not a parse failure).
+    assert_eq!(
+        parse_credits(&json!({"credits_remaining": 7})),
+        Some((7, None))
+    );
+    // No remaining field at all → None.
+    assert_eq!(parse_credits(&json!({"plan": "free"})), None);
+}
+
+#[test]
 fn client_timeout_budget_exceeds_name_search_server_cap() {
-    // Regression: see-know.eu's name/auto `/search` path has a ~55s server
+    // Regression: see-know.icu's name/auto `/search` path has a ~55s server
     // cap and returns real data in 50–60s. A curl budget below that (was
     // 12s) guarantees a timeout-exit on every name search — observed live
     // as an opaque "curl failed" with zero entities. The curl ceiling must
@@ -44,14 +76,14 @@ fn key_fingerprint_identifies_origin_without_full_secret() {
     // tripped by a literal living outside util::keys.rs.
     let fp = key_fingerprint("seek-1234567890aaaabbbbccccddddeeeeffff0000111122223333");
     // Provider-prefixed, head + tail present, middle elided.
-    assert!(fp.starts_with("see-know.eu:seek-12345"), "got {fp}");
+    assert!(fp.starts_with("see-know.icu:seek-12345"), "got {fp}");
     assert!(fp.ends_with("223333"), "got {fp}");
     assert!(fp.contains('\u{2026}'));
     // The full secret never appears verbatim — the elided middle is dropped.
     assert!(!fp.contains("aaaabbbbccccddddeeeeffff"));
     // Short/empty keys degrade gracefully.
-    assert_eq!(key_fingerprint(""), "see-know.eu:(no key)");
-    assert_eq!(key_fingerprint("short"), "see-know.eu:short");
+    assert_eq!(key_fingerprint(""), "see-know.icu:(no key)");
+    assert_eq!(key_fingerprint("short"), "see-know.icu:short");
 }
 
 #[test]
@@ -77,7 +109,7 @@ fn search_body_includes_limit_and_optional_type() {
 
 #[test]
 fn seeknow_client_uses_x_api_key_per_spec() {
-    // Regression guard for the auth header: see-know.eu requires X-API-Key
+    // Regression guard for the auth header: see-know.icu requires X-API-Key
     // and rejects Authorization: Bearer ("Missing API key. Use X-API-Key").
     assert_eq!(CLIENT.auth_scheme(), AuthScheme::XApiKey);
 }
@@ -94,7 +126,7 @@ fn resolve_key_falls_back_when_empty() {
 
 #[test]
 fn auth_error_envelope_is_detected() {
-    // The literal body see-know.eu returns for a rejected key (curl exits 0
+    // The literal body see-know.icu returns for a rejected key (curl exits 0
     // on a 401, so this is what reaches us). Detecting it is what turns
     // "SeekNow found nothing" into the actionable "the key is invalid".
     assert!(is_auth_error(
@@ -104,9 +136,9 @@ fn auth_error_envelope_is_detected() {
         r#"{"error":"invalid_api_key","message":"Missing API key. Use X-API-Key"}"#
     ));
     // A recognised key with no paid plan is also terminal — latch + skip.
-    // (This is the live see-know.eu response observed for the bundled key.)
+    // (This is the live see-know.icu response observed for the bundled key.)
     assert!(is_auth_error(
-        r#"{"error":"plan_required","message":"API access requires a paid plan. Upgrade at https://see-know.eu/pricing"}"#
+        r#"{"error":"plan_required","message":"API access requires a paid plan. Upgrade at https://see-know.icu/pricing"}"#
     ));
     // A normal (empty or populated) result is NOT an auth error.
     assert!(!is_auth_error(r#"{"data":{"items":[]}}"#));
@@ -293,7 +325,7 @@ fn budget_snapshot_reports_active_caps() {
 
 #[test]
 fn default_scan_cap_is_at_least_maximise_floor() {
-    // Regression guard for the operator's "use see-know.eu MAXIMALLY"
+    // Regression guard for the operator's "use see-know.icu MAXIMALLY"
     // directive. The cap started at 8 (99.84 % unused), was raised to 120,
     // 160, and now 300 (6 % of the 5,000-daily pool per scan) so the full
     // 18-endpoint matrix fires across ~10 recursively-discovered pivots.
@@ -423,7 +455,7 @@ fn client_base_url_uses_endpoint_override_or_default() {
         url.starts_with("https://"),
         "SeekNow base URL must be HTTPS — got {url}"
     );
-    // Must be a well-known domain (see-know.eu) or an override matching HTTPS + non-local rules
+    // Must be a well-known domain (see-know.icu) or an override matching HTTPS + non-local rules
     assert!(
         url.contains("see-know."),
         "SeekNow base URL must reference the canonical domain — got {url}"

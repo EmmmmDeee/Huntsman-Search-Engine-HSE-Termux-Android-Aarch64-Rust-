@@ -1,4 +1,4 @@
-//! SeekNow (see-know.eu) — parallel breach + stealer + OSINT pool.
+//! SeekNow (see-know.icu) — parallel breach + stealer + OSINT pool.
 //!
 //! Direct OathNet competitor with its own 5,000-lookup daily quota.
 //! Runs alongside oathnet_pro so each scan effectively gets 2 parallel
@@ -83,7 +83,7 @@ impl Module for SeekNow {
     }
 
     fn description(&self) -> &'static str {
-        "SeekNow (see-know.eu) — full 18-endpoint OSINT/breach pool with discord/gaming pivots"
+        "SeekNow (see-know.icu) — full 18-endpoint OSINT/breach pool with discord/gaming pivots"
     }
 
     fn priority(&self) -> u8 {
@@ -246,7 +246,7 @@ impl Module for SeekNow {
                 Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
                     .with_attr("hits", total.to_string())
                     .with_attr("endpoint", "/api/v1/search")
-                    .with_attr("provider", "see-know.eu")
+                    .with_attr("provider", "see-know.icu")
                     .with_attr("api_key_origin", &key_fp),
             );
             result.push(parent);

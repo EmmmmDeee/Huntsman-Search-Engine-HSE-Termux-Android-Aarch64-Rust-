@@ -1,5 +1,5 @@
 //! HTTP client, response cache, API key helpers, and low-level JSON I/O for
-//! the SeekNow (see-know.eu) API.
+//! the SeekNow (see-know.icu) API.
 
 use serde_json::Value;
 
@@ -17,7 +17,7 @@ const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
 /// every distinct endpoint × query a single scan generates).
 pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
 
-/// Shared curl-subprocess client. `X-API-Key` auth (per the see-know.eu spec —
+/// Shared curl-subprocess client. `X-API-Key` auth (per the see-know.icu spec —
 /// the server rejects `Authorization: Bearer` with "Missing API key. Use
 /// X-API-Key"), 75s curl timeout, 78s outer tokio timeout.
 // The name/auto `/search` path has a server-side cap of ~55s and routinely
@@ -86,10 +86,10 @@ pub fn resolve_key(ctx_key: Option<&str>) -> &str {
 pub fn key_fingerprint(key: &str) -> String {
     let k = key.trim();
     if k.is_empty() {
-        return "see-know.eu:(no key)".to_string();
+        return "see-know.icu:(no key)".to_string();
     }
     if k.len() <= 18 {
-        return format!("see-know.eu:{k}");
+        return format!("see-know.icu:{k}");
     }
     let head: String = k.chars().take(13).collect();
     let tail: String = {
@@ -97,7 +97,7 @@ pub fn key_fingerprint(key: &str) -> String {
         t.reverse();
         t.into_iter().collect()
     };
-    format!("see-know.eu:{head}\u{2026}{tail}")
+    format!("see-know.icu:{head}\u{2026}{tail}")
 }
 
 /// Body signature of a key that cannot retrieve data — so the whole scan should
@@ -106,7 +106,7 @@ pub fn key_fingerprint(key: &str) -> String {
 ///   * an outright auth rejection — `{"error":"invalid_api_key",…}` (wrong key)
 ///     or "…Missing API key. Use X-API-Key…" (header absent);
 ///   * a recognised key whose account lacks a paid plan —
-///     `{"error":"plan_required",…}` (the live see-know.eu response for a
+///     `{"error":"plan_required",…}` (the live see-know.icu response for a
 ///     free-tier key). The fix to the auth header alone can't unblock this — the
 ///     account needs a plan — so we treat it the same: skip and warn once.
 ///

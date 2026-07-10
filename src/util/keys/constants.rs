@@ -128,7 +128,7 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
-        "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.eu) — https://see-know.eu",
+        "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.icu) — https://see-know.icu",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
         "HUNTSMAN_OSINTCAT_KEY" => "OSINTCat — https://www.osintcat.net",
         "HUNTSMAN_NIAMONX_KEY" => "Niamonx — https://niamonx.io",
@@ -215,7 +215,7 @@ pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow (see-know.eu / see-know.icu) key — the current embedded default,
+/// SeekNow (see-know.icu / see-know.icu) key — the current embedded default,
 /// supplied directly by the operator. LIVE-VERIFIED HTTP 200 against
 /// `https://see-know.icu/api/v1/search` (POST, `X-API-Key`). This is the same
 /// key the operator carries in their `~/.huntsman.env`; promoting it to the
