@@ -90,9 +90,27 @@ pub fn cache_size() -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::{Mutex, MutexGuard, OnceLock};
+
+    /// Serialise the cache tests against each other. They ALL mutate one
+    /// process-global session cache ([`response_cache`]) and cargo runs tests in
+    /// parallel, so without this a sibling's `clear_session_cache()` /
+    /// `cache_response()` interleaves with another's assertions — observed as
+    /// `cache_distinguishes_by_query_type` reading its freshly-cached entry back as
+    /// `None` because a concurrent `clear_empties_cache` wiped the shared map
+    /// mid-test. Taking this lock first makes the cache tests run one-at-a-time
+    /// against the shared global while the rest of the suite stays parallel.
+    /// Poison-tolerant: a panicking test must not wedge its siblings.
+    fn cache_test_guard() -> MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 
     #[test]
     fn cache_stores_and_retrieves_responses() {
+        let _guard = cache_test_guard();
         clear_session_cache();
         let target = "test@example.com";
         let query_type = "email";
@@ -105,6 +123,7 @@ mod tests {
 
     #[test]
     fn cache_is_case_insensitive_for_targets() {
+        let _guard = cache_test_guard();
         clear_session_cache();
         let response = serde_json::json!({"status": "found"});
         cache_response("Test@Example.COM", "email", response.clone());
@@ -116,6 +135,7 @@ mod tests {
 
     #[test]
     fn cache_distinguishes_by_query_type() {
+        let _guard = cache_test_guard();
         clear_session_cache();
         let r1 = serde_json::json!({"type": "email_search"});
         let r2 = serde_json::json!({"type": "domain_search"});
@@ -130,6 +150,7 @@ mod tests {
 
     #[test]
     fn clear_empties_cache() {
+        let _guard = cache_test_guard();
         cache_response("test", "query", serde_json::json!({}));
         assert!(cache_size() > 0);
         clear_session_cache();
