@@ -170,6 +170,13 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "linkedin",
     "vk",
     "snapchat",
+    // Cross-platform handle aliases — typed as platform-prefixed Usernames by the
+    // social-handle map above, so the catch-all must not also mint them Other().
+    "twitter_username",
+    "x_username",
+    "telegram_username",
+    "youtube",
+    "tiktok",
     "city",
     "state",
     "region",
@@ -423,6 +430,15 @@ pub fn extract_rich_detail(
         ("linkedin", "linkedin"),
         ("vk", "vk"),
         ("snapchat", "snapchat"),
+        // Cross-platform aliases a provider's profile carries under a namespaced
+        // key — e.g. SeekNow's `username/github` (and GitHub itself) surface a
+        // linked `twitter_username`. GitHub→Twitter is a standard high-signal
+        // identity link; recover it as a pivotable `twitter:<handle>` at no cost.
+        ("twitter_username", "twitter"),
+        ("x_username", "twitter"),
+        ("telegram_username", "telegram"),
+        ("youtube", "youtube"),
+        ("tiktok", "tiktok"),
     ] {
         if let Some(h) = val_str(item, k)
             && h.len() >= 2

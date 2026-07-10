@@ -1547,6 +1547,10 @@ const BREACH_SOCIAL_PLATFORMS: &[&str] = &[
     "linkedin",
     "vk",
     "snapchat",
+    // In lockstep with breach_rich's cross-platform alias additions
+    // (`youtube`/`tiktok` field handles → `youtube:`/`tiktok:` Usernames).
+    "youtube",
+    "tiktok",
 ];
 
 /// AU-108 — Breach-listed cross-platform handle footprint.

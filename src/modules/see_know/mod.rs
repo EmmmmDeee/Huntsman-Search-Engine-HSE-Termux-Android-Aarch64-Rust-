@@ -248,7 +248,32 @@ impl Module for SeekNow {
             TargetKind::FullName => "", // auto-detect
             _ => "",
         };
-        let outcome = see_know::search(key, v, qtype).await?;
+        // Compute the endpoint plan up front (pure — derived from kind+seed, never
+        // from /search output) and run the two INDEPENDENT network phases
+        // CONCURRENTLY: the slow ~55s /search and the per-kind endpoint matrix.
+        // Serialised (search THEN matrix) they could sum toward see_know's own 80s
+        // module-timeout cap and discard the expensive /search data; running them
+        // together collapses the wall to ~max(search, matrix). Extraction below
+        // stays serial (both mutate `seen`/`result`). Budget-safe: both paths
+        // reserve slots via the atomic `budget_try_increment`.
+        let plan = effective_plan(target.kind, v);
+        let run_matrix = !ctx.cancel.is_cancelled() && see_know::budget_remaining();
+        let (search_res, endpoint_results) = tokio::join!(see_know::search(key, v, qtype), async {
+            if run_matrix {
+                dispatch_plan(key, v, &plan).await
+            } else {
+                Vec::new()
+            }
+        });
+        // On a /search transport error, do NOT abort the module (the old `?` did):
+        // the endpoint matrix may already hold paid data worth extracting.
+        let outcome = match search_res {
+            Ok(o) => o,
+            Err(e) => {
+                tracing::warn!(error = %e, "see_know /search errored — extracting endpoint results only");
+                see_know::SearchOutcome::default()
+            }
+        };
         let items = outcome.items;
         let total = items.len();
 
@@ -345,13 +370,10 @@ impl Module for SeekNow {
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
-        if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
-            // effective_plan() drops single-origin endpoints the free
-            // username stack already covers, so paid quota is spent only on
-            // breach / history / multi-platform aggregation and ID pivots.
-            let plan = effective_plan(target.kind, v);
-            let endpoint_results = dispatch_plan(key, v, &plan).await;
-
+        // `endpoint_results` was fetched CONCURRENTLY with /search above (empty
+        // when the matrix was skipped for cancel/budget). Extract it here, serially
+        // — even if the budget is now spent, these records are already paid for.
+        {
             for (endpoint, items) in &endpoint_results {
                 // Per-endpoint yield tracing: surfaces which endpoints return
                 // data for which target kinds in live logs, supporting the
@@ -387,7 +409,9 @@ impl Module for SeekNow {
             // resolved to their LINKED accounts, and because those links chain
             // (discord → roblox → steam → …) we chase them across MULTIPLE hops
             // within budget rather than a single round. See [`resolve_identity_pivots`].
-            if !ctx.cancel.is_cancelled() {
+            // Budget re-checked here (the outer guard moved to the concurrent
+            // fetch above), so a spent budget skips the extra pivot calls.
+            if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
                 resolve_identity_pivots(key, &key_fp, v, &ctx.scan_id, &mut seen, &mut result)
                     .await;
             }

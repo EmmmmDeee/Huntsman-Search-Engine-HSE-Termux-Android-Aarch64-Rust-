@@ -31,6 +31,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
     back into results by default. Enable with `hse config feature.cross_scan on`.
 
 ### Added
+- **SeekNow runs its `/search` and endpoint matrix concurrently, and recovers
+  cross-platform handle aliases.** The module awaited the slow ~55s universal
+  `/search` fully, THEN dispatched the per-kind endpoint matrix — the two are
+  independent (the plan is derived from kind+seed, never from `/search` output),
+  so serialising them could sum toward see_know's own 80s module-timeout cap and
+  discard the expensive `/search` data. They now run under one `tokio::join!`,
+  collapsing the wall to ~`max(search, matrix)`, and a `/search` transport error
+  no longer aborts the module (the endpoint results are still extracted).
+  Separately, a provider profile's linked
+  `twitter_username`/`x_username`/`telegram_username`/`youtube`/`tiktok` (e.g.
+  GitHub's `twitter_username`) is now recovered as a pivotable `platform:handle`
+  Username in the shared `breach_rich` extractor (both paid pools), with
+  `youtube`/`tiktok` added to the AU-108 cross-platform-footprint set.
 - **Scan results: more presentable, higher precision & transparency (Phase 4).**
   - *The default results table now separates confirmed leads from quarantined
     ones and leads with a precision summary.* A `precision: N verified · N

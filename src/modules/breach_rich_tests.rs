@@ -377,3 +377,25 @@ fn wifi_ssid_is_typed_and_generic_names_rejected() {
         "a typed SSID must not also mint Other(ssid)"
     );
 }
+
+#[test]
+fn cross_platform_handle_aliases_become_platform_prefixed_usernames() {
+    // A GitHub/see_know profile carries a linked twitter_username / youtube /
+    // tiktok — each must become a pivotable platform:handle Username, not Other().
+    let item = json!({
+        "login": "torvalds",
+        "twitter_username": "linus",
+        "youtube": "LinusTechTips",
+        "tiktok": "linus_t"
+    });
+    let r = run(&item, "see-know");
+    // Values are Username-normalised (lowercased), so assert on the lowercase form.
+    assert!(has(&r, EntityKind::Username, "twitter:linus"), "twitter_username → twitter: pivot");
+    assert!(has(&r, EntityKind::Username, "youtube:linustechtips"), "youtube → youtube: pivot");
+    assert!(has(&r, EntityKind::Username, "tiktok:linus_t"), "tiktok → tiktok: pivot");
+    // Not also duplicated as Other().
+    assert!(
+        !r.entities.iter().any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "twitter_username")),
+        "an aliased handle must not also mint Other(twitter_username)"
+    );
+}
