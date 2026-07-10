@@ -91,6 +91,40 @@ fn entities_header_line(shown: usize, raw_total: usize) -> String {
     }
 }
 
+/// SeekNow breach-corpus headline from the `/search` parent evidence: the
+/// server's OWN corpus counters (breach/stealer/external + truncation) that
+/// see_know stamps on evidence with source `"see_know"`, so the operator sees the
+/// TRUE corpus size behind the returned records rather than just the 500-record
+/// sample. Strictly see_know-sourced (hibp/osintcat stamp `breach_count` with
+/// different semantics). `None` when no see_know `/search` evidence carries the
+/// counters (no see_know hit, or a cache-hit run where they were absent).
+fn see_know_breach_headline(entities: &[Entity]) -> Option<String> {
+    for e in entities {
+        for ev in &e.evidence {
+            if ev.source != "see_know" {
+                continue;
+            }
+            let get = |k: &str| ev.attributes.get(k).and_then(|v| v.parse::<u64>().ok());
+            // `server_total` is the anchor — only present when the envelope carried
+            // real counts (never on a cache hit).
+            let Some(total) = get("server_total") else {
+                continue;
+            };
+            let returned = get("hits").unwrap_or(0);
+            let breach = get("breach_count").unwrap_or(0);
+            let stealer = get("stealer_count").unwrap_or(0);
+            let external = get("external_count").unwrap_or(0);
+            let trunc =
+                get("records_truncated").map_or(String::new(), |t| format!("; {t} truncated"));
+            return Some(format!(
+                "  Breach corpus (SeekNow): returned {returned} of {total} records{trunc} — \
+                 breach {breach} · stealer {stealer} · external {external}"
+            ));
+        }
+    }
+    None
+}
+
 /// The trailing "… N more" disclosure for a ranked list truncated to `shown`
 /// of `total` — `None` when the full list already fits. The SAME wording
 /// TIMELINE/CONNECTIONS already print; applied to the sections that
@@ -148,6 +182,37 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         scan.modules_run, scan.modules_errored, scan.modules_deduped
     );
 
+    // Partition confirmed leads from quarantined `candidate`-tagged non-subject
+    // nodes (same-name strangers / speculative leads the gates demoted) — the same
+    // separation the results table applies, brought to the richest view. The
+    // RELATIONS/CONNECTIONS sections below still use the FULL entity set.
+    let (confirmed, quarantined): (Vec<&Entity>, Vec<&Entity>) = entities
+        .iter()
+        .partition(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    {
+        use crate::core::entity::Classification;
+        let (mut v, mut p, mut c) = (0usize, 0usize, 0usize);
+        for e in &confirmed {
+            match e.classify() {
+                Classification::Verified => v += 1,
+                Classification::Probable => p += 1,
+                Classification::Candidate => c += 1,
+            }
+        }
+        println!(
+            "  Precision: {v} verified · {p} probable · {c} candidate ({} quarantined non-subject)",
+            quarantined.len()
+        );
+    }
+    // SeekNow breach-corpus headline — surfaces the server's own corpus counters
+    // (breach/stealer/external + truncation) that see_know stamps on its `/search`
+    // parent evidence, so the operator sees the TRUE corpus size behind the
+    // returned records, not just the 500-cap sample. Sourced strictly from
+    // see_know evidence (hibp/osintcat stamp `breach_count` with other semantics).
+    if let Some(line) = see_know_breach_headline(entities) {
+        println!("{line}");
+    }
+
     // Exposure Index — the calibrated 0–100 headline (with its transparent
     // breakdown) an operator reads first, aggregated from the breach/sensitive-PII/
     // identifier/correlation signals already computed below.
@@ -188,8 +253,10 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         println!();
     }
 
+    // Kind groups render CONFIRMED leads only; quarantined nodes get their own
+    // clearly-labelled section after the kind loop (separation, not suppression).
     let mut by_kind: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
-    for e in entities {
+    for &e in &confirmed {
         by_kind.entry(e.kind.to_string()).or_default().push(e);
     }
 
@@ -278,6 +345,33 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
             }
             println!();
         }
+    }
+
+    if !quarantined.is_empty() {
+        println!(
+            "━━━ POSSIBLE NON-SUBJECT / NAMESAKE (quarantined, {}) ━━━",
+            quarantined.len()
+        );
+        println!("  Same-name strangers / speculative leads the identity gates demoted —");
+        println!("  shown for completeness, NOT attributed to the subject.");
+        println!();
+        let mut q = quarantined.clone();
+        q.sort_by(|a, b| {
+            b.confidence
+                .partial_cmp(&a.confidence)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        for e in &q {
+            println!(
+                "  {} [{}]  {}  conf={:.2}  c_eff={:.2}",
+                e.kind,
+                e.classify(),
+                e.value,
+                e.confidence,
+                e.c_effective()
+            );
+        }
+        println!();
     }
 
     if !correlations.is_empty() {
@@ -790,13 +884,48 @@ fn print_diagnostics(
 mod tests {
     use super::{
         DOSSIER_KIND_ORDER, confine_relations_to_visible, entities_header_line,
-        order_dossier_kinds, truncation_note, zero_yield_keyed_or_paid_modules,
+        order_dossier_kinds, see_know_breach_headline, truncation_note,
+        zero_yield_keyed_or_paid_modules,
     };
-    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
     use crate::core::event::{Event, EventKind};
     use crate::core::module::ModuleCost;
     use crate::core::relation::{Relation, RelationKind};
     use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn see_know_breach_headline_reports_corpus_counts_only_from_see_know() {
+        // A see_know /search parent stamps server_total/breach/stealer/external +
+        // truncation on its evidence; the headline surfaces the TRUE corpus size.
+        let mut e = Entity::new(EntityKind::Username, "mriconic", 0.85, "scan");
+        e.add_evidence(
+            Evidence::new("see_know", "SeekNow: 500 record(s) via /search")
+                .with_attr("hits", "500")
+                .with_attr("server_total", "1800")
+                .with_attr("breach_count", "1200")
+                .with_attr("stealer_count", "300")
+                .with_attr("external_count", "300")
+                .with_attr("records_truncated", "1300"),
+        );
+        let line = see_know_breach_headline(std::slice::from_ref(&e)).expect("headline present");
+        assert!(line.contains("returned 500 of 1800 records"), "{line}");
+        assert!(line.contains("1300 truncated"), "{line}");
+        assert!(
+            line.contains("breach 1200 · stealer 300 · external 300"),
+            "{line}"
+        );
+
+        // A hibp entity that ALSO stamps breach_count must NOT produce the headline
+        // (different semantics) — only see_know-sourced evidence counts.
+        let mut h = Entity::new(EntityKind::Email, "a@b.com", 0.9, "scan");
+        h.add_evidence(Evidence::new("hibp", "breach").with_attr("breach_count", "5"));
+        assert!(see_know_breach_headline(std::slice::from_ref(&h)).is_none());
+
+        // Absent server_total (e.g. a cache-hit run) → no headline.
+        let mut c = Entity::new(EntityKind::Username, "x", 0.85, "scan");
+        c.add_evidence(Evidence::new("see_know", "cache").with_attr("hits", "12"));
+        assert!(see_know_breach_headline(std::slice::from_ref(&c)).is_none());
+    }
 
     #[test]
     fn dossier_renders_every_present_kind_never_dropping_one() {

@@ -31,6 +31,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
     back into results by default. Enable with `hse config feature.cross_scan on`.
 
 ### Added
+- **The dossier view separates quarantined leads and surfaces SeekNow's true
+  corpus size.** The `--output dossier` view — the richest one — rendered every
+  entity inline (a quarantined same-name stranger next to a confirmed subject
+  finding). It now leads with a `Precision:` summary, renders only confirmed
+  leads in the kind sections, and puts quarantined `candidate`-tagged nodes in a
+  dedicated `POSSIBLE NON-SUBJECT / NAMESAKE (quarantined, N)` section (shown for
+  completeness, clearly not attributed to the subject). A `Breach corpus
+  (SeekNow)` headline surfaces the server's own breach/stealer/external counts
+  and truncation (returned M of N records) — the counters see_know stamps on its
+  `/search` evidence — sourced strictly from see_know so the true corpus size
+  behind the 500-record sample is visible at a glance.
 - **SeekNow runs its `/search` and endpoint matrix concurrently, and recovers
   cross-platform handle aliases.** The module awaited the slow ~55s universal
   `/search` fully, THEN dispatched the per-kind endpoint matrix — the two are
