@@ -3,6 +3,7 @@
 //! call it without violating the "no inter-module imports" invariant.
 
 use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde::Deserialize;
 use serde_json::Value;
@@ -112,6 +113,37 @@ pub fn set_scan_cap_override(cap: u32) {
 fn mark_quota_exhausted() {
     BUDGET.mark_exhausted();
     tracing::warn!("OathNet daily quota exhausted — skipping remaining queries");
+}
+
+/// Emit the anti-bot-challenge diagnostic at most once per process.
+static CHALLENGE_WARNED: AtomicBool = AtomicBool::new(false);
+
+/// True if `body` is an anti-bot interstitial (Cloudflare "Just a moment…" JS
+/// challenge, an "Attention Required" block page, or a generic bot-check) rather
+/// than the API's JSON. These arrive as an HTML `200`/`403` that the JSON parser
+/// would otherwise surface as a cryptic `expected value at line 1 column 1`
+/// module error. Pure, so it is unit-testable.
+fn is_challenge_page(body: &str) -> bool {
+    body.contains("Just a moment")
+        || body.contains("cf-browser-verification")
+        || body.contains("challenge-platform")
+        || body.contains("Attention Required")
+        || body.contains("Checking your browser")
+        || body.contains("__cf_chl_")
+}
+
+/// Warn ONCE that OathNet is behind an anti-bot challenge on this network, so the
+/// operator gets an actionable diagnostic instead of a per-query parse error.
+fn warn_challenge_once() {
+    if !CHALLENGE_WARNED.swap(true, Ordering::Relaxed) {
+        tracing::warn!(
+            "OathNet (oathnet.org) returned an anti-bot challenge (Cloudflare interstitial / 403), \
+             not API data — its lookups will yield nothing this session. This is IP-reputation \
+             based: datacentre/VPN/proxy ranges are challenged. A residential connection, or a \
+             mirror set via HUNTSMAN_OATHNET_BASE, restores it. SeekNow (see-know.icu) is \
+             unaffected and remains the primary breach/stealer source."
+        );
+    }
 }
 
 fn base_url() -> String {
@@ -234,6 +266,26 @@ pub async fn search(
     if body.contains("\"left_today\":0") || body.contains("\"is_unlimited\":false,\"left_today\":0")
     {
         mark_quota_exhausted();
+        return Ok(Vec::new());
+    }
+    // A non-JSON body — an empty/whitespace 200, an HTML gateway/error page, or an
+    // anti-bot challenge interstitial — is "no results / provider unavailable", NOT
+    // a module failure. The bare `serde_json::from_str` below would otherwise
+    // surface it as a cryptic `expected value at line 1 column 1` hard error that
+    // fails the whole module every query. Mirrors see_know's `parse_response`
+    // non-JSON tolerance; a recognised challenge additionally logs one actionable
+    // diagnostic so the operator knows WHY OathNet is returning nothing.
+    let head = body.trim_start();
+    if !head.starts_with('{') && !head.starts_with('[') {
+        if is_challenge_page(&body) {
+            warn_challenge_once();
+        } else if !head.is_empty() {
+            tracing::debug!(
+                preview = %body.chars().take(80).collect::<String>(),
+                "oathnet: non-JSON response body treated as no results"
+            );
+        }
+        cache_put(ck, &[]);
         return Ok(Vec::new());
     }
     let env: Envelope =

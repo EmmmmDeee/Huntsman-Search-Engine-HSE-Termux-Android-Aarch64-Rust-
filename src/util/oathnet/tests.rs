@@ -270,3 +270,26 @@ use super::*;
     fn key_fingerprint_trims_surrounding_whitespace() {
         assert_eq!(key_fingerprint("  abc123  "), "oathnet.org:abc123");
     }
+
+    #[test]
+    fn challenge_page_detection_distinguishes_interstitial_from_json() {
+        // The live Cloudflare interstitial oathnet.org now serves must be
+        // recognised so it degrades to "no results" with a clear diagnostic,
+        // not a cryptic JSON parse error.
+        assert!(is_challenge_page(
+            "<!DOCTYPE html><html><head><title>Just a moment...</title>"
+        ));
+        assert!(is_challenge_page(
+            "<html><body><h1>Attention Required! | Cloudflare</h1>"
+        ));
+        assert!(is_challenge_page(
+            "<div id=\"challenge-platform\">Checking your browser</div>"
+        ));
+        // Real API JSON is NOT a challenge.
+        assert!(!is_challenge_page(r#"{"success":true,"data":{"results":[]}}"#));
+        assert!(!is_challenge_page("[]"));
+        // A breach record whose free text merely mentions cloudflare is not a page.
+        assert!(!is_challenge_page(
+            r#"{"success":true,"data":{"note":"host behind cloudflare"}}"#
+        ));
+    }

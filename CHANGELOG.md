@@ -10,6 +10,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Fixed
+- **OathNet now degrades gracefully behind an anti-bot challenge instead of
+  hard-failing every query.** `oathnet.org` is now served behind a Cloudflare
+  "Just a moment…" JS challenge (HTTP 403 / interstitial HTML), so the curl
+  client received HTML, not JSON — which the bare parser surfaced as a cryptic
+  `expected value at line 1 column 1` module error on every OathNet lookup. The
+  client now tolerates a non-JSON body the same way the SeekNow client does
+  (treats it as "no results / provider unavailable", not a failure) and, when it
+  recognises the challenge specifically, logs one actionable diagnostic —
+  naming the cause (IP-reputation-based bot challenge on datacentre/VPN ranges),
+  the `HUNTSMAN_OATHNET_BASE` mirror workaround, and that SeekNow is unaffected —
+  instead of a per-query parse error. SeekNow (see-know.icu) remains the primary
+  breach/stealer source and is not affected.
+
 ### Changed
 - **Local prior-scan data is no longer incorporated into a scan unless opted in
   (Phase 3).** Two paths silently folded local cross-scan history into every
