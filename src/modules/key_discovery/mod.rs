@@ -69,8 +69,8 @@ impl Module for KeyDiscoveryModule {
         true
     }
 
-    async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
+    async fn process(&self, _target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+        let result = ModuleResult::new();
 
         // Primary role: document and enforce proactive key discovery architecture
         //

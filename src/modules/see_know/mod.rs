@@ -294,12 +294,28 @@ impl Module for SeekNow {
             let mut parent = target.to_entity(0.85, &ctx.scan_id);
             parent.tag(tags::BREACH);
             parent.tag("see-know");
+
+            // Tag by data composition to improve result transparency
+            let has_breach = outcome.breach_count.map_or(false, |c| c > 0);
+            let has_stealer = outcome.stealer_count.map_or(false, |c| c > 0);
+            let has_external = outcome.external_count.map_or(false, |c| c > 0);
+
+            if has_breach {
+                parent.tag("breach-corpus");
+            }
+            if has_stealer {
+                parent.tag(tags::STEALER_LOG);
+            }
+            if has_external {
+                parent.tag(tags::EXTERNAL);
+            }
+
             // Base provenance; then the server's own corpus counters when present
             // (absent on a cache hit) so coverage reporting is authoritative
             // instead of mislabeling the SEARCH_LIMIT cap as the total.
-            let mut ev = Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
+            let mut ev = Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search/deep"))
                 .with_attr("hits", total.to_string())
-                .with_attr("endpoint", "/api/v1/search")
+                .with_attr("endpoint", "/api/v1/search/deep")
                 .with_attr("provider", "see-know.icu")
                 .with_attr("api_key_origin", &key_fp);
             if let Some(bc) = outcome.breach_count {
@@ -321,6 +337,11 @@ impl Module for SeekNow {
                 if st > total as u64 {
                     parent.tag("truncated");
                     ev = ev.with_attr("records_truncated", (st - total as u64).to_string());
+                    // Surface truncation severity: how much data is beyond the returned set
+                    let truncation_ratio = (st - total as u64) as f64 / st as f64;
+                    if truncation_ratio > 0.5 {
+                        parent.tag("high-truncation");
+                    }
                 }
             }
             parent.add_evidence(ev);
@@ -439,6 +460,32 @@ impl Module for SeekNow {
         // value when no alternate is usable, and `hse doctor`'s live re-validation
         // flips a recovered key back to Active.
         sync_key_status_to_pool(&ctx.scan_id, key);
+
+        // Surface comprehensive coverage metrics for transparency
+        let entity_count = result.entities.len();
+        if entity_count > 0 {
+            let api_key_count = result
+                .entities
+                .iter()
+                .filter(|e| e.kind == EntityKind::ApiKey)
+                .count();
+            let breach_entity_count = result
+                .entities
+                .iter()
+                .filter(|e| e.tags.contains(&tags::BREACH.to_string()))
+                .count();
+
+            tracing::info!(
+                target: SRC,
+                entities = entity_count,
+                api_keys = api_key_count,
+                breach_entities = breach_entity_count,
+                "SeekNow /search/deep coverage: {} total entities, {} API keys, {} from breach corpus",
+                entity_count,
+                api_key_count,
+                breach_entity_count
+            );
+        }
 
         Ok(result)
     }
