@@ -26,6 +26,34 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `scan_cap=750`), and a `see_know`-only scan returns real data.
 
 ### Added
+- **SeekNow (and every breach-rich provider) now extracts the data endpoints
+  wrap one or two levels deep, and types pivots by value instead of field
+  name.** Three future-proof extraction upgrades, verified live against
+  `see-know.icu`:
+  - *Nested-payload flattening.* SeekNow's social endpoints double-wrap their
+    payload — TikTok returns `{data:{credit,service,profile:{nickname:"Thomas
+    Iconic",user_id,…}}}` — so the real name and platform id lived two levels
+    below the top-level fields the extractors read and were dropped entirely
+    (only the `credit`/`service` plumbing leaked as noise). A depth-bounded
+    `flatten_record` now merges nested container objects (`profile`, `data`,
+    `account`, `user`, …) up before extraction; shallower keys win on collision
+    so the search-level identity stays authoritative, and the untouched original
+    record is kept on the evidence chain.
+  - *Value-based Url/Email typing.* A URL or email carried in **any** field — a
+    provider's `blog`/`html_url`/`recovery_email`, or a key a future endpoint
+    adds — is now surfaced as a pivotable `Url`/`Email` that feeds
+    crawl/DNS/identity expansion, instead of an inert `Other(field)` node that
+    pivots nowhere. Display assets are excluded both by field name
+    (`avatar`/`image`/…) **and** by the URL's own path extension
+    (`.webp`/`.jpg`/…), so a signed-CDN avatar under a novel field name (TikTok's
+    `avatar_thumb`) is never minted as a crawl target aimed at an image host.
+  - *Envelope-plumbing suppression + name aliases.* API wrapper/quota metadata
+    (`credit`, `service`, `quota*`, `credits*`, `took*`, `version`, `resets_at`,
+    `plan`, `mode`, …) is skipped rather than surfaced as `Other()` nodes, and
+    `nickname`/`display_name`/`real_name` join `full_name`/`name` as recognised
+    real-name fields in both the SeekNow and OathNet extractors (space-gated, so
+    a bare handle stays a Username). Live result on a real username: 45 entities
+    (was 38) with two real-name Persons recovered and zero wrapper noise.
 - **`hse doctor` now live-probes every configured key, not just WiGLE.** A new
   "Key validation" section reports each configured key as `live`, `REJECTED`
   (a definitive 401/403 — the key is bad), or `unknown` (unreachable/transient —

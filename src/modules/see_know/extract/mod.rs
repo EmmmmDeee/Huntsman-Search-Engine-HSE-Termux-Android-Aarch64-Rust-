@@ -179,6 +179,59 @@ fn identity_tags(item: &Value) -> Vec<String> {
     tags
 }
 
+/// Container keys whose nested object holds the real payload of a wrapped SeekNow
+/// response — merged up by [`flatten_record`]. A metadata layer (`credit`,
+/// `service`, `success`, `type`) sits alongside these and is filtered by the
+/// extractors' own skip lists, so only value-bearing scalars survive.
+const FLATTEN_CONTAINER_KEYS: &[&str] = &[
+    "profile", "data", "account", "user", "details", "info", "result", "results", "record",
+];
+
+/// Merge a record's nested container objects up into one flat object so the
+/// typed extractors (which read top-level fields) see data an endpoint wraps one
+/// or two levels deep. Scalars at a shallower level win on key collision (the
+/// search-level identity is authoritative); nested-only scalars are added.
+/// Recursion is depth-bounded (guards a pathological/cyclic shape) and non-scalar
+/// leaves are dropped — a stringified blob is not a graph node (the same policy
+/// the catch-all pass applies). Returns the input unchanged if it is not an
+/// object.
+fn flatten_record(item: &Value) -> Value {
+    fn merge(
+        dst: &mut serde_json::Map<String, Value>,
+        obj: &serde_json::Map<String, Value>,
+        depth: u8,
+    ) {
+        // Scalars first so a shallower level wins the `or_insert`.
+        for (k, v) in obj {
+            if matches!(v, Value::String(_) | Value::Bool(_) | Value::Number(_)) {
+                dst.entry(k.clone()).or_insert_with(|| v.clone());
+            }
+        }
+        if depth < 4 {
+            for (k, v) in obj {
+                if let Value::Object(inner) = v
+                    && FLATTEN_CONTAINER_KEYS.contains(&k.as_str())
+                {
+                    merge(dst, inner, depth + 1);
+                }
+            }
+        }
+    }
+    let Some(obj) = item.as_object() else {
+        return item.clone();
+    };
+    // Nothing to flatten (no nested container) → avoid the rebuild allocation.
+    if !obj
+        .iter()
+        .any(|(k, v)| v.is_object() && FLATTEN_CONTAINER_KEYS.contains(&k.as_str()))
+    {
+        return item.clone();
+    }
+    let mut out = serde_json::Map::new();
+    merge(&mut out, obj, 0);
+    Value::Object(out)
+}
+
 pub(super) fn extract_entities(
     item: &Value,
     target_value: &str,
@@ -193,8 +246,19 @@ pub(super) fn extract_entities(
         .unwrap_or_else(|| "see-know".to_string());
     // Full raw record on the evidence chain — every entity derived from this
     // record carries the complete source data plus its provenance (provider,
-    // API-key origin, endpoint) for traceability.
+    // API-key origin, endpoint) for traceability. Built from the ORIGINAL item so
+    // the evidence keeps the true nested shape.
     let ev = record_evidence(item, &dbname, endpoint, key_fp);
+
+    // Flatten nested container objects up so the typed extractors (which read
+    // top-level fields) see data an endpoint double-wraps. E.g. TikTok returns
+    // `{data:{credit,service,profile:{nickname:"Thomas Iconic",user_id,...}}}` —
+    // the real name and platform id live two levels down and were being dropped
+    // entirely (only the `credit`/`service` plumbing leaked as noise). Every
+    // scalar field below now reads the flattened view; outer keys win on
+    // collision, so the search-level identity stays authoritative.
+    let flat = flatten_record(item);
+    let item = &flat;
 
     // Does this record actually identify the subject? A broad see_know search —
     // above all a name auto-detect — can return same-name strangers; the
@@ -248,7 +312,16 @@ pub(super) fn extract_entities(
             );
         }
     }
-    if let Some(name) = val_str(item, "full_name").or_else(|| val_str(item, "name"))
+    // Real name from any of the provider's name fields. Social endpoints carry it
+    // as `nickname`/`display_name` (TikTok's `profile.nickname` = "Thomas Iconic")
+    // rather than `full_name`; the space gate keeps a bare handle (no space) out
+    // of the Person kind — those remain the Username the search already surfaced.
+    if let Some(name) = val_str(item, "full_name")
+        .or_else(|| val_str(item, "name"))
+        .or_else(|| val_str(item, "display_name"))
+        .or_else(|| val_str(item, "nickname"))
+        .or_else(|| val_str(item, "real_name"))
+        .or_else(|| val_str(item, "realname"))
         && name.trim().contains(' ')
         && seen.insert(name.to_lowercase())
     {
@@ -546,6 +619,84 @@ mod tests {
     fn parse_coord_reads_json_number() {
         let item = json!({"lat": 12.5});
         assert_eq!(parse_coord(&item, &["lat"]), Some(12.5));
+    }
+
+    #[test]
+    fn flatten_record_lifts_nested_profile_scalars_outer_wins() {
+        // The live TikTok endpoint shape: a metadata wrapper (`credit`/`service`)
+        // around the real `profile` payload, two levels deep.
+        let wrapped = json!({
+            "success": true,
+            "credit": "Lookup made by https://breachhub.org",
+            "service": "TikTok Osint",
+            "username": "mriconic",
+            "profile": {
+                "nickname": "Thomas Iconic",
+                "user_id": "7208908582498616326",
+                "username": "SHOULD_NOT_OVERRIDE",
+                "region": "MY"
+            }
+        });
+        let flat = flatten_record(&wrapped);
+        let o = flat.as_object().unwrap();
+        // Nested-only scalars are lifted to the top level.
+        assert_eq!(
+            o.get("nickname").and_then(|v| v.as_str()),
+            Some("Thomas Iconic")
+        );
+        assert_eq!(
+            o.get("user_id").and_then(|v| v.as_str()),
+            Some("7208908582498616326")
+        );
+        assert_eq!(o.get("region").and_then(|v| v.as_str()), Some("MY"));
+        // Outer key wins on collision — the search-level identity is authoritative.
+        assert_eq!(o.get("username").and_then(|v| v.as_str()), Some("mriconic"));
+        // Non-container nested objects and arrays are not entities → dropped.
+        assert!(!o.contains_key("profile"));
+    }
+
+    #[test]
+    fn flatten_record_is_a_noop_without_nested_containers() {
+        let flat = json!({"email": "a@b.com", "username": "u"});
+        assert_eq!(flatten_record(&flat), flat);
+    }
+
+    #[test]
+    fn extract_entities_recovers_person_from_nested_tiktok_nickname() {
+        // End-to-end: the wrapped TikTok record must yield a Person from the
+        // nested `profile.nickname` (a real name) and must NOT surface the
+        // `credit`/`service` wrapper plumbing as entities.
+        let wrapped = json!({
+            "success": true,
+            "credit": "Lookup made by https://breachhub.org",
+            "service": "TikTok Osint",
+            "username": "mriconic",
+            "profile": { "nickname": "Thomas Iconic", "user_id": "7208908582498616326" }
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &wrapped,
+            "mriconic",
+            "scan",
+            "username/tiktok",
+            "fp",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Thomas Iconic"),
+            "nested profile.nickname must become a Person"
+        );
+        assert!(
+            !result.entities.iter().any(
+                |e| matches!(&e.kind, EntityKind::Other(k) if k == "credit" || k == "service")
+            ),
+            "wrapper plumbing must not become entities"
+        );
     }
 
     #[test]

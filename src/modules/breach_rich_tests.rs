@@ -258,3 +258,42 @@ fn source_tag_is_parameterised() {
     // The same field set is surfaced regardless of provider.
     assert_eq!(see.entities.len(), oath.entities.len());
 }
+
+#[test]
+fn value_typing_surfaces_urls_and_emails_from_arbitrary_fields() {
+    // Modelled on the live see-know.icu `username/github` profile shape: a URL
+    // lives under `blog`/`html_url` (not the `url` field the primary path reads),
+    // and a contact email under a novel `recovery_email` key. Both must become
+    // pivotable Url/Email entities, NOT inert Other() nodes. The `avatar_url`
+    // display asset must be suppressed (not aimed at a CDN as a crawl target).
+    let item = json!({
+        "login": "torvalds",
+        "blog": "https://kernel.org/linus",
+        "html_url": "https://github.com/torvalds",
+        "avatar_url": "https://avatars.githubusercontent.com/u/1024025?v=4",
+        // A signed CDN image URL under a NON-media-named field — must be excluded
+        // by its `.webp` path extension, not just the field name (TikTok shape).
+        "avatar_thumb": "https://p19.tiktokcdn-us.com/xyz~tplv-cropcenter:100:100.webp?x-signature=abc",
+        "recovery_email": "linus@example.com",
+        "followers": 311176
+    });
+    let r = run(&item, "see-know");
+
+    // URLs from non-`url` fields are typed as pivotable Url.
+    assert!(has(&r, EntityKind::Url, "https://kernel.org/linus"), "blog → Url");
+    assert!(has(&r, EntityKind::Url, "https://github.com/torvalds"), "html_url → Url");
+    // Neither avatar (media asset) is minted as a Url — one excluded by field
+    // name, one by its image path extension.
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Url
+            && (e.value.contains("avatars.githubusercontent") || e.value.contains("tiktokcdn"))),
+        "avatar/image URLs must not become crawl targets"
+    );
+    // Email from a novel field name is typed as Email.
+    assert!(has(&r, EntityKind::Email, "linus@example.com"), "recovery_email → Email");
+    // A non-URL/non-email scalar still falls through to Other(field).
+    assert!(
+        r.entities.iter().any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "followers")),
+        "unrecognised scalar → Other(field)"
+    );
+}

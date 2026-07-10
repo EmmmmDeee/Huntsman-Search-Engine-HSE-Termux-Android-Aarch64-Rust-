@@ -101,6 +101,10 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "phone_number",
     "full_name",
     "name",
+    "display_name",
+    "nickname",
+    "real_name",
+    "realname",
     "ip",
     "country",
     "discord_id",
@@ -188,6 +192,34 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "index",
     "score",
     "_score",
+    // API-envelope / wrapper plumbing surfaced when an endpoint double-wraps its
+    // payload (e.g. SeekNow's TikTok endpoint nests the profile under a
+    // `{credit, service, …, profile:{…}}` layer). Attribution and quota metadata,
+    // not investigative data — kept on evidence, never a graph node.
+    "credit",
+    "service",
+    "quota",
+    "quota_remaining",
+    "quota_max",
+    "credits",
+    "credits_remaining",
+    "credits_daily_limit",
+    "credits_used_today",
+    "execution_time_ms",
+    "response_time",
+    "took_ms",
+    "took",
+    "version",
+    "api_version",
+    "count",
+    "results_count",
+    "timestamp",
+    "ts",
+    "resets_at",
+    "plan",
+    "mode",
+    "query",
+    "cached",
     // Domain WHOIS/RDAP metadata — surfaced as Domain *attributes* by the
     // dedicated DNS/RDAP modules, not worth duplicating as standalone graph
     // nodes (and `dns` is a record map, never an entity value).
@@ -451,22 +483,30 @@ pub fn extract_rich_detail(
         }
     }
 
-    // ── Catch-all: every remaining value-bearing SCALAR field becomes an
-    // `Other(field)` node, so no atomic data point in the raw record is left
-    // un-surfaced. Nested objects/arrays are NOT turned into entities — a
-    // stringified JSON blob (e.g. a `dns` record map) is not a meaningful graph
-    // node and only pollutes the entity set; its atomic contents are surfaced by
-    // the typed paths above and by the dedicated DNS/RDAP modules. ──
+    // ── Catch-all: every remaining value-bearing SCALAR field becomes an entity,
+    // so no atomic data point in the raw record is left un-surfaced. Nested
+    // objects/arrays are NOT turned into entities — a stringified JSON blob (e.g.
+    // a `dns` record map) is not a meaningful graph node and only pollutes the
+    // entity set; its atomic contents are surfaced by the typed paths above and
+    // by the dedicated DNS/RDAP modules.
+    //
+    // Typed BY VALUE, not by field name (future-proof): a URL or email carried in
+    // ANY field — a provider's `blog` / `html_url` / `recovery_email` / a field a
+    // future endpoint adds — is surfaced as a pivotable `Url`/`Email` that feeds
+    // crawl/DNS/identity expansion, instead of an inert `Other(field)` node that
+    // pivots nowhere. Everything else falls through to `Other(field)`. ──
     for (k, v) in obj {
-        // O(1) set lookup; the skip list is all-lowercase, so only pay for a
-        // lowercased copy when `k` actually contains uppercase ASCII (the common
-        // case is already lowercase → no allocation).
-        let skip = if k.bytes().any(|b| b.is_ascii_uppercase()) {
-            RICH_DETAIL_SKIP_SET.contains(k.to_lowercase().as_str())
+        // Lowercased field key for the O(1) set lookups below; only pay for the
+        // copy when `k` actually contains uppercase ASCII (the common case is
+        // already lowercase → no allocation, `kl` borrows `k`).
+        let kl_lower;
+        let kl: &str = if k.bytes().any(|b| b.is_ascii_uppercase()) {
+            kl_lower = k.to_lowercase();
+            &kl_lower
         } else {
-            RICH_DETAIL_SKIP_SET.contains(k.as_str())
+            k.as_str()
         };
-        if skip {
+        if RICH_DETAIL_SKIP_SET.contains(kl) {
             continue;
         }
         let val = match v {
@@ -478,6 +518,48 @@ pub fn extract_rich_detail(
         if val.is_empty() || val.len() > 2000 || is_absent_marker(&val) {
             continue;
         }
+        let trimmed = val.trim();
+
+        // Value-typing 1 — a web URL in any field. Display assets (avatars,
+        // images) are excluded by field name (`avatar*`/`image*`/…) AND by the
+        // URL's own path extension (`.webp`/`.jpg`/…) — the latter future-proofs
+        // against a provider naming an image field anything (TikTok's
+        // `avatar_thumb`/`avatar_larger` are signed CDN `.webp` URLs). Display
+        // media is not an investigative web page and would only aim the crawler at
+        // an image CDN. Shares the `@url:` seen-key namespace with the primary URL
+        // path so a URL already surfaced there is not re-minted.
+        if !MEDIA_URL_FIELDS.contains(kl)
+            && trimmed.len() >= 11
+            && (trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+            && trimmed.contains('.')
+            && !url_path_is_media(trimmed)
+            && seen.insert(format!("@url:{}", trimmed.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Url, trimmed, 0.50, scan_id),
+                ev,
+                source,
+                &["raw-field"],
+            );
+            continue;
+        }
+
+        // Value-typing 2 — an email address in any field (recovery/alt/contact
+        // emails a future endpoint may surface under a novel key).
+        if crate::util::extract::looks_like_email(trimmed)
+            && seen.insert(format!("@email:{}", trimmed.to_lowercase()))
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Email, trimmed, 0.55, scan_id),
+                ev,
+                source,
+                &["raw-field"],
+            );
+            continue;
+        }
+
         if seen.insert(format!("@other:{k}:{}", val.to_lowercase())) {
             push_breach_entity(
                 result,
@@ -489,6 +571,69 @@ pub fn extract_rich_detail(
         }
     }
 }
+
+/// True when a URL's path (the segment before any `?`/`#`) ends in a known image
+/// or media extension — a display asset, not an investigative web page. Value-
+/// based so it catches an image URL under ANY field name (a provider's
+/// `avatar_thumb`, `cover`, `banner`, …), including the signed-query CDN URLs
+/// social endpoints return (`…/x.webp?x-signature=…`). Case-insensitive.
+fn url_path_is_media(url: &str) -> bool {
+    let path = url
+        .split(['?', '#'])
+        .next()
+        .unwrap_or(url)
+        .trim_end_matches('/');
+    let tail = path.rsplit('.').next().unwrap_or("");
+    matches!(
+        tail.to_ascii_lowercase().as_str(),
+        "webp"
+            | "jpg"
+            | "jpeg"
+            | "png"
+            | "gif"
+            | "svg"
+            | "bmp"
+            | "ico"
+            | "tiff"
+            | "heic"
+            | "avif"
+            | "mp4"
+            | "webm"
+            | "mov"
+            | "mp3"
+            | "wav"
+            | "ogg"
+    )
+}
+
+/// Field names whose value is a display asset (profile picture / avatar / icon),
+/// not an investigative web page — so the value-based URL typing in the catch-all
+/// skips them rather than minting a crawl target pointed at an image CDN.
+static MEDIA_URL_FIELDS: std::sync::LazyLock<HashSet<&'static str>> =
+    std::sync::LazyLock::new(|| {
+        [
+            "avatar_url",
+            "avatar",
+            "image",
+            "image_url",
+            "img",
+            "photo",
+            "photo_url",
+            "picture",
+            "profile_pic",
+            "profile_picture",
+            "icon",
+            "icon_url",
+            "thumbnail",
+            "thumb",
+            "logo",
+            "gravatar",
+            "banner",
+            "background_image",
+        ]
+        .into_iter()
+        .collect()
+    });
 
 #[cfg(test)]
 mod tests {

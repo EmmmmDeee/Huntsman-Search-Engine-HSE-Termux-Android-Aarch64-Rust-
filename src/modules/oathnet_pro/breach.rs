@@ -301,7 +301,17 @@ pub(super) fn extract_breach_entities_with(
     // subject; the surname gate needs the row's name to reject that. Deliberately
     // a dedicated key (NOT a `PERSON_NAME_ATTRS` key) so it feeds only the
     // promotion gate and never the person-place relation builders.
-    if let Some(name) = val_str_or(item, &["full_name", "display_name", "name"]) {
+    if let Some(name) = val_str_or(
+        item,
+        &[
+            "full_name",
+            "display_name",
+            "name",
+            "nickname",
+            "real_name",
+            "realname",
+        ],
+    ) {
         let name = name.trim();
         if name.len() >= 2 {
             ev = ev.with_attr("breach_row_name", name);
@@ -356,7 +366,17 @@ pub(super) fn extract_breach_entities_with(
         );
     }
 
-    if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
+    if let Some(n) = val_str_or(
+        item,
+        &[
+            "full_name",
+            "display_name",
+            "name",
+            "nickname",
+            "real_name",
+            "realname",
+        ],
+    ) {
         let t = n.trim();
         if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
             push_oathnet_entity(
