@@ -7,7 +7,9 @@ use crate::core::error::{Error, Result};
 use crate::util::curl_client::{AuthScheme, CurlClient};
 use crate::util::response_cache::ResponseCache;
 
-use super::budget::{mark_key_invalid, mark_quota_exhausted};
+use super::budget::{
+    mark_key_invalid, mark_quota_exhausted, note_rate_limited, reset_rate_limit_streak,
+};
 
 // Embedded fallback: the single-source-of-truth default lives in `util::keys`.
 const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
@@ -122,8 +124,13 @@ pub(super) fn is_auth_error(body: &str) -> bool {
 enum Terminal {
     /// The key itself is rejected (`invalid_api_key` / `plan_required`).
     Auth,
-    /// The key is fine but its quota/credits are spent.
+    /// The key is fine but its quota/credits are spent (a DAILY wall).
     Quota,
+    /// The key is fine but is momentarily throttled (a per-minute cooldown,
+    /// ServiceDef `rate_limit_reset_secs = 17`). Transient — skip this call but
+    /// do NOT permanently latch the scan, or one spike zeros out the rest of the
+    /// coverage on the highest-priority source.
+    RateLimited,
 }
 
 /// True if either `credits_remaining` meter (top-level, or nested under `data`)
@@ -146,10 +153,17 @@ fn classify_terminal(v: &Value) -> Option<Terminal> {
     if is_auth_error(err) || is_auth_error(msg) {
         return Some(Terminal::Auth);
     }
-    if credits_exhausted(v)
-        || err == "rate_limit"
-        || err.contains("quota_exceeded")
-        || msg.contains("daily limit reached")
+    // Transient throttle FIRST — a rate-limit is a per-minute cooldown, not a
+    // daily wall, so it must be classified apart from `Quota` (which latches the
+    // whole scan). Matched by substring (envelope-scoped only) so `rate_limit`,
+    // `rate_limited`, `rate_limit_exceeded`, and a spaced/hyphenated message
+    // variant all count; `credits_remaining == 0` stays a true `Quota` signal.
+    let throttled =
+        |s: &str| s.contains("rate_limit") || s.contains("rate-limit") || s.contains("rate limit");
+    if throttled(err) || throttled(msg) || msg.contains("too many requests") {
+        return Some(Terminal::RateLimited);
+    }
+    if credits_exhausted(v) || err.contains("quota_exceeded") || msg.contains("daily limit reached")
     {
         return Some(Terminal::Quota);
     }
@@ -191,7 +205,21 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
             mark_quota_exhausted();
             Ok(Value::Null)
         }
-        None => Ok(value),
+        Some(Terminal::RateLimited) => {
+            // Skip THIS call (empty), but do not permanently latch on one spike.
+            // Only escalate to a full quota latch after a sustained consecutive
+            // streak, so the concurrent fan-out stops reserving slots against a
+            // key that is being throttled call after call.
+            if note_rate_limited() {
+                mark_quota_exhausted();
+            }
+            Ok(Value::Null)
+        }
+        None => {
+            // A clean (non-terminal) response lifts any transient throttle.
+            reset_rate_limit_streak();
+            Ok(value)
+        }
     }
 }
 

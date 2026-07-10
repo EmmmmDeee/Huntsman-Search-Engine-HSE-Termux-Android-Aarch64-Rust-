@@ -35,6 +35,31 @@ pub(super) static BUDGET: QuotaBudget = QuotaBudget::new(
 /// extra HTTP call per target when the module processes multiple seeds.
 static QUOTA_PROBED: AtomicBool = AtomicBool::new(false);
 
+/// Consecutive rate-limit responses since the last clean (non-terminal) reply.
+/// A single transient throttle (per-minute cooldown, ServiceDef
+/// `rate_limit_reset_secs = 17`) must NOT permanently latch the scan the way a
+/// daily-quota wall does — but sustained limiting should eventually stop the
+/// concurrent endpoint fan-out from reserving budget slots on calls that all come
+/// back empty. Reset to 0 by any clean response and by [`reset_budget`].
+static RATE_LIMIT_STREAK: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Consecutive rate-limit responses that escalate to a full quota latch.
+const RATE_LIMIT_LATCH_THRESHOLD: u32 = 4;
+
+/// Record a rate-limited response. Returns `true` once the CONSECUTIVE streak has
+/// reached [`RATE_LIMIT_LATCH_THRESHOLD`] — the caller then treats it as terminal
+/// (marks quota exhausted) to stop hammering a sustained-throttled key. A single
+/// spike returns `false`, so the scan keeps trying other endpoints.
+pub(super) fn note_rate_limited() -> bool {
+    RATE_LIMIT_STREAK.fetch_add(1, Ordering::Relaxed) + 1 >= RATE_LIMIT_LATCH_THRESHOLD
+}
+
+/// Clear the consecutive rate-limit streak — any clean response lifts the throttle
+/// so a momentary spike never counts toward the latch across the whole scan.
+pub(super) fn reset_rate_limit_streak() {
+    RATE_LIMIT_STREAK.store(0, Ordering::Relaxed);
+}
+
 /// True if this is the first call since [`reset_budget`] — i.e. the probe
 /// has not yet run for this scan. Returns false on all subsequent calls in
 /// the same scan (probe already done or no key available). Thread-safe:
@@ -43,6 +68,19 @@ pub fn should_probe_quota() -> bool {
     QUOTA_PROBED
         .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
         .is_ok()
+}
+
+/// Release the quota-probe latch so the NEXT target this scan re-probes.
+///
+/// [`should_probe_quota`] latches `QUOTA_PROBED=true` before the `/credits` call
+/// runs (deliberately, to stop a concurrent first-target herd from all probing).
+/// But a transient probe failure (a single un-retried GET drop, common on a cold
+/// Termux link) would then leave the latch consumed with no scaling applied, and
+/// nothing re-probes for the rest of the scan — pinning the per-round cap at the
+/// 300 floor instead of the plan-scaled value (2.5× under-utilisation on a 15k
+/// plan). Callers clear the latch on a failed probe so a later target retries.
+pub fn clear_quota_probe() {
+    QUOTA_PROBED.store(false, Ordering::Release);
 }
 
 /// Scale the per-scan cap to the operator's actual daily allocation.
@@ -56,6 +94,20 @@ pub fn should_probe_quota() -> bool {
 /// is set, the probe result is used only when no explicit override was given.
 /// The session cap is left unchanged (set high; server quota is the backstop).
 pub fn scale_scan_cap_from_daily(daily_limit: u32) {
+    // `remaining` unknown here → pass the sentinel MAX so the `.min(remaining)`
+    // clamp in [`scale_scan_cap`] is a no-op and behaviour matches the original
+    // daily-only scaling.
+    scale_scan_cap(u32::MAX, daily_limit);
+}
+
+/// Scale the per-scan cap to the plan allocation **and** clamp it to the credits
+/// actually remaining, so a near-exhausted plan is never over-spent.
+///
+/// `cap = clamp(daily_limit / 20, 300, 2500).min(remaining)`. When `remaining`
+/// is 0 the plan is spent, so the daily quota is marked exhausted (skipping the
+/// otherwise-guaranteed wasted `/search` on a zero balance) and no cap is set.
+/// The operator's explicit `HUNTSMAN_SEEKNOW_SCAN_CAP` override always wins.
+pub fn scale_scan_cap(remaining: u32, daily_limit: u32) {
     // Do not override if the operator already set an explicit cap via env or
     // ScanOptions — their explicit value always takes precedence.
     if std::env::var("HUNTSMAN_SEEKNOW_SCAN_CAP")
@@ -65,12 +117,18 @@ pub fn scale_scan_cap_from_daily(daily_limit: u32) {
     {
         return;
     }
-    let cap = (daily_limit / 20).clamp(300, 2500);
+    if remaining == 0 {
+        // Balance already spent — don't burn the first billable call on it.
+        mark_quota_exhausted();
+        return;
+    }
+    let cap = (daily_limit / 20).clamp(300, 2500).min(remaining);
     BUDGET.set_scan_cap_override(cap);
     tracing::debug!(
+        remaining,
         daily_limit,
         scan_cap = cap,
-        "see_know scan cap scaled to plan quota"
+        "see_know scan cap scaled to plan quota (clamped to remaining credits)"
     );
 }
 
@@ -146,6 +204,8 @@ pub fn reset_budget() {
     KEY_INVALID.store(false, Ordering::Relaxed);
     // Allow the quota probe to fire again on the next scan.
     QUOTA_PROBED.store(false, Ordering::Relaxed);
+    // A prior scan's rate-limit streak must not carry into this one.
+    RATE_LIMIT_STREAK.store(0, Ordering::Relaxed);
 }
 
 /// Refresh SeekNow's per-round budget at each expansion-round boundary so it is

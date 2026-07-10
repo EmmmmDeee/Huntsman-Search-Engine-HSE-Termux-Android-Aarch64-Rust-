@@ -25,7 +25,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `see_know live`, the scan cap now scales (`daily_limit=Some(15000)`,
   `scan_cap=750`), and a `see_know`-only scan returns real data.
 
-### Added
+### Fixed
+- **SeekNow budget & rate-limit handling hardened (audit batch 2).** Three
+  verified quota-correctness fixes on the highest-value paid source:
+  - *A transient rate-limit no longer zeroes out the rest of a scan.* A
+    per-minute `rate_limit` throttle (ServiceDef cooldown = 17s) was classified
+    as permanent daily-quota exhaustion, latching the sticky quota flag so every
+    remaining SeekNow call this scan fast-failed empty with no recovery. It is
+    now a distinct transient condition: the throttled call is skipped, but the
+    scan keeps trying and only escalates to a full latch after a sustained
+    consecutive streak (any clean response resets it). Rate-limit matching was
+    also broadened (`rate_limited`/`rate_limit_exceeded`/spaced+hyphenated
+    message variants), still envelope-scoped so a marker inside a data record
+    never trips it.
+  - *The scan cap is clamped to credits actually remaining.* The `/credits`
+    probe read `credits_remaining` but only `daily_limit` reached the cap, so a
+    99%-spent plan still planned up to 750 billable calls against ~100 real
+    credits; a zero balance still burned the first `/search`. The cap is now
+    `min(plan-scaled, remaining)`, and a zero balance latches quota-exhausted
+    up front instead of wasting a call.
+  - *A transient quota-probe failure no longer pins the cap at the floor.* The
+    once-per-scan probe latched its "already probed" flag before the `/credits`
+    GET ran, so a single cold-start network drop left the cap at the 300 floor
+    for the whole scan (2.5× under-utilisation of a 15k plan) with no re-probe.
+    A failed probe now releases the latch so the next target retries.
 - **SeekNow extraction & coverage-reporting hardened (audit batch 1).** A
   multi-lens audit of the live integration surfaced five verified data-loss and
   transparency gaps, all now fixed:

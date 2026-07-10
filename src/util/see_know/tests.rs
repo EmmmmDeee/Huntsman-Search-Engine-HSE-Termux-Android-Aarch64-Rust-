@@ -1,7 +1,8 @@
 use serde_json::json;
 
 use super::budget::{
-    budget_increment, budget_snapshot, reset_budget, scan_budget_remaining, set_scan_cap_override,
+    budget_increment, budget_snapshot, clear_quota_probe, is_quota_exhausted, reset_budget,
+    scale_scan_cap, scan_budget_remaining, set_scan_cap_override, should_probe_quota,
 };
 use super::client::{
     CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
@@ -351,6 +352,53 @@ fn scan_budget_remaining_decreases_with_increments() {
 }
 
 #[test]
+fn clear_quota_probe_reenables_probing() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget(); // clears QUOTA_PROBED
+    assert!(should_probe_quota(), "first probe after reset should fire");
+    assert!(
+        !should_probe_quota(),
+        "latched — a second call must not re-fire"
+    );
+    // A transient /credits failure clears the latch so the NEXT target retries.
+    clear_quota_probe();
+    assert!(
+        should_probe_quota(),
+        "after clear_quota_probe the next target must re-probe"
+    );
+    reset_budget();
+}
+
+#[test]
+fn scale_scan_cap_clamps_to_remaining_and_latches_at_zero() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    // An explicit operator cap override takes precedence and would mask the
+    // clamp under test — skip in that (rare) environment rather than flake.
+    if std::env::var("HUNTSMAN_SEEKNOW_SCAN_CAP")
+        .is_ok_and(|v| v.parse::<u32>().is_ok_and(|n| n > 0))
+    {
+        return;
+    }
+    reset_budget();
+    // daily 15k → clamp(750,300,2500)=750, but only 50 credits remain → cap 50.
+    scale_scan_cap(50, 15_000);
+    assert_eq!(
+        budget_snapshot().scan_cap,
+        50,
+        "cap must clamp to the credits actually remaining"
+    );
+    // Zero remaining → quota latched exhausted, no wasted first call.
+    reset_budget();
+    assert!(!is_quota_exhausted());
+    scale_scan_cap(0, 15_000);
+    assert!(
+        is_quota_exhausted(),
+        "a zero balance must latch quota-exhausted instead of scaling a cap"
+    );
+    reset_budget();
+}
+
+#[test]
 fn budget_snapshot_reports_active_caps() {
     let _guard = BUDGET_TEST_LOCK.lock();
     reset_budget();
@@ -484,6 +532,32 @@ fn parse_response_ignores_auth_marker_inside_data_payload() {
         "a record containing 'invalid_api_key' must survive, not be read as auth failure"
     );
     assert_eq!(v["total"], 1);
+}
+
+#[test]
+fn parse_response_rate_limit_is_transient_until_sustained() {
+    let _guard = BUDGET_TEST_LOCK.lock();
+    reset_budget();
+    // A single rate-limit is a per-minute throttle, not a daily wall — skip the
+    // call (Null) but do NOT permanently latch the scan.
+    let v = parse_response(r#"{"error":"rate_limit"}"#).expect("rate limit → Ok(Null)");
+    assert!(v.is_null());
+    assert!(
+        !is_quota_exhausted(),
+        "one rate-limit spike must not zero out the rest of the scan"
+    );
+    // A clean response between spikes lifts the throttle (resets the streak).
+    parse_response(r#"{"total":1,"results":[{"email":"a@x.com"}]}"#).expect("clean response");
+    // A SUSTAINED consecutive streak (broadened matching: `rate_limited` too)
+    // eventually escalates to a quota latch so the fan-out stops hammering.
+    for _ in 0..4 {
+        let _ = parse_response(r#"{"error":"rate_limited"}"#);
+    }
+    assert!(
+        is_quota_exhausted(),
+        "sustained consecutive rate-limits must latch to stop budget burn"
+    );
+    reset_budget();
 }
 
 #[test]
