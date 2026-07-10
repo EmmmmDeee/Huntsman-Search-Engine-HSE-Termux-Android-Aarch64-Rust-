@@ -30,6 +30,7 @@ use crate::core::{
 };
 use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
+use crate::util::json::val_str_or_coerce;
 use crate::util::see_know::val_str;
 use crate::util::target_match::TargetMatch;
 
@@ -291,7 +292,10 @@ pub(super) fn extract_entities(
             );
         }
     }
-    if let Some(phone) = val_str(item, "phone").or_else(|| val_str(item, "phone_number"))
+    // Coerce numeric encodings: breach/stealer dumps routinely serialize a phone
+    // as a JSON integer, which the string-only `val_str` drops (and the field is
+    // in `RICH_DETAIL_SKIP`, so the catch-all never rescues it either).
+    if let Some(phone) = val_str_or_coerce(item, &["phone", "phone_number"])
         && phone.len() >= 7
     {
         // Lowercase `phone` once and reuse that single copy for both the dedup
@@ -375,7 +379,10 @@ pub(super) fn extract_entities(
             &[],
         );
     }
-    if let Some(did) = val_str(item, "discord_id").or_else(|| val_str(item, "discordid"))
+    // Discord snowflakes arrive as JSON integers as often as strings — coerce so
+    // the ID→linked-accounts pivot (SeekNow's advertised edge) actually fires
+    // instead of silently dropping a numeric snowflake before emission.
+    if let Some(did) = val_str_or_coerce(item, &["discord_id", "discordid"])
         && seen.insert(format!("@discord:{did}"))
     {
         push_breach_entity(
@@ -394,9 +401,7 @@ pub(super) fn extract_entities(
     // Username with `steam:<id>` prefix so the gaming endpoint pivot
     // can find it without colliding with normal usernames. Matches
     // the discord-pivot pattern.
-    if let Some(sid) = val_str(item, "steam_id")
-        .or_else(|| val_str(item, "steamid"))
-        .or_else(|| val_str(item, "steam_id64"))
+    if let Some(sid) = val_str_or_coerce(item, &["steam_id", "steamid", "steam_id64"])
         && looks_like_steam_id(&sid)
         && seen.insert(format!("@steam:{sid}"))
     {
@@ -696,6 +701,44 @@ mod tests {
                 |e| matches!(&e.kind, EntityKind::Other(k) if k == "credit" || k == "service")
             ),
             "wrapper plumbing must not become entities"
+        );
+    }
+
+    #[test]
+    fn extract_entities_coerces_numeric_discord_and_phone_ids() {
+        // Breach dumps serialize snowflakes / phones as JSON integers. String-only
+        // `val_str` dropped them (and they're in RICH_DETAIL_SKIP, so the catch-all
+        // never rescued them) — silently killing the Discord ID→linked-accounts
+        // pivot. They must now coerce and emit.
+        let item = json!({
+            "username": "mriconic",
+            "discordid": 305047265741438976_i64,
+            "phone_number": 447911123456_i64
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "mriconic",
+            "scan",
+            "username/social",
+            "fp",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username && e.value == "discord:305047265741438976"),
+            "numeric discordid must coerce into a discord: Username pivot"
+        );
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Phone && e.value == "447911123456"),
+            "numeric phone_number must coerce into a Phone"
         );
     }
 

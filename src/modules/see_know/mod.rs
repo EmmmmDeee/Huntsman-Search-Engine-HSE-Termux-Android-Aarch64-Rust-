@@ -235,20 +235,44 @@ impl Module for SeekNow {
             TargetKind::FullName => "", // auto-detect
             _ => "",
         };
-        let items = see_know::search(key, v, qtype).await?;
+        let outcome = see_know::search(key, v, qtype).await?;
+        let items = outcome.items;
         let total = items.len();
 
         if total > 0 {
             let mut parent = target.to_entity(0.85, &ctx.scan_id);
             parent.tag(tags::BREACH);
             parent.tag("see-know");
-            parent.add_evidence(
-                Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
-                    .with_attr("hits", total.to_string())
-                    .with_attr("endpoint", "/api/v1/search")
-                    .with_attr("provider", "see-know.icu")
-                    .with_attr("api_key_origin", &key_fp),
-            );
+            // Base provenance; then the server's own corpus counters when present
+            // (absent on a cache hit) so coverage reporting is authoritative
+            // instead of mislabeling the SEARCH_LIMIT cap as the total.
+            let mut ev = Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
+                .with_attr("hits", total.to_string())
+                .with_attr("endpoint", "/api/v1/search")
+                .with_attr("provider", "see-know.icu")
+                .with_attr("api_key_origin", &key_fp);
+            if let Some(bc) = outcome.breach_count {
+                ev = ev.with_attr("breach_count", bc.to_string());
+            }
+            if let Some(sc) = outcome.stealer_count {
+                ev = ev.with_attr("stealer_count", sc.to_string());
+            }
+            if let Some(ec) = outcome.external_count {
+                ev = ev.with_attr("external_count", ec.to_string());
+            }
+            if let Some(st) = outcome.server_total {
+                ev = ev.with_attr("server_total", st.to_string());
+                // The server holds more records than the cap returned — surface
+                // the truncation so the operator knows the corpus is larger.
+                // `server_total` (not the count sum) is the guard; stealer
+                // flattening can make items.len() exceed it, which only
+                // under-reports truncation (never false-positives).
+                if st > total as u64 {
+                    parent.tag("truncated");
+                    ev = ev.with_attr("records_truncated", (st - total as u64).to_string());
+                }
+            }
+            parent.add_evidence(ev);
             result.push(parent);
 
             // Each record yields at least one entity; reserve up front so the
@@ -267,6 +291,14 @@ impl Module for SeekNow {
                 );
                 store_api_credential(item);
                 extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                // /search records carry the same lat/lon/location/timezone fields
+                // the typed endpoints do (it auto-routes to the specialised paths
+                // internally), so run the geo extractor here too — otherwise those
+                // coordinates were left as inert `Other()` numbers on the primary,
+                // highest-volume record source. The `"search"` label fires the
+                // generic (non-endpoint-gated) geo branches; the `@coord:`/`@loc:`/
+                // `@tz:` seen-keys don't collide with the country centroid.
+                extract_geo_entities(item, "search", &ctx.scan_id, &mut seen, &mut result);
             }
         }
 

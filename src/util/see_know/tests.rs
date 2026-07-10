@@ -176,9 +176,50 @@ fn extract_items_wraps_single_data_object() {
 }
 
 #[test]
+fn extract_items_handles_data_array_shape() {
+    // `{data:[…]}` previously fell through every branch → 100% record loss.
+    let v = json!({"data": [{"a": 1}, {"b": 2}]});
+    assert_eq!(extract_items(&v).len(), 2);
+}
+
+#[test]
+fn extract_items_handles_data_results_array_shape() {
+    // `{data:{results:[…]}}` was wrapped as one opaque object; now unpacked.
+    let v = json!({"data": {"results": [{"a": 1}, {"b": 2}, {"c": 3}]}});
+    assert_eq!(extract_items(&v).len(), 3);
+}
+
+#[test]
+fn extract_items_handles_data_victims_stealer_shape() {
+    // Stealer payload nested under `data`: victims[].credentials[] flatten.
+    let v = json!({"data": {"victims": [
+        {"log_id": "L1", "credentials": [{"username": "u1"}, {"username": "u2"}]}
+    ]}});
+    // Two credentials flatten to two items (host context inherited by each).
+    assert_eq!(extract_items(&v).len(), 2);
+}
+
+#[test]
 fn extract_items_empty_for_unknown_shape() {
     let v = json!({"unrelated": "value"});
     assert!(extract_items(&v).is_empty());
+}
+
+#[test]
+fn parse_credits_tolerates_string_and_float_encoded_meters() {
+    // Number-serialization drift on the one call that governs paid-budget
+    // scaling must not collapse the parse to None (which pins the cap at floor).
+    assert_eq!(
+        parse_credits(&json!({"credits_remaining": "15000", "credits_daily_limit": "15000"})),
+        Some((15000, Some(15000)))
+    );
+    // Float-encoded meters coerce (truncating toward zero).
+    assert_eq!(
+        parse_credits(&json!({"credits_remaining": 4200.0, "daily_limit": 5000.0})),
+        Some((4200, Some(5000)))
+    );
+    // A non-numeric string is rejected (no false meter).
+    assert_eq!(parse_credits(&json!({"credits_remaining": "n/a"})), None);
 }
 
 #[test]

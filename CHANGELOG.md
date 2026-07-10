@@ -26,6 +26,34 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `scan_cap=750`), and a `see_know`-only scan returns real data.
 
 ### Added
+- **SeekNow extraction & coverage-reporting hardened (audit batch 1).** A
+  multi-lens audit of the live integration surfaced five verified data-loss and
+  transparency gaps, all now fixed:
+  - *`/search` records now run geo extraction.* The primary, highest-volume
+    record source skipped `extract_geo_entities` (only the typed-endpoint loop
+    called it), so `latitude`/`longitude`/`location`/`timezone` on search hits
+    were left as inert `Other()` values instead of pivotable
+    `Coordinates`/`Address` — at zero extra API cost.
+  - *Numeric-encoded IDs are coerced, not dropped.* Breach/stealer dumps
+    routinely serialize a Discord snowflake, phone, or SteamID64 as a JSON
+    integer; the string-only `val_str` dropped them (and they sit in the
+    skip-list so the catch-all never rescued them), silently killing the
+    Discord-ID→linked-accounts pivot. These fields now coerce numbers.
+  - *`extract_items` handles `data`-nested collection shapes.* `{data:[…]}` fell
+    through every branch (100% record loss) and `{data:{results|victims:[…]}}`
+    was wrapped as one opaque object; all three are now unpacked, so an
+    array-shaped endpoint degrades gracefully instead of returning nothing.
+  - *`parse_credits` tolerates string/float-encoded meters.* A stringified
+    (`"15000"`) or float credit meter collapsed the whole parse to `None`,
+    pinning the per-scan budget at its floor; the meter now coerces across
+    number-serialization drift (the one call that governs paid-budget scaling).
+  - *`/search` corpus counts are surfaced instead of discarded (transparency).*
+    The response envelope's `breach_count`/`stealer_count`/`external_count`/
+    `total` were parsed then thrown away, and the parent finding reported
+    `items.len()` (capped at 500) as the headline — mislabeling the cap as the
+    corpus size. Those counts are now stamped on the finding's evidence, and
+    when the server holds more records than the cap returned the finding is
+    tagged `truncated` with a `records_truncated` count.
 - **A SeekNow API key leaked in the breach/stealer corpus is now auto-sourced
   into the rotation pool.** The key-harvest prefix table recognised 80+ vendor
   key formats but not SeekNow's own `seek-`+48-hex shape, so a raw SeekNow key

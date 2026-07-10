@@ -47,7 +47,9 @@ pub use client::{key_fingerprint, resolve_key};
 
 // Endpoint functions
 pub(crate) use endpoints::get_path;
-pub use endpoints::{discord_to_roblox, discord_user, query_credits, search, steam_profile};
+pub use endpoints::{
+    SearchOutcome, discord_to_roblox, discord_user, query_credits, search, steam_profile,
+};
 
 /// Extract a string field from a JSON Value.
 // Shared JSON helper — single definition in `util::json`, re-exported here so
