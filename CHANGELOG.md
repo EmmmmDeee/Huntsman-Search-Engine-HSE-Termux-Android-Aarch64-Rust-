@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse doctor` now live-probes every configured key, not just WiGLE.** A new
+  "Key validation" section reports each configured key as `live`, `REJECTED`
+  (a definitive 401/403 — the key is bad), or `unknown` (unreachable/transient —
+  never reported as dead, so an outage can't libel a good key), probed
+  concurrently against each service's registered endpoint. Composite-credential
+  services (WiGLE's `user:token`, Censys/PassiveTotal BasicAuth) are skipped
+  because a single-key probe can't supply a paired credential — WiGLE keeps its
+  own dedicated account check. This turns `hse doctor` into a genuine one-stop
+  key health check.
 - **Three previously-invisible provider keys are now registered.**
   `HUNTSMAN_OSINTCAT_KEY`, `HUNTSMAN_NIAMONX_KEY`, and `HUNTSMAN_FULLCONTACT_KEY`
   — read by their modules but absent from the key registry — now appear in the

@@ -1,9 +1,10 @@
 //! `hse doctor` — health-check subcommand.
 //!
 //! Reports Termux detection, DB path, key path, module/cost counts,
-//! HUNTSMAN_* keys loaded, and a live WiGLE account introspection
-//! that surfaces the email-unverified throttling warning before it
-//! starts silently truncating result sets.
+//! HUNTSMAN_* keys loaded, a live validation probe of every configured key
+//! against its registered endpoint (live / rejected / unknown), and a WiGLE
+//! account introspection that surfaces the email-unverified throttling warning
+//! before it starts silently truncating result sets.
 
 use crate::core::error::Result;
 use crate::{default_db_path, is_termux, modules::registry, storage::Store, util::keys};
@@ -125,6 +126,45 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         }
     }
 
+    // ── Live key validation (network, best-effort) ───────────────────
+    // Probe every CONFIGURED key against its registered validation endpoint, so
+    // `hse doctor` reports which keys actually authenticate — not just WiGLE.
+    // Only a definitive 401/403 is reported as a bad key; a transient / non-auth
+    // outcome is "unknown", never a false "dead". Bounded concurrency keeps this
+    // from firing a curl storm on a phone; output is sorted for determinism.
+    use crate::util::service_defs::KeyPlacement;
+    use futures::StreamExt;
+    // Skip services whose validation needs a PAIRED credential a single env var
+    // can't supply, or the probe would false-REJECT a working key:
+    //   - `BasicAuth` (censys id+secret, passivetotal user:key), and
+    //   - WiGLE (`Authorization: Basic base64(user:token)` — the pool stores user
+    //     and token as separate vars; WiGLE also has its own dedicated health
+    //     section below, so it is never silently dropped).
+    let to_probe: Vec<(&'static str, String)> = crate::util::service_defs::service_defs()
+        .iter()
+        .filter(|d| {
+            !matches!(d.key_header, KeyPlacement::BasicAuth) && !d.name.starts_with("wigle")
+        })
+        .filter_map(|d| loaded.get(d.env_var).map(|k| (d.name, k.clone())))
+        .collect();
+    println!("\nKey validation (live probe of configured keys):");
+    if to_probe.is_empty() {
+        println!("  (no keys configured for validatable services)");
+    } else {
+        let mut results: Vec<(&'static str, Option<bool>)> =
+            futures::stream::iter(to_probe)
+                .map(|(svc, key)| async move {
+                    (svc, crate::util::key_pool::validate_key(svc, &key).await)
+                })
+                .buffer_unordered(6)
+                .collect()
+                .await;
+        results.sort_by(|a, b| a.0.cmp(b.0));
+        for (svc, outcome) in results {
+            println!("  {svc:<16} {}", validation_label(outcome));
+        }
+    }
+
     // ── WiGLE account health (network call, best-effort) ──────────────
     // Poll /api/v2/profile/user. Surfaces the "email unverified →
     // throttled" warning that the WiGLE account page calls out but which
@@ -181,6 +221,19 @@ fn curl_missing_message() -> String {
      INVALID rather than erroring, which reads as a dead key pool, not a missing\n             \
      tool. Install it: pkg install curl"
         .to_string()
+}
+
+/// Human-readable label for a live key-validation outcome. A `Some(true)` means
+/// the endpoint accepted the key, `Some(false)` is a definitive 401/403 (bad
+/// key), and `None` is indeterminate (unreachable / timeout / 429 / non-auth) —
+/// deliberately NOT reported as dead, so a transient outage never libels a good
+/// key.
+fn validation_label(outcome: Option<bool>) -> &'static str {
+    match outcome {
+        Some(true) => "live",
+        Some(false) => "REJECTED — 401/403, key is bad",
+        None => "unknown (unreachable / transient / non-auth)",
+    }
 }
 
 /// Rank every unset `KNOWN_KEYS` env var by acquisition ROI, highest first.
