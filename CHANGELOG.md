@@ -11,6 +11,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **Email identities are no longer fused on a shared local-part across different
+  domains.** The persona-alias builder keyed an email on its local-part alone, so
+  `john@gmail.com`, `john@yahoo.com` and `john@acme-corp.com` were all linked as
+  one person — collapsing every unrelated organisation's `john@`, `admin@` or
+  `info@` mailbox into a single fabricated identity in the graph. Emails now key
+  on the full canonical mailbox (with Gmail dot/`+tag` folding, domain kept), so
+  two emails are aliased only when they are genuinely the same mailbox; a
+  role/functional-account stop-list (`admin`, `info`, `support`, …) and the
+  existing short/numeric guards exclude handles that alias too readily. A shared
+  personal handle still links an email to a matching *username*, and two mailboxes
+  that share such a handle still cluster transitively through it — so real
+  cross-platform personas are preserved while the false fusions are removed.
 - **Cross-scan history bridging is now deterministic under its probe budget.**
   At finalise, the engine collected a scan's entities from a `HashMap`
   (process-randomised order) and ran three cross-scan history passes that each

@@ -609,18 +609,72 @@ const PERSON_NAME_ATTRS: &[&str] = &[
     "display_name",
 ];
 
-/// The normalised identity fingerprint of an Email/Username, for detecting a
-/// shared persona across platforms. Emails key on the local-part (handled by
-/// [`crate::core::scan::identity_norm`], which splits on `@`); usernames on the
-/// whole value. `None` for a handle too short or all-digits to be a reliable
-/// persona key, so generic noise can't fan out into a false alias clique.
-fn persona_key(e: &Entity) -> Option<String> {
-    if !matches!(e.kind, EntityKind::Email | EntityKind::Username) {
+/// Role / functional mailbox handles — a mailbox named by its FUNCTION, not a
+/// person (`admin@`, `info@`, `support@`…). The same word recurs across countless
+/// unrelated organisations, so keying a shared-persona alias on it fabricates an
+/// identity clique. Entries must be lowercase ASCII alphanumerics to match
+/// [`crate::core::scan::identity_norm`] output (so `no-reply` folds to `noreply`);
+/// kept alphabetical for readability. Matched by a linear scan (tiny, fixed set),
+/// so there is no sortedness invariant to maintain.
+const ROLE_HANDLES: &[&str] = &[
+    "abuse",
+    "admin",
+    "billing",
+    "contact",
+    "hello",
+    "help",
+    "hostmaster",
+    "info",
+    "mail",
+    "marketing",
+    "noreply",
+    "office",
+    "postmaster",
+    "sales",
+    "security",
+    "support",
+    "team",
+    "webmaster",
+];
+
+/// A reliable persona key for a raw handle or email local-part: the
+/// [`crate::core::scan::identity_norm`] fold, but only when it is long enough
+/// (≥ 4 = `IDENTITY_OVERLAP_MIN`), not all-digits, and not a role/functional word
+/// — the classes that alias too readily and fabricate cliques. `None` otherwise.
+fn handle_key(raw: &str) -> Option<String> {
+    let key = crate::core::scan::identity_norm(raw);
+    if key.len() < 4
+        || key.bytes().all(|b| b.is_ascii_digit())
+        || ROLE_HANDLES.iter().any(|&r| r == key)
+    {
         return None;
     }
-    let key = crate::core::scan::identity_norm(&e.value);
-    // 4 = IDENTITY_OVERLAP_MIN: shorter handles alias too readily.
-    (key.len() >= 4 && !key.bytes().all(|b| b.is_ascii_digit())).then_some(key)
+    Some(key)
+}
+
+/// The persona key an Email/Username aliases on, made **kind-aware for precision**:
+///
+/// * **Email** → the FULL canonical mailbox
+///   ([`crate::core::resolve::canonical_email`]: Gmail dot / `+tag` folding, the
+///   domain KEPT). Two emails therefore alias only when they are the *same
+///   mailbox* — `john@gmail.com` and `john@acme-corp.com` no longer share a key.
+///   A bare local-part is unique only *within* a domain, so the old
+///   `identity_norm` local-part key fused every unrelated org's `john@` / `admin@`
+///   mailbox into one fabricated identity (the hazard the coref layer was already
+///   hardened against, but this builder never received).
+/// * **Username** → the [`handle_key`] fold of the whole value (role / short /
+///   numeric handles excluded).
+///
+/// The local-part still bridges an Email to a *Username* that shares the handle —
+/// but that cross-KIND link is derived separately in [`derive_handles`], and
+/// never email-to-email. `None` for any other kind, or a mailbox that fails to
+/// canonicalise.
+fn persona_key(e: &Entity) -> Option<String> {
+    match e.kind {
+        EntityKind::Email => crate::core::resolve::canonical_email(&e.value),
+        EntityKind::Username => handle_key(&e.value),
+        _ => None,
+    }
 }
 
 /// The folded last whitespace token of a Person value — a family key. `None` when
@@ -670,47 +724,90 @@ fn sort_edges(edges: &mut [Relation]) {
     });
 }
 
-/// Derive `AliasOf` edges between Email/Username entities that share one
-/// normalised persona key — the cross-platform "same handle" pivot
-/// (`jsmith@gmail.com` ↔ `jsmith@outlook.com` ↔ username `jsmith`). Purely
-/// structural (exact normalised-handle match), so precision is high; generic /
-/// numeric handles are excluded by [`persona_key`]. Symmetric edges are emitted
-/// once in canonical direction (smaller UID → larger) and deduped, then sorted —
-/// deterministic regardless of entity order.
+/// Derive `AliasOf` edges between Email/Username entities of one persona, in two
+/// precision-separated passes:
+///
+/// 1. **Same key** — entities sharing a [`persona_key`] alias. For Emails the key
+///    is the FULL canonical mailbox, so this links only *same-mailbox* spellings
+///    (`jo.hn@gmail.com` ↔ `john@googlemail.com`), never two different domains'
+///    `john@`. For Usernames it links the same handle across platforms.
+/// 2. **Cross-kind handle bridge** — an Email aliases a *Username* when the
+///    email's local-part [`handle_key`] equals the username's. This is the ONLY
+///    place a local-part drives an alias, and it never links email-to-email, so a
+///    common first name (`john@`) or role account (`admin@`) can no longer fuse
+///    unrelated mailboxes into a fabricated identity. Two mailboxes that share a
+///    genuine personal handle still cluster — transitively, via the username they
+///    both bridge to (a star, which the identity-cluster union-find resolves to
+///    the same component a direct clique would).
+///
+/// Purely structural (exact canonical/handle match), so precision is high; short /
+/// numeric / role handles are excluded by [`handle_key`]. Symmetric edges are
+/// emitted once in canonical direction (smaller UID → larger) and deduped, then
+/// sorted — deterministic regardless of entity order.
 pub fn derive_handles(entities: &[Entity], scan_id: &str) -> Vec<Relation> {
     use std::collections::{HashMap, HashSet};
 
+    let mut seen: HashSet<(String, String)> = HashSet::new();
+    let mut out: Vec<Relation> = Vec::new();
+
+    // Emit one canonical, deduped AliasOf edge between two distinct identifiers.
+    let link =
+        |a: &Entity, b: &Entity, out: &mut Vec<Relation>, seen: &mut HashSet<(String, String)>| {
+            // Same entity, or two spellings that normalise identically — not an alias
+            // between *distinct* identifiers.
+            if a.uid == b.uid || a.value == b.value {
+                return;
+            }
+            let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
+            if seen.insert((from.uid.clone(), to.uid.clone())) {
+                out.push(Relation::new(
+                    from.uid.as_str(),
+                    to.uid.as_str(),
+                    RelationKind::AliasOf,
+                    from.confidence.min(to.confidence),
+                    scan_id,
+                ));
+            }
+        };
+
+    // Pass 1: entities sharing a persona key (same mailbox / same username).
     let mut by_key: HashMap<String, Vec<&Entity>> = HashMap::new();
     for e in entities {
         if let Some(k) = persona_key(e) {
             by_key.entry(k).or_default().push(e);
         }
     }
-
-    let mut seen: HashSet<(String, String)> = HashSet::new();
-    let mut out = Vec::new();
     for group in by_key.values() {
         for i in 0..group.len() {
             for j in (i + 1)..group.len() {
-                let (a, b) = (group[i], group[j]);
-                // Same entity, or two spellings that normalise identically — not
-                // an alias between *distinct* identifiers.
-                if a.uid == b.uid || a.value == b.value {
-                    continue;
-                }
-                let (from, to) = if a.uid <= b.uid { (a, b) } else { (b, a) };
-                if seen.insert((from.uid.clone(), to.uid.clone())) {
-                    out.push(Relation::new(
-                        from.uid.as_str(),
-                        to.uid.as_str(),
-                        RelationKind::AliasOf,
-                        from.confidence.min(to.confidence),
-                        scan_id,
-                    ));
+                link(group[i], group[j], &mut out, &mut seen);
+            }
+        }
+    }
+
+    // Pass 2: cross-kind handle bridge (Email local-part ↔ Username handle).
+    let mut users_by_handle: HashMap<String, Vec<&Entity>> = HashMap::new();
+    for u in entities.iter().filter(|e| e.kind == EntityKind::Username) {
+        if let Some(k) = handle_key(&u.value) {
+            users_by_handle.entry(k).or_default().push(u);
+        }
+    }
+    if !users_by_handle.is_empty() {
+        for email in entities.iter().filter(|e| e.kind == EntityKind::Email) {
+            let Some(local_part) = email.value.split('@').next() else {
+                continue;
+            };
+            let Some(k) = handle_key(local_part) else {
+                continue;
+            };
+            if let Some(users) = users_by_handle.get(&k) {
+                for u in users {
+                    link(email, u, &mut out, &mut seen);
                 }
             }
         }
     }
+
     sort_edges(&mut out);
     out
 }

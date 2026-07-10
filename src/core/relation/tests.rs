@@ -1034,28 +1034,86 @@ fn registration_dedups_repeated_registrant() {
 
 #[test]
 fn handles_alias_shared_persona_across_platforms() {
-    // One persona ("jsmith") across two mailboxes and a username → a 3-clique of
-    // AliasOf edges. A different persona and a numeric handle stay unlinked.
+    // One persona ("jsmith") across two mailboxes and a username. The two mailboxes
+    // are DIFFERENT domains, so they no longer fuse directly (a bare local-part is
+    // unique only within a domain); instead each bridges to the shared username —
+    // a 2-edge star that still resolves to the same identity cluster. A different
+    // persona and a numeric handle stay unlinked.
     let g1 = ent(EntityKind::Email, "jsmith@gmail.com", 0.7);
     let o1 = ent(EntityKind::Email, "jsmith@outlook.com", 0.6);
     let u1 = ent(EntityKind::Username, "jsmith", 0.5);
     let other = ent(EntityKind::Email, "bobjones@gmail.com", 0.8);
-    let numeric = ent(EntityKind::Username, "12345", 0.9); // excluded by persona_key
+    let numeric = ent(EntityKind::Username, "12345", 0.9); // excluded by handle_key
 
     let rels = derive_handles(&[g1.clone(), o1.clone(), u1.clone(), other, numeric], "s");
-    assert_eq!(rels.len(), 3, "C(3,2) alias edges for the one persona");
+    assert_eq!(
+        rels.len(),
+        2,
+        "both mailboxes bridge to the username (star), no direct email↔email fuse"
+    );
+    // Every edge touches the username (the anchor); no edge is email↔email.
     for r in &rels {
         assert_eq!(r.kind, RelationKind::AliasOf);
         assert!(
             r.from_uid <= r.to_uid,
             "canonical direction (smaller uid first)"
         );
+        assert!(
+            r.from_uid == u1.uid || r.to_uid == u1.uid,
+            "the username is the shared anchor of every alias edge"
+        );
     }
+    // The star still connects all three: g1↔u1 and o1↔u1 both present.
+    let has = |x: &Entity, y: &Entity| {
+        rels.iter().any(|r| {
+            (r.from_uid == x.uid && r.to_uid == y.uid) || (r.from_uid == y.uid && r.to_uid == x.uid)
+        })
+    };
+    assert!(has(&g1, &u1) && has(&o1, &u1));
+
     // Idempotent + deterministic: re-deriving yields the same id set & order.
     let again = derive_handles(&[g1, o1, u1], "s");
     let ids: Vec<&str> = rels.iter().map(|r| r.id.as_str()).collect();
     let ids2: Vec<&str> = again.iter().map(|r| r.id.as_str()).collect();
     assert_eq!(ids, ids2);
+}
+
+#[test]
+fn handles_do_not_fuse_cross_domain_same_localpart() {
+    // PRECISION REGRESSION: two mailboxes that merely share a common first-name
+    // local-part across DIFFERENT domains are almost always different people; with
+    // no username anchor to bridge them, they must NOT be aliased. The old
+    // local-part key fused them into one fabricated identity.
+    let a = ent(EntityKind::Email, "john@gmail.com", 0.7);
+    let b = ent(EntityKind::Email, "john@acme-corp.com", 0.7);
+    assert!(
+        derive_handles(&[a, b], "s").is_empty(),
+        "same local-part, different domains, no username → no alias"
+    );
+
+    // Role / functional mailboxes are shared by countless orgs — never a persona.
+    let r1 = ent(EntityKind::Email, "admin@a.com", 0.8);
+    let r2 = ent(EntityKind::Email, "admin@b.com", 0.8);
+    let ru = ent(EntityKind::Username, "admin", 0.8);
+    assert!(
+        derive_handles(&[r1, r2, ru], "s").is_empty(),
+        "role handle 'admin' is stop-listed for both email keys and the bridge"
+    );
+}
+
+#[test]
+fn handles_alias_same_mailbox_spellings_and_are_order_independent() {
+    // Same Gmail mailbox spelled two ways (dot-blind + legacy domain) IS one
+    // identity → exactly one alias edge, regardless of input order.
+    let a = ent(EntityKind::Email, "jo.hn.doe@gmail.com", 0.7);
+    let b = ent(EntityKind::Email, "johndoe@googlemail.com", 0.6);
+    let fwd = derive_handles(&[a.clone(), b.clone()], "s");
+    let rev = derive_handles(&[b, a], "s");
+    assert_eq!(fwd.len(), 1, "one edge: same canonical Gmail mailbox");
+    // Determinism: shuffling the input yields byte-identical edges.
+    let ids_f: Vec<&str> = fwd.iter().map(|r| r.id.as_str()).collect();
+    let ids_r: Vec<&str> = rev.iter().map(|r| r.id.as_str()).collect();
+    assert_eq!(ids_f, ids_r);
 }
 
 #[test]

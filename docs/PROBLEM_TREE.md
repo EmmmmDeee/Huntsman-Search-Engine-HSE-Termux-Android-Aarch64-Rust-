@@ -1196,6 +1196,33 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   candidates, forward vs reversed input → identical tagged-uid set; verified to
   FAIL against the unfixed code). **P1** (violates the §1.7 determinism feature
   on the substrate every other precision claim rests on).
+- **`[x]` T2.35 · `derive_handles` fuses distinct identities on a bare email
+  local-part (fabricated `AliasOf` edges)** — surfaced by the precision-discovery
+  workflow (2026-07-10, ranked #1 / transformational) and verified by direct
+  read. `persona_key` (`core/relation/builders.rs`) reduced an Email to its
+  local-part via `identity_norm` (splits at `@`), so `john@gmail.com`,
+  `john@yahoo.com` and `john@acme-corp.com` all shared the key `john` and were
+  linked with hard `AliasOf` edges that feed `resolve_identity_clusters`'
+  union-find. Every unrelated organisation's `john@` / `admin@` / `info@` mailbox
+  collapsed into ONE fabricated person — the single largest false-positive
+  identity surface (a bare local-part is unique only *within* a domain), and the
+  worst outcome for an evidentiary tool. → **Solution:** made `persona_key`
+  kind-aware — an **Email** keys on its FULL canonical mailbox
+  (`resolve::canonical_email`, Gmail dot/`+tag` folded, domain kept), so two
+  emails alias only when they are the *same mailbox*; a **Username** keys on the
+  whole handle. A role/functional-word stop-list (`admin`, `info`, `support`, …)
+  and the existing short/numeric guards exclude handles that alias too readily.
+  The local-part now drives an alias ONLY as a cross-KIND Email↔Username bridge
+  (`derive_handles` pass 2), never email-to-email — so two mailboxes sharing a
+  genuine personal handle still cluster transitively via the username they both
+  bridge to (a star the union-find resolves to the same component). Tests:
+  updated `handles_alias_shared_persona_across_platforms` (2-edge star, not a
+  3-clique) + new `handles_do_not_fuse_cross_domain_same_localpart` (0 edges for
+  `john@gmail.com`+`john@acme-corp.com` and for role `admin@`; fails against the
+  unfixed code) + `handles_alias_same_mailbox_spellings_and_are_order_independent`
+  (Gmail dot-variants still merge; shuffle-invariant). MITRE T1589.002 (Email
+  Addresses): accurate persona clustering is the core Reconnaissance deliverable.
+  **P1** (accuracy — fabricated victim-identity links).
 
 ---
 
@@ -1712,6 +1739,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
+- **2026-07-10** — **Executed T2.35 (new, precision queue item 2/20): kill the
+  fabricated `AliasOf` edges from bare-local-part email fusion.** The
+  precision-discovery workflow's #1 (transformational) finding: `persona_key`
+  keyed an Email on its `identity_norm` local-part, so `john@gmail.com` and
+  `john@acme-corp.com` shared key `john` and were hard-`AliasOf`-linked, fusing
+  every unrelated org's `john@`/`admin@` mailbox into one fabricated identity in
+  the union-find. Made the key kind-aware — Email → full canonical mailbox
+  (`resolve::canonical_email`), Username → whole handle — added a role-word
+  stop-list, and moved the local-part to a cross-KIND Email↔Username bridge only
+  (never email↔email), so genuine personas still cluster transitively via the
+  shared username (a star). +2 net tests (updated the 3-clique expectation to a
+  2-edge star; new cross-domain-no-fuse test verified to fail against unfixed
+  code; new same-mailbox + shuffle-invariance test). Gate green: fmt/clippy
+  `-D warnings`/doc clean, full suite 0 failures (4578 lib). MITRE T1589.002.
+  **Paired:** `SOLUTION_TREE` SOL-PERSONA-PRECISION — same commit. T2.35 `[ ]`→`[x]`.
 - **2026-07-10** — **Executed T2.34 (new): deterministic cross-scan history
   bridging — the byte-identical-output substrate.** A precision-discovery workflow
   (8 expert lenses → adversarial verify → ranked synthesis; 42 confirmed

@@ -897,6 +897,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-KEY-REG | KEY.2 | `[x]` |
 | SOL-KEY-FOFA | KEY.3 (phases 1–2: FOFA, BuiltWith) | `[~]` |
 | SOL-DETERMINISM-XSCAN | T2.34 (cross-scan bridge order-independence) | `[x]` |
+| SOL-PERSONA-PRECISION | T2.35 (kind-aware email persona keying) | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -1072,6 +1073,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-07-10** — **SOL-PERSONA-PRECISION `[ ]`→`[x]` (closes T2.35): kind-aware email
+  persona keying.** Precision-discovery workflow's #1 (transformational) finding —
+  the largest fabricated-identity surface. `persona_key` keyed an Email on its bare
+  `identity_norm` local-part, so `john@gmail.com` and `john@acme-corp.com` shared
+  key `john` and were hard-`AliasOf`-linked into the identity union-find, fusing
+  every org's `john@`/`admin@` mailbox into one fabricated person. Made the key
+  kind-aware — Email → full canonical mailbox (`resolve::canonical_email`), Username
+  → whole handle — plus a role-word stop-list; the local-part now aliases ONLY as a
+  cross-KIND Email↔Username bridge (never email↔email), so genuine personas cluster
+  transitively via the shared username (a star the union-find resolves identically).
+  **S→P alternation:** the fix depends on T2.34's byte-identical baseline (shipped
+  first) to prove `derive_handles` stays deterministic under the new two-pass logic —
+  the `handles_alias_same_mailbox_spellings_and_are_order_independent` shuffle test
+  demonstrates it. +2 net tests; the cross-domain-no-fuse test fails against the
+  unfixed code. Gate green. Paired: `PROBLEM_TREE` T2.35 §8 — same commit.
 - **2026-07-10** — **SOL-DETERMINISM-XSCAN `[ ]`→`[x]` (closes T2.34): order-independent
   cross-scan bridging.** A precision-discovery workflow's top-ranked first commit —
   the one determinism hole on the substrate every precision claim rests on.
