@@ -26,6 +26,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `scan_cap=750`), and a `see_know`-only scan returns real data.
 
 ### Added
+- **Shared breach-extraction depth: WiFi SSID, alternate IP, and alternate
+  phone fields (audit batch 4).** All in the `breach_rich` extractor shared by
+  BOTH paid pools (see_know + oathnet_pro), so each fix lands on both at once:
+  a unique WiFi SSID (`ssid`/`wifi_ssid`/`network_name`/…) is now typed as
+  `Ssid` — often a more precise geolocator than the login IP, since WiGLE
+  resolves an SSID to GPS points (generic names like `xfinitywifi` rejected;
+  the offline WiGLE CSV path already minted `Ssid`, so the live paths were the
+  only ones dropping it); a public IP under any field (`lastip`/
+  `registration_ip`/… or a future key) is typed as a pivotable `IpAddress` geo
+  lead instead of inert `Other()` (private/reserved IPs still fall through, and
+  the primary IP node wins on collision); and alternate phone fields
+  (`mobile`/`cell`/`msisdn`/…) are typed as `Phone`, gated on digit count so a
+  numeric ID is not mistaken for a number.
 - **SeekNow key-sourcing loop closed + two more provider keys sourced (audit
   batch 3).**
   - *A dead/spent SeekNow key is now reflected into the shared pool.* Unlike

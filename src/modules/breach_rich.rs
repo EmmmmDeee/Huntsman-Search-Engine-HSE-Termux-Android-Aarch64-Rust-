@@ -99,6 +99,23 @@ const RICH_DETAIL_SKIP: &[&str] = &[
     "username",
     "phone",
     "phone_number",
+    // Alternate phone-number fields — typed as Phone by the shared alias loop
+    // above, so the catch-all must not also mint them as Other().
+    "mobile",
+    "cell",
+    "cellphone",
+    "telephone",
+    "tel",
+    "msisdn",
+    "contact_number",
+    "phone2",
+    "alt_phone",
+    // WiFi SSID fields — typed as Ssid by the shared alias loop above.
+    "ssid",
+    "wifi_ssid",
+    "wifi",
+    "network_name",
+    "wlan",
     "full_name",
     "name",
     "display_name",
@@ -483,6 +500,60 @@ pub fn extract_rich_detail(
         }
     }
 
+    // WiFi SSID — a unique home/work network name is often a MORE precise
+    // geolocator than the login IP (WiGLE resolves an SSID to GPS points). Field-
+    // aliased (a bare string can't be value-detected); generic names ("linksys",
+    // "xfinitywifi", …) and out-of-range lengths are rejected. The offline WiGLE
+    // CSV path already mints `Ssid`, so the live breach/stealer paths were the
+    // only ones dropping it — and this shared extractor fixes BOTH paid pools.
+    for k in ["ssid", "wifi_ssid", "wifi", "network_name", "wlan"] {
+        if let Some(s) = val_str(item, k)
+            && (4..=32).contains(&s.chars().count()) // TargetKind::Ssid rejects >32
+            && !is_absent_marker(&s)
+            && !crate::modules::wigle::is_generic_ssid(&s)
+            && seen.insert(format!("@ssid:{}", s.to_lowercase()))
+        {
+            push_context_entity(
+                result,
+                Entity::new(EntityKind::Ssid, &s, 0.55, scan_id),
+                ev,
+                source,
+                &["wifi-network", "stealer"],
+            );
+        }
+    }
+
+    // Alternate phone-number fields — carrier/breach dumps routinely file the
+    // number under a non-canonical key. Field-aliased (NOT value-based: a bare
+    // 7+ digit run could be a numeric ID, not a phone). Gated on digit COUNT so a
+    // formatted number ("+1 (555) 123-4567") still qualifies. The bare-value seen
+    // key coordinates with the primary phone path so a repeat isn't re-emitted.
+    for k in [
+        "mobile",
+        "cell",
+        "cellphone",
+        "telephone",
+        "tel",
+        "msisdn",
+        "contact_number",
+        "phone2",
+        "alt_phone",
+    ] {
+        if let Some(ph) = val_str(item, k)
+            && ph.chars().filter(char::is_ascii_digit).count() >= 7
+            && !is_absent_marker(&ph)
+            && seen.insert(ph.to_lowercase())
+        {
+            push_breach_entity(
+                result,
+                Entity::new(EntityKind::Phone, &ph, 0.55, scan_id),
+                ev,
+                source,
+                &[],
+            );
+        }
+    }
+
     // ── Catch-all: every remaining value-bearing SCALAR field becomes an entity,
     // so no atomic data point in the raw record is left un-surfaced. Nested
     // objects/arrays are NOT turned into entities — a stringified JSON blob (e.g.
@@ -557,6 +628,26 @@ pub fn extract_rich_detail(
                 source,
                 &["raw-field"],
             );
+            continue;
+        }
+
+        // Value-typing 3 — a PUBLIC IP in any field (`lastip`/`last_ip`/
+        // `registration_ip`/… or a key a future endpoint adds). A public IP is a
+        // geolocation lead; private/reserved IPs are not, so they fall through to
+        // `Other()`. Confidence 0.55 stays below the provider primary-IP path's
+        // 0.60 so the primary node wins on collision (both key by the bare value).
+        // The `continue` is unconditional: it dedups against that primary key AND
+        // suppresses the duplicate `Other(field)` this loop would otherwise mint.
+        if crate::util::preflight::is_public_ip(trimmed) {
+            if seen.insert(trimmed.to_string()) {
+                push_breach_entity(
+                    result,
+                    Entity::new(EntityKind::IpAddress, trimmed, 0.55, scan_id),
+                    ev,
+                    source,
+                    &["geolocation-lead", "raw-field"],
+                );
+            }
             continue;
         }
 

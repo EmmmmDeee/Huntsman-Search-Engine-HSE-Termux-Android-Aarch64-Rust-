@@ -297,3 +297,83 @@ fn value_typing_surfaces_urls_and_emails_from_arbitrary_fields() {
         "unrecognised scalar → Other(field)"
     );
 }
+
+#[test]
+fn alternate_ip_fields_are_typed_and_private_ips_fall_through() {
+    // A public IP under a non-canonical field is a geolocation lead → IpAddress,
+    // NOT an inert Other(). A private/reserved IP is not a lead → stays Other().
+    let item = json!({
+        "lastip": "203.0.113.45",       // public (documentation range, routable-shaped)
+        "registration_ip": "8.8.8.8",   // public
+        "local_ip": "192.168.1.10"      // private → not a geo lead
+    });
+    let r = run(&item, "see-know");
+    assert!(has(&r, EntityKind::IpAddress, "203.0.113.45"), "public lastip → IpAddress");
+    assert!(has(&r, EntityKind::IpAddress, "8.8.8.8"), "public registration_ip → IpAddress");
+    // No duplicate Other() for the public IPs.
+    assert!(
+        !r.entities.iter().any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "lastip")),
+        "a typed public IP must not also mint Other(lastip)"
+    );
+    // The private IP is preserved but not typed as a geo lead.
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::IpAddress && e.value == "192.168.1.10"),
+        "a private IP must not be typed as an IpAddress geo lead"
+    );
+}
+
+#[test]
+fn alternate_phone_fields_are_typed_as_phone() {
+    // Carrier/breach dumps file the number under a non-canonical key.
+    let item = json!({
+        "mobile": "+1 (555) 123-4567",
+        "msisdn": "447911123456",
+        "cell": "12"                    // too few digits → rejected
+    });
+    let r = run(&item, "see-know");
+    // Phone values are normalised by Entity::new (formatting stripped), so match
+    // on digit content rather than the exact input string.
+    let phone_digits: Vec<String> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Phone)
+        .map(|e| e.value.chars().filter(char::is_ascii_digit).collect())
+        .collect();
+    assert!(
+        phone_digits.iter().any(|d| d == "15551234567"),
+        "mobile → Phone (got {phone_digits:?})"
+    );
+    assert!(
+        phone_digits.iter().any(|d| d == "447911123456"),
+        "msisdn → Phone (got {phone_digits:?})"
+    );
+    assert!(
+        !phone_digits.iter().any(|d| d == "12"),
+        "a sub-7-digit value must not be typed as a Phone"
+    );
+    // Not also duplicated as Other().
+    assert!(
+        !r.entities.iter().any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "mobile")),
+        "a typed phone must not also mint Other(mobile)"
+    );
+}
+
+#[test]
+fn wifi_ssid_is_typed_and_generic_names_rejected() {
+    // A unique SSID is a precise geolocator (WiGLE → GPS). A generic name is not.
+    let item = json!({
+        "ssid": "Meyers_Home_5G",
+        "wifi_ssid": "xfinitywifi",     // generic → rejected by is_generic_ssid
+        "network_name": "abc"           // < 4 chars → out of range
+    });
+    let r = run(&item, "see-know");
+    assert!(has(&r, EntityKind::Ssid, "Meyers_Home_5G"), "unique ssid → Ssid");
+    assert!(
+        !r.entities.iter().any(|e| e.kind == EntityKind::Ssid && e.value == "xfinitywifi"),
+        "a generic SSID must be rejected"
+    );
+    assert!(
+        !r.entities.iter().any(|e| matches!(&e.kind, EntityKind::Other(k) if k == "ssid")),
+        "a typed SSID must not also mint Other(ssid)"
+    );
+}
