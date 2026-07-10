@@ -437,6 +437,17 @@ impl ScanEngine {
         // gone — poisoning the shared token under a long-lived serve/radar.
         // Per-module failures are already surfaced as ModuleError events.
         {
+            // Seed-round plan visibility: the operator sees exactly how many
+            // modules will run for this target kind and at what concurrency —
+            // dispelling the "APIs aren't executing" perception when a wide scan
+            // is simply working through a long module list.
+            info!(
+                scan_id = %scan.id,
+                kind = target.kind.canonical_str(),
+                modules = self.graph.modules_for(target.kind).len(),
+                concurrency = opts.effective_max_concurrent(),
+                "seed round: dispatching modules"
+            );
             let cx = DispatchCx {
                 scan_id: &scan.id,
                 target: &target,
@@ -452,6 +463,20 @@ impl ScanEngine {
             if let Err(e) = self.dispatch_target(&cx, &mut ctx, &mut dstate).await {
                 warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
             }
+            // Seed-round tally: `stats` starts at default() and neither the anchor
+            // nor recall touch it before here, so these ARE the seed-round counts.
+            info!(
+                scan_id = %scan.id,
+                run = stats.run,
+                skipped = stats.skipped,
+                cached = stats.cached,
+                deduped = stats.deduped,
+                errored = stats.errored,
+                timed_out = stats.timed_out,
+                entities = entity_map.len(),
+                elapsed_ms = started.elapsed().as_millis() as u64,
+                "seed round complete"
+            );
         }
 
         // Convert Address entities to Coordinates (offline city lookup) so they
@@ -483,9 +508,13 @@ impl ScanEngine {
                 relations: &mut lineage,
                 emitted_corr: &mut emitted_corr,
             };
-            let _ = self
+            // Capture the terminal stop reason so it reaches the log: the normal
+            // `DepthExhausted` outcome is emitted as no event anywhere, so this is
+            // the only place the operator learns how expansion ended.
+            let stop = self
                 .run_expansion(&scan.id, &target, &mut ctx, &opts, started, est)
                 .await;
+            info!(scan_id = %scan.id, reason = %stop.label(), "expansion finished");
 
             // Active gap-fill (last leg of the recursive-linking program): for any
             // single-route link the expansion gates left fragile, run the missing
@@ -956,6 +985,21 @@ impl ScanEngine {
                 warn!(scan_id = %scan.id, error = %e, "raw_archive prune deferred");
             }
 
+            // Closing scan summary in the standard log — for EVERY output format
+            // (the CLI table prints a tally, but json/dossier and the log ring had
+            // none). One line that says how the scan ended and what it produced.
+            info!(
+                scan_id = %scan.id,
+                status = scan.status.as_str(),
+                entities = entity_count,
+                run = scan.modules_run,
+                errored = scan.modules_errored,
+                timed_out = scan.modules_timed_out,
+                deduped = scan.modules_deduped,
+                skipped = scan.modules_skipped,
+                cached = scan.modules_cached,
+                "scan complete"
+            );
             emitter.emit(
                 &scan.id,
                 EventKind::ScanComplete {
@@ -1500,6 +1544,14 @@ impl ScanEngine {
             // during this round will be expansion candidates in the next round,
             // not this one.
             let entities_at_round_start = entity_map.len();
+            // Round-start visibility: makes recursion legible in the standard log
+            // (expansion decisions are otherwise emitted only as events).
+            info!(
+                scan_id,
+                depth,
+                working_set = entities_at_round_start,
+                "expansion round started"
+            );
             let has_paid = ctx.keys.contains_key("HUNTSMAN_OATHNET_KEY");
             // Each candidate carries the UID of the parent entity it was
             // derived from, so a `DerivedFrom` lineage edge can be recorded
@@ -1752,6 +1804,18 @@ impl ScanEngine {
                 apply_roi_cutoff(&mut next, visited, opts.max_concurrent);
             }
             let dispatched_this_round = next.len();
+            // Round-selection digest: how many working-set entities were weighed vs
+            // how many survived the gates and will actually be re-dispatched. The
+            // gap is the pruning (below-floor / wrong-identity / already-dispatched
+            // / ROI-cut), so a round that dispatches 0 of N is visibly a pruned
+            // round, not a stalled one. Counts only (PII-free).
+            info!(
+                scan_id,
+                depth,
+                considered = entities_at_round_start,
+                dispatched = dispatched_this_round,
+                "expansion round selection"
+            );
             let next: Vec<(Target, String)> = next.into_iter().map(|(t, _, p)| (t, p)).collect();
 
             if next.is_empty() {

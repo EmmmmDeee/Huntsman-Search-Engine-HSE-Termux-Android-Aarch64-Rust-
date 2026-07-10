@@ -10,6 +10,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+- **Scan pipeline: recursion and lifecycle are now visible in the log (Phase 2
+  verbosity).** Expansion decisions were emitted only as events (to the DB /
+  SSE bus), never to the standard log — so an operator watching `hse scan` saw
+  every seed-round module fire but *zero* evidence a recursion round ran, which
+  reads as "recursion isn't happening" even when it is. Added additive tracing
+  (no behavior change): a **seed-round plan line** (how many modules will run for
+  the target kind, at what concurrency) and a **seed-round completion tally**
+  (run/skipped/cached/deduped/errored/timed-out/entities/elapsed); an
+  **`expansion round started`** line per round (depth + working-set size), an
+  **`expansion round selection`** digest (entities considered vs re-dispatched, so
+  a pruned round is visibly pruned not stalled), and an **`expansion finished`**
+  line carrying the terminal stop reason (the normal `DepthExhausted` outcome was
+  previously emitted nowhere); a **`scan complete`** summary for every output
+  format (status + module tallies, which json/dossier and the log ring lacked);
+  and **module skip reasons** in the log (free-only/passive/needs-key/circuit-open
+  — previously event-only), at debug level so they surface only when investigating
+  coverage.
+
 ### Fixed
 - **Scan pipeline: scans now complete and recurse in usable time (ground-up
   Phase 1).** A root-cause investigation found that a default `hse scan` could

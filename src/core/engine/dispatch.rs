@@ -708,6 +708,17 @@ impl super::ScanEngine {
             module_skip_reason(module, cx.target, cx.opts, cx.is_expansion, target_sources)
         {
             stats.skipped += 1;
+            // Human-log the skip reason too (previously event-only): the operator
+            // watching the standard log can see WHY a module didn't run
+            // (free-only/passive/needs-key/circuit-open/…), not just that fewer
+            // modules fired than expected. Debug-level, so silent at the info
+            // default and only surfaces when investigating coverage.
+            debug!(
+                module = module.name(),
+                reason,
+                is_expansion = cx.is_expansion,
+                "module skipped"
+            );
             self.emit_skipped(cx.scan_id, module.name(), reason);
             true
         } else {
