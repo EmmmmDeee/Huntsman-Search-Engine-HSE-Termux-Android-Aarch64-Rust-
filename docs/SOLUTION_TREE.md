@@ -896,6 +896,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-KEY-POOL-SEED | KEY.1 | `[x]` |
 | SOL-KEY-REG | KEY.2 | `[x]` |
 | SOL-KEY-FOFA | KEY.3 (phases 1–2: FOFA, BuiltWith) | `[~]` |
+| SOL-DETERMINISM-XSCAN | T2.34 (cross-scan bridge order-independence) | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -1071,6 +1072,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-07-10** — **SOL-DETERMINISM-XSCAN `[ ]`→`[x]` (closes T2.34): order-independent
+  cross-scan bridging.** A precision-discovery workflow's top-ranked first commit —
+  the one determinism hole on the substrate every precision claim rests on.
+  `finalise_scan` collected entities from a `HashMap` and never sorted before three
+  budget-capped (`MAX_PROBES=48`) `link_cross_scan_*` passes, so the
+  `cross-scan`/`hub-entity` tag landed on an iteration-order-dependent subset — the
+  same scan persisted different content run-to-run. Sorted by `uid` (collision-free
+  SHA-256 → total order) once in `finalise_scan` (pipeline-wide) and self-sorted
+  inside `link_cross_scan_history` (self-contained testable contract). **S→P
+  alternation:** this establishes the byte-identical baseline REQUIRED before the
+  confidence-model and matcher precision changes (build-queue ranks 1, 3–18) can be
+  proven deterministic — those land next. Regression test verified to fail against
+  the unfixed code; +1 test, gate green. Paired: `PROBLEM_TREE` T2.34 §8 — same commit.
 - **2026-07-10** — **SOL-KEY-FOFA (phase 2 of KEY.3 collector modules): BuiltWith
   technology profile.** Built `modules/builtwith` — HTTP GET to
   `api.builtwith.com/v21/api.json?KEY&LOOKUP` for Domain targets. Returns a

@@ -112,6 +112,16 @@ pub(super) fn link_cross_scan_history(
     entities: &mut [Entity],
     scan_id: &str,
 ) -> usize {
+    // DETERMINISM: this pass stops after `MAX_PROBES`, so WHICH candidates are
+    // probed (and thus which earn the `cross-scan`/`hub-entity` tag + evidence)
+    // must not depend on slice order. The finalise pipeline already sorts by
+    // `uid` before calling this, but sorting here too makes the pass's output a
+    // self-contained pure function of the entity SET — a locally-enforced,
+    // unit-testable determinism contract for the highest-value signal (the
+    // cross-investigation hub bridge), independent of any caller. `uid` is a
+    // collision-free SHA-256 hex string, so this is a total order; the sort is a
+    // no-op when the caller already ordered the slice.
+    entities.sort_by(|a, b| a.uid.cmp(&b.uid));
     let mut linked = 0usize;
     let mut probes = 0usize;
     for e in entities.iter_mut() {

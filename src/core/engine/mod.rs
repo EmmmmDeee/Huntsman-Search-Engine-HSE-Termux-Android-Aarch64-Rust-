@@ -601,6 +601,19 @@ impl ScanEngine {
                 }
             }
             let mut entities: Vec<Entity> = entity_map.into_values().collect();
+            // DETERMINISM (byte-identical-output hard constraint): `entity_map` is a
+            // `HashMap`, so `into_values()` yields a process-randomised order. Several
+            // finalise passes below are ORDER-SENSITIVE under a fixed budget — most
+            // acutely the three `link_cross_scan_*` history passes, which probe the
+            // store for at most `history::MAX_PROBES` (48) entities and stop: WHICH
+            // entities earn the `cross-scan`/`hub-entity` tag + `CROSS_SCAN_SOURCE`
+            // evidence (the signal that drives cross-attribution and dossier
+            // prioritisation) therefore depended on HashMap iteration order, so the
+            // same scan could persist DIFFERENT entity content run-to-run. Sorting by
+            // `uid` (a collision-free SHA-256 hex string → a total order) once, here,
+            // before any budgeted pass, makes the entire finalise pipeline — and thus
+            // the persisted/exported result — a pure function of the entity SET.
+            entities.sort_by(|a, b| a.uid.cmp(&b.uid));
             // Codebase-wide address-locality consolidation. The UID merge above
             // dedups by exact normalised value, so "X, NSW" and "X, NSW 2582" (one
             // place at two granularities) survive as two Address entities — which

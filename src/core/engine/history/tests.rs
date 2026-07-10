@@ -471,3 +471,46 @@ fn relation_recall_is_idempotent_and_never_inflates_confidence() {
     );
     assert_eq!(entities[0].evidence.len(), evidence_after);
 }
+
+#[test]
+fn cross_scan_bridging_is_deterministic_under_the_probe_budget() {
+    // DETERMINISM regression (byte-identical-output hard constraint). With more
+    // qualifying candidates than `MAX_PROBES`, the pass tags exactly `MAX_PROBES`
+    // of them and stops. WHICH ones must be a pure function of the entity SET, not
+    // the slice order: before the fix the budget consumed the first `MAX_PROBES`
+    // in *iteration* order (a `HashMap`-randomised Vec upstream), so the same scan
+    // could persist the `cross-scan`/hub bridge on a different subset run-to-run.
+    let n = MAX_PROBES + 12; // 60 > 48: the cap must engage for the test to bite.
+    let store = InMemoryStore::new();
+    let mk = || {
+        (0..n)
+            .map(|i| ent(EntityKind::Email, &format!("user{i:03}@example.com"), 0.6, "this-scan"))
+            .collect::<Vec<_>>()
+    };
+    // A PRIOR scan recorded every one of them, so each is individually eligible to
+    // bridge — only the budget limits how many get tagged in one pass.
+    for e in mk() {
+        let mut prior = e.clone();
+        prior.scan_id = "prior-scan".to_string();
+        store.upsert_entity(&prior).unwrap();
+    }
+
+    let tagged = |mut es: Vec<Entity>| -> std::collections::BTreeSet<String> {
+        link_cross_scan_history(&store, &mut es, "this-scan");
+        es.into_iter()
+            .filter(|e| e.has_tag("cross-scan"))
+            .map(|e| e.uid)
+            .collect()
+    };
+
+    let forward = tagged(mk());
+    let reversed = tagged(mk().into_iter().rev().collect());
+
+    // The cap engaged (otherwise the test proves nothing about order sensitivity).
+    assert_eq!(forward.len(), MAX_PROBES, "budget must bind at MAX_PROBES");
+    // Same SET regardless of input order — the property the fix guarantees.
+    assert_eq!(
+        forward, reversed,
+        "cross-scan bridging must be order-independent under the probe budget"
+    );
+}

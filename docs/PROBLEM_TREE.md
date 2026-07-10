@@ -1175,6 +1175,27 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   domains_deterministically` test still passing unmodified. **P2** (a
   correctness gap that could permanently wedge an operator-facing status
   endpoint and block all future self-updates, not a crash or PII leak).
+- **`[x]` T2.34 · Cross-scan history bridging is order-dependent under its
+  probe budget (byte-identical-output violation)** — surfaced by the
+  precision-discovery workflow (2026-07-10) and verified by direct read.
+  `finalise_scan` (`core/engine/mod.rs:574`) collects entities from a
+  `HashMap` via `into_values()` (process-randomised order) and never sorts
+  before the three `link_cross_scan_*` history passes, each of which stops
+  after a fixed budget (`MAX_PROBES = 48`). When cross-scan candidates exceed
+  48, WHICH entities earn the `cross-scan`/`hub-entity` tag + `CROSS_SCAN_SOURCE`
+  evidence — the signal that drives cross-investigation attribution and dossier
+  prioritisation — depended on HashMap iteration order, so the *same scan* could
+  persist different entity content run-to-run. `entities_for_scan` re-sorts on
+  read, hiding the leak at read-time, but the content divergence survives to the
+  persisted store and every export. → **Solution:** sort entities by `uid`
+  (collision-free SHA-256 hex → total order) once in `finalise_scan` before any
+  budgeted pass (comprehensive pipeline determinism), and additionally self-sort
+  inside `link_cross_scan_history` so the hub-bridge signal's determinism is a
+  locally-enforced, unit-testable contract independent of caller. Regression
+  test `cross_scan_bridging_is_deterministic_under_the_probe_budget` (60 > 48
+  candidates, forward vs reversed input → identical tagged-uid set; verified to
+  FAIL against the unfixed code). **P1** (violates the §1.7 determinism feature
+  on the substrate every other precision claim rests on).
 
 ---
 
@@ -1691,6 +1712,24 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
+- **2026-07-10** — **Executed T2.34 (new): deterministic cross-scan history
+  bridging — the byte-identical-output substrate.** A precision-discovery workflow
+  (8 expert lenses → adversarial verify → ranked synthesis; 42 confirmed
+  code-grounded findings) ranked this the best FIRST commit: the only violation of
+  the ABSOLUTE byte-identical-output constraint on the substrate every other
+  precision claim rests on. `finalise_scan` (`core/engine/mod.rs`) fed a
+  `HashMap`-ordered entity Vec into three budget-capped (`MAX_PROBES=48`)
+  `link_cross_scan_*` passes, so WHICH entities earned the `cross-scan`/`hub-entity`
+  tag + `CROSS_SCAN_SOURCE` evidence depended on iteration order — the same scan
+  could persist different content run-to-run. Fixed with a `uid` sort in
+  `finalise_scan` before any budgeted pass (pipeline-wide determinism) plus a
+  self-sort inside `link_cross_scan_history` (a locally-enforced, unit-testable
+  contract for the hub-bridge signal). Regression test
+  `cross_scan_bridging_is_deterministic_under_the_probe_budget` (60>48 candidates,
+  forward vs reversed input → identical tagged-uid set) VERIFIED to fail against
+  the unfixed code. Gate green: fmt/clippy `-D warnings`/doc clean, full suite 0
+  failures (+1 test). **Paired:** `SOLUTION_TREE` SOL-DETERMINISM-XSCAN — same
+  commit. T2.34 `[ ]`→`[x]`. First of a 20-item precision build queue.
 - **2026-07-10** — **Executed KEY.3 phase 2: BuiltWith collector module.** Built
   `modules/builtwith/mod.rs` — technology-profile lookup for Domain targets →
   BuiltWith Domain API v21 (`?KEY&LOOKUP`). Emits a tech-annotated Domain

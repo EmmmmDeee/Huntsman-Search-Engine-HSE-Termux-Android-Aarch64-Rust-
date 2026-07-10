@@ -11,6 +11,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **Cross-scan history bridging is now deterministic under its probe budget.**
+  At finalise, the engine collected a scan's entities from a `HashMap`
+  (process-randomised order) and ran three cross-scan history passes that each
+  stop after a fixed probe budget (48). When a scan produced more than 48
+  eligible identifiers, *which* of them earned the `cross-scan`/`hub-entity`
+  bridge tag — the signal that links investigations and prioritises the dossier
+  — depended on hash-iteration order, so the same scan could persist different
+  content on different runs. Entities are now sorted by their (collision-free
+  SHA-256) `uid` before any budgeted pass, and the cross-scan bridging pass also
+  self-sorts, so the persisted and exported result is a pure function of the
+  finding set — upholding the project's byte-identical-output guarantee on the
+  signal that underpins cross-investigation attribution.
 - **The three proactive credential-discovery modules now declare a request
   budget above the engine default.** `key_discovery`,
   `external_credential_discovery`, and `credential_entropy_analyzer` were
