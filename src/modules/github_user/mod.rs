@@ -124,7 +124,7 @@ impl Module for GithubUser {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {
-            return Err(crate::util::http::http_status_error("github_user", resp).await);
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
 
         // json_scanned: GitHub user profiles include bio and blog fields —

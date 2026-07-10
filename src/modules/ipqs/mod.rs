@@ -256,7 +256,7 @@ impl Module for IpQs {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, key, ctx).await {
                     continue;
                 }
-                return Err(crate::util::http::http_status_error("ipqs", resp).await);
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
             break crate::util::http::json_decode(SRC, resp).await?;
         };

@@ -115,7 +115,7 @@ impl Module for Censys {
                 if handle_keyed_error(code, resp.headers(), &mut retries, SRC, api_id, ctx).await {
                     continue;
                 }
-                return Err(crate::util::http::http_status_error("censys", resp).await);
+                return Err(crate::util::http::http_status_error(SRC, resp).await);
             }
 
             break crate::util::http::json_decode(SRC, resp).await?;

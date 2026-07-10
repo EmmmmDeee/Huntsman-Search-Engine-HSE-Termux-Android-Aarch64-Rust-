@@ -225,7 +225,7 @@ async fn process_phone(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
             if crate::util::http::is_keyed_error_status(code) {
                 crate::util::http::note_keyed_error(code, "numverify", key, ctx);
             }
-            return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
+            return Err(crate::util::http::http_status_error(SRC, resp).await);
         }
         let data: NumverifyResp = crate::util::http::json_decode(SRC, resp).await?;
         Ok(Some(data))
@@ -347,7 +347,7 @@ async fn process_email(target: &Target, ctx: &ModuleContext) -> Result<ModuleRes
         return Ok(ModuleResult::new());
     }
     if !status.is_success() {
-        return Err(crate::util::http::http_status_error("contact_enrich", resp).await);
+        return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
 
     let data: ProfileResp = match crate::util::http::json_scanned(resp, SRC).await {
