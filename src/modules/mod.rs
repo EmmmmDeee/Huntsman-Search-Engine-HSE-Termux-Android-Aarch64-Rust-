@@ -45,6 +45,7 @@ pub mod codeberg_user;
 pub mod codewars_user;
 pub mod comb_search;
 pub mod contact_enrich;
+pub mod credential_entropy_analyzer;
 pub mod cpan_user;
 pub mod crates_io;
 pub mod criminal_ip;
@@ -412,6 +413,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(seon::Seon),
             Arc::new(key_discovery::KeyDiscoveryModule),
             Arc::new(external_credential_discovery::ExternalCredentialDiscovery),
+            Arc::new(credential_entropy_analyzer::CredentialEntropyAnalyzer),
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),
             Arc::new(epieos::Epieos),
