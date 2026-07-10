@@ -17,6 +17,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_CRIMINALIP_KEY",
     "HUNTSMAN_IPQS_KEY",
     "HUNTSMAN_VIRUSTOTAL_KEY",
+    "HUNTSMAN_ABUSECH_KEY",
     "HUNTSMAN_THREATFOX_KEY",
     // Expanded services (api_key_probe compatible)
     "HUNTSMAN_ABUSEIPDB_KEY",

@@ -108,7 +108,10 @@ mod tests {
         clear_session_cache();
         let response = serde_json::json!({"status": "found"});
         cache_response("Test@Example.COM", "email", response.clone());
-        assert_eq!(get_cached_response("test@example.com", "email"), Some(response));
+        assert_eq!(
+            get_cached_response("test@example.com", "email"),
+            Some(response)
+        );
     }
 
     #[test]

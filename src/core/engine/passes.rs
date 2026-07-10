@@ -329,7 +329,7 @@ pub(super) fn promote_multipath_corroborated(
 /// evidence record that SURFACES the link to prior investigations for the analyst.
 ///
 /// Provenance/tag-only: the evidence source is
-/// [`CROSS_SCAN_CORROBORATION_SOURCE`], which
+/// [`crate::core::entity::CROSS_SCAN_CORROBORATION_SOURCE`], which
 /// [`is_non_corroborating_source`](crate::core::entity::is_non_corroborating_source)
 /// excludes — so recurrence in the LOCAL store does NOT lift `source_count` /
 /// `c_effective` / the classification band. (It used to, which meant a lead was

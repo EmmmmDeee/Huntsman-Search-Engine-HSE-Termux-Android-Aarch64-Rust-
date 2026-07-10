@@ -110,7 +110,10 @@ impl Module for ExternalCredentialDiscovery {
 /// GitHub gist scanning for exposed credentials
 /// Searches public gists for discovered entities and extracts credentials
 #[allow(dead_code)]
-async fn scan_github_gists_for_entity(_entity_value: &str, _client: &Client) -> Vec<(String, String)> {
+async fn scan_github_gists_for_entity(
+    _entity_value: &str,
+    _client: &Client,
+) -> Vec<(String, String)> {
     // Implementation would:
     // 1. Search GitHub API for gists containing the entity value
     // 2. Fetch gist contents
@@ -122,10 +125,7 @@ async fn scan_github_gists_for_entity(_entity_value: &str, _client: &Client) -> 
 /// Web archive scanning for historical credential exposure
 /// Scans archive.org snapshots for discovered domains
 #[allow(dead_code)]
-async fn scan_archive_org_for_domain(
-    _domain: &str,
-    _client: &Client,
-) -> Vec<(String, String)> {
+async fn scan_archive_org_for_domain(_domain: &str, _client: &Client) -> Vec<(String, String)> {
     // Implementation would:
     // 1. Query archive.org API for snapshots of the domain
     // 2. Fetch historical HTML content
@@ -137,9 +137,7 @@ async fn scan_archive_org_for_domain(
 /// DNS TXT record and certificate analysis
 /// Extracts credential patterns from DNS and certificate data
 #[allow(dead_code)]
-async fn analyze_dns_and_certificates_for_entity(
-    _entity_value: &str,
-) -> Vec<(String, String)> {
+async fn analyze_dns_and_certificates_for_entity(_entity_value: &str) -> Vec<(String, String)> {
     // Implementation would:
     // 1. Resolve DNS records for entity (if domain)
     // 2. Analyze TXT records for token leaks (DMARC, SPF, etc.)

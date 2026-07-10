@@ -395,6 +395,14 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         key_header: KeyPlacement::BearerAuth,
         rate_limit_reset_secs: 60,
     },
+    ServiceDef {
+        name: "abusech",
+        env_var: "HUNTSMAN_ABUSECH_KEY",
+        category: "threat_intel",
+        test_url: "https://urlhaus-api.abuse.ch/v1/urls/recent/",
+        key_header: KeyPlacement::Header("Auth-Key"),
+        rate_limit_reset_secs: 120,
+    },
     // Intentionally NOT registered (same reasoning as DeHashed above): `niamonx`
     // (POST `/breaches_search`, `X-API-Key` header) and `fullcontact` (POST
     // `/v3/person.enrich`, `Authorization: Bearer`) are POST-only, so the

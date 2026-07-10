@@ -1466,7 +1466,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
     via `KeyPool::add`) and health-selects: lone healthy key verbatim, multi-key
     load-spread, dead sole key fails over. **Delivered 2026-07-09**, +3 tests.
     Paired `SOLUTION_TREE` SOL-KEY-POOL-SEED. **P2 (reliability)**
-  - **`[~]` KEY.2 · Registration completeness.** Register the orphan consumer keys
+  - **`[x]` KEY.2 · Registration completeness.** Register the orphan consumer keys
     (`NIAMONX`, `OSINTCAT`, `FULLCONTACT`, `GITHUB_TOKEN`, `ABUSECH`, `MLS`) into
     `KNOWN_KEYS` + `service_defs` so they're configurable/validatable/rotatable;
     ✅ **SRC-vs-`ServiceDef.name` audit done (2026-07-10):** the only two
@@ -1486,8 +1486,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
     verified live (`hibp`→live, bad `shodan`→REJECTED). ✅ **GitHub token
     registered (2026-07-10):** `name: "github"`, `BearerAuth`, `GET /user`
     validation — enables multi-token rotation for GitHub's harsh rate limits;
-    live in `hse keys services`. *Remaining:* `ABUSECH` (shared with threatfox)
-    — KEY.2 essentially complete. **P2**
+    live in `hse keys services`. ✅ **ABUSECH registered (2026-07-10):** `name: "abusech"`, `Auth-Key` header, `POST` test endpoint — enables URLhaus key validation & rotation. **KEY.2 COMPLETE.** **P2**
   - **`[ ]` KEY.3 · Spend every held key.** Build collector modules for the
     keys HSE holds/validates but never spends — `FOFA`, `BuiltWith`,
     `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`, `PassiveTotal`,

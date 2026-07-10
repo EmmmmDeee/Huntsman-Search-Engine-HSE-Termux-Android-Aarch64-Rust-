@@ -161,7 +161,7 @@ impl Module for CredentialEntropyAnalyzer {
 }
 
 /// Calculate Shannon entropy of a string (information density).
-/// 
+///
 /// Higher entropy indicates more randomness (characteristic of credentials).
 /// Natural language: ~4.5-5 bits/character
 /// Credentials: ~6-8 bits/character
@@ -179,7 +179,7 @@ pub fn shannon_entropy(text: &str) -> f64 {
     }
 
     let mut entropy = 0.0;
-    for &count in frequencies.iter() {
+    for &count in &frequencies {
         if count > 0 {
             let probability = count as f64 / len;
             entropy -= probability * probability.log2();
@@ -226,11 +226,8 @@ pub fn credential_likelihood(text: &str) -> f64 {
     score += length_score * 0.15;
 
     // 3. CHARACTER COMPOSITION: 25% weight
-    let alphanumeric_ratio = text
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .count() as f64
-        / text.len() as f64;
+    let alphanumeric_ratio =
+        text.chars().filter(char::is_ascii_alphanumeric).count() as f64 / text.len() as f64;
 
     let special_chars = text
         .chars()
@@ -238,19 +235,15 @@ pub fn credential_likelihood(text: &str) -> f64 {
         .count() as f64
         / text.len() as f64;
 
-    let space_ratio = text
-        .chars()
-        .filter(|c| c.is_whitespace())
-        .count() as f64
-        / text.len() as f64;
+    let space_ratio = text.chars().filter(|c| c.is_whitespace()).count() as f64 / text.len() as f64;
 
     // Credentials: high alphanumeric, some special chars, no spaces
     let composition_score = match (alphanumeric_ratio, special_chars, space_ratio) {
-        (_, _, s) if s > 0.1 => 0.0,      // Contains spaces (unlikely credential)
-        (a, _, _) if a < 0.7 => 0.0,      // Too many unusual chars
-        (a, _, _) if a >= 0.9 => 0.9,     // Pure alphanumeric (good credential)
+        (_, _, s) if s > 0.1 => 0.0,  // Contains spaces (unlikely credential)
+        (a, _, _) if a < 0.7 => 0.0,  // Too many unusual chars
+        (a, _, _) if a >= 0.9 => 0.9, // Pure alphanumeric (good credential)
         (a, sp, _) if a >= 0.8 && sp > 0.05 => 0.8, // Good mix with separators
-        (a, _, _) if a >= 0.8 => 0.7,    // Good alphanumeric ratio
+        (a, _, _) if a >= 0.8 => 0.7, // Good alphanumeric ratio
         _ => 0.3,
     };
     score += composition_score * 0.25;
@@ -268,10 +261,10 @@ pub fn credential_likelihood(text: &str) -> f64 {
         .0;
 
     let repetition_score = match max_consecutive {
-        0..=1 => 1.0,   // No repetition (good)
-        2 => 0.8,       // Single double char
-        3 => 0.5,       // Triple char (suspicious)
-        _ => 0.0,       // Heavy repetition (not a credential)
+        0..=1 => 1.0, // No repetition (good)
+        2 => 0.8,     // Single double char
+        3 => 0.5,     // Triple char (suspicious)
+        _ => 0.0,     // Heavy repetition (not a credential)
     };
     score += repetition_score * 0.10;
 
@@ -287,8 +280,18 @@ fn is_common_word(text: &str) -> bool {
     // Common words that would indicate this is NOT a credential
     matches!(
         text.to_ascii_lowercase().as_str(),
-        "password" | "secret" | "token" | "key" | "credential" | "api" | "private"
-            | "public" | "username" | "admin" | "default" | "example"
+        "password"
+            | "secret"
+            | "token"
+            | "key"
+            | "credential"
+            | "api"
+            | "private"
+            | "public"
+            | "username"
+            | "admin"
+            | "default"
+            | "example"
     )
 }
 
@@ -302,13 +305,22 @@ mod tests {
         // High entropy (credential-like)
         let credential = "a7x9pQr2mK5nLvB8cD3jF4gH6iJ1sT0uY";
         let entropy = shannon_entropy(credential);
-        assert!(entropy > 4.5, "Credential should have higher entropy than text: {}", entropy);
+        assert!(
+            entropy > 4.5,
+            "Credential should have higher entropy than text: {entropy}"
+        );
 
         // Low entropy (text-like)
         let text = "the quick brown fox";
         let entropy_text = shannon_entropy(text);
-        assert!(entropy_text < 4.0, "Natural text should have lower entropy: {}", entropy_text);
-        assert!(entropy > entropy_text, "Credential should have higher entropy than natural text");
+        assert!(
+            entropy_text < 4.0,
+            "Natural text should have lower entropy: {entropy_text}"
+        );
+        assert!(
+            entropy > entropy_text,
+            "Credential should have higher entropy than natural text"
+        );
     }
 
     #[test]
@@ -317,8 +329,7 @@ mod tests {
         let score = credential_likelihood(aws_key);
         assert!(
             score > 0.5,
-            "AWS key should score as likely credential: {}",
-            score
+            "AWS key should score as likely credential: {score}"
         );
     }
 
@@ -326,7 +337,10 @@ mod tests {
     fn credential_likelihood_penalizes_spaces() {
         let text_with_spaces = "this is a sentence with many words";
         let score = credential_likelihood(text_with_spaces);
-        assert!(score < 0.3, "Text with spaces shouldn't score as credential");
+        assert!(
+            score < 0.3,
+            "Text with spaces shouldn't score as credential"
+        );
     }
 
     #[test]

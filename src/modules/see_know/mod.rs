@@ -296,9 +296,9 @@ impl Module for SeekNow {
             parent.tag("see-know");
 
             // Tag by data composition to improve result transparency
-            let has_breach = outcome.breach_count.map_or(false, |c| c > 0);
-            let has_stealer = outcome.stealer_count.map_or(false, |c| c > 0);
-            let has_external = outcome.external_count.map_or(false, |c| c > 0);
+            let has_breach = outcome.breach_count.is_some_and(|c| c > 0);
+            let has_stealer = outcome.stealer_count.is_some_and(|c| c > 0);
+            let has_external = outcome.external_count.is_some_and(|c| c > 0);
 
             if has_breach {
                 parent.tag("breach-corpus");

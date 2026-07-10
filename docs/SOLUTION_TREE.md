@@ -887,6 +887,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-KEY-POOL-SEED | KEY.1 | `[x]` |
+| SOL-KEY-REG | KEY.2 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -4104,3 +4105,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   spend-every-key collectors, KEY.4 tier-into-dispatch + force-multiplier).
   Paired: `PROBLEM_TREE` §8 KEY.1 — same commit. Gate green, 4507 lib tests (+3),
   architecture 30/30.
+- **2026-07-10** — **SOL-KEY-REG (completion of KEY.2): register ABUSECH into
+  `service_defs` + `KNOWN_KEYS` → KEY.2 `[~]`→`[x]`.** Seals the key-registration
+  program that onboarded orphan keys into the configurable/validatable/rotatable
+  registry. ABUSECH (abuse.ch Auth-Key, shared with URLhaus/ThreatFox/MalwareBazaar)
+  added to `KNOWN_KEYS` (Settings/doctor visibility) and `service_defs` (poolable
+  via service registry, `Auth-Key` header, GET `/urls/recent/` test endpoint for
+  doctor validation, 120s rate-limit window). Paired: `PROBLEM_TREE` §8 KEY.2 —
+  same commit.

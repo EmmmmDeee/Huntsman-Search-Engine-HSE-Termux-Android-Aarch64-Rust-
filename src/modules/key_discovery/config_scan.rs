@@ -33,9 +33,11 @@ pub fn scan_config_for_credentials(text: &str) -> Vec<(String, String)> {
 
             let key_lower = key_part.to_ascii_lowercase();
             if should_scan_key(&key_lower) {
-                let value = val_part.trim_matches(|c| c == '\'' || c == '"' || c == ' ').to_string();
+                let value = val_part
+                    .trim_matches(|c| c == '\'' || c == '"' || c == ' ')
+                    .to_string();
                 if !value.is_empty() && !is_redacted(&value) && is_likely_credential(&value) {
-                    found.push((key_part.to_ascii_uppercase().to_string(), value));
+                    found.push((key_part.to_ascii_uppercase(), value));
                 }
             }
         }
@@ -75,12 +77,20 @@ pub fn scan_config_for_credentials(text: &str) -> Vec<(String, String)> {
 
 /// Extract credentials from connection strings
 fn extract_connection_string(line: &str) -> Option<(String, String)> {
-    let patterns = ["mongodb://", "postgresql://", "mysql://", "mariadb://", "redis://", "mongodb+srv://"];
-    for pattern in patterns.iter() {
+    let patterns = [
+        "mongodb://",
+        "postgresql://",
+        "mysql://",
+        "mariadb://",
+        "redis://",
+        "mongodb+srv://",
+    ];
+    for pattern in &patterns {
         if let Some(start) = line.find(pattern) {
             // Extract from the protocol to the end of word boundary
             let rest = &line[start..];
-            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ';')
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == ';')
                 .unwrap_or(rest.len());
             let connection_string = &rest[..end];
 
@@ -92,7 +102,13 @@ fn extract_connection_string(line: &str) -> Option<(String, String)> {
                     if let Some(colon_pos) = before_at.rfind(':') {
                         let password = &before_at[colon_pos + 1..];
                         if !password.is_empty() && password.len() >= 8 && !is_redacted(password) {
-                            return Some((format!("{}_PASSWORD", pattern.trim_end_matches("://").to_uppercase()), password.to_string()));
+                            return Some((
+                                format!(
+                                    "{}_PASSWORD",
+                                    pattern.trim_end_matches("://").to_uppercase()
+                                ),
+                                password.to_string(),
+                            ));
                         }
                     }
                 }
@@ -104,8 +120,13 @@ fn extract_connection_string(line: &str) -> Option<(String, String)> {
 
 /// Extract credentials from Authorization headers
 fn extract_auth_header(line: &str) -> Option<(String, String)> {
-    let patterns = ["Authorization:", "X-API-Key:", "X-Auth-Token:", "X-Access-Token:"];
-    for pattern in patterns.iter() {
+    let patterns = [
+        "Authorization:",
+        "X-API-Key:",
+        "X-Auth-Token:",
+        "X-Access-Token:",
+    ];
+    for pattern in &patterns {
         if let Some(start) = line.find(pattern) {
             let after_pattern = &line[start + pattern.len()..];
             let rest = after_pattern.trim_start();
@@ -122,12 +143,16 @@ fn extract_auth_header(line: &str) -> Option<(String, String)> {
             let rest = &rest[token_start..];
 
             // Extract the token/credential value
-            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == ';' || c == '\n')
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '"' || c == ';' || c == '\n')
                 .unwrap_or(rest.len());
             if end >= 10 {
                 let token = rest[..end].trim_matches(|c| c == '\'' || c == '"' || c == ' ');
                 if !token.is_empty() && !is_redacted(token) {
-                    return Some(((*pattern).trim_end_matches(':').to_uppercase().to_string(), token.to_string()));
+                    return Some((
+                        (*pattern).trim_end_matches(':').to_uppercase(),
+                        token.to_string(),
+                    ));
                 }
             }
         }
@@ -143,7 +168,10 @@ fn extract_database_url_credentials(line: &str) -> Option<(String, String)> {
         // Find the last colon before the @
         if let Some(colon_pos) = before_at.rfind(':') {
             let potential_pass = &before_at[colon_pos + 1..];
-            if !potential_pass.is_empty() && !is_redacted(potential_pass) && is_likely_credential(potential_pass) {
+            if !potential_pass.is_empty()
+                && !is_redacted(potential_pass)
+                && is_likely_credential(potential_pass)
+            {
                 // Make sure this looks like a credentials pattern, not a timestamp or similar
                 if before_at.len() > 5 {
                     return Some(("DATABASE_PASSWORD".to_string(), potential_pass.to_string()));
@@ -178,10 +206,11 @@ fn extract_aws_credentials(line: &str) -> Option<(String, String)> {
 
     // AWS secret key pattern: looking for SecretAccessKey= or aws_secret_access_key=
     let secret_patterns = ["SecretAccessKey=", "aws_secret_access_key="];
-    for pattern in secret_patterns.iter() {
+    for pattern in &secret_patterns {
         if let Some(start) = line.find(pattern) {
             let rest = &line[start + pattern.len()..];
-            let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
+            let end = rest
+                .find(|c: char| c.is_whitespace() || c == '"' || c == '\'')
                 .unwrap_or(rest.len());
             if end >= 20 {
                 let secret = &rest[..end];
@@ -203,7 +232,7 @@ fn detect_private_key(line: &str) -> Option<(String, String)> {
         "-----BEGIN EC PRIVATE KEY-----",
         "-----BEGIN PGP PRIVATE KEY-----",
     ];
-    for marker in key_markers.iter() {
+    for marker in &key_markers {
         if line.contains(marker) {
             return Some(("PRIVATE_KEY".to_string(), marker.to_string()));
         }
@@ -268,7 +297,10 @@ mod tests {
     fn ignores_short_values() {
         let text = "API_KEY=short";
         let found = scan_config_for_credentials(text);
-        assert!(found.is_empty(), "Should ignore values shorter than 10 chars");
+        assert!(
+            found.is_empty(),
+            "Should ignore values shorter than 10 chars"
+        );
     }
 
     #[test]
@@ -299,7 +331,10 @@ mod tests {
     fn detects_api_secret_assignments() {
         let text = "aws_secret_access_key=WJAG7ASD89fjkasdflj23kdasfljkasdflkasdjfDEADBEEF";
         let found = scan_config_for_credentials(text);
-        assert!(!found.is_empty(), "Should find AWS secret via key assignment");
+        assert!(
+            !found.is_empty(),
+            "Should find AWS secret via key assignment"
+        );
     }
 
     #[test]
