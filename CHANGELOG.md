@@ -90,6 +90,8 @@ versions can include breaking changes; patch versions are bug-fix-only.
     back into results by default. Enable with `hse config feature.cross_scan on`.
 
 ### Added
+- **Correlations now carry and are ranked by their MITRE ATT&CK technique breadth.** Each correlation (a cross-source conclusion, e.g. two identifiers that resolve to the same person) now records the distinct ATT&CK Reconnaissance techniques behind it — the union of the techniques that collected its underlying findings — and shows them in the dossier. When two conclusions are otherwise equally ranked, the one corroborated across MORE distinct (independent) techniques is ordered first, so a link confirmed by a breach AND a WHOIS record AND a certificate outranks one re-derived three times by the same kind of source. This makes ATT&CK a measure of source independence, not just per-finding provenance; the confidence-driven primary ordering is unchanged.
+### Added
 - **Scan reports now include a MITRE ATT&CK Reconnaissance coverage summary.** Every finding already carried the ATT&CK technique(s) that collected it; the dossier view now aggregates those into a scan-level `ATT&CK RECONNAISSANCE COVERAGE` block — which of the catalogued TA0043 techniques the scan exercised (with how many findings and the strongest confidence per technique, sub-techniques rolled up to their parent), and an explicit list of the techniques it did not exercise. It is a Navigator-style coverage/gap read computed purely from the findings, with no external threat-intelligence bundle, and is fully deterministic.
 ### Added
 - **BuiltWith technology-profile module (phase 2 of KEY.3 collector build).** Added

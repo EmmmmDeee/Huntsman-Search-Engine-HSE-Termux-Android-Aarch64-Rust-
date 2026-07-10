@@ -38,6 +38,7 @@ pub(in crate::core::correlator) fn rule_au_012_identity_linked_domain(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()

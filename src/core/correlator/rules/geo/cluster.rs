@@ -34,6 +34,7 @@ pub(in crate::core::correlator) fn rule_au_013_local_network_discovery(
         scan_id: scan_id.into(),
         ts,
         rank: 0.0,
+        techniques: Vec::new(),
     }]
 }
 
@@ -65,6 +66,7 @@ pub(in crate::core::correlator) fn rule_au_014_geo_cluster(
                     scan_id: scan_id.into(),
                     ts,
                     rank: 0.0,
+                    techniques: Vec::new(),
                 })
             } else {
                 None

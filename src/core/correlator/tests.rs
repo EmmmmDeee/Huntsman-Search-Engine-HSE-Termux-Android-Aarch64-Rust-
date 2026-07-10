@@ -277,8 +277,9 @@ fn rank_and_sort_is_deterministic_for_same_rule_ties() {
     // Same rule, same rank — distinguished only by entity_uids. Feed both orders.
     let mut a = vec![mk(vec!["u2"]), mk(vec!["u1"])];
     let mut b = vec![mk(vec!["u1"]), mk(vec!["u2"])];
-    super::rank_and_sort(&mut a, &ceff);
-    super::rank_and_sort(&mut b, &ceff);
+    let tech: HashMap<String, Vec<&'static str>> = HashMap::new();
+    super::rank_and_sort(&mut a, &ceff, &tech);
+    super::rank_and_sort(&mut b, &ceff, &tech);
     let uids = |c: &[Correlation]| c.iter().map(|x| x.entity_uids.clone()).collect::<Vec<_>>();
     assert_eq!(
         uids(&a),
@@ -287,6 +288,64 @@ fn rank_and_sort_is_deterministic_for_same_rule_ties() {
     );
     // And the fixed order is by entity_uids ascending.
     assert_eq!(a[0].entity_uids, vec!["u1".to_string()]);
+}
+
+#[test]
+fn rank_and_sort_unions_techniques_and_breaks_ties_by_diversity() {
+    // ATT&CK technique-diversity as a per-conclusion source-independence signal.
+    use std::collections::HashMap;
+    let ceff: HashMap<String, f64> = [("a".to_string(), 0.5), ("b".to_string(), 0.5)]
+        .into_iter()
+        .collect();
+    // Entity `a` was collected via THREE distinct techniques, `b` via one.
+    let tech: HashMap<String, Vec<&'static str>> = [
+        ("a".to_string(), vec!["T1589.002", "T1596.002", "T1590.005"]),
+        ("b".to_string(), vec!["T1596.002"]),
+    ]
+    .into_iter()
+    .collect();
+    let mk = |id: &str, uid: &str| {
+        Correlation::new(
+            id,
+            "x",
+            Severity::Medium,
+            "d".into(),
+            vec![uid.to_string()],
+            "scan",
+            0,
+        )
+    };
+    // Two same-severity, same-C_eff conclusions. Crucially the HIGH-diversity one
+    // (`a`, 3 techniques) is given the LARGER rule_id (`AU-002`) and the
+    // low-diversity one (`b`, 1 technique) the SMALLER (`AU-001`) — so absent the
+    // diversity tie-break the rule_id order would put `b` first. Diversity ranking
+    // before rule_id is the ONLY thing that can float `a` to the top.
+    let mut corrs = vec![mk("AU-001", "b"), mk("AU-002", "a")];
+    super::rank_and_sort(&mut corrs, &ceff, &tech);
+
+    // techniques field is the sorted, deduped union of the child provenance.
+    let a_corr = corrs
+        .iter()
+        .find(|c| c.entity_uids == vec!["a".to_string()])
+        .unwrap();
+    assert_eq!(
+        a_corr.techniques,
+        vec!["T1589.002", "T1590.005", "T1596.002"]
+    );
+    let b_corr = corrs
+        .iter()
+        .find(|c| c.entity_uids == vec!["b".to_string()])
+        .unwrap();
+    assert_eq!(b_corr.techniques, vec!["T1596.002"]);
+
+    // The more technique-diverse conclusion ranks first despite its rule_id
+    // (`AU-001` vs `AU-002`) — diversity is applied BEFORE the rule_id tie-break,
+    // and the equal rank/severity means only diversity could reorder them.
+    assert_eq!(
+        corrs[0].entity_uids,
+        vec!["a".to_string()],
+        "3-technique conclusion must outrank the 1-technique one at equal rank/severity"
+    );
 }
 
 // ── Severity Display ────────────────────────────────────────────────

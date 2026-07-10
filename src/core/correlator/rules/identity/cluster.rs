@@ -67,6 +67,7 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
         scan_id: scan_id.into(),
         ts,
         rank: 0.0,
+        techniques: Vec::new(),
     }]
 }
 
@@ -132,6 +133,7 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             })
         })
         .collect()
@@ -253,6 +255,7 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             })
         })
         .collect()
@@ -304,6 +307,7 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             })
         })
         .collect()

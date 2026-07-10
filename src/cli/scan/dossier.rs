@@ -386,6 +386,26 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
             };
             println!("  {} [{}] {}", c.rule_id, sev, c.rule_name);
             println!("    {}", c.description);
+            // Per-conclusion MITRE ATT&CK provenance: the distinct Reconnaissance
+            // techniques behind this link (union of the child findings'
+            // provenance). More distinct techniques = more independent
+            // corroboration — the same signal the diversity tie-break ranks on.
+            if !c.techniques.is_empty() {
+                let named: Vec<String> = c
+                    .techniques
+                    .iter()
+                    .map(|id| {
+                        crate::core::attack::technique(id)
+                            .map_or_else(|| id.clone(), |t| format!("{id} {}", t.name))
+                    })
+                    .collect();
+                println!(
+                    "    MITRE ATT&CK ({} technique{}): {}",
+                    named.len(),
+                    if named.len() == 1 { "" } else { "s" },
+                    named.join("; ")
+                );
+            }
             println!();
         }
     }

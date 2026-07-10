@@ -47,6 +47,7 @@ pub(in crate::core::correlator) fn rule_au_016_breach_ip_geo_chain(
         scan_id: scan_id.into(),
         ts,
         rank: 0.0,
+        techniques: Vec::new(),
     }]
 }
 
@@ -122,6 +123,7 @@ pub(in crate::core::correlator) fn rule_au_017_multi_geo_convergence(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()

@@ -206,6 +206,26 @@ pub fn subtechniques(base: &str) -> Vec<&'static Technique> {
         .collect()
 }
 
+/// The distinct catalogued ATT&CK technique IDs an entity was collected via — its
+/// `attack:<ID>` provenance tags resolved against the catalogue, sorted and
+/// deduped. Uncatalogued/stale tags are ignored (can't invent a technique). The
+/// **count** of these is a source-independence signal: a link re-derived across
+/// several DISTINCT techniques (a breach + a WHOIS + a certificate) is materially
+/// more robust than the same technique repeated, because the techniques are
+/// orthogonal collection methods. Pure; deterministic (catalogue-ordered).
+#[must_use]
+pub fn entity_techniques(e: &crate::core::entity::Entity) -> Vec<&'static str> {
+    let mut ids: Vec<&'static str> = e
+        .tags
+        .iter()
+        .filter_map(|t| t.strip_prefix("attack:"))
+        .filter_map(|id| technique(id).map(|t| t.id))
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
 /// Per-technique coverage within one scan: whether any finding was collected via
 /// this Reconnaissance technique, how many, and the strongest such finding.
 /// Sub-technique hits roll UP into their parent (a parent counts as exercised

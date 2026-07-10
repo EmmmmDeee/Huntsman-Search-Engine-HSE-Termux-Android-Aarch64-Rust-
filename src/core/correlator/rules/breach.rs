@@ -469,6 +469,7 @@ pub(in crate::core::correlator) fn rule_au_047_reused_secret_identity(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         });
     }
     out
@@ -676,6 +677,7 @@ pub(in crate::core::correlator) fn rule_au_009_stealer_log(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         })
         .collect()
 }
@@ -750,6 +752,7 @@ pub(in crate::core::correlator) fn rule_au_019_temporal_breach_cluster(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         })
         .collect()
 }

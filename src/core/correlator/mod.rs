@@ -89,15 +89,40 @@ pub struct Correlation {
     /// (they deserialize with rank 0.0 and simply sort last).
     #[serde(default)]
     pub rank: f64,
+    /// The distinct MITRE ATT&CK Reconnaissance technique IDs behind this
+    /// conclusion — the union of the child entities' `attack:<ID>` provenance,
+    /// sorted and deduped. This lifts ATT&CK from *per-datum* provenance to
+    /// *per-conclusion* provenance and makes technique breadth a first-class
+    /// measure of source independence: a link corroborated across several DISTINCT
+    /// techniques is more robust than one re-derived under a single technique, and
+    /// the ranking rewards that (a diversity tie-break in [`rank_and_sort`]).
+    /// Populated at finalize; `#[serde(default)]` keeps pre-existing rows readable
+    /// (empty → no diversity signal, sorts as before).
+    #[serde(default)]
+    pub techniques: Vec<String>,
 }
 
 /// Compute `severity.weight() × max(C_eff)` over the child entities of each
-/// correlation, write it into `rank`, and sort the slice rank-descending with
-/// a stable severity/rule_id tie-break. Shared by both the finalize pass
-/// (`Correlator::run`) and the live incremental pass (engine) so a correlation
-/// carries the same rank whether it was streamed mid-scan or produced at the
-/// end. `ceff` maps entity uid → c_effective().
-pub fn rank_and_sort(corrs: &mut [Correlation], ceff: &std::collections::HashMap<String, f64>) {
+/// correlation, write it into `rank`, populate each correlation's ATT&CK
+/// `techniques` (the union of its children's `attack:<ID>` provenance), and sort
+/// the slice rank-descending with a stable tie-break chain. Shared by both the
+/// finalize pass (`Correlator::run`) and the live incremental pass (engine) so a
+/// correlation carries the same rank + technique set whether it was streamed
+/// mid-scan or produced at the end. `ceff` maps entity uid → `c_effective()`;
+/// `tech` maps entity uid → its sorted distinct ATT&CK technique IDs
+/// ([`crate::core::attack::entity_techniques`]).
+///
+/// The primary ordering (`rank` = severity × max child C_eff) is UNCHANGED — the
+/// technique count enters only as a **diversity tie-break** *after* severity, so
+/// two conclusions of equal severity and confidence are ordered with the one
+/// corroborated across MORE distinct (orthogonal) techniques first. Technique
+/// breadth is thus expressed and rewarded without perturbing the confidence-driven
+/// rank, keeping the change monotonic and the ordering deterministic.
+pub fn rank_and_sort(
+    corrs: &mut [Correlation],
+    ceff: &std::collections::HashMap<String, f64>,
+    tech: &std::collections::HashMap<String, Vec<&'static str>>,
+) {
     for c in corrs.iter_mut() {
         let max_child = c
             .entity_uids
@@ -105,12 +130,30 @@ pub fn rank_and_sort(corrs: &mut [Correlation], ceff: &std::collections::HashMap
             .filter_map(|uid| ceff.get(uid).copied())
             .fold(0.0_f64, f64::max);
         c.rank = c.severity.weight() * max_child;
+
+        // Union the child entities' distinct ATT&CK techniques → the conclusion's
+        // source-independence signature. Sorted + deduped so it is deterministic
+        // and the count is a true DISTINCT-technique measure.
+        let mut techniques: Vec<String> = c
+            .entity_uids
+            .iter()
+            .filter_map(|uid| tech.get(uid))
+            .flatten()
+            .map(|id| (*id).to_string())
+            .collect();
+        techniques.sort_unstable();
+        techniques.dedup();
+        c.techniques = techniques;
     }
     corrs.sort_by(|a, b| {
         b.rank
             .partial_cmp(&a.rank)
             .unwrap_or(std::cmp::Ordering::Equal)
             .then(b.severity.cmp(&a.severity))
+            // Diversity tie-break: at equal rank AND severity, the conclusion
+            // corroborated across MORE distinct ATT&CK techniques (orthogonal
+            // collection methods) is the more robust and ranks first.
+            .then(b.techniques.len().cmp(&a.techniques.len()))
             .then(a.rule_id.cmp(&b.rule_id))
             // Total tie-break so the ORDER is deterministic even when one rule
             // fires for several entity groups (same rule_id): the per-group
@@ -140,6 +183,7 @@ impl Correlation {
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         }
     }
 }
@@ -189,7 +233,11 @@ impl Correlator {
             .iter()
             .map(|e| (e.uid.clone(), e.c_effective()))
             .collect();
-        rank_and_sort(&mut firings, &ceff);
+        let tech: std::collections::HashMap<String, Vec<&'static str>> = entities
+            .iter()
+            .map(|e| (e.uid.clone(), crate::core::attack::entity_techniques(e)))
+            .collect();
+        rank_and_sort(&mut firings, &ceff, &tech);
 
         for c in &firings {
             self.store.upsert_correlation(c)?;

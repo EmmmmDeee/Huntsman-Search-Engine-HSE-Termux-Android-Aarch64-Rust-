@@ -78,5 +78,6 @@ pub(in crate::core::correlator) fn rule_au_072_payid_payment_surface(
         scan_id: scan_id.into(),
         ts,
         rank: 0.0,
+        techniques: Vec::new(),
     }]
 }

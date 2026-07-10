@@ -1077,6 +1077,10 @@ impl ScanEngine {
             .iter()
             .map(|e| (e.uid.clone(), e.c_effective()))
             .collect();
+        let tech: HashMap<String, Vec<&'static str>> = entities
+            .iter()
+            .map(|e| (e.uid.clone(), crate::core::attack::entity_techniques(e)))
+            .collect();
         // Contain a correlator panic exactly as module dispatch does
         // (`run_module_guarded`): the 34 AU-rules run index/parse-heavy logic over
         // entity data, so a single malformed value in one rule must degrade to "no
@@ -1115,7 +1119,7 @@ impl ScanEngine {
             .into_iter()
             .filter(|c| emitted.insert(correlation_key(c)))
             .collect();
-        crate::core::correlator::rank_and_sort(&mut fresh, &ceff);
+        crate::core::correlator::rank_and_sort(&mut fresh, &ceff, &tech);
         for c in fresh {
             if let Err(e) = self.store.upsert_correlation(&c) {
                 warn!(scan_id, error = %e, "live correlation persist failed");

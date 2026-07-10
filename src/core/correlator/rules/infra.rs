@@ -36,6 +36,7 @@ pub(in crate::core::correlator) fn rule_au_004_malicious_infrastructure(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         })
         .collect()
 }
@@ -69,6 +70,7 @@ pub(in crate::core::correlator) fn rule_au_005_anonymous_network(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             })
         })
         .collect()
@@ -107,6 +109,7 @@ pub(in crate::core::correlator) fn rule_au_006_proxy_vpn(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             })
         })
         .collect()
@@ -147,6 +150,7 @@ pub(in crate::core::correlator) fn rule_au_007_high_risk_reputation(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             })
         })
         .collect()
@@ -184,6 +188,7 @@ pub(in crate::core::correlator) fn rule_au_008_exposed_service(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()
@@ -225,6 +230,7 @@ pub(in crate::core::correlator) fn rule_au_010_infra_consensus(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             });
         }
     }
@@ -283,6 +289,7 @@ pub(in crate::core::correlator) fn rule_au_015_threat_intel_hit(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()

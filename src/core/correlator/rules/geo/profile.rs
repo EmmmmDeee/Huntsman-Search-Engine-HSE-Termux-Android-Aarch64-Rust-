@@ -57,6 +57,7 @@ pub(in crate::core::correlator) fn rule_au_018_email_address_colocation(
         scan_id: scan_id.into(),
         ts,
         rank: 0.0,
+        techniques: Vec::new(),
     }]
 }
 

@@ -105,6 +105,7 @@ pub(in crate::core::correlator) fn rule_au_011_cross_platform_username(
                     scan_id: scan_id.into(),
                     ts,
                     rank: 0.0,
+                    techniques: Vec::new(),
                 })
             } else {
                 None
@@ -203,6 +204,7 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         });
     }
     out
@@ -651,6 +653,7 @@ pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
         scan_id: scan_id.into(),
         ts,
         rank: 0.0,
+        techniques: Vec::new(),
     }]
 }
 
@@ -737,6 +740,7 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
         scan_id: scan_id.into(),
         ts,
         rank: 0.0,
+        techniques: Vec::new(),
     }]
 }
 
@@ -847,6 +851,7 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         });
     }
     out
@@ -908,6 +913,7 @@ pub(in crate::core::correlator) fn rule_au_077_name_derived_username_confirmed(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()
@@ -972,6 +978,7 @@ pub(in crate::core::correlator) fn rule_au_086_name_derived_email_confirmed(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()
@@ -1015,6 +1022,7 @@ pub(in crate::core::correlator) fn rule_au_078_hub_entity(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         })
         .collect()
 }
@@ -1135,6 +1143,7 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
                         scan_id: scan_id.into(),
                         ts,
                         rank: 0.0,
+                        techniques: Vec::new(),
                     });
                 }
             }
@@ -1170,6 +1179,7 @@ pub(in crate::core::correlator) fn rule_au_079_bio_cross_mention(
                             scan_id: scan_id.into(),
                             ts,
                             rank: 0.0,
+                            techniques: Vec::new(),
                         });
                     }
                 }
@@ -1277,6 +1287,7 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             });
         }
     }
@@ -1442,6 +1453,7 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             });
         }
     }

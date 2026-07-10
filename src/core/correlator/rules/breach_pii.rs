@@ -212,6 +212,7 @@ pub(in crate::core::correlator) fn rule_au_073_subject_date_of_birth(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()
@@ -345,6 +346,7 @@ pub(in crate::core::correlator) fn rule_au_074_au_government_id_exposure(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             });
         }
     }
@@ -418,6 +420,7 @@ pub(in crate::core::correlator) fn rule_au_075_named_associate(
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         })
         .collect()
 }
@@ -508,6 +511,7 @@ pub(in crate::core::correlator) fn rule_au_090_au_jurisdiction(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()
@@ -625,6 +629,7 @@ pub(in crate::core::correlator) fn rule_au_091_au_postcode_locality(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()
@@ -742,6 +747,7 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         }
     } else {
         Correlation {
@@ -758,6 +764,7 @@ pub(in crate::core::correlator) fn rule_au_092_breach_locality_footprint_crossch
             scan_id: scan_id.into(),
             ts,
             rank: 0.0,
+            techniques: Vec::new(),
         }
     };
     vec![correlation]
@@ -896,6 +903,7 @@ pub(in crate::core::correlator) fn rule_au_093_au_address_from_breach(
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
+                techniques: Vec::new(),
             }
         })
         .collect()
