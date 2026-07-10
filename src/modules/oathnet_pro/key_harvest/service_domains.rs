@@ -54,6 +54,10 @@ pub(super) const API_SERVICE_DOMAINS: &[(&str, &str)] = &[
     ("dehashed.com", "dehashed"),
     ("app.dehashed.com", "dehashed"),
     ("api.dehashed.com", "dehashed"),
+    // OsintCat is a first-class poolable HSE ServiceDef (HUNTSMAN_OSINTCAT_KEY);
+    // route a leaked osintcat.net credential into its pool exactly as the
+    // see-know.icu wiring does. `host_label_match` already covers www./api.
+    ("osintcat.net", "osintcat"),
     ("intelx.io", "intelx"),
     ("2.intelx.io", "intelx"),
     ("free.intelx.io", "intelx"),

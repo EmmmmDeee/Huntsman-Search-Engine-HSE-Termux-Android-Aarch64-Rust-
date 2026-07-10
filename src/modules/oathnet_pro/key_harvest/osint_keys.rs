@@ -172,6 +172,16 @@ pub(super) const OSINT_PROVIDERS: &[OsintProvider] = &[
         contexts: &["dehashed"],
         shapes: &[ALNUM32],
     },
+    // OathNet — HSE's sibling breach pool. Its embedded key is a bare
+    // 64-lowercase-hex blob with no prefix, so only context+shape can attribute
+    // it: a leaked `OATHNET_API_KEY=<64hex>` in a .env / `extra` dump would
+    // otherwise fall to `generic_hex` (unattributed) or, if it lands in a
+    // password/hash field, be suppressed entirely by the password-field gate.
+    OsintProvider {
+        service: "oathnet",
+        contexts: &["oathnet"],
+        shapes: &[HEX64],
+    },
 ];
 
 /// Attribute a prefix-less key `value` to an OSINT/threat-intel provider when

@@ -25,8 +25,30 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `see_know live`, the scan cap now scales (`daily_limit=Some(15000)`,
   `scan_cap=750`), and a `see_know`-only scan returns real data.
 
-### Fixed
-- **SeekNow budget & rate-limit handling hardened (audit batch 2).** Three
+### Added
+- **SeekNow key-sourcing loop closed + two more provider keys sourced (audit
+  batch 3).**
+  - *A dead/spent SeekNow key is now reflected into the shared pool.* Unlike
+    every peer keyed module, `see_know` never told the pool when its key was
+    rejected or its quota spent — so a harvested `seek-` key sitting usable in
+    the pool was **unreachable** (the env var is always present, so the pool only
+    rotates to an alternate once the primary is marked unhealthy), and a
+    permanently-dead embedded key was re-tested every scan. `process()` now marks
+    the key `Invalid` (auth) or `Exhausted` (daily quota) at scan end. The
+    single-key case stays safe: pool resolution fail-opens to the env value when
+    no alternate is usable, and `hse doctor`'s live re-validation flips a
+    recovered key back to Active. This is what turns the committed `seek-` harvest
+    into a realized quota multiplier.
+  - *A leaked `osintcat.net` credential now routes to its pool.* OsintCat is a
+    first-class poolable service, but its domain was missing from the harvest
+    routing table, so a stealer-log osintcat.net credential was dropped as
+    `unknown`. Added — parallel to the see-know.icu wiring.
+  - *A leaked OathNet key is now attributed.* OathNet's embedded key is a
+    prefix-less 64-hex blob indistinguishable by shape; a leaked
+    `OATHNET_API_KEY=<64hex>` fell to `generic_hex` (or was suppressed in a
+    password field). It is now attributed to the sibling breach pool by
+    context+shape, the same mechanism DeHashed uses.
+- **SeekNow extraction & coverage-reporting hardened (audit batch 1).** Three
   verified quota-correctness fixes on the highest-value paid source:
   - *A transient rate-limit no longer zeroes out the rest of a scan.* A
     per-minute `rate_limit` throttle (ServiceDef cooldown = 17s) was classified

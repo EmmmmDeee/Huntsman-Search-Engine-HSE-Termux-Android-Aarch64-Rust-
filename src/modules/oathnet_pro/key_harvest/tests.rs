@@ -1894,6 +1894,26 @@ fn osint_context_upgrades_generic_hex_to_named_provider() {
 }
 
 #[test]
+fn oathnet_hex_key_is_attributed_under_context() {
+    // OathNet's embedded key is a prefix-less 64-hex blob — indistinguishable by
+    // shape, so a leaked `OATHNET_API_KEY=<64hex>` must be attributed to the
+    // sibling breach pool via context, not dropped as generic_hex or suppressed.
+    // Synthetic high-entropy 64-hex (NOT the real embedded key).
+    let hex64 = "a3f8c1d90b7e264f5a8c0e1d9f4b6a2c7e3d80f19b5c4a6ed2718c04b93af65e";
+    assert_eq!(hex64.len(), 64);
+    assert_eq!(
+        match_osint_provider("OATHNET_API_KEY", hex64),
+        Some("oathnet")
+    );
+    assert_eq!(
+        identify_with_context("OATHNET_API_KEY", hex64).map(|(s, _, d)| (s, d)),
+        Some(("oathnet", DetectionConfidence::Proven))
+    );
+    // No context ⇒ still generic_hex (unchanged baseline).
+    assert_eq!(identify_api_key(hex64).map(|(s, _)| s), Some("generic_hex"));
+}
+
+#[test]
 fn osint_hex_only_provider_rejects_non_hex_value() {
     // Hunter.io is strictly 40-hex. A 40-hex value attributes; a 40-char alnum
     // value (letters past `f`) under the same context does not (wrong charset).

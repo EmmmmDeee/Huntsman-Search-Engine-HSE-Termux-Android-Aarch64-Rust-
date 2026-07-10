@@ -388,7 +388,57 @@ impl Module for SeekNow {
             }
         }
 
+        // Reflect a confirmed dead/spent key into the shared pool so (a) a
+        // harvested `seek-` key sitting usable in the pool becomes reachable next
+        // scan — the env var is always present so `resolve_through_pool` only
+        // rotates to it once the primary is marked unhealthy — and (b) a
+        // permanently-dead embedded key stops being re-tested every scan. The
+        // single-key case is safe: `resolve_through_pool` fail-opens to the env
+        // value when no alternate is usable, and `hse doctor`'s live re-validation
+        // flips a recovered key back to Active.
+        sync_key_status_to_pool(&ctx.scan_id, key);
+
         Ok(result)
+    }
+}
+
+/// Persist a confirmed-terminal SeekNow key status into the global pool at the
+/// end of a scan. Auth rejection → `Invalid`; daily-quota exhaustion →
+/// `Exhausted` (deliberately NOT `report_key_exhausted`'s 17s `RateLimited`,
+/// which would wrongly re-enable a daily-spent key inside the per-minute
+/// cooldown). A no-op when the key is still healthy. Skips unit-test scan ids so
+/// tests never mutate the persisted global pool (mirrors the `key_harvest::emit`
+/// guard).
+fn sync_key_status_to_pool(scan_id: &str, key: &str) {
+    use crate::util::key_pool::{global_pool, save_pool_best_effort};
+    if scan_id == "test" || scan_id == "scan" || scan_id.starts_with("test-") {
+        return;
+    }
+    let Some(status) =
+        terminal_pool_status(see_know::is_key_invalid(), see_know::is_quota_exhausted())
+    else {
+        return;
+    };
+    let pool = global_pool();
+    pool.mark_status("see_know", key, status);
+    save_pool_best_effort(&pool);
+}
+
+/// Pure: the pool status a scan should persist for the held key given the two
+/// terminal latches, or `None` when the key is still healthy. Auth rejection wins
+/// over quota (a rejected key is dead regardless of balance); daily-quota
+/// exhaustion maps to `Exhausted`, never the 17s `RateLimited` cooldown.
+fn terminal_pool_status(
+    invalid: bool,
+    quota_exhausted: bool,
+) -> Option<crate::util::key_pool::KeyStatus> {
+    use crate::util::key_pool::KeyStatus;
+    if invalid {
+        Some(KeyStatus::Invalid)
+    } else if quota_exhausted {
+        Some(KeyStatus::Exhausted)
+    } else {
+        None
     }
 }
 

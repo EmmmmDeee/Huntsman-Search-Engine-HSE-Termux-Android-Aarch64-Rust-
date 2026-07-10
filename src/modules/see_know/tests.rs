@@ -1,5 +1,20 @@
 use super::*;
 use crate::core::entity::Entity;
+use crate::util::key_pool::KeyStatus;
+
+    #[test]
+    fn terminal_pool_status_prefers_invalid_and_ignores_healthy() {
+        // Auth rejection is dead regardless of balance → Invalid wins over quota.
+        assert_eq!(terminal_pool_status(true, true), Some(KeyStatus::Invalid));
+        assert_eq!(terminal_pool_status(true, false), Some(KeyStatus::Invalid));
+        // Daily-quota exhaustion → Exhausted (never the 17s RateLimited cooldown).
+        assert_eq!(
+            terminal_pool_status(false, true),
+            Some(KeyStatus::Exhausted)
+        );
+        // A still-healthy key is never marked — no spurious pool mutation.
+        assert_eq!(terminal_pool_status(false, false), None);
+    }
 
     #[test]
     fn module_timeout_exceeds_seeknow_curl_outer_budget() {
