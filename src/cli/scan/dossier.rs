@@ -426,8 +426,55 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
     print_connections(entities, relations);
     print_resolved_identities(entities, relations);
     print_connection_brokers(entities, relations);
+    print_attack_coverage(entities);
 
     print_diagnostics(scan, entities, kind, value, &scan.id, store);
+}
+
+/// MITRE ATT&CK RECONNAISSANCE COVERAGE — the scan-level rollup of the inline
+/// `attack:<ID>` provenance every finding carries, turning per-datum tags into a
+/// Navigator-style "which of the TA0043 techniques did this collection exercise,
+/// and which stayed dark" layer (`core::attack::coverage`). Deterministic: the
+/// report iterates the ID-sorted catalogue. Rendered only when the scan exercised
+/// at least one technique (an empty scan gets no block).
+fn print_attack_coverage(entities: &[Entity]) {
+    let report = crate::core::attack::coverage(entities);
+    if report.exercised_count == 0 {
+        return;
+    }
+    println!(
+        "━━━ MITRE ATT&CK {} COVERAGE ({}) ━━━",
+        report.tactic_name.to_uppercase(),
+        report.tactic_id
+    );
+    println!();
+    println!(
+        "  Exercised {} of {} catalogued Reconnaissance techniques.",
+        report.exercised_count, report.total_count
+    );
+    println!();
+    for t in report.exercised() {
+        // Sub-techniques indent under the tactic; parents sit flush. The rolled-up
+        // finding count and strongest corroboration-adjusted confidence give the
+        // operator a per-technique collection-strength read at a glance.
+        let lead = if t.is_subtechnique {
+            "    ↳ "
+        } else {
+            "  ▪ "
+        };
+        println!(
+            "{lead}{}  {} — {} finding(s), max confidence {:.2}",
+            t.id, t.name, t.finding_count, t.max_c_eff
+        );
+    }
+    // Collection gaps: catalogued techniques this scan did not exercise. Compact,
+    // ID-ordered, so the operator sees where coverage could be extended.
+    let gaps: Vec<&str> = report.gaps().iter().map(|t| t.id).collect();
+    if !gaps.is_empty() {
+        println!();
+        println!("  Gaps (not exercised): {}", gaps.join(", "));
+    }
+    println!();
 }
 
 /// CONNECTIONS — graph-free link analysis (PROBLEM_TREE C1, the

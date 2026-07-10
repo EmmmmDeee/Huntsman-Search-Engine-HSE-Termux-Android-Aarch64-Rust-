@@ -1242,6 +1242,28 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `build_entities_rejects_privacy_proxy_registrants` (all three fields dropped)
   and `build_entities_keeps_genuine_org_when_only_the_name_is_redacted`. **P1**
   (accuracy — fabricated findings). Precision queue item 3/20.
+- **`[x]` T2.37 · MITRE deliverable: scan-level ATT&CK Reconnaissance coverage &
+  gap report (the tags were write-only)** — surfaced by the precision-discovery
+  workflow (2026-07-10, ranked #7 / transformational). Every finding is stamped
+  with `attack:<ID>` provenance (`dispatch.rs`), and per-finding tags render in
+  the dossier — but *nothing aggregated them*: an operator had no structure
+  telling them which of the 33 catalogued Reconnaissance techniques a scan
+  exercised vs stayed dark, and `Technique` was `{id,name}` with no parent/sub
+  relation, so sub-technique coverage couldn't roll up. → **Solution:** added pure
+  primitives to `core::attack` — `parent_id`/`is_subtechnique`/`subtechniques`
+  (the hierarchy enabler) and `coverage(&[Entity]) -> CoverageReport`: a
+  BTreeMap-backed fold over the ID-sorted catalogue that reads each finding's
+  `attack:<ID>` tags + `c_effective`, reports per technique `{exercised,
+  finding_count, max_c_eff}`, and rolls sub-technique hits UP to their parent.
+  Deterministic (catalogue order), ignores uncatalogued/stale tags (can't invent
+  a technique), and surfaced as an `ATT&CK RECONNAISSANCE COVERAGE` dossier block
+  (exercised techniques with strength + explicit gap list). This is the
+  Navigator-style coverage layer WITHOUT vendoring a STIX bundle. Tests:
+  `parent_and_subtechnique_relations` (incl. the catalogue-integrity invariant
+  that every sub's parent is catalogued), `coverage_reports_exercised_gaps_and_
+  rolls_subtechniques_up`, `coverage_ignores_uncatalogued_tags_and_is_order_
+  independent`. **CAP** (the named MITRE-enhancement deliverable). Precision queue
+  item 4/20.
 
 ---
 
@@ -1758,6 +1780,22 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
+- **2026-07-10** — **Executed T2.37 (new, precision queue item 4/20): the MITRE
+  deliverable — scan-level ATT&CK Reconnaissance coverage & gap report.** The
+  `attack:<ID>` provenance tags were write-only (per-finding render, no
+  aggregation). Added pure `core::attack` primitives — `parent_id`,
+  `is_subtechnique`, `subtechniques`, and `coverage(&[Entity]) -> CoverageReport`
+  (folds tags + `c_effective` over the ID-sorted catalogue, rolls sub-techniques
+  up to parents, ignores uncatalogued tags, fully deterministic) — and surfaced an
+  `ATT&CK RECONNAISSANCE COVERAGE` dossier block (exercised techniques with
+  finding count + max confidence, plus the explicit gap list). Navigator-style
+  coverage without vendoring STIX; the parent/sub rollup is the enabler for the
+  hierarchical technique-diversity scoring (queue item rank 12). +3 tests, incl. a
+  catalogue-integrity invariant (every sub-technique's parent is catalogued) and a
+  shuffle-invariance determinism check. Layering clean (`core::attack` →
+  `core::entity` same-layer; architecture 30/30). Gate green: fmt/clippy
+  `-D warnings`/doc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-MITRE-COVERAGE — same commit. T2.37 `[ ]`→`[x]`.
 - **2026-07-10** — **Executed T2.36 (new, precision queue item 3/20): stop
   `whoisxml` fabricating privacy-proxy registrants as identities.**
   `build_entities` minted `Domains By Proxy, LLC`/`REDACTED FOR PRIVACY`/

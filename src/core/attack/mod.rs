@@ -181,6 +181,161 @@ pub fn technique(id: &str) -> Option<&'static Technique> {
     RECONNAISSANCE.iter().find(|t| t.id == id)
 }
 
+/// The parent technique ID of a sub-technique (`T1596.002` → `T1596`), or `None`
+/// for a top-level technique. Pure string split on the ATT&CK dotted form.
+#[must_use]
+pub fn parent_id(id: &str) -> Option<&str> {
+    id.split_once('.').map(|(base, _)| base)
+}
+
+/// True when `id` is an ATT&CK sub-technique (dotted form, e.g. `T1590.005`).
+#[must_use]
+pub fn is_subtechnique(id: &str) -> bool {
+    id.contains('.')
+}
+
+/// The catalogued sub-techniques of a parent technique ID (`T1596` →
+/// `T1596.001..005`), sorted by ID for stable output. Empty for an unknown or
+/// leaf ID. The `RECONNAISSANCE` catalogue is already ID-sorted, so the filtered
+/// result inherits that order.
+#[must_use]
+pub fn subtechniques(base: &str) -> Vec<&'static Technique> {
+    RECONNAISSANCE
+        .iter()
+        .filter(|t| parent_id(t.id) == Some(base))
+        .collect()
+}
+
+/// Per-technique coverage within one scan: whether any finding was collected via
+/// this Reconnaissance technique, how many, and the strongest such finding.
+/// Sub-technique hits roll UP into their parent (a parent counts as exercised
+/// when any of its sub-techniques was), so coverage reads hierarchically.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct TechniqueCoverage {
+    /// Canonical ATT&CK ID (`T1589.002`).
+    pub id: &'static str,
+    /// ATT&CK technique name.
+    pub name: &'static str,
+    /// True for a dotted sub-technique ID.
+    pub is_subtechnique: bool,
+    /// Whether the scan collected any finding via this technique (rolled up from
+    /// sub-techniques for a parent).
+    pub exercised: bool,
+    /// Distinct findings collected via this technique (rolled up).
+    pub finding_count: u32,
+    /// Strongest `c_effective` among those findings (`0.0` when unexercised).
+    pub max_c_eff: f64,
+}
+
+/// Scan-level MITRE ATT&CK **Reconnaissance** (TA0043) coverage — the
+/// Navigator-style "which techniques did this collection exercise vs stay dark"
+/// layer, computed purely from the inline `attack:<ID>` provenance every finding
+/// already carries. Deterministic: `techniques` is the full catalogue in ID order,
+/// so identical input yields byte-identical output.
+#[derive(Debug, Clone, PartialEq, Serialize)]
+pub struct CoverageReport {
+    /// `TA0043`.
+    pub tactic_id: &'static str,
+    /// `Reconnaissance`.
+    pub tactic_name: &'static str,
+    /// Every catalogued technique with its per-scan coverage, sorted by ID.
+    pub techniques: Vec<TechniqueCoverage>,
+    /// Number of catalogued techniques exercised (parents + sub-techniques).
+    pub exercised_count: usize,
+    /// Total catalogued techniques ([`RECONNAISSANCE`]`.len()`).
+    pub total_count: usize,
+}
+
+impl CoverageReport {
+    /// The catalogued techniques the scan did NOT exercise — the collection gaps,
+    /// in ID order. Sub-techniques whose parent was exercised still appear if the
+    /// specific sub-technique itself was dark.
+    #[must_use]
+    pub fn gaps(&self) -> Vec<&TechniqueCoverage> {
+        self.techniques.iter().filter(|t| !t.exercised).collect()
+    }
+
+    /// The exercised techniques, in ID order.
+    #[must_use]
+    pub fn exercised(&self) -> Vec<&TechniqueCoverage> {
+        self.techniques.iter().filter(|t| t.exercised).collect()
+    }
+}
+
+/// Compute the [`CoverageReport`] for a scan's entity set. **Pure** — reads each
+/// entity's `attack:<ID>` tags (stamped at admission by the dispatcher) and its
+/// `c_effective`, folds them onto the catalogue, and rolls sub-technique hits up
+/// to their parents. An entity counts once per distinct technique it carries;
+/// an `attack:<ID>` tag whose ID is not catalogued (a stale/typo'd stamp) is
+/// ignored, so the report can't invent a technique. Deterministic regardless of
+/// entity order (the output is the ID-sorted catalogue).
+#[must_use]
+pub fn coverage(entities: &[crate::core::entity::Entity]) -> CoverageReport {
+    use std::collections::{BTreeMap, BTreeSet};
+
+    // Direct hits per EXACT catalogued technique ID: (finding_count, max_c_eff).
+    let mut direct: BTreeMap<&'static str, (u32, f64)> = BTreeMap::new();
+    for e in entities {
+        let c = e.c_effective();
+        // Dedup techniques within one entity so a finding carrying the same
+        // technique twice still counts once.
+        let mut on_this: BTreeSet<&'static str> = BTreeSet::new();
+        for tag in &e.tags {
+            if let Some(id) = tag.strip_prefix("attack:")
+                && let Some(t) = technique(id)
+            {
+                on_this.insert(t.id);
+            }
+        }
+        for id in on_this {
+            let slot = direct.entry(id).or_insert((0, 0.0));
+            slot.0 += 1;
+            if c > slot.1 {
+                slot.1 = c;
+            }
+        }
+    }
+
+    // Roll each sub-technique's hits up into its (catalogued) parent.
+    let mut rolled = direct.clone();
+    for (&id, &(count, ceff)) in &direct {
+        if let Some(parent) = parent_id(id)
+            && let Some(pt) = technique(parent)
+        {
+            let slot = rolled.entry(pt.id).or_insert((0, 0.0));
+            slot.0 += count;
+            if ceff > slot.1 {
+                slot.1 = ceff;
+            }
+        }
+    }
+
+    let techniques: Vec<TechniqueCoverage> = RECONNAISSANCE
+        .iter()
+        .map(|t| {
+            let (finding_count, max_c_eff) = rolled.get(t.id).copied().unwrap_or((0, 0.0));
+            TechniqueCoverage {
+                id: t.id,
+                name: t.name,
+                is_subtechnique: is_subtechnique(t.id),
+                exercised: finding_count > 0,
+                finding_count,
+                max_c_eff,
+            }
+        })
+        .collect();
+
+    let exercised_count = techniques.iter().filter(|t| t.exercised).count();
+    let total_count = techniques.len();
+    CoverageReport {
+        tactic_id: TACTIC_ID,
+        tactic_name: TACTIC_NAME,
+        techniques,
+        exercised_count,
+        total_count,
+    }
+}
+
 /// The ATT&CK Reconnaissance technique IDs a module's functional
 /// [`ModuleCategory`] implements — the **default** mapping every module inherits
 /// (a module whose category is too coarse, e.g. an active scanner sitting in

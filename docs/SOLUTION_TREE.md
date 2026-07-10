@@ -899,6 +899,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-DETERMINISM-XSCAN | T2.34 (cross-scan bridge order-independence) | `[x]` |
 | SOL-PERSONA-PRECISION | T2.35 (kind-aware email persona keying) | `[x]` |
 | SOL-WHOIS-PROXY-REJECT | T2.36 (drop privacy-proxy registrants) | `[x]` |
+| SOL-MITRE-COVERAGE | T2.37 (scan-level ATT&CK coverage report) | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -1074,6 +1075,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-07-10** — **SOL-MITRE-COVERAGE `[ ]`→`[x]` (closes T2.37): the MITRE deliverable.** Turned the write-only `attack:<ID>` provenance into a scan-level ATT&CK Reconnaissance (TA0043) coverage/gap layer. Added pure `core::attack` primitives (`parent_id`/`is_subtechnique`/`subtechniques` — the hierarchy enabler — and `coverage(&[Entity]) -> CoverageReport`, a deterministic BTreeMap fold that rolls sub-technique hits up to parents and ignores uncatalogued tags), surfaced as a dossier coverage block. **⚑ enabler:** the parent/sub rollup unblocks the technique-diversity corroboration dimension (rank 12) — ATT&CK becomes a measurement of source independence, not just per-datum provenance. No STIX vendoring. +3 tests (incl. catalogue-integrity + shuffle-invariance). Paired: `PROBLEM_TREE` T2.37 §8 — same commit.
 - **2026-07-10** — **SOL-WHOIS-PROXY-REJECT `[ ]`→`[x]` (closes T2.36): reject privacy-proxy WHOIS registrants at the module.** `whoisxml::build_entities` minted `Domains By Proxy, LLC`/`REDACTED FOR PRIVACY`/`abuse@whoisguard.com` as full-confidence subject-attributed Org/Person/Email. **S→P reuse:** rather than a new predicate, reused the already-tested `util::domains::is_proxy_registrant` — the SAME single-source exclusion the correlator (AU-061) and relation `derive_co_ownership` apply downstream — as a per-FIELD guard, so the entity is never created (a GDPR-redacted name drops but a genuine org in the same record survives). No over-build: one predicate, three call sites. +2 tests. Gate green. Paired: `PROBLEM_TREE` T2.36 §8 — same commit.
 - **2026-07-10** — **SOL-PERSONA-PRECISION `[ ]`→`[x]` (closes T2.35): kind-aware email
   persona keying.** Precision-discovery workflow's #1 (transformational) finding —
