@@ -68,6 +68,7 @@ pub mod employer_pivot;
 pub mod epieos;
 pub mod exa_search;
 pub mod exif_geo;
+pub mod external_credential_discovery;
 pub mod fediverse;
 pub mod fullcontact;
 pub mod gaming_profile;
@@ -410,6 +411,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             // OSINT orchestration API modules
             Arc::new(seon::Seon),
             Arc::new(key_discovery::KeyDiscoveryModule),
+            Arc::new(external_credential_discovery::ExternalCredentialDiscovery),
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),
             Arc::new(epieos::Epieos),
