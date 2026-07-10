@@ -22,14 +22,19 @@
 //!   IpAddress  → /search + /network/ip
 //!   FullName   → /search (auto-detect) — no add-on needed
 //!
-//! Single-origin presence checks (github/twitter/reddit/tiktok/roblox/xbox/
-//! minecraft) are deliberately NOT dispatched — the free `username_search`
-//! stack (600+ sites), `social_probe`, and `search_engines` scraping already
-//! cover those, so SeekNow's paid lookups go only to the broad `/search`,
-//! username-history aggregation, and cross-platform ID resolution. See the
-//! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
+//! The full per-kind endpoint matrix — including the single-origin profile
+//! checks (github/twitter/reddit/tiktok/roblox/xbox/minecraft) — IS dispatched
+//! (`effective_plan` returns the plan unfiltered; only the per-scan budget cap
+//! bounds spend). SeekNow's breach/stealer corpus returns richer per-profile
+//! data than the free `username_search` presence checks, so the standing
+//! maximise-see-know.icu directive dispatches them rather than deferring to the
+//! free stack. The retained `FREE_COVERED_SINGLE_ORIGIN` scaffolding in the
+//! `endpoints` submodule keeps a one-flip conservative mode available but is not
+//! active. See that submodule for the authoritative plan.
 //!
-//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 160).
+//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups — the cap is scaled
+//! to the plan at scan start (`clamp(daily_limit/20, 300, 2500)`, clamped to the
+//! credits actually remaining), so it floors at 300 rather than a fixed default.
 //! Discovered credentials feed the same key-harvest pipeline as oathnet_pro
 //! — extract_api_keys_from_item recognises the same 80+ prefix patterns.
 
