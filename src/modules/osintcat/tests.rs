@@ -110,3 +110,16 @@ fn emit_email_osint_skips_nulls_and_adds_non_null_fields() {
     assert!(ev.attributes.contains_key("label"));
     assert!(!ev.attributes.contains_key("null_field"), "null fields skipped");
 }
+
+/// Registration guard: this module's key env var must resolve to a `ServiceDef`
+/// whose canonical name equals the `SRC` the module reports exhaustion under, so
+/// the KEY_ENV → pool wiring (seeding, rotation, dead-key memory) is coherent.
+#[test]
+fn key_env_registers_a_matching_service_def() {
+    let def = crate::util::service_defs::service_defs()
+        .iter()
+        .find(|d| d.env_var == KEY_ENV)
+        .unwrap_or_else(|| panic!("no ServiceDef registers {KEY_ENV}"));
+    assert_eq!(def.name, SRC, "ServiceDef.name must equal the module SRC");
+    assert!(crate::util::service_defs::is_poolable_service(SRC));
+}

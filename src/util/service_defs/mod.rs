@@ -369,6 +369,26 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         key_header: KeyPlacement::Header("x-api-key"),
         rate_limit_reset_secs: 5,
     },
+    // OSINTCat (osintcat.net) — aggregated breach/footprint lookups. The free
+    // `GET /api/user` account endpoint the `osintcat` module already uses as its
+    // own key check (with the `x-api-key` header) doubles as a cheap validation
+    // probe, so this registers cleanly for pooling/rotation/validation.
+    ServiceDef {
+        name: "osintcat",
+        env_var: "HUNTSMAN_OSINTCAT_KEY",
+        category: "breach",
+        test_url: "https://www.osintcat.net/api/user",
+        key_header: KeyPlacement::Header("x-api-key"),
+        rate_limit_reset_secs: 60,
+    },
+    // Intentionally NOT registered (same reasoning as DeHashed above): `niamonx`
+    // (POST `/breaches_search`, `X-API-Key` header) and `fullcontact` (POST
+    // `/v3/person.enrich`, `Authorization: Bearer`) are POST-only, so the
+    // GET-based validator here would spend a request and/or mis-report a valid
+    // key as invalid. Their modules read HUNTSMAN_{NIAMONX,FULLCONTACT}_KEY from
+    // the env directly; those keys are still surfaced in the Settings grid via
+    // `KNOWN_KEYS`. Pooling/rotation is forgone for them until a POST-aware
+    // validation path exists.
 ];
 
 /// The full static registry of keyed-provider definitions — the canonical list

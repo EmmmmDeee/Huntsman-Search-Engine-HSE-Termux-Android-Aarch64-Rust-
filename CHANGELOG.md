@@ -10,6 +10,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+- **Three previously-invisible provider keys are now registered.**
+  `HUNTSMAN_OSINTCAT_KEY`, `HUNTSMAN_NIAMONX_KEY`, and `HUNTSMAN_FULLCONTACT_KEY`
+  — read by their modules but absent from the key registry — now appear in the
+  Settings grid and `hse doctor`/`hse keys` so they can be pasted and managed.
+  OSINTCat is additionally registered as a poolable service (`hse keys services`),
+  so its key rotates, validates, and gets dead-key memory like the others; Niamonx
+  and FullContact are POST-only, so they are deliberately left unpooled (a
+  GET-based validator would mis-report a valid key), documented alongside the
+  same DeHashed exclusion.
+
 ### Fixed
 - **Hunter.io and Exa key rotation now actually works.** Both modules reported
   a rate-limited/dead key to the pool under their module name (`hunter_io`,

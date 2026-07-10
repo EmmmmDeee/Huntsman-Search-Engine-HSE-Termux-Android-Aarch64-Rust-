@@ -52,6 +52,14 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_EPIEOS_KEY",
     "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
+    // Aggregator / enrichment consumer keys — modules read these but they were
+    // previously invisible to the Settings grid and `hse doctor`. `osintcat` is
+    // also registered in `service_defs` (poolable/validatable); `niamonx` and
+    // `fullcontact` are POST-only, so they are known-and-configurable here but
+    // deliberately not pooled/validated (see the note in `service_defs`).
+    "HUNTSMAN_OSINTCAT_KEY",
+    "HUNTSMAN_NIAMONX_KEY",
+    "HUNTSMAN_FULLCONTACT_KEY",
     // Breach / search multipliers — high-leverage paid pools the Settings
     // grid must surface so the operator can paste/rotate them in the UI.
     "HUNTSMAN_SEEKNOW_KEY",
@@ -117,6 +125,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
         "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.eu) — https://see-know.eu",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",
+        "HUNTSMAN_OSINTCAT_KEY" => "OSINTCat — https://www.osintcat.net",
+        "HUNTSMAN_NIAMONX_KEY" => "Niamonx — https://niamonx.io",
+        "HUNTSMAN_FULLCONTACT_KEY" => "FullContact — https://fullcontact.com",
         _ => return None,
     })
 }

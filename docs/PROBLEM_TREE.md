@@ -1472,9 +1472,16 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
     ✅ **SRC-vs-`ServiceDef.name` audit done (2026-07-10):** the only two
     mismatches (`hunter_io`→`hunter`, `exa_search`→`exa`) are fixed with a
     `KEY_SERVICE` const + drift-guard tests; all other ~25 keyed modules verified
-    matching. *Remaining:* register the 6 orphan keys, drop the dead `mls`
-    `"test"` default, extend `hse doctor` to live-probe all registered keys (not
-    just WiGLE). **P2**
+    matching. ✅ **Orphan registration (2026-07-10):** `OSINTCAT`/`NIAMONX`/
+    `FULLCONTACT` added to `KNOWN_KEYS` (Settings/doctor visibility); `osintcat`
+    also registered in `service_defs` (poolable/validatable — verified live in
+    `hse keys services`) with a drift-guard test. `NIAMONX`/`FULLCONTACT` are
+    POST-only so deliberately NOT pooled (a GET validator would false-negative —
+    documented next to the DeHashed exclusion). The `mls` `"test"` default is NOT
+    dead — it is Mozilla's documented public test key (the earlier audit was
+    wrong); left as-is. *Remaining:* `GITHUB_TOKEN` (optional/shared across 3
+    modules) and `ABUSECH` (shared with threatfox) registration; extend
+    `hse doctor` to live-probe all registered keys (not just WiGLE). **P2**
   - **`[ ]` KEY.3 · Spend every held key.** Build collector modules for the
     keys HSE holds/validates but never spends — `FOFA`, `BuiltWith`,
     `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`, `PassiveTotal`,
