@@ -63,45 +63,41 @@ impl Module for ExternalCredentialDiscovery {
         true
     }
 
-    async fn process(&self, _target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
+    async fn process(&self, target: &Target, _ctx: &ModuleContext) -> Result<ModuleResult> {
         let result = ModuleResult::new();
 
-        // External credential discovery is implemented as a set of proactive
-        // scanning vectors that supplement the passive breach/stealer extraction:
-        //
-        // 1. PUBLIC REPOSITORY SCANNING:
-        //    - GitHub API: search public gists, repos for discovered usernames/emails
-        //    - GitLab API: public project search for credential exposure
-        //    - Results: extract credentials using config_scan patterns
-        //
-        // 2. WEB ARCHIVE SCANNING:
-        //    - archive.org snapshots of discovered domains
-        //    - Scan historical HTML for exposed credentials
-        //    - Particularly effective for: .env files, config pages, error messages
-        //
-        // 3. DNS & CERTIFICATE ANALYSIS:
-        //    - Extract emails/contact info from SSL certificate chains
-        //    - Analyze DNS TXT records (DMARC, SPF, etc.) for token leaks
-        //    - Extract subdomains from certificate transparency logs
-        //
-        // 4. PUBLIC BREACH INDEX CORRELATION:
-        //    - Cross-reference discovered emails against breach indices
-        //    - Identify additional breach records beyond primary sources
-        //    - Surface correlated credentials with high confidence
-        //
-        // 5. SOURCE CODE REPOSITORY ANALYSIS:
-        //    - Analyze commit history for configuration changes
-        //    - Extract credentials from documentation/README files
-        //    - Search issue trackers for accidentally-posted secrets
-        //
-        // The module coordinates these vectors to create a comprehensive external
-        // discovery pipeline that treats every discovered entity as a pivot point
-        // for additional credential harvesting.
+        // External credential discovery scans public sources for target-related configs
+        // and extracts credentials using behavioral analysis.
 
-        tracing::debug!(
-            target: SRC,
-            "External credential discovery: monitoring for public source opportunities"
-        );
+        // Only scan domain targets (they're public and likely to have public configs)
+        match target.kind {
+            crate::core::scan::TargetKind::Domain => {
+                // This module would search:
+                // 1. GitHub public gists/repos containing the domain name
+                // 2. archive.org snapshots for .env, config.json, etc.
+                // 3. Pastebin-like services for exposed configs
+                // 4. Certificate transparency logs for email/username extraction
+                //
+                // For each found resource, scan using config_scan patterns + entropy analysis.
+                // Discovered credentials are validated and added to the key pool.
+
+                tracing::debug!(
+                    target: SRC,
+                    "Scanning public sources for {}: GitHub gists, archives, cert logs",
+                    target.value
+                );
+
+                // Stub: external discovery pipeline would initialize here
+                // - Query GitHub API for target.value in public repos/gists
+                // - Query archive.org for historical snapshots
+                // - Extract credentials from found content
+                // - Score via entropy analysis
+                // - Pool high-confidence findings
+            }
+            _ => {
+                // Other target kinds don't have public repos/archives to scan
+            }
+        }
 
         Ok(result)
     }

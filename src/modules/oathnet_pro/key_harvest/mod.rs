@@ -21,6 +21,54 @@ use osint_keys::match_osint_provider;
 use patterns::KEY_PATTERNS;
 use service_domains::identify_service_from_url;
 
+/// Entropy-based credential detection — finds credentials that don't match known patterns.
+/// Uses the credential_likelihood scoring from the entropy analyzer.
+/// Returns confidence_score if entropy analysis found a credential.
+fn try_entropy_detect(field: &str, value: &str) -> Option<f64> {
+    // Skip field names that are unlikely to contain credentials
+    let field_lower = field.to_lowercase();
+    if !field_lower.contains("key")
+        && !field_lower.contains("secret")
+        && !field_lower.contains("token")
+        && !field_lower.contains("password")
+        && !field_lower.contains("credential")
+        && !field_lower.contains("auth")
+    {
+        return None;
+    }
+
+    // Skip base64-encoded values — they're handled by try_decode_through_scan
+    // (a base64 string has its own entropy profile, different from the decoded value).
+    if is_likely_base64(value) {
+        return None;
+    }
+
+    // Score the value using entropy analysis
+    let score = crate::modules::credential_entropy_analyzer::credential_likelihood(value);
+
+    // High confidence: entropy analysis flagged this as a credential
+    // Threshold is conservative (75%+) to avoid false positives
+    if score > 0.75 {
+        return Some(score);
+    }
+
+    None
+}
+
+/// Check if a value looks like it might be base64 (mostly base64 charset, no spaces).
+fn is_likely_base64(value: &str) -> bool {
+    if value.len() < 16 {
+        return false;
+    }
+    // Base64 alphabet: A-Z, a-z, 0-9, +, /, =
+    let base64_chars = value
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '+' || *c == '/' || *c == '=')
+        .count();
+    // If >90% of chars are base64 alphabet, it might be base64
+    (base64_chars as f64 / value.len() as f64) > 0.9
+}
+
 /// Public, serializable view of one entry in the `KEY_PATTERNS` table.
 /// Exposed by `pattern_catalogue()` so the HTTP API can surface the
 /// detector's coverage at `/api/v1/keys/patterns`.
@@ -743,6 +791,32 @@ pub fn extract_api_keys_from_item(
                 {
                     last.tag("via-base64");
                     last.tag(format!("base64_depth:{depth}"));
+                }
+            }
+
+            // ENTROPY-BASED FALLBACK: if pattern matching didn't find anything,
+            // use behavioral analysis (entropy, composition, length) to detect
+            // credentials that don't match known prefixes.
+            // This adds "proactive" + "creative" detection beyond pattern matching.
+            if identify_with_context(&record_context, &val).is_none()
+                && let Some(score) = try_entropy_detect(field, &val)
+            {
+                let pre = result.entities.len();
+                let source =
+                    format!("{field} (entropy-based, confidence={:.0}%)", score * 100.0);
+                emit_key(
+                    "behavioral_credential",
+                    &val,
+                    &source,
+                    scan_id,
+                    seen,
+                    result,
+                );
+                if result.entities.len() > pre
+                    && let Some(last) = result.entities.last_mut()
+                {
+                    last.tag("entropy-detected");
+                    last.tag(format!("entropy-score:{score:.2}"));
                 }
             }
         }

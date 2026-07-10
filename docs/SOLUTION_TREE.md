@@ -524,8 +524,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
   re-sync of the local cell DB (currently requires manual `hse cells import`
   trigger).
-- **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
+- **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
+  *In progress (2026-07-10):* **entropy gate delivered** — `try_entropy_detect()`
+  fallback in key_harvest pipeline scores values via `credential_likelihood()`;
+  high-confidence findings (>75%) emitted as `behavioral_credential` entities with
+  `entropy-detected` tag + score metadata, enabling discovery of unknown credential
+  types and custom/internal keys. External discovery stub added (`external_credential_discovery`
+  → Domain targets, GitHub/archive/cert logs). *Remaining:* SERP dorks, credential-reuse
+  graph, fuller stealer cross-ref.
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
   exports + evidence chains as the auditable, machine-diffable deliverable.
 

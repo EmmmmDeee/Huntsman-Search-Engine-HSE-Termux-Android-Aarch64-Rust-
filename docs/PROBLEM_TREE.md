@@ -1383,7 +1383,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   closely-clustered fixtures where the two estimators don't meaningfully
   diverge).
   *Remaining:* tighter AU bounding; movement/timeline geo.
-- **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
+- **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
   **credential-reuse graph** (link accounts by shared salted hash / session token
@@ -1391,6 +1391,14 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   scanner + entropy gate; richer stealer-log cross-referencing
   (`oathnet_pro`/`see_know` presence → pivot). Active, authorised collection.
   **CAP-med**
+  *In progress (2026-07-10):* **entropy gate** wired into key-harvest pipeline:
+  fallback behavioral detection when pattern-matching fails, scores credential
+  likelihood via `credential_entropy_analyzer`, emits high-confidence findings
+  (>75%) as `behavioral_credential` entities to the pool. Enables discovery of
+  unknown/custom/internal credential types. External discovery stub added
+  (`external_credential_discovery` → GitHub/archive/cert logs on Domain targets).
+  Remaining: broaden SERP dorks, credential-reuse graph, fuller stealer-log
+  cross-ref.
 - **`[ ]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
