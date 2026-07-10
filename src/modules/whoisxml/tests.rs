@@ -119,6 +119,51 @@ use super::*;
     }
 
     #[test]
+    fn build_entities_rejects_privacy_proxy_registrants() {
+        // A privacy-proxy / redacted registrant is the ABSENCE of registrant intel:
+        // a shared placeholder used across millions of domains. None of its fields
+        // may be minted as a subject-attributed identity (fabricated finding).
+        let rec = record(
+            r#"{ "registrant": {
+                "name": "REDACTED FOR PRIVACY",
+                "organization": "Domains By Proxy, LLC",
+                "email": "abuse@whoisguard.com"
+            } }"#,
+        );
+        let es = build_entities(&rec, "acme.com", "t");
+        assert!(
+            values(&es, EntityKind::Person).is_empty(),
+            "redacted name must not become a Person"
+        );
+        assert!(
+            values(&es, EntityKind::Organisation).is_empty(),
+            "privacy-proxy org must not become an Organisation"
+        );
+        assert!(
+            values(&es, EntityKind::Email).is_empty(),
+            "proxy mailbox must not become an Email"
+        );
+    }
+
+    #[test]
+    fn build_entities_keeps_genuine_org_when_only_the_name_is_redacted() {
+        // GDPR-era WHOIS commonly redacts the personal NAME but keeps the real ORG.
+        // Per-FIELD gating must drop the redacted name yet keep the genuine org and
+        // mailbox — whole-contact rejection would lose real intelligence.
+        let rec = record(
+            r#"{ "registrant": {
+                "name": "Redacted for Privacy",
+                "organization": "Acme Pty Ltd",
+                "email": "jane@acme.com"
+            } }"#,
+        );
+        let es = build_entities(&rec, "acme.com", "t");
+        assert!(values(&es, EntityKind::Person).is_empty());
+        assert_eq!(values(&es, EntityKind::Organisation), vec!["Acme Pty Ltd"]);
+        assert_eq!(values(&es, EntityKind::Email), vec!["jane@acme.com"]);
+    }
+
+    #[test]
     fn nonempty_trims_and_drops_blank() {
         assert_eq!(nonempty(&Some("x".to_string())).as_deref(), Some("x"));
         // Surrounding whitespace is trimmed off.

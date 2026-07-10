@@ -1223,6 +1223,25 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   (Gmail dot-variants still merge; shuffle-invariant). MITRE T1589.002 (Email
   Addresses): accurate persona clustering is the core Reconnaissance deliverable.
   **P1** (accuracy — fabricated victim-identity links).
+- **`[x]` T2.36 · `whoisxml` mints privacy-proxy / redacted registrants as
+  full-confidence Person/Org/Email (fabricated findings)** — surfaced by the
+  precision-discovery workflow (2026-07-10) and verified by direct read.
+  `build_entities` (`modules/whoisxml/mod.rs`) gated contact fields only through
+  `nonempty()`, so `Domains By Proxy, LLC` → `Organisation 0.70`, `REDACTED FOR
+  PRIVACY` → `Person 0.60`, `abuse@whoisguard.com` → `Email 0.70` were emitted as
+  target-attributed identities. A privacy-proxy registrant is the *absence* of
+  registrant intel — a shared placeholder reused across millions of unrelated
+  domains — so this fabricates subject-attributed findings (worst outcome), and
+  the proxy email can seed the email→breach pivot as if it were the subject's.
+  The correlator (AU-061) and relation builders already excluded proxy
+  registrants downstream via `util::domains::is_proxy_registrant`, but the module
+  created the entities *before* correlation. → **Solution:** reuse the canonical
+  `is_proxy_registrant(value, is_email)` predicate (single source of truth) as a
+  PER-FIELD guard on the org / person / email arms, so a GDPR-redacted name is
+  dropped while a genuine org in the same record is kept. New tests
+  `build_entities_rejects_privacy_proxy_registrants` (all three fields dropped)
+  and `build_entities_keeps_genuine_org_when_only_the_name_is_redacted`. **P1**
+  (accuracy — fabricated findings). Precision queue item 3/20.
 
 ---
 
@@ -1739,6 +1758,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
+- **2026-07-10** — **Executed T2.36 (new, precision queue item 3/20): stop
+  `whoisxml` fabricating privacy-proxy registrants as identities.**
+  `build_entities` minted `Domains By Proxy, LLC`/`REDACTED FOR PRIVACY`/
+  `abuse@whoisguard.com` as full-confidence Org/Person/Email attributed to the
+  subject — a fabricated finding and a false email→breach pivot seed. Reused the
+  existing canonical `util::domains::is_proxy_registrant` predicate (already used
+  by AU-061 + relation builders downstream) as a per-FIELD guard on the three
+  arms, so a GDPR-redacted name is dropped while a genuine org in the same record
+  survives. Also correctly drops role/infra registrant mailboxes
+  (`hostmaster@`/`abuse@`). +2 tests. Gate green: fmt/clippy `-D warnings`/doc
+  clean, full suite 0 failures. **Paired:** `SOLUTION_TREE` SOL-WHOIS-PROXY-REJECT
+  — same commit. T2.36 `[ ]`→`[x]`.
 - **2026-07-10** — **Executed T2.35 (new, precision queue item 2/20): kill the
   fabricated `AliasOf` edges from bare-local-part email fusion.** The
   precision-discovery workflow's #1 (transformational) finding: `persona_key`

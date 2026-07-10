@@ -286,7 +286,17 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
     ] {
         let Some(c) = contact else { continue };
 
+        // A privacy-proxy / redacted registrant field is the ABSENCE of registrant
+        // intel — a shared placeholder (`Domains By Proxy, LLC`, `REDACTED FOR
+        // PRIVACY`, `abuse@whoisguard.com`) reused across millions of unrelated
+        // domains. Minting it as a subject-attributed Org/Person/Email is a
+        // fabricated finding (the worst outcome for an evidentiary tool), so each
+        // field is gated through the canonical `is_proxy_registrant` predicate
+        // (the same one the correlator/relation layers use downstream, applied
+        // here so the entity is never created). Gated PER FIELD, not per contact,
+        // so a GDPR-redacted name doesn't discard a genuine org in the same record.
         if let Some(org) = nonempty(&c.organization)
+            && !crate::util::domains::is_proxy_registrant(&org, false)
             && seen.insert(format!("org:{}", org.to_lowercase()))
         {
             let mut e = Entity::new(EntityKind::Organisation, &org, 0.70, scan_id);
@@ -301,6 +311,7 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
         }
 
         if let Some(name) = nonempty(&c.name)
+            && !crate::util::domains::is_proxy_registrant(&name, false)
             && seen.insert(format!("person:{}", name.to_lowercase()))
         {
             let mut e = Entity::new(EntityKind::Person, &name, 0.60, scan_id);
@@ -319,7 +330,9 @@ fn build_entities(rec: &WhoisRecord, domain: &str, scan_id: &str) -> Vec<Entity>
 
         if let Some(email) = nonempty(&c.email).filter(|s| s.contains('@')) {
             let low = email.to_lowercase();
-            if seen.insert(format!("mail:{low}")) {
+            if !crate::util::domains::is_proxy_registrant(&email, true)
+                && seen.insert(format!("mail:{low}"))
+            {
                 let mut e = Entity::new(EntityKind::Email, &email, 0.70, scan_id);
                 e.tag("whoisxml");
                 e.tag(format!("whois-{role}-email"));

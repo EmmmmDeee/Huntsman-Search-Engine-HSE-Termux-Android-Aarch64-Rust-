@@ -898,6 +898,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-KEY-FOFA | KEY.3 (phases 1–2: FOFA, BuiltWith) | `[~]` |
 | SOL-DETERMINISM-XSCAN | T2.34 (cross-scan bridge order-independence) | `[x]` |
 | SOL-PERSONA-PRECISION | T2.35 (kind-aware email persona keying) | `[x]` |
+| SOL-WHOIS-PROXY-REJECT | T2.36 (drop privacy-proxy registrants) | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -1073,6 +1074,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-07-10** — **SOL-WHOIS-PROXY-REJECT `[ ]`→`[x]` (closes T2.36): reject privacy-proxy WHOIS registrants at the module.** `whoisxml::build_entities` minted `Domains By Proxy, LLC`/`REDACTED FOR PRIVACY`/`abuse@whoisguard.com` as full-confidence subject-attributed Org/Person/Email. **S→P reuse:** rather than a new predicate, reused the already-tested `util::domains::is_proxy_registrant` — the SAME single-source exclusion the correlator (AU-061) and relation `derive_co_ownership` apply downstream — as a per-FIELD guard, so the entity is never created (a GDPR-redacted name drops but a genuine org in the same record survives). No over-build: one predicate, three call sites. +2 tests. Gate green. Paired: `PROBLEM_TREE` T2.36 §8 — same commit.
 - **2026-07-10** — **SOL-PERSONA-PRECISION `[ ]`→`[x]` (closes T2.35): kind-aware email
   persona keying.** Precision-discovery workflow's #1 (transformational) finding —
   the largest fabricated-identity surface. `persona_key` keyed an Email on its bare

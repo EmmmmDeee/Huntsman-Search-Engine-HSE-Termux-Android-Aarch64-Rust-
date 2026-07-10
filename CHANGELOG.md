@@ -11,6 +11,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **WHOIS privacy-proxy registrants are no longer reported as the domain owner.** The WhoisXML module minted a redacted or proxy registrant — `Domains By Proxy, LLC`, `REDACTED FOR PRIVACY`, `abuse@whoisguard.com` — as a full-confidence Organisation, Person, or Email attributed to the target, even though such a value is a shared placeholder used across millions of unrelated domains (the absence of registrant intel, not the owner). Each registrant field is now checked against the same privacy-proxy predicate the correlation layer already used, so the placeholder is never emitted as a finding — while a genuine organisation is still kept when only the personal name is redacted, as is now standard under GDPR.
 - **Email identities are no longer fused on a shared local-part across different
   domains.** The persona-alias builder keyed an email on its local-part alone, so
   `john@gmail.com`, `john@yahoo.com` and `john@acme-corp.com` were all linked as
