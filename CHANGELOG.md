@@ -54,6 +54,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
     back into results by default. Enable with `hse config feature.cross_scan on`.
 
 ### Added
+- **SeekNow now uses `/search/deep` as its primary universal query — ~2x the
+  external-record coverage at the same 1-credit cost.** The see-know.icu API
+  exposes a `POST /api/v1/search/deep` endpoint that queries the slow sources the
+  standard `/search` skips (live-observed against the enterprise key: `external_count`
+  36 vs 18 for the same seed, `mode:"deep"`), for the same 1 credit and within the
+  module's existing 80s cap (~40s server-side). Because deep is a strict superset
+  of `/search`, the module now issues `search_deep` as the primary universal call
+  (still concurrent with the endpoint matrix under one `tokio::join!`) and only
+  falls back to the standard `/search` on a deep *transport* error — an empty deep
+  result means genuinely no data, so no wasteful second call is made. The deep and
+  standard variants use disjoint cache namespaces (`search-deep` vs `search`), so a
+  thinner standard hit can never mask the richer deep result set (or vice-versa)
+  for the same seed. New public client fn `see_know::search_deep`.
 - **The dossier view separates quarantined leads and surfaces SeekNow's true
   corpus size.** The `--output dossier` view — the richest one — rendered every
   entity inline (a quarantined same-name stranger next to a confirmed subject

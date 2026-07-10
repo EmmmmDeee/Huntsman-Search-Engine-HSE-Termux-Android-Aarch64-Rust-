@@ -304,6 +304,29 @@ fn typed_cache_key_disambiguates_query_type_from_auto_detect() {
 }
 
 #[test]
+fn deep_and_standard_search_use_disjoint_cache_namespaces() {
+    // /search/deep is a superset of /search at the same cost. The two use
+    // distinct cache namespaces ("search-deep" vs "search") so a thin standard
+    // hit can never mask the richer deep result set (or vice-versa) for the
+    // same seed + query_type. Regression guard for the deep-search wiring.
+    for qt in ["", "email", "username", "domain"] {
+        let standard = typed_cache_key("search", "seed@example.com", qt);
+        let deep = typed_cache_key("search-deep", "seed@example.com", qt);
+        assert_ne!(
+            standard, deep,
+            "deep and standard search must NOT share a cache key (query_type={qt:?})"
+        );
+    }
+    // The deep namespace is still disambiguated by query_type within itself.
+    let deep_auto = typed_cache_key("search-deep", "alice", "");
+    let deep_typed = typed_cache_key("search-deep", "alice", "email");
+    assert_ne!(
+        deep_auto, deep_typed,
+        "deep auto-detect and deep typed must NOT share a cache key"
+    );
+}
+
+#[test]
 fn empty_results_are_never_cached_but_non_empty_are() {
     // Regression for the transient-empty poisoning bug: cache_put() must
     // refuse an empty result so a transient `total:0` cannot poison later

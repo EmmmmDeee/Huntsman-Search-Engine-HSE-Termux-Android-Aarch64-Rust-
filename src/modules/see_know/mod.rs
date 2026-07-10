@@ -258,20 +258,33 @@ impl Module for SeekNow {
         // reserve slots via the atomic `budget_try_increment`.
         let plan = effective_plan(target.kind, v);
         let run_matrix = !ctx.cancel.is_cancelled() && see_know::budget_remaining();
-        let (search_res, endpoint_results) = tokio::join!(see_know::search(key, v, qtype), async {
-            if run_matrix {
-                dispatch_plan(key, v, &plan).await
-            } else {
-                Vec::new()
-            }
-        });
-        // On a /search transport error, do NOT abort the module (the old `?` did):
+        // Primary universal query: /search/deep — MAX coverage (the slow sources
+        // the standard /search skips; live-observed ~2x the external records) at
+        // the SAME 1-credit cost. Runs concurrently with the endpoint matrix.
+        let (deep_res, endpoint_results) =
+            tokio::join!(see_know::search_deep(key, v, qtype), async {
+                if run_matrix {
+                    dispatch_plan(key, v, &plan).await
+                } else {
+                    Vec::new()
+                }
+            });
+        // Deep is a SUPERSET of the standard search, so an empty deep result means
+        // no data (it already retried once internally) — no fallback needed. Fall
+        // back to the standard /search ONLY on a deep TRANSPORT error (transient
+        // recovery on the faster path). Never abort the module (the old `?` did):
         // the endpoint matrix may already hold paid data worth extracting.
-        let outcome = match search_res {
+        let outcome = match deep_res {
             Ok(o) => o,
             Err(e) => {
-                tracing::warn!(error = %e, "see_know /search errored — extracting endpoint results only");
-                see_know::SearchOutcome::default()
+                tracing::warn!(error = %e, "see_know /search/deep errored — falling back to standard /search");
+                match see_know::search(key, v, qtype).await {
+                    Ok(o) => o,
+                    Err(e2) => {
+                        tracing::warn!(error = %e2, "see_know /search also errored — extracting endpoint results only");
+                        see_know::SearchOutcome::default()
+                    }
+                }
             }
         };
         let items = outcome.items;

@@ -6,8 +6,13 @@
 //!   POST /search                — universal search: breach + stealer + external
 //!                                 records unified in one call, with
 //!                                 breach_count/stealer_count/external_count.
-//!                                 The broadest, most comprehensive endpoint, so
-//!                                 it is the primary call for every target kind.
+//!   POST /search/deep           — same as /search (and the same 1-credit cost)
+//!                                 but with MAX coverage: it additionally queries
+//!                                 the slow sources /search skips (live-observed
+//!                                 ~2x the external records). A superset of
+//!                                 /search, so it is the PRIMARY universal call
+//!                                 for every target kind, with /search kept as a
+//!                                 transport-error fallback.
 //!   GET  /network/email-check   — email existence + service map
 //!   GET  /network/ip            — IP geolocation + ASN
 //!   GET  /network/phone         — phone number enrichment
@@ -48,7 +53,8 @@ pub use client::{key_fingerprint, resolve_key};
 // Endpoint functions
 pub(crate) use endpoints::get_path;
 pub use endpoints::{
-    SearchOutcome, discord_to_roblox, discord_user, query_credits, search, steam_profile,
+    SearchOutcome, discord_to_roblox, discord_user, query_credits, search, search_deep,
+    steam_profile,
 };
 
 /// Extract a string field from a JSON Value.

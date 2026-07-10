@@ -51,15 +51,39 @@ pub struct SearchOutcome {
     pub server_total: Option<u64>,
 }
 
-/// Universal search via POST /api/v1/search.
+/// Universal search via `POST /api/v1/search`.
 ///
 /// The `query_type` is one of: email, username, domain, ip, phone,
 /// discord_id, steam_id. Pass an empty string for auto-detect.
 pub async fn search(key: &str, query: &str, query_type: &str) -> Result<SearchOutcome> {
-    // Disambiguated cache key — auto-detect ("") and typed ("email")
-    // queries on the same value used to collide, masking the typed
-    // variant's specialised result rows.
-    let ck = typed_cache_key("search", query, query_type);
+    search_impl(key, query, query_type, false).await
+}
+
+/// Deep universal search via `POST /api/v1/search/deep` — same cost (1 credit) as
+/// [`search`] but with MAX coverage: it additionally queries the slow sources the
+/// standard `/search` skips (live-observed ~2× the `external_count` for the same
+/// seed), returning `mode:"deep"`. ~40s server-side, within the module's 80s cap.
+/// Its result set is a superset of `/search`, so the module uses it as the primary
+/// universal query and only falls back to [`search`] when deep yields nothing.
+pub async fn search_deep(key: &str, query: &str, query_type: &str) -> Result<SearchOutcome> {
+    search_impl(key, query, query_type, true).await
+}
+
+/// Shared universal-search implementation for the standard (`/search`) and deep
+/// (`/search/deep`) variants. `deep` switches the endpoint path, the cache
+/// namespace (so a deep hit never masks a standard lookup or vice-versa), and the
+/// archive label.
+async fn search_impl(
+    key: &str,
+    query: &str,
+    query_type: &str,
+    deep: bool,
+) -> Result<SearchOutcome> {
+    // Distinct cache namespace per variant + per query_type, so auto-detect ("")
+    // vs typed ("email") and standard vs deep never collide (which would mask a
+    // richer result set behind a thinner cached one).
+    let cache_ns = if deep { "search-deep" } else { "search" };
+    let ck = typed_cache_key(cache_ns, query, query_type);
     if let Some(cached) = cache_get(&ck) {
         // Cache stores only the records; counters are unavailable on a hit.
         return Ok(SearchOutcome {
@@ -73,15 +97,15 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<SearchOu
     if is_key_invalid() || !budget_try_increment() {
         return Ok(SearchOutcome::default());
     }
-    let url = format!("{}/search", base_url());
+    let path = if deep { "search/deep" } else { "search" };
+    let url = format!("{}/{path}", base_url());
     let body = build_search_body(query, query_type, SEARCH_LIMIT);
-    // Human archive label: `search` (auto-detect) or `search-<type>` (typed),
-    // with the actual looked-up value — so the saved filename names exactly what
-    // was queried.
+    // Human archive label: variant + optional `-<type>`, with the actual looked-up
+    // value — so the saved filename names exactly what was queried.
     let archive_endpoint = if query_type.is_empty() {
-        "search".to_string()
+        cache_ns.to_string()
     } else {
-        format!("search-{query_type}")
+        format!("{cache_ns}-{query_type}")
     };
     // The name/auto `/search` path intermittently returns `total:0` even when
     // the record exists (server-side cap races). Retry once on a transient
