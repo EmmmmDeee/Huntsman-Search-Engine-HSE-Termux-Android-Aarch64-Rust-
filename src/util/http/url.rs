@@ -41,7 +41,41 @@ pub async fn json_scanned<T: DeserializeOwned>(
         .await
         .map_err(|e| e.to_string())?;
     scan_for_api_keys(&text);
-    serde_json::from_str(&text).map_err(|e| format!("{module}: {e}"))
+    serde_json::from_str(&text)
+        .map_err(|e| format!("{module}: {}", describe_json_reason(&text, &e)))
+}
+
+/// True if a response body is an HTML document or an anti-bot challenge
+/// interstitial rather than JSON. Conservative — only fires on STRUCTURAL
+/// HTML/challenge markers (a leading `<!DOCTYPE`/`<html`, or a Cloudflare
+/// challenge token), never on JSON that merely mentions these words in a field.
+pub(crate) fn is_html_or_challenge(body: &str) -> bool {
+    let head = body.trim_start();
+    head.starts_with("<!DOCTYPE")
+        || head.starts_with("<!doctype")
+        || head.starts_with("<html")
+        || head.starts_with("<HTML")
+        || body.contains("Just a moment")
+        || body.contains("challenge-platform")
+        || body.contains("Attention Required")
+        || body.contains("__cf_chl_")
+}
+
+/// A clear, PII-safe reason a response body failed to parse as JSON (no module
+/// prefix — the caller adds its own) — so a module logs "empty response" or "HTML
+/// page / anti-bot challenge" instead of the raw serde `expected value at line 1
+/// column 1`. Deliberately does NOT echo a malformed-JSON body (it may hold
+/// partial data); the HTML/empty classifications carry the diagnostic without any
+/// body content. Pure.
+fn describe_json_reason(text: &str, err: &serde_json::Error) -> String {
+    let head = text.trim_start();
+    if head.is_empty() {
+        "empty response body (expected JSON)".to_string()
+    } else if is_html_or_challenge(head) {
+        "non-JSON response — HTML page or anti-bot challenge (not API data)".to_string()
+    } else {
+        err.to_string()
+    }
 }
 
 /// Decode a response body as JSON, tagging any decode failure with `module`.
@@ -54,7 +88,7 @@ pub async fn json_scanned<T: DeserializeOwned>(
 /// telemetry, geo lookups, DNS-over-HTTPS, etc.).
 pub async fn json_decode<T: DeserializeOwned>(module: &str, resp: reqwest::Response) -> Result<T> {
     let text = read_json_text(resp, module).await?;
-    serde_json::from_str(&text).map_err(|e| Error::module(module, e.to_string()))
+    serde_json::from_str(&text).map_err(|e| Error::module(module, describe_json_reason(&text, &e)))
 }
 
 /// Extension on [`reqwest::RequestBuilder`] that sends the request and maps any
@@ -85,5 +119,53 @@ impl RequestBuilderExt for reqwest::RequestBuilder {
             // `without_url()` drops the URL — it carries the API key and the
             // target's PII in its query string, and this error reaches the logs.
             .map_err(|e| Error::module(module, e.without_url().to_string()))
+    }
+}
+
+#[cfg(test)]
+mod url_json_tests {
+    use super::{describe_json_reason, is_html_or_challenge};
+
+    #[test]
+    fn is_html_or_challenge_flags_pages_not_json() {
+        assert!(is_html_or_challenge("<!DOCTYPE html><html><head>"));
+        assert!(is_html_or_challenge("  <html lang=\"en\">"));
+        assert!(is_html_or_challenge(
+            "<div id=\"challenge-platform\">Just a moment...</div>"
+        ));
+        assert!(is_html_or_challenge("Attention Required! | Cloudflare"));
+        // Real JSON is not a page — even if a field mentions html/cloudflare.
+        assert!(!is_html_or_challenge(
+            r#"{"note":"served via cloudflare <html>"}"#
+        ));
+        assert!(!is_html_or_challenge("[]"));
+    }
+
+    #[test]
+    fn describe_json_reason_names_the_failure_class() {
+        let err = serde_json::from_str::<serde_json::Value>("").unwrap_err();
+        assert_eq!(
+            describe_json_reason("", &err),
+            "empty response body (expected JSON)"
+        );
+        let html = "<!DOCTYPE html><html><title>Just a moment...</title>";
+        let herr = serde_json::from_str::<serde_json::Value>(html).unwrap_err();
+        assert!(
+            describe_json_reason(html, &herr).contains("HTML page or anti-bot challenge"),
+            "got: {}",
+            describe_json_reason(html, &herr)
+        );
+        // Genuinely malformed JSON keeps the raw serde message (no body echoed).
+        let bad = r#"{"a":"#;
+        let berr = serde_json::from_str::<serde_json::Value>(bad).unwrap_err();
+        let msg = describe_json_reason(bad, &berr);
+        assert!(
+            !msg.contains("HTML"),
+            "malformed JSON is not an HTML page: {msg}"
+        );
+        assert!(
+            !msg.contains(bad),
+            "must not echo the (possibly-partial-data) body"
+        );
     }
 }

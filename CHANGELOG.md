@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Fixed
+- **Every JSON API module now reports a clear reason when a response isn't JSON.**
+  The two shared decode helpers (`json_scanned`/`json_decode`, used by ~40
+  reqwest-based modules) surfaced the raw serde `expected value at line 1 column
+  1` on any non-JSON body — an empty response, an HTML gateway/error page, or an
+  anti-bot challenge — which is uninterpretable in a log. They now classify the
+  failure ("empty response body", "non-JSON response — HTML page or anti-bot
+  challenge") without echoing a possibly-partial-data body, so an operator can
+  tell a provider-side block from a genuine bug at a glance. Control flow is
+  unchanged (still an error the module handles); only the message improved.
 - **OathNet now degrades gracefully behind an anti-bot challenge instead of
   hard-failing every query.** `oathnet.org` is now served behind a Cloudflare
   "Just a moment…" JS challenge (HTTP 403 / interstitial HTML), so the curl
