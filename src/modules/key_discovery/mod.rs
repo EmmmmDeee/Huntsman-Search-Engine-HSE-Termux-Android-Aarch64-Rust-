@@ -21,7 +21,8 @@
 //! and operationalize new API keys, turning key discovery into a fundamental,
 //! proactive capability of the scan architecture itself.
 
-mod config_scan;
+pub mod config_scan;
+pub use config_scan::scan_config_for_credentials;
 
 use async_trait::async_trait;
 
