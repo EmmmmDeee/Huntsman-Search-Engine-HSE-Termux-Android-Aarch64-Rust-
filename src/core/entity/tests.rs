@@ -202,6 +202,39 @@ fn recall_does_not_count_as_corroboration() {
 }
 
 #[test]
+fn cross_scan_corroboration_is_provenance_only_not_a_corroborating_source() {
+    // The AU-066 cross-scan-corroboration boost attaches evidence that SURFACES a
+    // link to prior scans, but recurrence in the local store is not an independent
+    // observation — it must not lift confidence a whole tier (which broke
+    // fresh-scan == re-scan reproducibility).
+    let mut e = Entity::new(EntityKind::Person, "Jordan Meyers", 0.25, "s");
+    e.add_evidence(Evidence::new("oathnet_pro", "Breach record"));
+    e.add_evidence(Evidence::new(
+        super::CROSS_SCAN_CORROBORATION_SOURCE,
+        "route proven in 3 prior scans",
+    ));
+    // Both kept for the analyst; only the one real source corroborates.
+    assert_eq!(e.evidence_sources().len(), 2);
+    assert_eq!(
+        e.source_count(),
+        1,
+        "cross-scan history is not an independent source"
+    );
+    assert!(
+        (e.c_effective() - 0.25).abs() < 1e-9,
+        "a cross-scan-corroborated-only lead keeps its true confidence"
+    );
+    assert_eq!(
+        e.classify(),
+        Classification::Candidate,
+        "stays CANDIDATE — not silently promoted a tier by local prior-scan history"
+    );
+    assert!(super::is_non_corroborating_source(
+        super::CROSS_SCAN_CORROBORATION_SOURCE
+    ));
+}
+
+#[test]
 fn uncorroborated_recycled_is_gated_until_a_second_source_confirms() {
     // Regression: a value scraped only from a recycled search snippet (the
     // lowest-reliability discovery path) must NOT be promoted to an expansion

@@ -10,6 +10,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+- **Local prior-scan data is no longer incorporated into a scan unless opted in
+  (Phase 3).** Two paths silently folded local cross-scan history into every
+  scan's output:
+  - *Confidence inflation fixed.* The AU-066 cross-scan-corroboration boost
+    attached an evidence source that was NOT excluded from corroboration
+    counting, so a lead was graded a whole classification tier higher merely for
+    having appeared in a prior scan — a fresh scan and a re-scan of the same
+    subject disagreed on classification. That source is now excluded: the boost
+    stays a provenance tag/evidence (still surfaces the link for the analyst) but
+    never lifts `c_effective`, restoring fresh-scan == re-scan reproducibility.
+  - *Cross-scan injection is now opt-in.* The three `link_cross_scan_*`
+    annotation passes and the AU-065/066 finding emission ran unconditionally at
+    finalise, folding prior-scan tags, evidence, findings, and even relations to
+    entities not present this scan into the output. They now run only under a new
+    `feature.cross_scan` toggle (default **off**), matching the existing
+    `feature.recall` model. HSE still always *learns* route shapes (the
+    `record_pathway_template` sink stays on) — it just doesn't inject that history
+    back into results by default. Enable with `hse config feature.cross_scan on`.
+
 ### Added
 - **Scan pipeline: recursion and lifecycle are now visible in the log (Phase 2
   verbosity).** Expansion decisions were emitted only as events (to the DB /

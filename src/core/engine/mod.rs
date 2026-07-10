@@ -629,23 +629,28 @@ impl ScanEngine {
             // so it never inflates confidence; runs after promotion (the two bands
             // are disjoint, but a corroborated relative is then never re-examined).
             flag_geo_discordant_namesakes(&mut entities);
-            // Local intelligence flywheel: tag any specific personal identifier
-            // (phone/email/handle/named person/precise address) that ALSO appears
-            // in an earlier scan in the store — a cross-investigation bridge recall
-            // (seed-centric) never makes. Runs before persist so a hit is genuinely
-            // prior; provenance only, so it never inflates confidence.
-            history::link_cross_scan_history(store.as_ref(), &mut entities, &scan.id);
-            // Co-occurrence flywheel: when two specific identifiers that appeared TOGETHER
-            // in an earlier scan both reappear now, tag the recurring association — a
-            // stronger, data-driven historical link than single-value recurrence. Same
-            // contract: before persist, provenance-only, never inflates confidence.
-            history::link_cross_scan_cooccurrence(store.as_ref(), &mut entities, &scan.id);
-            // Relation recall: when a reappearing identifier was SEMANTICALLY linked
-            // (located_at / identified_by / alias_of / associated_with / registered_by)
-            // to something in a prior scan, surface that known connection now — pulling
-            // a past conclusion forward as a lead, often to an entity not even present
-            // this scan. Same contract: before persist, provenance-only, never inflates.
-            history::link_cross_scan_relations(store.as_ref(), &mut entities, &scan.id);
+            // Cross-scan history flywheel — OPT-IN (`feature.cross_scan`, default
+            // off). These three passes fold data from PRIOR scans of the same
+            // subject into this scan's output (tags, evidence, and — for relations
+            // — links to entities not even present this scan). They never inflate
+            // confidence, but they DO incorporate local prior-scan intelligence, so
+            // per the "local data not incorporated unless purposely added" contract
+            // they only run when the operator opts in. The learning SINK
+            // (`record_pathway_template`, below) stays always-on — HSE keeps
+            // learning route shapes; it just doesn't inject them back by default.
+            if crate::util::settings::get_bool("feature.cross_scan", false) {
+                // Tag any specific personal identifier (phone/email/handle/named
+                // person/precise address) that ALSO appears in an earlier scan — a
+                // cross-investigation bridge a seed-centric recall never makes.
+                history::link_cross_scan_history(store.as_ref(), &mut entities, &scan.id);
+                // When two identifiers that appeared TOGETHER in an earlier scan
+                // both reappear now, tag the recurring association.
+                history::link_cross_scan_cooccurrence(store.as_ref(), &mut entities, &scan.id);
+                // When a reappearing identifier was SEMANTICALLY linked in a prior
+                // scan (located_at / identified_by / alias_of / …), surface that
+                // known connection now.
+                history::link_cross_scan_relations(store.as_ref(), &mut entities, &scan.id);
+            }
             // Determinism: normalise each entity's evidence/tags ordering before
             // persist, so concurrent dispatch's completion-order merging can't leak
             // into the stored/exported result (see `Entity::canonicalize_order`).
@@ -816,19 +821,34 @@ impl ScanEngine {
             // (`xscan_boost`) for the conservative boost below. Best-effort: a
             // storage hiccup never aborts a finalised scan.
             let mut xscan_boost: HashMap<String, String> = HashMap::new();
+            // The learning SINK (recording this scan's route shapes) stays
+            // always-on so HSE keeps accumulating cross-scan knowledge; but
+            // CONSULTING that prior-scan history to emit AU-065/066 findings and
+            // boost this scan's leads is OPT-IN (`feature.cross_scan`, default off)
+            // — it incorporates local prior-scan data into the output, which the
+            // "local data not incorporated unless purposely added" contract gates.
+            let feature_cross_scan = crate::util::settings::get_bool("feature.cross_scan", false);
             if let (Ok(ents), Ok(rels)) = (
                 store.entities_for_scan(&scan.id),
                 store.relations_for_scan(&scan.id),
             ) {
                 // The fragile single-route identity pairs (a<b) — exactly AU-063's
                 // notion of an uncorroborated link, via the shared detector so the
-                // gap the lead flags is the gap the engine fills.
-                let fragile: HashSet<(String, String)> =
+                // gap the lead flags is the gap the engine fills. Only needed by the
+                // (opt-in) AU-066 gap-fill.
+                let fragile: HashSet<(String, String)> = if feature_cross_scan {
                     crate::core::correlator::single_route_identity_links(&ents, &rels)
                         .into_iter()
                         .map(|l| (l.a_uid, l.b_uid))
-                        .collect();
+                        .collect()
+                } else {
+                    HashSet::new()
+                };
                 for ct in crate::core::relation::connection_templates(&ents, &rels, 4) {
+                    // Consult prior-scan history + emit corroboration findings only
+                    // when opted in; the record_pathway_template sink below is
+                    // unconditional so learning never stops.
+                    if feature_cross_scan {
                     let prior = store.pathway_template_count(&ct.template).unwrap_or(0);
                     if prior >= 1 {
                         let mut uids: std::collections::BTreeSet<String> =
@@ -902,6 +922,7 @@ impl ScanEngine {
                             xscan_boost.entry(t.clone()).or_insert(reason);
                         }
                     }
+                    } // end `if feature_cross_scan` — the sink below stays always-on
                     let _ = store.record_pathway_template(&ct.template);
                 }
             }

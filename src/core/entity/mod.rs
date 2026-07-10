@@ -100,14 +100,29 @@ pub const RECALL_SOURCE: &str = "recall";
 /// inflate [`Entity::source_count`] / `c_effective`.
 pub const CROSS_SCAN_SOURCE: &str = "cross_scan_history";
 
+/// The evidence source attached by the AU-066 cross-scan-corroboration boost
+/// (`engine::passes::promote_cross_scan_corroborated`). Like
+/// [`CROSS_SCAN_SOURCE`], it records a link to prior scans of the same subject
+/// and is kept/shown for the analyst — but recurrence in the LOCAL store is not
+/// an independent observation, so it must never inflate [`Entity::source_count`]
+/// / `c_effective` (that silently graded a lead a whole tier higher merely for
+/// having been seen before, so a fresh scan and a re-scan disagreed on
+/// classification — the "local data must not be incorporated unless purposely
+/// added" contract, applied to confidence).
+pub const CROSS_SCAN_CORROBORATION_SOURCE: &str = "cross_scan_corroboration";
+
 /// True if `source` must NOT count toward cross-source corroboration — a
 /// deterministic self-enrichment pass ([`ENRICHMENT_ONLY_SOURCES`]), the recall
-/// replay ([`RECALL_SOURCE`]), or the cross-scan history link ([`CROSS_SCAN_SOURCE`]).
-/// All attach genuine, useful evidence, but none is an independent observation, so
-/// none may inflate the corroboration count.
+/// replay ([`RECALL_SOURCE`]), or a cross-scan history link
+/// ([`CROSS_SCAN_SOURCE`] / [`CROSS_SCAN_CORROBORATION_SOURCE`]). All attach
+/// genuine, useful evidence, but none is an independent observation, so none may
+/// inflate the corroboration count.
 #[inline]
 pub fn is_non_corroborating_source(source: &str) -> bool {
-    is_enrichment_source(source) || source == RECALL_SOURCE || source == CROSS_SCAN_SOURCE
+    is_enrichment_source(source)
+        || source == RECALL_SOURCE
+        || source == CROSS_SCAN_SOURCE
+        || source == CROSS_SCAN_CORROBORATION_SOURCE
 }
 
 // ─── EntityKind ──────────────────────────────────────────────────────────────

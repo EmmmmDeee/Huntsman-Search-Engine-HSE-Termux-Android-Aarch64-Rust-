@@ -108,11 +108,19 @@ pub const FEATURE_TOGGLES: &[(&str, bool)] = &[
     // every scan is a FRESH START: it shows only what THIS run discovered, with
     // no archaic prior-scan entities injected into the working set (which also
     // kept the per-round correlation pass small and fast). The data is still
-    // fully RETAINED in the store and reused by cross-scan corroboration at
-    // finalise; recall only controls whether prior entities are *pre-loaded* into
-    // a new scan. Turn it on (`hse config feature.recall on`) for a session that
-    // should build on everything previously gathered.
+    // fully RETAINED in the store; `recall` controls whether prior entities are
+    // *pre-loaded* into a new scan. Turn it on (`hse config feature.recall on`)
+    // for a session that should build on everything previously gathered.
     ("feature.recall", false),
+    // Cross-scan history injection at finalise (AU-065/066 corroboration + the
+    // three `link_cross_scan_*` annotation passes). Default **OFF** — like
+    // `recall`, HSE always LEARNS route shapes (the `record_pathway_template`
+    // sink is unconditional), but folding that prior-scan history back into a
+    // scan's OUTPUT (tags/evidence/findings, and relations to entities not even
+    // present this scan) incorporates local data, so it is opt-in. Turn it on
+    // (`hse config feature.cross_scan on`) to let a scan surface links proven
+    // across earlier investigations of the same subject.
+    ("feature.cross_scan", false),
     // Autonomous self-update: background task checks for upstream commits every
     // 6 h and applies them automatically when ON. The binary restarts in-place
     // via exec(2). Turn off to manage updates manually (`hse update`).

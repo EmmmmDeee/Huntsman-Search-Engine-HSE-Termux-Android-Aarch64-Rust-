@@ -326,15 +326,19 @@ pub(super) fn promote_multipath_corroborated(
 /// attribution METHOD is proven, and that historical proof is the orthogonal
 /// pathway that fills the gap (the engine-emitted AU-066 finding). Each listed
 /// endpoint earns a `cross-scan-corroborated` tag and a `cross_scan_corroboration`
-/// evidence record, lifting its corroboration → `c_effective` → classification
-/// band so the scan's OUTPUT reflects the accumulated knowledge.
+/// evidence record that SURFACES the link to prior investigations for the analyst.
 ///
-/// Conservative by design: the engine gates the `boost` set on a route proven in
-/// **≥2 prior scans** (stricter than the AU-065 finding's ≥1), and the evidence
-/// source classifies as the unscored `"other"` family, so it never feeds back to
-/// inflate the in-scan orthogonality measure. Free, offline, idempotent via the
-/// tag. `boost` maps each endpoint UID to its human reason; returns the number
-/// promoted.
+/// Provenance/tag-only: the evidence source is
+/// [`CROSS_SCAN_CORROBORATION_SOURCE`], which
+/// [`is_non_corroborating_source`](crate::core::entity::is_non_corroborating_source)
+/// excludes — so recurrence in the LOCAL store does NOT lift `source_count` /
+/// `c_effective` / the classification band. (It used to, which meant a lead was
+/// graded a whole tier higher merely for having been seen in a prior scan, so a
+/// fresh scan and a re-scan of the same subject disagreed on classification.
+/// Local prior-scan history is not an independent observation and must not be
+/// silently incorporated into confidence.) The engine still gates the `boost` set
+/// on a route proven in **≥2 prior scans**. Free, offline, idempotent via the tag.
+/// `boost` maps each endpoint UID to its human reason; returns the number tagged.
 pub(super) fn promote_cross_scan_corroborated(
     entities: &mut [Entity],
     boost: &HashMap<String, String>,
@@ -351,7 +355,10 @@ pub(super) fn promote_cross_scan_corroborated(
         }
         if let Some(reason) = boost.get(&e.uid) {
             e.tag("cross-scan-corroborated");
-            e.add_evidence(Evidence::new("cross_scan_corroboration", reason.clone()));
+            e.add_evidence(Evidence::new(
+                crate::core::entity::CROSS_SCAN_CORROBORATION_SOURCE,
+                reason.clone(),
+            ));
             promoted += 1;
         }
     }
