@@ -1495,11 +1495,14 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
     registered (2026-07-10):** `name: "github"`, `BearerAuth`, `GET /user`
     validation — enables multi-token rotation for GitHub's harsh rate limits;
     live in `hse keys services`. ✅ **ABUSECH registered (2026-07-10):** `name: "abusech"`, `Auth-Key` header, `POST` test endpoint — enables URLhaus key validation & rotation. **KEY.2 COMPLETE.** **P2**
-  - **`[ ]` KEY.3 · Spend every held key.** Build collector modules for the
-    keys HSE holds/validates but never spends — `FOFA`, `BuiltWith`,
-    `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`, `PassiveTotal`,
-    `Pulsedive` (one module per cycle, each with fixtures + ATT&CK mapping); add
-    `cache_ttl_secs` to stable-data keyed modules to stretch quota. **CAP-med**
+  - **`[~]` KEY.3 · Spend every held key (phase 1: FOFA).** Build collector
+    modules for the keys HSE holds/validates but never spends — `FOFA`,
+    `BuiltWith`, `BreachDirectory`, `C99`, `BinaryEdge`, `FullHunt`,
+    `PassiveTotal`, `Pulsedive` (one module per cycle, each with fixtures +
+    ATT&CK mapping); add `cache_ttl_secs` to stable-data keyed modules to
+    stretch quota. **Delivered 2026-07-10:** FOFA infrastructure search module
+    (IP/Domain targets → IP, Domain, Organisation entities; evidence w/ protocol/
+    port/title/OS; cache 48h). **P2 (capability)**
   - **`[ ]` KEY.4 · Make key tier matter.** Wire `key_roi::classify` (today only
     logged/tagged/sorted) into dispatch ordering / expansion budget so Multiplier
     keys run first and earn more expansion; wire the dormant
@@ -1685,6 +1688,15 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
 
 ## 8. Maintained log
 
+- **2026-07-10** — **Executed KEY.3 phase 1: FOFA collector module.** Built
+  `modules/fofa/mod.rs` — infrastructure search targeting IP/Domain queries →
+  FOFA API v1/search (base64-encoded queries) → IP, Domain, Organisation
+  entities. Evidence attributes: protocol, open_port, service_title, os; cache
+  48h (symmetric with netlas/shodan). Added 7 unit tests (encode, filter IP/
+  domain, empty/error handling, entity emission). Gate green: fmt/clippy/doc
+  clean, full suite 0 failures (+7 tests). **Paired:** `SOLUTION_TREE` SOL-
+  KEY-FOFA [~] — same commit. 7 remaining collector modules (BuiltWith,
+  BreachDirectory, C99, BinaryEdge, FullHunt, PassiveTotal, Pulsedive).
 - **2026-06-17** — Unified the four audit streams (security/correctness/
   architecture/privacy) + direct metrics into this single functionality-scoped
   tree; added the Gallant doctrine (§1), the Foundations tier (§3.F: toolkit /

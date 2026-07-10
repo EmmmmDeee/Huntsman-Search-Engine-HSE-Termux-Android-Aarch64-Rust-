@@ -895,6 +895,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-HINT-NOISE | T2.14 | `[~]` |
 | SOL-KEY-POOL-SEED | KEY.1 | `[x]` |
 | SOL-KEY-REG | KEY.2 | `[x]` |
+| SOL-KEY-FOFA | KEY.3 (phase 1) | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -1070,6 +1071,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 
 ## 5. Maintained log (paired with `PROBLEM_TREE` §8)
 
+- **2026-07-10** — **SOL-KEY-FOFA (phase 1 of KEY.3 collector modules): FOFA
+  infrastructure search.** Built `modules/fofa` — base64-query HTTP POST to
+  `fofa.info/api/v1/search` for IP/Domain targets. Returns IP, Domain, Organisation
+  entities with evidence (protocol, port, title, OS); cache 48h TTL. 7 unit tests
+  (encode/filter/empty/error/emit). Gate green: fmt/clippy/doc/test 0 failures
+  (+7). Wired in MODULE_REGISTRY. Paired: `PROBLEM_TREE` KEY.3 `[ ]`→`[~]` — same
+  commit. Next 7 modules (BuiltWith, BreachDirectory, C99, BinaryEdge, FullHunt,
+  PassiveTotal, Pulsedive) to close KEY.3.
 - **2026-06-17** — **Created the tree of solutions** as the dual of the problem tree
   and wired the §0 paired-maintenance protocol (same-commit rule, P→S / S→P
   alternation, gap analysis as the bridge). Seeded every solution node from the real

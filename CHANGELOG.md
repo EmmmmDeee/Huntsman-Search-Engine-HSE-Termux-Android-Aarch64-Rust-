@@ -54,6 +54,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
     back into results by default. Enable with `hse config feature.cross_scan on`.
 
 ### Added
+- **FOFA infrastructure search module (phase 1 of KEY.3 collector build).** Added
+  `modules/fofa` — a key-gated collector for infrastructure reconnaissance. Targets
+  IP and Domain entities, queries FOFA API v1/search with base64-encoded filters
+  (`ip="x.x.x.x"`/`host="domain.com"`), and surfaces IP, Domain, and Organisation
+  entities carrying evidence (protocol, open_port, service_title, OS) from each
+  result. Cache TTL 48h (48,000 seconds) — symmetric with netlas and shodan for
+  stable-data stretching. Seven remaining collector modules planned (BuiltWith,
+  BreachDirectory, C99, BinaryEdge, FullHunt, PassiveTotal, Pulsedive) to close
+  the KEY.3 spend-every-held-key program. Wired into MODULE_REGISTRY with priority
+  78. This unlocks coverage from FOFA's 15k+/month paid quota.
 - **SeekNow now uses `/search/deep` as its primary universal query — ~2x the
   external-record coverage at the same 1-credit cost.** The see-know.icu API
   exposes a `POST /api/v1/search/deep` endpoint that queries the slow sources the

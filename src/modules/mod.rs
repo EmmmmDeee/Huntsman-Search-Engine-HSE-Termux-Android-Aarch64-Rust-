@@ -71,6 +71,7 @@ pub mod exa_search;
 pub mod exif_geo;
 pub mod external_credential_discovery;
 pub mod fediverse;
+pub mod fofa;
 pub mod fullcontact;
 pub mod gaming_profile;
 pub mod geo_domain_classifier;
@@ -466,6 +467,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(acma_rrl::AcmaRrl),
             Arc::new(ahpra::Ahpra),
             Arc::new(hlr_cnam::HlrCnam),
+            Arc::new(fofa::Fofa),
             Arc::new(netlas::Netlas),
             Arc::new(trove_au::TroveAu),
             Arc::new(austlii::AustLii),
