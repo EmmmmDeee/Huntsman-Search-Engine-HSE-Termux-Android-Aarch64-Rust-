@@ -2128,21 +2128,25 @@ fn mk_tagged(kind: EntityKind, value: &str, src: &str, tags: &[&str]) -> Entity 
 }
 
 #[test]
-fn au_039_links_wallet_to_identity() {
+fn au_039_links_wallet_to_source_related_identity() {
+    // Genuine co-location: one stealer log ("hudsonrock") surfaced BOTH the wallet
+    // and the account owner, so the same source is stamped on each entity — a real
+    // attribution lead the rule reports.
     let ents = vec![
         mk_tagged(
             EntityKind::CryptoAddress,
             "1A1zP1eP...",
-            "chain_intel",
+            "hudsonrock",
             &["crypto-address"],
         ),
-        mk_tagged(EntityKind::Person, "Jordan Avery", "see_know", &[]),
+        mk_tagged(EntityKind::Person, "Jordan Avery", "hudsonrock", &[]),
     ];
     let out = rule_au_039_wallet_identity(&ents, "scan", 0);
     assert_eq!(out.len(), 1);
     assert_eq!(out[0].rule_id, "AU-039");
     assert_eq!(out[0].severity, Severity::High);
     assert_eq!(out[0].entity_uids.len(), 2);
+
     // No identity present ⇒ no firing.
     let only_wallet = vec![mk_tagged(
         EntityKind::CryptoAddress,
@@ -2151,31 +2155,115 @@ fn au_039_links_wallet_to_identity() {
         &[],
     )];
     assert!(rule_au_039_wallet_identity(&only_wallet, "scan", 0).is_empty());
+
+    // Co-existence WITHOUT a shared source is not attribution (T2.39): a wallet
+    // from a chain module and a person from a disjoint presence module co-occur in
+    // the same scan but were never surfaced together, so no link is fabricated.
+    let disjoint = vec![
+        mk_tagged(
+            EntityKind::CryptoAddress,
+            "1A1zP1eP...",
+            "chain_intel",
+            &["crypto-address"],
+        ),
+        mk_tagged(EntityKind::Person, "Jordan Avery", "see_know", &[]),
+    ];
+    assert!(rule_au_039_wallet_identity(&disjoint, "scan", 0).is_empty());
 }
 
 #[test]
-fn au_039_anchor_is_deterministic_under_multiple_identities() {
-    // With ≥2 identities present the anchor must be a stable choice (smallest
-    // Person UID), not whichever the randomized live-pass iteration hit first —
-    // otherwise the live and finalise passes name different people for one wallet
-    // and BOTH rows persist (disjoint entity sets escape containment-dedup).
+fn au_039_does_not_attribute_wallet_to_source_unrelated_identity() {
+    // T2.39 regression — the core defect: the pre-fix rule anchored every wallet to
+    // the single smallest-UID Person across the whole scan, so an unrelated
+    // bystander was reported as the wallet's owner purely by UID sort order. Here
+    // the wallet + one person come from the same stealer log ("hudsonrock"); a
+    // second, unrelated person comes from a disjoint source. We deliberately give
+    // the UNRELATED person the smaller UID, so the buggy min-UID pick would name
+    // them — the fix must instead pick the source-related person and never the
+    // bystander.
+    let a = Entity::new(EntityKind::Person, "Aaron Avery", 0.8, "scan");
+    let z = Entity::new(EntityKind::Person, "Zoe Zimmer", 0.8, "scan");
+    let (small_uid_name, large_uid_name) = if a.uid <= z.uid {
+        (a.raw_value.clone(), z.raw_value.clone())
+    } else {
+        (z.raw_value.clone(), a.raw_value.clone())
+    };
     let wallet = mk_tagged(
         EntityKind::CryptoAddress,
         "1A1zP1eP...",
-        "chain_intel",
+        "hudsonrock",
         &["crypto-address"],
     );
-    let p1 = mk_tagged(EntityKind::Person, "Aaron Avery", "see_know", &[]);
-    let p2 = mk_tagged(EntityKind::Person, "Zoe Zimmer", "see_know", &[]);
-    let expected = std::cmp::min(p1.uid.clone(), p2.uid.clone());
+    // Smaller-UID person: UNRELATED (disjoint source, would win the buggy pick).
+    let unrelated = mk_tagged(EntityKind::Person, &small_uid_name, "see_know", &[]);
+    // Larger-UID person: shares the wallet's source ⇒ the genuine attribution.
+    let related = mk_tagged(EntityKind::Person, &large_uid_name, "hudsonrock", &[]);
 
-    let fwd = rule_au_039_wallet_identity(&[wallet.clone(), p1.clone(), p2.clone()], "scan", 0);
-    let rev = rule_au_039_wallet_identity(&[wallet.clone(), p2.clone(), p1.clone()], "scan", 0);
-    assert_eq!(fwd.len(), 1);
-    assert_eq!(rev.len(), 1);
-    // Same anchor regardless of input order, and it is the min-UID person.
-    assert_eq!(fwd[0].entity_uids, rev[0].entity_uids);
-    assert!(fwd[0].entity_uids.contains(&expected));
+    let out = rule_au_039_wallet_identity(
+        &[wallet.clone(), unrelated.clone(), related.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(
+        out.len(),
+        1,
+        "only the source-related identity is attributed"
+    );
+    assert!(out[0].entity_uids.contains(&wallet.uid));
+    assert!(
+        out[0].entity_uids.contains(&related.uid),
+        "attributed to the shared-source person"
+    );
+    assert!(
+        !out[0].entity_uids.contains(&unrelated.uid),
+        "never the min-UID bystander"
+    );
+    // Order-independent: same result whichever order the entities arrive in (the
+    // live HashMap-ordered pass and the finalise pass must agree).
+    let rev = rule_au_039_wallet_identity(
+        &[wallet.clone(), related.clone(), unrelated.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(out[0].entity_uids, rev[0].entity_uids);
+}
+
+#[test]
+fn au_039_prefers_tied_person_over_email_and_reports_each_tie() {
+    // One stealer log surfaced the wallet, two people, and an email — all sharing
+    // the "hudsonrock" source. Person is the more specific identity, so both tied
+    // people are reported (each an independent, genuine lead) and the redundant
+    // email is suppressed.
+    let src = "hudsonrock";
+    let wallet = mk_tagged(
+        EntityKind::CryptoAddress,
+        "1A1zP1eP...",
+        src,
+        &["crypto-address"],
+    );
+    let p1 = mk_tagged(EntityKind::Person, "Aaron Avery", src, &[]);
+    let p2 = mk_tagged(EntityKind::Person, "Zoe Zimmer", src, &[]);
+    let em = mk_tagged(EntityKind::Email, "z@example.com", src, &[]);
+    let out = rule_au_039_wallet_identity(
+        &[wallet.clone(), p1.clone(), p2.clone(), em.clone()],
+        "scan",
+        0,
+    );
+    assert_eq!(out.len(), 2, "both tied people reported");
+    let uids: std::collections::HashSet<_> = out
+        .iter()
+        .flat_map(|c| c.entity_uids.iter().cloned())
+        .collect();
+    assert!(uids.contains(&p1.uid) && uids.contains(&p2.uid));
+    assert!(
+        !uids.contains(&em.uid),
+        "email not emitted when a person is tied"
+    );
+
+    // Falls back to an email anchor only when NO person is tied.
+    let out2 = rule_au_039_wallet_identity(&[wallet.clone(), em.clone()], "scan", 0);
+    assert_eq!(out2.len(), 1);
+    assert!(out2[0].entity_uids.contains(&em.uid));
 }
 
 #[test]

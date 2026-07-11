@@ -934,6 +934,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `cargo doc` plus independent re-derivation of the pre-fix line numbers via
   `git show HEAD:...`, proving the citation was grounded in real code, not
   fabricated.
+- **`[x]` SOL-AU039-SHARED-SOURCE · AU-039 wallet→identity attribution gated on
+  a real co-location tie, not an arbitrary global anchor** — closes **T2.39**,
+  the design decision the T2.38 sweep correctly declined to make blind. The
+  deferred question ("what relatedness gates the anchor, and does the data
+  model carry that provenance here?") was answered by investigating the entity
+  model: `Entity::corroborating_sources()` already exposes each entity's
+  independent evidence sources at this call site. The criterion is **a shared
+  corroborating source** — some single module surfaced BOTH the wallet and the
+  identity (a stealer log stamps the same `source` on an owner and their
+  wallet). New `shares_corroborating_source(a, b)` helper (`rules/mod.rs`,
+  built on `corroborating_sources()` so a replay/enrichment pass can't
+  manufacture a tie — mirroring `source_families`' honesty rule) replaces the
+  "smallest-UID `Person`/`Email` across the whole scan" anchor. Per wallet the
+  rule now anchors to the source-tied identities (Person preferred over Email;
+  every genuinely-tied identity of the preferred kind is reported, none
+  singled out), and fires nothing when no identity shares a source — removing
+  the arbitrariness rather than relocating it. Deterministic (pure function of
+  source membership + UID order), so live and finalise passes agree. The two
+  tests that encoded the buggy co-existence semantics were replaced by three
+  (a genuine-tie positive with a no-shared-source negative; the T2.39
+  regression that gives the bystander the smaller UID so the old pick would
+  name them; and the person-preferred/report-each-tie case) — each fails
+  against the unfixed rule and passes against the fix.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1012,6 +1035,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-LOCATION-SEED-NO-REAFFIRM | T2.36 | `[x]` |
 | SOL-SEEKNOW-SUBJECT-GATE | T2.37 | `[x]` |
 | SOL-AU063-DOC-FIX | T2.38 | `[x]` |
+| SOL-AU039-SHARED-SOURCE | T2.39 | `[x]` |
 
 ---
 
@@ -1023,19 +1047,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.39** (new, 2026-07-11) — AU-039 (`correlator/rules/crypto.rs`)
-  attributes a cryptocurrency wallet to an arbitrary anchor identity
-  (lexicographically-smallest `uid` among ALL confirmed `Person`/`Email`
-  entities in the scan) with zero relatedness check to the wallet itself —
-  proven by the rule's own existing test, which shows two unrelated people
-  produce the same attribution differing only by alphabetical sort order.
-  `High` severity, realistic trigger (AU-075 alone routinely mints multiple
-  `Person` entities per scan). Root cause identified precisely; a real fix
-  needs a design decision this sweep correctly declined to make unilaterally
-  — what relatedness criterion should gate the anchor (shared evidence
-  source? co-occurrence window? the existing `CORROBORATING_FAMILIES`
-  concept already used elsewhere in the same file?) and whether the data
-  model even carries that provenance at this call site. Not yet started.
+- ~~**T2.39**~~ — **delivered** ✅ (`SOL-AU039-SHARED-SOURCE`, 2026-07-11). The
+  deferred design decision was resolved by investigating the data model:
+  `Entity::corroborating_sources()` carries the provenance at this call site,
+  so AU-039 now gates wallet→identity attribution on a **shared corroborating
+  evidence source** (a real co-location tie) instead of the arbitrary global
+  min-UID anchor. Off the open queue.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4318,4 +4335,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fabricated across either the T2.36/T2.37 sweep or this one to manufacture
   urgency where none existed. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4560 lib tests, unchanged — doc-only fix).
+  Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-11** — **SOL-AU039-SHARED-SOURCE built, T2.39 closed** — resolving
+  the very design decision the previous entry deferred. Investigating the
+  entity model answered both open questions the T2.38 sweep declined to
+  guess: the provenance IS carried at this call site
+  (`Entity::corroborating_sources()`), and the right relatedness criterion is
+  a **shared corroborating evidence source** (some single module surfaced both
+  the wallet and the identity — a stealer log stamps the same `source` on an
+  owner and their wallet). New `shares_corroborating_source(a, b)` helper
+  (`rules/mod.rs`, built on `corroborating_sources()` so a replay/enrichment
+  pass can't manufacture a tie — the same honesty rule `source_families`
+  already enforces) replaces AU-039's "smallest-UID identity across the whole
+  scan" anchor. Per wallet the rule now reports each source-tied identity
+  (Person preferred over Email, none singled out) and fires nothing when no
+  identity shares a source — removing the arbitrariness the deferral warned an
+  ad-hoc "pick a different anchor" fix would merely relocate. Deterministic
+  (pure function of source membership + UID order), so live and finalise
+  passes agree. The two tests that encoded the buggy co-existence semantics
+  were replaced by three (genuine-tie positive + no-shared-source negative;
+  the T2.39 regression that gives the bystander the smaller UID so the old
+  pick would name them; person-preferred/report-each-tie) — each fails against
+  the unfixed rule, passes against the fix. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4561 lib tests, +1 net).
   Paired: `PROBLEM_TREE` §8 — same commit.

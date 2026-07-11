@@ -382,6 +382,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The AU-039 correlation ("cryptocurrency wallet linked to identity") no
+  longer attributes a wallet to an unrelated person by alphabetical accident.**
+  It previously anchored EVERY wallet in a scan to the single
+  lexicographically-smallest `Person` (or `Email`) UID across the whole
+  confirmed set, with no check that the wallet and that identity shared any
+  evidence — so a scan carrying several people (a spouse, next-of-kin, or
+  stealer-log owner, all routinely minted by AU-075) reported one person's
+  wallet as belonging to whichever name sorted first. Attribution now requires
+  a real co-location tie: the wallet and the identity must share a corroborating
+  evidence source (some single collection module surfaced both — e.g. a stealer
+  log that names an owner and their wallet in one record). Every genuinely tied
+  identity is reported (`Person` preferred over `Email`); when no identity
+  shares a source with the wallet, no attribution is emitted. The result is a
+  pure function of the entity set, so it no longer depended on HashMap
+  iteration order. Regression tests
+  `au_039_links_wallet_to_source_related_identity`,
+  `au_039_does_not_attribute_wallet_to_source_unrelated_identity`, and
+  `au_039_prefers_tied_person_over_email_and_reports_each_tie`.
 - **`search_engines` and `see_know` no longer manufacture apparent
   independent corroboration for a re-pivoted, non-identity target (an
   address, coordinate, or same-name-stranger page) by stamping a flat

@@ -1395,7 +1395,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   every file" exists to catch before it misleads a future maintainer into
   "fixing" already-correct code).
 
-- **`[ ]` T2.39 · AU-039 (`correlator/rules/crypto.rs`,
+- **`[x]` T2.39 · AU-039 (`correlator/rules/crypto.rs`,
   `rule_au_039_wallet_identity`) attributes a cryptocurrency wallet to an
   ARBITRARY anchor identity with zero relatedness check — the same
   content-blind-attribution shape as T2.36/T2.37, one layer up (the
@@ -1427,6 +1427,36 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   on a realistic multi-person scan — but correctly NOT patched blind, since
   an ad-hoc "pick a different anchor" fix without a real relatedness
   criterion would just move the arbitrariness rather than remove it).
+  **Fixed:** the deferred design question was resolved by investigating the
+  data model, which *does* carry the needed provenance at this call site —
+  each `Entity` exposes `corroborating_sources()` (its independent evidence
+  sources, minus the non-corroborating replay/enrichment passes). The chosen
+  relatedness criterion is **a shared corroborating evidence source**: some
+  single collection module surfaced BOTH the wallet and the identity (a
+  stealer log / breach record naming an owner and their wallet stamps the
+  same `source` on each entity it mints) — a concrete co-location tie, not
+  mere co-existence in the scan. A new `shares_corroborating_source(a, b)`
+  helper (in `rules/mod.rs`, built on `corroborating_sources()` so a `recall`
+  / `cross_scan_history` / enrichment pass can't fabricate a tie — the same
+  honesty rule `source_families` already enforces) gates the anchor. The rule
+  no longer picks one global min-UID identity: for each wallet it anchors to
+  the source-tied identities (Person preferred over Email; when several of
+  the preferred kind are genuinely tied, EACH is reported as an independent
+  lead — none is arbitrarily singled out), and emits nothing when no identity
+  shares a source with the wallet. Selection is a pure function of the entity
+  set (source membership + UID order), so the live HashMap-ordered pass and
+  the finalise pass agree — the disjoint-set double-persist the old UID
+  tie-break was added to prevent stays fixed. The two prior tests, which
+  encoded the buggy co-existence semantics (wallet from `chain_intel`,
+  identity from a disjoint `see_know` — no real tie), were replaced by three:
+  `au_039_links_wallet_to_source_related_identity` (fires on a genuine
+  shared-source tie; no firing on co-existence without one),
+  `au_039_does_not_attribute_wallet_to_source_unrelated_identity` (the T2.39
+  regression — gives the unrelated bystander the *smaller* UID so the old
+  min-UID pick would name them, and asserts the fix attributes only the
+  source-tied person), and
+  `au_039_prefers_tied_person_over_email_and_reports_each_tie`. Each fails
+  against the unfixed rule and passes against the fix. **P1 closed.**
 
 ---
 
@@ -5962,3 +5992,38 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   not a failure of the exercise. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4560 lib tests, unchanged — doc-only fix).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-11** — **Closed T2.39 — the P1 evidentiary-integrity node the
+  prior cycle opened and deliberately deferred.** AU-039
+  (`correlator/rules/crypto.rs`) anchored EVERY cryptocurrency wallet in a
+  scan to the single lexicographically-smallest `Person`/`Email` UID across
+  the whole confirmed set, with no check that the wallet and that identity
+  shared any evidence — so a realistic multi-person scan (AU-075 alone mints
+  spouse/next-of-kin/stealer-log-owner `Person` entities) reported one
+  person's wallet as belonging to whichever name sorted first alphabetically,
+  a `High`-severity misattribution driven purely by UID order. The deferred
+  design question ("what relatedness gates the anchor, and does the model
+  carry that provenance here?") was resolved by investigating the entity
+  model: `Entity::corroborating_sources()` already exposes each entity's
+  independent evidence sources at this call site. The criterion is a **shared
+  corroborating evidence source** — some single collection module surfaced
+  BOTH the wallet and the identity (a stealer log stamps the same `source` on
+  an owner and their wallet) — a concrete co-location tie, not mere
+  co-existence in the scan. New `shares_corroborating_source(a, b)` helper
+  (`rules/mod.rs`, built on `corroborating_sources()` so a
+  `recall`/`cross_scan_history`/enrichment pass can't fabricate a tie —
+  mirroring `source_families`' honesty rule) gates the anchor; the rule now
+  reports each source-tied identity (Person preferred over Email, each an
+  independent lead) and fires nothing when none shares a source — removing the
+  arbitrariness rather than relocating it (exactly the failure mode the
+  deferral warned against). Selection is a pure function of the entity set
+  (source membership + UID order), so live and finalise passes agree and the
+  disjoint-set double-persist the old UID tie-break guarded against stays
+  fixed. The two prior tests encoded the buggy co-existence semantics (wallet
+  from `chain_intel`, identity from a disjoint `see_know`) and were replaced
+  by three: a genuine-tie positive with a no-shared-source negative; the T2.39
+  regression (gives the bystander the *smaller* UID so the old min-UID pick
+  would name them, asserts only the source-tied person is attributed); and the
+  person-preferred/report-each-tie case — each fails against the unfixed rule
+  and passes against the fix. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4561 lib tests, +1 net: −2 stale tests, +3
+  new). **Paired:** `SOLUTION_TREE` §5 — same commit.
