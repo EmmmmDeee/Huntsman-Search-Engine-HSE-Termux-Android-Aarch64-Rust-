@@ -21,6 +21,24 @@ fn multi_term_target_requires_every_term_in_one_field() {
 }
 
 #[test]
+fn multi_term_target_matches_at_token_boundary_not_mid_token() {
+    // PRECISION REGRESSION: "Jordan Avery" must NOT match a namesake whose every
+    // term is only a PREFIX/substring of an unrelated token — the residual leak
+    // after the all-terms rule. Under the old substring match, "Jordanna Averyl"
+    // (jordan ⊂ jordanna, avery ⊂ averyl) counted as the subject; token-boundary
+    // matching rejects it while still matching the genuine row.
+    let tm = TargetMatch::new("Jordan Avery");
+    assert!(!tm.matches(&json!({ "full_name": "Jordanna Averyl" })));
+    assert!(!tm.matches(&json!({ "full_name": "Averyl Jordanna" })));
+    // A hyphen/underscore-separated spelling still tokenises to the exact terms.
+    assert!(tm.matches(&json!({ "full_name": "jordan-avery" })));
+    assert!(tm.matches(&json!({ "username": "jordan_avery_23" })));
+    // The genuine row and the shared-first-name reject are unchanged.
+    assert!(tm.matches(&json!({ "full_name": "JORDAN MICHAEL AVERY" })));
+    assert!(!tm.matches(&json!({ "full_name": "Jordan Parker" })));
+}
+
+#[test]
 fn single_term_target_keeps_substring_matching() {
     // A single significant term (a handle) matches as a substring, so a
     // concatenated variant of the handle still counts as the subject.

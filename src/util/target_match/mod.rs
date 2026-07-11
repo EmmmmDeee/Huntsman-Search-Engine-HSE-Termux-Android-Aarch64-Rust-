@@ -77,13 +77,23 @@ impl TargetMatch {
                 }
                 let mut terms = self.terms.iter().map(|&(s, e)| &self.lower[s..e]);
                 // Multi-term targets (a full name like "Jordan Avery", or an
-                // email) must match EVERY significant term within a single
-                // field — not just one — so a row for "Jordan Parker" no longer
-                // counts as the target on the shared first name (the dominant
-                // junk source on name scans). Single-term targets keep
-                // substring-contains matching.
+                // email) must match EVERY significant term within a single field,
+                // AT A TOKEN BOUNDARY — each term must be a WHOLE alphanumeric token
+                // of the field value, not merely a substring buried inside a longer
+                // token. Requiring all terms already stopped a shared FIRST name
+                // ("Jordan Parker") from matching; the token-boundary check
+                // additionally stops a look-alike whose every term is a PREFIX of an
+                // unrelated token ("Jordanna Averyl" — jordan ⊂ jordanna, avery ⊂
+                // averyl), the residual namesake leak on name scans. A genuine row
+                // ("JORDAN MICHAEL AVERY") still matches — its tokens include the
+                // exact terms. Single-term targets (a handle) keep substring
+                // matching, so a concatenated variant ("alikareem2024") still counts.
                 let hit = if self.require_all_terms {
-                    terms.all(|t| vl.contains(t))
+                    let field_tokens: std::collections::HashSet<&str> = vl
+                        .split(|c: char| !c.is_alphanumeric())
+                        .filter(|w| !w.is_empty())
+                        .collect();
+                    terms.all(|t| field_tokens.contains(t))
                 } else {
                     terms.any(|t| vl.contains(t))
                 };
