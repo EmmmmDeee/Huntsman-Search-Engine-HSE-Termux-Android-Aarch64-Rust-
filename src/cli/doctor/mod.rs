@@ -1,12 +1,19 @@
 //! `hse doctor` — health-check subcommand.
 //!
 //! Reports Termux detection, DB path, key path, module/cost counts,
-//! HUNTSMAN_* keys loaded, and a live WiGLE account introspection
-//! that surfaces the email-unverified throttling warning before it
-//! starts silently truncating result sets.
+//! HUNTSMAN_* keys loaded, a per-source scraper health signal derived from
+//! the persisted event log (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
+//! SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]), and a live WiGLE
+//! account introspection that surfaces the email-unverified throttling
+//! warning before it starts silently truncating result sets.
 
 use crate::core::error::Result;
-use crate::{default_db_path, is_termux, modules::registry, storage::Store, util::keys};
+use crate::{
+    default_db_path, is_termux,
+    modules::registry,
+    storage::Store,
+    util::{keys, scraper_health, timefmt},
+};
 
 use super::cost_label;
 
@@ -26,7 +33,11 @@ pub(super) async fn cmd_doctor() -> Result<()> {
 
     println!("\nStorage:");
     let db_path = default_db_path();
-    match Store::open(&db_path) {
+    // Kept as a `Result` (not unwrapped into the match arm) so the same open
+    // handle can back the scraper-health section further down without a
+    // second `Store::open` — the DB is opened once per `doctor` run either way.
+    let store_result = Store::open(&db_path);
+    match &store_result {
         Ok(store) => {
             println!("  ok — database opens cleanly");
             // Explicit corruption check (T5): a healthy DB reports a single "ok".
@@ -112,6 +123,52 @@ pub(super) async fn cmd_doctor() -> Result<()> {
                 None => println!("  - [{tier:<10}] {k}"),
             }
         }
+    }
+
+    // ── Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL) ──────────
+    // Derived from the persisted event log across ALL scans (a rolling
+    // window — see `recent_module_outcome_events`'s doc), not just this
+    // process: a source that has errored on every one of its last N runs is
+    // real drift an operator should know about even if the failing scans
+    // happened days ago in unrelated invocations.
+    println!("\nScraper health (recent window):");
+    match &store_result {
+        Ok(store) => match store.recent_module_outcome_events(scraper_health::RECENT_EVENTS_WINDOW)
+        {
+            Ok(events) => {
+                let health = scraper_health::aggregate_source_health(&events);
+                let drifted: Vec<_> = health.iter().filter(|h| h.is_drifted()).collect();
+                println!(
+                    "  {} source(s) tracked over {} recent outcome event(s)",
+                    health.len(),
+                    events.len()
+                );
+                if drifted.is_empty() {
+                    println!("  no drifted sources");
+                } else {
+                    println!(
+                        "  {} DRIFTED (>= {} consecutive failures with no success in between):",
+                        drifted.len(),
+                        scraper_health::DRIFTED_THRESHOLD
+                    );
+                    for h in &drifted {
+                        let last_ok = h
+                            .last_success_at
+                            .and_then(|ts| timefmt::ymd_utc(ts as i64))
+                            .unwrap_or_else(|| "no success in this window".to_string());
+                        println!(
+                            "    - {:<20} {} consecutive failures, last success: {}",
+                            h.module, h.consecutive_failures, last_ok
+                        );
+                        if let Some(err) = &h.last_error {
+                            println!("      last error: {err}");
+                        }
+                    }
+                }
+            }
+            Err(e) => println!("  could not read event log — {e}"),
+        },
+        Err(_) => println!("  skipped — database did not open (see Storage above)"),
     }
 
     // ── WiGLE account health (network call, best-effort) ──────────────

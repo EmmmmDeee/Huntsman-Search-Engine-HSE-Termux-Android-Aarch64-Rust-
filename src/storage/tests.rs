@@ -665,6 +665,87 @@ fn event_log_round_trips_in_emission_order() {
 }
 
 #[test]
+fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
+    // The substrate for the per-source health signal (T2.7 / SOL-HEALTH-SIGNAL):
+    // only ModuleDone/ModuleError matter, newest-first, across ALL scan_ids, and
+    // respecting the caller's limit.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-a");
+    insert_scan(&store, "scan-b");
+
+    let rows = [
+        (
+            "scan-a",
+            100,
+            EventKind::ScanStart {
+                target_kind: "domain".into(),
+                target_value: "example.com".into(),
+            },
+        ),
+        (
+            "scan-a",
+            101,
+            EventKind::ModuleStart {
+                module: "dns_intel".into(),
+            },
+        ),
+        (
+            "scan-a",
+            102,
+            EventKind::ModuleDone {
+                module: "dns_intel".into(),
+                found: 3,
+            },
+        ),
+        (
+            "scan-b",
+            200,
+            EventKind::ModuleError {
+                module: "shodan".into(),
+                error: "timeout".into(),
+            },
+        ),
+        (
+            "scan-b",
+            201,
+            EventKind::ModuleSkipped {
+                module: "crtsh".into(),
+                reason: "no key".into(),
+            },
+        ),
+    ];
+    for (scan_id, ts, kind) in rows {
+        let mut ev = Event::new(scan_id, kind);
+        ev.ts = ts;
+        store.insert_event(&ev).unwrap();
+    }
+
+    let outcomes = store.recent_module_outcome_events(100).unwrap();
+    assert_eq!(
+        outcomes.len(),
+        2,
+        "only module_done/module_error rows, across both scans"
+    );
+    // Newest first.
+    assert!(matches!(
+        &outcomes[0].kind,
+        EventKind::ModuleError { module, .. } if module == "shodan"
+    ));
+    assert!(matches!(
+        &outcomes[1].kind,
+        EventKind::ModuleDone { module, .. } if module == "dns_intel"
+    ));
+
+    // limit is respected.
+    let bounded = store.recent_module_outcome_events(1).unwrap();
+    assert_eq!(bounded.len(), 1);
+    assert!(matches!(&bounded[0].kind, EventKind::ModuleError { .. }));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
     // The "Ali Kareem" failure: a scan found 558 entities but the export read
     // an empty result because the scan never finalised (a module hung / the
@@ -1401,6 +1482,7 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_entities_kind",
         "index|idx_entities_scan",
         "index|idx_events_scan",
+        "index|idx_events_type",
         "index|idx_obs_entity",
         "index|idx_obs_scan",
         "index|idx_relations_scan",

@@ -96,6 +96,7 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
+            CREATE INDEX IF NOT EXISTS idx_events_type   ON events(event_type, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
@@ -725,6 +726,32 @@ impl Store {
             collect_rows(rows, "events_for_scan")
         };
         Ok(deserialize_rows(raw, "events_for_scan"))
+    }
+
+    /// The most recent `ModuleDone`/`ModuleError` events **across all scans**,
+    /// newest first, bounded by `limit` — the raw substrate for the per-source
+    /// health signal (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL,
+    /// see [`crate::util::scraper_health`]). Filtered at the SQL layer (not by
+    /// the caller) so a health check never has to wade through
+    /// `ModuleStart`/`ModuleSkipped`/entity/correlation rows to find the two
+    /// kinds it cares about. Naturally a ROLLING window: `events` is already
+    /// pruned to [`crate::core::port::EVENTS_RETENTION_SECS`] /
+    /// [`crate::core::port::EVENTS_MAX_ROWS`] (see [`Self::prune_events`]), so
+    /// this reflects recent scans only, not full history — a source that
+    /// broke and was never scanned again ages out rather than staying flagged
+    /// forever.
+    pub fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM events
+                 WHERE event_type IN ('module_done', 'module_error')
+                 ORDER BY id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            collect_rows(rows, "recent_module_outcome_events")
+        };
+        Ok(deserialize_rows(raw, "recent_module_outcome_events"))
     }
 }
 

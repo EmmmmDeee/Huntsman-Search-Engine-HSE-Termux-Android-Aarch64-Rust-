@@ -596,7 +596,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sites (dossier + JSON output); the third (`api/handlers`) has no observer
   for `analyse()`'s return value and was left alone. Live-verified on a real
   scan, not just unit tests. **(§5)**
-- **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
+- **`[~]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
   auto-flag a source "drifted" when `consecutive_failures ≥ N` or `parse_rate
@@ -604,8 +604,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   stable enough to measure; each golden-fixture test (T2.7) becomes the
   acceptance criterion.
   *Closes / powers:* **T2.7** per-source health signal gap (currently no solution
-  node). *Gap:* not yet started — implementation deferred until the golden-fixture
-  golden-fixture corpus (T2.7 parser rewrites) is in place. **(§4a)**
+  node). *Delivered (2026-07-11):* the "wait for the golden-fixture corpus first"
+  premise was corrected — hard-failure detection needs no new tracking column
+  and no dependency on SOL-F1's rewrites being done first, because the signal
+  already exists: every dispatch already emits a persisted `ModuleDone`/
+  `ModuleError` event, per scan, across every scan ever run. The gap was that
+  nothing ever aggregated it ACROSS scan boundaries. New
+  `Store::recent_module_outcome_events` (a bounded, newest-first cross-scan
+  query, `events` already pruned to 7 days / 100k rows so this is naturally a
+  rolling window) feeds a new pure `util::scraper_health::aggregate_source_health`
+  (one pass, per-module trailing-failure streak + last success timestamp,
+  deterministic name-sorted output) — no new table, no new column. Wired into
+  `hse doctor`: reports source count tracked, flags any module with
+  `consecutive_failures ≥ 3` (a single transient timeout doesn't page the
+  operator; three does), shows its last success date and last error.
+  *Remaining:* the SPA health panel (CLI-only for now); the `parse_rate`/
+  zero-yield leg — a module that runs to completion but silently returns fewer
+  results because a page layout drifted (`ModuleDone{found:0}` on a source that
+  used to yield) needs a per-source historical-yield baseline to distinguish
+  from a genuinely empty target, which this slice deliberately did not invent
+  under cycle-scope pressure; and the golden-fixture corpus itself (T2.7's
+  other named leg) remains unbuilt. **(§4a)**
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -1015,7 +1034,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[ ]` |
 | SOL-FORENSIC | C7 | `[ ]` |
-| SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[ ]` |
+| SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[~]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 | SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
 | SOL-GREYNOISE-KEYED | T2.22 | `[x]` |
@@ -1053,10 +1072,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   so AU-039 now gates wallet→identity attribution on a **shared corroborating
   evidence source** (a real co-location tie) instead of the arbitrary global
   min-UID anchor. Off the open queue.
-- **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
-  node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
-  surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
-  ahpra/acma_rrl/trove_au/`austlii` widen the scraper surface; priority remains raised.
+- **T2.7** scraper-health signal — **implemented, hard-failure leg (2026-07-11):**
+  SOL-HEALTH-SIGNAL's `last_success_at`/`consecutive_failures` tracking and `hse
+  doctor` surface are built, derived from the existing cross-scan event log (no
+  new tracking table needed). *Remaining:* SPA panel, parse-rate/zero-yield-based
+  drift detection, and the golden-fixture corpus (the other named T2.7 leg —
+  rewrite parsers on `bstr`/`aho-corasick`, saved real responses per source).
+  **Elevated (cycle 17):** ahpra/acma_rrl/trove_au/`austlii` widen the scraper
+  surface; priority remains raised.
 - **§7 S4** — SOL-REDACT residual: archived success body not run through
   `redact_literal_secrets` (LOW). Contained.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
@@ -4359,3 +4382,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the unfixed rule, passes against the fix. Gate green: fmt/clippy
   `-D warnings`/rustdoc clean, full suite 0 failures (4561 lib tests, +1 net).
   Paired: `PROBLEM_TREE` §8 — same commit.
+- **2026-07-11** — **SOL-HEALTH-SIGNAL built (hard-failure leg), T2.7 elevated
+  `[ ]`→`[~]`.** The sketch's own premise was wrong on inspection: it assumed
+  a new tracking column and a wait on SOL-F1's parser rewrites; neither was
+  needed, since the engine already persists `ModuleDone`/`ModuleError` per
+  dispatch on every scan — the real gap was that nothing aggregated it ACROSS
+  scans. New `Store::recent_module_outcome_events` (bounded, newest-first,
+  cross-scan, backed by a new `idx_events_type` index) is a naturally rolling
+  window off the existing 7-day/100k-row event-retention policy. New pure
+  `util::scraper_health::aggregate_source_health` walks it once, tracking a
+  per-module trailing-failure streak and last-success timestamp,
+  deterministically name-sorted. `is_drifted()` at `consecutive_failures ≥ 3`
+  (three strikes, not one — a transient blip shouldn't page the operator).
+  Wired into a new "Scraper health" section of `hse doctor`. 9 new tests (7
+  pure aggregation + 1 storage-level SQL-filter/order/limit test), plus the
+  pre-existing exact-schema enumeration test updated for the new index — a
+  real schema addition, not a stale assertion. Live-verified: a real `hse
+  doctor` run renders the section correctly against the operator's own
+  database (honestly empty for this DB, not fabricated). *Remaining:* SPA
+  panel, parse-rate/zero-yield drift detection (needs a per-source yield
+  baseline, deliberately not guessed at), and the golden-fixture corpus (T2.7's
+  other leg). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4569 lib tests, +8). Paired: `PROBLEM_TREE` §8, T2.7 `[ ]`→`[~]`
+  — same commit.

@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse doctor` reports a per-source scraper health signal: which sources
+  have been failing across recent scans, not just whatever the last verbose
+  log happened to show.** New "Scraper health (recent window)" section
+  flags any module with 3+ consecutive failures since its last success
+  (derived from the existing cross-scan event log, no new tracking table),
+  showing the streak, last-success date, and last error message. A rolling
+  window — sources that broke and haven't been scanned again age out rather
+  than staying flagged forever.
 - **CSV export and the debug bundle / full dossier now show `source_count` —
   the count of distinct, independent corroborating sources that actually
   drives `c_effective()` — alongside the existing `corroboration` field,

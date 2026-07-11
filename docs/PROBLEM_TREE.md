@@ -357,7 +357,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   and renamed `SYNTH_EMAIL_PROVIDERS`. `KEY_ENV` left as-is: each literal is
   module-local and cannot drift against another module, so it's a cosmetic style
   nit, not a duplication/drift risk.
-- **`[ ]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
+- **`[~]` T2.7 · Scraper resilience** — `au_people`, `au_electoral`, `au_property`,
   `search_engines` (17 SERPs), `username_search` (300+ sites) parse churning HTML;
   some endpoints speculative → high silent-breakage.
   → **Solution:** rewrite parsers on `bstr`/`aho-corasick` (F.1), back each with a
@@ -365,6 +365,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
+  **Health-signal leg delivered (2026-07-11, SOL-HEALTH-SIGNAL):** the sketch's
+  premise — that this needed a new tracking column/table and had to wait for
+  SOL-F1's parser rewrites to land first — didn't hold up: the engine already
+  persists a `ModuleDone`/`ModuleError` event for every dispatch, on every scan,
+  today; the only real gap was that nothing ever aggregated that signal ACROSS
+  scan boundaries. New `Store::recent_module_outcome_events` (bounded,
+  newest-first, all scan_ids — naturally a rolling window since `events` is
+  already pruned to 7 days / 100k rows) feeds a new pure
+  `util::scraper_health::aggregate_source_health`: one pass over the window
+  computes each module's current unbroken failure streak and its last success
+  timestamp, deterministically (no `HashMap`-order leak — output sorted by
+  module name). Wired into `hse doctor`'s new "Scraper health" section: reports
+  how many sources were tracked in the window, and for any module with
+  `consecutive_failures ≥ 3` (one transient timeout shouldn't page the operator;
+  three consecutive should) prints its streak, last success date, and last error
+  message. Live-verified: a real `hse doctor` run against the operator's own
+  scan database renders the new section (currently "0 source(s) tracked... no
+  drifted sources" — an honest empty state for this database, not a fabricated
+  result). *Remaining on T2.7:* the SPA panel; the `parse_rate`/zero-yield leg
+  (a module that completes but silently returns fewer/zero results because a
+  page layout drifted needs a per-source historical-yield baseline to
+  distinguish from a target that's genuinely empty — deliberately not invented
+  under cycle-scope pressure); and the golden-fixture corpus itself (saved real
+  responses per scraper, so a layout change fails a test deterministically).
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -6027,3 +6051,48 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   and passes against the fix. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4561 lib tests, +1 net: −2 stale tests, +3
   new). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-11** — **T2.7 elevated `[ ]`→`[~]`: built the per-source
+  scraper-health hard-failure signal, correcting a stale premise in
+  SOL-HEALTH-SIGNAL's own sketch.** The sketch assumed this needed a new
+  tracking column/table and had to wait for SOL-F1's `bstr`/`aho-corasick`
+  parser rewrites to land first ("stable enough to measure"). Investigating
+  the actual data model showed neither premise held: the engine already
+  persists a `ModuleDone`/`ModuleError` event for every module dispatch, on
+  every scan, today — a request/parse failure is visible in the event log
+  whether or not the parser has been rewritten. The real gap was narrower:
+  nothing ever aggregated that signal ACROSS scan boundaries, so an operator
+  had no way to see "this source has failed on its last 5 runs" without
+  manually diffing per-scan logs. Added `Store::recent_module_outcome_events`
+  (`storage/mod.rs`) — a bounded (5,000-row), newest-first, all-scan_ids query
+  filtered at the SQL layer to just the two outcome event types, backed by a
+  new `idx_events_type` index; naturally a rolling window since `events` is
+  already pruned to `EVENTS_RETENTION_SECS`/`EVENTS_MAX_ROWS` (7 days / 100k
+  rows), so a source that broke and was never scanned again ages out rather
+  than staying flagged forever. Added a new pure module,
+  `util::scraper_health`: `aggregate_source_health` walks the window once,
+  tracking one running per-module streak (consecutive `ModuleError`s since the
+  last `ModuleDone`, and that success's timestamp), then returns a
+  name-sorted `Vec` — deterministic, no `HashMap`-iteration-order leak, no
+  live `Store` needed to unit-test it. A source is `is_drifted()` at
+  `consecutive_failures ≥ 3` — three strikes, not one, so an isolated
+  transient network blip doesn't page the operator. Wired into `hse doctor`'s
+  new "Scraper health (recent window)" section: source count tracked, and for
+  every drifted module its streak, last-success date (`util::timefmt::ymd_utc`,
+  no `chrono` dep), and last error message. Live-verified beyond the test
+  suite: a real `hse doctor` run against the operator's own database renders
+  the new section cleanly (`0 source(s) tracked... no drifted sources` — this
+  DB's honest current state, not a fabricated result). 9 new tests (7 pure
+  `scraper_health` aggregation cases + 1 storage-level
+  `recent_module_outcome_events` test proving the SQL filter/order/limit; the
+  existing `open_produces_exact_schema_and_pragmas` schema-enumeration test
+  updated for the new index — a real schema change, not a stale assertion).
+  *Remaining on T2.7 (logged precisely, not rushed):* the SPA health panel
+  (CLI-only for now); the `parse_rate`/zero-yield leg — distinguishing a
+  module that silently returns fewer/zero results because a page layout
+  drifted from one that's genuinely hit an empty target needs a per-source
+  historical-yield baseline this slice deliberately did not invent under
+  cycle-scope pressure; and the golden-fixture corpus itself (saved real
+  responses per scraper so a layout change fails a test deterministically).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4569 lib tests, +8). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL
+  `[ ]`→`[~]`, §4/§5 refreshed — same commit.

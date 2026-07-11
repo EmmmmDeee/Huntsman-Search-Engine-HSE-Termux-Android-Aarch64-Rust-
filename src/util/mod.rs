@@ -44,6 +44,7 @@ pub mod proxy;
 pub mod raw_archive;
 pub mod response_cache;
 pub mod scan;
+pub mod scraper_health;
 pub mod see_know;
 
 // Exhaustive multi-API orchestration (12+ paid APIs, intelligent chaining, unified workflows)
