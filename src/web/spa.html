@@ -570,11 +570,18 @@ function kindToStr(k){
 function kindPill(k){const s=kindToStr(k);return `<span class="kind-pill k-${attr(s)}">${esc(s)}</span>`;}
 // Non-corroborating evidence sources — NOT independent intelligence, so they
 // must not count toward the C_eff boost. Mirrors the backend's
-// is_non_corroborating_source(): the deterministic self-enrichment pass
-// ('geo_normalize') and the recall replay ('recall'). Without 'recall' here a
-// re-scan's recalled rows would render a tier higher in Browse than the server
-// grades them (CANDIDATE shown as PROBABLE).
-const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'recall']);
+// is_non_corroborating_source() exactly: the deterministic self-enrichment
+// passes ENRICHMENT_ONLY_SOURCES ('geo_normalize', 'name_intel', 'payid'),
+// the recall replay ('recall'), and the cross-scan history link
+// ('cross_scan_history'). This set previously carried only 2 of the 5 —
+// missing 'name_intel', 'payid', and 'cross_scan_history' — so an entity
+// corroborated only by those sources (e.g. a name-permuted email plus a
+// cross-scan hit) rendered a higher C_eff/tier in Browse than the server's
+// authoritative classification, reintroducing the exact over-credit bugs
+// those three exclusions exist to close (see the backend doc comments on
+// ENRICHMENT_ONLY_SOURCES/RECALL_SOURCE/CROSS_SCAN_SOURCE in
+// core::entity), just in the display layer instead of the confidence engine.
+const ENRICHMENT_SOURCES = new Set(['geo_normalize', 'name_intel', 'payid', 'recall', 'cross_scan_history']);
 // Distinct corroborating sources drive the C_eff boost — must match the
 // backend's Entity::source_count()/corroborating_sources(): count distinct
 // non-enrichment evidence.source strings; when none are present, fall back to

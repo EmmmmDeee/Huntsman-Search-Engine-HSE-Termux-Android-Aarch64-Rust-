@@ -168,12 +168,33 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
         let _ = writeln!(
             s,
-            "    confidence={:.2}  c_eff={:.2}  corroboration={}  class={}",
+            "    confidence={:.2}  c_eff={:.2}  corroboration={}  source_count={}  class={}",
             e.confidence,
             e.c_effective(),
             e.corroboration,
+            e.source_count(),
             e.classify()
         );
+        // `corroboration` is a raw per-module observation magnitude (seeded by
+        // the emitting module, summed on every merge, never deduplicated) — it
+        // is NOT the count `c_eff` is actually computed from. The two often
+        // read as the same kind of number side by side, which is exactly what
+        // makes a merged multi-source entity's confidence look unexplained
+        // without reading the source. Spell out the divergence here instead of
+        // leaving the reader to reconcile it by hand — see the per-evidence
+        // `(non-corroborating)` markers below for which sources counted.
+        if e.corroboration != e.source_count() {
+            let _ = writeln!(
+                s,
+                "    note: c_eff is driven by source_count={} (distinct \
+                 corroborating sources), not corroboration={} (a separate raw \
+                 per-module magnitude — does not by itself mean {} independent \
+                 confirmations)",
+                e.source_count(),
+                e.corroboration,
+                e.corroboration,
+            );
+        }
         if !e.tags.is_empty() {
             let _ = writeln!(s, "    tags: {}", e.tags.join(", "));
         }
@@ -193,7 +214,12 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             let _ = writeln!(s, "    MITRE ATT&CK: {}", mitre.join("; "));
         }
         for ev in &e.evidence {
-            let _ = writeln!(s, "    ├─ [{}] {}", ev.source, ev.summary);
+            let marker = if crate::core::entity::is_non_corroborating_source(&ev.source) {
+                "  (non-corroborating: enrichment/recall/cross-scan — doesn't count toward source_count)"
+            } else {
+                ""
+            };
+            let _ = writeln!(s, "    ├─ [{}] {}{marker}", ev.source, ev.summary);
             for (k, v) in &ev.attributes {
                 if !v.is_empty() {
                     let _ = writeln!(s, "    │    {k} = {v}");

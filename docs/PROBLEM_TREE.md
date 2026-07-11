@@ -1212,6 +1212,102 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   condition as an unexplained module failure — not a crash or data
   corruption).
 
+- **`[x]` T2.35 · `corroboration` and the count that actually drives `c_eff`
+  (`source_count()`) look like the same number sitting side by side in every
+  export/debug/dashboard surface, but usually aren't — and the SPA's
+  client-side mirror of the exclusion list was missing 3 of 5 entries** —
+  surfaced by live evidence: the operator supplied a real scan's CSV export
+  and full debug bundle, both showing entities where `c_eff` exactly equals
+  base `confidence` despite a displayed `corroboration` of 2, 3, or 9 (no
+  boost at all), and — more strikingly — ~19 mutually-exclusive breach-derived
+  physical addresses (spanning many different US states) all carrying the
+  IDENTICAL `confidence=0.82  corroboration=8` pair. Root-caused via two
+  research passes rather than assumed: (1) `Entity::c_effective()` is
+  correct and already well-tested — it uses `source_count()` (distinct,
+  non-enrichment evidence sources), NOT the `corroboration` field, which is a
+  raw per-module observation magnitude summed unconditionally on every merge
+  (`Entity::absorb`) and never deduplicated; this dual-counter design is
+  itself deliberate and regression-tested (`c_eff_boosts_on_distinct_sources_
+  not_summed_corroboration`). (2) But NO export surface — CSV, the debug
+  bundle / full dossier, nor the SPA — ever showed the reader the real
+  `source_count()`, so a human had no way to tell from the output alone
+  whether a `corroboration` number meant anything. Separately, and worse: the
+  SPA's client-side `effC()`/`sourceCount()` (added to mirror the backend
+  after an earlier over-crediting bug) used an `ENRICHMENT_SOURCES` JS set of
+  only `{geo_normalize, recall}` — missing `name_intel`, `payid`, and
+  `cross_scan_history` from the backend's real `is_non_corroborating_source`
+  — so an entity corroborated only by one of those three sources rendered a
+  HIGHER C_eff/tier in the live Browse dashboard than the server's own
+  authoritative classification, reintroducing (client-side only) the exact
+  over-credit bugs those three exclusions were added to close. → **Solution:**
+  (a) `cli/export/renderers.rs::render_full` now prints `source_count`
+  alongside `corroboration`, an explanatory `note:` line when they diverge,
+  and a `(non-corroborating: …)` marker on each excluded evidence line; (b)
+  `api/scan_export::entities_to_csv` gained `source_count` and
+  `corroborating_sources` CSV columns next to the existing `corroboration`/
+  `sources`; (c) two stale doc comments in `core::entity` (module-level +
+  `Entity` struct-level) that still described the old pure-multiplicative
+  formula, plus the `corroboration` field's own doc comment which asserted it
+  WAS "the number of independent corroborating sources," were rewritten to
+  match the real `max(multiplicative, agreement)` formula and correctly
+  attribute which field drives it; (d) the SPA's `ENRICHMENT_SOURCES` set now
+  lists all 5 real exclusions, with a new Rust drift-guard test
+  (`spa_enrichment_sources_matches_backend_is_non_corroborating_source`) that
+  reads the live backend constants and fails if the two ever diverge again,
+  the same pattern this codebase already uses to pin `EVENT_TYPES` against
+  `core::event::EventKind`. **This closes the display/consistency gap only**
+  — the underlying reason so many unrelated addresses shared `corroboration=8`
+  in the first place is a separate, deeper bug in `search_engines`'
+  pivot-expansion path, opened below as **T2.36**. **P2** (a transparency and
+  cross-surface-consistency defect for an evidentiary tool whose core promise
+  is showing its work — not itself a wrong confidence VALUE from the
+  authoritative backend classifier, but a wrong one from the SPA's mirror,
+  plus an unreadable one everywhere else).
+
+- **`[ ]` T2.36 · `search_engines`' pivot-expansion path stamps a flat,
+  content-blind `confidence=0.82` "parent" entity onto ANY re-queried target
+  it searches, with no check that a single result actually references that
+  target — inflating confidence and corroboration uniformly regardless of
+  relevance** — found while researching T2.35: every entity HSE discovers is
+  re-queued as a new pivot target during expansion (`core::engine::mod.rs`,
+  `Target::new(tk, entity.value.clone())`), and `search_engines` accepts
+  `TargetKind::Address` (among others). When it processes a re-targeted
+  address, `search_engines/build.rs:50` unconditionally does
+  `let mut parent = target.to_entity(0.82, scan_id);` whenever the search
+  returns ≥1 result — with no relevance check, unlike the module's own
+  existing `location_on_subject`/surname gate that DOES check relevance for
+  snippet-derived extraction. Because the parent shares the original entity's
+  UID, it merges via `Entity::absorb()`: `confidence = max(existing, 0.82)`
+  (explains a uniform 0.82 regardless of the address's real 0.65 breach-only
+  confidence) and `corroboration.saturating_add(...)` unconditionally
+  (explains the inflated, near-identical counts). A second, separate counter
+  bump at `build.rs:306-307` — `existing.corroboration.saturating_add(1)` per
+  search RESULT whose snippet merely contains the address text, uncapped and
+  not deduplicated by domain — compounds it: since HSE runs the same fixed
+  engine/query-template roster for any address pivot, and search results
+  routinely echo the query string back regardless of true relevance, this
+  produces a similar corroboration range for essentially ANY address,
+  correlated with subject or not. A related but distinct bug (bare
+  fragment-value entities like 2-letter country codes sharing one UID across
+  hundreds of unrelated rows) was already fixed in v1.5.1 via
+  `core::validation::placeholder::is_fragment_value`; full street addresses
+  pass that gate (they ARE specific), so this is the flat/uncapped,
+  content-blind version of the same underlying concern, not the same bug
+  recurring. → **Solution direction (not yet implemented):** gate
+  `build.rs:50`'s parent-entity construction the same way the module's
+  existing relevance gate already works for snippet extraction — build the
+  parent only when at least one result plausibly references the target, not
+  unconditionally on "the search returned something" — and/or cap or
+  deduplicate the `build.rs:307` per-result counter by distinct domain rather
+  than by raw hit count. **P1** (an evidentiary-integrity defect on an
+  evidentiary tool: the tool's own re-pivot/search mechanism fabricates
+  apparent independent corroboration for any address pivot regardless of
+  actual relevance to the subject, which is exactly the class of false
+  positive this project's own doctrine treats as worse than missing
+  coverage — not yet a data-loss/crash P0, but materially worse than T2.35's
+  display-only gap since it affects the AUTHORITATIVE backend confidence
+  value, not just how it's shown).
+
 ---
 
 ## 4. Capability program — surpass SpiderFoot & Maltego (CAP)

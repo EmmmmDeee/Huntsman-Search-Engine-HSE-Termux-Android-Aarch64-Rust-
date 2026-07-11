@@ -3,7 +3,10 @@
 //! # Architecture invariants
 //! - SHA-256 deterministic UIDs
 //! - GREATEST-semantics merge (confidence, corroboration only ever increase)
-//! - `C_eff = clamp(C × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+//! - `C_eff = clamp(max(C × (1 + 0.15·ln n), 1 − (1−C)·0.65^(n−1)), 0.0, 1.0)`,
+//!   where `n = source_count()` (distinct corroborating sources) — NOT the raw
+//!   `corroboration` field, a separate per-module observation magnitude. See
+//!   [`Entity::c_effective`] and [`Entity::source_count`].
 //! - `Classify()` is derived-only from `C_eff`
 //! - No unsafe, no std::sync::Mutex (use tokio::sync)
 //! - Zero CGO / native deps
@@ -357,7 +360,11 @@ impl Evidence {
 /// `uid = hex(SHA-256(kind_str + ":" + value_normalised))`
 ///
 /// # Confidence formula
-/// `C_eff = clamp(confidence × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+/// `C_eff = clamp(max(confidence × (1 + 0.15·ln n), 1 − (1−confidence)·0.65^(n−1)), 0, 1)`,
+/// where `n = source_count()` — the count of DISTINCT corroborating sources,
+/// floored at 1. **Not** the raw `corroboration` field below, which is a
+/// separate summed observation magnitude that never drives `C_eff` directly.
+/// See [`Entity::c_effective`] and [`Entity::source_count`].
 ///
 /// # GREATEST-semantics merge
 /// `confidence` and `corroboration` only ever increase during merge.
@@ -373,7 +380,12 @@ pub struct Entity {
     pub raw_value: String,
     /// Base confidence ∈ [0, 1].
     pub confidence: f64,
-    /// Number of independent corroborating sources (≥ 1).
+    /// Raw observation-magnitude counter (≥ 1): seeded per-module (e.g. a
+    /// breach-count, an engine-agreement count) and summed on every
+    /// GREATEST-semantics merge via [`Self::absorb`] — never deduplicated by
+    /// source. **This is not a count of independent sources** and does not
+    /// drive [`Self::c_effective`]; that uses [`Self::source_count`] instead.
+    /// Retained as a ranking/diagnostics signal (see its doc comment for why).
     pub corroboration: u32,
     /// Decay timestamp (Unix seconds). Used to compute time-decay.
     pub observed_at: u64,

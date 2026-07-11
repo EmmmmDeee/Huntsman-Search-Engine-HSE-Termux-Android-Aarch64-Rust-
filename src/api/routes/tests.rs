@@ -467,6 +467,50 @@ use super::*;
     }
 
     #[test]
+    fn spa_enrichment_sources_matches_backend_is_non_corroborating_source() {
+        // Drift guard: the SPA's client-side C_eff mirror (`ENRICHMENT_SOURCES`,
+        // used by `sourceCount()`/`effC()` in spa.html to reproduce
+        // `Entity::c_effective()` for Browse) must exclude exactly the same
+        // evidence sources as the backend's authoritative
+        // `is_non_corroborating_source()`. It once carried only 2 of the 5 real
+        // exclusions (missing `name_intel`, `payid`, `cross_scan_history`), so
+        // an entity corroborated only by one of those rendered a higher
+        // C_eff/tier in Browse than the server's own classification —
+        // reintroducing, client-side, the exact over-credit bugs those
+        // exclusions were added to close.
+        use crate::core::entity::{CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE};
+        let expected: Vec<&str> = ENRICHMENT_ONLY_SOURCES
+            .iter()
+            .copied()
+            .chain([RECALL_SOURCE, CROSS_SCAN_SOURCE])
+            .collect();
+        let js = SPA_HTML
+            .split_once("const ENRICHMENT_SOURCES = new Set([")
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(set, _)| set)
+            .expect("ENRICHMENT_SOURCES literal present in spa.html");
+        for name in &expected {
+            assert!(
+                js.contains(&format!("'{name}'")),
+                "backend is_non_corroborating_source excludes `{name}` but the \
+                 SPA's ENRICHMENT_SOURCES set does not — Browse would over-credit \
+                 an entity corroborated only by this source"
+            );
+        }
+        // Symmetric: no UNEXPECTED member either — a source wrongly excluded
+        // client-side would under-credit an entity the backend treats as
+        // genuinely corroborating.
+        let js_count = js.matches('\'').count() / 2;
+        assert_eq!(
+            js_count,
+            expected.len(),
+            "SPA ENRICHMENT_SOURCES has a different member count than the \
+             backend's exclusion list ({expected:?}) — check for a stale or \
+             extra entry: {js}"
+        );
+    }
+
+    #[test]
     fn embedded_spa_tails_the_live_session_event_stream() {
         // The per-session live SSE endpoint (/live/{id}/events) streams a running
         // session's lifecycle + every per-iteration scan's events. It had no SPA

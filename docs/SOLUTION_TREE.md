@@ -855,6 +855,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   new node **T2.34**. ✅ Live-verified (no unit-test harness exists for
   `process()`-level HTTP glue in this codebase): re-ran the same real scan,
   confirmed `"module error"` → `"done","found":0` in the event log.
+- **`[x]` SOL-CEFF-TRANSPARENCY · `source_count()` — the count that actually
+  drives `c_effective()` — is now visible everywhere `corroboration` (a
+  different, raw per-module magnitude) is shown, and the SPA's client-side
+  formula mirror excludes the same 5 sources the backend does, not 2** — the
+  base `c_effective()` formula was already correct and tested (verified by
+  research, not assumed); the real gap was that CSV export, the debug bundle
+  / full dossier, and the SPA all displayed `corroboration` next to `c_eff`
+  with nothing to tell a reader the two numbers are unrelated. Fixed across
+  every surface in one commit: `render_full` prints `source_count` + a
+  `note:` on divergence + per-evidence `(non-corroborating)` markers;
+  `entities_to_csv` gained `source_count`/`corroborating_sources` columns;
+  two stale `core::entity` doc comments (module + struct level) describing
+  the old pure-multiplicative formula, plus the `corroboration` field's own
+  doc comment which asserted it WAS the corroborating-source count, were
+  rewritten to match reality; the SPA's `ENRICHMENT_SOURCES` JS set — missing
+  `name_intel`/`payid`/`cross_scan_history` — now matches the backend's
+  `is_non_corroborating_source` exactly, with a new drift-guard test
+  (`spa_enrichment_sources_matches_backend_is_non_corroborating_source`) that
+  reads the live backend constants, mirroring the existing `EVENT_TYPES`
+  guard pattern so the two can't silently diverge again. *Closes:* new node
+  **T2.35**. Opened **T2.36** (not yet solved) for the deeper cause of *why*
+  so many unrelated addresses shared `corroboration=8` in the first place —
+  a `search_engines` pivot-expansion bug, distinct from this display gap. ✅
+  2 new tests (CSV divergence case, `render_full` note/marker case) + 1 new
+  SPA drift-guard test.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -929,6 +954,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
 | SOL-WIGLE-412-GRACEFUL | T2.34 | `[x]` |
+| SOL-CEFF-TRANSPARENCY | T2.35 | `[x]` |
 
 ---
 
@@ -940,6 +966,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.36** (new, 2026-07-11) — `search_engines`' pivot-expansion path stamps
+  a flat `confidence=0.82` parent entity onto any re-queried target with no
+  relevance check, inflating confidence/corroboration uniformly for entities
+  like breach-derived addresses regardless of whether the search results
+  actually concern them. Root cause identified precisely (`build.rs:50`,
+  `build.rs:306-307`); solution direction sketched (mirror the module's own
+  existing relevance gate; cap/dedupe the per-result counter by domain). Not
+  yet started — a P1, evidentiary-integrity-affecting fix, not a quick one.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4137,3 +4171,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   zero-yield count but a module that cleanly finds nothing is not. Gate
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4554 lib tests, unchanged). Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-11** — **SOL-CEFF-TRANSPARENCY built, T2.35 closed; T2.36 opened
+  (deeper, not yet solved).** Triggered by the operator supplying a real
+  scan's CSV export and full debug bundle as evidence, not a sweep. Two
+  research passes established ground truth before any fix: `c_effective()`
+  itself is correct, deterministic, and already regression-tested — it uses
+  `source_count()` (distinct non-enrichment sources), not the raw
+  `corroboration` field (a per-module magnitude, summed unconditionally on
+  merge, by design). The real gap: nothing ever showed the reader
+  `source_count()` next to the confusingly-similar-looking `corroboration`.
+  Fixed in `render_full` (debug bundle + full dossier: `source_count` printed,
+  a `note:` line on divergence, per-evidence non-corroborating markers),
+  `entities_to_csv` (`source_count`/`corroborating_sources` columns), and 3
+  stale `core::entity` doc comments describing the wrong (old
+  pure-multiplicative, or flatly incorrect) formula. Separately — found while
+  tracing the same investigation — the SPA's client-side `effC()` mirror
+  used an `ENRICHMENT_SOURCES` set of 2 entries where the backend's real
+  exclusion list has 5, so Browse could render a higher tier than the
+  server's own classification for an entity corroborated only by
+  `name_intel`/`payid`/`cross_scan_history`; fixed to match exactly, with a
+  new drift-guard test reading the live backend constants (mirrors the
+  existing `EVENT_TYPES` pattern). Investigating WHY so many unrelated
+  addresses shared `corroboration=8` in the first place led to a second,
+  deeper research pass that found the true root cause is NOT in the
+  breach-ingestion module (`oathnet_pro` correctly seeds `corroboration: 1`
+  per entity) but in `search_engines`' pivot-expansion path, which stamps a
+  flat, content-blind `confidence=0.82` parent entity onto any re-queried
+  target with no relevance check — opened as new **T2.36**, deliberately not
+  fixed in this commit (a real design decision — mirroring an existing
+  relevance gate the module already has elsewhere for a different code path
+  — not a quick patch). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4557 lib tests). Paired: `PROBLEM_TREE` §8 — same
+  commit.

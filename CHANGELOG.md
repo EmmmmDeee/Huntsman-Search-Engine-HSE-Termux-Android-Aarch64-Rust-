@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **CSV export and the debug bundle / full dossier now show `source_count` —
+  the count of distinct, independent corroborating sources that actually
+  drives `c_effective()` — alongside the existing `corroboration` field,
+  which is a separate raw per-module magnitude that does not by itself
+  determine confidence.** The CSV gained `source_count` and
+  `corroborating_sources` columns; the debug bundle/full dossier print
+  `source_count`, an explanatory note when the two diverge, and marks each
+  non-corroborating evidence line (enrichment/recall/cross-scan sources).
+  Previously a reader had no way to tell from either export whether a
+  `corroboration` number meant anything.
 - **`optimization_hints` regains two event-sourced signals a pure entity-only
   scan analysis structurally cannot see: a cost-gated "scan exceeded 60s with
   a zero-yield keyed/paid module" hint, and a bounded per-scan summary line
@@ -372,6 +382,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **The live web dashboard's client-side confidence/tier calculation could
+  render an entity higher than the server's own authoritative
+  classification.** Its `ENRICHMENT_SOURCES` mirror of the backend's
+  non-corroborating-source exclusion list carried only 2 of the real 5
+  entries (missing `name_intel`, `payid`, `cross_scan_history`), so an entity
+  corroborated only by one of those three sources counted toward the
+  client-side C_eff boost when it should not have. Now matches the backend
+  exactly, with a test that fails automatically if the two ever diverge
+  again.
 - **`wigle` geo/SSID search no longer reports a known, already-documented
   WiGLE account-throttle (unverified email) as a module error.** WiGLE
   answers those two endpoints with HTTP 412 rather than a 200 with a

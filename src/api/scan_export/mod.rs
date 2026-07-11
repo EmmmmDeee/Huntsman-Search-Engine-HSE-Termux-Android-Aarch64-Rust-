@@ -59,14 +59,24 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
     let mut body = String::with_capacity(192 + entities.len() * 192);
     // `evidence_urls` + `evidence` make every row self-verifiable: the operator
     // can follow the source links and read each module's finding without
-    // reconstructing anything from the value alone.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n");
+    // reconstructing anything from the value alone. `source_count` +
+    // `corroborating_sources` sit next to `corroboration` + `sources` for the
+    // same reason: `corroboration` is a raw per-module observation magnitude
+    // (summed on merge, never deduplicated) that does NOT drive `c_effective`
+    // — `source_count` (distinct corroborating sources) does. Without both
+    // numbers side by side, a reader has no way to tell from the CSV alone
+    // whether a high `corroboration` reflects genuine independent agreement.
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags\n");
     for e in entities {
         let eff = e.c_effective();
+        let source_count = e.source_count();
         let tier = e.classify().to_string();
         let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
         sources.sort_unstable();
         let sources = sources.join("|");
+        let mut corroborating: Vec<&str> = e.corroborating_sources().into_iter().collect();
+        corroborating.sort_unstable();
+        let corroborating_sources = corroborating.join("|");
         let tags = e.tags.join("|");
 
         // Distinct full URLs across all evidence (the verifiable links), and a
@@ -111,16 +121,18 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
 
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
             e.confidence,
             eff,
             e.corroboration,
+            source_count,
             tier,
             e.observed_at,
             csv_escape(&sources),
+            csv_escape(&corroborating_sources),
             csv_escape(&evidence_urls),
             csv_escape(&evidence),
             csv_escape(&tags),
