@@ -217,7 +217,28 @@ impl Module for Netlas {
 fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> ModuleResult {
     let mut result = ModuleResult::new();
 
-    let mut all_emails: Vec<String> = Vec::new();
+    // Emails keyed to their STRONGEST provenance (a `BTreeMap` so the emit order
+    // is deterministic and a case-folded key dedups spellings). Reliability tier:
+    // 2 = certificate-bound (cryptographically tied to the host by a CA — the
+    // registrant/operator's declared contact), 1 = WHOIS registrant record,
+    // 0 = scraped from the HTTP response body (weakly tied to the subject — it may
+    // be a third-party vendor, a privacy-policy, or a CMS-template address). On a
+    // multi-source email the strongest tier wins. This replaces the previous flat
+    // 0.65 + blanket `ssl-extracted` tag, which scored an http-scraped stranger
+    // identically to a cert-bound contact and mislabelled its provenance.
+    let mut emails_by_src: std::collections::BTreeMap<String, u8> =
+        std::collections::BTreeMap::new();
+    let mut record_email = |raw: &str, tier: u8| {
+        let key = raw.trim().to_lowercase();
+        if key.is_empty() {
+            return;
+        }
+        let slot = emails_by_src.entry(key).or_insert(0);
+        *slot = (*slot).max(tier);
+    };
+    const EMAIL_CERT: u8 = 2;
+    const EMAIL_WHOIS: u8 = 1;
+    const EMAIL_HTTP: u8 = 0;
     let mut all_cert_domains: Vec<String> = Vec::new();
     let mut cert_orgs: Vec<String> = Vec::new();
     let mut port_list: Vec<String> = Vec::new();
@@ -278,7 +299,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
                     ssl_cn = Some(cn.to_string());
                 }
                 if let Some(emails) = &subj.email {
-                    all_emails.extend(emails.iter().cloned());
+                    emails.iter().for_each(|em| record_email(em, EMAIL_CERT));
                 }
                 // OV/EV certificates carry the verified organisation name in
                 // the Subject O field — a confirmed legal entity name.
@@ -287,7 +308,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
                 }
             }
             if let Some(emails) = &cert.emails {
-                all_emails.extend(emails.iter().cloned());
+                emails.iter().for_each(|em| record_email(em, EMAIL_CERT));
             }
             if let Some(doms) = &cert.domains {
                 all_cert_domains.extend(doms.iter().cloned());
@@ -307,7 +328,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         }
         if let Some(http_data) = &data.http {
             if let Some(emails) = &http_data.emails {
-                all_emails.extend(emails.iter().cloned());
+                emails.iter().for_each(|em| record_email(em, EMAIL_HTTP));
             }
             // HTTP <title> (often the owning org/product) and status code —
             // decoded via fields=* but previously dropped.
@@ -328,7 +349,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
             && let Some(net) = &whois.net
             && let Some(emails) = &net.emails
         {
-            all_emails.extend(emails.iter().cloned());
+            emails.iter().for_each(|em| record_email(em, EMAIL_WHOIS));
         }
         if let Some(cves) = &data.cve {
             for cve in cves.iter().take(5) {
@@ -508,23 +529,28 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     // module docstring these are its "key differentiator … direct BFS pivot to breach
     // stack", so a silent `.take(10)` drops real breach-stack pivots a cert/WHOIS
     // record exposes (registrant/admin/tech/abuse contacts on a busy host).
-    all_emails.sort();
-    all_emails.dedup();
-    for email in &all_emails {
-        let email = email.to_lowercase();
-        if crate::util::extract::looks_like_email(&email) {
-            let mut e = Entity::new(EntityKind::Email, &email, 0.65, scan_id);
-            e.tag("netlas");
-            e.tag("ssl-extracted");
-            e.add_evidence(
-                Evidence::new(
-                    SRC,
-                    format!("Email extracted from SSL/HTTP data for {ip_str}"),
-                )
-                .with_attr("emails_extracted", &email),
-            );
-            result.push(e);
+    // Emit each unique email at the confidence + provenance tag its STRONGEST
+    // source warrants. A cert-bound address is CA-attested to the host; a WHOIS
+    // contact is a declared registrant address; an http-scraped address is only
+    // weakly tied to the subject and must NOT read as `ssl-extracted` or carry the
+    // same confidence. `BTreeMap` iteration is email-sorted → deterministic.
+    for (email, &tier) in &emails_by_src {
+        if !crate::util::extract::looks_like_email(email) {
+            continue;
         }
+        let (conf, tag, provenance) = match tier {
+            EMAIL_CERT => (0.72, "ssl-extracted", "SSL/TLS certificate"),
+            EMAIL_WHOIS => (0.58, "whois-extracted", "WHOIS registrant record"),
+            _ => (0.45, "http-scraped", "scraped HTTP response body"),
+        };
+        let mut e = Entity::new(EntityKind::Email, email, conf, scan_id);
+        e.tag("netlas");
+        e.tag(tag);
+        e.add_evidence(
+            Evidence::new(SRC, format!("Email from {provenance} for {ip_str}"))
+                .with_attr("provenance", provenance),
+        );
+        result.push(e);
     }
 
     result

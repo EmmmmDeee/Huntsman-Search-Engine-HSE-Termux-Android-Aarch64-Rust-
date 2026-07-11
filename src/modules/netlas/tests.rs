@@ -83,10 +83,12 @@ fn build_entities_emits_every_unique_san_domain_and_email() {
         .iter()
         .filter(|e| e.kind == EntityKind::Domain && e.has_tag("ssl-san"))
         .count();
+    // These 12 emails come from the HTTP body → `http-scraped` provenance tag
+    // (NOT `ssl-extracted`), the lowest reliability tier.
     let email_ct = r
         .entities
         .iter()
-        .filter(|e| e.kind == EntityKind::Email && e.has_tag("ssl-extracted"))
+        .filter(|e| e.kind == EntityKind::Email && e.has_tag("http-scraped"))
         .count();
     assert_eq!(
         domain_ct, 25,
@@ -96,6 +98,53 @@ fn build_entities_emits_every_unique_san_domain_and_email() {
         email_ct, 12,
         "every unique extracted email must be emitted, not capped at 10"
     );
+    // Provenance precision: an http-body email is the weakest tier, well below a
+    // cert-bound one, and must not be mislabelled `ssl-extracted`.
+    let http_email = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Email)
+        .expect("an email entity");
+    assert!(http_email.has_tag("http-scraped") && !http_email.has_tag("ssl-extracted"));
+    assert!(
+        http_email.confidence < 0.5,
+        "http-scraped email is low-confidence"
+    );
+}
+
+#[test]
+fn build_entities_tiers_email_confidence_by_provenance() {
+    use crate::core::entity::EntityKind;
+    // The SAME address appears in the certificate subject AND the http body — the
+    // STRONGER (cert-bound) provenance must win: `ssl-extracted`, higher confidence.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "203.0.113.10",
+            "certificate": { "subject": { "email": ["admin@example.com"] } },
+            "http": { "emails": ["admin@example.com", "scraped@thirdparty.io"] },
+            "whois": { "net": { "emails": ["registrant@example.com"] } }
+        }}]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let email = |v: &str| {
+        r.entities
+            .iter()
+            .find(|e| e.kind == EntityKind::Email && e.value == v)
+            .unwrap_or_else(|| panic!("missing email {v}"))
+    };
+    // Cert-bound (also seen in http) → strongest tier wins.
+    let cert = email("admin@example.com");
+    assert!(cert.has_tag("ssl-extracted") && !cert.has_tag("http-scraped"));
+    // WHOIS registrant → mid tier.
+    let whois = email("registrant@example.com");
+    assert!(whois.has_tag("whois-extracted"));
+    // Http-only third party → weakest tier.
+    let http = email("scraped@thirdparty.io");
+    assert!(http.has_tag("http-scraped"));
+    // Strict ordering: cert > whois > http.
+    assert!(cert.confidence > whois.confidence);
+    assert!(whois.confidence > http.confidence);
 }
 
 #[test]
