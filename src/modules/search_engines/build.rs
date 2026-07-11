@@ -43,30 +43,50 @@ pub(super) fn build_entities(
         _ => None,
     };
 
-    let engines_hit: HashSet<&str> = results.iter().map(|r| r.engine).collect();
-    let queries_run: HashSet<&str> = results.iter().map(|r| r.query.as_str()).collect();
+    // A location seed (an Address or Coordinates value fed back by recursion) is
+    // a coarse place, not an identity: virtually every real street address or
+    // lat/lon has SOME web presence via real-estate / aggregator / mapping sites
+    // regardless of the subject, so a search hit re-affirms nothing about the
+    // person. Computed once and consulted everywhere below that would otherwise
+    // treat "the web returned a result for this seed" as genuine corroboration —
+    // the parent stamp here, the snippet-address gate, and the URL demotion.
+    let location_seed = matches!(target.kind, TargetKind::Address | TargetKind::Coordinates);
 
-    // Parent entity with search metadata
-    let mut parent = target.to_entity(0.82, scan_id);
-    parent.tag("search-enriched");
-    let mut engines_list: Vec<&str> = engines_hit.iter().copied().collect();
-    engines_list.sort_unstable();
-    parent.add_evidence(
-        Evidence::new(
-            "search_engines",
-            format!(
-                "Search across {} engine(s) returned {} result(s) from {} quer{}",
-                engines_hit.len(),
-                results.len(),
-                queries_run.len(),
-                if queries_run.len() == 1 { "y" } else { "ies" },
-            ),
-        )
-        .with_attr("result_count", results.len().to_string())
-        .with_attr("engines", engines_list.join(", "))
-        .with_attr("queries_run", queries_run.len().to_string()),
-    );
-    result.push(parent);
+    // Parent entity with search metadata — a self-referencing re-affirmation of
+    // the seed. Skip it entirely for a location seed: it shares the seed's UID,
+    // so minting it at the flat 0.82 "this identifier has real web presence"
+    // confidence merges (via `absorb`, GREATEST semantics) straight back into the
+    // seed address and manufactured false corroboration for ANY address pivot — a
+    // live scan flat-stamped ~19 mutually-exclusive breach addresses (spanning
+    // many different US states) at an identical 0.82 this way. Web presence is
+    // real corroboration for a genuine identity (email/username/domain) but
+    // tautological for a place, so a location seed earns no re-affirmation; the
+    // gated per-result extraction below still emits whatever the pages genuinely
+    // yield, tiered on its own merits.
+    if !location_seed {
+        let engines_hit: HashSet<&str> = results.iter().map(|r| r.engine).collect();
+        let queries_run: HashSet<&str> = results.iter().map(|r| r.query.as_str()).collect();
+        let mut parent = target.to_entity(0.82, scan_id);
+        parent.tag("search-enriched");
+        let mut engines_list: Vec<&str> = engines_hit.iter().copied().collect();
+        engines_list.sort_unstable();
+        parent.add_evidence(
+            Evidence::new(
+                "search_engines",
+                format!(
+                    "Search across {} engine(s) returned {} result(s) from {} quer{}",
+                    engines_hit.len(),
+                    results.len(),
+                    queries_run.len(),
+                    if queries_run.len() == 1 { "y" } else { "ies" },
+                ),
+            )
+            .with_attr("result_count", results.len().to_string())
+            .with_attr("engines", engines_list.join(", "))
+            .with_attr("queries_run", queries_run.len().to_string()),
+        );
+        result.push(parent);
+    }
 
     for r in results {
         let host = extract_host(&r.url);
@@ -245,7 +265,17 @@ pub(super) fn build_entities(
         // result's snippet or URL before extracting its address. Single-token
         // targets (email handle / username) are not prone to this first-name
         // collision and are unaffected.
-        let location_on_subject = if terms.len() >= 2 {
+        // A location seed has no subject-identity anchor to gate on: `target_terms`
+        // splits its value into place tokens, so `terms.last()` is the trailing
+        // postcode / state (for "…, Hodges, SC, 29653" it is "29653"), which every
+        // aggregator page that indexed the address reproduces verbatim — the gate
+        // would be tautologically true and let each such page re-extract the seed
+        // address and bump its confidence (+0.10/result) and corroboration. A page
+        // ABOUT a place mentioning that place is not corroboration of the subject,
+        // so never harvest snippet addresses from a location-seed pivot.
+        let location_on_subject = if location_seed {
+            false
+        } else if terms.len() >= 2 {
             let hay = format!("{combined_text} {}", r.url).to_lowercase();
             terms
                 .last()
@@ -341,8 +371,7 @@ pub(super) fn build_entities(
             // floor, excluded from confirmed correlation) so they neither inflate
             // results nor recurse into more suburb spam — unless the URL is a
             // confirmed profile, which is identity-bearing regardless of seed.
-            let location_seed =
-                matches!(target.kind, TargetKind::Address | TargetKind::Coordinates);
+            // `location_seed` is the function-scoped binding computed once above.
             // A code-repo URL that matched only on a repo/file name while its
             // owner handle is unrelated to the target (e.g.
             // `github.com/ExponentiAI/HAIGEN` — an AI project, not the subject's

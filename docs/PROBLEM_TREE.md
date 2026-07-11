@@ -1264,7 +1264,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   authoritative backend classifier, but a wrong one from the SPA's mirror,
   plus an unreadable one everywhere else).
 
-- **`[ ]` T2.36 · `search_engines`' pivot-expansion path stamps a flat,
+- **`[x]` T2.36 · `search_engines`' pivot-expansion path stamps a flat,
   content-blind `confidence=0.82` "parent" entity onto ANY re-queried target
   it searches, with no check that a single result actually references that
   target — inflating confidence and corroboration uniformly regardless of
@@ -1306,7 +1306,66 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   positive this project's own doctrine treats as worse than missing
   coverage — not yet a data-loss/crash P0, but materially worse than T2.35's
   display-only gap since it affects the AUTHORITATIVE backend confidence
-  value, not just how it's shown).
+  value, not just how it's shown). **Fixed:** a `location_seed` boolean
+  (`matches!(target.kind, TargetKind::Address | TargetKind::Coordinates)`)
+  was hoisted to function scope and consulted at all three sites that
+  previously treated "the web returned a result" as corroboration: the
+  parent-entity construction at the former line 50 is now skipped entirely
+  for a location seed (not merely demoted — since the parent shares the
+  seed's UID and would still unconditionally inflate `corroboration` via
+  `absorb()` even at a lower confidence, and would union a `candidate` tag
+  onto a possibly-legitimate confirmed address; skipping is the only design
+  that removes the fabrication rather than relabelling it), and the
+  `location_on_subject` snippet-address gate now short-circuits to `false`
+  for a location seed (confirmed via an explicit tokenization trace:
+  `target_terms()` on an address value yields the trailing postcode/state as
+  `terms.last()`, which every aggregator page that indexed the address
+  trivially reproduces — the gate was tautologically true, not a genuine
+  relevance filter, for this seed kind). 2 new regression tests
+  (`location_seed_pivot_does_not_reaffirm_the_seed_at_0_82`,
+  `identity_seed_still_gets_flat_parent_reaffirmation` — the latter proving
+  the fix does NOT regress the legitimate Email/Username/Domain case). Two
+  independent adversarial review passes confirmed correctness by re-deriving
+  the fix from first principles and by independently re-running every gate
+  command from scratch (not trusting the implementer's report). Live-verified
+  beyond the test suite: a real `hse scan --kind address` against a public
+  street address with only `search_engines` enabled shows zero
+  `search-enriched` tags and zero entities at 0.82 — every finding correctly
+  tiers at 0.30–0.45, candidate/generic-location.
+- **`[x]` T2.37 · `see_know`'s `/search` path had the identical bug shape as
+  T2.36, one file over — a sibling module, not a recurrence of the same
+  code** — found by a deliberate cross-module sweep for the same pattern
+  after T2.36 was root-caused (not a coincidence discovery): `see_know`
+  accepts `Email | Username | Phone | FullName | IpAddress | Domain`
+  re-pivots, and unconditionally minted a `confidence=0.85`, `BREACH`-tagged
+  parent entity whenever its `/search` endpoint returned `total > 0` rows —
+  the raw, unfiltered hit count, not a count of rows that actually identify
+  the subject. A broad `FullName` re-pivot hitting same-name strangers (the
+  module's own doc comments already admit this happens) stamped 0.85 BREACH
+  on the pivot entity regardless. The per-record extraction path
+  (`extract_entities`) already demotes non-matching individual rows via
+  `TargetMatch`, "mirroring oathnet_pro" per its own comment — but that gate
+  was never applied to the PARENT, which is exactly the oathnet_pro bug this
+  codebase already fixed once (`oathnet_pro/breach.rs`'s
+  `breach_parent_entity`, gated on `matching.is_empty()` rather than raw
+  `total_returned`) recurring, unfixed, in a sibling module. → **Fixed:**
+  added `search_subject_present(target_value, items) -> bool` (a pure
+  function reusing the same `TargetMatch` already imported for per-record
+  gating), and wrapped the parent-entity construction in
+  `if search_subject_present(v, &items) { ... }` — mirroring
+  `oathnet_pro`'s already-proven gate exactly. The per-record extraction
+  loop is unchanged. 1 new regression test
+  (`search_subject_present_gates_on_a_real_match`: a page of pure strangers
+  reads as not-present; adding the subject's own row opens the gate;
+  exact-selector kinds like email still match trivially; empty results never
+  match). A codebase-wide sweep of all 39 non-test `target.to_entity(` call
+  sites across every other module found no further instances — each of the
+  other 37 either has a real content/relevance gate already, or its
+  `accepts()` set never admits a coarse/re-pivotable target kind in the
+  first place; findings were independently re-verified against live code
+  before being reported, not taken on trust. **P1** (identical evidentiary-
+  integrity class as T2.36 — same fix pattern, already proven correct in
+  `oathnet_pro`, applied a second time).
 
 ---
 
@@ -5767,3 +5826,54 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   invalid-HTML-tag lints) clean, full suite 0 failures (4554 lib tests,
   unchanged — no new unit-testable surface). **Paired:** `SOLUTION_TREE`
   §5 — same commit.
+- **2026-07-11** — **New T2.35, closed same cycle: `source_count()` — the
+  count that actually drives `c_eff` — was invisible everywhere
+  `corroboration` (a different raw magnitude) was shown, and the SPA's
+  client-side formula mirror excluded only 2 of the real 5 non-corroborating
+  sources.** Triggered by the operator supplying a real scan's CSV export and
+  debug bundle as evidence. Two research passes: the base formula was already
+  correct and tested; the gap was purely that no export surface (CSV, debug
+  bundle/full dossier, SPA) ever showed `source_count()` next to the
+  confusingly similar `corroboration` field. Fixed in `render_full`
+  (`source_count` + divergence note + per-evidence non-corroborating
+  markers), `entities_to_csv` (`source_count`/`corroborating_sources`
+  columns), 3 stale `core::entity` doc comments (module/struct/field level,
+  one of which flatly asserted `corroboration` WAS the independent-source
+  count), and the SPA's `ENRICHMENT_SOURCES` set (2→5 entries, matching the
+  backend exactly), with a new drift-guard test reading the live backend
+  constants so the two can't diverge silently again. Investigating why so
+  many unrelated addresses shared `corroboration=8` led to a second research
+  pass that found the true cause lies elsewhere (`search_engines`'
+  pivot-expansion path, not the ingestion module) — opened as **T2.36** below
+  rather than rushed into this commit. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4557 lib tests). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+- **2026-07-11** — **T2.36 closed + new T2.37 (closed same cycle): the
+  content-blind confidence-stamp bug found while investigating T2.35 was
+  root-caused, fixed, adversarially verified twice, and a codebase-wide sweep
+  found and fixed one sibling instance.** Executed as a multi-phase workflow
+  (investigate → implement → adversarially verify → sweep → triage → fix
+  confirmed findings) given the scope and evidentiary-integrity stakes.
+  `search_engines/build.rs`'s parent-entity re-affirmation and its
+  `location_on_subject` snippet-address gate both now respect a
+  function-scoped `location_seed` check (`Address`/`Coordinates` targets get
+  no self re-affirmation at all — a deliberate skip, not a demotion, since a
+  lower-confidence parent would still unconditionally inflate `corroboration`
+  via `absorb()` and union a `candidate` tag onto a possibly-legitimate
+  entity). The codebase-wide sweep this cycle mandated (not just a
+  single-file patch) found one further real instance — `see_know`'s `/search`
+  path had the identical bug, gated on raw `total > 0` instead of an actual
+  subject-match check — fixed identically to how this codebase already fixed
+  the same shape once before in `oathnet_pro` (`TargetMatch`-gated). All 37
+  other `target.to_entity(` call sites across every other module were
+  independently re-verified against live code (not taken on the sweep
+  agent's word) and confirmed clean — no findings fabricated to manufacture
+  urgency. Both fixes independently adversarially verified: one pass
+  re-derived correctness from the code and traced concrete cases by hand: a
+  second pass re-ran every gate command from scratch rather than trusting
+  the implementer's report. Live-verified beyond the test suite: a real `hse
+  scan --kind address` with only `search_engines` enabled shows zero
+  `search-enriched` tags and zero 0.82-confidence entities — every finding
+  correctly tiers at 0.30–0.45. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4560 lib tests, +3). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

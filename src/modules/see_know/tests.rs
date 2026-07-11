@@ -56,6 +56,47 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn search_subject_present_gates_on_a_real_match() {
+        use serde_json::json;
+        // T2.36-pattern regression: a broad `full_name` `/search` page of pure
+        // term-sharing strangers must not read as "subject present" — the
+        // caller would otherwise mint a 0.85 BREACH parent that merges (via
+        // `absorb`, GREATEST semantics) straight onto the pre-seeded subject
+        // anchor regardless of whether any row actually concerns them.
+        let strangers: Vec<serde_json::Value> = (0..5)
+            .map(|i| {
+                json!({
+                    "full_name": format!("Stranger {i}"),
+                    "country": "ZZ",
+                })
+            })
+            .collect();
+        assert!(
+            !search_subject_present("Ali Kareem", &strangers),
+            "a page of strangers must not read as subject-present"
+        );
+
+        // When the subject's own row is present, the gate opens.
+        let mut page = strangers.clone();
+        page.push(json!({"full_name": "Ali Kareem", "country": "AU"}));
+        assert!(
+            search_subject_present("Ali Kareem", &page),
+            "the subject's own row must open the gate"
+        );
+
+        // Exact-selector kinds (email/phone/domain/IP) trivially match their
+        // own record — the parent must still fire for those.
+        let email_hit = vec![json!({"email": "jordan.meyer@wartburg.edu"})];
+        assert!(search_subject_present(
+            "jordan.meyer@wartburg.edu",
+            &email_hit
+        ));
+
+        // Empty results never read as subject-present.
+        assert!(!search_subject_present("Ali Kareem", &[]));
+    }
+
+    #[test]
     fn extract_entities_characterization() {
         use serde_json::json;
         let item = json!({

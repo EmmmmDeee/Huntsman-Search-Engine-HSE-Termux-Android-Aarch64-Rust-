@@ -382,6 +382,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`search_engines` and `see_know` no longer manufacture apparent
+  independent corroboration for a re-pivoted, non-identity target (an
+  address, coordinate, or same-name-stranger page) by stamping a flat
+  high-confidence self-referencing entity regardless of whether any result
+  actually concerns that target.** For `search_engines`, a re-pivoted
+  Address/Coordinates value previously always received a `confidence=0.82`
+  "search-enriched" re-affirmation merged onto the entity, since virtually
+  every real street address has some web presence via aggregator sites
+  regardless of subject relevance; a live scan showed ~19 mutually-exclusive
+  addresses spanning many US states all reaching an identical inflated
+  confidence this way. For `see_know`, a broad name/domain/IP re-pivot
+  hitting same-name strangers previously stamped a flat `confidence=0.85`
+  breach-tagged parent on the raw hit count rather than an actual subject
+  match — the same bug shape this codebase had already fixed once in
+  `oathnet_pro`, recurring unfixed in a sibling module. Both now require a
+  genuine relevance/subject-match signal before re-affirming the target,
+  with regression tests proving genuine identity seeds (email/username/
+  domain) are unaffected.
 - **The live web dashboard's client-side confidence/tier calculation could
   render an entity higher than the server's own authoritative
   classification.** Its `ENRICHMENT_SOURCES` mirror of the backend's

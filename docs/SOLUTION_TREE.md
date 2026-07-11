@@ -880,6 +880,46 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   a `search_engines` pivot-expansion bug, distinct from this display gap. ✅
   2 new tests (CSV divergence case, `render_full` note/marker case) + 1 new
   SPA drift-guard test.
+- **`[x]` SOL-LOCATION-SEED-NO-REAFFIRM · `search_engines` no longer
+  self-reaffirms a re-pivoted Address/Coordinates seed at flat 0.82
+  confidence** — a function-scoped `location_seed` check
+  (`matches!(target.kind, TargetKind::Address | TargetKind::Coordinates)`,
+  hoisted from an existing inline use one call site down) now gates both the
+  parent-entity construction (skipped entirely for a location seed, not
+  merely demoted — a demoted parent would still unconditionally inflate
+  `corroboration` via `absorb()` and union a stray `candidate` tag) and the
+  `location_on_subject` snippet-address gate (short-circuits `false` for a
+  location seed — confirmed via tokenization trace that the gate was
+  tautologically true for an address value, since `terms.last()` is just the
+  trailing postcode, which every indexing aggregator page reproduces
+  verbatim). *Closes:* new node **T2.36**. ✅ 2 new tests
+  (`location_seed_pivot_does_not_reaffirm_the_seed_at_0_82`,
+  `identity_seed_still_gets_flat_parent_reaffirmation` — the latter proves no
+  regression for genuine identity seeds). Two independent adversarial
+  verification passes (one re-derived correctness from the code, one
+  re-ran every gate command from scratch). Live-verified: a real `hse scan
+  --kind address` with only `search_engines` enabled shows zero
+  `search-enriched` tags and zero 0.82-confidence entities.
+- **`[x]` SOL-SEEKNOW-SUBJECT-GATE · `see_know`'s `/search` breach-parent
+  stamp now requires a genuine subject match, not just a non-empty result
+  page** — the sibling instance of SOL-LOCATION-SEED-NO-REAFFIRM's bug shape,
+  found by a deliberate cross-module sweep after T2.36 was root-caused (not
+  a coincidence). `see_know` unconditionally minted a `confidence=0.85`
+  `BREACH`-tagged parent whenever `/search` returned `total > 0` rows — the
+  raw hit count, not a subject-match count — even though the per-record
+  extraction path already demotes non-matching individual rows via
+  `TargetMatch`, "mirroring oathnet_pro" per its own comment; that gate was
+  never applied to the parent, reintroducing the exact bug `oathnet_pro`'s
+  own `breach_parent_entity` already fixed (`matching.is_empty()`, not raw
+  `total_returned`). New pure `search_subject_present(target_value, items)`
+  reuses the same `TargetMatch` machinery and gates the parent identically to
+  `oathnet_pro`'s proven pattern. *Closes:* new node **T2.37**. ✅ 1 new test
+  (`search_subject_present_gates_on_a_real_match`: strangers don't open the
+  gate, the subject's own row does, exact-selector kinds still match
+  trivially, empty results never match). A sweep of all 39 non-test
+  `target.to_entity(` call sites across every other module found no further
+  instances — each independently re-verified against live code, not taken on
+  trust; zero findings fabricated to manufacture false urgency.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -955,6 +995,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
 | SOL-WIGLE-412-GRACEFUL | T2.34 | `[x]` |
 | SOL-CEFF-TRANSPARENCY | T2.35 | `[x]` |
+| SOL-LOCATION-SEED-NO-REAFFIRM | T2.36 | `[x]` |
+| SOL-SEEKNOW-SUBJECT-GATE | T2.37 | `[x]` |
 
 ---
 
@@ -966,14 +1008,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.36** (new, 2026-07-11) — `search_engines`' pivot-expansion path stamps
-  a flat `confidence=0.82` parent entity onto any re-queried target with no
-  relevance check, inflating confidence/corroboration uniformly for entities
-  like breach-derived addresses regardless of whether the search results
-  actually concern them. Root cause identified precisely (`build.rs:50`,
-  `build.rs:306-307`); solution direction sketched (mirror the module's own
-  existing relevance gate; cap/dedupe the per-result counter by domain). Not
-  yet started — a P1, evidentiary-integrity-affecting fix, not a quick one.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4204,3 +4238,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   — not a quick patch). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4557 lib tests). Paired: `PROBLEM_TREE` §8 — same
   commit.
+
+- **2026-07-11** — **SOL-LOCATION-SEED-NO-REAFFIRM + SOL-SEEKNOW-SUBJECT-GATE
+  built; T2.36 closed, new T2.37 opened and closed same cycle.** Run as a
+  multi-phase workflow given the scope and evidentiary-integrity stakes:
+  parallel investigation (tokenization trace of `location_on_subject` for an
+  Address seed; a first sweep of `target.to_entity(` across every module;
+  the existing `build_entities` test idiom) fed a single implementation pass,
+  which was then independently adversarially verified twice — one pass
+  re-derived correctness from the code and traced concrete cases by hand,
+  the other re-ran every gate command from scratch rather than trusting the
+  implementer's report. `search_engines/build.rs` now gates its
+  parent-entity re-affirmation AND its snippet-address extraction on a
+  function-scoped `location_seed` check; the fix SKIPS reaffirmation for a
+  location seed rather than demoting it, since a demoted parent sharing the
+  seed's UID would still unconditionally inflate `corroboration` via
+  `absorb()`. A dedicated post-fix sweep (independently re-verifying every
+  candidate against live code, not trusting the sweep pass's citations)
+  found exactly one further real instance — `see_know`'s `/search` path,
+  gated on raw hit count instead of a genuine subject match — fixed
+  identically to how this codebase's own `oathnet_pro` module already fixed
+  the same shape once before. All other 37 `target.to_entity(` call sites
+  were checked and correctly cleared; the sweep explicitly declined to
+  fabricate findings where none existed. Live-verified beyond the test
+  suite: a real `hse scan --kind address` shows zero `search-enriched` tags
+  and zero 0.82-confidence entities where the unfixed code would have shown
+  both. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4560 lib tests, +3). Paired: `PROBLEM_TREE` §8 — same commit.

@@ -1768,6 +1768,89 @@ fn url_from_a_location_seed_is_quarantined_as_generic_location() {
 }
 
 #[test]
+fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
+    // T2.36 regression: the engine re-queues every discovered entity as a pivot,
+    // so a breach-derived street address comes back as an Address seed. Real-estate
+    // / aggregator sites index virtually every US address, so the re-query always
+    // returned SOME result and the unconditional parent stamp flat-marked the seed
+    // at 0.82 "search-enriched" — read downstream as independent corroboration and
+    // pushing the address to VERIFIED regardless of subject relevance. A live scan
+    // showed ~19 mutually-exclusive addresses (many different US states) all at an
+    // identical 0.82 from this. A location seed must earn no self re-affirmation.
+    let target = Target::new(TargetKind::Address, "1218 E Grumling Rd, Hodges, SC 29653");
+    let mk = |url: &str| SearchResult {
+        url: url.to_string(),
+        title: "1218 E Grumling Rd, Hodges, SC 29653 | Zillow".to_string(),
+        snippet: "1218 E Grumling Rd, Hodges, SC 29653 is a house listed for sale.".to_string(),
+        engine: "duckduckgo",
+        query: "\"1218 E Grumling Rd, Hodges, SC 29653\"".to_string(),
+    };
+    let results = vec![
+        mk("https://www.zillow.com/homedetails/1218-E-Grumling-Rd-Hodges-SC-29653/"),
+        mk("https://www.realtor.com/realestateandhomes-detail/1218-E-Grumling-Rd-Hodges-SC-29653"),
+    ];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+
+    // No self-referencing parent re-affirmation was stamped.
+    assert!(
+        !res.entities.iter().any(|e| e.has_tag("search-enriched")),
+        "a location seed must not mint a search-enriched parent"
+    );
+    // Nothing is left at the flat 0.82 identity-confirmed tier.
+    assert!(
+        !res.entities
+            .iter()
+            .any(|e| (e.confidence - 0.82).abs() < 1e-9),
+        "no entity from a location-seed pivot reaches 0.82, got {:?}",
+        res.entities
+            .iter()
+            .map(|e| (e.kind.clone(), e.confidence))
+            .collect::<Vec<_>>()
+    );
+    // The seed address is not re-extracted from the aggregator snippets either
+    // (mechanism 2): a page about the address mentioning the address is not
+    // subject corroboration, so no inflated Address self-entity survives.
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Address),
+        "the seed address must not be re-affirmed via snippet extraction"
+    );
+}
+
+#[test]
+fn identity_seed_still_gets_flat_parent_reaffirmation() {
+    // The fix must not regress the legitimate case: for a genuine identity seed
+    // (email / username / domain) "this identifier has real web presence" IS
+    // corroboration, so the parent still re-affirms it at the flat 0.82
+    // search-enriched tier — the demotion is location-seed-specific.
+    for kind in [TargetKind::Email, TargetKind::Username, TargetKind::Domain] {
+        let value = match kind {
+            TargetKind::Email => "jerome.despal@example.com",
+            TargetKind::Username => "kylo4kylo",
+            _ => "acme.com",
+        };
+        let target = Target::new(kind, value);
+        let results = vec![SearchResult {
+            url: "https://example.org/about".to_string(),
+            title: "profile".to_string(),
+            snippet: "some page".to_string(),
+            engine: "duckduckgo",
+            query: "q".to_string(),
+        }];
+        let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+        let parent = res
+            .entities
+            .iter()
+            .find(|e| e.has_tag("search-enriched"))
+            .unwrap_or_else(|| panic!("identity seed {kind:?} keeps its search-enriched parent"));
+        assert!(
+            (parent.confidence - 0.82).abs() < 1e-9,
+            "{kind:?} parent stays at 0.82, got {}",
+            parent.confidence
+        );
+    }
+}
+
+#[test]
 fn domain_queries_include_abn() {
     let t = Target::new(TargetKind::Domain, "acme.com");
     let q = build_queries(&t);

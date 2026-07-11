@@ -48,6 +48,7 @@ use crate::core::{
 use crate::modules::oathnet_pro::key_harvest::{extract_api_keys_from_item, store_api_credential};
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know;
+use crate::util::target_match::TargetMatch;
 
 mod endpoints;
 mod extract;
@@ -239,17 +240,30 @@ impl Module for SeekNow {
         let total = items.len();
 
         if total > 0 {
-            let mut parent = target.to_entity(0.85, &ctx.scan_id);
-            parent.tag(tags::BREACH);
-            parent.tag("see-know");
-            parent.add_evidence(
-                Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
-                    .with_attr("hits", total.to_string())
-                    .with_attr("endpoint", "/api/v1/search")
-                    .with_attr("provider", "see-know.eu")
-                    .with_attr("api_key_origin", &key_fp),
-            );
-            result.push(parent);
+            // `/search` on a broad seed (above all a `full_name` auto-detect,
+            // but also an address-adjacent phone/IP) can return rows for
+            // strangers who merely share a term with the target. Minting the
+            // 0.85 BREACH parent off raw `total` re-affirms the seed's own UID
+            // — merging via `absorb` (GREATEST semantics) straight into the
+            // pre-existing entity — even when NONE of the returned rows
+            // actually identify the subject. `search_subject_present` mirrors
+            // the same match gate `oathnet_pro::breach::breach_parent_entity`
+            // already applies to its parent; the per-record extraction below
+            // is unaffected — it demotes non-matching rows individually via
+            // `is_target` inside `extract_entities`.
+            if search_subject_present(v, &items) {
+                let mut parent = target.to_entity(0.85, &ctx.scan_id);
+                parent.tag(tags::BREACH);
+                parent.tag("see-know");
+                parent.add_evidence(
+                    Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
+                        .with_attr("hits", total.to_string())
+                        .with_attr("endpoint", "/api/v1/search")
+                        .with_attr("provider", "see-know.eu")
+                        .with_attr("api_key_origin", &key_fp),
+                );
+                result.push(parent);
+            }
 
             // Each record yields at least one entity; reserve up front so the
             // result vector doesn't repeatedly realloc as records are walked.
@@ -420,6 +434,16 @@ async fn resolve_identity_pivots(
             break; // a hop that surfaced nothing new — stop chasing
         }
     }
+}
+
+/// True if at least one `/search` row actually identifies the scan subject,
+/// per the shared [`TargetMatch`] rules. Gates the top-level breach-parent
+/// stamp (see `process`) so a page of term-sharing strangers doesn't
+/// re-affirm the seed at full confidence; pure function of `(target_value,
+/// items)` so the gate is testable without a live HTTP round-trip.
+fn search_subject_present(target_value: &str, items: &[Value]) -> bool {
+    let match_ctx = TargetMatch::new(target_value);
+    items.iter().any(|item| match_ctx.matches(item))
 }
 
 /// True if a seed is junk that should never reach a SeekNow HTTP call — local
