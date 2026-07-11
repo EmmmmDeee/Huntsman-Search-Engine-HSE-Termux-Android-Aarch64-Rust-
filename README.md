@@ -7,7 +7,7 @@
 
 Pure-Rust OSINT / GEOINT platform with **162 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
-SpiderFoot-style Web UI, zero native dependencies.
+dark-console Web UI, zero native dependencies.
 
 ---
 
@@ -61,7 +61,7 @@ hse serve   # binds 127.0.0.1:8080 (loopback only)
 ```
 
 Open **Chrome** (or Firefox) on the phone and go to `http://127.0.0.1:8080`.
-You'll get a SpiderFoot-style dark-navbar UI — **Dashboard · New Scan · Scans ·
+You'll get a dark-console UI — **Dashboard · New Scan · Scans ·
 Live · Engines · Settings** — where **New Scan** drives the engine and each
 scan's results page tabs through a sortable entity browser, a D3 force graph,
 severity-tagged correlations, and a real-time (SSE) event log. The **Settings
@@ -207,11 +207,18 @@ corroborated by several modules carries all of their techniques (merges union
 the tags).
 
 
-## Web UI (SpiderFoot-style)
+## Web UI (dark-console, zero vendored UI framework)
 
-`hse serve` launches a localhost-only HTTP server with an embedded
-single-file SPA using SpiderFoot's exact vendor stack (Bootstrap 3,
-jQuery, D3 v3, tablesorter, alertify):
+`hse serve` launches a localhost-only HTTP server with an embedded SPA split
+into native ES modules (`src/web/js/`) on a from-scratch dark-console design
+system (`src/web/css/app.css`). D3 v3 is the one remaining vendored library
+(the force-directed graph rendering engine); Bootstrap, jQuery, tablesorter,
+and alertify — SpiderFoot's original UI-framework stack — have been dropped
+in favour of our own CSS and a small vanilla-JS compatibility layer
+(`src/web/js/ui.js`) for navbar collapse, the About modal, sortable tables,
+and toast/confirm/prompt dialogs. The navigation structure and scan workflow
+still follow SpiderFoot's mental model for operator familiarity; the visual
+design and every dependency underneath it are HSE's own:
 
 - **Dashboard** — stats cards, scan status breakdown, quick actions
 - **New Scan** — target input + module grid with tooltips + depth/throttle
@@ -221,7 +228,7 @@ jQuery, D3 v3, tablesorter, alertify):
   typed relation edges — subdomain/lineage/co-location — dashed, kind on hover),
   Correlations (severity-tagged), Event Log (real-time SSE), Info
 - **Settings** — API key management with validation
-- **Dark mode** toggle
+- **Dark mode** by default, light mode opt-out toggle
 
 Binds to `127.0.0.1:8080` by default — no LAN exposure. This is the
 operator-followed default, not an enforced restriction: `--bind`/`HSE_BIND`

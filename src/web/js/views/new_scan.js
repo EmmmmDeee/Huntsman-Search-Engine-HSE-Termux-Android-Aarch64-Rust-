@@ -33,8 +33,8 @@ export async function renderNewScan(v){
     <h2>New Scan</h2>
     <hr style="margin:8px 0 14px 0">
 
-    <div class="panel panel-default" style="border-color:#d43f3a;margin-bottom:14px">
-      <div class="panel-heading" style="background:#fdecea"><b><i class="glyphicon glyphicon-flash" style="color:#d43f3a"></i>&nbsp;Autonomous investigation</b>
+    <div class="panel panel-default" style="border-color:var(--danger);margin-bottom:14px">
+      <div class="panel-heading" style="background:var(--danger-dim)"><b><i class="glyphicon glyphicon-flash" style="color:var(--danger)"></i>&nbsp;Autonomous investigation</b>
         <span class="text-muted" style="font-weight:400">— no input required</span></div>
       <div class="panel-body">
         <p class="text-muted" style="margin:0 0 10px 0;font-size:12px">
@@ -182,7 +182,7 @@ export async function renderNewScan(v){
       </div>
 
       <p style="margin-top:14px;margin-bottom:6px">
-        <a href="#" id="adv-toggle" style="font-size:12px;color:#059CD7">${W.showAdv?'▾':'▸'} Advanced options</a>
+        <a href="#" id="adv-toggle" style="font-size:12px;color:var(--accent)">${W.showAdv?'▾':'▸'} Advanced options</a>
       </p>
       <div id="adv-box" style="display:${W.showAdv?'block':'none'}">
         <div class="row">
@@ -322,11 +322,11 @@ export function renderWizardModuleTable(){
   else active = new Set(ucMatches.map(m=>m.name));
 
   host.innerHTML = `
-    <div style="padding:6px 0;color:#666;font-size:12px">
+    <div style="padding:6px 0;color:var(--text-muted);font-size:12px">
       <b>${active.size}</b> of <b>${accepting.length}</b> module${accepting.length===1?'':'s'} selected
       ${W.usecase==='passive' ? ' · <span class="text-warning">passive_only flag will further restrict at runtime</span>':''}
     </div>
-    ${W.kind==='auto' ? `<div style="padding:0 0 6px;color:#888;font-size:12px">
+    ${W.kind==='auto' ? `<div style="padding:0 0 6px;color:var(--text-dim);font-size:12px">
       <i class="glyphicon glyphicon-flash"></i> Target type is auto-detected from the value; at runtime only modules that accept the detected type run.
     </div>`:''}
     <div class="mod-grid">
@@ -341,7 +341,7 @@ export function renderWizardModuleTable(){
         return `<label${desc ? ` title="${attr(desc)}"` : ''}>
           <input type="checkbox" data-mod="${attr(m.name)}" ${checked?'checked':''}>
           <span class="mn">${esc(m.name)}</span>
-          ${m.passive ? '<span class="cost-pill" style="background:#eee;color:#666" title="passive (no outbound)">passive</span>':''}
+          ${m.passive ? '<span class="cost-pill" style="background:var(--bg-elevated-2);color:var(--text-muted)" title="passive (no outbound)">passive</span>':''}
           ${costPill(cost)}
         </label>`;
       }).join('')}
@@ -374,9 +374,9 @@ export function renderDataTypeModules(){
   }
   const activeFromData = new Set(matching.map(m=>m.name));
   host.innerHTML = `
-    <div style="padding:6px 0 4px;color:#666;font-size:12px">
+    <div style="padding:6px 0 4px;color:var(--text-muted);font-size:12px">
       <b>${matching.length}</b> module${matching.length===1?'':'s'} accept ${esc(W.dataType)} as input.
-      <a href="#" id="apply-data-selection" style="margin-left:8px;color:#059CD7">Apply selection →</a>
+      <a href="#" id="apply-data-selection" style="margin-left:8px;color:var(--accent)">Apply selection →</a>
     </div>
     <div class="mod-grid">
       ${matching.map(m=>{
@@ -385,7 +385,7 @@ export function renderDataTypeModules(){
         return `<label${desc ? ` title="${attr(desc)}"` : ''}>
           <input type="checkbox" data-mod="${attr(m.name)}" checked>
           <span class="mn">${esc(m.name)}</span>
-          ${m.passive ? '<span class="cost-pill" style="background:#eee;color:#666" title="passive">passive</span>':''}
+          ${m.passive ? '<span class="cost-pill" style="background:var(--bg-elevated-2);color:var(--text-muted)" title="passive">passive</span>':''}
           ${costPill(cost)}
         </label>`;
       }).join('')}

@@ -1568,10 +1568,53 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   document is now just the small shell). **P2** ✅ 0 lib-test regressions
   (all pre-existing SPA-content guards still pass, now against their new
   home), gate green (fmt/clippy `-D warnings`/rustdoc/full suite).
-
----
-
-## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
+- **`[x]` T2.42 · SPA still visually and technologically dependent on
+  SpiderFoot's original vendor stack (Bootstrap 3.4.1, jQuery 3.7,
+  tablesorter, alertify)** — T2.41 split the monolith into modules but
+  deliberately kept the same look; a follow-up user request
+  ("Completely revamp the UI and REFACTOR it") asked for the visual layer
+  itself, plus was open to dropping the vendor libraries outright. Carrying
+  four legacy UI-framework dependencies purely for chrome (grid, buttons,
+  modals, sortable tables, toasts) — none of it OSINT-specific — is dead
+  weight against the project's own minimal-dependency doctrine, and one of
+  them (alertify) carried a standing, never-resolved licensing question
+  (§7 Deferred: "GPL `alertify` + missing `NOTICE`"). → **Solution:** a
+  from-scratch dark-console design system (`src/web/css/app.css`) plus a
+  small vanilla-JS compatibility layer (`src/web/js/ui.js`) replacing
+  Bootstrap/jQuery/tablesorter/alertify entirely; D3 v3 (the force-graph
+  rendering engine, not a look dependency) is the only library still
+  vendored. **P2** ✅ Dark-first by construction (CSS custom-property
+  tokens on `:root`, a `.light-theme` opt-out block flips them — no more
+  parallel `body.dark-theme …{}` override per component); 47 hand-authored
+  inline-SVG-mask icons replace the glyphicon icon font, which — audited
+  while building the replacement — had in fact never rendered at all:
+  `bootstrap.min.css`'s `@font-face` pointed at relative `../fonts/...`
+  paths the server never served, so every `<i class="glyphicon …">` icon
+  had been invisible tofu since the vendor stack was first vendored (a
+  real, previously-undetected regression this revamp incidentally fixes).
+  Every existing view file's markup and `alertify.*`/`jQuery(...)
+  .tablesorter(...)` call sites were kept **verbatim** — `ui.js` installs
+  `window.jQuery`/`window.alertify` shims matching the exact call contract
+  (`.success/.error/.warning/.notify/.confirm/.prompt`,
+  `jQuery.fn.tablesorter` truthy + `jQuery('#id').tablesorter(opts)`) so
+  none of the ~40 view files needed to change, only `src/web/css/app.css`,
+  `src/web/spa.html`, and the new `src/web/js/ui.js`. Also swept ~30 inline
+  hardcoded hex literals (`style="color:#666"` etc.) across view files to
+  `var(--text-muted)`/`var(--danger)`/etc. equivalents so they stay theme-
+  aware, leaving only the handful that are legitimately theme-invariant
+  (white text on a solid-colour badge, the D3 graph legend's swatches,
+  which must literally match `NODE_COLOR`). Live-verified in headless
+  Chromium: every top-level view, all 22 ScanInfo sub-tabs (incl. the D3
+  graph against a real 454-entity/2785-correlation scan), the navbar
+  mobile-collapse toggle, the About modal (open/close/backdrop/Escape),
+  the sortable-table replacement (click-to-sort with a visible indicator),
+  and the toast/confirm/prompt dialog replacements — all with zero
+  console/page errors. One real bug caught and fixed during that pass:
+  `.btn-block` buttons overflowed their panel by their own border+padding
+  width because no rule set `box-sizing: border-box` — fixed with a
+  universal `*,*::before,*::after{box-sizing:border-box}` reset (screenshot-
+  confirmed before/after). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite (lib + integration + doc tests) 0 failures.
 
 Grounded in the existing modules and the BUILD set of `OSINT_MATRIX_GAP_ANALYSIS`.
 Each node: **current → target → solution**. Everything here is built on §3.F
@@ -2056,7 +2099,8 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   operator-only (local CLI), web import is size-bounded.
 
 · also indexed: root `DOSSIER_*.md` real-looking secrets · **Privacy/Legal/Licensing** (PII fixture & root `DOSSIER_*.md`, source
-legality, GPL `alertify` + missing `NOTICE`, at-rest encryption, use disclaimer)
+legality, at-rest encryption, use disclaimer — the GPL `alertify` + missing
+`NOTICE` item closed itself: T2.42 dropped the vendored alertify entirely)
 · **Terminology** ("operator"→user/analyst; `key_harvest`/`API_KEY_HUNTING_GUIDE`)
 · **Docs** (module-count drift across README/MODULES.md/CHANGELOG/FAULT_TREE —
 **reconciled in the 2026-06-17 doc audit:** README catalogue completed to all 118
@@ -6329,3 +6373,32 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   fmt/clippy `-D warnings`/rustdoc clean, full suite (lib + integration +
   doc) 0 failures. **Paired:** `SOLUTION_TREE` SOL-SPA-MODULE-SPLIT, §5 —
   same commit.
+- **2026-07-11** — **T2.42: replaced the SPA's remaining vendor UI-framework
+  stack (Bootstrap, jQuery, tablesorter, alertify) with a from-scratch
+  dark-console design system and a small vanilla-JS compatibility layer —
+  the visual-revamp follow-up to T2.41's structural-only split.** New
+  `src/web/css/app.css`: dark-first CSS custom-property tokens (a
+  `.light-theme` class flips them, replacing the old per-component
+  `body.dark-theme …{}` duplication), the same Bootstrap-era class
+  vocabulary the view files' markup already used redefined from scratch, 47
+  hand-authored inline-SVG-mask icons replacing the glyphicon icon font —
+  which turned out to have never actually rendered (the vendored
+  `@font-face` pointed at an unserved relative font path; a real latent
+  bug this incidentally fixes). New `src/web/js/ui.js`: vanilla navbar-
+  collapse, modal open/close/backdrop/Escape, a click-to-sort table
+  replacement, and `window.jQuery`/`window.alertify` shims matching the
+  exact call contract every view file already used — so none of the ~40
+  view files needed markup or call-site changes. D3 v3 stays vendored (a
+  rendering engine, not a look dependency). Dropping alertify also closes
+  a standing licensing question (§7: "GPL `alertify` + missing `NOTICE`").
+  Swept ~30 inline hardcoded hex colours in view files to CSS-variable
+  equivalents so they stay theme-aware. Live-verified in headless Chromium:
+  every view, all 22 ScanInfo sub-tabs (incl. the D3 graph against a real
+  454-entity/2785-correlation scan), mobile navbar collapse, the About
+  modal, sortable tables, and the toast/confirm/prompt replacements — zero
+  console/page errors. Caught and fixed one real bug in the process:
+  `.btn-block` buttons overflowing their panel (missing
+  `box-sizing: border-box`), via a universal reset, screenshot-confirmed.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite (lib +
+  integration + doc) 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-SPA-VENDOR-DROP, §5 — same commit.

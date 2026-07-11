@@ -32,7 +32,7 @@ export function renderInfo(host, scan){
     <div class="panel panel-default">
       <div class="panel-heading"><b>Scan settings</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
-        <tbody>${rows.map(([k,v])=>`<tr><td style="width:220px;color:#666">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
+        <tbody>${rows.map(([k,v])=>`<tr><td style="width:220px;color:var(--text-muted)">${esc(k)}</td><td>${v}</td></tr>`).join('')}</tbody>
       </table>
     </div>
   `;

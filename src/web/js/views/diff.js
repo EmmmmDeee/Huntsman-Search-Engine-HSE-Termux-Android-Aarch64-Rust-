@@ -66,8 +66,8 @@ export function renderDiffResult(d){
     <td class="text-right"><code>${Number(s.before).toFixed(3)} → ${Number(s.after).toFixed(3)}</code>
       <span style="color:${s.after>=s.before?'#3c763d':'#a94442'}">${s.after>=s.before?'▲':'▼'}</span></td></tr>`;
   return `<div class="row" style="margin-bottom:10px">
-      <div class="col-xs-4"><div class="stat-card"><div class="lab">Added</div><div class="val" style="color:#3c763d">+${added.length}</div></div></div>
-      <div class="col-xs-4"><div class="stat-card"><div class="lab">Removed</div><div class="val" style="color:#a94442">−${removed.length}</div></div></div>
+      <div class="col-xs-4"><div class="stat-card"><div class="lab">Added</div><div class="val" style="color:var(--success)">+${added.length}</div></div></div>
+      <div class="col-xs-4"><div class="stat-card"><div class="lab">Removed</div><div class="val" style="color:var(--danger)">−${removed.length}</div></div></div>
       <div class="col-xs-4"><div class="stat-card"><div class="lab">In common</div><div class="val">${d.common||0}</div></div></div>
     </div>
     ${tbl('Added','#3c763d',added,diffRow)}

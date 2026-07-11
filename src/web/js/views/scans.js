@@ -62,9 +62,9 @@ export function budgetBar(b){
   const col = b.quota_exhausted ? '#a94442' : (pct>=80?'#8a6d3b':'#3c763d');
   const lab = cap>0 ? `${used} / ${cap}` : `${used}`;
   return `<div style="display:flex;align-items:center;gap:6px">
-    <div style="flex:1;background:#eee;border-radius:3px;height:8px;overflow:hidden">
+    <div style="flex:1;background:var(--bg-elevated-2);border-radius:3px;height:8px;overflow:hidden">
       <div style="width:${pct}%;height:100%;background:${col}"></div></div>
-    <span class="text-muted" style="font-size:11px;min-width:64px;text-align:right">${esc(lab)}${b.quota_exhausted?' <b style="color:#a94442">FULL</b>':''}</span>
+    <span class="text-muted" style="font-size:11px;min-width:64px;text-align:right">${esc(lab)}${b.quota_exhausted?' <b style="color:var(--danger)">FULL</b>':''}</span>
   </div>`;
 }
 export function apiBudgetsPanel(s){

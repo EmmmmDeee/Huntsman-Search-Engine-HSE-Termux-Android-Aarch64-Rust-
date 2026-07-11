@@ -22,8 +22,8 @@ export async function renderAudit(host, id){
       background:#fafafa;padding:10px 12px;margin-bottom:10px;border-radius:3px">
       <div>${sevBadge(f.severity)}&nbsp;<b>${esc(f.category)}</b></div>
       <div style="margin:6px 0">${esc(f.message)}</div>
-      ${ex?`<ul style="margin:4px 0 6px 18px;color:#555">${ex}</ul>`:''}
-      <div style="color:#3c763d"><i class="glyphicon glyphicon-arrow-right"></i>&nbsp;${esc(f.recommendation)}</div>
+      ${ex?`<ul style="margin:4px 0 6px 18px;color:var(--text-muted)">${ex}</ul>`:''}
+      <div style="color:var(--success)"><i class="glyphicon glyphicon-arrow-right"></i>&nbsp;${esc(f.recommendation)}</div>
     </div>`;
   }).join('');
   const sh = r.source_health||{};
@@ -46,11 +46,11 @@ export async function renderAudit(host, id){
   host.innerHTML = `
     <div class="row">
       <div class="col-sm-3 col-xs-6"><div class="stat-card"><div class="lab">Quality score</div>
-        <div class="val" style="color:${col}">${r.score}<span style="font-size:14px;color:#999">/100</span></div></div></div>
+        <div class="val" style="color:${col}">${r.score}<span style="font-size:14px;color:var(--text-dim)">/100</span></div></div></div>
       <div class="col-sm-9 col-xs-6"><div class="stat-card" style="text-align:left">
         <div class="lab">Grade</div><div style="font-size:15px;color:${col};font-weight:600">${esc(r.grade||'')}</div>
-        <div class="text-muted" style="margin-top:4px">${r.entity_total} entities · ${r.tiers.verified} verified · ${r.tiers.probable} probable · ${r.tiers.candidate} candidate · ${Math.round((r.noise_ratio||0)*100)}% noise${r.quarantined?` · <span style="color:#8a6d3b">${r.quarantined} quarantined</span>`:''}</div>
-        ${(r.geo&&r.geo.coord_count)?`<div class="text-muted" style="margin-top:2px">geo: ${r.geo.coord_count} fix(es) / ${r.geo.source_count} source(s) · spread ${Math.round(r.geo.max_spread_km)} km · ${r.geo.has_consensus?'consensus':'no consensus'}${r.geo.outliers?` · <span style="color:#d9534f">${r.geo.outliers} outlier(s)</span>`:''}</div>`:''}
+        <div class="text-muted" style="margin-top:4px">${r.entity_total} entities · ${r.tiers.verified} verified · ${r.tiers.probable} probable · ${r.tiers.candidate} candidate · ${Math.round((r.noise_ratio||0)*100)}% noise${r.quarantined?` · <span style="color:var(--warning)">${r.quarantined} quarantined</span>`:''}</div>
+        ${(r.geo&&r.geo.coord_count)?`<div class="text-muted" style="margin-top:2px">geo: ${r.geo.coord_count} fix(es) / ${r.geo.source_count} source(s) · spread ${Math.round(r.geo.max_spread_km)} km · ${r.geo.has_consensus?'consensus':'no consensus'}${r.geo.outliers?` · <span style="color:var(--danger)">${r.geo.outliers} outlier(s)</span>`:''}</div>`:''}
       </div></div>
     </div>
     ${kinds?`<p class="text-muted" style="margin:6px 0 12px">${kinds}</p>`:''}

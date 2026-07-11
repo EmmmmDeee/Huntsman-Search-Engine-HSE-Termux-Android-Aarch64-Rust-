@@ -1,16 +1,16 @@
 import { $ } from '/static/js/helpers.js';
 export function applyTheme(){
-  // SpiderFoot-compatible: dark is the default; only opt out explicitly.
-  const stored = localStorage.getItem('theme');
-  const dark = stored !== 'light-theme';
-  document.body.classList.toggle('dark-theme', dark);
-  $('#theme-label').textContent = dark ? 'Light Mode' : 'Dark Mode';
+  // Dark is the base look (app.css's :root tokens) — `.light-theme` is an
+  // explicit opt-out override block, applied only when chosen.
+  const light = localStorage.getItem('theme') === 'light-theme';
+  document.body.classList.toggle('light-theme', light);
+  $('#theme-label').textContent = light ? 'Dark Mode' : 'Light Mode';
 }
 document.addEventListener('DOMContentLoaded', ()=>{
   $('#theme-toggle').addEventListener('click', e=>{
     e.preventDefault();
-    const dark = !document.body.classList.contains('dark-theme');
-    localStorage.setItem('theme', dark ? 'dark-theme' : 'light-theme');
+    const light = !document.body.classList.contains('light-theme');
+    localStorage.setItem('theme', light ? 'light-theme' : 'dark-theme');
     applyTheme();
   });
 });

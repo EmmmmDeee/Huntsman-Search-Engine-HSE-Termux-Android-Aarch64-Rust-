@@ -85,8 +85,8 @@ export async function renderLive(v){
       <div class="pull-right"><button class="btn btn-default btn-sm" onclick="render()" title="Refresh"><i class="glyphicon glyphicon-refresh"></i></button></div>
     </h2>
     <hr style="margin:8px 0 14px 0">
-    <div class="panel panel-default" style="border-color:#07aef1">
-      <div class="panel-heading" style="background:#eaf7fd"><b><i class="glyphicon glyphicon-record" style="color:#07aef1"></i>&nbsp;Live Signal Radar</b>
+    <div class="panel panel-default" style="border-color:var(--accent)">
+      <div class="panel-heading" style="background:var(--info-dim)"><b><i class="glyphicon glyphicon-record" style="color:var(--accent)"></i>&nbsp;Live Signal Radar</b>
         <span class="text-muted" style="font-weight:400">— continuous autonomous enumeration of <i>this device's</i> passive signals</span></div>
       <div class="panel-body">
         <p class="text-muted" style="margin:0 0 10px 0;font-size:12px">
@@ -124,9 +124,9 @@ export async function renderLive(v){
         <p class="text-muted" style="margin:8px 0 0 0;font-size:12px"><b>Radar</b> (recommended): each sweep spends API budget only on NEW seeds — a keyed module never re-queries a seed an earlier sweep already covered, so a long-running radar isn't aggressive with the APIs. Unchecked = classic live re-scan (re-queries everything each interval to catch fresh data). Leave iterations blank to run until toggled off; tuned low for Termux battery/data.</p>
       </div>
     </div>
-    <div class="panel panel-default" id="live-stream-panel" style="display:none;border-color:#5bc0de">
+    <div class="panel panel-default" id="live-stream-panel" style="display:none;border-color:var(--info)">
       <div class="panel-heading" style="background:rgba(91,192,222,0.12)">
-        <b><i class="glyphicon glyphicon-transfer" style="color:#5bc0de"></i>&nbsp;Live activity</b>
+        <b><i class="glyphicon glyphicon-transfer" style="color:var(--info)"></i>&nbsp;Live activity</b>
         <span id="live-stream-label" class="text-muted" style="font-weight:400"></span>
         <button class="btn btn-default btn-xs pull-right" onclick="closeLiveStream()" title="Stop tailing this session"><i class="glyphicon glyphicon-stop"></i>&nbsp;Stop</button>
       </div>

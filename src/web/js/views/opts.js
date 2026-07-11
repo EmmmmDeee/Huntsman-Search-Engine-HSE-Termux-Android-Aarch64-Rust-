@@ -114,10 +114,10 @@ export async function renderOpts(v){
       <div class="panel-heading"><b>Server</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
         <tbody>
-          <tr><td style="width:220px;color:#666">Version</td><td><code>${esc(S.version||'?')}</code></td></tr>
-          <tr><td style="color:#666">Health</td><td>${S.health ? '<span class="label label-success">ok</span>' : '<span class="label label-danger">unreachable</span>'}</td></tr>
-          <tr><td style="color:#666">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
-          <tr><td style="color:#666">Known keys</td><td>${data.count}</td></tr>
+          <tr><td style="width:220px;color:var(--text-muted)">Version</td><td><code>${esc(S.version||'?')}</code></td></tr>
+          <tr><td style="color:var(--text-muted)">Health</td><td>${S.health ? '<span class="label label-success">ok</span>' : '<span class="label label-danger">unreachable</span>'}</td></tr>
+          <tr><td style="color:var(--text-muted)">Env file path</td><td><code>${esc(data.env_path)}</code></td></tr>
+          <tr><td style="color:var(--text-muted)">Known keys</td><td>${data.count}</td></tr>
         </tbody>
       </table>
     </div>
@@ -223,7 +223,7 @@ export function wireDiagnostics(){
                       : s==='warn' ? '<span class="label label-warning">warn</span>'
                       : '<span class="label label-danger">fail</span>';
       const rows = (r.checks||[]).map(c =>
-        `<tr><td>${pill(c.status)}</td><td><code>${esc(c.name)}</code></td><td style="color:#aaa">${esc(c.detail)}</td></tr>`
+        `<tr><td>${pill(c.status)}</td><td><code>${esc(c.name)}</code></td><td style="color:var(--text-dim)">${esc(c.detail)}</td></tr>`
       ).join('');
       $('#st-results').innerHTML =
         `<table class="table table-condensed" style="margin-bottom:0"><tbody>${rows}</tbody></table>`;
@@ -340,9 +340,9 @@ export function showRestartOverlay(){
     'position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.75);'+
     'z-index:9999;display:flex;align-items:center;justify-content:center';
   overlay.innerHTML =
-    '<div style="background:#fff;border-radius:6px;padding:32px 44px;text-align:center;max-width:400px">'+
+    '<div style="background:var(--bg-elevated);border-radius:6px;padding:32px 44px;text-align:center;max-width:400px">'+
     '<h3 style="margin:0 0 10px">Update Applied!</h3>'+
-    '<p style="color:#555;font-size:13px">Huntsman is restarting in the background.<br>'+
+    '<p style="color:var(--text-muted);font-size:13px">Huntsman is restarting in the background.<br>'+
     'This page will reload automatically.</p>'+
     '<div class="progress" style="height:6px;margin:14px 0 0">'+
     '<div class="progress-bar progress-bar-striped active" style="width:100%"></div></div></div>';

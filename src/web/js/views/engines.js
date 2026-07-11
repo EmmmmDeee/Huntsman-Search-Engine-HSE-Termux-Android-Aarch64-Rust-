@@ -41,7 +41,7 @@ export async function renderEngines(v){
       <td>${dot(status)}</td>
       <td class="text-right">${latency}</td>
       <td class="text-right">${results}</td>
-      <td style="color:#999;font-size:12px">${detail}</td>
+      <td style="color:var(--text-dim);font-size:12px">${detail}</td>
       <td class="text-right">${btn}</td>
     </tr>`;
   }).join('');
@@ -52,10 +52,10 @@ export async function renderEngines(v){
       </h3>
     </div>
     <div class="row">
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Up</div><div class="val" style="color:#3c763d">${cnt.up}</div></div></div>
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Blocked</div><div class="val" style="color:#8a6d3b">${cnt.blocked}</div></div></div>
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Down</div><div class="val" style="color:#a94442">${cnt.down}</div></div></div>
-      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Disabled</div><div class="val" style="color:#777">${cnt.disabled}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Up</div><div class="val" style="color:var(--success)">${cnt.up}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Blocked</div><div class="val" style="color:var(--warning)">${cnt.blocked}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Down</div><div class="val" style="color:var(--danger)">${cnt.down}</div></div></div>
+      <div class="col-md-3 col-sm-6 col-xs-6"><div class="stat-card"><div class="lab">Disabled</div><div class="val" style="color:var(--text-dim)">${cnt.disabled}</div></div></div>
     </div>
     <p class="text-muted" style="margin-top:8px">Free, keyless engines — probed at startup and on a periodic cycle. Last sweep: ${esc(when)}. Auto-refreshes every 30&nbsp;s. Disable a noisy/blocked engine inline — it's then skipped by the probe and every scan (manage all toggles under <a href="#/opts">Settings</a>).</p>
     <div class="table-responsive"><table class="table table-striped table-condensed">

@@ -42,9 +42,9 @@ export function renderStatus(host, scan){
           <div class="panel-heading"><b>Classification</b></div>
           <div class="panel-body">
             <div class="row text-center">
-              <div class="col-xs-4"><div class="stat-card"><div class="lab c-VERIFIED">Verified</div><div class="val" style="color:#3c763d">${verified}</div></div></div>
-              <div class="col-xs-4"><div class="stat-card"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:#8a6d3b">${probable}</div></div></div>
-              <div class="col-xs-4"><div class="stat-card"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:#a94442">${candidate}</div></div></div>
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-VERIFIED">Verified</div><div class="val" style="color:var(--success)">${verified}</div></div></div>
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-PROBABLE">Probable</div><div class="val" style="color:var(--warning)">${probable}</div></div></div>
+              <div class="col-xs-4"><div class="stat-card"><div class="lab c-CANDIDATE">Candidate</div><div class="val" style="color:var(--danger)">${candidate}</div></div></div>
             </div>
             <p class="help-block">Tiers derived from <code>C_eff = clamp(C × (1 + 0.15·ln(distinct_sources)), 0, 1)</code>.</p>
           </div>

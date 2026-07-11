@@ -4,27 +4,26 @@
   <meta charset="utf-8">
   <title>Huntsman Search Engine</title>
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <!-- Colours Chrome-on-Android's address bar to match the dark navbar. -->
-  <meta name="theme-color" content="#222222">
+  <!-- Colours Chrome-on-Android's address bar to match the dark console. -->
+  <meta name="theme-color" content="#0c0f13">
   <!-- Installable as a standalone fullscreen app on Chrome-for-Android (Add to
        Home Screen): the manifest declares display:standalone, the meta is the
        modern Chrome hint. Progressive enhancement — desktop browsers ignore it. -->
   <meta name="mobile-web-app-capable" content="yes">
   <link rel="manifest" href="/manifest.webmanifest">
-  <!-- Inline SVG favicon (concentric locator mark, brand cyan on navbar dark). Being a
-       data URI, modern Chrome uses it directly and never requests /favicon.ico —
-       which would otherwise fall through to the SPA fallback and return the whole
-       HTML document as an image. Fully offline; no extra route or binary asset. -->
-  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23222222'/><circle cx='16' cy='16' r='8' fill='none' stroke='%2307aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='%2307aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='%2307aef1' stroke-width='2'/></svg>">
+  <!-- Inline SVG favicon (concentric locator mark, brand cyan on the dark console).
+       Being a data URI, modern Chrome uses it directly and never requests
+       /favicon.ico — which would otherwise fall through to the SPA fallback and
+       return the whole HTML document as an image. Fully offline; no extra route
+       or binary asset. -->
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%230c0f13'/><circle cx='16' cy='16' r='8' fill='none' stroke='%2307aef1' stroke-width='2'/><circle cx='16' cy='16' r='2.4' fill='%2307aef1'/><path d='M16 2v6M16 24v6M2 16h6M24 16h6' stroke='%2307aef1' stroke-width='2'/></svg>">
 
-  <!-- Spiderfoot's exact vendor stack: Bootstrap 3.4.1, jQuery 3.7.1,
-       D3 v3, tablesorter 2.31, alertify 1.13. Served from the embedded
-       binary so the SPA still loads with zero outbound requests. -->
-  <link href="/static/bootstrap.min.css"           rel="stylesheet">
-  <link href="/static/jquery.tablesorter.theme.css" rel="stylesheet">
-  <link href="/static/alertify.min.css"            rel="stylesheet">
-  <link href="/static/alertify.bootstrap.min.css"  rel="stylesheet">
-  <link href="/static/spiderfoot-style.css"        rel="stylesheet">
+  <!-- Our own from-scratch dark-console design system (src/web/css/app.css) —
+       no vendored UI framework is loaded any more (Bootstrap/jQuery/
+       tablesorter/alertify were dropped; see that file's own doc comment).
+       D3 stays vendored below as a rendering engine, not a look-and-feel
+       dependency. Still zero outbound requests either way: everything is
+       embedded in the binary. -->
   <link href="/static/css/app.css" rel="stylesheet">
 
 </head>
@@ -48,7 +47,7 @@
         <li id="nav-scans"  ><a href="#/scans"  ><i class="glyphicon glyphicon-list"></i>&nbsp;Scans</a></li>
         <li id="nav-live"   ><a href="#/live"   ><i class="glyphicon glyphicon-record"></i>&nbsp;Live</a></li>
         <li id="nav-engines"><a href="#/engines"><i class="glyphicon glyphicon-search"></i>&nbsp;Engines</a></li>
-        <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings&nbsp;<span id="update-badge" style="display:none;background:#e74c3c;color:#fff;border-radius:8px;font-size:9px;padding:1px 5px;vertical-align:middle"></span></a></li>
+        <li id="nav-opts"   ><a href="#/opts"   ><i class="glyphicon glyphicon-wrench"></i>&nbsp;Settings&nbsp;<span id="update-badge" style="display:none;background:var(--danger);color:#fff;border-radius:8px;font-size:9px;padding:1px 5px;vertical-align:middle"></span></a></li>
       </ul>
       <form class="navbar-form navbar-left" style="margin-left:10px" onsubmit="globalSearch(event)">
         <div class="input-group input-group-sm" style="width:220px">
@@ -77,11 +76,12 @@
         to run on Termux on Android aarch64 (no root). Single binary, rustls-only, no
         native dependencies, bundled SQLite, embedded SPA.</p>
         <p>You are running version <b>v<span id="ver2">?</span></b>.</p>
-        <p>UI patterns and visual identity intentionally mirror
+        <p>The navigation structure and scan workflow follow the same mental model as
         <a href="https://www.spiderfoot.net/" target="_blank">SpiderFoot</a> for operator
-        familiarity. Source code on
+        familiarity, on a from-scratch dark-console design (no vendored UI framework —
+        see the About-page source for details). Source code on
         <a href="https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-" target="_blank">GitHub</a>.</p>
-        <p style="color:#888;font-size:11px">⚠️ API keys are sensitive. Set them via
+        <p style="color:var(--text-dim);font-size:11px">⚠️ API keys are sensitive. Set them via
         <code>$HOME/.huntsman.env</code> (chmod 0600) or on the Settings page
         (editable by default, loopback only; lock down with <code>hse serve --no-key-write</code>).
         Never paste keys into chat, screenshots, or shared documents.</p>
@@ -97,14 +97,11 @@
   <div id="view"></div>
 </div>
 
-<!-- Vendor scripts loaded at bottom for faster first paint, matching
-     Spiderfoot's footer layout. -->
-<script src="/static/jquery.min.js"></script>
-<script src="/static/bootstrap.min.js"></script>
-<script src="/static/alertify.min.js"></script>
-<script src="/static/jquery.tablesorter.min.js"></script>
+<!-- D3 (force-directed graph engine) is the one remaining vendored script —
+     loaded at the bottom for faster first paint. Everything else the app
+     needs (navbar/modal behaviour, sortable tables, toasts/dialogs) is our
+     own vanilla JS in js/ui.js, imported by main.js below. -->
 <script src="/static/d3.min.js"></script>
-
 
 <script type="module" src="/static/js/main.js"></script>
 </body>

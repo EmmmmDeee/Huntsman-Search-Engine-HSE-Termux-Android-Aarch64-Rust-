@@ -56,65 +56,30 @@ use super::{AppState, handlers, scan_export, scan_handlers, settings_handlers, u
 /// so the release artefact is still a single file.
 const SPA_HTML: &str = include_str!("../../web/spa.html");
 
-/// Vendor bundle — Spiderfoot's exact stack (Bootstrap 3.4.1, jQuery 3.7,
-/// D3 v3, tablesorter, alertify) plus Spiderfoot's own CSS file. Embedded
-/// at compile time so the release artefact is still a single binary.
+/// Vendor bundle — now just D3 v3, the force-directed graph rendering
+/// engine. Bootstrap, jQuery, tablesorter, and alertify (SpiderFoot's
+/// original UI-framework stack) were dropped entirely in favour of a
+/// from-scratch design system (`src/web/css/app.css`) plus small vanilla-JS
+/// replacements (`src/web/js/ui.js`) for the handful of interactive
+/// behaviours those libraries provided (navbar collapse, the About modal,
+/// sortable tables, toast/confirm/prompt dialogs) — see `ui.js`'s own doc
+/// comment. D3 stays vendored because it is a rendering engine, not a
+/// look-and-feel dependency: every visual property of the graph (node
+/// colours, sizes, the canvas background) is already this project's own
+/// code. Dropping the vendored alertify build also happens to close a
+/// standing licensing question noted in `docs/PROBLEM_TREE.md` §7
+/// (Deferred — Privacy/Legal/Licensing): alertify was GPL-licensed with no
+/// accompanying `NOTICE`.
 ///
-/// All entries are served from `/static/{*file}`, alongside [`APP_FILES`],
-/// with a one-hour `Cache-Control: must-revalidate` header — see
+/// Embedded at compile time so the release artefact is still a single
+/// binary. Served from `/static/{*file}`, alongside [`APP_FILES`], with a
+/// one-hour `Cache-Control: must-revalidate` header — see
 /// [`vendor_handler`]'s ETag/conditional-GET handling for why.
-const VENDOR_FILES: &[(&str, &str, &[u8])] = &[
-    (
-        "bootstrap.min.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/bootstrap.min.css"),
-    ),
-    (
-        "bootstrap.min.js",
-        "application/javascript",
-        include_bytes!("../../web/vendor/bootstrap.min.js"),
-    ),
-    (
-        "jquery.min.js",
-        "application/javascript",
-        include_bytes!("../../web/vendor/jquery.min.js"),
-    ),
-    (
-        "d3.min.js",
-        "application/javascript",
-        include_bytes!("../../web/vendor/d3.min.js"),
-    ),
-    (
-        "jquery.tablesorter.min.js",
-        "application/javascript",
-        include_bytes!("../../web/vendor/jquery.tablesorter.min.js"),
-    ),
-    (
-        "jquery.tablesorter.theme.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/jquery.tablesorter.theme.css"),
-    ),
-    (
-        "alertify.min.js",
-        "application/javascript",
-        include_bytes!("../../web/vendor/alertify.min.js"),
-    ),
-    (
-        "alertify.min.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/alertify.min.css"),
-    ),
-    (
-        "alertify.bootstrap.min.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/alertify.bootstrap.min.css"),
-    ),
-    (
-        "spiderfoot-style.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/spiderfoot-style.css"),
-    ),
-];
+const VENDOR_FILES: &[(&str, &str, &[u8])] = &[(
+    "d3.min.js",
+    "application/javascript",
+    include_bytes!("../../web/vendor/d3.min.js"),
+)];
 
 /// First-party SPA modules (split from the former monolithic `spa.html` for
 /// maintainability — see each module's own doc comment in `src/web/js/`).
@@ -278,6 +243,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         "js/timers.js",
         "application/javascript",
         include_bytes!("../../web/js/timers.js"),
+    ),
+    (
+        "js/ui.js",
+        "application/javascript",
+        include_bytes!("../../web/js/ui.js"),
     ),
     (
         "js/views/dash.js",
@@ -504,7 +474,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
 
     let app = Router::new()
         .nest("/api", api)
-        // ── static vendor bundle (Bootstrap 3, jQuery, D3, tablesorter, alertify) ──
+        // ── static bundle (D3 vendored + first-party app.css/js modules) ──
         // `{*file}` (wildcard, not `{file}`) so nested first-party module paths
         // (`js/scan_info/browse.js`) match, not just a single flat segment.
         .route("/static/{*file}", get(vendor_handler))
@@ -793,8 +763,8 @@ async fn api_not_found(method: Method, OriginalUri(uri): OriginalUri) -> impl In
     )
 }
 
-/// Serve one of the embedded vendor files (Bootstrap, jQuery, etc.) or a
-/// first-party SPA module (`js/…`, `css/app.css`). Returns 404 for any path
+/// Serve the one embedded vendor file (D3) or a first-party SPA module
+/// (`js/…`, `css/app.css`). Returns 404 for any path
 /// not in [`VENDOR_FILES`] or [`APP_FILES`] — there's no path traversal to
 /// worry about despite the wildcard route (`/static/{*file}`, needed so
 /// nested app paths like `js/scan_info/browse.js` match): every candidate
@@ -808,7 +778,7 @@ async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Respons
             // ETag is the crate version (which uniquely identifies the
             // embedded bytes — the bundle ships in-binary). We deliberately
             // do NOT use `Cache-Control: immutable` because the URL
-            // (`/static/bootstrap.min.css`) is stable across upgrades;
+            // (`/static/d3.min.js`) is stable across upgrades;
             // pairing immutable with a stable URL leaves the browser stuck
             // on old bytes after a binary upgrade. Instead `must-revalidate`
             // plus the conditional-request handling below lets the browser

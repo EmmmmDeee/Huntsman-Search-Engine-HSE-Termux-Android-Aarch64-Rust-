@@ -34,6 +34,13 @@ import { renderOpts, pollUpdateBadge } from '/static/js/views/opts.js';
 import { globalSearch, renderSearch } from '/static/js/views/search.js';
 import { renderEngines, refreshEngines } from '/static/js/views/engines.js';
 import { renderLive, closeLiveStream } from '/static/js/views/live.js';
+import { initCompatShims, initNavbarToggle, initModals } from '/static/js/ui.js';
+
+/* Installed at module-load time (before any view can run) so the
+ * `alertify.*`/`jQuery(...).tablesorter(...)` call sites scattered across
+ * the view files — unchanged from when they targeted the real vendored
+ * libraries — keep working against the vanilla-JS replacements. */
+initCompatShims();
 
 /* CSRF: the API rejects any state-changing request (POST/PUT/DELETE/PATCH) that
  * lacks the X-HSE-CSRF header — a custom header a cross-site page can't set on a
@@ -99,6 +106,8 @@ Object.assign(window, {
 /* ═══════════ Bootstrap ═══════════ */
 (async function init(){
   applyTheme();
+  initNavbarToggle();
+  initModals();
   if (typeof alertify !== 'undefined') alertify.set('notifier','position','top-right');
   try {
     const h = await API.health();

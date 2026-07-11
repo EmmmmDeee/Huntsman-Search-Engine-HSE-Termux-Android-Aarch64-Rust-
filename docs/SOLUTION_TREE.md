@@ -1028,6 +1028,47 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unit tests, a new `spa_bundle()` shell-plus-transitive-import crawler for
   the integration tests (the served `/` document is now just the shell, so
   content checks need the full module closure). 0 regressions; gate green.
+- **`[x]` SOL-SPA-VENDOR-DROP · From-scratch dark-console design system;
+  Bootstrap/jQuery/tablesorter/alertify dropped entirely** — closes
+  **T2.42**. A follow-up user request ("Completely revamp the UI and
+  REFACTOR it") asked for the visual layer SOL-SPA-MODULE-SPLIT
+  deliberately preserved, and was open to dropping the vendor libraries
+  outright. New `src/web/css/app.css` design system: CSS custom-property
+  tokens on `:root` (dark is the base look; `.light-theme` is a small
+  opt-out override block — no more per-component `body.dark-theme …{}`
+  duplication), the same Bootstrap-era class vocabulary the ~40 view files'
+  markup already used (`.row`/`.col-md-N`, `.btn`/`.btn-primary`,
+  `.panel`/`.table`/`.label`/`.modal`/`.glyphicon-*`, …) redefined from
+  scratch so none of those files' generated markup needed to change, and
+  47 hand-authored inline-SVG-mask icons replacing the glyphicon icon
+  font — which, audited while building the replacement, turned out to have
+  never actually rendered: `bootstrap.min.css`'s `@font-face` pointed at a
+  relative `../fonts/...` path the server never served, so every glyphicon
+  had been invisible since the stack was first vendored (a real latent
+  regression this incidentally fixes). New `src/web/js/ui.js`: vanilla-JS
+  navbar-collapse, modal open/close/backdrop/Escape, a `sortableTable()`
+  click-to-sort replacement for tablesorter, and `window.jQuery`/
+  `window.alertify` shims matching the exact call contract every view file
+  already used (`.success/.error/.warning/.notify/.confirm/.prompt`,
+  `jQuery.fn.tablesorter` + `jQuery('#id').tablesorter(opts)`) — so again,
+  no view file needed to change. D3 v3 stays vendored (a rendering engine,
+  not a look dependency; every visual property of the graph is already
+  this project's own code). Dropping alertify also closes a standing,
+  never-resolved licensing question (`PROBLEM_TREE` §7 Deferred: "GPL
+  `alertify` + missing `NOTICE`"). Also swept ~30 inline hardcoded hex
+  literals across view files to `var(--text-muted)`/`var(--danger)`/etc.
+  so they stay theme-aware, leaving only the genuinely theme-invariant ones
+  (white-on-solid-badge text, the D3 legend's swatches which must match
+  `NODE_COLOR` literally). Verified live in headless Chromium: every
+  top-level view, all 22 ScanInfo sub-tabs (incl. the D3 graph against a
+  real 454-entity/2785-correlation scan), the mobile navbar-collapse
+  toggle, the About modal, the sortable-table click handler, and the
+  toast/confirm/prompt replacements — all zero console/page errors. One
+  real bug caught during that pass: `.btn-block` buttons overflowed their
+  panel (missing `box-sizing: border-box`) — fixed with a universal
+  `*,*::before,*::after` reset, screenshot-confirmed before/after. *Closes:*
+  **T2.42**. ✅ 0 regressions; gate green (fmt/clippy `-D warnings`/rustdoc/
+  full suite).
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -4540,3 +4581,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `src/api/routes/tests.rs`, `spa_bundle()` in `tests/api.rs`) — 0
   regressions. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures. Paired: `PROBLEM_TREE` T2.41, §8 — same commit.
+- **2026-07-11** — **SOL-SPA-VENDOR-DROP: from-scratch dark-console design
+  system + vanilla-JS compatibility layer replace Bootstrap/jQuery/
+  tablesorter/alertify entirely, closing T2.42.** The user's follow-up
+  request ("Completely revamp the UI and REFACTOR it") asked for the
+  visual layer the prior structural split had deliberately left alone, and
+  was open to dropping the vendor libraries outright. New `app.css`: dark-
+  first CSS custom-property tokens, a `.light-theme` opt-out override
+  block, the pre-existing Bootstrap-era class vocabulary redefined from
+  scratch (so none of the ~40 view files' markup changed), 47 inline-SVG-
+  mask icons replacing a glyphicon icon font that — audited while building
+  the replacement — turned out to have never rendered at all (a real
+  latent bug incidentally fixed). New `ui.js`: vanilla navbar-collapse,
+  modal handling, a sortable-table replacement, and `window.jQuery`/
+  `window.alertify` shims matching every view file's existing call
+  contract exactly, so no view file needed a call-site change either. D3
+  v3 stays vendored (a rendering engine, not a look dependency). Dropping
+  alertify also resolved a standing licensing question (`PROBLEM_TREE` §7:
+  GPL alertify + missing NOTICE). Live-verified in headless Chromium
+  across every view, all 22 ScanInfo sub-tabs (incl. the D3 graph against
+  a real 454-entity/2785-correlation scan), mobile nav collapse, the About
+  modal, sortable tables, and toast/confirm/prompt dialogs — zero console/
+  page errors; one real `box-sizing` overflow bug found and fixed along
+  the way (screenshot-confirmed before/after). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures. Paired: `PROBLEM_TREE`
+  T2.42, §8 — same commit.

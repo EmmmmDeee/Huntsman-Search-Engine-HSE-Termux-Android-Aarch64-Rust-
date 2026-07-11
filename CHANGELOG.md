@@ -11,6 +11,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Changed
+- **The SPA's UI now runs on a from-scratch dark-console design system —
+  Bootstrap 3, jQuery, tablesorter, and alertify (SpiderFoot's original
+  vendor stack) are gone entirely.** New `src/web/css/app.css`: dark-first
+  CSS custom-property tokens (`.light-theme` is the opt-out override), the
+  same class vocabulary the view files' markup already used (`.row`,
+  `.btn-primary`, `.panel`, `.table`, `.modal`, `.glyphicon-*`, …)
+  redefined from scratch, and 47 inline-SVG-mask icons replacing the
+  glyphicon icon font — which, it turns out, had never actually rendered
+  (the vendored `@font-face` pointed at a font path the server never
+  served). New `src/web/js/ui.js`: vanilla navbar-collapse, modal handling,
+  a sortable-table click-to-sort replacement, and `window.jQuery`/
+  `window.alertify` shims matching every existing call site exactly, so no
+  view file's markup or JS needed to change. D3 v3 is the one library
+  still vendored (a rendering engine, not a look dependency). Dark mode is
+  now the default with a light-mode opt-out toggle (previously the
+  reverse framing of the same default). Live-verified across every view
+  and all 22 ScanInfo sub-tabs in headless Chromium with zero console
+  errors.
 - **The SPA's monolithic 3999-line `spa.html` (inline CSS + one giant inline
   `<script>` holding every helper, the API client, the router, and ~100
   page/view render functions) is split into `src/web/css/app.css` plus 37
