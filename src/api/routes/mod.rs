@@ -33,7 +33,7 @@
 //! | GET    | `/api/v1/update/status`           | `get_status` (v1.5+)     |
 //! | POST   | `/api/v1/update/trigger`          | `post_trigger` (v1.5+)   |
 //! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
-//! | GET    | `/static/{file}`                  | `vendor_handler`         |
+//! | GET    | `/static/{*file}`                 | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
 
 use std::sync::Arc;
@@ -60,9 +60,9 @@ const SPA_HTML: &str = include_str!("../../web/spa.html");
 /// D3 v3, tablesorter, alertify) plus Spiderfoot's own CSS file. Embedded
 /// at compile time so the release artefact is still a single binary.
 ///
-/// All entries are served from `/static/{file}` with a one-year
-/// `Cache-Control` header — browsers cache aggressively, so the ~510 KB
-/// bundle is paid for exactly once per device.
+/// All entries are served from `/static/{*file}`, alongside [`APP_FILES`],
+/// with a one-hour `Cache-Control: must-revalidate` header — see
+/// [`vendor_handler`]'s ETag/conditional-GET handling for why.
 const VENDOR_FILES: &[(&str, &str, &[u8])] = &[
     (
         "bootstrap.min.css",
@@ -113,6 +113,211 @@ const VENDOR_FILES: &[(&str, &str, &[u8])] = &[
         "spiderfoot-style.css",
         "text/css; charset=utf-8",
         include_bytes!("../../web/vendor/spiderfoot-style.css"),
+    ),
+];
+
+/// First-party SPA modules (split from the former monolithic `spa.html` for
+/// maintainability — see each module's own doc comment in `src/web/js/`).
+/// Embedded at compile time so the release artefact is still a single binary;
+/// served from `/static/{path}` alongside [`VENDOR_FILES`], keyed on the path
+/// relative to `src/web/` (e.g. `js/main.js`, `css/app.css`) so nested module
+/// paths resolve exactly as written in each file's own
+/// `import … from '/static/js/…';` statement.
+const APP_FILES: &[(&str, &str, &[u8])] = &[
+    (
+        "css/app.css",
+        "text/css; charset=utf-8",
+        include_bytes!("../../web/css/app.css"),
+    ),
+    (
+        "js/api.js",
+        "application/javascript",
+        include_bytes!("../../web/js/api.js"),
+    ),
+    (
+        "js/helpers.js",
+        "application/javascript",
+        include_bytes!("../../web/js/helpers.js"),
+    ),
+    (
+        "js/main.js",
+        "application/javascript",
+        include_bytes!("../../web/js/main.js"),
+    ),
+    (
+        "js/router.js",
+        "application/javascript",
+        include_bytes!("../../web/js/router.js"),
+    ),
+    (
+        "js/scan_info/audit.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/audit.js"),
+    ),
+    (
+        "js/scan_info/benchmark.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/benchmark.js"),
+    ),
+    (
+        "js/scan_info/browse.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/browse.js"),
+    ),
+    (
+        "js/scan_info/communities.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/communities.js"),
+    ),
+    (
+        "js/scan_info/correlations.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/correlations.js"),
+    ),
+    (
+        "js/scan_info/duplicates.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/duplicates.js"),
+    ),
+    (
+        "js/scan_info/gaps.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/gaps.js"),
+    ),
+    (
+        "js/scan_info/graph.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/graph.js"),
+    ),
+    (
+        "js/scan_info/identities.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/identities.js"),
+    ),
+    (
+        "js/scan_info/index.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/index.js"),
+    ),
+    (
+        "js/scan_info/info.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/info.js"),
+    ),
+    (
+        "js/scan_info/leads.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/leads.js"),
+    ),
+    (
+        "js/scan_info/location.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/location.js"),
+    ),
+    (
+        "js/scan_info/log.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/log.js"),
+    ),
+    (
+        "js/scan_info/metrics.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/metrics.js"),
+    ),
+    (
+        "js/scan_info/network.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/network.js"),
+    ),
+    (
+        "js/scan_info/path.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/path.js"),
+    ),
+    (
+        "js/scan_info/pivots.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/pivots.js"),
+    ),
+    (
+        "js/scan_info/relations.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/relations.js"),
+    ),
+    (
+        "js/scan_info/report.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/report.js"),
+    ),
+    (
+        "js/scan_info/status.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/status.js"),
+    ),
+    (
+        "js/scan_info/timeline.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/timeline.js"),
+    ),
+    (
+        "js/scan_info/trust.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/trust.js"),
+    ),
+    (
+        "js/state.js",
+        "application/javascript",
+        include_bytes!("../../web/js/state.js"),
+    ),
+    (
+        "js/theme.js",
+        "application/javascript",
+        include_bytes!("../../web/js/theme.js"),
+    ),
+    (
+        "js/timers.js",
+        "application/javascript",
+        include_bytes!("../../web/js/timers.js"),
+    ),
+    (
+        "js/views/dash.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/dash.js"),
+    ),
+    (
+        "js/views/diff.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/diff.js"),
+    ),
+    (
+        "js/views/engines.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/engines.js"),
+    ),
+    (
+        "js/views/live.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/live.js"),
+    ),
+    (
+        "js/views/new_scan.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/new_scan.js"),
+    ),
+    (
+        "js/views/opts.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/opts.js"),
+    ),
+    (
+        "js/views/scans.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/scans.js"),
+    ),
+    (
+        "js/views/search.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/search.js"),
     ),
 ];
 
@@ -300,7 +505,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
     let app = Router::new()
         .nest("/api", api)
         // ── static vendor bundle (Bootstrap 3, jQuery, D3, tablesorter, alertify) ──
-        .route("/static/{file}", get(vendor_handler))
+        // `{*file}` (wildcard, not `{file}`) so nested first-party module paths
+        // (`js/scan_info/browse.js`) match, not just a single flat segment.
+        .route("/static/{*file}", get(vendor_handler))
         // ── favicon — browsers (esp. Chrome-on-Android) request /favicon.ico
         //    unconditionally; without this route it would hit the SPA fallback
         //    and return the whole HTML document as an "image". Serve the same
@@ -586,12 +793,17 @@ async fn api_not_found(method: Method, OriginalUri(uri): OriginalUri) -> impl In
     )
 }
 
-/// Serve one of the embedded vendor files (Bootstrap, jQuery, etc.).
-/// Returns 404 for any name not in [`VENDOR_FILES`] — there's no
-/// path traversal to worry about because the match is on the exact
-/// filename and `Path<String>` doesn't decode slashes by default.
+/// Serve one of the embedded vendor files (Bootstrap, jQuery, etc.) or a
+/// first-party SPA module (`js/…`, `css/app.css`). Returns 404 for any path
+/// not in [`VENDOR_FILES`] or [`APP_FILES`] — there's no path traversal to
+/// worry about despite the wildcard route (`/static/{*file}`, needed so
+/// nested app paths like `js/scan_info/browse.js` match): every candidate
+/// byte slice is already embedded in the binary at compile time, and the
+/// match is exact-string equality against that fixed, known-good list, never
+/// a filesystem lookup — a `file` value like `../../etc/passwd` simply
+/// matches nothing and falls through to the 404 below.
 async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Response {
-    for (name, ct, bytes) in VENDOR_FILES {
+    for (name, ct, bytes) in VENDOR_FILES.iter().chain(APP_FILES.iter()) {
         if *name == file {
             // ETag is the crate version (which uniquely identifies the
             // embedded bytes — the bundle ships in-binary). We deliberately

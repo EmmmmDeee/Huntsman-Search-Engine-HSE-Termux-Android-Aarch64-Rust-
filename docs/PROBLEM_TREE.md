@@ -1526,6 +1526,48 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   fails against the unfixed code (confirmed by reverting the fix and
   re-running: `pr@rileyjorja.com` is minted) and passes against the fix.
   **P1 closed.**
+- **`[x]` T2.41 · Monolithic `spa.html` (3999 lines, everything inline)** —
+  the whole SPA lived in one file: `<style>` (310 lines of CSS), 5 vendor
+  `<script>` tags, and one giant inline `<script>` (3578 lines) holding
+  every helper, the API client, the hash router, and ~100 page/view render
+  functions across Dashboard/Scans/Diff/New-Scan/ScanInfo's 22 sub-tabs/
+  Settings/Search/Live/Engines — a single-file structure that made any one
+  view hard to isolate, review, or diff. → **Solution:** split into
+  `src/web/css/app.css` (verbatim CSS extraction) plus 37 native ES modules
+  under `src/web/js/` (one file per concern: `state.js`, `helpers.js`,
+  `api.js`, `router.js`, `main.js`, `timers.js`, `theme.js`, one file per
+  top-level view under `js/views/`, one file per ScanInfo sub-tab under
+  `js/scan_info/`), loaded via `<script type="module" src="/static/js/
+  main.js">` — zero new dependencies (no bundler/Node toolchain; native
+  `import`/`export` only), matching the project's existing offline-first,
+  minimal-dependency ethos. `spa.html` itself shrank to a 111-line shell
+  (head/nav/modal/mainbody scaffold). Every module is still `include_bytes!`-
+  embedded at compile time (a new `APP_FILES` array paralleling the existing
+  `VENDOR_FILES` pattern), so the release artefact is still one
+  self-contained binary; `/static/{file}` became the wildcard route
+  `/static/{*file}` to serve the nested module paths. **Purely structural —
+  same look, same behaviour, no visual or functional change intended.**
+  Verified lossless: the full ~3600-line extraction was reconstructed and
+  `diff`-checked byte-identical against the original before being split.
+  Verified wired: every module's imports/exports were checked by an
+  automated symbol-usage scan (0 missing, 0 unused), including the 5
+  legitimate circular imports rooted at `main.js`'s `render()` (safe per ES
+  module semantics — each call site is inside a callback, never at
+  top-level). Live-verified in a real headless-Chromium session: every
+  top-level view (Dashboard/New Scan/Scans/Live/Engines/Settings/Search) and
+  every ScanInfo sub-tab (report/network/leads/timeline/communities/trust/
+  pivots/gaps/path/metrics/duplicates/identities/location/benchmark/
+  relations/audit/status/browse/corr/graph/log/info) rendered against a
+  real running scan with zero console/page errors, including the D3-graph
+  tab exercising the historically-fixed `nodesById` link-resolution path.
+  ~10 tests in `src/api/routes/tests.rs` and 4 in `tests/api.rs` that used
+  to scan the monolithic `SPA_HTML` string were adapted to read the
+  relevant split module(s) instead (a new `app_file()` test helper for the
+  former, a new `spa_bundle()` crawler — shell + transitive
+  `import …from '/static/…'` closure — for the latter, since the served `/`
+  document is now just the small shell). **P2** ✅ 0 lib-test regressions
+  (all pre-existing SPA-content guards still pass, now against their new
+  home), gate green (fmt/clippy `-D warnings`/rustdoc/full suite).
 
 ---
 
@@ -6263,3 +6305,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   to find something. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4573 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-AUDIT-CADENCE extended, §5 — same commit.
+- **2026-07-11** — **T2.41: split the 3999-line monolithic `spa.html` into
+  `src/web/css/app.css` + 37 native ES modules under `src/web/js/` — a
+  requested structural UI refactor delivered as one large change (same
+  look, same behaviour, zero new dependencies).** Every helper/view/API-
+  client/router that used to live in one inline `<script>` now has its own
+  file (`state.js`, `helpers.js`, `api.js`, `router.js`, `main.js`,
+  `timers.js`, `theme.js`, `js/views/*.js`, `js/scan_info/*.js`), loaded via
+  `<script type="module" src="/static/js/main.js">`; `spa.html` shrank to a
+  111-line shell. Still one self-contained binary — every module is
+  `include_bytes!`-embedded via a new `APP_FILES` array alongside the
+  existing `VENDOR_FILES`, and `/static/{file}` became the wildcard route
+  `/static/{*file}` to serve nested module paths. Verified lossless
+  (reconstruct + `diff` byte-identical to the pre-split file), verified
+  wired (automated import/export symbol scan: 0 missing, 0 unused, across
+  all 38 files, including confirming the 5 `main.js`-rooted circular
+  imports are safe), and live-verified in headless Chromium against a real
+  running scan — every top-level view and all 22 ScanInfo sub-tabs
+  rendered with zero console/page errors. ~14 tests that scanned the old
+  monolithic `SPA_HTML` string (`src/api/routes/tests.rs`,
+  `tests/api.rs`) were migrated to read the split modules instead (new
+  `app_file()` / `spa_bundle()` test helpers) — 0 regressions. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite (lib + integration +
+  doc) 0 failures. **Paired:** `SOLUTION_TREE` SOL-SPA-MODULE-SPLIT, §5 —
+  same commit.

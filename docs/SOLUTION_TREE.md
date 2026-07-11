@@ -1000,6 +1000,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   on-target result with the surname present still mints both — confirmed to
   fail against the unfixed code by reverting and re-running) and a
   single-token-target unaffected-by-the-gate guard.
+- **`[x]` SOL-SPA-MODULE-SPLIT · Monolithic `spa.html` split into native ES
+  modules, zero new dependencies** — closes **T2.41**. The 3999-line
+  single-file SPA (310-line inline `<style>` + 3578-line inline `<script>`
+  holding ~100 render functions) is now `src/web/css/app.css` plus 37
+  `import`/`export` modules under `src/web/js/` (`state.js`, `helpers.js`,
+  `api.js`, `router.js`, `main.js`, `timers.js`, `theme.js`,
+  `js/views/*.js` per top-level page, `js/scan_info/*.js` per ScanInfo
+  sub-tab), loaded via one `<script type="module">` tag — no bundler, no
+  Node toolchain, matching the project's existing offline-first minimal-
+  dependency doctrine. `spa.html` shrank to a 111-line shell. Every module
+  stays `include_bytes!`-embedded (`APP_FILES`, paralleling `VENDOR_FILES`)
+  so the binary is still self-contained; `/static/{file}` became
+  `/static/{*file}` to serve nested module paths. Purely structural: same
+  look, same behaviour. Verified three ways — (1) lossless extraction:
+  reconstructed and `diff`-checked byte-identical against the pre-split
+  file; (2) wiring: an automated import/export symbol-usage scan found 0
+  missing and 0 unused imports across all 38 files, including confirming
+  the 5 legitimate `main.js`-rooted circular imports are safe (each
+  `render()` call site is inside a callback, never module top-level);
+  (3) live, in headless Chromium against a real running scan — every
+  top-level view and all 22 ScanInfo sub-tabs rendered with zero console/
+  page errors, including the D3-graph tab's `nodesById` link-resolution
+  path. The ~14 tests that used to scan the monolithic `SPA_HTML` string
+  (10 in `src/api/routes/tests.rs`, 4 in `tests/api.rs`) were migrated to
+  read the split module(s) directly — a new `app_file()` helper for the
+  unit tests, a new `spa_bundle()` shell-plus-transitive-import crawler for
+  the integration tests (the served `/` document is now just the shell, so
+  content checks need the full module closure). 0 regressions; gate green.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -4493,3 +4521,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   outcome. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4573 lib tests, +2). Paired: `PROBLEM_TREE` §6 sixth pass —
   same commit.
+- **2026-07-11** — **SOL-SPA-MODULE-SPLIT: split the monolithic 3999-line
+  `spa.html` into `src/web/css/app.css` + 37 native ES modules under
+  `src/web/js/`, closing T2.41.** Requested as a one-large-effort
+  structural UI refactor (same look, same behaviour, no new build
+  toolchain — plain `<script type="module">`, zero new dependencies,
+  matching the project's minimal-dependency doctrine). `spa.html` is now a
+  111-line shell; every module is still `include_bytes!`-embedded
+  (`APP_FILES`, alongside `VENDOR_FILES`) so the release binary stays
+  self-contained, served from the new wildcard route `/static/{*file}`.
+  Verified lossless (diff-checked reconstruction), verified wired (0
+  missing/unused imports across all 38 files via an automated symbol scan,
+  including the 5 safe `main.js`-rooted circular imports), and live-
+  verified in headless Chromium against a real running scan — every
+  top-level view and all 22 ScanInfo sub-tabs render with zero console/
+  page errors. Migrated the ~14 tests that scanned the old monolithic
+  `SPA_HTML` string to read the split modules (`app_file()` in
+  `src/api/routes/tests.rs`, `spa_bundle()` in `tests/api.rs`) — 0
+  regressions. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures. Paired: `PROBLEM_TREE` T2.41, §8 — same commit.

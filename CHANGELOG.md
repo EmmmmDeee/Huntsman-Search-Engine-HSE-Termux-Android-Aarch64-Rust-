@@ -10,6 +10,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Changed
+- **The SPA's monolithic 3999-line `spa.html` (inline CSS + one giant inline
+  `<script>` holding every helper, the API client, the router, and ~100
+  page/view render functions) is split into `src/web/css/app.css` plus 37
+  native ES modules under `src/web/js/` — one file per concern
+  (`state.js`, `helpers.js`, `api.js`, `router.js`, `main.js`, `timers.js`,
+  `theme.js`, one per top-level view, one per ScanInfo sub-tab), loaded via
+  a single `<script type="module">` tag. `spa.html` itself is now a
+  111-line shell. No new dependency (no bundler, no Node toolchain — plain
+  browser-native `import`/`export`); every module is still embedded at
+  compile time (`APP_FILES`, alongside the existing `VENDOR_FILES`) so the
+  release binary is still one self-contained file. Purely structural: same
+  look, same behaviour, verified via a byte-identical reconstruction diff,
+  an automated import/export wiring scan, and a live headless-Chromium
+  pass over every view and all 22 ScanInfo sub-tabs against a real running
+  scan (zero console/page errors). `/static/{file}` became the wildcard
+  route `/static/{*file}` to serve the new nested module paths.
+
 ### Added
 - **Two new regression tests pin the geo-corroboration logic against a
   real-scan-derived US breach address / Australian subject pairing, and the

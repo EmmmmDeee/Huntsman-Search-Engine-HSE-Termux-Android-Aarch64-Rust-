@@ -1,0 +1,310 @@
+    /* Tiny HSE-specific layer on top of Bootstrap 3 + spiderfoot.css.
+       Anything that diverges visibly from Spiderfoot's chrome belongs
+       in spiderfoot-style.css upstream — these rules are deliberately
+       narrow. */
+    body { background-color: #fff; }
+    .navbar-inverse { background-color: #222; border-color: #080808; }
+    .navbar-inverse .navbar-brand { color: #ddd; }
+    .navbar-inverse .navbar-nav > li > a { color: #ccc; }
+    .navbar-inverse .navbar-nav > li > a:hover { color: #fff; }
+    .navbar-inverse .navbar-nav > .active > a,
+    .navbar-inverse .navbar-nav > .active > a:hover { background-color: #080808; color: #fff; }
+    .navbar-brand b { color: #07aef1; font-weight: 600; }
+    .navbar-brand small { color: #999; font-weight: 400; font-size: 11px; margin-left: 6px; }
+    .stat-card { background:#f7f7f7; border:1px solid #e3e3e3; border-radius:4px;
+                 padding:10px 14px; margin-bottom:10px; }
+    .stat-card .lab { font-size:11px; color:#888; text-transform:uppercase; letter-spacing:.04em; }
+    .stat-card .val { font-size:22px; font-weight:600; color:#333; line-height:1.2; }
+    .stat-card .val.dim { font-size:14px; color:#666; font-weight:400; }
+    .kind-pill { display:inline-block; font-size:10px; padding:2px 7px; border-radius:10px;
+                 background:#ddd; color:#444; font-weight:500; white-space:nowrap; }
+    .k-email{background:#d9edf7;color:#31708f}
+    .k-domain{background:#dff0d8;color:#3c763d}
+    .k-username{background:#e6f4ea;color:#2c7c40}
+    .k-phone{background:#fcf8e3;color:#8a6d3b}
+    .k-ip_address{background:#d9edf7;color:#31708f}
+    .k-asn{background:#e6e6fa;color:#5a4d8a}
+    .k-person{background:#dff0d8;color:#3c763d}
+    .k-credential{background:#f2dede;color:#a94442}
+    .k-password{background:#f2dede;color:#a94442}
+    .k-address{background:#fce8e6;color:#a94442}
+    .k-coordinates{background:#fde2d4;color:#8a4b1f}
+    .k-organisation{background:#e6e6fa;color:#5a4d8a}
+    .k-url{background:#d9edf7;color:#31708f}
+    .k-other{background:#eee;color:#666}
+    /* Remaining produced kinds — each distinct so no kind renders as an
+       undifferentiated default pill (grouped by family with the palette above). */
+    .k-abn_acn{background:#e6e6fa;color:#5a4d8a}
+    .k-cidr{background:#d9edf7;color:#31708f}
+    .k-mac_address{background:#e8eef2;color:#41607a}
+    .k-device_id{background:#e8eef2;color:#41607a}
+    .k-ssid{background:#d6f0ef;color:#2c6e6a}
+    .k-tracking_id{background:#ede7f6;color:#5e4b8a}
+    .k-api_key{background:#f2dede;color:#a94442}
+    .k-crypto_address{background:#fff3cd;color:#856404}
+    .status-pill { font-size:10px; padding:2px 8px; border-radius:10px; font-weight:500; }
+    .s-complete{background:#dff0d8;color:#3c763d}
+    .s-aborted{background:#fcf8e3;color:#8a6d3b}
+    .s-running{background:#d9edf7;color:#31708f}
+    .s-failed{background:#f2dede;color:#a94442}
+    .s-pending{background:#eee;color:#666}
+    .cost-pill { font-size:10px; padding:1px 7px; border-radius:10px; }
+    .cost-free{background:#dff0d8;color:#3c763d;border:1px solid #c3e0ad}
+    .cost-key_gated{background:#fcf8e3;color:#8a6d3b;border:1px solid #f1e3a7}
+    .cost-paid{background:#f2dede;color:#a94442;border:1px solid #e6b4b4}
+    .cls{font-family:monospace;font-size:11px}
+    .c-VERIFIED{color:#3c763d;font-weight:600}
+    .c-PROBABLE{color:#8a6d3b}
+    .c-CANDIDATE{color:#a94442}
+    .tag{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
+         background:#eee;color:#666;margin-right:2px}
+    .src-pill{display:inline-block;font-size:10px;padding:1px 6px;border-radius:8px;
+              background:#e7f3fb;color:#31708f;margin-right:2px;font-family:monospace}
+    .crumbs{color:#888;font-size:12px;margin-bottom:8px}
+    .crumbs a{color:#059CD7;text-decoration:none}
+    .crumbs a:hover{text-decoration:underline}
+    .corr-card{padding:8px 12px;margin-bottom:6px;border-left:4px solid #999;background:#f7f7f7}
+    .cv-critical{border-color:#9b1f9b;background:#fce8fc}
+    .cv-high{border-color:#a94442;background:#fdf2f2}
+    .cv-medium{border-color:#8a6d3b;background:#fcf8e3}
+    .cv-low{border-color:#31708f;background:#eaf4fb}
+    .corr-name{font-weight:600;color:#333}
+    .corr-d{color:#555;font-size:12px}
+    .corr-h{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.04em;margin-bottom:2px}
+    #log-box{font-family:monospace;font-size:11.5px;line-height:1.7;
+             max-height:560px;overflow-y:auto;background:#f7f7f7;border:1px solid #e3e3e3;
+             border-radius:3px;padding:8px 12px}
+    .log-row{display:flex;gap:10px}
+    .log-row .ts{color:#888;flex-shrink:0;width:80px}
+    .log-row .typ{flex-shrink:0;width:120px;font-weight:600}
+    .log-row .msg{color:#444;flex:1;word-break:break-word}
+    .lv-info .typ{color:#31708f} .lv-ok .typ{color:#3c763d} .lv-err .typ{color:#a94442}
+    .lv-warn .typ{color:#8a6d3b} .lv-skip .typ{color:#888}
+    .lv-found .typ{color:#2c7c40} .lv-corr .typ{color:#9b1f9b}
+    #graph-svg{display:block;width:100%;height:560px;
+               background:radial-gradient(circle at 50% 40%,#fbfbfb 0%,#f4f4f4 70%);
+               border:1px solid #e3e3e3;border-radius:3px;cursor:grab;
+               /* Own touch gestures inside the canvas so one-finger pan/drag
+                  works on Chrome-Android instead of scrolling the page. */
+               touch-action:none}
+    /* SpiderFoot-style by-type bar in the scan summary */
+    .kbar-cell{min-width:120px}
+    .kbar-track{position:relative;height:14px;background:#eee;border-radius:2px;overflow:hidden}
+    .kbar-fill{position:absolute;left:0;top:0;height:100%;background:#07aef1;border-radius:2px}
+    .kbar-pct{position:absolute;right:4px;top:0;line-height:14px;font-size:10px;color:#444}
+    body.dark-theme .kbar-track{background:#333}
+    body.dark-theme .kbar-pct{color:#ccc}
+    .graph-legend{position:absolute;top:8px;right:14px;background:rgba(255,255,255,.92);
+                  border:1px solid #ddd;border-radius:3px;padding:6px 10px;font-size:11px}
+    .graph-legend .lr{display:flex;align-items:center;gap:6px;margin-bottom:2px;color:#555}
+    .graph-legend .sw{width:10px;height:10px;border-radius:50%;display:inline-block}
+    .graph-ctl{position:absolute;bottom:10px;left:14px}
+    .graph-hint{position:absolute;bottom:14px;right:14px;font-size:11px;
+                background:rgba(255,255,255,.85);padding:2px 8px;border-radius:3px}
+    .help-panel{background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
+                padding:10px;font-size:12px}
+    .help-panel b{color:#333}
+    .help-panel i{color:#666;font-style:normal;font-family:monospace}
+    .keyrow{padding:10px 14px;background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;
+            margin-bottom:6px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+    .keyrow .kn{font-family:monospace;font-weight:600;color:#333;min-width:220px}
+    .keyrow .kd{font-size:11px;color:#888}
+    .keyrow input[type=password]{flex:1;min-width:200px}
+    /* Phone (Chrome-Android): keep fixed-width controls from overflowing a
+       narrow viewport. Overrides the inline widths via !important. */
+    @media (max-width: 767px) {
+      .navbar-form { margin-left: 0 !important; }
+      .navbar-form .input-group { width: 100% !important; }
+      #scan-filter { width: 100% !important; float: none !important; margin-top: 6px !important; display: block; }
+      .keyrow .kn { min-width: 0 !important; }
+      .keyrow input[type=password] { min-width: 0 !important; }
+    }
+    .keyrow .kactions{display:flex;gap:6px;margin-left:auto}
+    /* Capability-toggle grid (Settings): chips wrap and flow; monospace name. */
+    .tg-grid{display:flex;flex-wrap:wrap;gap:5px}
+    .tg-chip{font-family:monospace}
+    .mod-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:4px;
+              max-height:380px;overflow-y:auto;padding:2px;border:1px solid #e3e3e3;
+              border-radius:3px;background:#fafafa}
+    .mod-grid label{display:flex;align-items:center;gap:6px;padding:5px 8px;background:#fff;
+                    border:1px solid #e3e3e3;border-radius:3px;font-weight:400;margin:0;cursor:pointer}
+    .mod-grid label:hover{border-color:#aaa}
+    .mod-grid label.dimmed{opacity:.45}
+    .mod-grid .mn{font-family:monospace;font-size:11.5px;flex:1;overflow:hidden;
+                  text-overflow:ellipsis;white-space:nowrap}
+    .navbar-brand{padding-top:14px;padding-bottom:14px}
+    .navbar-brand .brand-logo-text{font-size:18px;letter-spacing:.02em;color:#333}
+    /* Tablesorter v2 theme tweak — make header arrows visible */
+    .tablesorter-default thead .tablesorter-header { background-image: none; padding-right:18px; }
+    .tablesorter-default thead .tablesorter-headerAsc::after  { content:" ▲"; color:#059CD7 }
+    .tablesorter-default thead .tablesorter-headerDesc::after { content:" ▼"; color:#059CD7 }
+    .progress.thin{height:6px;margin-bottom:0}
+    .scan-error{color:#a94442;font-family:monospace;font-size:11px}
+    .entity-detail{background:#f7f9fc;border-top:1px solid #e3e3e3;padding:10px 14px}
+    .entity-detail .ev-block{margin-bottom:8px;padding:6px 10px;background:#fff;border:1px solid #e3e3e3;border-radius:3px}
+    .entity-detail .ev-src{font-family:monospace;font-size:11px;color:#31708f;font-weight:600}
+    .entity-detail .ev-sum{font-size:12px;color:#444;margin:2px 0}
+    .entity-detail .ev-attrs{display:flex;flex-wrap:wrap;gap:4px;margin-top:3px}
+    .entity-detail .ev-attr{font-size:10px;background:#eef3f8;padding:1px 6px;border-radius:3px;color:#333;font-family:monospace}
+    .entity-detail .ev-attr .ak{color:#666}
+    #browse-table tbody tr{cursor:pointer}
+    #browse-table tbody tr:hover{background:#f0f7ff !important}
+    body.dark-theme .entity-detail{background:#1e2228}
+    body.dark-theme .entity-detail .ev-block{background:#252830;border-color:#333}
+    body.dark-theme .entity-detail .ev-attr{background:#2a2f38;color:#ccc}
+    .search-results{padding:12px}
+    .search-results .sr-item{padding:8px 12px;border-bottom:1px solid #eee;cursor:pointer}
+    .search-results .sr-item:hover{background:#f0f7ff}
+    .empty-state{padding:32px 20px;text-align:center;color:#888}
+    .empty-state h3{color:#555;font-weight:500;font-size:16px;margin-bottom:6px}
+    .empty-state p{font-size:13px;max-width:480px;margin:0 auto 12px;line-height:1.5}
+    /* Network tab — subject hub + grouped, ranked connection cards (mobile-first) */
+    .net-hero{display:flex;flex-wrap:wrap;align-items:center;gap:12px;justify-content:space-between;
+      background:linear-gradient(135deg,#eaf7fd,#f7f7f7);border:1px solid #cfe8f5;border-radius:6px;
+      padding:12px 16px;margin-bottom:12px}
+    .net-hero-name{font-size:20px;font-weight:600;color:#222;word-break:break-word}
+    .net-hero-meta{margin-top:3px}
+    .net-hero-stats{display:flex;gap:14px}
+    .net-stat{text-align:center;min-width:54px}
+    .net-stat .v{font-size:20px;font-weight:600;color:#07aef1;line-height:1.1}
+    .net-stat .l{font-size:10px;color:#888;text-transform:uppercase;letter-spacing:.04em}
+    .net-group{border:1px solid #e3e3e3;border-radius:5px;margin-bottom:10px;overflow:hidden}
+    .net-group-head{background:#f7f7f7;border-bottom:1px solid #e3e3e3;padding:7px 12px;font-weight:600;color:#333;font-size:13px}
+    .net-conn{display:flex;align-items:center;gap:8px;padding:7px 12px;border-bottom:1px solid #f0f0f0;flex-wrap:wrap}
+    .net-conn:last-child{border-bottom:none}
+    .net-conn:hover{background:#f5fbff}
+    .net-rel{flex-shrink:0;min-width:76px;font-size:10px;text-transform:uppercase;letter-spacing:.03em;
+      color:#31708f;background:#e7f3fb;border-radius:8px;padding:2px 8px;text-align:center;font-weight:600}
+    .net-conn-val{flex:1;min-width:120px;font-family:monospace;font-size:12.5px;color:#222;word-break:break-all}
+    .net-conf{flex-shrink:0;width:54px;height:6px;background:#eee;border-radius:3px;overflow:hidden}
+    .net-conf-bar{display:block;height:100%;background:#07aef1}
+    /* Leads tab — ranked next-action cards with a one-click Scan button */
+    .lead-card{display:flex;align-items:center;gap:10px;justify-content:space-between;flex-wrap:wrap;
+      border:1px solid #e3e3e3;border-left:3px solid #07aef1;border-radius:5px;padding:9px 13px;margin-bottom:8px;background:#fff}
+    .lead-card:hover{background:#f5fbff}
+    .lead-main{flex:1;min-width:180px}
+    .lead-val{font-size:14px;font-weight:600;color:#222;word-break:break-word}
+    .lead-reason{font-size:11.5px;color:#777;margin-top:2px}
+    .lead-scan{flex-shrink:0}
+    /* Confirmed leads (an independent second signal corroborates them) get a
+       green accent + badge so the reliable pivots stand out; geo-discordant
+       namesakes are dimmed with an amber caution badge so they're easy to skip. */
+    .lead-card.confirmed{border-left-color:#2bbf6a}
+    .lead-card.discordant{border-left-color:#c9a23a;opacity:.72}
+    .lead-card.discordant:hover{opacity:1}
+    .lead-badge{display:inline-block;font-size:10px;font-weight:700;color:#1a8f4e;background:#e6f7ee;
+      border:1px solid #bfe8d0;border-radius:3px;padding:0 5px;margin-left:6px;vertical-align:middle;letter-spacing:.3px}
+    .lead-badge.namesake{color:#8a6d1a;background:#fdf6e3;border-color:#ecd9a0}
+    body.dark-theme .lead-card{background:#1f1f1f;border-color:#333;border-left-color:#07aef1}
+    body.dark-theme .lead-card.confirmed{border-left-color:#2bbf6a}
+    body.dark-theme .lead-card.discordant{border-left-color:#c9a23a}
+    body.dark-theme .lead-card:hover{background:#243240}
+    body.dark-theme .lead-val{color:#eee}
+    body.dark-theme .lead-reason{color:#999}
+    body.dark-theme .lead-badge{color:#7fe0a8;background:#173726;border-color:#2c5d40}
+    body.dark-theme .lead-badge.namesake{color:#e6c878;background:#332a12;border-color:#5d4f2c}
+    /* Timeline — the subject's footprint reconstructed as one vertical chronology */
+    .tl{position:relative;margin:4px 0 0 6px;padding-left:18px;border-left:2px solid #e3e3e3}
+    .tl-item{position:relative;margin-bottom:11px}
+    .tl-date{font-size:11px;font-weight:600;color:#555;font-variant-numeric:tabular-nums}
+    .tl-dot{position:absolute;left:-25px;top:2px;width:10px;height:10px;border-radius:50%;border:2px solid #fff}
+    .tl-body{font-size:13px;color:#222;margin-top:1px;word-break:break-word}
+    .tl-badge{display:inline-block;font-size:10px;font-weight:700;color:#fff;border-radius:3px;padding:0 5px;margin-right:5px;vertical-align:middle;letter-spacing:.2px}
+    .tl-src{font-size:10.5px;margin-top:1px}
+    body.dark-theme .tl{border-left-color:#333}
+    body.dark-theme .tl-date{color:#aaa}
+    body.dark-theme .tl-dot{border-color:#1f1f1f}
+    body.dark-theme .tl-body{color:#eee}
+    body.dark-theme .net-hero{background:linear-gradient(135deg,#16222c,#1f1f1f);border-color:#2d4a5a}
+    body.dark-theme .net-hero-name{color:#eee}
+    body.dark-theme .net-group{border-color:#333}
+    body.dark-theme .net-group-head{background:#2a2a2a;border-color:#333;color:#ddd}
+    body.dark-theme .net-conn{border-bottom-color:#2a2a2a}
+    body.dark-theme .net-conn:hover{background:#243240}
+    body.dark-theme .net-conn-val{color:#ddd}
+    body.dark-theme .net-rel{background:#1e2a30;color:#5aa0cf}
+    body.dark-theme .net-conf{background:#333}
+    /* Dark mode (Spiderfoot-compatible — toggled via #theme-toggler) */
+    body.dark-theme{background:#1a1a1a;color:#ddd}
+    body.dark-theme .navbar-inverse{background:#111;border-color:#000}
+    body.dark-theme .navbar-inverse .navbar-nav>.active>a{background:#000}
+    body.dark-theme .panel{background:#222;border-color:#333}
+    body.dark-theme .panel-default>.panel-heading{background:#2a2a2a;border-color:#333;color:#ddd}
+    body.dark-theme .table-striped>tbody>tr:nth-of-type(odd){background:#252525}
+    body.dark-theme .table>tbody>tr>td,body.dark-theme .table>thead>tr>th{border-color:#333;color:#ddd}
+    body.dark-theme .stat-card{background:#222;border-color:#333}
+    body.dark-theme .stat-card .val{color:#ddd}
+    body.dark-theme .help-panel{background:#222;border-color:#333}
+    body.dark-theme .help-panel b{color:#eee}
+    body.dark-theme #graph-svg{background:radial-gradient(circle at 50% 40%,#222 0%,#1a1a1a 70%)}
+    body.dark-theme .graph-hint{background:rgba(20,20,20,.85);color:#999}
+    body.dark-theme .graph-legend{background:rgba(28,28,28,.92);border-color:#333}
+    body.dark-theme .graph-legend .lr{color:#bbb}
+    body.dark-theme .graph-ctl .btn-default{background:#2a2a2a;color:#ccc;border-color:#444}
+    body.dark-theme #log-box{background:#222;border-color:#333;color:#ddd}
+    body.dark-theme .keyrow{background:#222;border-color:#333}
+    body.dark-theme .mod-grid{background:#1f1f1f;border-color:#333}
+    body.dark-theme .mod-grid label{background:#272727;border-color:#333;color:#ddd}
+    /* Browse sidebar — SpiderFoot two-column layout */
+    #browse-rollup tr.active-kind td{background:#059CD7 !important;color:#fff !important}
+    #browse-rollup tr.active-kind .kind-pill{background:rgba(255,255,255,.25);color:#fff}
+    #b-sidebar .panel{position:sticky;top:65px}
+    body.dark-theme #browse-rollup{background:#1f1f1f}
+    body.dark-theme #browse-rollup tr td{color:#ccc;border-color:#333}
+    body.dark-theme #browse-rollup tr:hover td{background:#2a2a2a !important}
+    body.dark-theme #browse-rollup tr.active-kind td{background:#059CD7 !important;color:#fff !important}
+    body.dark-theme #b-sidebar .panel{background:#1f1f1f;border-color:#333}
+    body.dark-theme #b-sidebar .panel-heading{background:#2a2a2a;border-color:#333;color:#ddd}
+    /* SpiderFoot uses #1c1c1c for the body in dark mode — closer than #1a1a1a */
+    body.dark-theme{background:#1c1c1c}
+    /* Input/select dark mode */
+    body.dark-theme .form-control{background:#2a2a2a;color:#ddd;border-color:#444}
+    body.dark-theme .form-control:focus{background:#333;border-color:#059CD7}
+    body.dark-theme .input-group-btn .btn{background:#2a2a2a;color:#ccc;border-color:#444}
+    /* Table header dark */
+    body.dark-theme .table>thead>tr>th{background:#222;color:#bbb;border-color:#333}
+    /* btn-default dark */
+    body.dark-theme .btn-default{background:#2a2a2a;color:#ccc;border-color:#444}
+    body.dark-theme .btn-default:hover{background:#333;color:#fff}
+    /* New scan wizard dark mode */
+    body.dark-theme .help-panel{background:#1e2a30;border-color:#2d4a5a;color:#bbb}
+    body.dark-theme .panel{background:#1f1f1f;border-color:#333}
+    body.dark-theme .panel-heading{background:#2a2a2a;color:#ddd;border-color:#333}
+    body.dark-theme .panel-body{background:#1f1f1f;color:#ccc}
+    body.dark-theme .nav-tabs{border-color:#333}
+    body.dark-theme .nav-tabs>li>a{background:#222;color:#aaa;border-color:#333}
+    body.dark-theme .nav-tabs>li>a:hover{background:#2a2a2a;color:#ddd;border-color:#444}
+    body.dark-theme .nav-tabs>li.active>a,body.dark-theme .nav-tabs>li.active>a:focus{background:#1c1c1c;color:#fff;border-color:#333 #333 #1c1c1c}
+    body.dark-theme .table-striped>tbody>tr:nth-of-type(odd){background:#222}
+    body.dark-theme .table-striped>tbody>tr:nth-of-type(even){background:#1c1c1c}
+    body.dark-theme .table>tbody>tr>td{color:#ccc;border-color:#333}
+    body.dark-theme .table>tbody>tr:hover{background:#2a2a2a !important}
+    body.dark-theme textarea.form-control{background:#2a2a2a;color:#ddd;border-color:#444}
+    body.dark-theme .mod-grid label{background:#222;border-color:#333;color:#ccc}
+    body.dark-theme .mod-grid label:hover{background:#2a2a2a}
+    body.dark-theme .stat-card{background:#222;border-color:#333}
+    body.dark-theme .stat-card .val{color:#ddd}
+    body.dark-theme .stat-card .lab{color:#777}
+    /* Wizard advanced-options box, severity-count pills, and table group-header
+       rows: static styling moved off inline `style=` so the dark overrides below
+       actually win (inline styles outrank id/class selectors). */
+    #adv-box{background:#f7f7f7;border:1px solid #e3e3e3;border-radius:3px;padding:10px;margin-bottom:14px}
+    .sev-count{background:#f7f7f7;border:1px solid #ddd;color:#444;margin-right:4px}
+    .grp-row{background:#fafafa}
+    body.dark-theme #adv-box{background:#222;border-color:#333}
+    body.dark-theme .sev-count{background:#2a2a2a;border-color:#444;color:#ccc}
+    body.dark-theme .grp-row{background:#262626;color:#ddd}
+    /* Correlation cards — keep the severity hue on the left border, dark-tint the fill */
+    body.dark-theme .corr-card{background:#1f1f1f;border-left-color:#777;color:#ccc}
+    body.dark-theme .cv-critical{border-left-color:#c64fc6;background:#2a1430}
+    body.dark-theme .cv-high{border-left-color:#cf6b6a;background:#2c1818}
+    body.dark-theme .cv-medium{border-left-color:#c0a060;background:#2a2516}
+    body.dark-theme .cv-low{border-left-color:#5aa0cf;background:#16222c}
+    body.dark-theme .corr-d{color:#bbb}
+    body.dark-theme .corr-h{color:#999}
+    /* Scan-log message text — #log-box sets #ddd but .msg overrode it to #444 */
+    body.dark-theme .log-row .msg{color:#cfcfcf}
+    body.dark-theme .log-row .ts{color:#888}
+    /* Row hovers: the light-blue #f0f7ff is invisible on a dark table */
+    body.dark-theme #browse-table tbody tr:hover{background:#243240 !important}
+    body.dark-theme .search-results .sr-item:hover{background:#243240}

@@ -1888,14 +1888,62 @@ fn segments_after(text: &str, prefix: &str, keep: impl Fn(char) -> bool) -> Vec<
     out
 }
 
+/// Crawl every asset the served SPA shell depends on: its own `<link>` /
+/// `<script src>` references, plus every `import … from '/static/js/…'` inside
+/// each fetched JS module (transitively — `main.js` alone pulls in ~35 view
+/// modules). The former monolithic `spa.html` held every view inline, so a
+/// content check could just scan the one served document; now that it's split
+/// across `src/web/js/`, the same checks need the concatenation of the shell
+/// plus every module it transitively loads. Returns `(combined text, sorted
+/// list of every `/static/…` path discovered)`.
+async fn spa_bundle(app: &axum::Router) -> (String, Vec<String>) {
+    fn path_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '/'
+    }
+
+    let (_, shell) = fetch_text(app, "/").await;
+    let mut queue: Vec<String> = segments_after(&shell, "/static/", path_char)
+        .into_iter()
+        .map(|p| format!("/static/{p}"))
+        .collect();
+    let mut combined = shell.clone();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut discovered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut i = 0;
+    while i < queue.len() {
+        let path = queue[i].clone();
+        i += 1;
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        discovered.insert(path.clone());
+        let (status, body) = fetch_text(app, &path).await;
+        if status != http::StatusCode::OK {
+            continue;
+        }
+        combined.push('\n');
+        combined.push_str(&body);
+        if path.ends_with(".js") {
+            for imp in segments_after(&body, "from '/static/", path_char) {
+                let full = format!("/static/{imp}");
+                if !seen.contains(&full) {
+                    queue.push(full);
+                }
+            }
+        }
+    }
+    (combined, discovered.into_iter().collect())
+}
+
 #[tokio::test]
 async fn spa_served_with_required_ui_structure() {
     let app = test_app("spa-structure");
-    let (status, html) = fetch_text(&app, "/").await;
+    let (status, _) = fetch_text(&app, "/").await;
     assert_eq!(status, http::StatusCode::OK);
+    let (html, _) = spa_bundle(&app).await;
     assert!(
         html.len() > 10_000,
-        "SPA document suspiciously small ({} bytes)",
+        "SPA bundle suspiciously small ({} bytes)",
         html.len()
     );
     // Directive UI checklist — this scaffolding must stay present.
@@ -1923,7 +1971,7 @@ async fn spa_references_only_registered_api_endpoints() {
     // never the `api_not_found` fallback. A new SPA endpoint with no probe here
     // fails loudly, forcing its route to be confirmed.
     let app = test_app("spa-endpoints");
-    let (_, html) = fetch_text(&app, "/").await;
+    let (html, _) = spa_bundle(&app).await;
 
     let bases = segments_after(&html, "/api/v1/", |c| c.is_ascii_lowercase() || c == '_');
     assert!(
@@ -1991,22 +2039,19 @@ async fn spa_references_only_served_static_assets() {
     // Every vendored `/static/<file>` the SPA links must be served (200,
     // non-empty) by the vendor handler — guards a broken-link regression.
     let app = test_app("spa-static");
-    let (_, html) = fetch_text(&app, "/").await;
-    let files = segments_after(&html, "/static/", |c| {
-        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'
-    });
+    let (_, files) = spa_bundle(&app).await;
     assert!(
         files.len() >= 5,
-        "expected the SPA to load several vendored assets, found {files:?}"
+        "expected the SPA to load several vendored/app assets, found {files:?}"
     );
     for f in &files {
-        let (status, body) = fetch_text(&app, &format!("/static/{f}")).await;
+        let (status, body) = fetch_text(&app, f).await;
         assert_eq!(
             status,
             http::StatusCode::OK,
-            "vendored asset /static/{f} not served (broken link)"
+            "asset {f} not served (broken link)"
         );
-        assert!(!body.is_empty(), "vendored asset /static/{f} served empty");
+        assert!(!body.is_empty(), "asset {f} served empty");
     }
 }
 
@@ -2018,8 +2063,9 @@ async fn spa_api_client_calls_are_all_defined() {
     // catches (the route can exist while the JS helper is missing/misspelled).
     // Pure static scan of the served document; no JS engine, no browser.
     let app = test_app("spa-api-client");
-    let (status, html) = fetch_text(&app, "/").await;
+    let (status, _) = fetch_text(&app, "/").await;
     assert_eq!(status, http::StatusCode::OK, "SPA `/` must serve 200");
+    let (html, _) = spa_bundle(&app).await;
 
     // Identifiers written as `API.<name>` — this captures call sites
     // (`API.foo(`, `API.csvUrl(`) but NOT the object-literal definitions
