@@ -390,6 +390,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`search_engines` no longer attributes a completely unrelated third
+  party's email or phone number to the scan subject.** Its email/phone
+  snippet extraction had no subject-relevance check at all — any match found
+  in a search result's title/snippet was minted regardless of whether that
+  specific result actually named the subject — while its own address
+  extractor two blocks below already carried exactly this check (built for
+  an earlier "trusting a same-first-name stranger's address" regression). A
+  real scan surfaced this concretely: an email belonging to an unrelated
+  Instagram account reached `PROBABLE` confidence attributed to a different
+  person of the same first name. The existing, already-proven relevance
+  check now gates email and phone extraction the same way it already gated
+  addresses. Regression tests
+  `email_and_phone_extraction_requires_the_surname_in_the_result` and
+  `email_extraction_unaffected_for_single_token_targets`.
 - **The AU-039 correlation ("cryptocurrency wallet linked to identity") no
   longer attributes a wallet to an unrelated person by alphabetical accident.**
   It previously anchored EVERY wallet in a scan to the single

@@ -149,65 +149,99 @@ pub(super) fn build_entities(
 
         // Extract emails from title + snippet text
         let combined_text = format!("{} {}", r.title, r.snippet);
-        for email in extract_emails_from_text(&combined_text) {
-            if crate::util::domains::is_infrastructure_email(&email) {
-                continue;
-            }
-            if seen_emails.insert(email.clone()) {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
-                e.tag(tags::WEB_SCRAPED);
-                e.tag(tags::SEARCH_DISCOVERED);
-                e.add_evidence(
-                    Evidence::new(
-                        "search_engines",
-                        format!(
-                            "[{}] Email found on {} — {}",
-                            r.engine,
-                            extract_host(&r.url),
-                            r.url
-                        ),
-                    )
-                    .with_attr("url", &r.url)
-                    .with_attr("engine", r.engine)
-                    .with_attr("query", &r.query),
-                );
-                result.push(e);
-            } else if let Some(existing) = result
-                .entities
-                .iter_mut()
-                .find(|e| e.kind == EntityKind::Email && e.value == email)
-            {
-                existing.confidence = (existing.confidence + 0.10).min(0.85);
-                existing.corroboration = existing.corroboration.saturating_add(1);
-            }
-        }
 
-        for phone in extract_phones_from_text(&combined_text) {
-            if seen_phones.insert(phone.clone()) {
-                let mut e = Entity::new(EntityKind::Phone, &phone, 0.55, scan_id);
-                e.tag(tags::WEB_SCRAPED);
-                e.tag(tags::SEARCH_DISCOVERED);
-                e.add_evidence(
-                    Evidence::new(
-                        "search_engines",
-                        format!(
-                            "[{}] Phone found on {} — {}",
-                            r.engine,
-                            extract_host(&r.url),
-                            r.url
-                        ),
-                    )
-                    .with_attr("url", &r.url)
-                    .with_attr("engine", r.engine),
-                );
-                result.push(e);
-            } else if let Some(existing) = result
-                .entities
-                .iter_mut()
-                .find(|e| e.kind == EntityKind::Phone && e.value == phone)
-            {
-                existing.confidence = (existing.confidence + 0.12).min(0.80);
-                existing.corroboration = existing.corroboration.saturating_add(1);
+        // Subject-relevance gate — shared by every extraction below that mines
+        // free-text snippet content (email, phone, address): a name search
+        // returns fuzzy namesakes (a live "Cindy Haynes" scan surfaced a
+        // "Cindy He" UNSW staff page; separately, a "Riley Morley" scan pulled
+        // `pr@rileyjorja.com` off an unrelated "Riley (@rileyj)" Instagram bio
+        // that never mentions "Morley" anywhere), and trusting THEIR contact
+        // details injects a false attribution onto the real subject at
+        // meaningful confidence (email/phone start at PROBABLE, 0.55-0.60) —
+        // materially worse than the address case this gate was first built for,
+        // since a wrong email/phone is directly actionable PII, not just a
+        // wrong locality. For a multi-part name, require the distinctive
+        // surname (the last name token) somewhere in this result's snippet or
+        // URL before extracting anything from it. Single-token targets (email
+        // handle / username) are not prone to this first-name collision and are
+        // unaffected. A location seed has no subject-identity anchor to gate
+        // on: `target_terms` splits its value into place tokens, so
+        // `terms.last()` is the trailing postcode/state, which every
+        // aggregator page that indexed the address reproduces verbatim — the
+        // gate would be tautologically true, so a location seed never mines
+        // snippet PII at all (mirrors the parent-reaffirmation skip above).
+        let result_names_the_subject = if location_seed {
+            false
+        } else if terms.len() >= 2 {
+            let hay = format!("{combined_text} {}", r.url).to_lowercase();
+            terms
+                .last()
+                .is_some_and(|surname| hay.contains(surname.as_str()))
+        } else {
+            true
+        };
+
+        if result_names_the_subject {
+            for email in extract_emails_from_text(&combined_text) {
+                if crate::util::domains::is_infrastructure_email(&email) {
+                    continue;
+                }
+                if seen_emails.insert(email.clone()) {
+                    let mut e = Entity::new(EntityKind::Email, &email, 0.60, scan_id);
+                    e.tag(tags::WEB_SCRAPED);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    e.add_evidence(
+                        Evidence::new(
+                            "search_engines",
+                            format!(
+                                "[{}] Email found on {} — {}",
+                                r.engine,
+                                extract_host(&r.url),
+                                r.url
+                            ),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine)
+                        .with_attr("query", &r.query),
+                    );
+                    result.push(e);
+                } else if let Some(existing) = result
+                    .entities
+                    .iter_mut()
+                    .find(|e| e.kind == EntityKind::Email && e.value == email)
+                {
+                    existing.confidence = (existing.confidence + 0.10).min(0.85);
+                    existing.corroboration = existing.corroboration.saturating_add(1);
+                }
+            }
+
+            for phone in extract_phones_from_text(&combined_text) {
+                if seen_phones.insert(phone.clone()) {
+                    let mut e = Entity::new(EntityKind::Phone, &phone, 0.55, scan_id);
+                    e.tag(tags::WEB_SCRAPED);
+                    e.tag(tags::SEARCH_DISCOVERED);
+                    e.add_evidence(
+                        Evidence::new(
+                            "search_engines",
+                            format!(
+                                "[{}] Phone found on {} — {}",
+                                r.engine,
+                                extract_host(&r.url),
+                                r.url
+                            ),
+                        )
+                        .with_attr("url", &r.url)
+                        .with_attr("engine", r.engine),
+                    );
+                    result.push(e);
+                } else if let Some(existing) = result
+                    .entities
+                    .iter_mut()
+                    .find(|e| e.kind == EntityKind::Phone && e.value == phone)
+                {
+                    existing.confidence = (existing.confidence + 0.12).min(0.80);
+                    existing.corroboration = existing.corroboration.saturating_add(1);
+                }
             }
         }
 
@@ -256,34 +290,13 @@ pub(super) fn build_entities(
         // Corroboration cap for postcode-only / bare addresses is 0.60 to prevent
         // pure suburb mentions reaching Probable (0.75+) via repetition alone.
         //
-        // Subject-relevance gate: a name search returns fuzzy namesakes (a live
-        // "Cindy Haynes" scan surfaced a "Cindy He" UNSW staff page); trusting
-        // THEIR address injects a false location — here a "Sydney, NSW" fix that
-        // contradicted the QLD evidence and drove a wrong-state AU-056
-        // jurisdiction plus a 700 km geo-divergence. For a multi-part name,
-        // require the distinctive surname (the last name token) somewhere in this
-        // result's snippet or URL before extracting its address. Single-token
-        // targets (email handle / username) are not prone to this first-name
-        // collision and are unaffected.
-        // A location seed has no subject-identity anchor to gate on: `target_terms`
-        // splits its value into place tokens, so `terms.last()` is the trailing
-        // postcode / state (for "…, Hodges, SC, 29653" it is "29653"), which every
-        // aggregator page that indexed the address reproduces verbatim — the gate
-        // would be tautologically true and let each such page re-extract the seed
-        // address and bump its confidence (+0.10/result) and corroboration. A page
-        // ABOUT a place mentioning that place is not corroboration of the subject,
-        // so never harvest snippet addresses from a location-seed pivot.
-        let location_on_subject = if location_seed {
-            false
-        } else if terms.len() >= 2 {
-            let hay = format!("{combined_text} {}", r.url).to_lowercase();
-            terms
-                .last()
-                .is_some_and(|surname| hay.contains(surname.as_str()))
-        } else {
-            true
-        };
-        let snippet_addresses = if location_on_subject {
+        // Gated on the same `result_names_the_subject` subject-relevance check
+        // computed above for email/phone extraction (originally: a live "Cindy
+        // Haynes" scan surfaced a "Cindy He" UNSW staff page; trusting THEIR
+        // address injected a false "Sydney, NSW" location that contradicted the
+        // real QLD evidence and drove a wrong-state AU-056 jurisdiction plus a
+        // 700 km geo-divergence).
+        let snippet_addresses = if result_names_the_subject {
             extract_addresses_from_text(&combined_text)
         } else {
             Vec::new()

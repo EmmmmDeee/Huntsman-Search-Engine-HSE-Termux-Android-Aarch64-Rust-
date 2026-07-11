@@ -1768,6 +1768,91 @@ fn url_from_a_location_seed_is_quarantined_as_generic_location() {
 }
 
 #[test]
+fn email_and_phone_extraction_requires_the_surname_in_the_result() {
+    // Regression from a live "Riley Morley" scan: Bing returned
+    // instagram.com/rileyj/ (an unrelated account — first name "Riley" only, no
+    // "Morley" anywhere in the bio) whose snippet happened to contain
+    // "pr@rileyjorja.com", and the unfixed code minted that as a PROBABLE
+    // (0.60+) email attributed to the subject with zero check that the result
+    // actually names them — the same first-name-collision shape the address
+    // extractor was already gated against (`result_names_the_subject`, née
+    // `location_on_subject`), just never extended to email/phone.
+    let target = Target::new(TargetKind::FullName, "Riley Morley");
+    let off_target = SearchResult {
+        url: "https://www.instagram.com/rileyj/".to_string(),
+        title: "instagram.com".to_string(),
+        snippet: "Riley (@rileyj) • Instagram photos and videos \"AU/ @remmiebyriley \
+                  pr@rileyjorja.com\" call +61 400 111 222"
+            .to_string(),
+        engine: "bing",
+        query: "\"Riley Morley\"".to_string(),
+    };
+    let results = vec![off_target];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Email),
+        "an off-target result (no surname match) must not mint an email: {:?}",
+        res.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| &e.value)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "an off-target result (no surname match) must not mint a phone either"
+    );
+
+    // The genuine case must still work: the surname present in the snippet.
+    let on_target = SearchResult {
+        url: "https://www.uml.edu/research/osp/staff/morley-riley.aspx".to_string(),
+        title: "Riley Morley | Office of Sponsored Programs | UMass Lowell".to_string(),
+        snippet: "Contact Riley Morley at riley.morley@uml.edu or +61 400 111 222".to_string(),
+        engine: "brave",
+        query: "\"Riley Morley\"".to_string(),
+    };
+    let results2 = vec![on_target];
+    let res2 = build_entities(&target, "s", &results2, &url_engine_counts(&results2));
+    assert!(
+        res2.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "riley.morley@uml.edu"),
+        "a genuine on-target result (surname present) must still mint the email: {:?}",
+        res2.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| &e.value)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        res2.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a genuine on-target result must still mint the phone"
+    );
+}
+
+#[test]
+fn email_extraction_unaffected_for_single_token_targets() {
+    // Single-token targets (email/username) are not prone to first-name
+    // collision, so the gate must stay a no-op for them — mirrors the existing
+    // guarantee already proven for address extraction.
+    let target = Target::new(TargetKind::Username, "kylo4kylo");
+    let results = vec![SearchResult {
+        url: "https://example.com/unrelated".to_string(),
+        title: "totally unrelated page".to_string(),
+        snippet: "contact someone at other@example.com".to_string(),
+        engine: "duckduckgo",
+        query: "kylo4kylo".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com"),
+        "single-token targets must still extract emails regardless of surname presence"
+    );
+}
+
+#[test]
 fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
     // T2.36 regression: the engine re-queues every discovered entity as a pivot,
     // so a breach-derived street address comes back as an Address seed. Real-estate

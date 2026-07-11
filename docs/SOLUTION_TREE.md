@@ -976,6 +976,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   regression that gives the bystander the smaller UID so the old pick would
   name them; and the person-preferred/report-each-tie case) — each fails
   against the unfixed rule and passes against the fix.
+- **`[x]` SOL-SNIPPET-PII-SUBJECT-GATE · `search_engines`' email/phone
+  snippet extraction gated on subject relevance, extending an
+  already-proven check that simply hadn't reached them yet** — closes
+  **T2.40**, found via an operator-supplied real scan (CSV export + debug
+  bundle for "Riley Morley"): a completely unrelated Instagram bio's email
+  (`pr@rileyjorja.com` — first name "Riley" only, no "Morley" anywhere)
+  reached `PROBABLE 0.70` attributed to the subject because the snippet
+  merely appeared among the results for a `"Riley Morley"` query. The fix
+  didn't invent new logic: the address extractor in the SAME function
+  (`build.rs`) already carried exactly the needed check
+  (`location_on_subject`, built for an earlier live regression — "Cindy
+  Haynes" trusting a "Cindy He" UNSW page's address) — it simply hadn't been
+  extended to email/phone. Hoisted the check to run once per result before
+  ANY snippet extraction, renamed `location_on_subject` →
+  `result_names_the_subject` (never location-specific — it asks whether
+  THIS result actually names the subject), and gated email + phone + address
+  extraction on the single shared boolean, removing the duplicate
+  definition. Byte-identical gate values for every existing caller
+  (location seeds, single-token targets); the full pre-existing 290-test
+  `search_engines` suite passed unmodified before 2 new tests were added:
+  the T2.40 regression (an off-target result mints neither PII kind; an
+  on-target result with the surname present still mints both — confirmed to
+  fail against the unfixed code by reverting and re-running) and a
+  single-token-target unaffected-by-the-gate guard.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1055,6 +1079,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SEEKNOW-SUBJECT-GATE | T2.37 | `[x]` |
 | SOL-AU063-DOC-FIX | T2.38 | `[x]` |
 | SOL-AU039-SHARED-SOURCE | T2.39 | `[x]` |
+| SOL-SNIPPET-PII-SUBJECT-GATE | T2.40 | `[x]` |
 
 ---
 
@@ -4405,3 +4430,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   other leg). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4569 lib tests, +8). Paired: `PROBLEM_TREE` §8, T2.7 `[ ]`→`[~]`
   — same commit.
+- **2026-07-11** — **SOL-SNIPPET-PII-SUBJECT-GATE built, new T2.40 closed same
+  cycle.** Triggered by an operator-supplied real scan (CSV + debug bundle,
+  target "Riley Morley"): `pr@rileyjorja.com`, belonging to an unrelated
+  Instagram account, reached PROBABLE 0.70 attributed to the subject from a
+  single off-target snippet. Root cause: `search_engines/build.rs`'s
+  email/phone extraction had no subject-relevance check at all, while its
+  OWN address extractor a few lines below already carried one
+  (`location_on_subject`) built for an earlier live regression ("Cindy
+  Haynes"/"Cindy He"). The fix reused the existing, already-proven check
+  rather than inventing a new one: hoisted it to run once per result before
+  any snippet extraction, renamed to `result_names_the_subject` (never
+  location-specific), and gated email + phone + address on the single shared
+  boolean — removing the duplicate definition. Byte-identical for every
+  existing caller; the pre-existing 290-test `search_engines` suite passed
+  unmodified before 2 new tests were added, one of which reproduces the exact
+  real-scan false positive and is confirmed to fail against the unfixed code
+  via `git stash`. Live-verified: `hse selftest` 9/9 clean. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4571 lib
+  tests, +2). Paired: `PROBLEM_TREE` §8, new T2.40 `[x]` — same commit.

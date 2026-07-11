@@ -1482,6 +1482,51 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `au_039_prefers_tied_person_over_email_and_reports_each_tie`. Each fails
   against the unfixed rule and passes against the fix. **P1 closed.**
 
+- **`[x]` T2.40 · `search_engines`' email/phone snippet extraction had NO
+  subject-relevance gate — the same content-blind-attribution shape as
+  T2.36/T2.37, on a higher-stakes PII kind — while the address extractor two
+  code-blocks below it already carried one** — found investigating an
+  operator-supplied real scan's CSV export and full debug bundle (a "Riley
+  Morley" scan): `pr@rileyjorja.com`, an email belonging to a completely
+  unrelated Instagram account ("Riley (@rileyj)" — first name only, no
+  "Morley" anywhere in the bio), reached `confidence=0.70 PROBABLE` attributed
+  to the subject purely because the snippet mentioning it was among the
+  results for a `"Riley Morley"` query. Root cause: `build.rs`'s email/phone
+  extraction (`extract_emails_from_text`/`extract_phones_from_text` over each
+  result's `title + snippet`) minted an entity from ANY match with zero check
+  that the specific result actually names the subject — while the address
+  extractor a few dozen lines below it in the SAME function already carried
+  exactly this check (`location_on_subject`, built for an earlier live
+  regression: a "Cindy Haynes" scan trusting a "Cindy He" UNSW staff page's
+  address). The gate existed, was proven, and simply wasn't extended to the
+  two PII kinds most directly actionable when wrong. **P1** (evidentiary-
+  integrity: a wrong email/phone at PROBABLE confidence is directly
+  actionable misattributed PII, arguably worse than T2.36/T2.37's wrong
+  parent-confidence stamp since it names a THIRD PARTY's real contact detail
+  as though it were the subject's own). **Fixed:** hoisted the surname/
+  single-token relevance check (identical formula, computed once per result)
+  to run BEFORE email/phone/address extraction in the loop, renamed
+  `location_on_subject` → `result_names_the_subject` (the check was never
+  location-specific — it asks whether THIS result actually names the
+  subject), and gated all three extractions (email, phone, address) on it,
+  removing the now-duplicate definition. Behaviour-preserving for every
+  existing caller: location seeds and single-token targets (email/username)
+  produce byte-identical gate values to before; the two pre-existing
+  address-gate regression tests
+  (`location_seed_pivot_does_not_reaffirm_the_seed_at_0_82`,
+  `identity_seed_still_gets_flat_parent_reaffirmation`) pass unchanged, and
+  the full 290-test `search_engines` suite passed unmodified before adding
+  new tests. 2 new regression tests:
+  `email_and_phone_extraction_requires_the_surname_in_the_result` (the T2.40
+  regression — reproduces the exact real-scan shape: an off-target result
+  mints neither email nor phone; a genuine on-target result with the surname
+  present still mints both) and
+  `email_extraction_unaffected_for_single_token_targets` (proves a
+  username/email seed's extraction is untouched by the new gate). The first
+  fails against the unfixed code (confirmed by reverting the fix and
+  re-running: `pr@rileyjorja.com` is minted) and passes against the fix.
+  **P1 closed.**
+
 ---
 
 ## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
@@ -6096,3 +6141,42 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4569 lib tests, +8). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL
   `[ ]`→`[~]`, §4/§5 refreshed — same commit.
+- **2026-07-11** — **New T2.40, closed same cycle: `search_engines`'
+  email/phone snippet extraction had no subject-relevance gate — the address
+  extractor two blocks below it in the same function already did.** Triggered
+  by the operator supplying a real scan's CSV export and full debug bundle
+  (target "Riley Morley"): an email `pr@rileyjorja.com` reached
+  `confidence=0.70 PROBABLE`, attributed to the subject with its ONLY
+  evidence being a Bing snippet for `instagram.com/rileyj/` — a completely
+  unrelated account ("Riley (@rileyj)", first name only, "Morley" nowhere in
+  the bio). Traced the exact evidence record in the debug bundle (raw JSON
+  event log, not just the CSV) to confirm the extraction was genuine snippet
+  content, not a rendering artefact, before concluding anything. Root cause:
+  `build.rs`'s email/phone extraction
+  (`extract_emails_from_text`/`extract_phones_from_text` over
+  `title + snippet`) minted an entity from ANY match, unconditionally — while
+  the address extractor a few dozen lines below it in the SAME function
+  already required the distinctive surname token to appear in the result's
+  snippet/URL first (`location_on_subject`, built for an earlier live
+  regression: a "Cindy Haynes" scan trusting a "Cindy He" UNSW page's
+  address). The proven fix existed in the file; it simply had never been
+  extended to the two PII kinds most directly actionable when wrong (a wrong
+  email/phone names a real third party's contact detail as the subject's
+  own — arguably worse than T2.36/T2.37's wrong confidence stamp on the
+  subject's own identifier). **Fixed:** hoisted the check to compute once per
+  result before ANY snippet extraction, renamed `location_on_subject` →
+  `result_names_the_subject` (the check was never location-specific), and
+  gated email + phone + address extraction on the single shared boolean.
+  Byte-identical behaviour for every existing caller (verified: the full
+  pre-existing 290-test `search_engines` suite, including both prior
+  seed-reaffirmation regression tests, passed unmodified before new tests
+  were added). 2 new regression tests:
+  `email_and_phone_extraction_requires_the_surname_in_the_result` (the T2.40
+  regression, reproducing the exact real-scan shape — confirmed to fail
+  against the unfixed code by reverting the fix via `git stash` and
+  re-running, which minted the real `pr@rileyjorja.com` false positive
+  verbatim) and `email_extraction_unaffected_for_single_token_targets`.
+  Live-verified beyond the test suite: `hse selftest` 9/9 clean after the
+  change. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4571 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-SNIPPET-PII-SUBJECT-GATE, §4/§5 refreshed — same commit.
