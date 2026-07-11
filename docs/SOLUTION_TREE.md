@@ -841,6 +841,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes:* new node **T2.33**. ✅ 1 test
   (`set_phase_recovers_from_a_poisoned_mutex`, poisons a real `Mutex` via
   `catch_unwind`), fail-before confirmed.
+- **`[x]` SOL-WIGLE-412-GRACEFUL · `wigle`'s geo/SSID search paths no longer
+  turn a known, already-documented account-unverified throttle into a
+  `ModuleError`** — `fetch_wigle_typed`/`fetch_wigle_ssid` now special-case
+  HTTP 412 into the same graceful `Ok(Resp{success:Some(false), ..})` path
+  every other "WiGLE said no" outcome already takes, instead of propagating
+  `Err` via `?`, and record the confirmed-unverified status into the account
+  cache as a free side effect. The BSSID/detail path was independently
+  confirmed already safe (swallows non-success via `.ok()`/`if let Ok(...)`)
+  so was left untouched. A first design (tag the emitted entity with a
+  caveat) was live-tested, found unreachable — a 412 on both bbox widths
+  means no entity survives to tag — and reverted before shipping. *Closes:*
+  new node **T2.34**. ✅ Live-verified (no unit-test harness exists for
+  `process()`-level HTTP glue in this codebase): re-ran the same real scan,
+  confirmed `"module error"` → `"done","found":0` in the event log.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -914,6 +928,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-SOURCEFORGE-ATTACK-COMPLETE | T2.31 | `[x]` |
 | SOL-NAMEINTEL-ATTACK-COMPLETE | T2.32 | `[x]` |
 | SOL-UPDATE-POISON-CONSISTENT | T2.33 | `[x]` |
+| SOL-WIGLE-412-GRACEFUL | T2.34 | `[x]` |
 
 ---
 
@@ -4092,3 +4107,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items, bare-URL,
   invalid-HTML-tag lints) clean, full suite 0 failures (4554 lib tests).
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-11** — **SOL-WIGLE-412-GRACEFUL built, T2.34 closed same cycle.**
+  Live evidence (the operator's own WiGLE account page, plus a real `hse
+  scan --kind coords` logging `HTTP 412 Precondition Failed` from `wigle`)
+  surfaced this, not a discovery sweep. First fix attempt — tag the emitted
+  entity with an "account unverified" caveat, piggybacked on the module's
+  existing cell/bluetooth `tokio::join!` — was live-tested and found
+  unreachable: a 412 on both the tight and wide bbox attempts means geo
+  search returns nothing at all, so there is no entity left to tag. Reverted
+  before shipping rather than land a design that looked right but was dead
+  code in the exact case it claimed to fix — caught by actually running it,
+  not by trusting the design. Root-caused instead: `fetch_wigle_typed`/
+  `fetch_wigle_ssid` treat any non-2xx as `Err`, propagating out of
+  `process()` via `?`; the BSSID/detail path (`fetch_detail`/`util::wigle::
+  get`, and `wifi_intel::query_wigle_detail`) was independently confirmed
+  unaffected, already swallowing non-success gracefully. Both fetch
+  functions now special-case HTTP 412 into `Ok(Resp{success:Some(false),
+  ..})` — the same "WiGLE said no" path every other unsuccessful outcome
+  already takes — and record `verified:Some(false)` into the account cache
+  as a free side effect of traffic already being made, no dedicated poll
+  needed. *Closes:* new node **T2.34**. ✅ No unit-test harness exists for
+  `process()`-level HTTP glue in this codebase (verified: no mock-HTTP
+  dev-dependency, no other module's `process()` is unit-tested this way
+  either), so verification was live: re-ran the identical scan, confirmed
+  `"module error"` → `"done","found":0`, and confirmed the T2.14 zero-yield
+  summary line picked up the change (3 of 12 → 4 of 12) — the two fixes
+  compose correctly, since a module that errors is invisible to the
+  zero-yield count but a module that cleanly finds nothing is not. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4554 lib tests, unchanged). Paired: `PROBLEM_TREE` §8 — same commit.

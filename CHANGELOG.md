@@ -372,6 +372,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`wigle` geo/SSID search no longer reports a known, already-documented
+  WiGLE account-throttle (unverified email) as a module error.** WiGLE
+  answers those two endpoints with HTTP 412 rather than a 200 with a
+  thinner result set when the configured account's email isn't verified —
+  now handled the same way every other "WiGLE said no" outcome already is:
+  a clean zero-yield result, with the account's unverified state recorded
+  for `hse doctor` / `/api/v1/stats` as a side effect. The BSSID/detail
+  lookup path was unaffected and needed no change.
 - **The self-update mechanism can no longer wedge itself into a permanent
   "applying" state.** Two sites that record the outcome of a triggered
   update (success → restarting, failure → error) silently did nothing if

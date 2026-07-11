@@ -109,3 +109,16 @@ pub async fn refresh_account_status(
 pub fn is_unverified() -> bool {
     matches!(account_status().verified, Some(false))
 }
+
+/// Record that a query endpoint itself just proved the account unverified —
+/// WiGLE answers `network/search` with HTTP 412 (`"Email is not verified for
+/// account"`) rather than a 200 with a thinner body, so this is learned as a
+/// side effect of `fetch.rs`'s normal traffic, not a dedicated poll. Leaves
+/// `user` untouched (a bare 412 carries no username) and only ever narrows
+/// unknown/stale state to the ground truth WiGLE just reported.
+pub(super) fn mark_unverified(now: u64) {
+    if let Ok(mut g) = account_status_cache().lock() {
+        g.verified = Some(false);
+        g.last_polled_ts = Some(now);
+    }
+}

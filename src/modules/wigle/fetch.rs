@@ -2,6 +2,27 @@
 
 use super::*;
 
+/// WiGLE's signal for "this account's email isn't verified yet": query
+/// endpoints answer with HTTP 412 and a `success:false` body rather than a
+/// 200 with a thinner result set — live-confirmed 2026-07-11:
+/// `{"success":false,"message":"Email is not verified for account. Send
+/// verification email on account page: https://wigle.net/account"}`. This is
+/// a known, already-documented throttle (surfaced separately by `hse doctor`
+/// / `/api/v1/stats`), not a transient failure, so callers should see a
+/// clean zero-yield result — same as any other "WiGLE said no" — instead of
+/// a `ModuleError`. Also records the fact in the account cache: ground truth
+/// learned for free from traffic already being made, without a dedicated
+/// `profile/user` poll.
+fn account_unverified_response() -> Resp {
+    super::account::mark_unverified(crate::core::entity::unix_now());
+    Resp {
+        success: Some(false),
+        result_count: None,
+        total_results: None,
+        results: Vec::new(),
+    }
+}
+
 /// Default WiFi-only fetch retained for back-compat — delegates to
 /// the type-parameterised variant.
 pub(super) async fn fetch_wigle(
@@ -56,6 +77,9 @@ pub(super) async fn fetch_wigle_typed(
         tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
         return Err(Error::module(SRC, "rate-limited (429)"));
     }
+    if status.as_u16() == 412 {
+        return Ok(account_unverified_response());
+    }
     if !status.is_success() {
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
@@ -94,6 +118,9 @@ pub(super) async fn fetch_wigle_ssid(
         let retry_secs = crate::util::http::retry_after_secs(resp.headers(), 60, 120);
         tracing::warn!("WiGLE 429 — rate-limited (server requested {retry_secs}s backoff)");
         return Err(Error::module(SRC, "rate-limited (429)"));
+    }
+    if status.as_u16() == 412 {
+        return Ok(account_unverified_response());
     }
     if !status.is_success() {
         return Err(crate::util::http::http_status_error(SRC, resp).await);

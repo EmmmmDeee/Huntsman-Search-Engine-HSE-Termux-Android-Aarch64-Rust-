@@ -1177,6 +1177,41 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   correctness gap that could permanently wedge an operator-facing status
   endpoint and block all future self-updates, not a crash or PII leak).
 
+- **`[x]` T2.34 · `wigle`'s geo/SSID search paths turn a known, already-
+  documented account-throttle condition into a `ModuleError` instead of a
+  clean zero-yield result** — surfaced by live evidence, not speculation:
+  the operator supplied their live WiGLE account page (email-unverified),
+  and a real `hse scan --kind coords` against it logged `"module error",
+  "module":"wigle","error":"[wigle] HTTP 412 Precondition Failed:
+  {\"success\":false,\"message\":\"Email is not verified for account...\"}"`.
+  `fetch_wigle_typed`/`fetch_wigle_ssid` (`modules/wigle/fetch.rs`) both
+  treat any non-2xx status as `Err(...)`, which propagates via `?` straight
+  out of `process()` — so an unverified account (already tracked by
+  `hse doctor` / `/api/v1/stats` via `account::is_unverified`) turns every
+  geo/SSID dispatch into an opaque error instead of the graceful `Ok(empty)`
+  the file already gives every OTHER "WiGLE said no" case
+  (`body.success != Some(true)`). The BSSID/detail path
+  (`fetch_detail`/`util::wigle::get`, and `wifi_intel`'s sibling
+  `query_wigle_detail`) was independently confirmed NOT affected — both
+  already swallow every non-success outcome via `.ok()`/`if let Ok(...)`,
+  so only the two `?`-propagating search-endpoint functions had the gap.
+  An earlier attempt at this fix (tagging the emitted entity with an
+  "account unverified" caveat, piggybacked on the existing cell/bluetooth
+  `tokio::join!`) turned out to target the wrong failure mode — a hard 412
+  on BOTH the tight and wide bbox attempts means geo search returns nothing
+  at all when unverified, so there is no entity left to tag; caught by
+  actually running the fix live rather than trusting the design, reverted
+  before shipping. → **Solution:** special-case HTTP 412 in both fetch
+  functions: return `Ok(Resp{success: Some(false), ..})` (flows through the
+  existing "WiGLE said no" path unchanged) instead of `Err(...)`, and record
+  `verified: Some(false)` into the account-status cache as a side effect —
+  ground truth learned for free from traffic already being made, without a
+  dedicated `profile/user` poll. **P2** (a real observability/correctness
+  defect on the operator's own account — every WiGLE geo/SSID scan against
+  an unverified account misreported a documented, non-actionable-per-scan
+  condition as an unexplained module failure — not a crash or data
+  corruption).
+
 ---
 
 ## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
@@ -5603,3 +5638,36 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   — `optimization_hints` correctly surfaced the bounded per-scan summary
   line, confirming the feature end-to-end rather than only in unit tests.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-11** — **New T2.34, closed same cycle: `wigle`'s geo/SSID search
+  turned a known account-throttle into a `ModuleError`.** Live evidence
+  triggered this one, not a discovery sweep: the operator's own WiGLE
+  account page (email-unverified) plus a real `hse scan --kind coords`
+  logging `HTTP 412 Precondition Failed` from `wigle` where the module
+  should have quietly found nothing. First attempt at a fix (tag the
+  emitted entity with a caveat, piggybacked on the existing cell/bluetooth
+  `tokio::join!`) was wrong — re-running the live scan against the actual
+  fix proved the geo path 412s on BOTH bbox widths when unverified, so no
+  entity ever exists to tag; reverted before shipping rather than land a
+  design that looked plausible but was unreachable in the exact case it
+  claimed to fix. Root-caused instead: `fetch_wigle_typed`/`fetch_wigle_ssid`
+  treat any non-2xx as `Err`, propagating out of `process()` via `?`, while
+  the BSSID/detail path already swallows non-success gracefully (confirmed
+  by reading `fetch_detail`/`util::wigle::get`/`wifi_intel::query_wigle_
+  detail` — none of the three are affected). Fixed at the source: both
+  fetch functions now special-case 412 into `Ok(Resp{success:Some(false),
+  ..})` (the existing "WiGLE said no" path, unchanged) and record
+  `verified:Some(false)` into the account cache as a free side effect of
+  traffic already being made. `fetch.rs`/`fetch_wigle_typed`/
+  `fetch_wigle_ssid` have no existing unit-test harness (this codebase does
+  not mock HTTP — `process()`-level glue is verified live, matching every
+  other module), so verification was live: re-ran the identical
+  `hse scan --kind coords` and confirmed the event log now reads
+  `"done","module":"wigle","found":0` where it previously read
+  `"module error"` — and, as a bonus, the T2.14 zero-yield summary line
+  correctly picked up the change (3 of 12 → 4 of 12), since a module that
+  errors is invisible to the zero-yield count but a module that cleanly
+  finds nothing is not — the two fixes compose correctly. Gate green:
+  fmt/clippy `-D warnings`/rustdoc (private items, bare-URL,
+  invalid-HTML-tag lints) clean, full suite 0 failures (4554 lib tests,
+  unchanged — no new unit-testable surface). **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
