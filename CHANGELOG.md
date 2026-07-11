@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Two new regression tests pin the geo-corroboration logic against a
+  real-scan-derived US breach address / Australian subject pairing, and the
+  `au_unclaimed` per-record exact-match classifier against real QLD register
+  records** — investigating an apparent false "0 km" cross-border
+  geo-corroboration surfaced by an operator-supplied real scan confirmed the
+  underlying logic already handles it correctly; no behaviour changed, but
+  the verified-sound result is now permanently guarded against regression.
 - **`hse doctor` reports a per-source scraper health signal: which sources
   have been failing across recent scans, not just whatever the last verbose
   log happened to show.** New "Scraper health (recent window)" section

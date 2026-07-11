@@ -1012,6 +1012,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-AUDIT-CADENCE · Multi-agent adversarial re-audit** — parallel fan-out
   (parsers / storage-API / engine / correlator / SPA / security / internals) with
   honest "clean" verdicts; the source of T2.8–T2.12 and the §7 detail. ✅
+  **Extended to operator-triggered real-scan review (2026-07-11):** a real
+  scan's CSV export + debug bundle surfaced an apparent P1 evidentiary-integrity
+  shape (a US breach-candidate address geo-corroborated at "~0 km" from an
+  Australian subject anchor) — investigated by direct reproduction against
+  HEAD rather than assumed. `core::geo_family::au_postcode()`/
+  `distance_to_subject()` correctly return `None` for the exact real entity
+  shape (a US 5-digit ZIP under `postal_code`/`addr_postal` keys, never the
+  literal `postcode` key `au_postcode` requires): the bundle's own
+  `hse_version`/module-count header shows it predates the current tree, so the
+  visible defect is most likely already closed by the existing
+  `au_postcode_ignores_a_leading_us_street_number` hardening. A second,
+  related thread (two QLD family-candidate addresses also carrying
+  `exact-name-match` despite neither visible register owner matching the
+  subject's full name) reproduces the per-record classification
+  (`au_unclaimed::qld_helpers::owner_matches_full_name`) as correct in
+  isolation but could not be fully root-caused without the raw upstream CKAN
+  response — logged honestly as unresolved (`PROBLEM_TREE` §6) rather than
+  guessed at. Two new regression tests pin both verified-sound findings
+  against the real data (`real_scan_us_breach_address_reproduction`,
+  `per_record_address_tags_are_correct_before_any_merge`). No code changed —
+  a clean-verdict investigation is a correct outcome, not a failed one.
 
 ---
 
@@ -4449,3 +4470,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   via `git stash`. Live-verified: `hse selftest` 9/9 clean. Gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4571 lib
   tests, +2). Paired: `PROBLEM_TREE` §8, new T2.40 `[x]` — same commit.
+- **2026-07-11** — **SOL-AUDIT-CADENCE extended: an apparent P1
+  evidentiary-integrity shape from the same real scan investigated and
+  confirmed sound against HEAD.** The operator's debug bundle showed US
+  breach-candidate addresses (5-digit ZIPs) geo-corroborated at "~0 km"
+  from the real Australian subject anchor. Direct reproduction (the exact
+  real entity: US Address, `postal_code`/`addr_postal` evidence keys, plus
+  the exact real QLD `exact-name-match` anchor) confirms
+  `core::geo_family::au_postcode()`/`distance_to_subject()` correctly
+  return `None`, not `0`, against current HEAD — the bundle's own
+  `hse_version`/module-count header shows it predates this tree, so the
+  visible defect is most likely already closed by the existing
+  `au_postcode_ignores_a_leading_us_street_number` hardening. A second
+  thread (two QLD family-candidate addresses also carrying
+  `exact-name-match` with neither visible owner matching the subject)
+  reproduces `au_unclaimed`'s per-record classification as correct in
+  isolation; the coexistence in the live bundle could not be fully
+  root-caused without the raw upstream CKAN response and is logged
+  honestly as unresolved (`PROBLEM_TREE` §6) rather than guessed at. Two
+  new regression tests pin both verified-sound findings against the real
+  data. No code changed — a clean-verdict investigation is a correct
+  outcome. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4573 lib tests, +2). Paired: `PROBLEM_TREE` §6 sixth pass —
+  same commit.

@@ -1869,6 +1869,49 @@ defects it found (T2.12) are all in the **periphery** — CLI command UX/exit co
 the JSON-snapshot `diff` path, and the response cache — none crash or corrupt
 persisted scan data. It also independently re-verified the T2.9 `latest` fix
 (`ORDER BY started_at DESC, id DESC` is a true timestamp+PK sort, not lexical).
+A sixth pass (2026-07-11), triggered by an operator's real-scan CSV/debug bundle,
+investigated an apparent P1-shaped evidentiary-integrity defect and confirmed it
+does **not** reproduce against HEAD: the bundle's `hse_version: 1.13.0` /
+`161 registered` header shows it predates the current tree (now 162 modules), and
+several US oathnet_pro breach-candidate Address entities (5-digit ZIPs, e.g.
+`1218 E Grumling Rd., Hodges, Sc, 29653`) carried a `geo_corroboration` evidence
+record claiming "~0 km from the subject's confirmed location" against the
+subject's real Australian (QLD) anchor — which, if live, would be a serious
+false geo-corroboration promoting an unrelated US namesake's breach record to
+`VERIFIED`. Root-cause investigation: `core::geo_family::au_postcode()` is the
+function `promote_breach_candidate_geo_corroborated`/`promote_geo_corroborated_family`
+both depend on to resolve an entity's locality; it reads either the entity
+VALUE's trailing digit run (rejecting anything ≠ 4 digits — a 5-digit US ZIP
+fails this) or a literal `postcode` evidence-attribute key (the US breach
+evidence uses `postal_code`/`addr_postal`, never `postcode`). A direct
+reproduction — the exact real entity shape (US Address, `breach`+`candidate`
+tags, `postal_code`/`addr_postal` evidence) plus the exact real subject anchor
+(a `QLD 4124` `exact-name-match` Address) — confirms `au_postcode()` correctly
+returns `None` and `distance_to_subject()` correctly returns `None` (not `0`)
+against current HEAD: the false positive visible in the uploaded bundle does not
+reproduce today, most likely already closed by the existing
+`au_postcode_ignores_a_leading_us_street_number` hardening (itself pinned from
+an earlier real scan, `90b936dc…`) or a related fix landed since this bundle was
+generated. A second thread from the same bundle — two QLD "family-candidate"
+unclaimed-money addresses (postcodes 4001, 4207) that ALSO carried
+`exact-name-match` even though neither visible owner record
+("ANN SQUARE INVESTMENT PTY LTD", "FLANNAN MORLEY & GERALDINE F MORLEY") is a
+full-name match for the scanned subject — was investigated the same way:
+`au_unclaimed::qld_helpers::records_to_entities`'s per-record classification
+(`owner_matches_full_name`) was directly reproduced with these exact two real
+records and correctly tags both `family-candidate`, never `exact-name-match`.
+Unlike the first thread, this one could not be fully root-caused without the raw
+upstream CKAN API response (only the rendered entity view was available in the
+bundle) — a genuine third exact-match record at the same postcode, invisible in
+the rendered evidence list, remains a live possibility and is NOT ruled out;
+logged honestly as unresolved rather than guessed at. Two new permanent
+regression tests pin the verified-sound findings against the real data:
+`core::geo_family::tests::real_scan_us_breach_address_reproduction` and
+`au_unclaimed::tests::qld::per_record_address_tags_are_correct_before_any_merge`.
+No code changed this pass — investigation only, following the same
+investigate-before-assuming discipline as every fix in this register; reporting
+a verified-sound result honestly, backed by a reproducible test, is not a failed
+investigation.
 
 ## 7. Deferred (out of scope here — separate pass)
 
@@ -6180,3 +6223,43 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   change. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4571 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-SNIPPET-PII-SUBJECT-GATE, §4/§5 refreshed — same commit.
+- **2026-07-11** — **Sixth verified-sound pass (§6): investigated an
+  apparent P1 evidentiary-integrity defect from the same real scan and
+  found it does NOT reproduce against HEAD.** The operator's uploaded debug
+  bundle showed several US oathnet_pro breach-candidate addresses (5-digit
+  ZIPs) tagged `geo_corroboration`, claiming "~0 km from the subject's
+  confirmed location" against the real Australian (QLD) anchor — which, if
+  live today, would be a serious false positive (an unrelated US namesake's
+  breach record promoted to VERIFIED via a fabricated geo-match). Rather
+  than assume the bundle reflected current behaviour, reproduced the exact
+  entity shape directly: `core::geo_family::au_postcode()` correctly
+  rejects a 5-digit US ZIP (whether from the address value's trailing
+  digit-run, which requires exactly 4 digits, or from evidence attributes,
+  which use `postal_code`/`addr_postal`, never the literal `postcode` key
+  the function requires), so `distance_to_subject()` correctly returns
+  `None`, not `0`. The bundle's own header (`hse_version: 1.13.0`,
+  `161 registered` modules vs the current 162) confirms it predates this
+  tree — the defect is most likely already closed by the existing
+  `au_postcode_ignores_a_leading_us_street_number` hardening (itself pinned
+  from an earlier real scan). A second thread from the same bundle — two
+  QLD `family-candidate` addresses (postcodes 4001, 4207) that ALSO carried
+  `exact-name-match` despite neither visible register owner
+  ("ANN SQUARE INVESTMENT PTY LTD", "FLANNAN MORLEY & GERALDINE F MORLEY")
+  being a full-name match for the subject — was investigated the same way:
+  `au_unclaimed::qld_helpers::records_to_entities`'s per-record
+  classification reproduces correctly (both records tag only
+  `family-candidate`) against these exact real records, so the coexistence
+  in the live bundle is NOT explained by a defect in this function.
+  **Honestly logged as unresolved, not guessed at:** without the raw
+  upstream CKAN API response (only the rendered entity view is available),
+  a genuine third exact-match record at the same postcode — invisible in
+  the rendered evidence list — remains a live possibility and is not ruled
+  out. Two new permanent regression tests pin both verified-sound findings
+  against the real data:
+  `core::geo_family::tests::real_scan_us_breach_address_reproduction`,
+  `au_unclaimed::tests::qld::per_record_address_tags_are_correct_before_any_merge`.
+  No code changed — a clean-verdict investigation, backed by a
+  reproducible test against real data, is a correct outcome, not a failure
+  to find something. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4573 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-AUDIT-CADENCE extended, §5 — same commit.
