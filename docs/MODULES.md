@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (34)
+### social (36)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -99,7 +99,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `phone_au` | phone | free | **yes** | 138 | phone |
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
-### breach (11)
+### breach (12)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
