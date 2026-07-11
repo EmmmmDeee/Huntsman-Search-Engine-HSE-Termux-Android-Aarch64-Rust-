@@ -1,4 +1,4 @@
-/// All 24 SeekNow API endpoints hardcoded with metadata, credit costs, and routing rules.
+//! All 24 SeekNow API endpoints hardcoded with metadata, credit costs, and routing rules.
 
 pub struct EndpointSpec {
     pub name: &'static str,
@@ -31,7 +31,6 @@ pub const ALL_ENDPOINTS: &[EndpointSpec] = &[
         description: "Deep search (~40s), max coverage including slow sources",
         response_shape: "{ data: { items: [...] } } | { results: [...] }",
     },
-
     // Stealer (1 endpoint, 2 credits)
     EndpointSpec {
         name: "stealer_logs",
@@ -42,7 +41,6 @@ pub const ALL_ENDPOINTS: &[EndpointSpec] = &[
         description: "RedLine, Raccoon, Vidar logs with machine fingerprints",
         response_shape: "{ victims: [ { credentials: [...] } ] }",
     },
-
     // Social/Gaming (9 endpoints, 1 credit each)
     EndpointSpec {
         name: "discord_user",
@@ -116,7 +114,6 @@ pub const ALL_ENDPOINTS: &[EndpointSpec] = &[
         description: "Past usernames (Discord, Roblox, etc.)",
         response_shape: "{ results: [ { username, platform, changed_at } ] }",
     },
-
     // Network (3 endpoints, 1 credit each)
     EndpointSpec {
         name: "network_ip",
@@ -145,7 +142,6 @@ pub const ALL_ENDPOINTS: &[EndpointSpec] = &[
         description: "Carrier, country, line type, breach mentions",
         response_shape: "{ data: { carrier, country, line_type, breach_count, ... } }",
     },
-
     // Domain (2 endpoints, 1 credit each)
     EndpointSpec {
         name: "domain_intel",
@@ -165,7 +161,6 @@ pub const ALL_ENDPOINTS: &[EndpointSpec] = &[
         description: "Registrar, registration date, expiry, registrant info",
         response_shape: "{ data: { registrar, created_date, expiry_date, registrant, ... } }",
     },
-
     // Gaming (3 endpoints, 1 credit each)
     EndpointSpec {
         name: "gaming_xbox",
@@ -194,7 +189,6 @@ pub const ALL_ENDPOINTS: &[EndpointSpec] = &[
         description: "Minecraft Java/Bedrock UUID, skin metadata",
         response_shape: "{ data: { uuid, username, skin_model, name_history: [...], ... } }",
     },
-
     // Enterprise (3 endpoints, 5 credits each - Enterprise plan only)
     EndpointSpec {
         name: "enterprise_discord_history",
@@ -223,7 +217,6 @@ pub const ALL_ENDPOINTS: &[EndpointSpec] = &[
         description: "ZIP archive download of Discord history (Enterprise-only)",
         response_shape: "{ download_url, file_size, expires_at }",
     },
-
     // Meta (2 endpoints, 0 credits each)
     EndpointSpec {
         name: "credits",
@@ -261,7 +254,14 @@ pub const TARGET_TYPE_ROUTING: &[TargetTypeRouting] = &[
     TargetTypeRouting {
         target_type: "username",
         primary_endpoints: &["search_fast", "username_social", "username_history"],
-        expansion_endpoints: &["search_deep", "stealer_logs", "username_github", "username_twitter", "username_reddit", "username_tiktok"],
+        expansion_endpoints: &[
+            "search_deep",
+            "stealer_logs",
+            "username_github",
+            "username_twitter",
+            "username_reddit",
+            "username_tiktok",
+        ],
     },
     TargetTypeRouting {
         target_type: "domain",
@@ -319,16 +319,76 @@ pub struct ResponseTimeProfile {
 }
 
 pub const RESPONSE_TIME_PROFILES: &[ResponseTimeProfile] = &[
-    ResponseTimeProfile { endpoint: "search_fast", p50_ms: 2_000, p95_ms: 5_000, p99_ms: 8_000 },
-    ResponseTimeProfile { endpoint: "search_deep", p50_ms: 20_000, p95_ms: 40_000, p99_ms: 55_000 },
-    ResponseTimeProfile { endpoint: "stealer_logs", p50_ms: 3_000, p95_ms: 7_000, p99_ms: 12_000 },
-    ResponseTimeProfile { endpoint: "network_ip", p50_ms: 800, p95_ms: 2_000, p99_ms: 4_000 },
-    ResponseTimeProfile { endpoint: "network_email_check", p50_ms: 600, p95_ms: 1_500, p99_ms: 3_000 },
-    ResponseTimeProfile { endpoint: "network_phone", p50_ms: 700, p95_ms: 1_800, p99_ms: 3_500 },
-    ResponseTimeProfile { endpoint: "domain_intel", p50_ms: 1_500, p95_ms: 4_000, p99_ms: 8_000 },
-    ResponseTimeProfile { endpoint: "domain_whois", p50_ms: 1_200, p95_ms: 3_500, p99_ms: 6_000 },
-    ResponseTimeProfile { endpoint: "username_social", p50_ms: 4_000, p95_ms: 8_000, p99_ms: 12_000 },
-    ResponseTimeProfile { endpoint: "username_history", p50_ms: 2_000, p95_ms: 5_000, p99_ms: 8_000 },
-    ResponseTimeProfile { endpoint: "discord_user", p50_ms: 1_000, p95_ms: 3_000, p99_ms: 5_000 },
-    ResponseTimeProfile { endpoint: "gaming_roblox", p50_ms: 1_500, p95_ms: 3_500, p99_ms: 6_000 },
+    ResponseTimeProfile {
+        endpoint: "search_fast",
+        p50_ms: 2_000,
+        p95_ms: 5_000,
+        p99_ms: 8_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "search_deep",
+        p50_ms: 20_000,
+        p95_ms: 40_000,
+        p99_ms: 55_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "stealer_logs",
+        p50_ms: 3_000,
+        p95_ms: 7_000,
+        p99_ms: 12_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "network_ip",
+        p50_ms: 800,
+        p95_ms: 2_000,
+        p99_ms: 4_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "network_email_check",
+        p50_ms: 600,
+        p95_ms: 1_500,
+        p99_ms: 3_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "network_phone",
+        p50_ms: 700,
+        p95_ms: 1_800,
+        p99_ms: 3_500,
+    },
+    ResponseTimeProfile {
+        endpoint: "domain_intel",
+        p50_ms: 1_500,
+        p95_ms: 4_000,
+        p99_ms: 8_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "domain_whois",
+        p50_ms: 1_200,
+        p95_ms: 3_500,
+        p99_ms: 6_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "username_social",
+        p50_ms: 4_000,
+        p95_ms: 8_000,
+        p99_ms: 12_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "username_history",
+        p50_ms: 2_000,
+        p95_ms: 5_000,
+        p99_ms: 8_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "discord_user",
+        p50_ms: 1_000,
+        p95_ms: 3_000,
+        p99_ms: 5_000,
+    },
+    ResponseTimeProfile {
+        endpoint: "gaming_roblox",
+        p50_ms: 1_500,
+        p95_ms: 3_500,
+        p99_ms: 6_000,
+    },
 ];

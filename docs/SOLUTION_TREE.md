@@ -578,7 +578,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   hint. Removed both as confirmed-dead rather than left misleading; not
   mechanically restored (see new **SOL-HINT-NOISE** below — this closes the
   ROI hint specifically, T2.14 tracks reinstating these two).
-- **`[ ]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
+- **`[x]` SOL-HINT-NOISE · Reinstate `analyse()`'s two removed dead hints,
   with a real per-module noise decision** → **T2.14**: the scan-level "60s +
   zero-yield module" hint can be reinstated the same way SOL-ROI-HINT was
   (event-sourced, caller-side); the per-module "module X returned 0 entities"
@@ -587,8 +587,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   given target kind (normal, not noteworthy), so a naive per-module
   reinstatement would flood the hints list with the opposite of signal.
   Candidates: cap to worst-N, cost-gate like SOL-ROI-HINT
-  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. *Gap:* not
-  yet started. **(§4a)**
+  (`KeyGated`/`Paid`-only), or collapse to a bounded summary count. **Built
+  (2026-07-11):** `util::diagnostics::event_hints::append_event_sourced_hints`
+  — the noise question resolved to the bounded-summary-count candidate, not
+  cap-to-worst-N: one line ("N of M dispatched modules found nothing for this
+  target kind") regardless of how many modules zero-yielded, plus the
+  unchanged cost-gated 60s scan-level hint. Wired into both consumer call
+  sites (dossier + JSON output); the third (`api/handlers`) has no observer
+  for `analyse()`'s return value and was left alone. Live-verified on a real
+  scan, not just unit tests. **(§5)**
 - **`[ ]` SOL-HEALTH-SIGNAL · Per-source scraper health surface** — add a
   `last_success_at` + `consecutive_failures` tracking column (or an in-process
   `AtomicU64` per source name) exposed via `hse doctor` and a SPA health panel;
@@ -881,7 +888,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
-| SOL-HINT-NOISE | T2.14 | `[ ]` |
+| SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -918,10 +925,6 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
-- **T2.14** (new, 2026-07-01) — the two `analyse()` hints T2.13 removed as
-  dead code: SOL-HINT-NOISE sketched (event-sourced reinstatement for the
-  60s hint; cap/cost-gate/summarise decision needed for the per-module hint).
-  Not yet started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4064,3 +4067,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite 0 failures
   (4432 lib tests, +7; +1 API test), architecture suite green. Paired:
   `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-11** — **SOL-HINT-NOISE built, T2.14 closed.** Built
+  `util::diagnostics::event_hints::append_event_sourced_hints` from
+  `Event`/`ModuleCost` — the ground truth a pure entity-only `analyse()`
+  structurally cannot see, since a dispatched module that found nothing never
+  appears in `modules_by_yield`. The per-module noise question (open since
+  2026-07-01) resolved to the bounded-summary-count candidate: one line ("N
+  of M dispatched modules found nothing for this target kind") rather than
+  cap-to-worst-N or a per-module enumeration, so a 42-module scan with 30
+  zero-yield modules produces one line, not thirty. The scan-level 60s hint
+  kept its existing cost-gate (`KeyGated`/`Paid`-only via the relocated
+  `keyed_or_paid_zero_yield_modules`, moved out of `cli/scan/dossier.rs` into
+  the same new module so both hints and both consumer call sites — dossier
+  text output and the JSON output path — share one implementation instead of
+  drifting). The third `analyse()` call site (`api/handlers/mod.rs`) discards
+  the return value entirely (ledger-persist side effect only, no reader), so
+  it was deliberately left unenriched. Same commit swept a pre-existing
+  clippy backlog (32 errors / 10 files, confirmed via `git stash` to predate
+  this change) uncovered while proving the full gate green — see
+  `PROBLEM_TREE` §8 for the fix-by-fix breakdown. Live-verified: built `hse`
+  and ran a real `hse scan --kind coords --output json`; `optimization_hints`
+  read `"4 of 12 dispatched modules found nothing for this target kind"`.
+  Gate green: fmt/clippy `-D warnings`/rustdoc (private items, bare-URL,
+  invalid-HTML-tag lints) clean, full suite 0 failures (4554 lib tests).
+  Paired: `PROBLEM_TREE` §8 — same commit.

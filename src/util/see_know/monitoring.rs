@@ -1,5 +1,5 @@
-/// Real-time monitoring, alerting, and analytics dashboard for SeekNow operations.
-/// Hardcoded metrics collection and reporting for enterprise plan visibility.
+//! Real-time monitoring, alerting, and analytics dashboard for SeekNow operations.
+//! Hardcoded metrics collection and reporting for enterprise plan visibility.
 
 /// Dashboard metric aggregation (hardcoded reporting).
 pub struct DashboardMetrics {
@@ -21,11 +21,14 @@ impl DashboardMetrics {
     pub fn health_status(&self) -> HealthStatus {
         if self.quota_percent_used >= 95.0 {
             HealthStatus::Critical
-        } else if self.quota_percent_used >= 80.0 {
-            HealthStatus::Warning
-        } else if self.error_rate_percent >= 20.0 {
-            HealthStatus::Warning
-        } else if self.cache_hit_rate_percent < 10.0 && self.scans_completed > 10 {
+        } else if
+        // Any of three independent triggers is worth a Warning: quota nearly
+        // exhausted, an elevated error rate, or a low cache-hit rate once
+        // enough scans have run for the rate to be meaningful.
+        self.quota_percent_used >= 80.0
+            || self.error_rate_percent >= 20.0
+            || (self.cache_hit_rate_percent < 10.0 && self.scans_completed > 10)
+        {
             HealthStatus::Warning
         } else if self.uptime_percent < 99.0 {
             HealthStatus::Degraded
@@ -53,9 +56,9 @@ pub struct PerformanceAnalytics {
 }
 
 pub enum MetricStatus {
-    Nominal,      // within baseline
-    Elevated,     // above baseline but acceptable
-    Anomalous,    // significantly above baseline
+    Nominal,   // within baseline
+    Elevated,  // above baseline but acceptable
+    Anomalous, // significantly above baseline
 }
 
 /// Cost efficiency analytics (hardcoded from production data).
@@ -242,27 +245,27 @@ pub struct CollectionInterval {
 pub const COLLECTION_INTERVALS: &[CollectionInterval] = &[
     CollectionInterval {
         metric_group: "quota_usage",
-        interval_secs: 30,      // probe every 30 seconds
+        interval_secs: 30, // probe every 30 seconds
         batch_size: 1,
     },
     CollectionInterval {
         metric_group: "endpoint_response_time",
-        interval_secs: 5,       // collect per endpoint
+        interval_secs: 5, // collect per endpoint
         batch_size: 100,
     },
     CollectionInterval {
         metric_group: "error_rates",
-        interval_secs: 60,      // hourly aggregate
+        interval_secs: 60, // hourly aggregate
         batch_size: 1000,
     },
     CollectionInterval {
         metric_group: "cache_effectiveness",
-        interval_secs: 300,     // 5-minute aggregate
+        interval_secs: 300, // 5-minute aggregate
         batch_size: 1000,
     },
     CollectionInterval {
         metric_group: "entity_extraction",
-        interval_secs: 120,     // 2-minute aggregate
+        interval_secs: 120, // 2-minute aggregate
         batch_size: 500,
     },
 ];
@@ -294,10 +297,10 @@ pub const TREND_WINDOWS: &[TrendWindow] = &[
 
 /// Custom dashboard configurations (hardcoded for different roles).
 pub enum DashboardProfile {
-    Executive,     // high-level metrics only
-    Operator,      // detailed operational metrics
-    Analyst,       // deep entity/cost analytics
-    Engineer,      // low-level technical metrics
+    Executive, // high-level metrics only
+    Operator,  // detailed operational metrics
+    Analyst,   // deep entity/cost analytics
+    Engineer,  // low-level technical metrics
 }
 
 pub struct DashboardConfig {
@@ -309,7 +312,7 @@ pub struct DashboardConfig {
 pub const DASHBOARD_CONFIGS: &[DashboardConfig] = &[
     DashboardConfig {
         profile: "executive",
-        refresh_interval_secs: 300,    // 5 min
+        refresh_interval_secs: 300, // 5 min
         metrics_shown: &[
             "quota_remaining",
             "scans_completed",
@@ -320,7 +323,7 @@ pub const DASHBOARD_CONFIGS: &[DashboardConfig] = &[
     },
     DashboardConfig {
         profile: "operator",
-        refresh_interval_secs: 30,     // 30 sec
+        refresh_interval_secs: 30, // 30 sec
         metrics_shown: &[
             "quota_remaining",
             "quota_percent_used",
@@ -335,7 +338,7 @@ pub const DASHBOARD_CONFIGS: &[DashboardConfig] = &[
     },
     DashboardConfig {
         profile: "analyst",
-        refresh_interval_secs: 60,     // 1 min
+        refresh_interval_secs: 60, // 1 min
         metrics_shown: &[
             "cost_per_entity_by_type",
             "entities_per_credit",
@@ -348,7 +351,7 @@ pub const DASHBOARD_CONFIGS: &[DashboardConfig] = &[
     },
     DashboardConfig {
         profile: "engineer",
-        refresh_interval_secs: 10,     // 10 sec
+        refresh_interval_secs: 10, // 10 sec
         metrics_shown: &[
             "endpoint_latency_p50_p95_p99",
             "error_count_by_endpoint",
@@ -419,12 +422,12 @@ pub const ANOMALY_DETECTION_RULES: &[AnomalyDetectionRule] = &[
     AnomalyDetectionRule {
         metric: "response_time_ms",
         detection_method: "zscore",
-        sensitivity: 2.0,  // 2 sigma = ~95% confidence
+        sensitivity: 2.0, // 2 sigma = ~95% confidence
     },
     AnomalyDetectionRule {
         metric: "error_rate_percent",
         detection_method: "zscore",
-        sensitivity: 1.5,  // 1.5 sigma = ~93% confidence
+        sensitivity: 1.5, // 1.5 sigma = ~93% confidence
     },
     AnomalyDetectionRule {
         metric: "cache_hit_rate_percent",
@@ -434,7 +437,7 @@ pub const ANOMALY_DETECTION_RULES: &[AnomalyDetectionRule] = &[
     AnomalyDetectionRule {
         metric: "quota_depletion_rate",
         detection_method: "trend",
-        sensitivity: 1.0,  // 1x normal rate
+        sensitivity: 1.0, // 1x normal rate
     },
 ];
 

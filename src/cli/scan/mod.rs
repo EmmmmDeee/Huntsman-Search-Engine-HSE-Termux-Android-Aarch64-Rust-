@@ -283,8 +283,19 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
             .and_then(|f| f.checked_sub(scan.started_at))
             .unwrap_or(0)
             .saturating_mul(1000);
-        let diag =
+        let mut diag =
             crate::util::diagnostics::analyse(&sid, kind_str, &cmd.value, wall_ms, &entities);
+        // T2.14: event-sourced hints analyse() cannot compute itself (no
+        // StoragePort access) — enrich here, mirroring the dossier's
+        // identical enrichment, so `--output json` and `--output dossier`
+        // agree on optimization_hints regardless of which surface a caller uses.
+        let events = store.events_for_scan(&sid).unwrap_or_default();
+        let cost_by_module: std::collections::HashMap<String, crate::core::module::ModuleCost> =
+            crate::modules::registry()
+                .iter()
+                .map(|m| (m.name().to_string(), m.cost()))
+                .collect();
+        crate::util::diagnostics::append_event_sourced_hints(&mut diag, &events, &cost_by_module);
         println!(
             "{}",
             serde_json::to_string_pretty(&serde_json::json!({

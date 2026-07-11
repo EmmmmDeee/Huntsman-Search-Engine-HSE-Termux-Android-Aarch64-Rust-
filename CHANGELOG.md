@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`optimization_hints` regains two event-sourced signals a pure entity-only
+  scan analysis structurally cannot see: a cost-gated "scan exceeded 60s with
+  a zero-yield keyed/paid module" hint, and a bounded per-scan summary line
+  ("N of M dispatched modules found nothing for this target kind").** Both
+  read `Event`/`ModuleCost` directly rather than the derived entity set, so a
+  dispatched module that found nothing is now visible in the dossier and JSON
+  output instead of silently vanishing. Available in both `hse scan --output
+  dossier` and `--output json`.
 - **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
   is now proven against a real `git` subprocess, not just pure-logic tests.**
   A local origin+clone fixture pair (no network) exercises the actual

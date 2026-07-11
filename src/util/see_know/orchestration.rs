@@ -1,9 +1,7 @@
+use super::endpoint_matrix::*;
 /// Enterprise orchestration logic: coordinates workflow execution, endpoint routing,
 /// budget management, force-multiplier cascade, and monitoring for hardcoded optimization.
-
 use super::enterprise_config::*;
-use super::endpoint_matrix::*;
-use super::force_multiplier::*;
 
 /// Scan execution plan (hardcoded based on target type and available budget).
 pub struct ExecutionPlan {
@@ -62,17 +60,17 @@ pub fn generate_execution_plan(
 
     if remaining_budget > 0 {
         for endpoint_name in routing.expansion_endpoints {
-            if let Some(spec) = ALL_ENDPOINTS.iter().find(|e| e.name == *endpoint_name) {
-                if remaining_budget >= spec.credits {
-                    endpoints.push(EndpointCall {
-                        endpoint_name: spec.name,
-                        endpoint_path: spec.path,
-                        credit_cost: spec.credits,
-                        priority: 50,
-                        retry_count: 1,
-                        timeout_ms: 15_000,
-                    });
-                }
+            if let Some(spec) = ALL_ENDPOINTS.iter().find(|e| e.name == *endpoint_name)
+                && remaining_budget >= spec.credits
+            {
+                endpoints.push(EndpointCall {
+                    endpoint_name: spec.name,
+                    endpoint_path: spec.path,
+                    credit_cost: spec.credits,
+                    priority: 50,
+                    retry_count: 1,
+                    timeout_ms: 15_000,
+                });
             }
         }
     }
@@ -112,7 +110,7 @@ pub enum ScanStrategy {
 pub fn select_scan_strategy(target_type: &str, budget: u32) -> ScanStrategy {
     match (target_type, budget) {
         (_, 0..=100) => ScanStrategy::QuickVerify,
-        ("email" | "phone" | "ip", 101..=300) => ScanStrategy::QuickVerify,
+        ("email" | "phone" | "ip", 101..=299) => ScanStrategy::QuickVerify,
         ("username" | "domain" | "name", 101..=299) => ScanStrategy::Balanced,
         (_, 300..=749) => ScanStrategy::Balanced,
         ("domain" | "name", 750..=1499) => ScanStrategy::DeepAssessment,
@@ -150,15 +148,18 @@ pub const ALERT_THRESHOLDS: AlertThresholds = AlertThresholds {
 
 /// Optimization recommendations (hardcoded from cost analytics).
 pub enum OptimizationRecommendation {
-    IncreaseDepthForROI,          // your cost per entity is high, try deeper scan
-    ReduceDepthToSaveQuota,        // cost per entity is low at current depth, stop there
-    BatchMultipleTargets,          // similar targets, batch them for cache efficiency
-    FocusOnForceMultiplier,        // API keys found, prioritize cascading
-    UseQuickVerifyOnly,            // budget is tight, use depth 1
-    MixApproach,                   // balanced depth 2 approach is optimal
+    IncreaseDepthForROI,    // your cost per entity is high, try deeper scan
+    ReduceDepthToSaveQuota, // cost per entity is low at current depth, stop there
+    BatchMultipleTargets,   // similar targets, batch them for cache efficiency
+    FocusOnForceMultiplier, // API keys found, prioritize cascading
+    UseQuickVerifyOnly,     // budget is tight, use depth 1
+    MixApproach,            // balanced depth 2 approach is optimal
 }
 
-pub fn recommend_optimization(target_type: &str, cost_per_entity: f32) -> OptimizationRecommendation {
+pub fn recommend_optimization(
+    target_type: &str,
+    cost_per_entity: f32,
+) -> OptimizationRecommendation {
     match (target_type, cost_per_entity) {
         // Email: 0.17 is already good, no change
         ("email", 0.10..=0.25) => OptimizationRecommendation::MixApproach,
@@ -209,9 +210,9 @@ pub const CONCURRENCY_PROFILES: &[ConcurrencyProfile] = &[
 
 pub fn select_concurrency_profile(daily_budget: u32) -> &'static ConcurrencyProfile {
     match daily_budget {
-        0..=1000 => &CONCURRENCY_PROFILES[0],      // sequential
-        1001..=5000 => &CONCURRENCY_PROFILES[1],   // balanced
-        _ => &CONCURRENCY_PROFILES[2],             // aggressive (15k plan)
+        0..=1000 => &CONCURRENCY_PROFILES[0],    // sequential
+        1001..=5000 => &CONCURRENCY_PROFILES[1], // balanced
+        _ => &CONCURRENCY_PROFILES[2],           // aggressive (15k plan)
     }
 }
 
@@ -258,24 +259,40 @@ pub struct SLAExpectation {
 }
 
 pub const SLA_EXPECTATIONS: &[SLAExpectation] = &[
-    SLAExpectation { category: "search_fast", p50_ms: 2_000, p95_ms: 5_000 },
-    SLAExpectation { category: "search_deep", p50_ms: 20_000, p95_ms: 40_000 },
-    SLAExpectation { category: "network_lookups", p50_ms: 800, p95_ms: 2_000 },
-    SLAExpectation { category: "domain_intel", p50_ms: 1_500, p95_ms: 4_000 },
+    SLAExpectation {
+        category: "search_fast",
+        p50_ms: 2_000,
+        p95_ms: 5_000,
+    },
+    SLAExpectation {
+        category: "search_deep",
+        p50_ms: 20_000,
+        p95_ms: 40_000,
+    },
+    SLAExpectation {
+        category: "network_lookups",
+        p50_ms: 800,
+        p95_ms: 2_000,
+    },
+    SLAExpectation {
+        category: "domain_intel",
+        p50_ms: 1_500,
+        p95_ms: 4_000,
+    },
 ];
 
 /// Orchestration state machine: scan execution progression (hardcoded).
 pub enum OrchestrationState {
-    Initializing,          // loading config, checking credentials
-    ProbingQuota,          // calling /credits endpoint
-    PlanningEndpoints,     // selecting endpoints based on budget
-    ExecutingPrimary,      // calling primary endpoints
-    ExecutingExpansion,    // calling expansion endpoints if budget allows
-    ExtractingEntities,    // extracting 17 entity types
-    CascadingForceMulti,   // validating API keys, unlocking downstream
-    Correlating,           // deduplicating and linking entities
-    Monitoring,            // logging metrics and alerts
-    Complete,              // scan finished
+    Initializing,        // loading config, checking credentials
+    ProbingQuota,        // calling /credits endpoint
+    PlanningEndpoints,   // selecting endpoints based on budget
+    ExecutingPrimary,    // calling primary endpoints
+    ExecutingExpansion,  // calling expansion endpoints if budget allows
+    ExtractingEntities,  // extracting 17 entity types
+    CascadingForceMulti, // validating API keys, unlocking downstream
+    Correlating,         // deduplicating and linking entities
+    Monitoring,          // logging metrics and alerts
+    Complete,            // scan finished
 }
 
 /// Hardcoded retry strategy (backoff parameters for transient errors).
@@ -295,10 +312,10 @@ pub const RETRY_STRATEGY: RetryStrategy = RetryStrategy {
 
 /// Fallback behavior when an endpoint fails (hardcoded per endpoint type).
 pub enum FallbackBehavior {
-    SkipEndpoint,           // skip this endpoint, continue with others
-    RetryWithBackoff,       // retry with exponential backoff
-    FallbackToSearchFast,   // fallback to /search endpoint
-    GracefulDegradation,    // continue without this data
+    SkipEndpoint,         // skip this endpoint, continue with others
+    RetryWithBackoff,     // retry with exponential backoff
+    FallbackToSearchFast, // fallback to /search endpoint
+    GracefulDegradation,  // continue without this data
 }
 
 pub fn select_fallback_behavior(endpoint_category: &str) -> FallbackBehavior {

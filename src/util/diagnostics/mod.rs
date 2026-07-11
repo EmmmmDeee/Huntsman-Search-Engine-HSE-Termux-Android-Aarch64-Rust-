@@ -9,6 +9,7 @@
 
 mod analyse;
 pub mod cluster;
+pub mod event_hints;
 pub(super) mod ledger;
 #[cfg(test)]
 mod tests;
@@ -16,6 +17,7 @@ pub mod types;
 
 pub use analyse::{analyse, read_adaptive_routing};
 pub use cluster::{country_coherence_weight, filter_country_coherent};
+pub use event_hints::{append_event_sourced_hints, keyed_or_paid_zero_yield_modules};
 pub use types::{
     AdaptiveRouting, ConfidenceStats, CoordinateCluster, EntityCluster, EntityOverlap,
     GeoPrecisionReport, LedgerEntry, LineageNode, ModuleHistoricalScore, ModuleLedger,

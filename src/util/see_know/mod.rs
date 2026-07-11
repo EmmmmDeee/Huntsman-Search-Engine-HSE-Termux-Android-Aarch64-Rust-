@@ -29,11 +29,11 @@ mod client;
 mod endpoints;
 
 // Hardcoded enterprise configuration and orchestration
-pub mod enterprise_config;
 pub mod endpoint_matrix;
+pub mod enterprise_config;
 pub mod force_multiplier;
-pub mod orchestration;
 pub mod monitoring;
+pub mod orchestration;
 
 #[cfg(test)]
 mod tests;

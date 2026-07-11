@@ -1,6 +1,5 @@
-/// Autonomous validation: Proves multi-API orchestration works end-to-end with real OSINT data.
-/// Analyzes actual scan results to validate all orchestration components are functioning.
-
+//! Autonomous validation: Proves multi-API orchestration works end-to-end with real OSINT data.
+//! Analyzes actual scan results to validate all orchestration components are functioning.
 
 /// Real-world entity from OSINT scan
 #[derive(Debug, Clone, PartialEq)]
@@ -25,8 +24,15 @@ pub struct AutonomousValidationReport {
 }
 
 /// Parse OSINT CSV scan result
-pub fn parse_osint_entity(kind: &str, value: &str, confidence: f32, classification: &str, sources: &str) -> OsintEntity {
-    let source_list: Vec<String> = sources.split('|')
+pub fn parse_osint_entity(
+    kind: &str,
+    value: &str,
+    confidence: f32,
+    classification: &str,
+    sources: &str,
+) -> OsintEntity {
+    let source_list: Vec<String> = sources
+        .split('|')
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
         .collect();
@@ -79,7 +85,9 @@ pub fn detect_apis_from_entities(entities: &[OsintEntity]) -> Vec<String> {
         }
     }
 
-    apis.into_iter().map(|s| s.to_string()).collect()
+    apis.into_iter()
+        .map(std::string::ToString::to_string)
+        .collect()
 }
 
 /// Find deduplication candidates (same entity type, high confidence)
@@ -89,7 +97,9 @@ pub fn find_dedup_candidates(entities: &[OsintEntity]) -> Vec<(String, String, f
     for i in 0..entities.len() {
         for j in i + 1..entities.len() {
             if entities[i].kind == entities[j].kind {
-                let similarity = if entities[i].value.to_lowercase() == entities[j].value.to_lowercase() {
+                let similarity = if entities[i].value.to_lowercase()
+                    == entities[j].value.to_lowercase()
+                {
                     0.95
                 } else if levenshtein_similarity(&entities[i].value, &entities[j].value) > 0.85 {
                     0.85
@@ -123,16 +133,20 @@ fn levenshtein_similarity(s1: &str, s2: &str) -> f32 {
 
     let mut matrix = vec![vec![0; len2 + 1]; len1 + 1];
 
-    for i in 0..=len1 {
-        matrix[i][0] = i;
+    for (i, row) in matrix.iter_mut().enumerate() {
+        row[0] = i;
     }
-    for j in 0..=len2 {
-        matrix[0][j] = j;
+    for (j, cell) in matrix[0].iter_mut().enumerate() {
+        *cell = j;
     }
 
     for i in 1..=len1 {
         for j in 1..=len2 {
-            let cost = if s1.chars().nth(i - 1) == s2.chars().nth(j - 1) { 0 } else { 1 };
+            let cost = if s1.chars().nth(i - 1) == s2.chars().nth(j - 1) {
+                0
+            } else {
+                1
+            };
             matrix[i][j] = std::cmp::min(
                 std::cmp::min(matrix[i - 1][j] + 1, matrix[i][j - 1] + 1),
                 matrix[i - 1][j - 1] + cost,
@@ -162,8 +176,11 @@ pub fn find_correlation_groups(entities: &[OsintEntity]) -> Vec<Vec<String>> {
                 continue;
             }
 
-            if entity.kind == other.kind &&
-               entity.value.to_lowercase().contains(&other.value.to_lowercase().split('-').next().unwrap_or(""))
+            if entity.kind == other.kind
+                && entity
+                    .value
+                    .to_lowercase()
+                    .contains(other.value.to_lowercase().split('-').next().unwrap_or(""))
             {
                 group.push(other.value.clone());
                 processed.insert(other.value.clone());
@@ -180,8 +197,14 @@ pub fn find_correlation_groups(entities: &[OsintEntity]) -> Vec<Vec<String>> {
 
 /// Validate orchestration is working
 pub fn validate_orchestration(entities: &[OsintEntity]) -> AutonomousValidationReport {
-    let verified_count = entities.iter().filter(|e| e.classification == "VERIFIED").count();
-    let probable_count = entities.iter().filter(|e| e.classification == "PROBABLE").count();
+    let verified_count = entities
+        .iter()
+        .filter(|e| e.classification == "VERIFIED")
+        .count();
+    let probable_count = entities
+        .iter()
+        .filter(|e| e.classification == "PROBABLE")
+        .count();
 
     let apis = detect_apis_from_entities(entities);
     let dedup_candidates = find_dedup_candidates(entities);
@@ -227,8 +250,20 @@ mod tests {
     #[test]
     fn test_detect_apis_from_entities() {
         let entities = vec![
-            parse_osint_entity("email", "test@example.com", 0.92, "VERIFIED", "seeknow|oathnet_pro"),
-            parse_osint_entity("person", "John Doe", 0.85, "VERIFIED", "search_engines|social_probe"),
+            parse_osint_entity(
+                "email",
+                "test@example.com",
+                0.92,
+                "VERIFIED",
+                "seeknow|oathnet_pro",
+            ),
+            parse_osint_entity(
+                "person",
+                "John Doe",
+                0.85,
+                "VERIFIED",
+                "search_engines|social_probe",
+            ),
         ];
 
         let apis = detect_apis_from_entities(&entities);
@@ -250,9 +285,9 @@ mod tests {
         let candidates = find_dedup_candidates(&entities);
         assert!(!candidates.is_empty());
 
-        let has_email_match = candidates.iter().any(|(e1, e2, conf)| {
-            (*conf >= 0.95) && (e1.contains("test") || e2.contains("Test"))
-        });
+        let has_email_match = candidates
+            .iter()
+            .any(|(e1, e2, conf)| (*conf >= 0.95) && (e1.contains("test") || e2.contains("Test")));
         assert!(has_email_match, "Should find case-insensitive email match");
     }
 
@@ -283,16 +318,41 @@ mod tests {
     #[test]
     fn test_validate_orchestration_with_real_data() {
         let entities = vec![
-            parse_osint_entity("email", "matthewdiegmann@gmail.com", 0.920, "VERIFIED",
-                "contact_enrich|disposable_check|gravatar|name_intel|oathnet_pro|payid|search_engines|seed|smtp_vrfy|xposed_or_not"),
-            parse_osint_entity("person", "Matthew Diegmann", 0.850, "VERIFIED",
-                "name_intel|oathnet_pro|search_engines|see_know|social_probe"),
-            parse_osint_entity("username", "matthewdiegmann", 0.700, "VERIFIED",
-                "contact_enrich|email_parse|email_to_username|gravatar|name_intel"),
-            parse_osint_entity("username", "maximilian-diegmann", 0.550, "PROBABLE",
-                "search_engines"),
-            parse_osint_entity("address", "QLD 4552, Australia", 0.500, "PROBABLE",
-                "geo_normalize|qld_unclaimed"),
+            parse_osint_entity(
+                "email",
+                "matthewdiegmann@gmail.com",
+                0.920,
+                "VERIFIED",
+                "contact_enrich|disposable_check|gravatar|name_intel|oathnet_pro|payid|search_engines|seed|smtp_vrfy|xposed_or_not",
+            ),
+            parse_osint_entity(
+                "person",
+                "Matthew Diegmann",
+                0.850,
+                "VERIFIED",
+                "name_intel|oathnet_pro|search_engines|see_know|social_probe",
+            ),
+            parse_osint_entity(
+                "username",
+                "matthewdiegmann",
+                0.700,
+                "VERIFIED",
+                "contact_enrich|email_parse|email_to_username|gravatar|name_intel",
+            ),
+            parse_osint_entity(
+                "username",
+                "maximilian-diegmann",
+                0.550,
+                "PROBABLE",
+                "search_engines",
+            ),
+            parse_osint_entity(
+                "address",
+                "QLD 4552, Australia",
+                0.500,
+                "PROBABLE",
+                "geo_normalize|qld_unclaimed",
+            ),
         ];
 
         let report = validate_orchestration(&entities);
@@ -312,8 +372,20 @@ mod tests {
     #[test]
     fn test_orchestration_detects_multiple_apis() {
         let entities = vec![
-            parse_osint_entity("email", "test@example.com", 0.92, "VERIFIED", "seeknow|oathnet_pro"),
-            parse_osint_entity("person", "Test Person", 0.85, "VERIFIED", "search_engines|social_probe|gravatar"),
+            parse_osint_entity(
+                "email",
+                "test@example.com",
+                0.92,
+                "VERIFIED",
+                "seeknow|oathnet_pro",
+            ),
+            parse_osint_entity(
+                "person",
+                "Test Person",
+                0.85,
+                "VERIFIED",
+                "search_engines|social_probe|gravatar",
+            ),
         ];
 
         let report = validate_orchestration(&entities);
@@ -341,7 +413,13 @@ mod tests {
     #[test]
     fn test_budget_efficiency_calculation() {
         let entities = vec![
-            parse_osint_entity("email", "test@example.com", 0.92, "VERIFIED", "seeknow|oathnet_pro"),
+            parse_osint_entity(
+                "email",
+                "test@example.com",
+                0.92,
+                "VERIFIED",
+                "seeknow|oathnet_pro",
+            ),
             parse_osint_entity("person", "Test Person", 0.85, "VERIFIED", "search_engines"),
             parse_osint_entity("username", "testuser", 0.70, "VERIFIED", "gravatar"),
         ];

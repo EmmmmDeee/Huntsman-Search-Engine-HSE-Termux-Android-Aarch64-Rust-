@@ -1,7 +1,5 @@
-/// Force-multiplier cascade: automatically discover and validate API keys from breach data,
-/// unlock downstream paid modules (Shodan, Censys, SecurityTrails), and feed results recursively.
-
-use crate::core::entity::{Entity, EntityKind};
+//! Force-multiplier cascade: automatically discover and validate API keys from breach data,
+//! unlock downstream paid modules (Shodan, Censys, SecurityTrails), and feed results recursively.
 
 /// Downstream modules that can be unlocked by force-multiplier API keys.
 pub enum DownstreamModule {
@@ -143,13 +141,34 @@ pub struct EntityPriority {
 }
 
 pub const ENTITY_DISCOVERY_PRIORITY: &[EntityPriority] = &[
-    EntityPriority { entity_kind: "api_key", priority: 100 },
-    EntityPriority { entity_kind: "credentials", priority: 90 },
-    EntityPriority { entity_kind: "domain", priority: 80 },
-    EntityPriority { entity_kind: "ip_address", priority: 75 },
-    EntityPriority { entity_kind: "email", priority: 70 },
-    EntityPriority { entity_kind: "username", priority: 60 },
-    EntityPriority { entity_kind: "person", priority: 50 },
+    EntityPriority {
+        entity_kind: "api_key",
+        priority: 100,
+    },
+    EntityPriority {
+        entity_kind: "credentials",
+        priority: 90,
+    },
+    EntityPriority {
+        entity_kind: "domain",
+        priority: 80,
+    },
+    EntityPriority {
+        entity_kind: "ip_address",
+        priority: 75,
+    },
+    EntityPriority {
+        entity_kind: "email",
+        priority: 70,
+    },
+    EntityPriority {
+        entity_kind: "username",
+        priority: 60,
+    },
+    EntityPriority {
+        entity_kind: "person",
+        priority: 50,
+    },
 ];
 
 /// Config file paths that commonly leak API keys (hardcoded from OSINT best practices).
@@ -274,12 +293,12 @@ pub fn recommend_cascade_strategy(
     total_budget_remaining: u32,
 ) -> &'static str {
     match (keys_discovered, total_budget_remaining) {
-        (0, _) => "skip_cascade", // no keys found, no point cascading
+        (0, _) => "skip_cascade",               // no keys found, no point cascading
         (1..=2, 1000..=u32::MAX) => "balanced", // few keys, enough budget, balanced approach
-        (1..=2, 500..=999) => "conservative", // few keys, tight budget, be conservative
+        (1..=2, 500..=999) => "conservative",   // few keys, tight budget, be conservative
         (3..=10, 2000..=u32::MAX) => "balanced", // many keys, good budget, balanced
         (3..=10, 1000..=1999) => "conservative", // many keys, tight budget, be selective
-        (11..=u32::MAX, _) => "aggressive", // lots of keys, go all-in
+        (11..=u32::MAX, _) => "aggressive",     // lots of keys, go all-in
         _ => "conservative",
     }
 }
@@ -305,7 +324,10 @@ pub struct CascadeCostEstimate {
     pub total_estimated_cost: u32,
 }
 
-pub fn estimate_cascade_cost(keys_discovered: u32, downstream_scan_budget: u32) -> CascadeCostEstimate {
+pub fn estimate_cascade_cost(
+    keys_discovered: u32,
+    downstream_scan_budget: u32,
+) -> CascadeCostEstimate {
     let keys_to_validate = keys_discovered.min(MAX_KEYS_PER_SCAN);
     let validation_cost = keys_to_validate; // 1 credit per key validation (live test)
     let max_downstream_scans = keys_to_validate * MAX_DOWNSTREAM_SCANS_PER_KEY;

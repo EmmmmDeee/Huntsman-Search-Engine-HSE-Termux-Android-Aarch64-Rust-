@@ -1,5 +1,5 @@
-/// Integration tests: Comprehensive validation of multi-API orchestration system.
-/// Proves: execution planning, budget tracking, chaining, deduplication, fallback strategies work autonomously.
+//! Integration tests: Comprehensive validation of multi-API orchestration system.
+//! Proves: execution planning, budget tracking, chaining, deduplication, fallback strategies work autonomously.
 
 #[cfg(test)]
 mod tests {
@@ -84,7 +84,11 @@ mod tests {
     #[test]
     fn test_correlation_graph_add_entity() {
         let mut graph = CorrelationGraph::new();
-        graph.add_entity("alice@example.com".to_string(), "email".to_string(), "SeekNow".to_string());
+        graph.add_entity(
+            "alice@example.com".to_string(),
+            "email".to_string(),
+            "SeekNow".to_string(),
+        );
 
         assert_eq!(graph.nodes.len(), 1);
         assert_eq!(graph.nodes[0].entity_id, "alice@example.com");
@@ -96,8 +100,16 @@ mod tests {
     #[test]
     fn test_correlation_graph_dedup_same_entity() {
         let mut graph = CorrelationGraph::new();
-        graph.add_entity("alice@example.com".to_string(), "email".to_string(), "SeekNow".to_string());
-        graph.add_entity("alice@example.com".to_string(), "email".to_string(), "HIBP".to_string());
+        graph.add_entity(
+            "alice@example.com".to_string(),
+            "email".to_string(),
+            "SeekNow".to_string(),
+        );
+        graph.add_entity(
+            "alice@example.com".to_string(),
+            "email".to_string(),
+            "HIBP".to_string(),
+        );
 
         // Same entity should have 1 node with 2 source APIs
         assert_eq!(graph.nodes.len(), 1);
@@ -109,8 +121,16 @@ mod tests {
     #[test]
     fn test_correlation_graph_different_entities() {
         let mut graph = CorrelationGraph::new();
-        graph.add_entity("alice@example.com".to_string(), "email".to_string(), "SeekNow".to_string());
-        graph.add_entity("bob@example.com".to_string(), "email".to_string(), "SeekNow".to_string());
+        graph.add_entity(
+            "alice@example.com".to_string(),
+            "email".to_string(),
+            "SeekNow".to_string(),
+        );
+        graph.add_entity(
+            "bob@example.com".to_string(),
+            "email".to_string(),
+            "SeekNow".to_string(),
+        );
 
         // Different entities should create separate nodes
         assert_eq!(graph.nodes.len(), 2);
@@ -119,13 +139,28 @@ mod tests {
     #[test]
     fn test_correlation_graph_get_dedup_candidates() {
         let mut graph = CorrelationGraph::new();
-        graph.add_entity("alice@example.com".to_string(), "email".to_string(), "SeekNow".to_string());
-        graph.add_entity("Alice@Example.Com".to_string(), "email".to_string(), "HIBP".to_string());
-        graph.add_entity("bob@example.com".to_string(), "email".to_string(), "SeekNow".to_string());
+        graph.add_entity(
+            "alice@example.com".to_string(),
+            "email".to_string(),
+            "SeekNow".to_string(),
+        );
+        graph.add_entity(
+            "Alice@Example.Com".to_string(),
+            "email".to_string(),
+            "HIBP".to_string(),
+        );
+        graph.add_entity(
+            "bob@example.com".to_string(),
+            "email".to_string(),
+            "SeekNow".to_string(),
+        );
 
         let candidates = graph.get_dedup_candidates();
 
-        assert!(!candidates.is_empty(), "Case-insensitive match should find dedup candidates");
+        assert!(
+            !candidates.is_empty(),
+            "Case-insensitive match should find dedup candidates"
+        );
         assert!(candidates.iter().any(|(_, _, conf)| *conf >= 0.95));
     }
 
@@ -154,7 +189,10 @@ mod tests {
         assert!(result);
         assert_eq!(tracker.session_spent, 100);
 
-        let entry = tracker.api_budgets.iter().find(|(name, _, _)| name == "SeekNow");
+        let entry = tracker
+            .api_budgets
+            .iter()
+            .find(|(name, _, _)| name == "SeekNow");
         assert!(entry.is_some());
         let (_, _, used) = entry.unwrap();
         assert_eq!(*used, 100);
@@ -209,7 +247,10 @@ mod tests {
         let mut tracker = MultiApiBudgetTracker::new();
         tracker.session_spent = 30_000; // 30% of 100,000
 
-        assert!(matches!(tracker.health_status(), BudgetHealthStatus::Healthy));
+        assert!(matches!(
+            tracker.health_status(),
+            BudgetHealthStatus::Healthy
+        ));
     }
 
     #[test]
@@ -217,7 +258,10 @@ mod tests {
         let mut tracker = MultiApiBudgetTracker::new();
         tracker.session_spent = 60_000; // 60% of 100,000
 
-        assert!(matches!(tracker.health_status(), BudgetHealthStatus::Caution));
+        assert!(matches!(
+            tracker.health_status(),
+            BudgetHealthStatus::Caution
+        ));
     }
 
     #[test]
@@ -225,7 +269,10 @@ mod tests {
         let mut tracker = MultiApiBudgetTracker::new();
         tracker.session_spent = 85_000; // 85% of 100,000
 
-        assert!(matches!(tracker.health_status(), BudgetHealthStatus::Warning));
+        assert!(matches!(
+            tracker.health_status(),
+            BudgetHealthStatus::Warning
+        ));
     }
 
     #[test]
@@ -233,7 +280,10 @@ mod tests {
         let mut tracker = MultiApiBudgetTracker::new();
         tracker.session_spent = 96_000; // 96% of 100,000
 
-        assert!(matches!(tracker.health_status(), BudgetHealthStatus::Critical));
+        assert!(matches!(
+            tracker.health_status(),
+            BudgetHealthStatus::Critical
+        ));
     }
 
     #[test]
@@ -318,7 +368,8 @@ mod tests {
 
     #[test]
     fn test_unified_report_finalize() {
-        let mut report = UnifiedReport::new("scan-123".to_string(), "alice@example.com".to_string());
+        let mut report =
+            UnifiedReport::new("scan-123".to_string(), "alice@example.com".to_string());
         report.apis_queried.push(ApiReport {
             api_name: "SeekNow".to_string(),
             entities_found: 10,
@@ -339,7 +390,7 @@ mod tests {
         assert_eq!(report.total_entities_found, 15);
         assert_eq!(report.total_cost, 150);
         // Assume 20% dedup
-        assert_eq!(report.unique_entities, (15 as f32 * 0.8) as u32);
+        assert_eq!(report.unique_entities, (15_f32 * 0.8) as u32);
         assert!(report.cost_per_entity > 0.0);
     }
 
@@ -356,7 +407,10 @@ mod tests {
         let mut dashboard = MultiApiDashboard::new();
         dashboard.update_api_status("SeekNow", true, 150);
 
-        let status = dashboard.api_status.iter().find(|s| s.api_name == "SeekNow");
+        let status = dashboard
+            .api_status
+            .iter()
+            .find(|s| s.api_name == "SeekNow");
         assert!(status.is_some());
         let status = status.unwrap();
         assert_eq!(status.queries_completed, 1);
@@ -369,7 +423,10 @@ mod tests {
         let mut dashboard = MultiApiDashboard::new();
         dashboard.update_api_status("SeekNow", false, 5000);
 
-        let status = dashboard.api_status.iter().find(|s| s.api_name == "SeekNow");
+        let status = dashboard
+            .api_status
+            .iter()
+            .find(|s| s.api_name == "SeekNow");
         assert!(status.is_some());
         let status = status.unwrap();
         assert_eq!(status.queries_completed, 1);
@@ -425,8 +482,8 @@ mod tests {
 
     #[test]
     fn test_deduplication_config_has_threshold() {
-        assert!(DEDUPLICATION.merge_threshold >= 0.0);
-        assert!(DEDUPLICATION.merge_threshold <= 1.0);
+        const { assert!(DEDUPLICATION.merge_threshold >= 0.0) };
+        const { assert!(DEDUPLICATION.merge_threshold <= 1.0) };
     }
 
     #[test]
@@ -449,11 +506,14 @@ mod tests {
         let mut budget = MultiApiBudgetTracker::new();
         for api_call in &plan.apis_to_call {
             let result = budget.spend(api_call.api_name, api_call.estimated_cost);
-            assert!(result, "Budget tracking should succeed for planned API calls");
+            assert!(
+                result,
+                "Budget tracking should succeed for planned API calls"
+            );
         }
 
         // 3. Verify chaining orchestrator can process discovered entities
-        let mut chainer = ChainingOrchestrator::new(plan.entity_dedup_graph.then_some(2).unwrap_or(1));
+        let mut chainer = ChainingOrchestrator::new(if plan.entity_dedup_graph { 2 } else { 1 });
         chainer.discover_entity(
             "alice@example.com".to_string(),
             "email".to_string(),
@@ -466,11 +526,22 @@ mod tests {
         }
 
         let mut graph = CorrelationGraph::new();
-        graph.add_entity("alice@example.com".to_string(), "email".to_string(), "SeekNow".to_string());
-        graph.add_entity("Alice@Example.Com".to_string(), "email".to_string(), "Hunter.io".to_string());
+        graph.add_entity(
+            "alice@example.com".to_string(),
+            "email".to_string(),
+            "SeekNow".to_string(),
+        );
+        graph.add_entity(
+            "Alice@Example.Com".to_string(),
+            "email".to_string(),
+            "Hunter.io".to_string(),
+        );
 
         let candidates = graph.get_dedup_candidates();
-        assert!(!candidates.is_empty(), "Case-insensitive dedup should find same entity across APIs");
+        assert!(
+            !candidates.is_empty(),
+            "Case-insensitive dedup should find same entity across APIs"
+        );
     }
 
     #[test]
@@ -510,7 +581,7 @@ mod tests {
     fn test_workflow_scalability() {
         // Test that system can handle increasingly complex workflows
         for depth in 1..=3 {
-            for budget in [100u32, 500, 1000, 5000].iter() {
+            for budget in &[100u32, 500, 1000, 5000] {
                 let plan = generate_multi_api_plan("email", depth, *budget);
                 assert!(plan.is_some(), "Plan should succeed for all combinations");
 

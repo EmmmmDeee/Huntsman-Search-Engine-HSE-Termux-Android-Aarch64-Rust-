@@ -1,5 +1,5 @@
-/// Enterprise-hardcoded configuration for SeekNow integration.
-/// All calculations, thresholds, and parameters optimized for 15,000 daily credit plan.
+//! Enterprise-hardcoded configuration for SeekNow integration.
+//! All calculations, thresholds, and parameters optimized for 15,000 daily credit plan.
 
 /// Enterprise plan parameters (hardcoded).
 pub struct EnterprisePlan {
@@ -18,13 +18,13 @@ pub struct EnterprisePlan {
 /// These are the operator's actual plan parameters.
 pub const ENTERPRISE: EnterprisePlan = EnterprisePlan {
     daily_limit: 15_000,
-    per_scan_cap: 750,      // daily_limit / 20 = 15,000 / 20 = 750 (clamped 300-2500)
-    scan_budget_floor: 300,  // minimum per-scan budget
+    per_scan_cap: 750, // daily_limit / 20 = 15,000 / 20 = 750 (clamped 300-2500)
+    scan_budget_floor: 300, // minimum per-scan budget
     scan_budget_ceil: 2_500, // maximum per-scan budget
-    session_cap: 100_000,    // local session ceiling (server quota is backstop)
-    cache_size: 1_024,       // in-process response cache entries
-    max_retries: 3,          // transient error retry count
-    curl_timeout_secs: 75,   // curl timeout (above /search max ~55s)
+    session_cap: 100_000, // local session ceiling (server quota is backstop)
+    cache_size: 1_024, // in-process response cache entries
+    max_retries: 3,    // transient error retry count
+    curl_timeout_secs: 75, // curl timeout (above /search max ~55s)
     tokio_timeout_millis: 78_000, // outer tokio timeout (curl < outer)
 };
 
@@ -43,7 +43,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "email_investigation",
         depth: 1,
-        estimated_budget: 75,     // 50-100 clamped to 75 midpoint
+        estimated_budget: 75, // 50-100 clamped to 75 midpoint
         estimated_time_secs: 30,
         typical_entities: 12,
         cost_per_entity: 0.17,
@@ -51,7 +51,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "username_recon",
         depth: 2,
-        estimated_budget: 225,    // 150-300 clamped to 225 midpoint
+        estimated_budget: 225, // 150-300 clamped to 225 midpoint
         estimated_time_secs: 120,
         typical_entities: 25,
         cost_per_entity: 0.20,
@@ -59,7 +59,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "domain_assessment",
         depth: 3,
-        estimated_budget: 525,    // 300-750 clamped to 525 midpoint
+        estimated_budget: 525, // 300-750 clamped to 525 midpoint
         estimated_time_secs: 300,
         typical_entities: 87,
         cost_per_entity: 0.06,
@@ -67,7 +67,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "ip_geolocation",
         depth: 2,
-        estimated_budget: 150,    // 100-200 clamped to 150 midpoint
+        estimated_budget: 150, // 100-200 clamped to 150 midpoint
         estimated_time_secs: 60,
         typical_entities: 8,
         cost_per_entity: 0.19,
@@ -75,7 +75,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "phone_osint",
         depth: 1,
-        estimated_budget: 35,     // 20-50 clamped to 35 midpoint
+        estimated_budget: 35, // 20-50 clamped to 35 midpoint
         estimated_time_secs: 10,
         typical_entities: 3,
         cost_per_entity: 0.39,
@@ -83,7 +83,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "person_profile",
         depth: 3,
-        estimated_budget: 750,    // 500-1000 clamped to 750 midpoint
+        estimated_budget: 750, // 500-1000 clamped to 750 midpoint
         estimated_time_secs: 600,
         typical_entities: 45,
         cost_per_entity: 0.60,
@@ -99,7 +99,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "incident_response",
         depth: 2,
-        estimated_budget: 350,    // 200-500 clamped to 350 midpoint
+        estimated_budget: 350, // 200-500 clamped to 350 midpoint
         estimated_time_secs: 300,
         typical_entities: 40,
         cost_per_entity: 0.35,
@@ -107,7 +107,7 @@ pub const WORKFLOWS: &[ScanProfile] = &[
     ScanProfile {
         name: "api_key_hunting",
         depth: 3,
-        estimated_budget: 1_125,  // 750-1500 clamped to 1125 midpoint
+        estimated_budget: 1_125, // 750-1500 clamped to 1125 midpoint
         estimated_time_secs: 600,
         typical_entities: 50,
         cost_per_entity: 0.90,
@@ -126,25 +126,25 @@ pub const DAILY_RECOMMENDATIONS: &[DailyRecommendation] = &[
     DailyRecommendation {
         pattern: "aggressive_deep",
         scans_per_day: 15,
-        total_credits: 7_875,  // 15 × 525 (domain_assessment avg)
+        total_credits: 7_875, // 15 × 525 (domain_assessment avg)
         best_for: "Infrastructure-focused investigations",
     },
     DailyRecommendation {
         pattern: "balanced_mixed",
         scans_per_day: 35,
-        total_credits: 7_875,  // 5×525 (domain) + 30×75 (email)
+        total_credits: 7_875, // 5×525 (domain) + 30×75 (email)
         best_for: "Mixed OSINT with broad coverage",
     },
     DailyRecommendation {
         pattern: "aggressive_broad",
         scans_per_day: 100,
-        total_credits: 7_500,  // 100 × 75 (email_investigation avg)
+        total_credits: 7_500, // 100 × 75 (email_investigation avg)
         best_for: "High-volume quick scans",
     },
     DailyRecommendation {
         pattern: "threat_hunting",
         scans_per_day: 3,
-        total_credits: 3_000,  // 3 × 1000 (threat_actor_hunting)
+        total_credits: 3_000, // 3 × 1000 (threat_actor_hunting)
         best_for: "Focused threat actor profiling",
     },
 ];
@@ -158,43 +158,110 @@ pub struct ApiKeyPattern {
 
 pub const API_KEY_PATTERNS: &[ApiKeyPattern] = &[
     // OpenAI / Anthropic
-    ApiKeyPattern { prefix: "sk-ant-", provider: "anthropic", force_multiplier: true },
-    ApiKeyPattern { prefix: "sk-proj-", provider: "openai", force_multiplier: true },
-    ApiKeyPattern { prefix: "sk-", provider: "openai", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "sk-ant-",
+        provider: "anthropic",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "sk-proj-",
+        provider: "openai",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "sk-",
+        provider: "openai",
+        force_multiplier: true,
+    },
     // AWS
-    ApiKeyPattern { prefix: "AKIA", provider: "aws", force_multiplier: true },
-    ApiKeyPattern { prefix: "ASIA", provider: "aws", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "AKIA",
+        provider: "aws",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "ASIA",
+        provider: "aws",
+        force_multiplier: true,
+    },
     // GitHub
-    ApiKeyPattern { prefix: "ghp_", provider: "github", force_multiplier: true },
-    ApiKeyPattern { prefix: "ghu_", provider: "github", force_multiplier: true },
-    ApiKeyPattern { prefix: "ghs_", provider: "github", force_multiplier: true },
-    ApiKeyPattern { prefix: "gho_", provider: "github", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "ghp_",
+        provider: "github",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "ghu_",
+        provider: "github",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "ghs_",
+        provider: "github",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "gho_",
+        provider: "github",
+        force_multiplier: true,
+    },
     // Google
-    ApiKeyPattern { prefix: "AIzaSy", provider: "google", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "AIzaSy",
+        provider: "google",
+        force_multiplier: true,
+    },
     // Stripe
-    ApiKeyPattern { prefix: "sk_live_", provider: "stripe", force_multiplier: true },
-    ApiKeyPattern { prefix: "sk_test_", provider: "stripe", force_multiplier: true },
-    ApiKeyPattern { prefix: "rk_live_", provider: "stripe", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "sk_live_",
+        provider: "stripe",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "sk_test_",
+        provider: "stripe",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "rk_live_",
+        provider: "stripe",
+        force_multiplier: true,
+    },
     // Slack
-    ApiKeyPattern { prefix: "xoxb-", provider: "slack", force_multiplier: true },
-    ApiKeyPattern { prefix: "xoxp-", provider: "slack", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "xoxb-",
+        provider: "slack",
+        force_multiplier: true,
+    },
+    ApiKeyPattern {
+        prefix: "xoxp-",
+        provider: "slack",
+        force_multiplier: true,
+    },
     // JWT / Bearer tokens
-    ApiKeyPattern { prefix: "eyJ", provider: "jwt", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "eyJ",
+        provider: "jwt",
+        force_multiplier: true,
+    },
     // Shodan (force-multiplier unlock)
-    ApiKeyPattern { prefix: "SHODAN_KEY=", provider: "shodan", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "SHODAN_KEY=",
+        provider: "shodan",
+        force_multiplier: true,
+    },
     // Censys (force-multiplier unlock)
-    ApiKeyPattern { prefix: "CENSYS_API_ID=", provider: "censys", force_multiplier: true },
-
+    ApiKeyPattern {
+        prefix: "CENSYS_API_ID=",
+        provider: "censys",
+        force_multiplier: true,
+    },
     // SecurityTrails (force-multiplier unlock)
-    ApiKeyPattern { prefix: "SECURITYTRAILS_KEY=", provider: "securitytrails", force_multiplier: true },
+    ApiKeyPattern {
+        prefix: "SECURITYTRAILS_KEY=",
+        provider: "securitytrails",
+        force_multiplier: true,
+    },
 ];
 
 /// Entity extraction patterns (17 types hardcoded).
@@ -204,23 +271,74 @@ pub struct EntityExtractor {
 }
 
 pub const ENTITY_EXTRACTORS: &[EntityExtractor] = &[
-    EntityExtractor { entity_type: "email", patterns: &["\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"] },
-    EntityExtractor { entity_type: "username", patterns: &["username", "user", "login", "handle"] },
-    EntityExtractor { entity_type: "password", patterns: &["password", "passwd", "pwd", "pass"] },
-    EntityExtractor { entity_type: "phone", patterns: &["\\+?\\d{1,3}[- ]?\\d{3}[- ]?\\d{3}[- ]?\\d{4}"] },
-    EntityExtractor { entity_type: "person", patterns: &["name", "firstname", "lastname", "full_name"] },
-    EntityExtractor { entity_type: "domain", patterns: &["domain", "host", "server", "site"] },
-    EntityExtractor { entity_type: "ip_address", patterns: &["\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", "ipv4", "ip"] },
-    EntityExtractor { entity_type: "api_key", patterns: &["key", "token", "secret", "credential", "api_key"] },
-    EntityExtractor { entity_type: "credentials", patterns: &["username", "password"] },
-    EntityExtractor { entity_type: "address", patterns: &["address", "street", "city", "state", "zip", "postal"] },
-    EntityExtractor { entity_type: "coordinates", patterns: &["latitude", "longitude", "lat", "lon", "geo"] },
-    EntityExtractor { entity_type: "organisation", patterns: &["company", "organization", "employer", "org"] },
-    EntityExtractor { entity_type: "asn", patterns: &["asn", "as_number", "autonomous_system"] },
-    EntityExtractor { entity_type: "mac_address", patterns: &["\\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\\b"] },
-    EntityExtractor { entity_type: "device_id", patterns: &["device_id", "imei", "serial", "uuid"] },
-    EntityExtractor { entity_type: "url", patterns: &["http", "https", "ftp", "url", "link"] },
-    EntityExtractor { entity_type: "crypto_address", patterns: &["bitcoin", "ethereum", "wallet", "0x"] },
+    EntityExtractor {
+        entity_type: "email",
+        patterns: &["\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Z|a-z]{2,}\\b"],
+    },
+    EntityExtractor {
+        entity_type: "username",
+        patterns: &["username", "user", "login", "handle"],
+    },
+    EntityExtractor {
+        entity_type: "password",
+        patterns: &["password", "passwd", "pwd", "pass"],
+    },
+    EntityExtractor {
+        entity_type: "phone",
+        patterns: &["\\+?\\d{1,3}[- ]?\\d{3}[- ]?\\d{3}[- ]?\\d{4}"],
+    },
+    EntityExtractor {
+        entity_type: "person",
+        patterns: &["name", "firstname", "lastname", "full_name"],
+    },
+    EntityExtractor {
+        entity_type: "domain",
+        patterns: &["domain", "host", "server", "site"],
+    },
+    EntityExtractor {
+        entity_type: "ip_address",
+        patterns: &["\\b(?:\\d{1,3}\\.){3}\\d{1,3}\\b", "ipv4", "ip"],
+    },
+    EntityExtractor {
+        entity_type: "api_key",
+        patterns: &["key", "token", "secret", "credential", "api_key"],
+    },
+    EntityExtractor {
+        entity_type: "credentials",
+        patterns: &["username", "password"],
+    },
+    EntityExtractor {
+        entity_type: "address",
+        patterns: &["address", "street", "city", "state", "zip", "postal"],
+    },
+    EntityExtractor {
+        entity_type: "coordinates",
+        patterns: &["latitude", "longitude", "lat", "lon", "geo"],
+    },
+    EntityExtractor {
+        entity_type: "organisation",
+        patterns: &["company", "organization", "employer", "org"],
+    },
+    EntityExtractor {
+        entity_type: "asn",
+        patterns: &["asn", "as_number", "autonomous_system"],
+    },
+    EntityExtractor {
+        entity_type: "mac_address",
+        patterns: &["\\b(?:[0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}\\b"],
+    },
+    EntityExtractor {
+        entity_type: "device_id",
+        patterns: &["device_id", "imei", "serial", "uuid"],
+    },
+    EntityExtractor {
+        entity_type: "url",
+        patterns: &["http", "https", "ftp", "url", "link"],
+    },
+    EntityExtractor {
+        entity_type: "crypto_address",
+        patterns: &["bitcoin", "ethereum", "wallet", "0x"],
+    },
 ];
 
 /// Performance monitoring thresholds (hardcoded).

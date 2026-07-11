@@ -1,7 +1,6 @@
 /// Multi-API orchestrator: intelligent coordination of 12+ paid APIs.
 /// Routes queries to optimal APIs, chains results, deduplicates entities,
 /// tracks budgets, handles failures, and maximizes coverage per credit spent.
-
 use super::multi_api_config::*;
 
 /// Unified API execution plan (auto-generated from scan profile).
@@ -10,7 +9,7 @@ pub struct MultiApiExecutionPlan {
     pub apis_to_call: Vec<ApiCallSpec>,
     pub total_estimated_cost: u32,
     pub total_estimated_time_secs: u32,
-    pub entity_dedup_graph: bool,  // Build correlation graph?
+    pub entity_dedup_graph: bool, // Build correlation graph?
     pub cascade_strategy: CascadeStrategy,
 }
 
@@ -24,9 +23,9 @@ pub struct ApiCallSpec {
 }
 
 pub enum CascadeStrategy {
-    Sequential,        // Call APIs in priority order
-    Parallel,          // Call all APIs concurrently
-    Layered,           // Call priority 1, then use results for priority 2
+    Sequential, // Call APIs in priority order
+    Parallel,   // Call all APIs concurrently
+    Layered,    // Call priority 1, then use results for priority 2
 }
 
 /// Auto-generate multi-API execution plan based on target type.
@@ -58,7 +57,7 @@ pub fn generate_multi_api_plan(
             });
             spent += api.per_query_cost;
         } else {
-            break;  // Budget exhausted
+            break; // Budget exhausted
         }
     }
 
@@ -75,7 +74,7 @@ pub fn generate_multi_api_plan(
         scan_name: target_type,
         apis_to_call,
         total_estimated_cost: spent,
-        total_estimated_time_secs: 60,  // Placeholder
+        total_estimated_time_secs: 60, // Placeholder
         entity_dedup_graph: depth >= 2,
         cascade_strategy: cascade,
     })
@@ -101,6 +100,12 @@ pub struct CorrelationGraphNode {
 pub struct CorrelationGraph {
     pub nodes: Vec<CorrelationGraphNode>,
     pub edges: Vec<(String, String, f32)>, // (entity1_id, entity2_id, confidence)
+}
+
+impl Default for CorrelationGraph {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl CorrelationGraph {
@@ -139,7 +144,9 @@ impl CorrelationGraph {
         for i in 0..self.nodes.len() {
             for j in i + 1..self.nodes.len() {
                 if self.nodes[i].entity_type == self.nodes[j].entity_type {
-                    let similarity = if self.nodes[i].entity_id.to_lowercase() == self.nodes[j].entity_id.to_lowercase() {
+                    let similarity = if self.nodes[i].entity_id.to_lowercase()
+                        == self.nodes[j].entity_id.to_lowercase()
+                    {
                         0.95
                     } else {
                         0.8
@@ -166,6 +173,12 @@ pub struct MultiApiBudgetTracker {
     pub session_spent: u32,
 }
 
+impl Default for MultiApiBudgetTracker {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiApiBudgetTracker {
     pub fn new() -> Self {
         MultiApiBudgetTracker {
@@ -184,18 +197,21 @@ impl MultiApiBudgetTracker {
         self.api_budgets
             .iter()
             .find(|(name, _, _)| name == api_name)
-            .map(|(_, limit, used)| used < limit)
-            .unwrap_or(false)
+            .is_some_and(|(_, limit, used)| used < limit)
     }
 
     /// Spend credits from an API
     pub fn spend(&mut self, api_name: &str, cost: u32) -> bool {
-        if let Some(entry) = self.api_budgets.iter_mut().find(|(name, _, _)| name == api_name) {
-            if entry.2 + cost <= entry.1 && self.session_spent + cost <= self.session_budget {
-                entry.2 += cost;
-                self.session_spent += cost;
-                return true;
-            }
+        if let Some(entry) = self
+            .api_budgets
+            .iter_mut()
+            .find(|(name, _, _)| name == api_name)
+            && entry.2 + cost <= entry.1
+            && self.session_spent + cost <= self.session_budget
+        {
+            entry.2 += cost;
+            self.session_spent += cost;
+            return true;
         }
         false
     }
@@ -265,7 +281,8 @@ impl ChainingOrchestrator {
 
     /// Add discovered entity and generate chaining commands
     pub fn discover_entity(&mut self, entity: String, entity_type: String, source_api: String) {
-        self.discovered_entities.push((entity.clone(), entity_type.clone(), source_api.clone()));
+        self.discovered_entities
+            .push((entity.clone(), entity_type.clone(), source_api.clone()));
 
         if self.current_depth < self.max_depth {
             // Find applicable chaining rules
@@ -275,7 +292,7 @@ impl ChainingOrchestrator {
                         target_api: rule.chain_to_api.to_string(),
                         entity: entity.clone(),
                         entity_type: entity_type.clone(),
-                        priority: 50,  // Lower priority than primary queries
+                        priority: 50, // Lower priority than primary queries
                     });
                 }
             }
@@ -332,7 +349,7 @@ pub struct UnifiedReport {
     pub apis_queried: Vec<ApiReport>,
     pub total_entities_found: u32,
     pub unique_entities: u32,
-    pub dedup_savings: u32,     // How many duplicates were merged
+    pub dedup_savings: u32, // How many duplicates were merged
     pub total_cost: u32,
     pub cost_per_entity: f32,
     pub correlation_graph_nodes: u32,
@@ -397,6 +414,12 @@ pub struct ApiStatus {
     pub status: &'static str,
 }
 
+impl Default for MultiApiDashboard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl MultiApiDashboard {
     pub fn new() -> Self {
         MultiApiDashboard {
@@ -435,7 +458,11 @@ impl MultiApiDashboard {
 
     /// Get overall system health
     pub fn overall_health(&self) -> &'static str {
-        let avg_uptime: f32 = self.api_status.iter().map(|s| s.uptime_percent).sum::<f32>()
+        let avg_uptime: f32 = self
+            .api_status
+            .iter()
+            .map(|s| s.uptime_percent)
+            .sum::<f32>()
             / self.api_status.len() as f32;
         let avg_error_rate = self.error_rate_percent;
 

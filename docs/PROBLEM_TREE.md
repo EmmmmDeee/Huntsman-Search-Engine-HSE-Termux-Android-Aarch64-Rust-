@@ -660,7 +660,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `analyse_emits_optimization_hints_for_zero_yield` (never actually exercised
   zero-yield handling — `analyse` could never see it) →
   `analyse_falls_back_to_a_hint_when_nothing_else_fires`.
-- **`[ ]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
+- **`[x]` T2.14 · Restore the two dead `analyse()` hints T2.13 removed, with a
   real design for the noise question** — `util::diagnostics::analyse` no
   longer emits a "scan exceeded 60s with a zero-yield module" hint or a
   per-module "returned 0 entities" hint (T2.13 addendum); both were
@@ -679,7 +679,23 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   (`KeyGated`/`Paid` only), or replace the per-module enumeration with a
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
-  either hint).*
+  either hint).* **Implemented (2026-07-11):** option (b) — new
+  `util::diagnostics::event_hints::append_event_sourced_hints`, built from
+  `Event`/`ModuleCost` (ground truth a pure entity-only `analyse()` can't see:
+  a dispatched module that found nothing never appears in `modules_by_yield`
+  at all), called from both consumer call sites
+  (`cli/scan/dossier.rs::print_diagnostics`, `cli/scan/mod.rs`'s JSON output
+  path) right after the existing ROI hint — the third call site
+  (`api/handlers/mod.rs`) discards `analyse()`'s return value entirely (exists
+  only for its ledger-persist side effect), so it was left alone rather than
+  enriched for no observer. The noise question resolved to the bounded-count
+  form: the cost-gated scan-level 60s+ hint (unchanged shape, still
+  `KeyGated`/`Paid`-only via the relocated `keyed_or_paid_zero_yield_modules`)
+  plus one per-scan summary line ("N of M dispatched modules found nothing for
+  this target kind") — no per-module enumeration, so a 42-module scan with 30
+  zero-yield modules produces one line, not thirty. Live-verified on a real
+  `hse scan --kind coords --output json` run: `optimization_hints` correctly
+  reads `"4 of 12 dispatched modules found nothing for this target kind"`.
 - **`[x]` T2.15 · Silent multi-row deserialize/read failures (storage layer)**
   — every multi-row reader in `storage/` (`list_scans`, `correlations_for_scan`,
   `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
@@ -5555,4 +5571,35 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   same `ConnectInfo` + `is_loopback()` 403 guard; non-loopback 403 test added.
   Gate green: fmt/clippy `-D warnings`/rustdoc (private items) clean, full suite
   0 failures (4432 lib tests, +7; +1 API 403 test), architecture suite green.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-11** — **T2.14 closed** (see the node above for the full design
+  writeup) **+ a pre-existing clippy backlog swept clean while proving the
+  gate.** Landed `util::diagnostics::event_hints` and wired it into both
+  `optimization_hints` consumers; new file's own test module covers dispatch
+  counting (`ModuleDone`/`ModuleError` count, `ModuleSkipped` doesn't), the
+  keyed/paid zero-yield filter, the cost-gate + threshold on the 60s hint, and
+  that the summary line is one bounded line regardless of zero-yield count.
+  Separately, `cargo clippy --all-targets --locked -- -D warnings` on the
+  pre-T2.14 tree (confirmed via `git stash`, not caused by this change) was
+  already red: 32 error lines across 10 files in the `multi_api_*`/
+  `autonomous_validation`/`see_know` subsystem from the earlier autonomous-
+  validation commit. The "prove absolutely everything works" bar doesn't
+  admit "clean except for pre-existing debt," so fixed the full backlog in
+  the same commit: 8× doc-comment-placement (leading `///` file headers →
+  `//!`), 3× missing `Default` for a `fn new()` type, 2× collapsible-if
+  (let-chain rewrite), 2× if-same-then-else (`monitoring.rs::health_status`
+  — three branches returning the same `Warning` combined into one `||`
+  condition with the shared rationale spelled out), 2× const-assertions
+  (wrapped in `const { assert!(...) }`), 2× needless-range-loop (Levenshtein
+  matrix init → `.iter_mut().enumerate()`), plus one each of needless-borrow,
+  redundant-closure, explicit-iter-loop, unnecessary-cast, and
+  map-unwrap-or/`is_some_and`. No behaviour change anywhere in the sweep —
+  every fix is a lint-level rewrite of existing logic, confirmed by the full
+  suite being green before and after. Gate green: fmt/clippy `-D
+  warnings`/rustdoc (private items, bare-URL and invalid-HTML-tag lints)
+  clean, full suite 0 failures (4554 lib tests). Live-verified per
+  `docs/CONVENTIONS.md` §9: built the `hse` binary and ran a real
+  `hse scan --kind coords --output json` against public landmark coordinates
+  — `optimization_hints` correctly surfaced the bounded per-scan summary
+  line, confirming the feature end-to-end rather than only in unit tests.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
