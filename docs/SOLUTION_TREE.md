@@ -920,6 +920,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `target.to_entity(` call sites across every other module found no further
   instances — each independently re-verified against live code, not taken on
   trust; zero findings fabricated to manufacture false urgency.
+- **`[x]` SOL-AU063-DOC-FIX · `correlator/rules/gap.rs`'s
+  `AU063_DETAIL_MIN_CONF` doc comment corrected to match its own `.min()`
+  gate** — found by a dedicated core/ doc-comment-vs-code drift sweep. The
+  doc claimed a detail finding fires when "at least one endpoint is this
+  confident"; the code requires BOTH (`min(ea,eb) >= 0.40`) — the logical
+  opposite. A second instance of the identical drift, in the opposite
+  direction, sat 175 lines below on the `Candidate` struct's inline comment,
+  making the file internally self-contradictory. Both corrected to state the
+  weaker-endpoint/`min` semantics the code actually implements. *Closes:* new
+  node **T2.38**. ✅ Doc-only, zero behaviour change (verified: constant
+  value, `.min()` call, and filter condition all untouched) — confirmed via
+  `cargo doc` plus independent re-derivation of the pre-fix line numbers via
+  `git show HEAD:...`, proving the citation was grounded in real code, not
+  fabricated.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -997,6 +1011,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CEFF-TRANSPARENCY | T2.35 | `[x]` |
 | SOL-LOCATION-SEED-NO-REAFFIRM | T2.36 | `[x]` |
 | SOL-SEEKNOW-SUBJECT-GATE | T2.37 | `[x]` |
+| SOL-AU063-DOC-FIX | T2.38 | `[x]` |
 
 ---
 
@@ -1008,6 +1023,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- **T2.39** (new, 2026-07-11) — AU-039 (`correlator/rules/crypto.rs`)
+  attributes a cryptocurrency wallet to an arbitrary anchor identity
+  (lexicographically-smallest `uid` among ALL confirmed `Person`/`Email`
+  entities in the scan) with zero relatedness check to the wallet itself —
+  proven by the rule's own existing test, which shows two unrelated people
+  produce the same attribution differing only by alphabetical sort order.
+  `High` severity, realistic trigger (AU-075 alone routinely mints multiple
+  `Person` entities per scan). Root cause identified precisely; a real fix
+  needs a design decision this sweep correctly declined to make unilaterally
+  — what relatedness criterion should gate the anchor (shared evidence
+  source? co-occurrence window? the existing `CORROBORATING_FAMILIES`
+  concept already used elsewhere in the same file?) and whether the data
+  model even carries that provenance at this call site. Not yet started.
 - **T2.7** scraper-health signal — **partially covered (cycle 20):** SOL-HEALTH-SIGNAL
   node now sketched (`last_success_at` + `consecutive_failures` tracking, `hse doctor`
   surface + SPA panel); full implementation still open. **Elevated (cycle 17):**
@@ -4265,3 +4293,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   and zero 0.82-confidence entities where the unfixed code would have shown
   both. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4560 lib tests, +3). Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-11** — **SOL-AU063-DOC-FIX built, T2.38 closed; new T2.39 opened,
+  deliberately not solved.** Second precision-sweep workflow this cycle: 4
+  parallel discovery passes (`core/` doc-drift, `util/` doc-drift + shared
+  confidence-bug check, a 22-of-108 correlator-rule spot-check, and a
+  TODO/unjustified-`#[allow]`/risky-`unwrap()` sweep) → triage → implement →
+  independent verification. Near-clean result: dozens of formulas and
+  thresholds across `core/` and `util/` (ABN/ACN checksums, `health_score`
+  weights, shoelace centroid, Haversine, ~20 correlator thresholds) verified
+  to match their doc comments exactly; zero TODO/FIXME/HACK markers
+  repo-wide; all 10 `#[allow(...)]` suppressions read in context and
+  confirmed justified; the 2 production `unwrap()` sites in `core`/`modules`
+  confirmed genuinely guarded, no concrete panic scenario articulable for
+  either. One real, self-contradictory doc-comment pair found and fixed
+  (`gap.rs`'s `AU063_DETAIL_MIN_CONF` doc said "at least one endpoint," the
+  code's own `.min()` gate requires both — and a second copy of the same
+  drift, in the opposite direction, sat 175 lines below). One real,
+  evidence-grounded logic weakness found and DELIBERATELY not patched blind:
+  AU-039 attributes a wallet to an arbitrary anchor identity with zero
+  relatedness check, proven by the rule's own test — opened as T2.39 rather
+  than rushed, since a real fix needs a relatedness-criterion design decision
+  this sweep correctly declined to invent unilaterally. No findings
+  fabricated across either the T2.36/T2.37 sweep or this one to manufacture
+  urgency where none existed. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4560 lib tests, unchanged — doc-only fix).
+  Paired: `PROBLEM_TREE` §8 — same commit.

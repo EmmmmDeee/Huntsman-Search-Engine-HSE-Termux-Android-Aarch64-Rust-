@@ -1367,6 +1367,67 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   integrity class as T2.36 — same fix pattern, already proven correct in
   `oathnet_pro`, applied a second time).
 
+- **`[x]` T2.38 · `correlator/rules/gap.rs`'s `AU063_DETAIL_MIN_CONF` doc
+  comment claimed the OPPOSITE of what its own gating code does** — found by
+  a dedicated core/ doc-comment-vs-code drift sweep (the same class of defect
+  already found and fixed once in `core::entity`). The constant's doc said a
+  detailed AU-063 finding fires "when at least one endpoint is this
+  confident," but the actual gate uses `priority: ea.c_effective().min(eb.c_
+  effective())` then filters `priority >= AU063_DETAIL_MIN_CONF` — requiring
+  **both** endpoints to clear 0.40, the logical opposite of "at least one."
+  The inline comment on the `Candidate` struct 175 lines below had the SAME
+  drift in the opposite direction ("the stronger endpoint's effective
+  confidence"), so the file was internally self-contradictory, not just
+  wrong against the code once. **Failure scenario the wrong doc would have
+  misled an operator/maintainer about:** a confirmed real email
+  (`c_effective`=0.85) linked by one route to a low-confidence
+  name-permutation username (`c_effective`=0.10) — per the false doc claim
+  ("a corroborated/real endpoint always earns its detail") this should
+  surface its own AU-063 finding; the real code correctly folds it into the
+  consolidated summary instead (`min(0.85,0.10)=0.10 &lt; 0.40`). → **Fixed:**
+  both comments rewritten to state the `min`/weaker-endpoint semantics the
+  code actually implements; zero behaviour change (constant value, `.min()`
+  call, and filter untouched). Doc-only, no test needed — confirmed via
+  `cargo doc` + independent verification re-reading the pre-fix file via
+  `git show HEAD:...` to confirm the citation was grounded in real
+  pre-existing text, not fabricated. **P3** (a doc-precision defect, not a
+  behavioural one — but exactly the standard "force precision in each and
+  every file" exists to catch before it misleads a future maintainer into
+  "fixing" already-correct code).
+
+- **`[ ]` T2.39 · AU-039 (`correlator/rules/crypto.rs`,
+  `rule_au_039_wallet_identity`) attributes a cryptocurrency wallet to an
+  ARBITRARY anchor identity with zero relatedness check — the same
+  content-blind-attribution shape as T2.36/T2.37, one layer up (the
+  correlation-rule layer, not the entity-confidence layer)** — found by a
+  dedicated correlator-rule spot-check sweep (22 of 108 rules independently
+  verified doc-vs-code; this was the one genuine logic weakness among them).
+  The rule picks the lexicographically-smallest-`uid` `Person` (or `Email`
+  if no `Person` exists) across the WHOLE confirmed entity set as "the"
+  anchor for EVERY `CryptoAddress` entity in the scan, with no check that the
+  wallet and that specific person share any evidence, source, or record —
+  confirmed by the rule's own existing test
+  (`au_039_anchor_is_deterministic_under_multiple_identities`), which proves
+  two clearly-unrelated people ("Aaron Avery", "Zoe Zimmer") produce the same
+  wallet attribution, differing only by which name sorts first
+  alphabetically. Severity is `High` ("possible attribution"). Given AU-075
+  alone routinely mints multiple distinct `Person` entities per scan
+  (spouse/next-of-kin/emergency-contact/stealer-log-owner), a real scan with
+  ≥2 people is a realistic trigger, not a contrived edge case — a wallet
+  belonging to one person can be confidently reported as belonging to an
+  unrelated family member or bystander purely due to uid sort order. →
+  **Solution direction (not yet implemented, deliberately deferred rather
+  than rushed):** requires a design decision this sweep correctly declined to
+  make unilaterally — what "relatedness" should gate the anchor selection
+  (shared evidence source? a co-occurrence/proximity window? the existing
+  `CORROBORATING_FAMILIES` orthogonal-source concept already used elsewhere
+  in this same file?), and whether the underlying entity/evidence data model
+  even carries the provenance needed to answer that at this call site.
+  **P1** (evidentiary-integrity class, `High`-severity misattribution risk
+  on a realistic multi-person scan — but correctly NOT patched blind, since
+  an ad-hoc "pick a different anchor" fix without a real relatedness
+  criterion would just move the arbitrariness rather than remove it).
+
 ---
 
 ## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
@@ -5877,3 +5938,27 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   correctly tiers at 0.30–0.45. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4560 lib tests, +3). **Paired:**
   `SOLUTION_TREE` §5 — same commit.
+- **2026-07-11** — **Second precision sweep this cycle: new T2.38, closed
+  same cycle; new T2.39, opened and deliberately deferred.** Run as a second
+  multi-phase workflow (4 parallel discovery agents covering `core/`,
+  `util/`, a 22-of-108 correlator-rule spot-check, and a TODO/unjustified-
+  `#[allow]`/risky-`unwrap()` sweep → triage → implement → independent
+  verification) continuing the same "force precision in each and every file"
+  mandate. Near-clean result across all four: dozens of formulas/thresholds
+  (ABN/ACN checksums, `health_score` weights, shoelace centroid, Haversine,
+  ~20 correlator rule thresholds) verified to match their doc comments
+  exactly; zero TODO/FIXME/HACK markers repo-wide; all 10 `#[allow(...)]`
+  suppressions independently read in context and confirmed justified; both
+  of the 2 production (non-test) `unwrap()` call sites in `core`/`modules`
+  confirmed genuinely guarded by an immediately-preceding structural
+  invariant, with no concrete malformed-input scenario able to panic either.
+  One real doc/code contradiction found and fixed (T2.38); one real,
+  evidence-grounded but design-dependent logic weakness found and
+  deliberately NOT patched blind (T2.39) — correctly distinguishing "small,
+  unambiguous, low-risk" from "needs a design decision before anyone touches
+  it," rather than rushing a fix that would just relocate the arbitrariness.
+  No findings fabricated across either sweep to manufacture urgency where
+  none existed — a legitimate, informative outcome for a mature codebase,
+  not a failure of the exercise. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4560 lib tests, unchanged — doc-only fix).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

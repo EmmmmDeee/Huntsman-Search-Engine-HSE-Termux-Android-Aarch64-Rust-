@@ -36,11 +36,13 @@ const CORROBORATING_FAMILIES: &[&str] = &[
 ];
 
 /// A single-route link is surfaced as its own detailed AU-063 finding only when
-/// at least one endpoint is this confident — i.e. it is a connection actually
-/// worth corroborating. A link between two low-confidence, name-derived
-/// permutation candidates (the bulk of a broad name scan) is not individually
-/// actionable; it is consolidated into the summary finding instead. Probable
-/// tier, so a corroborated/real endpoint always earns its detail.
+/// its *weaker* endpoint is this confident — the gate tests the `min` of the two
+/// endpoint confidences (the `Candidate::priority` set below), so *both* ends
+/// must clear it. A link that leans on even one low-confidence, name-derived
+/// permutation candidate (the bulk of a broad name scan) is not individually
+/// actionable; it is consolidated into the summary finding instead. This is the
+/// Probable-tier floor, so a link Probable at *both* ends earns its detail — a
+/// confident hub tied to a speculative permutation does not.
 const AU063_DETAIL_MIN_CONF: f64 = 0.40;
 
 /// Cap on individually-surfaced AU-063 gap findings (strongest endpoints first).
@@ -213,10 +215,11 @@ pub(in crate::core::correlator) fn rule_au_063_corroboration_gap(
     };
 
     // One detail candidate per fragile link: the finding itself, the priority
-    // that decides which gaps are worth surfacing in full (the stronger
-    // endpoint's effective confidence — corroborate the real leads first), the
-    // orthogonal families it needs (for the consolidated summary), and its
-    // endpoints (for the summary's pivot set).
+    // that decides which gaps are worth surfacing in full (the *weaker*
+    // endpoint's effective confidence — a link is only as credible as its min
+    // end, so this both ranks strong-to-strong links first and consolidates the
+    // permutation tail), the orthogonal families it needs (for the consolidated
+    // summary), and its endpoints (for the summary's pivot set).
     struct Candidate {
         priority: f64,
         corr: Correlation,
