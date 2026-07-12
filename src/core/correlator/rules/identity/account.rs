@@ -195,8 +195,13 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
             rule_name: "Shared public key links accounts".into(),
             severity: Severity::Critical,
             description: format!(
-                "A reused public key proves one person controls {} accounts (same private key): {}",
-                accounts.len(),
+                "A reused public key proves one person controls {} accounts (same private key) \
+                 — key evidence names: {}",
+                // Count DISTINCT controllers (handles), not identifier spellings: the
+                // guard above already treats "alice" + "alice@x.com" as ONE account,
+                // so reporting `accounts.len()` here would over-state control (e.g.
+                // "3 accounts" for alice's login+email plus bob, who are 2 owners).
+                handles.len(),
                 join_capped(accounts.iter().map(String::as_str), 6)
             ),
             entity_uids: uids,

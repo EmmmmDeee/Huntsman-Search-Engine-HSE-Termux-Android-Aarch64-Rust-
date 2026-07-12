@@ -2542,6 +2542,27 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `dbname`-based tests are the controls. Gate green: fmt/clippy `-D warnings`/
   rustdoc clean, full suite 0 failures (4566 lib tests, +1). **Paired:**
   `SOLUTION_TREE` SOL-CORRELATOR-INTEGRITY (slice 3), §5 — same commit.
+- **`[x]` T2.67 · AU-048 over-stated the account count from identifier
+  spellings — a magnitude over-claim against the rule's own definition (4th
+  slice of the correlator audit).** AU-048 (shared public key) fires Critical
+  when a reused key proves one person controls ≥2 accounts. Its firing guard is
+  sound — it folds each identifier to a `canonical_handle` and requires ≥2
+  DISTINCT handles, explicitly treating (per its own comment) `"alice"` +
+  `"alice@x.com"` as ONE account — but the **description reported
+  `accounts.len()`** (the count of distinct identifier SPELLINGS), not
+  `handles.len()`. So a key reused across alice's login + alice's email + bob (3
+  spellings, 2 real owners) fired "controls **3** accounts" when, by the rule's
+  own account definition, it is 2. The magnitude outran the evidence.
+  **P3** (evidentiary magnitude — a real over-claim, not a false firing). →
+  **Solution:** report `handles.len()` (the distinct-controller count the guard
+  already computes) in the description, keeping the identifier list as the
+  supporting evidence. 1 must-fire test
+  (`au048_reports_distinct_controllers_not_identifier_spellings`: alice
+  login+email + bob → "controls 2 accounts"), git-stash-proven to report "3"
+  against the pre-fix code; the existing firing/guard tests are unchanged
+  controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4567 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-CORRELATOR-INTEGRITY (slice 4), §5 — same commit.
 
 ---
 
@@ -8062,3 +8083,16 @@ way, so this specific drift class can't recur silently again.
   `dbname` tests are controls. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4566 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-CORRELATOR-INTEGRITY (slice 3), §5 — same commit.
+- **2026-07-12** — **T2.67: AU-048 no longer over-states the account count from
+  identifier spellings (correlator audit slice 4).** The shared-public-key rule
+  fires Critical when a reused key proves one person controls ≥2 accounts. Its
+  guard correctly requires ≥2 distinct `canonical_handle`s (treating "alice" +
+  "alice@x.com" as ONE account), but the description reported `accounts.len()`
+  (distinct identifier SPELLINGS), so a key reused across alice's login + email +
+  bob (3 spellings, 2 owners) claimed "controls 3 accounts" when by the rule's
+  own definition it is 2 — the magnitude outran the evidence. Fix: report
+  `handles.len()` (the distinct-controller count the guard already computes),
+  keeping the identifier list as evidence. 1 must-fire test git-stash-proven to
+  report "3" pre-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4567 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-CORRELATOR-INTEGRITY (slice 4), §5 — same commit.

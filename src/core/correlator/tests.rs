@@ -4927,6 +4927,33 @@ fn au048_links_accounts_sharing_a_public_key() {
 }
 
 #[test]
+fn au048_reports_distinct_controllers_not_identifier_spellings() {
+    // A key whose evidence names alice under BOTH her login and her email, PLUS a
+    // second owner bob = 3 identifier spellings but only 2 distinct account owners
+    // (alice, bob). The finding must report "controls 2 accounts", not 3 — the
+    // count is the distinct-controller measure the guard already uses (which treats
+    // "alice" + "alice@x.com" as ONE account), so reporting the spelling count
+    // over-states control by the rule's own definition.
+    let mut key = Entity::new(EntityKind::Credential, "ssh:count-check", 0.9, "scan");
+    key.tag("ssh-key");
+    key.add_evidence(
+        Evidence::new("github_user", "SSH key published by @alice")
+            .with_attr("github_login", "alice")
+            .with_attr("email", "alice@x.com"),
+    );
+    key.add_evidence(
+        Evidence::new("github_user", "same key published by @bob").with_attr("github_login", "bob"),
+    );
+    let hits = super::rules::rule_au_048_shared_public_key(&[key], "scan", 0);
+    assert_eq!(hits.len(), 1, "two distinct owners sharing a key must link");
+    assert!(
+        hits[0].description.contains("controls 2 accounts"),
+        "must report 2 distinct account owners, not 3 identifier spellings: {}",
+        hits[0].description
+    );
+}
+
+#[test]
 fn au048_discloses_when_the_account_list_is_truncated() {
     // The description enumerates at most 6 accounts, but a key genuinely
     // shared across MANY accounts (a stolen/reused keypair pushed to several

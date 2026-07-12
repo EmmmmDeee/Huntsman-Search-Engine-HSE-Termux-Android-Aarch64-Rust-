@@ -1507,10 +1507,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   password reused across two SeekNow breaches counted as ONE and the finding
   stayed silent (a false negative on a primary paid breach source). Extended
   `breach_of` to also read `source_db`. ✅ 1 must-fire test git-stash-proven;
-  gate green (4566 lib tests, +1). *Remaining (banked for later cycles):*
-  AU-017/030/048/099 among the audit's other candidate findings — one
+  gate green (4566 lib tests, +1). **Slice 4 delivered — AU-048 (shared public
+  key) over-stated the account count:** its firing guard correctly requires ≥2
+  distinct `canonical_handle`s (treating "alice" + "alice@x.com" as one account),
+  but the description reported `accounts.len()` (identifier spellings), so a key
+  reused across alice's login + email + bob (3 spellings, 2 owners) claimed
+  "controls 3 accounts" — a magnitude over-claim by the rule's own definition.
+  Report `handles.len()` instead. ✅ 1 must-fire test git-stash-proven (reports
+  "3" pre-fix); gate green (4567 lib tests, +1). *Remaining (banked for later
+  cycles):* AU-017/030/099 among the audit's other candidate findings — one
   live-verified commit each. **Paired:** `PROBLEM_TREE` T2.57 (slice 1) / T2.65
-  (slice 2) / T2.66 (slice 3) — each slice its own commit.
+  (slice 2) / T2.66 (slice 3) / T2.67 (slice 4) — each slice its own commit.
 - **`[x]` SOL-DEADCODE-SWEEP · Resolve "looks built but isn't" dead code /
   unwired capability** → **T2.58** (slice 1). A per-directory sweep (one scanner
   per top-level module dir fanned out via the Workflow tool, each claimed-dead
@@ -5790,3 +5797,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   silent against the pre-fix `breach_of`; the existing `dbname`-based tests are
   the controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4566 lib tests, +1). Paired: `PROBLEM_TREE` T2.66 — same commit.
+- **2026-07-12** — **SOL-CORRELATOR-INTEGRITY slice 4: AU-048 over-stated the
+  account count from identifier spellings.** The shared-public-key rule fires
+  Critical when a reused key proves one person controls ≥2 accounts. Its firing
+  guard is sound — it folds each identifier to a `canonical_handle` and requires
+  ≥2 DISTINCT handles, explicitly treating (per its own comment) "alice" +
+  "alice@x.com" as ONE account — but the description reported `accounts.len()`
+  (the count of distinct identifier SPELLINGS), so a key reused across alice's
+  login + email + bob (3 spellings, 2 owners) claimed "controls 3 accounts" when,
+  by the rule's own account definition, it is 2 — the magnitude outran the
+  evidence. Fix: report `handles.len()` (the distinct-controller count the guard
+  already computes) in the description, keeping the identifier list as the
+  supporting evidence. 1 must-fire test
+  (`au048_reports_distinct_controllers_not_identifier_spellings`: alice
+  login+email + bob → "controls 2 accounts") git-stash-proven to report "3"
+  against the pre-fix code; the existing firing/guard tests are unchanged
+  controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4567 lib tests, +1). Paired: `PROBLEM_TREE` T2.67 — same commit.

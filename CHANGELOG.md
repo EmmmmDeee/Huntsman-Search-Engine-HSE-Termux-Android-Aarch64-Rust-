@@ -136,6 +136,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **The shared-key finding (AU-048) no longer over-states how many accounts one
+  person controls.** It proves a reused public key ties multiple accounts to one
+  person, but it counted distinct identifier *spellings* — so if a key's evidence
+  named someone by both their login and their email, that single person was
+  counted as two accounts. It now reports the number of distinct account owners,
+  matching the definition its own firing test already used.
 - **Credential-reuse detection (AU-105) now counts SeekNow breaches correctly.**
   The rule fires when one password/hash recurs across two or more distinct
   breaches, but it read the breach name only from the `dbname`/`breach`
