@@ -8,12 +8,20 @@ use serde::Deserialize;
 use serde_json::Value;
 
 use crate::core::error::{Error, Result};
+use crate::util::backoff::BackoffPolicy;
 use crate::util::budget::QuotaBudget;
 use crate::util::curl_client::{AuthScheme, CurlClient};
 use crate::util::response_cache::ResponseCache;
 
 // Embedded fallback: single source of truth lives in `util::keys`.
 const HARDCODED_KEY: &str = crate::util::keys::OATHNET_DEFAULT_KEY;
+
+/// Retry pacing for a transient OathNet HTTP 429 (distinct from true daily
+/// quota exhaustion — see the inline notes in [`search`]). Mirrors
+/// `see_know`'s `RATE_LIMIT_BACKOFF`: 3 attempts (initial call + 2 retries),
+/// doubling 2s → 4s, capped at 8s, jittered so concurrently-dispatched
+/// requests that all get rate-limited at once don't retry in lockstep.
+const RATE_LIMIT_BACKOFF: BackoffPolicy = BackoffPolicy::new(3, 2_000, 8_000, true);
 
 pub const KEY_ENV: &str = "HUNTSMAN_OATHNET_KEY";
 
@@ -89,8 +97,17 @@ pub fn budget_snapshot() -> crate::util::budget::BudgetSnapshot {
 /// Reset the per-scan budget counters. Must be called at the start of every
 /// scan so that `hse serve` / `hse live` (long-lived processes) get a fresh
 /// budget for each scan rather than accumulating across scans.
+///
+/// Also clears [`RESPONSE_CACHE`]: it exists to dedup identical
+/// `(path, field, value)` queries *within one scan* across oathnet_pro,
+/// geo_intel, and search_engines (see its own doc comment) — but with no
+/// scan-boundary reset, a long-lived `hse serve`/`hse live` process would
+/// silently keep returning the first scan's cached breach/stealer records
+/// for every later re-scan of the same email/username/phone, indefinitely,
+/// with no live re-check and no way for the operator to force a refresh.
 pub fn reset_budget() {
     BUDGET.reset_scan();
+    RESPONSE_CACHE.clear();
 }
 
 /// True while the shared OathNet budget can absorb at least one more billable
@@ -206,65 +223,89 @@ pub async fn search(
         url.push_str("&search_id=");
         url.push_str(&crate::util::http::urlencode(&sid));
     }
-    let body = CLIENT.get(&url, key).await?;
-    // Retain the paid response verbatim BEFORE parsing/extraction — operator
-    // policy: purchased data is kept in absolute completeness until manually
-    // deleted (see `util::raw_archive`). The endpoint label is the last two
-    // path segments (e.g. `/service/v2/breach/search` → `breach-search`) and the
-    // query is the looked-up value, so the saved filename names exactly what was
-    // queried. The archive skips empty bodies on its own.
-    let trimmed = path.trim_matches('/');
-    let mut segs = trimmed.rsplit('/').take(2);
-    let endpoint_label = match (segs.next(), segs.next()) {
-        (Some(b), Some(a)) => format!("{a}-{b}"),
-        (Some(b), None) => b.to_owned(),
-        _ => trimmed.to_owned(),
-    };
-    crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
-    // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
-    // which false-positives on legitimate metadata fields like `session_quota`
-    // and `recommended_quota`. Match only true exhaustion signals.
-    // Detect quota exhaustion from STRUCTURALLY-SCOPED signals only. The former
-    // bare-phrase checks ("limit exceeded"/"Daily quota exceeded"/"quota exceeded")
-    // substring-matched the whole body, so a breach record whose free-text field
-    // contained one of those phrases both discarded the entire page AND latched the
-    // daily-quota kill for the rest of the scan. The `"left_today":0` JSON key/value
-    // is specific enough not to collide with payload text, and a genuine 429 is
-    // handled from the parsed envelope below.
-    if body.contains("\"left_today\":0") || body.contains("\"is_unlimited\":false,\"left_today\":0")
-    {
-        mark_quota_exhausted();
-        return Ok(Vec::new());
-    }
-    let env: Envelope =
-        serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
-    if !env.success {
-        if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
-            // Negative-cache the clean miss so subsequent scans of the same
-            // dead target don't re-spend an OathNet lookup confirming it's
-            // still empty. The cache is per-process so this only affects
-            // within-session re-queries.
-            cache_put(ck, &[]);
-            return Ok(Vec::new());
-        }
-        if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
+    // A genuine 429 is a transient burst rate-limit — the key still has
+    // credits, the request was simply too fast — DISTINCT from true
+    // exhaustion (`"left_today":0`). Diagnosed as a real bug: a 429 used to
+    // be classified identically to true exhaustion, immediately latching
+    // `mark_quota_exhausted()` and abandoning OathNet for the rest of the
+    // scan with zero backoff. Retry with exponential backoff instead; only
+    // latch exhaustion if backoff attempts run out, so a persistent 429
+    // still degrades exactly as before rather than retrying forever.
+    let mut attempt = 0u32;
+    loop {
+        let body = CLIENT.get(&url, key).await?;
+        // Retain the paid response verbatim BEFORE parsing/extraction — operator
+        // policy: purchased data is kept in absolute completeness until manually
+        // deleted (see `util::raw_archive`). The endpoint label is the last two
+        // path segments (e.g. `/service/v2/breach/search` → `breach-search`) and the
+        // query is the looked-up value, so the saved filename names exactly what was
+        // queried. The archive skips empty bodies on its own.
+        let trimmed = path.trim_matches('/');
+        let mut segs = trimmed.rsplit('/').take(2);
+        let endpoint_label = match (segs.next(), segs.next()) {
+            (Some(b), Some(a)) => format!("{a}-{b}"),
+            (Some(b), None) => b.to_owned(),
+            _ => trimmed.to_owned(),
+        };
+        crate::util::raw_archive::record("oathnet", &endpoint_label, value, &body);
+        // Detect actual quota exhaustion. Earlier check used `body.contains("quota")`
+        // which false-positives on legitimate metadata fields like `session_quota`
+        // and `recommended_quota`. Match only true exhaustion signals.
+        // Detect quota exhaustion from STRUCTURALLY-SCOPED signals only. The former
+        // bare-phrase checks ("limit exceeded"/"Daily quota exceeded"/"quota exceeded")
+        // substring-matched the whole body, so a breach record whose free-text field
+        // contained one of those phrases both discarded the entire page AND latched the
+        // daily-quota kill for the rest of the scan. The `"left_today":0` JSON key/value
+        // is specific enough not to collide with payload text, and a genuine 429 is
+        // handled from the parsed envelope below.
+        if body.contains("\"left_today\":0")
+            || body.contains("\"is_unlimited\":false,\"left_today\":0")
+        {
             mark_quota_exhausted();
             return Ok(Vec::new());
         }
-        return Err(Error::module("oathnet", "API returned success=false"));
-    }
-    let data = match env.data {
-        Some(d) => d,
-        // Negative-cache empty data envelopes too.
-        None => {
-            cache_put(ck, &[]);
-            return Ok(Vec::new());
+        let env: Envelope =
+            serde_json::from_str(&body).map_err(|e| Error::module("oathnet", e.to_string()))?;
+        if !env.success {
+            if env.errors.as_ref().and_then(|e| e.status_code) == Some(404) {
+                // Negative-cache the clean miss so subsequent scans of the same
+                // dead target don't re-spend an OathNet lookup confirming it's
+                // still empty. The cache is per-process so this only affects
+                // within-session re-queries.
+                cache_put(ck, &[]);
+                return Ok(Vec::new());
+            }
+            if env.errors.as_ref().and_then(|e| e.status_code) == Some(429) {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    mark_quota_exhausted();
+                    return Ok(Vec::new());
+                }
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "oathnet 429 rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+                continue;
+            }
+            return Err(Error::module("oathnet", "API returned success=false"));
         }
-    };
-    let sd: SearchData =
-        serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
-    cache_put(ck, &sd.items);
-    Ok(sd.items)
+        let data = match env.data {
+            Some(d) => d,
+            // Negative-cache empty data envelopes too.
+            None => {
+                cache_put(ck, &[]);
+                return Ok(Vec::new());
+            }
+        };
+        let sd: SearchData =
+            serde_json::from_value(data).map_err(|e| Error::module("oathnet", e.to_string()))?;
+        cache_put(ck, &sd.items);
+        return Ok(sd.items);
+    }
 }
 
 /// Extract a string field from a JSON Value.

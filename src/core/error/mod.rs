@@ -23,6 +23,16 @@ pub enum Error {
     MissingKey(String),
     #[error("[{module}] {message}")]
     Module { module: String, message: String },
+    /// A transient rate-limit response (a burst throttle, NOT exhausted
+    /// quota/credits) from a paid API client — distinct so a retry loop can
+    /// back off and retry (`util::backoff::BackoffPolicy`) instead of
+    /// treating it as a hard failure or a permanent quota-exhausted latch.
+    /// Diagnosed against a real bug: `util::see_know`/`util::oathnet`
+    /// previously classified a rate-limit response identically to true daily
+    /// quota exhaustion, silently abandoning the provider for the rest of
+    /// the scan with zero backoff.
+    #[error("rate limited: {0}")]
+    RateLimited(String),
     #[error("{0}")]
     Other(String),
 }

@@ -2,10 +2,21 @@
 
 use serde_json::Value;
 
-use crate::core::error::Result;
+use crate::core::error::{Error, Result};
+use crate::util::backoff::BackoffPolicy;
 
 use super::budget::{budget_try_increment, is_key_invalid};
 use super::client::{base_url, cache_get, cache_put, get_json, post_json, typed_cache_key};
+
+/// Retry pacing for a transient see-know.eu rate-limit response
+/// (`Error::RateLimited`, distinct from true quota exhaustion — see
+/// `client::Terminal::RateLimited`'s doc comment). 3 attempts (the initial
+/// call plus 2 retries), doubling 2s → 4s, capped at 8s, jittered so several
+/// concurrently-dispatched endpoint calls that all get rate-limited at once
+/// don't all retry in lockstep. These are the same figures a prior,
+/// never-wired `RETRY_STRATEGY` constant in `orchestration.rs` already
+/// specified — reused here now that they have a real, live call site.
+const RATE_LIMIT_BACKOFF: BackoffPolicy = BackoffPolicy::new(3, 2_000, 8_000, true);
 
 /// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
@@ -58,13 +69,20 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     } else {
         format!("search-{query_type}")
     };
-    // The name/auto `/search` path intermittently returns `total:0` even when
-    // the record exists (server-side cap races). Retry once on a transient
-    // empty before giving up. `cache_put` already refuses to memoise an empty
-    // result, so a transient miss can never poison later lookups of this query.
-    const MAX_ATTEMPTS: u32 = 2;
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
+    // Two independent, differently-paced retry classes share this loop:
+    //  - a transient EMPTY result (server-side cap race on the name/auto path)
+    //    → retry once immediately, no delay. `cache_put` already refuses to
+    //    memoise an empty result, so a transient miss can never poison later
+    //    lookups of this query.
+    //  - a transient RATE-LIMIT response (`Error::RateLimited`, distinct from
+    //    true quota exhaustion — see `client::Terminal::RateLimited`) → retry
+    //    with exponential backoff (`RATE_LIMIT_BACKOFF`) instead of giving up
+    //    immediately, which is what happened before this was diagnosed: a
+    //    burst throttle used to latch the shared budget and silently abandon
+    //    SeekNow for the rest of the scan.
+    const EMPTY_RETRY_ATTEMPTS: u32 = 2;
+    let mut attempt = 0u32;
+    loop {
         match post_json(&url, key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
@@ -72,23 +90,43 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
                     cache_put(ck, items.clone());
                     return Ok(items);
                 }
-                // Transient empty: not cached. Retry if attempts remain.
+                attempt += 1;
+                if attempt >= EMPTY_RETRY_ATTEMPTS {
+                    // Every attempt came back empty — an uncached genuine miss.
+                    return Ok(Vec::new());
+                }
+                tracing::debug!(
+                    query_type,
+                    attempt,
+                    "see_know /search returned empty — retrying once"
+                );
             }
-            Err(e) => last_err = Some(e),
+            Err(Error::RateLimited(msg)) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(Error::RateLimited(msg));
+                }
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    query_type,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know /search rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= EMPTY_RETRY_ATTEMPTS {
+                    return Err(e);
+                }
+                tracing::debug!(
+                    query_type,
+                    attempt,
+                    "see_know /search errored — retrying once"
+                );
+            }
         }
-        if attempt + 1 < MAX_ATTEMPTS {
-            tracing::debug!(
-                query_type,
-                attempt = attempt + 1,
-                "see_know /search returned empty or errored — retrying once"
-            );
-        }
-    }
-    // Both attempts empty/errored. Surface the error (so the curl exit code
-    // reaches the logs) if we have one; otherwise an uncached empty vec.
-    match last_err {
-        Some(e) => Err(e),
-        None => Ok(Vec::new()),
     }
 }
 
@@ -155,30 +193,44 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // returns empty for a given seed, and retrying those would double scan
     // wall-time for no gain. `cache_put` already refuses to memoise an empty
     // result, so a genuine miss never poisons a later lookup.
-    const MAX_ATTEMPTS: u32 = 2;
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
+    //
+    // A `RateLimited` error is paced separately (`RATE_LIMIT_BACKOFF`,
+    // distinct from true quota exhaustion — see `client::Terminal::
+    // RateLimited`): previously this response was classified identically to
+    // exhausted credits, latching the shared budget and silently abandoning
+    // SeekNow for every remaining endpoint call in the scan with zero
+    // backoff or retry.
+    const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
+    let mut attempt = 0u32;
+    loop {
         match get_json(&url, key, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 cache_put(ck.clone(), items.clone());
                 return Ok(items);
             }
-            Err(e) => {
-                if attempt + 1 < MAX_ATTEMPTS {
-                    tracing::debug!(
-                        path,
-                        attempt = attempt + 1,
-                        "see_know GET errored — retrying once"
-                    );
+            Err(Error::RateLimited(msg)) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(Error::RateLimited(msg));
                 }
-                last_err = Some(e);
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know GET rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= TRANSPORT_RETRY_ATTEMPTS {
+                    return Err(e);
+                }
+                tracing::debug!(path, attempt, "see_know GET errored — retrying once");
             }
         }
-    }
-    match last_err {
-        Some(e) => Err(e),
-        None => Ok(Vec::new()),
     }
 }
 

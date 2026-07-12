@@ -1681,6 +1681,89 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   against every registered platform). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite (lib + integration + doc tests) 0
   failures. **P1 closed.**
+- **`[x]` T2.44 · SeekNow/OathNet silently served stale cross-scan data, and a
+  transient rate-limit was misclassified as permanent quota exhaustion** —
+  investigated on an explicit operator report ("HSE... utilises old data even
+  when it isn't meant to" / "diagnose the Seek API['s]... frequency... before
+  requiring a break like an exponential back off"). Two independent, real
+  bugs, both in the shared paid-API client layer:
+  **(a) Stale cross-scan cache.** `util::oathnet`/`util::see_know` each keep a
+  `RESPONSE_CACHE` (`util::response_cache::ResponseCache`) that dedups
+  identical `(path, field/type, value)` queries **within one scan** — its own
+  doc comment says so. But `reset_budget()` (called once at the start of
+  every scan, specifically so `hse serve`/`hse live` — long-lived processes —
+  get a fresh state each scan; `oathnet::reset_budget`'s own doc comment says
+  exactly this) only ever reset the quota counters, never the cache. Under a
+  long-lived process, re-scanning the same email/username/phone/domain any
+  time later silently returned the FIRST scan's cached breach/stealer
+  records, with zero live re-check, no staleness indication, and no operator
+  control to force a refresh — for the two highest-value paid modules. **P1**
+  (evidentiary-integrity: this is exactly the "old data" the operator
+  observed, on the two modules operators most rely on for "did anything new
+  leak").
+  **(b) Rate-limit conflated with quota exhaustion, zero backoff.** SeekNow's
+  `{"error":"rate_limit"}` and OathNet's HTTP 429 — both transient
+  burst-throttle signals, NOT exhausted credits — were classified identically
+  to true daily-quota exhaustion (`credits_exhausted`/`"left_today":0`),
+  immediately latching the shared per-scan budget flag for the REST of the
+  scan. Every remaining endpoint call for that provider (often dozens) then
+  short-circuited via the budget gate with zero HTTP call, zero retry, zero
+  backoff — a single burst-limited response silently disabled the provider
+  for the rest of the scan. A `RetryStrategy`/`FallbackBehavior::
+  RetryWithBackoff` construct already existed in `util::see_know::
+  orchestration` with sensible-looking parameters, but was **entirely dead
+  code** — confirmed via a repo-wide grep for `orchestration::`, `monitoring::`,
+  and `force_multiplier::` outside their own files: zero call sites for any
+  of the ~1,135 lines across `orchestration.rs`/`monitoring.rs`/
+  `force_multiplier.rs`. **P2** (throughput/coverage: no backoff means a
+  scan that hits a burst limit gets materially less SeekNow/OathNet data than
+  the operator's quota actually allows).
+  → **Solution:** (a) `reset_budget()` for both providers now also clears
+  their `RESPONSE_CACHE`. (b) New `util::backoff::BackoffPolicy` — a generic,
+  pure, fully unit-tested exponential-backoff-with-jitter primitive (no new
+  `rand` dependency; jitter sourced from a freshly-constructed
+  `std::collections::hash_map::RandomState`, whose keys randomise per
+  construction) — reusing the SAME numeric parameters (3 attempts, 2s→4s→8s,
+  jittered) the dead `RETRY_STRATEGY` constant already specified, now with a
+  real, live call site. New `Error::RateLimited` variant lets a retry loop
+  distinguish "back off and retry" from a hard failure. `see_know::client`'s
+  `Terminal` enum splits `RateLimited` out from `Quota`; `search()`/
+  `get_path()` back off and retry (bounded) instead of giving up instantly;
+  `oathnet::search()` gained the same treatment for a genuine 429 (it had no
+  retry loop at all before). A persistent rate-limit still degrades to the
+  same quota-exhausted latch as before once backoff attempts run out — no
+  infinite retrying. Also reconciled 3 stale quota-figure doc comments
+  (`src/modules/see_know/mod.rs`, `src/modules/see_know/endpoints/mod.rs`)
+  that quoted "5,000-daily, 160/scan" / "300/scan, 4,500/session" against the
+  actual `enterprise_config.rs` figures (15,000-daily, 300→750/scan dynamic,
+  100,000/session).
+  *Explicitly NOT done this cycle, flagged for a future decision:* the
+  ~1,135 dead lines across `orchestration.rs`/`monitoring.rs`/
+  `force_multiplier.rs` were left untouched — genuinely wiring in an entire
+  execution-planning/monitoring/force-multiplier-cascade layer (or safely
+  deleting it) is a substantial, separate decision, not a mechanical slice of
+  this fix.
+  *Separately investigated, no bug found:* "why HSE fails to use the full
+  spectrum of modules" — every module-skip path in
+  `core::engine::dispatch::module_skip_reason` is deliberate and disclosed
+  via `ModuleSkipped` events (allowlist/exclude, `--free-only`, category
+  focus, the SSRF preflight, etc.); no hidden module-count cap or silent
+  truncation exists. Two real but INTENTIONAL footguns worth naming: the
+  circuit breaker (`core::engine::circuit`) is process-global by design, so a
+  rate-limit hit by one scan can suspend that module for other
+  concurrent/subsequent scans under `hse serve`/`hse live`; `hse config
+  module.<name> off` persists to disk with no expiry. Neither is a defect —
+  both are already documented behaviour — so neither was changed.
+  10 new regression tests: 2 (`reset_budget_clears_the_cross_module_
+  response_cache`, one per provider) confirmed via `git stash` to fail
+  pre-fix; 7 pure `util::backoff` tests; 2 SeekNow classification tests
+  (`parse_response_treats_rate_limit_as_retryable_not_quota_exhausted`,
+  confirmed via `git stash` to fail pre-fix, plus a sibling proving true
+  exhaustion still latches correctly) — 11 total. `oathnet::search()`'s live
+  retry loop itself is not independently unit-tested (no mockable transport
+  exists for the curl-subprocess client, consistent with its pre-existing,
+  already-untested coverage). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4601 lib tests, +11).
 
 ---
 
@@ -6754,3 +6837,30 @@ way, so this specific drift class can't recur silently again.
   text (108) and pass against the fix (109). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (31 architecture tests,
   +1). Also updates the § "Docs" catch-all bullet above with this finding.
+- **2026-07-12** — **T2.44: SeekNow/OathNet stale cross-scan cache +
+  rate-limit-vs-quota-exhaustion conflation, fixed — direct response to an
+  operator-reported diagnostic request.** `RESPONSE_CACHE` (both providers)
+  dedups within-scan, but `reset_budget()` never cleared it, so a long-lived
+  `hse serve`/`hse live` process silently kept returning the FIRST scan's
+  cached breach records for every later re-scan, indefinitely. Separately, a
+  transient rate-limit (SeekNow `rate_limit`, OathNet 429) was classified
+  identically to true quota exhaustion, permanently latching the shared
+  budget for the rest of the scan with zero backoff — a `RetryStrategy`
+  construct already existed in `orchestration.rs` with sensible parameters
+  but was entirely dead code (confirmed via repo-wide grep: zero call sites
+  across ~1,135 lines of `orchestration.rs`/`monitoring.rs`/
+  `force_multiplier.rs`). Fixed: `reset_budget()` now clears the cache for
+  both providers; new `util::backoff::BackoffPolicy` (generic, pure, no new
+  `rand` dependency) + a new `Error::RateLimited` variant let both clients'
+  retry loops back off and retry a transient rate-limit instead of giving
+  up instantly, reusing the dead `RETRY_STRATEGY`'s own numbers now that
+  they have a real call site. Also reconciled 3 stale quota-figure doc
+  comments. Separately investigated and found NO bug in module dispatch
+  ("full spectrum of modules") — every skip path is deliberate and
+  disclosed; two intentional footguns named (process-global circuit
+  breaker, persistent module toggle) but not changed. 11 new regression
+  tests, 2 confirmed via `git stash` to fail pre-fix (cache-clear), 2 more
+  confirmed via `git stash` (rate-limit classification). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4601 lib
+  tests, +11). **Paired:** `SOLUTION_TREE` SOL-STALE-CACHE-BACKOFF (new
+  node), §5 — same commit.

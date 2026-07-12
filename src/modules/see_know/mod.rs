@@ -1,6 +1,8 @@
 //! SeekNow (see-know.eu) — parallel breach + stealer + OSINT pool.
 //!
-//! Direct OathNet competitor with its own 5,000-lookup daily quota.
+//! Direct OathNet competitor with its own 15,000-lookup daily quota
+//! (`util::see_know::enterprise_config::ENTERPRISE` — the single source of
+//! truth for this and every other quota figure quoted in this file).
 //! Runs alongside oathnet_pro so each scan effectively gets 2 parallel
 //! Multiplier-tier pools (separate quotas, overlapping but distinct
 //! data corpora — combining them maximises coverage).
@@ -29,7 +31,9 @@
 //! username-history aggregation, and cross-platform ID resolution. See the
 //! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
 //!
-//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 160).
+//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 300,
+//! dynamically scaled up to 750 after the per-scan `/credits` probe —
+//! `clamp(daily_limit / 20, 300, 2500)`; session ceiling 100,000).
 //! Discovered credentials feed the same key-harvest pipeline as oathnet_pro
 //! — extract_api_keys_from_item recognises the same 80+ prefix patterns.
 

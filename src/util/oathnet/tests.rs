@@ -36,6 +36,27 @@ use super::*;
     }
 
     #[test]
+    fn reset_budget_clears_the_cross_module_response_cache() {
+        // Regression: RESPONSE_CACHE dedups identical queries WITHIN one scan
+        // (its own doc comment), but reset_budget() previously only reset the
+        // quota counters -- a long-lived `hse serve`/`hse live` process would
+        // silently keep serving the FIRST scan's cached breach records for
+        // every later re-scan of the same value, forever, with no live
+        // re-check. reset_budget() must also clear the cache.
+        let key = "reset_budget_clears_cache_test_key";
+        cache_put(key.to_string(), &[json!({"stale": true})]);
+        assert!(
+            cache_get(key).is_some(),
+            "sanity: the cache must actually hold the value before reset"
+        );
+        reset_budget();
+        assert!(
+            cache_get(key).is_none(),
+            "reset_budget() must clear RESPONSE_CACHE so a new scan re-queries live"
+        );
+    }
+
+    #[test]
     fn val_str_extracts_string_field() {
         let v = json!({"name": "alice", "age": 30});
         assert_eq!(val_str(&v, "name"), Some("alice".to_string()));

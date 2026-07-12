@@ -74,6 +74,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **SeekNow and OathNet no longer silently serve stale cross-scan breach
+  data.** Both providers' response cache dedups identical queries within
+  one scan, but the per-scan reset never cleared it — a long-lived `hse
+  serve`/`hse live` process would silently keep returning the FIRST scan's
+  cached breach/stealer records for every later re-scan of the same
+  email/username/phone/domain, indefinitely, with no live re-check.
+- **SeekNow and OathNet now back off and retry on a transient rate-limit
+  instead of abandoning the provider for the rest of the scan.** A
+  burst-throttle response (SeekNow's `rate_limit`, OathNet's HTTP 429) was
+  previously classified identically to true daily-quota exhaustion,
+  permanently latching the shared budget with zero retry. New generic
+  `util::backoff::BackoffPolicy` (exponential backoff with jitter, no new
+  dependency) gives both clients real retry pacing (3 attempts, 2s→4s→8s)
+  before falling back to the same graceful degradation as before.
 - **README's "Deterministic correlator: N rules" count was stale (108,
   should be 109) and is now guarded against recurring.** New `core::
   correlator::rule_counts()` accessor plus an architecture test

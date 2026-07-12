@@ -122,8 +122,18 @@ pub(super) fn is_auth_error(body: &str) -> bool {
 enum Terminal {
     /// The key itself is rejected (`invalid_api_key` / `plan_required`).
     Auth,
-    /// The key is fine but its quota/credits are spent.
+    /// The key is fine but its quota/credits are spent for the rest of the
+    /// day — retrying can't help until the next billing period, so this
+    /// latches [`mark_quota_exhausted`] and the scan gives up on SeekNow.
     Quota,
+    /// A transient burst-rate-limit (`{"error":"rate_limit"}`) — DISTINCT
+    /// from [`Terminal::Quota`]: the key still has credits, the request was
+    /// simply too fast. Diagnosed as a real bug: this used to be classified
+    /// identically to true quota exhaustion, so one 429-shaped response
+    /// permanently latched the budget and silently abandoned SeekNow for the
+    /// rest of the scan (every remaining endpoint call, often dozens) with
+    /// zero backoff or retry. Callers should back off and retry instead.
+    RateLimited,
 }
 
 /// True if either `credits_remaining` meter (top-level, or nested under `data`)
@@ -133,23 +143,31 @@ fn credits_exhausted(v: &Value) -> bool {
     zero(v) || v.get("data").is_some_and(zero)
 }
 
-/// Classify a PARSED see-know response for a terminal auth/quota condition,
-/// scoped to the top-level `error`/`message` envelope strings and the
-/// `credits_remaining` meter. Deliberately does NOT scan the data payload: a
-/// breach/stealer record whose captured content happens to contain a marker like
-/// `invalid_api_key` (routine in leaked config blobs) must never be mistaken for a
-/// provider-level failure — the previous whole-body substring scan did exactly
-/// that, silently disabling the provider for the whole scan on a single record.
+/// Classify a PARSED see-know response for a terminal auth/quota/rate-limit
+/// condition, scoped to the top-level `error`/`message` envelope strings and
+/// the `credits_remaining` meter. Deliberately does NOT scan the data
+/// payload: a breach/stealer record whose captured content happens to
+/// contain a marker like `invalid_api_key` (routine in leaked config blobs)
+/// must never be mistaken for a provider-level failure — the previous
+/// whole-body substring scan did exactly that, silently disabling the
+/// provider for the whole scan on a single record.
+///
+/// `rate_limit` is intentionally its OWN [`Terminal::RateLimited`] variant,
+/// not folded into [`Terminal::Quota`]: a burst rate-limit means "the key
+/// still has credits, slow down," which is recoverable within the same scan
+/// via backoff — unlike true exhaustion (`credits_exhausted` /
+/// `quota_exceeded` / `daily limit reached`), which cannot recover until the
+/// next billing period.
 fn classify_terminal(v: &Value) -> Option<Terminal> {
     let err = v.get("error").and_then(Value::as_str).unwrap_or_default();
     let msg = v.get("message").and_then(Value::as_str).unwrap_or_default();
     if is_auth_error(err) || is_auth_error(msg) {
         return Some(Terminal::Auth);
     }
-    if credits_exhausted(v)
-        || err == "rate_limit"
-        || err.contains("quota_exceeded")
-        || msg.contains("daily limit reached")
+    if err == "rate_limit" {
+        return Some(Terminal::RateLimited);
+    }
+    if credits_exhausted(v) || err.contains("quota_exceeded") || msg.contains("daily limit reached")
     {
         return Some(Terminal::Quota);
     }
@@ -191,6 +209,14 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
             mark_quota_exhausted();
             Ok(Value::Null)
         }
+        // Surfaced as an `Err` (not `Ok(Value::Null)`) so the retry loops in
+        // `endpoints.rs` can distinguish "back off and retry" from a normal
+        // empty result — see `Terminal::RateLimited`'s doc comment for why
+        // this must NOT latch `mark_quota_exhausted()`.
+        Some(Terminal::RateLimited) => Err(Error::RateLimited(format!(
+            "seek_now: {}",
+            body.chars().take(120).collect::<String>()
+        ))),
         None => Ok(value),
     }
 }

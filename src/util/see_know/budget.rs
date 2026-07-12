@@ -146,6 +146,13 @@ pub fn reset_budget() {
     KEY_INVALID.store(false, Ordering::Relaxed);
     // Allow the quota probe to fire again on the next scan.
     QUOTA_PROBED.store(false, Ordering::Relaxed);
+    // Clear the cross-module response cache: it dedups identical endpoint
+    // queries WITHIN one scan (see `client::RESPONSE_CACHE`'s own doc
+    // comment), but with no scan-boundary reset a long-lived `hse serve` /
+    // `hse live` process would silently keep returning the first scan's
+    // cached SeekNow records for every later re-scan of the same
+    // email/username/phone, indefinitely, with no live re-check.
+    super::client::RESPONSE_CACHE.clear();
 }
 
 /// Refresh SeekNow's per-round budget at each expansion-round boundary so it is

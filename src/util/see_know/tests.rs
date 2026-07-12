@@ -1,7 +1,8 @@
 use serde_json::json;
 
 use super::budget::{
-    budget_increment, budget_snapshot, reset_budget, scan_budget_remaining, set_scan_cap_override,
+    budget_increment, budget_snapshot, is_quota_exhausted, reset_budget, scan_budget_remaining,
+    set_scan_cap_override,
 };
 use super::client::{
     CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
@@ -35,6 +36,28 @@ fn client_timeout_budget_exceeds_name_search_server_cap() {
 #[test]
 fn resolve_key_uses_provided_when_non_empty() {
     assert_eq!(resolve_key(Some("my-key")), "my-key");
+}
+
+#[test]
+fn reset_budget_clears_the_cross_module_response_cache() {
+    // Regression: RESPONSE_CACHE dedups identical endpoint queries WITHIN one
+    // scan (its own doc comment), but reset_budget() previously only reset
+    // the quota counters and the key-invalid/quota-probed latches -- a
+    // long-lived `hse serve`/`hse live` process would silently keep serving
+    // the FIRST scan's cached SeekNow records for every later re-scan of the
+    // same email/username/phone, forever, with no live re-check.
+    // reset_budget() must also clear the cache.
+    let key = "reset_budget_clears_cache_test_key";
+    cache_put(key.to_string(), vec![json!({"stale": true})]);
+    assert!(
+        cache_get(key).is_some(),
+        "sanity: the cache must actually hold the value before reset"
+    );
+    reset_budget();
+    assert!(
+        cache_get(key).is_none(),
+        "reset_budget() must clear RESPONSE_CACHE so a new scan re-queries live"
+    );
 }
 
 #[test]
@@ -411,6 +434,44 @@ fn parse_response_ignores_auth_marker_inside_data_payload() {
         "a record containing 'invalid_api_key' must survive, not be read as auth failure"
     );
     assert_eq!(v["total"], 1);
+}
+
+#[test]
+fn parse_response_treats_rate_limit_as_retryable_not_quota_exhausted() {
+    // Regression: a transient burst rate-limit (`{"error":"rate_limit"}`) used
+    // to be classified identically to true daily-quota exhaustion, latching
+    // `mark_quota_exhausted()` and silently abandoning SeekNow for every
+    // remaining endpoint call in the scan (with no backoff at all). It must
+    // now surface as a distinguishable `Error::RateLimited` and must NOT
+    // latch the quota-exhausted flag — a burst throttle is recoverable
+    // within the same scan via backoff, unlike real exhaustion.
+    reset_budget();
+    let err = parse_response(r#"{"error":"rate_limit","message":"slow down"}"#)
+        .expect_err("a rate-limit body must surface as an Err, not Ok(Null)");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "must classify as RateLimited, not a generic error: {err:?}"
+    );
+    assert!(
+        !is_quota_exhausted(),
+        "a transient rate-limit must NOT latch true quota exhaustion"
+    );
+    reset_budget();
+}
+
+#[test]
+fn parse_response_still_treats_true_exhaustion_as_quota_not_rate_limited() {
+    // Sibling regression: real exhaustion signals must keep latching
+    // mark_quota_exhausted() exactly as before — only bare "rate_limit" is
+    // the new, distinct, retryable case.
+    reset_budget();
+    let v = parse_response(r#"{"error":"quota_exceeded"}"#).expect("quota exhaustion is Ok(Null)");
+    assert!(v.is_null());
+    assert!(
+        is_quota_exhausted(),
+        "true exhaustion must still latch the quota-exhausted flag"
+    );
+    reset_budget();
 }
 
 #[test]
