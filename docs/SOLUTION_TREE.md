@@ -441,6 +441,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   wrongly fire reconstructed-DOB timeline events off arbitrary third-party
   breach dumps). 2 new regression tests, confirmed via `git stash` to fail
   against the pre-fix `exposure` module and pass against the fix.
+  *Delivered (2026-07-12) — a sibling drift found while closing the above:*
+  `core::exposure`'s Financial flag (`FINANCIAL_KEYS`) only recognised the
+  bare `bank_account` spelling; AU-104's own `BANK_ACCOUNT_KEYS` in
+  `breach_pii` has 4 more (`account_number`/`account_no`/`acct_number`/
+  `acct_no`) that were never mirrored. `BANK_ACCOUNT_KEYS` promoted to
+  `pub(crate)`; `exposure` now checks it directly alongside its own
+  remaining `iban`/`card_number` literals, which correctly stay separate
+  (AU-104 is BSB/domestic-account-number scoped, no card/IBAN concept at
+  all). 1 new regression test, confirmed via `git stash` to fail pre-fix and
+  pass post-fix.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -4712,3 +4722,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   pre-fix and pass post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures. Paired: `PROBLEM_TREE` C1, §8 — same
   commit.
+- **2026-07-12** — **SOL-CORR extended again: a sibling drift in
+  `exposure`'s Financial flag, found while closing the DOB/gov-ID cycle
+  above.** `FINANCIAL_KEYS` only recognised the bare `bank_account`
+  spelling; AU-104's own `BANK_ACCOUNT_KEYS` in `breach_pii` has 4 more
+  (`account_number`/`account_no`/`acct_number`/`acct_no`) that were never
+  mirrored, silently undercounting the exposure score for a breach record
+  using one of them. `BANK_ACCOUNT_KEYS` promoted to `pub(crate)`;
+  `exposure` now checks it directly, keeping only its own `iban`/
+  `card_number` literals (no `breach_pii` equivalent — AU-104 is BSB/
+  domestic-account-number scoped). 1 new regression test, confirmed via
+  `git stash` to fail pre-fix and pass post-fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4583 lib tests, +1).
+  Paired: `PROBLEM_TREE` C1, §8 — same commit.

@@ -1206,8 +1206,12 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
 const BSB_KEYS: &[&str] = &["bsb", "bank_state_branch", "bsb_number", "bank_bsb"];
 
 /// Breach field keys that carry a bank account number (co-occurrence escalates a
-/// BSB exposure to a full, directly-abusable account credential).
-const BANK_ACCOUNT_KEYS: &[&str] = &[
+/// BSB exposure to a full, directly-abusable account credential). Also the
+/// canonical bank-account-number vocabulary `core::exposure`'s Financial
+/// component single-sources for its "bank_account" concept (see that module's
+/// doc comment) — `card_number`/`iban` have no equivalent here and stay as
+/// `exposure`'s own literals; only the bank-account-number spellings overlap.
+pub(crate) const BANK_ACCOUNT_KEYS: &[&str] = &[
     "account_number",
     "bank_account",
     "account_no",

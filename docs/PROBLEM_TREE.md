@@ -1806,6 +1806,19 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   pursued this cycle to avoid scope creep into the import/parsing layer; both
   are legitimate candidates for a FUTURE cycle that scopes the prerequisite
   change as its own step first.
+  *Delivered (2026-07-12) — a second single-sourcing drift found while
+  finishing the DOB/gov-ID unification above:* `core::exposure`'s Financial
+  flag (`FINANCIAL_KEYS`) only recognised the bare `bank_account` spelling —
+  AU-104's own `BANK_ACCOUNT_KEYS` in `breach_pii` has 4 more
+  (`account_number`/`account_no`/`acct_number`/`acct_no`) that were never
+  mirrored, silently undercounting the exposure score for a breach record
+  using one of them. `BANK_ACCOUNT_KEYS` promoted to `pub(crate)`;
+  `exposure` now checks it alongside its own remaining `iban`/`card_number`
+  literals, which have no `breach_pii` equivalent (AU-104 is BSB/domestic-
+  account-number scoped, not card/IBAN) and correctly stay separate. 1 new
+  regression test, confirmed via `git stash` to fail pre-fix and pass
+  post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures. **Paired:** `SOLUTION_TREE` SOL-CORR extended, §5 — same commit.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -6550,3 +6563,16 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   the unfixed module and pass against the fix. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-CORR extended, §5 — same commit.
+- **2026-07-12** — **C1: single-sourced a second, sibling drift found while
+  closing out the DOB/gov-ID cycle above — `core::exposure`'s Financial flag
+  only recognised the bare `bank_account` spelling.** AU-104's own
+  `BANK_ACCOUNT_KEYS` in `breach_pii` carries 4 more spellings
+  (`account_number`/`account_no`/`acct_number`/`acct_no`) that were never
+  mirrored, silently undercounting the exposure score for a breach record
+  using one of them. `BANK_ACCOUNT_KEYS` promoted to `pub(crate)`;
+  `exposure` now checks it directly alongside its own remaining
+  `iban`/`card_number` literals, which correctly stay separate (AU-104 has
+  no card/IBAN concept at all). 1 new regression test, confirmed via `git
+  stash` to fail pre-fix and pass post-fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4583 lib tests, +1).
+  **Paired:** `SOLUTION_TREE` SOL-CORR extended, §5 — same commit.

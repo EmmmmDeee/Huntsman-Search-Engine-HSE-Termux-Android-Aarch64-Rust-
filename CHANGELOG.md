@@ -55,6 +55,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`core::exposure`'s Financial disclosure flag no longer scores from a
+  drifted, narrower copy of the bank-account-number evidence-attribute-key
+  vocabulary.** `FINANCIAL_KEYS` only recognised the bare `bank_account`
+  spelling; AU-104's own `BANK_ACCOUNT_KEYS` in
+  `core::correlator::rules::breach_pii` carries 4 more
+  (`account_number`/`account_no`/`acct_number`/`acct_no`) that were never
+  mirrored, silently undercounting the score for a breach record using one
+  of them. `BANK_ACCOUNT_KEYS` is now `pub(crate)` and `exposure` checks it
+  directly, keeping only its own `iban`/`card_number` literals (AU-104 has
+  no card/IBAN concept, so those correctly stay separate).
 - **`core::exposure`'s Sensitive-PII component no longer scores from a
   drifted, narrower copy of the DOB/government-ID evidence-attribute-key
   vocabularies.** `DOB_KEYS`/`GOV_ID_KEYS` had silently narrowed to 3 of 9 DOB

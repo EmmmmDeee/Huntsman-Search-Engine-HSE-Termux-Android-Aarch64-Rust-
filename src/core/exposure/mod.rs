@@ -46,8 +46,16 @@ const MAX_CORRELATION: u8 = 15;
 /// exposure score for a breach record naming e.g. `tax_file_number` or
 /// `date_birth` (OathNet/SeekNow's own DOB field name — a major breach source)
 /// instead of the one spelling each list used to know about.
-use crate::core::correlator::rules::breach_pii::{DOB_KEYS, GOV_IDS};
-const FINANCIAL_KEYS: &[&str] = &["iban", "bank_account", "card_number"];
+use crate::core::correlator::rules::breach_pii::{BANK_ACCOUNT_KEYS, DOB_KEYS, GOV_IDS};
+
+/// Financial evidence-attribute keys. The bank-account-number spellings are
+/// single-sourced from `breach_pii::BANK_ACCOUNT_KEYS` (AU-104's own canonical
+/// list) for the same reason as `DOB_KEYS`/`GOV_IDS` above — a prior local
+/// copy here only recognised the bare `bank_account` spelling and silently
+/// missed `account_number`/`account_no`/`acct_number`/`acct_no`. `iban` and
+/// `card_number` have no `breach_pii` equivalent (AU-104 is BSB/domestic-
+/// account-number scoped) and stay as this module's own literals.
+const FINANCIAL_KEYS: &[&str] = &["iban", "card_number"];
 
 /// Qualitative band for the headline number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -217,7 +225,8 @@ fn sensitive_component(confirmed: &[&Entity]) -> ExposureComponent {
                 let kl = k.to_ascii_lowercase();
                 gov |= GOV_IDS.iter().any(|g| g.keys.contains(&kl.as_str()));
                 dob |= DOB_KEYS.contains(&kl.as_str());
-                fin |= FINANCIAL_KEYS.contains(&kl.as_str());
+                fin |= FINANCIAL_KEYS.contains(&kl.as_str())
+                    || BANK_ACCOUNT_KEYS.contains(&kl.as_str());
             }
         }
     }
