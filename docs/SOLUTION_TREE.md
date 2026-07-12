@@ -1500,10 +1500,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (or a false conflict against the subject's real interstate home). Added
   `&& !is_infrastructure_geo(e)` to both Address branches (twin omission = one
   fix). ✅ 2 must-not-fire tests git-stash-proven; gate green (4565 lib tests,
-  +2). *Remaining (banked for later cycles):* AU-017/030/048/099/105 among the
-  audit's other candidate findings — one live-verified commit each.
-  **Paired:** `PROBLEM_TREE` T2.57 (slice 1) / T2.65 (slice 2) — each slice its
-  own commit.
+  +2). **Slice 3 delivered — AU-105 (credential reuse) under-counted SeekNow
+  breaches:** `breach_of` read only `dbname`/`breach` else the module name, but
+  the `see_know` extractor renames a record's raw `source` breach-name field to
+  `source_db`, so every SeekNow breach collapsed to the bare module name — a
+  password reused across two SeekNow breaches counted as ONE and the finding
+  stayed silent (a false negative on a primary paid breach source). Extended
+  `breach_of` to also read `source_db`. ✅ 1 must-fire test git-stash-proven;
+  gate green (4566 lib tests, +1). *Remaining (banked for later cycles):*
+  AU-017/030/048/099 among the audit's other candidate findings — one
+  live-verified commit each. **Paired:** `PROBLEM_TREE` T2.57 (slice 1) / T2.65
+  (slice 2) / T2.66 (slice 3) — each slice its own commit.
 - **`[x]` SOL-DEADCODE-SWEEP · Resolve "looks built but isn't" dead code /
   unwired capability** → **T2.58** (slice 1). A per-directory sweep (one scanner
   per top-level module dir fanned out via the Workflow tool, each claimed-dead
@@ -5762,3 +5769,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   tests are the must-fire controls. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4565 lib tests, +2). Paired: `PROBLEM_TREE`
   T2.65 — same commit.
+- **2026-07-12** — **SOL-CORRELATOR-INTEGRITY slice 3: AU-105 under-counted
+  distinct breaches from the SeekNow provider — a drifted breach-name vocabulary
+  suppressed credential-reuse findings.** AU-105 fires when a secret recurs
+  across ≥2 DISTINCT breaches; the breach a record belongs to comes from
+  `breach_of(ev)`, which read only the `dbname`/`breach` attrs else fell back to
+  the evidence source field (the module name). But the `see_know` extractor's
+  full-fidelity fold renames a record's raw `source` breach-name field to
+  `source_db` (so it can't clobber the provenance `source` attr). So a SeekNow
+  record whose breach name lived in `source`/`source_db` was invisible to
+  `breach_of`, and every such breach collapsed to the bare module name
+  `see_know`: a password genuinely reused across two SeekNow breaches counted as
+  ONE, and AU-105 — "one of the most actionable people-centric findings" per its
+  own doc — stayed silent. `dbname`-stamping providers (OathNet/stealer) were
+  unaffected; a see_know-specific vocab drift. Fix: extended `breach_of` to also
+  read `source_db`, so SeekNow breach names are recovered and distinct-breach
+  counting is correct across providers. 1 must-fire test
+  (`au105_reads_the_see_know_source_db_breach_name`: a password reused across two
+  `source_db` breaches now fires High with both names) git-stash-proven to stay
+  silent against the pre-fix `breach_of`; the existing `dbname`-based tests are
+  the controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4566 lib tests, +1). Paired: `PROBLEM_TREE` T2.66 — same commit.

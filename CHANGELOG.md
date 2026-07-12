@@ -136,6 +136,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Credential-reuse detection (AU-105) now counts SeekNow breaches correctly.**
+  The rule fires when one password/hash recurs across two or more distinct
+  breaches, but it read the breach name only from the `dbname`/`breach`
+  attributes — while SeekNow records carry it under `source_db`. Every SeekNow
+  breach therefore collapsed to the bare provider name, so a password genuinely
+  reused across two SeekNow breaches counted as one and the finding stayed
+  silent. It now reads `source_db` too, recovering the reuse signal on a primary
+  paid breach source.
 - **Correlator rules AU-056/AU-085 no longer let a datacentre address decide the
   subject's jurisdiction.** The jurisdiction cross-checks reconcile a
   coordinate's state against an address's state (or a phone's region), but the

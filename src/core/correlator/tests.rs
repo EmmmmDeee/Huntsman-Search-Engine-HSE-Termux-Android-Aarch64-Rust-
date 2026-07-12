@@ -3630,6 +3630,34 @@ fn au105_flags_plaintext_password_reused_across_breaches() {
 }
 
 #[test]
+fn au105_reads_the_see_know_source_db_breach_name() {
+    // SeekNow (`see_know`) records carry the breach DB name in a raw `source`
+    // field, which the extractor renames to `source_db` (so it can't clobber the
+    // provenance `source` attr). Before the fix, `breach_of` read only `dbname`/
+    // `breach`, so every SeekNow breach collapsed to the bare module name
+    // "see_know": a genuine cross-breach password reuse counted as ONE breach and
+    // AU-105 stayed silent. Reading `source_db` recovers the two distinct breaches.
+    let mut email = Entity::new(EntityKind::Email, "j@x.com", 0.9, "s");
+    for db in ["linkedin.com", "adobe.com"] {
+        email.add_evidence(
+            Evidence::new("see_know", "SeekNow record")
+                .with_attr("source_db", db)
+                .with_attr("password", "reused-pw-9931"),
+        );
+    }
+    let r = super::rules::rule_au_105_credential_reuse(&[email], "s", 0);
+    assert_eq!(r.len(), 1, "cross-breach reuse via source_db must fire");
+    assert_eq!(r[0].rule_id, "AU-105");
+    assert_eq!(r[0].severity, Severity::High, "plaintext reuse is High");
+    assert!(r[0].description.contains("2 distinct breaches"));
+    assert!(
+        r[0].description.contains("linkedin.com") && r[0].description.contains("adobe.com"),
+        "both recovered breach names must appear: {}",
+        r[0].description
+    );
+}
+
+#[test]
 fn au105_groups_a_hash_case_insensitively_across_sources() {
     // The same hash dumped UPPER-case by one source and lower-case by another is
     // ONE reused secret (Medium) — case must not split it.

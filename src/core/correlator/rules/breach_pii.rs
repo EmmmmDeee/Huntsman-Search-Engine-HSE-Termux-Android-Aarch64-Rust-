@@ -1326,11 +1326,20 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     let mut digest_bridge: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // The breach a record came from — the unit reuse is measured across.
+    // The breach a record came from — the unit reuse is measured across. Read
+    // the breach-name attr across the spellings the providers actually stamp:
+    // `dbname` (OathNet/stealer), `breach`, and `source_db` — the key the
+    // `see_know` extractor renames a record's raw `source` breach-name field to
+    // (so it can't clobber the provenance `source` attr). Without `source_db`,
+    // every SeekNow breach collapsed to the bare module name `see_know`, so a
+    // genuine password reused across two SeekNow breaches counted as ONE and
+    // AU-105 stayed silent — an under-count that suppressed the most actionable
+    // people-centric finding on a primary paid breach source.
     let breach_of = |ev: &crate::core::entity::Evidence| -> String {
         ev.attributes
             .get("dbname")
             .or_else(|| ev.attributes.get("breach"))
+            .or_else(|| ev.attributes.get("source_db"))
             .map_or(ev.source.as_str(), String::as_str)
             .to_string()
     };

@@ -2518,6 +2518,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   must-fire controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4565 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-CORRELATOR-INTEGRITY (slice 2), §5 — same commit.
+- **`[x]` T2.66 · AU-105 under-counted distinct breaches from the SeekNow
+  provider — a drifted breach-name vocabulary suppressed credential-reuse
+  findings (3rd slice of the correlator audit).** AU-105 (credential reuse)
+  fires when one secret recurs across `>= 2` DISTINCT breaches; the breach a
+  record belongs to comes from `breach_of(ev)`, which read only the `dbname` /
+  `breach` attrs, else fell back to the evidence *source field* (the module
+  name). But the `see_know` extractor's full-fidelity fold renames a record's
+  raw `source` breach-name field to **`source_db`** (so it can't clobber the
+  provenance `source` attr — see `see_know/extract`). So a SeekNow record whose
+  breach name lived in `source`/`source_db` was invisible to `breach_of`, and
+  every such breach collapsed to the bare module name `see_know`: a password
+  genuinely reused across two SeekNow breaches counted as ONE and AU-105 stayed
+  silent — suppressing "one of the most actionable people-centric findings" on
+  a primary paid breach source. `dbname`-stamping providers (OathNet/stealer)
+  were unaffected — it's a see_know-specific vocabulary drift. **P2**
+  (evidentiary integrity — a real false-negative, an under-claim). → **Solution:**
+  extended `breach_of` to also read `source_db`, so the SeekNow breach names are
+  recovered and distinct-breach counting is correct across providers. 1
+  must-fire test (`au105_reads_the_see_know_source_db_breach_name`: a password
+  reused across two `source_db` breaches now fires High with both names),
+  git-stash-proven to stay silent against the pre-fix `breach_of`; the existing
+  `dbname`-based tests are the controls. Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4566 lib tests, +1). **Paired:**
+  `SOLUTION_TREE` SOL-CORRELATOR-INTEGRITY (slice 3), §5 — same commit.
 
 ---
 
@@ -8024,3 +8048,17 @@ way, so this specific drift class can't recur silently again.
   controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
   0 failures (4565 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-CORRELATOR-INTEGRITY (slice 2), §5 — same commit.
+- **2026-07-12** — **T2.66: AU-105 no longer under-counts SeekNow breaches —
+  recovered a suppressed credential-reuse finding (correlator audit slice 3).**
+  AU-105 fires when a secret recurs across ≥2 distinct breaches; `breach_of`
+  read only `dbname`/`breach` else the module name. The `see_know` extractor's
+  full-fidelity fold renames a record's raw `source` breach-name field to
+  `source_db`, so SeekNow breaches were invisible to `breach_of` and all
+  collapsed to the bare module name `see_know` — a password reused across two
+  SeekNow breaches counted as ONE and the finding stayed silent (a false
+  negative on a primary paid breach source; `dbname`-stamping providers were
+  unaffected — a see_know-specific vocab drift). Fix: `breach_of` now also reads
+  `source_db`. 1 must-fire test git-stash-proven to stay silent pre-fix; the
+  `dbname` tests are controls. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4566 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-CORRELATOR-INTEGRITY (slice 3), §5 — same commit.
