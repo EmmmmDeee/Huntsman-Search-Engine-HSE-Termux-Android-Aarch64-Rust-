@@ -1609,8 +1609,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   host_state / set_private (empirically redundant — DB already 0600) / TACTIC
   consts / store_api_credential_from_item. **Paired:**
   `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
-  (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) / T2.70 (slice 7) — each slice
-  its own commit.
+  (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) / T2.70 (slice 7) / T2.71
+  (slice 8) — each slice its own commit. **Slice 8 delivered — the second WIRE-IN:
+  the scan-completion webhook that was configured but never fired.** The sweep
+  surfaced `core::webhook::notify_scan_complete` (the fire-and-forget
+  `scan_complete` POST) with zero callers — but NOT dead-to-delete:
+  `webhook_url_from_env()` is wired (`cli/scan`/`cli/live` read
+  `HUNTSMAN_WEBHOOK_URL` into `ScanOptions.webhook_url`), so a configured webhook
+  stored the URL and silently never POSTed, and the module doc claimed the engine
+  fired it. Decision: WIRE-IN (a genuine, useful, deterministically-provable
+  feature). `finalise_scan` now fires the POST on the terminal state (in the async
+  context after the `spawn_blocking` finalise, since the POST is async and the
+  finalise is blocking), payload built from the completed scan, fire-and-forget
+  (bounded 10 s, never errors). ✅ Proven against a REAL target: a local HTTP sink
+  + `HUNTSMAN_WEBHOOK_URL` + `hse scan -v Kylo4kylo` captured the real POST
+  (entity_count 141 / status aborted / correlations 7) where the pre-fix binary
+  sent nothing; git-stash-proven regression test with a one-shot TCP sink.
 - **`[x]` SOL-ROLE-MAILBOX-COMPOUND · Suppress provider-prefixed system
   mailboxes (DNS SOA / registrar desks) from posing as the subject's email** →
   **T2.68**. Found by a PRIORITY-5 LIVE end-to-end pass (real binary vs the
@@ -5822,6 +5836,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `ModuleContext` pipeline intact without the field. Gate green: fmt/clippy/
   rustdoc clean, full suite 0 failures (4565 lib tests, −4 — the proxy module's
   own tests, deleted with it). Paired: `PROBLEM_TREE` T2.70 — same commit.
+- **2026-07-12** — **SOL-DEADCODE-SWEEP slice 8: wired in the scan-completion
+  webhook that was configured but never fired (the second WIRE-IN, counterpart to
+  the T2.70 sweep).** `core::webhook::notify_scan_complete` — the fire-and-forget
+  POST of a `scan_complete` JSON (scan id, target, entity/correlation counts,
+  status) — had zero callers. But it was NOT dead-to-delete: `webhook_url_from_env()`
+  is wired (`cli/scan`/`cli/live` read `HUNTSMAN_WEBHOOK_URL` into
+  `ScanOptions.webhook_url`), so an operator who set the env var got the URL
+  stored and NOTHING else — the last step, the actual POST, was missing, and the
+  module's own doc claimed the engine fired it on completion. Decision: WIRE-IN
+  (a genuine, useful, deterministically-provable integration point). `finalise_scan`
+  now fires `notify_scan_complete` once the scan reaches a terminal state, if
+  `scan.options.webhook_url` is set. It runs in the async context AFTER the
+  `spawn_blocking` finalise (the POST is async, the finalise is blocking), builds
+  the payload from the completed scan (`scan.target` / `scan.entity_count` /
+  `scan.status` + the store's correlation count), and stays fire-and-forget
+  (bounded 10 s, never errors) so a dead endpoint can't stall or fail the scan.
+  Fires for every terminal state; the `status` field distinguishes complete /
+  aborted / failed. ✅ Proven against a REAL target (per the directive): a local
+  HTTP sink + `HUNTSMAN_WEBHOOK_URL=http://127.0.0.1:PORT/hook … hse scan -v
+  Kylo4kylo` captured the real POST — `{"event":"scan_complete","target_value":
+  "kylo4kylo","entity_count":141,"status":"aborted","correlations_count":7,…}` —
+  where the pre-fix binary sent nothing. THEN a git-stash-proven regression test
+  (`scan_completion_fires_the_configured_webhook`: a one-shot local TCP sink + a
+  real `engine.run` with `webhook_url` set asserts the `scan_complete` POST
+  arrives; against the unwired engine the `recv_timeout` elapses and the test
+  fails); the test pins `regional_search: false` so its live scan can't race the
+  `search_engines::build_queries` unit tests on the process-global regional flag.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4566
+  lib tests, +1). Paired: `PROBLEM_TREE` T2.71 — same commit.
 - **2026-07-12** — **New SOL-RANDOMIZED-MAC: the OUI classifier now flags
   randomized (private) MAC addresses instead of attributing them as real
   devices.** Surfaced by a real 1,643-device Android BLE-radar export the

@@ -544,7 +544,7 @@ impl ScanEngine {
         // Snapshot the cancellation state before crossing into the blocking
         // thread: CancellationToken is not 'static and cannot be moved.
         let cancelled = ctx.cancel.is_cancelled();
-        tokio::task::spawn_blocking(move || -> Result<Scan> {
+        let scan = tokio::task::spawn_blocking(move || -> Result<Scan> {
             // Persist the scan's entities in a single transaction. On the common
             // path (every entity is new or a clean GREATEST-merge) this collapses
             // N per-entity commits into one WAL fsync — a material win on
@@ -956,7 +956,39 @@ impl ScanEngine {
             Ok(scan)
         })
         .await
-        .map_err(|e| crate::core::error::Error::Other(e.to_string()))?
+        .map_err(|e| crate::core::error::Error::Other(e.to_string()))??;
+
+        // Fire the operator's completion webhook, if one was configured via
+        // `HUNTSMAN_WEBHOOK_URL` / `ScanOptions`. The URL was already threaded into
+        // `scan.options.webhook_url` by the CLI/live paths, but the POST itself was
+        // never wired — so a configured webhook silently never fired. This closes
+        // that gap. It must run HERE (in the async context after the blocking
+        // finalise), because `notify_scan_complete` is async and the finalise above
+        // runs inside `spawn_blocking`. Fire-and-forget: the helper is bounded to a
+        // 10 s timeout and never returns an error, so a slow or dead endpoint can't
+        // stall or fail the scan. Fires for every terminal state (complete /
+        // aborted / failed); the `status` field distinguishes them.
+        if let Some(url) = scan.options.webhook_url.as_deref() {
+            let correlations_count = self
+                .store
+                .correlations_for_scan(&scan.id)
+                .map(|c| c.len())
+                .unwrap_or(0);
+            crate::core::webhook::notify_scan_complete(
+                &ctx.http,
+                url,
+                &crate::core::webhook::WebhookPayload {
+                    scan_id: &scan.id,
+                    target_kind: scan.target.kind.canonical_str(),
+                    target_value: &scan.target.value,
+                    entity_count: scan.entity_count,
+                    status: scan.status.as_str(),
+                    correlations_count,
+                },
+            )
+            .await;
+        }
+        Ok(scan)
     }
 
     /// Working-set ceiling for the LIVE incremental correlation pass. Above this,

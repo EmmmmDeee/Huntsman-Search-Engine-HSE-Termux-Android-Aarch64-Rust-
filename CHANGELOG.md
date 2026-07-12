@@ -11,6 +11,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Scan-completion webhooks now actually fire.** Setting `HUNTSMAN_WEBHOOK_URL`
+  (or a per-scan webhook URL) was already accepted and stored, but the engine
+  never sent the notification — so a configured webhook silently did nothing. On
+  every terminal scan state (complete / aborted / failed) the engine now POSTs a
+  `scan_complete` JSON payload — scan id, target, entity count, correlation
+  count, and status — to the configured URL. It is fire-and-forget: bounded to a
+  10-second timeout and never fails the scan, and only the webhook host (never
+  the full URL, which may carry a secret in its path) is logged on error.
 - **New correlator rule AU-111 surfaces a CDN-fronted domain's likely origin
   IP.** When `waf_detect` fingerprints a domain behind a well-known global
   anycast CDN (Cloudflare, Akamai, Fastly, CloudFront, Sucuri, Incapsula,

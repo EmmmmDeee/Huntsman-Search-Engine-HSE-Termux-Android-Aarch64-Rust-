@@ -2702,3 +2702,92 @@ fn admission_rejection_covers_every_drop_filter_and_order() {
         "the earliest gate in the chain wins",
     );
 }
+
+/// A completed scan with a `webhook_url` configured must POST the `scan_complete`
+/// payload to it. This is the wiring `finalise_scan` was missing: the CLI/live
+/// paths thread `HUNTSMAN_WEBHOOK_URL` into `ScanOptions.webhook_url`, but the
+/// engine never fired the POST, so a configured webhook silently never arrived.
+/// Git-stash-proven: against the unfixed engine no connection is made and the
+/// `recv_timeout` below elapses, failing the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_completion_fires_the_configured_webhook() {
+    use crate::core::test_support::InMemoryStore;
+    use std::io::{Read, Write};
+    use std::sync::mpsc;
+
+    // One-shot local HTTP sink on an ephemeral port: accept a single connection,
+    // read the request, reply 200, and hand the raw request back over a channel.
+    // Blocking IO on a std thread, off the async runtime.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel::<String>();
+    let sink = std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 2048];
+            // reqwest may flush headers and body separately — accumulate until the
+            // JSON body is present (or the peer stops / times out).
+            for _ in 0..10 {
+                match sock.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        acc.extend_from_slice(&buf[..n]);
+                        if String::from_utf8_lossy(&acc).contains("scan_complete") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            let _ = tx.send(String::from_utf8_lossy(&acc).to_string());
+        }
+    });
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store_port, bus.clone());
+    let opts = ScanOptions {
+        webhook_url: Some(format!("http://127.0.0.1:{port}/hook/secret")),
+        // Pin regional OFF so this test doesn't flip the process-global regional
+        // search flag (`set_regional`, driven from `regional_search`) that the
+        // `search_engines::build_queries` unit tests read — otherwise running a
+        // real scan here races those tests in the concurrent runner.
+        regional_search: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let _ = engine.run(scan, target, ctx).await;
+
+    let req = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("a scan_complete webhook POST must arrive after the scan finalises");
+    sink.join().ok();
+    assert!(
+        req.starts_with("POST "),
+        "expected an HTTP POST, got:\n{req}"
+    );
+    assert!(
+        req.contains("\"event\":\"scan_complete\""),
+        "webhook body must be the scan_complete event:\n{req}"
+    );
+    assert!(
+        req.contains("\"target_value\":\"seed\""),
+        "webhook body must carry the seed target:\n{req}"
+    );
+}
