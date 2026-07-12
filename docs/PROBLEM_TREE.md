@@ -2220,6 +2220,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   no reachable live user published a real address — noted honestly rather
   than overclaimed. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-FIELD-DECODE
   (slice 2), §5 — same commit.
+- **`[x]` T2.56 · `crates_io` dropped the account-creation date every sibling
+  code-registry module records** — third and final slice of the field-decode
+  cluster; a drifted-sibling evidentiary-quality fix. The live
+  `crates.io/api/v1/users/{login}` response carries a top-level `created_at`
+  (ISO-8601) on every real account — **confirmed against `dtolnay`
+  (`2012-07-09T03:55:40Z`) and `alexcrichton` (`2009-03-19T19:31:50Z`)** — but
+  `CrateUser` never deserialised it, so the account-age signal was silently
+  dropped on every scan, even though the sibling `code`-family modules
+  (`gitea_user`/`codeberg_user` `created`, `hexpm_user` `inserted_at`) all
+  surface it as evidence. Account age is a real corroboration signal (a
+  decade-old maintainer account is a materially stronger identity anchor than
+  one created last week). **P2** (single-sourcing/consistency + evidentiary
+  quality). → **Solution:** added `created_at` to `CrateUser` and emit it as
+  the `created_at` evidence attr on the confirmed-username entity (guarding
+  the empty-string case, matching the `avatar_url`/`name` attr pattern);
+  refreshed the module-doc example JSON to the real shape. 2 new tests
+  (`deserialises_real_shape_and_surfaces_created_at` — a body trimmed verbatim
+  from the live `dtolnay` response asserting the attr is surfaced; and a
+  blank-`created_at` guard test) — git-stash-proven to fail against the
+  pre-fix module (`error[E0609]: no field created_at on type &CrateUser`).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4612 lib tests, +2). Live-verified end-to-end against the REAL API: a real
+  `dtolnay` scan's JSON export now carries
+  `"created_at": "2012-07-09T03:55:40Z"` on the username evidence (absent
+  pre-fix). Closes the SOL-PROVIDER-FIELD-DECODE cluster (all three
+  live-reachable field-decode drifts — hexpm/codeberg+gitea/crates — repaired).
+  **Paired:** `SOLUTION_TREE` SOL-PROVIDER-FIELD-DECODE (slice 3, node closed),
+  §5 — same commit.
 
 ---
 
@@ -7536,3 +7564,21 @@ way, so this specific drift class can't recur silently again.
   unit/deser-proven since both platforms mask by default (no reachable live
   user with a real address — noted honestly). **Paired:** `SOLUTION_TREE`
   SOL-PROVIDER-FIELD-DECODE (slice 2), §5 — same commit.
+- **2026-07-12** — **T2.56: `crates_io` dropped the account-creation date its
+  sibling code-registry modules record — fixed; field-decode cluster slice 3
+  (cluster closed).** The live `crates.io/api/v1/users/{login}` response carries
+  a top-level `created_at` on every real account (confirmed against `dtolnay`
+  `2012-07-09T03:55:40Z` and `alexcrichton` `2009-03-19T19:31:50Z`), but
+  `CrateUser` never deserialised it, so the account-age signal every sibling
+  (`gitea_user`/`codeberg_user` `created`, `hexpm_user` `inserted_at`) records
+  was silently dropped. Added `created_at` to `CrateUser` and emit it as the
+  `created_at` evidence attr on the confirmed-username entity (empty-string
+  guarded); refreshed the module-doc JSON. 2 new tests incl. a verbatim-live
+  `dtolnay` deser regression, git-stash-proven (`error[E0609]: no field
+  created_at`). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4612 lib tests, +2). Live-verified end-to-end: a real `dtolnay`
+  scan's JSON export now carries `"created_at": "2012-07-09T03:55:40Z"` on the
+  username evidence (absent pre-fix). Closes the SOL-PROVIDER-FIELD-DECODE
+  cluster — all three live-reachable field-decode drifts repaired. **Paired:**
+  `SOLUTION_TREE` SOL-PROVIDER-FIELD-DECODE (slice 3, node closed), §5 — same
+  commit.

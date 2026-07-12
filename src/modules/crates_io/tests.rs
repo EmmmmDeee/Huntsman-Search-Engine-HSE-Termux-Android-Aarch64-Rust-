@@ -89,6 +89,42 @@ use super::*;
     }
 
     #[test]
+    fn deserialises_real_shape_and_surfaces_created_at() {
+        // A body trimmed verbatim from the live `/api/v1/users/dtolnay` response.
+        // The pre-fix `CrateUser` had no `created_at` field, so the account-age
+        // signal every sibling code-registry module records was silently dropped.
+        let body = user_resp(
+            r#"{"user":{"id":3618,"login":"dtolnay","name":"David Tolnay",
+                "avatar":"https://avatars.githubusercontent.com/u/1940490?v=4",
+                "url":"https://github.com/dtolnay",
+                "created_at":"2012-07-09T03:55:40Z"}}"#,
+        );
+        assert_eq!(
+            body.user.as_ref().unwrap().created_at.as_deref(),
+            Some("2012-07-09T03:55:40Z"),
+            "the real response's created_at must deserialise"
+        );
+        let ents = build_entities(&body, "s");
+        let u = of_kind(&ents, EntityKind::Username).expect("username entity");
+        assert_eq!(
+            u.evidence[0].attributes.get("created_at").map(String::as_str),
+            Some("2012-07-09T03:55:40Z"),
+            "account-creation date must be surfaced as evidence"
+        );
+    }
+
+    #[test]
+    fn blank_created_at_adds_no_attr() {
+        let body = user_resp(r#"{"user":{"login":"frank","created_at":""}}"#);
+        let ents = build_entities(&body, "s");
+        let u = of_kind(&ents, EntityKind::Username).unwrap();
+        assert!(
+            !u.evidence[0].attributes.contains_key("created_at"),
+            "a blank created_at must not become an attribute"
+        );
+    }
+
+    #[test]
     fn no_user_yields_nothing() {
         assert!(build_entities(&user_resp(r#"{}"#), "s").is_empty());
     }

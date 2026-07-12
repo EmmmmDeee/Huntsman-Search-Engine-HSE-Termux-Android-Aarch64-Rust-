@@ -90,6 +90,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`crates_io` now records the account-creation date it used to drop.** The
+  live crates.io user API returns a top-level `created_at` on every account,
+  but the module never decoded it — so the account-age signal every sibling
+  code-registry module (`gitea_user`/`codeberg_user`, `hexpm_user`) already
+  records was silently discarded. It now surfaces `created_at` as evidence on
+  the confirmed-username entity, so account age is available for downstream
+  cross-source corroboration.
 - **Both Forgejo modules now handle the profile email correctly — `codeberg_user`
   recovers a real published address it used to drop, and `gitea_user` no longer
   emits the forge's privacy-masking placeholder as a contact.** The Forgejo API

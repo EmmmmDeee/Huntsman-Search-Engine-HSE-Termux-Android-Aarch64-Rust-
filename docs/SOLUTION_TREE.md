@@ -1421,8 +1421,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   removed); full lib suite now passes 8/8 consecutive runs (was ~1-in-3
   flaky); gate green. Paired: `PROBLEM_TREE` T2.53 — same commit.
 
-- **`[~]` SOL-PROVIDER-FIELD-DECODE · Fix dropped / mis-decoded real API
-  fields on free, live-reachable provider modules** → **T2.54** (slice 1), a
+- **`[x]` SOL-PROVIDER-FIELD-DECODE · Fix dropped / mis-decoded real API
+  fields on free, live-reachable provider modules** → **T2.54/T2.55/T2.56**
+  (slices 1–3, cluster closed), a
   fresh discovery-pass cluster distinct from SOL-PROVIDER-OVERHAUL (which
   audited endpoint *reachability*; this audits field-level *decode
   correctness* against the live response shape). **Slice 1 delivered —
@@ -1453,9 +1454,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   against the un-filtered branch); gate green (4610 lib tests, +5);
   live-verified — `gitea_user`/`techknowlogick` and `codeberg_user`/`earl-warren`
   (both `@noreply.*`) now emit NO Email for the placeholder.
-  *Remaining (tracked):* `crates_io` (drops `created_at` its siblings
-  harvest) — one live-verified commit. **Paired:** `PROBLEM_TREE` T2.54
-  (slice 1) / T2.55 (slice 2) — each slice its own commit.
+  **Slice 3 delivered — `crates_io` (cluster closed):** the live
+  `crates.io/api/v1/users/{login}` response carries a top-level `created_at`
+  on every real account (confirmed `dtolnay` `2012-07-09T03:55:40Z`,
+  `alexcrichton` `2009-03-19T19:31:50Z`), but `CrateUser` never decoded it —
+  the account-age signal every sibling code-registry module records was
+  dropped. Added `created_at` + emit it as the `created_at` evidence attr on
+  the confirmed-username entity (empty-string guarded). ✅ 2 new tests
+  (verbatim-live `dtolnay` deser regression + blank guard), git-stash-proven
+  (`error[E0609]: no field created_at`); gate green (4612 lib tests, +2);
+  live-verified — a real `dtolnay` scan's JSON export now carries the
+  `created_at` attr (absent pre-fix). **No `[ ]` slices remain — all three
+  live-reachable field-decode drifts (hexpm / codeberg+gitea / crates) are
+  repaired.** **Paired:** `PROBLEM_TREE` T2.54 (slice 1) / T2.55 (slice 2) /
+  T2.56 (slice 3) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5389,3 +5401,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   full suite 0 failures (4610 lib tests, +5). Live-verified: both hosts' real
   `@noreply.*` users now emit NO Email for the placeholder. Remaining in the
   cluster: `crates_io`. Paired: `PROBLEM_TREE` T2.55 — same commit.
+- **2026-07-12** — **SOL-PROVIDER-FIELD-DECODE slice 3 (node closed):
+  `crates_io` dropped the account-creation date every sibling code-registry
+  module records.** The live `crates.io/api/v1/users/{login}` response carries
+  a top-level `created_at` on every real account (confirmed against `dtolnay`
+  `2012-07-09T03:55:40Z` and `alexcrichton` `2009-03-19T19:31:50Z`), but
+  `CrateUser` never deserialised it — so the account-age signal that
+  `gitea_user`/`codeberg_user` (`created`) and `hexpm_user` (`inserted_at`)
+  all surface was silently dropped. Added `created_at` to `CrateUser` and emit
+  it as the `created_at` evidence attr on the confirmed-username entity
+  (empty-string guarded, matching the `avatar_url`/`name` attr pattern);
+  refreshed the module-doc example JSON to the real shape. 2 new tests
+  (`deserialises_real_shape_and_surfaces_created_at`, a verbatim-live `dtolnay`
+  body; + a blank-`created_at` guard), git-stash-proven (`error[E0609]: no
+  field created_at on type &CrateUser`). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4612 lib tests, +2).
+  Live-verified end-to-end: a real `dtolnay` scan's JSON export now carries
+  `"created_at": "2012-07-09T03:55:40Z"` on the username evidence (absent
+  pre-fix). This closes the SOL-PROVIDER-FIELD-DECODE cluster — all three
+  live-reachable field-decode drifts (hexpm / codeberg+gitea / crates)
+  repaired. Paired: `PROBLEM_TREE` T2.56 — same commit.
