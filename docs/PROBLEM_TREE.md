@@ -2443,6 +2443,28 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   (`TACTIC_NAME`/`shortest_path` delete), `modules::…::store_api_credential_from_item`
   (delete), `storage` low-confidence trio (wire-in). **Paired:** `SOLUTION_TREE`
   SOL-DEADCODE-SWEEP (slice 5), §5 — same commit.
+- **`[x]` T2.63 · Two isolated dead `pub fn`s in live infra modules
+  (`util::curl::fetch_post`, `util::key_pool::pool::set_environment`).** Slice 6
+  of the dead-code sweep. Both are standalone helpers in otherwise-live modules
+  (so the `dead_code` lint never fired) with **0** references anywhere including
+  tests: `fetch_post` is the `UA_MOBILE` POST variant (its `_with_ua` sibling is
+  live in `search_engines`, so `curl_exec`'s POST path stays), and
+  `set_environment` post-hoc reassigns a pool key's environment label (already
+  set at key-add time). Own-decision verification corrected two sweep
+  mislabels along the way — `shortest_path` and `validate_for_kind` are NOT
+  0-ref (test-only / re-exported), so they are deferred as their own steps, not
+  deleted blind. **P3** (minor codebase health). → **Decision: DELETE** (neither
+  is a capability gap — `fetch_post` is a redundant UA variant, `set_environment`
+  duplicates the add-time path). Removed both fns. Compiler + clippy `-D
+  warnings` prove it safe (no cascade of newly-dead helpers). Gate green:
+  fmt/clippy/rustdoc clean, full suite 0 failures (4560 lib tests, unchanged —
+  no tests referenced them). No live run applies (unreachable code). *Remaining
+  backlog:* `store_api_credential_from_item` (re-exported-but-uncalled, delete);
+  `TACTIC_ID`/`TACTIC_NAME` (dead attack-vocab consts); the wire-in-candidate fns
+  (`refresh_pool`/`prune_degraded`/`host_state`/`set_private`/`validate_for_kind`/
+  `shortest_path`) and the `storage` low-confidence trio — each a careful
+  wire-in-vs-delete decision of its own. **Paired:** `SOLUTION_TREE`
+  SOL-DEADCODE-SWEEP (slice 6), §5 — same commit.
 
 ---
 
@@ -7904,3 +7926,16 @@ way, so this specific drift class can't recur silently again.
   No live run applies (unreachable data — that IS the finding). Leaves the one
   kept see_know file 100% live. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
   (slice 5), §5 — same commit.
+- **2026-07-12** — **T2.63: deleted two isolated dead `pub fn`s
+  (`util::curl::fetch_post`, `util::key_pool::pool::set_environment`) —
+  dead-code sweep slice 6.** Standalone helpers in live modules (so the
+  `dead_code` lint never fired), 0 refs anywhere incl. tests: `fetch_post` is
+  the redundant `UA_MOBILE` POST variant (its `_with_ua` sibling is live, so
+  `curl_exec`'s POST path stays); `set_environment` duplicates the add-time
+  environment-label path. Own-decision verification corrected two sweep
+  mislabels (`shortest_path`/`validate_for_kind` are test-only/re-exported, NOT
+  0-ref — deferred, not deleted blind). Decision: DELETE. Compiler + clippy
+  `-D warnings` prove it safe. Gate green: fmt/clippy/rustdoc clean, full suite
+  0 failures (4560 lib tests, unchanged). No live run applies (unreachable
+  code). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 6), §5 — same
+  commit.

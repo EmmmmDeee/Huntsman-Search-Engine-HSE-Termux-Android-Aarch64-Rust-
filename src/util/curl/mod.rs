@@ -214,12 +214,6 @@ pub async fn fetch_with_ua(url: &str, timeout_ms: u64, ua: &str) -> Option<Strin
     curl_exec(url, timeout_ms, ua, None, None).await
 }
 
-/// POST form data to a URL via curl subprocess. Returns the response body
-/// on success, None on any error (timeout, non-zero exit, missing curl).
-pub async fn fetch_post(url: &str, data: &str, timeout_ms: u64) -> Option<String> {
-    curl_exec(url, timeout_ms, UA_MOBILE, Some(data), None).await
-}
-
 /// POST form data with a specific User-Agent string.
 pub async fn fetch_post_with_ua(
     url: &str,

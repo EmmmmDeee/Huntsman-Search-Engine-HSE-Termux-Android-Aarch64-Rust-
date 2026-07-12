@@ -1551,14 +1551,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   dead const — all 0-ref, all duplicating native capability. Decision: DELETE —
   trimmed to just `EnterprisePlan` + `ENTERPRISE` (~406 lines). ✅ Compiler +
   clippy `-D warnings` prove it safe (no field newly-unused); gate green (4560
-  lib tests). *Remaining dead-code backlog (banked, verified by the sweep):*
-  scattered dead fns (`fetch_post`/`set_environment` delete; `refresh_pool`/
-  `prune_degraded`/`host_state`/`set_private`/`validate_for_kind` wire-in),
-  `core` (`TACTIC_NAME`/`shortest_path` delete),
-  `modules::…::store_api_credential_from_item` (delete), `storage`
-  low-confidence trio (wire-in) — one decision each. **Paired:** `PROBLEM_TREE`
-  T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61 (slice 4) / T2.62
-  (slice 5) — each slice its own commit.
+  lib tests). **Slice 6 delivered — two isolated dead `pub fn`s
+  (`util::curl::fetch_post`, `util::key_pool::pool::set_environment`):** 0-ref
+  standalone helpers in live modules; `fetch_post` is the redundant `UA_MOBILE`
+  POST variant (its `_with_ua` sibling stays live), `set_environment` duplicates
+  the add-time path. Own-decision verification corrected two sweep mislabels
+  (`shortest_path`/`validate_for_kind` are test-only/re-exported, not 0-ref —
+  deferred). Decision: DELETE; compiler + clippy prove it safe. *Remaining
+  dead-code backlog (banked):* `store_api_credential_from_item`
+  (re-exported-but-uncalled, delete), `TACTIC_ID`/`TACTIC_NAME` (dead attack-vocab
+  consts), and the wire-in-vs-delete judgement calls (`refresh_pool`/
+  `prune_degraded`/`host_state`/`set_private`/`validate_for_kind`/`shortest_path`
+  + `storage` low-confidence trio) — one careful decision each. **Paired:**
+  `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
+  (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5670,3 +5676,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   see_know cleanup: T2.58 removed the four dead submodules, T2.62 removes the
   dead consts from the one kept file, leaving it 100% live. Paired:
   `PROBLEM_TREE` T2.62 — same commit.
+- **2026-07-12** — **SOL-DEADCODE-SWEEP slice 6: deleted two isolated dead
+  `pub fn`s (`util::curl::fetch_post`, `util::key_pool::pool::set_environment`).**
+  Standalone helpers in otherwise-live modules (so the `dead_code` lint never
+  fired), 0 references anywhere including tests. `fetch_post` is the redundant
+  `UA_MOBILE` POST variant — its `_with_ua` sibling is live in `search_engines`,
+  so `curl_exec`'s POST path stays; `set_environment` post-hoc reassigns a pool
+  key's environment label, which is already set at key-add time. Own-decision
+  verification corrected two sweep mislabels in the same area:
+  `core::path::shortest_path` and `core::validation::validate_for_kind` are NOT
+  0-ref (test-only and re-exported respectively), so they were deferred as their
+  own wire-in-vs-delete steps rather than deleted blind. Decision: DELETE (both
+  are redundant, neither a capability gap). Compiler + clippy `-D warnings` prove
+  it safe (no cascade of newly-dead helpers). Gate green: fmt/clippy/rustdoc
+  clean, full suite 0 failures (4560 lib tests, unchanged — no tests referenced
+  them). No live run applies (unreachable code — that IS the finding). Paired:
+  `PROBLEM_TREE` T2.63 — same commit.

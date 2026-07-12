@@ -38,6 +38,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Removed
+- **Removed two unused internal helper functions** — `util::curl::fetch_post`
+  (a redundant POST variant; the user-agent-specific `fetch_post_with_ua` is
+  still used) and `util::key_pool::pool::set_environment` (post-hoc key
+  environment reassignment, which was never called; the label is set when a key
+  is added). Neither had any caller. No user-facing behavior change.
 - **Trimmed dead scaffolding tables from `see_know::enterprise_config`.** The
   file is kept for the live `ENTERPRISE` plan config the SeekNow budget reads,
   but it also carried seven speculative hardcoded tables (workflow budgets,
