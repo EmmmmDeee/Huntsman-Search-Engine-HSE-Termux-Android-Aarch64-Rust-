@@ -1421,6 +1421,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   removed); full lib suite now passes 8/8 consecutive runs (was ~1-in-3
   flaky); gate green. Paired: `PROBLEM_TREE` T2.53 — same commit.
 
+- **`[~]` SOL-PROVIDER-FIELD-DECODE · Fix dropped / mis-decoded real API
+  fields on free, live-reachable provider modules** → **T2.54** (slice 1), a
+  fresh discovery-pass cluster distinct from SOL-PROVIDER-OVERHAUL (which
+  audited endpoint *reachability*; this audits field-level *decode
+  correctness* against the live response shape). **Slice 1 delivered —
+  `hexpm_user`:** its entire advertised enrichment was dead against the live
+  hex.pm API — the top-level `email` (a real personal address) was never
+  deserialised, and the `handles` map is keyed by display names (`"GitHub"`,
+  `"X.com"`) with full-URL values, so the `match "github"/"twitter"` on the
+  raw key never fired (the tests passed only on a fabricated shape). Added
+  `email`+`inserted_at` (+`Email` entity, account-age evidence), matched
+  handles on the lowercased key, extracted the handle from the URL value
+  (`handle_from_link`), sorted the `HashMap` iteration for determinism, and
+  updated `produces()`/`attack_techniques()`. ✅ real-body deser regression +
+  10 others, git-stash-proven; gate green (4605 lib tests, +4); live-verified
+  end-to-end — a real `wojtekmach` scan now recovers the email and the
+  GitHub + X/Twitter cross-platform pivots (was neither pre-fix).
+  *Remaining (tracked):* `codeberg_user` (drops top-level `email` its Forgejo
+  sibling `gitea_user` harvests), `crates_io` (drops `created_at` its siblings
+  harvest) — one live-verified commit each. **Paired:** `PROBLEM_TREE` T2.54
+  (slice 1) — each slice its own commit.
+
 ### S.PROCESS — The methodology itself ⚑
 
 - **`[x]` SOL-PAIRED-TREES · The problem/solution pair + gap analysis** ⚑ — *this
@@ -5313,3 +5335,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unchanged. Gate green; the full lib suite, previously ~1-in-3 flaky, now
   passes 8/8 consecutive runs (4601 lib tests). Paired: `PROBLEM_TREE` T2.53 —
   same commit.
+- **2026-07-12** — **New SOL-PROVIDER-FIELD-DECODE slice 1: restored
+  `hexpm_user`'s email + GitHub/X cross-platform pivots, dead against the live
+  API.** A fresh discovery pass (field-level decode correctness, distinct from
+  the endpoint-reachability provider overhaul) found the top-level `email` was
+  never deserialised and the `handles` map is keyed by display names
+  (`"GitHub"`, `"X.com"`) with full-URL values — so the module's advertised
+  enrichment silently produced nothing (its tests passed only on a fabricated
+  lowercase-key/bare-handle shape). Added `email`+`inserted_at` (+`Email`
+  entity, account-age evidence), matched handles on the lowercased key,
+  extracted the handle from the URL value via a new `handle_from_link`,
+  sorted the `HashMap` iteration for determinism, and updated
+  `produces()`/`attack_techniques()`. 11 tests (was 7), incl. a real-body
+  deser regression + direct `handle_from_link` tests, git-stash-proven
+  (compile error pre-fix). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4605 lib tests). Live-verified end-to-end against the
+  REAL API: a real `wojtekmach` scan recovers `wojtek@wojtekmach.pl` and the
+  GitHub + X/Twitter pivots (was neither pre-fix). Remaining in the cluster:
+  `codeberg_user`, `crates_io`. Paired: `PROBLEM_TREE` T2.54 — same commit.

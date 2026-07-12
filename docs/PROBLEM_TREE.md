@@ -2149,6 +2149,44 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   tests). **Verified by stability:** the full lib suite, previously failing
   ~1-in-3, now passes **8/8** consecutive runs. **Paired:** `SOLUTION_TREE`
   SOL-CACHE-TEST-ISOLATION (new node), §5 — same commit.
+- **`[x]` T2.54 · `hexpm_user`'s entire advertised enrichment was dead against
+  the live API — email dropped, cross-platform pivots never fired** — first
+  slice of a fresh discovery-pass cluster (dropped/mis-decoded fields on
+  free, live-reachable provider modules). Two compounding live-shape
+  mismatches, both confirmed against the real `hex.pm/api/users/{u}` endpoint
+  (`wojtekmach`, `josevalim`): **(a)** the top-level `email` — a real personal
+  address (`wojtek@wojtekmach.pl`, `jose.valim@gmail.com`), the single
+  highest-value field the endpoint returns — was **never deserialised**
+  (`HexUser` had only `username`/`full_name`/`handles`), so it was silently
+  dropped on every scan. **(b)** the module's headline capability (per its own
+  doc: "a `handles` map that links the hex.pm identity to GitHub and Twitter…
+  direct cross-platform pivots") **never fired**: the real `handles` map is
+  keyed by human DISPLAY NAMES (`"GitHub"`, `"X.com"`), not lowercase ids, and
+  its values are full profile **URLs** (`"https://github.com/wojtekmach"`),
+  not bare handles — so the `match "github"/"twitter"` on the raw key hit
+  `_ => continue` for every entry. The module's unit tests passed only because
+  they used fabricated lowercase keys + bare-handle values that never matched
+  the real API shape. **P2** (a `code`-family source whose entire enrichment —
+  email + GitHub/X pivots — silently produced nothing on live traffic).
+  → **Solution:** added `email` (+ `inserted_at` account-age) to `HexUser` and
+  emit an `Email` entity; rewrote the handles loop to match on the
+  lowercased key (`"x.com"`/`"x"`/`"twitter"` → twitter) and extract the
+  handle from the URL value via a new `handle_from_link` helper (last path
+  segment, host-only URLs rejected); sorted the `handles` iteration so the
+  `HashMap` order can't leak into output (determinism); added the real
+  `account_created` date as evidence; updated `produces()` (+`Email`) and
+  `attack_techniques()` (+`T1589.002` email, +`T1593.001` social).
+  11 tests (was 7), incl. `deserialises_the_real_hexpm_response_shape` (a body
+  trimmed verbatim from a real `wojtekmach` response) and direct
+  `handle_from_link` unit tests — git-stash-proven to fail against the pre-fix
+  module (compile error — old `HexUser` has no `email`/`inserted_at`). Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4605
+  lib tests, +4). Live-verified end-to-end against the REAL API: a real
+  `wojtekmach` scan now recovers the email `wojtek@wojtekmach.pl` and the
+  GitHub + X/Twitter cross-platform pivots (the handle carries both `github`
+  and `twitter` tags) — where the pre-fix module emitted only the bare
+  username, profile URL, and Person. **Paired:** `SOLUTION_TREE`
+  SOL-PROVIDER-FIELD-DECODE (new node), §5 — same commit.
 
 ---
 
@@ -7430,3 +7468,20 @@ way, so this specific drift class can't recur silently again.
   Gate green; the full lib suite, previously ~1-in-3 flaky, now passes 8/8
   consecutive runs (4601 lib tests). **Paired:** `SOLUTION_TREE`
   SOL-CACHE-TEST-ISOLATION (new node), §5 — same commit.
+- **2026-07-12** — **T2.54: `hexpm_user`'s email + GitHub/X pivots were dead
+  against the live API — restored; first slice of a fresh field-decode
+  cluster.** Confirmed against the real `hex.pm/api/users/{u}`: the top-level
+  `email` (a real personal address) was never deserialised, and the `handles`
+  map is keyed by display names (`"GitHub"`, `"X.com"`) with full-URL values,
+  so the module's `match "github"/"twitter"` never fired — its entire
+  advertised enrichment silently produced nothing (its tests passed only on a
+  fabricated shape). Added `email`+`inserted_at` to `HexUser` (+`Email`
+  entity, account-age evidence), matched handles on the lowercased key,
+  extracted the handle from the URL value (`handle_from_link`), and sorted the
+  `HashMap` iteration for determinism. 11 tests (was 7), incl. a
+  real-body deser regression, git-stash-proven. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4605 lib tests). Live-verified
+  end-to-end: a real `wojtekmach` scan now recovers `wojtek@wojtekmach.pl` and
+  the GitHub + X/Twitter cross-platform pivots (was neither pre-fix).
+  **Paired:** `SOLUTION_TREE` SOL-PROVIDER-FIELD-DECODE (new node), §5 — same
+  commit.

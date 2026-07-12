@@ -90,6 +90,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`hexpm_user` now recovers the published email and GitHub/X cross-platform
+  handles again.** The hex.pm profile API returns a real personal email plus a
+  `handles` map keyed by display names (`GitHub`, `X.com`) with profile-URL
+  values; the module never parsed the email and matched handles on the wrong
+  key format, so it silently emitted neither on every scan. It now surfaces
+  the email as an Email entity and the GitHub/X links as cross-platform
+  username pivots (plus the account-creation date).
 - **Two `see_know` cache tests no longer flake under the parallel test suite**
   (internal/CI reliability). Their read-after-write on the process-global
   SeekNow response cache could be cleared by an unrelated concurrent
