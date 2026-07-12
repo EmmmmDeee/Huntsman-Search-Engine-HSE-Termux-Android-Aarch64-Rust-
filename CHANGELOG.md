@@ -78,6 +78,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`sourceforge_user` works again — and returns more — after SourceForge
+  removed its legacy user API.** The old `/api/user/username={h}/json`
+  endpoint now 404s for every real user, so the module had been silently
+  emitting nothing. It now uses the Allura REST endpoint `/rest/u/{handle}`,
+  which additionally provides the account-creation date, personal homepage,
+  and linked social accounts. A live scan of a real SourceForge handle now
+  recovers the confirmed username, profile URL, and the developer's real
+  name again.
 - **`huggingface_user` works again after Hugging Face migrated its profile
   API.** The old `GET /api/users/{handle}` endpoint now returns 404 for every
   real user, so the module had been silently emitting nothing on every

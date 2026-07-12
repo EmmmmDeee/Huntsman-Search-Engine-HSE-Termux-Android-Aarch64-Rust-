@@ -2013,6 +2013,47 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   ZERO, with the real `account_created` `2019-11-23T17:38:57Z` carried on
   the evidence. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 2),
   §5 — same commit.
+- **`[x]` T2.50 · `sourceforge_user` silently died when SourceForge removed
+  its legacy user API — restored (and enriched) by moving to the Allura
+  `/rest/u/` endpoint** — third slice of the provider-integration overhaul.
+  The module queried `GET /api/user/username={handle}/json`, which now
+  returns SourceForge's HTML **`404`** page for every real user
+  (live-confirmed against `jonelo`, a long-standing SF author);
+  `fetch_json_or_404` read that as a clean "no such user," so the module
+  emitted nothing on every username scan. **P2** (silent coverage loss on
+  the oldest large OSS-hosting platform — a `code`-family population largely
+  invisible to GitHub/GitLab/Bitbucket, i.e. exactly the corroboration this
+  source exists to add). The live endpoint is the Allura REST
+  `GET /rest/u/{handle}`, a **richer** shape than the legacy one: the handle
+  is `name`, the real/display name moved into a `developers[]` array (the
+  record whose `username` matches the handle), and it adds `creation_date`,
+  `external_homepage`, and `socialnetworks[]`. It no longer carries the
+  legacy free-text bio (`about`) or self-reported `location`, so the
+  Email/Address/Coordinates those produced are gone.
+  → **Solution:** repointed `process()` to `/rest/u/{handle}`; rewrote
+  `SfUser` to the Allura shape (+ `SfSocial`/`SfDeveloper` sub-structs);
+  the real name now comes from the matching `developers[]` record (guarded so
+  a non-matching developer record can't be misattributed); added the real
+  `account_created` date as evidence, and NEW extraction of the personal
+  `external_homepage` (Url + derived Domain) and non-placeholder
+  `socialnetworks[]` account URLs (cross-platform social pivots). Dropped the
+  now-absent bio-email and location extraction; updated `produces()`
+  (`Username`/`Person`/`Url`/`Domain`; `Email`/`Address`/`Coordinates`
+  removed) and `attack_techniques()` (now `T1589.003`/`T1593.001`/
+  `T1593.003`; the email `T1589.002` and location `T1591.001` dropped with
+  their fields). 11 tests (was 8): incl.
+  `deserialises_the_real_rest_u_response_shape` (a body trimmed verbatim from
+  a real `jonelo` `/rest/u/` response) and a non-matching-developer guard
+  test — git-stash-proven to fail against the pre-fix module (compile error —
+  the old `SfUser` has no `creation_date`/`developers`) and pass against the
+  fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4610 lib tests, +3). Live-verified end-to-end against the REAL
+  API: `hse scan --kind username --value jonelo --modules sourceforge_user`
+  now recovers the confirmed handle, profile URL, and the **real name
+  "Johann N. Löfflmann"** (from `developers[].name`) with the real
+  `2011-03-12` creation date — where the pre-fix module emitted ZERO.
+  **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 3), §5 — same
+  commit.
 
 ---
 
@@ -7227,3 +7268,24 @@ way, so this specific drift class can't recur silently again.
   entities (was 0 pre-fix), carrying the real 2019 account-creation date.
   **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 2), §5 — same
   commit.
+- **2026-07-12** — **T2.50: `sourceforge_user` was silently dead — SF removed
+  its legacy user API — restored + enriched via the Allura `/rest/u/`
+  endpoint; slice 3 of the provider-integration overhaul.** The module's
+  `GET /api/user/username={h}/json` now returns SourceForge's HTML 404 for
+  every real user (live-confirmed against `jonelo`), read as a clean "no such
+  user," so the module emitted nothing on every scan. The live Allura
+  endpoint `GET /rest/u/{handle}` is richer: handle in `name`, real name in a
+  matching `developers[]` record, plus `creation_date`, `external_homepage`,
+  and `socialnetworks[]`. Repointed the endpoint, rewrote `SfUser` (+
+  `SfSocial`/`SfDeveloper`), took the real name from the matching developer
+  record (guarded against misattribution), added the `account_created` date
+  as evidence, and NEW homepage (Url+Domain) + social-account-URL extraction;
+  dropped the now-absent bio-email/location extraction and updated
+  `produces()`/`attack_techniques()` to match. 11 tests (was 8), incl. a
+  real-`/rest/u/`-body deser regression, git-stash-proven (compile error
+  pre-fix). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4610 lib tests, +3). Live-verified end-to-end: a real `jonelo`
+  scan now recovers the confirmed handle, profile URL, and the real name
+  "Johann N. Löfflmann" with the real 2011-03-12 creation date — was 0
+  pre-fix. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 3), §5 —
+  same commit.

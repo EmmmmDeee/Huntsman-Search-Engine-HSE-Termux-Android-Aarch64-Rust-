@@ -1361,9 +1361,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   gate green (4607 lib tests); live-verified end-to-end — a real `julien-c`
   scan now emits **70 real entities** (was 0 pre-fix) carrying the real 2019
   account-creation date.
-  *Remaining (tracked):* `sourceforge_user`, `opencorporates`, `mls` — one
-  focused live-verified commit each. **Paired:** `PROBLEM_TREE` T2.48 (slice
-  1), T2.49 (slice 2) — each its own commit.
+  **Slice 3 delivered — `sourceforge_user`:** SF removed its legacy
+  `/api/user/username={h}/json` endpoint (now an HTML `404` for every real
+  user), so the module emitted nothing on every scan. Repointed to the Allura
+  `GET /rest/u/{handle}` — a richer shape (handle in `name`, real name in a
+  matching `developers[]` record, plus `creation_date`, `external_homepage`,
+  `socialnetworks[]`). Rewrote the deserializer, took the real name from the
+  matching developer record (guarded against misattribution), added the
+  account-created date as evidence and NEW homepage (Url+Domain) +
+  social-account-URL extraction, dropped the now-absent bio-email/location
+  extraction, updated `produces()`/`attack_techniques()`. ✅
+  real-`/rest/u/`-body deser regression + 10 others, git-stash-proven; gate
+  green (4610 lib tests, +3); live-verified end-to-end — a real `jonelo` scan
+  recovers the confirmed handle, profile URL, and the real name "Johann N.
+  Löfflmann" with the real 2011 creation date (was 0 pre-fix).
+  *Remaining (tracked):* `opencorporates` (Free→KeyGated, domainsdb
+  template), `mls` (Mozilla Location Service decommissioned — a
+  delete-or-repoint decision). **Paired:** `PROBLEM_TREE` T2.48 (slice 1),
+  T2.49 (slice 2), T2.50 (slice 3) — each its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5190,3 +5205,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `julien-c` scan now emits 70 real entities (was 0 pre-fix), carrying the
   real 2019 account-creation date. Paired: `PROBLEM_TREE` T2.49 — same
   commit.
+- **2026-07-12** — **SOL-PROVIDER-OVERHAUL slice 3: repaired + enriched
+  `sourceforge_user` after SF removed its legacy user API.**
+  `GET /api/user/username={h}/json` now returns SourceForge's HTML 404 for
+  every real user (live-confirmed against `jonelo`), read as a clean "no such
+  user," so the module emitted nothing on every scan. The live Allura
+  endpoint `GET /rest/u/{handle}` is a richer shape: handle in `name`, real
+  name in the matching `developers[]` record, plus `creation_date`,
+  `external_homepage`, `socialnetworks[]`. Repointed the endpoint, rewrote
+  `SfUser` (+ `SfSocial`/`SfDeveloper`), took the real name from the matching
+  developer record (guarded against misattributing a non-matching record),
+  added the account-created date as evidence and NEW homepage (Url+Domain) +
+  social-account-URL extraction, dropped the now-absent bio-email/location
+  extraction, and updated `produces()`/`attack_techniques()` (email/location
+  techniques removed; `T1593.001` social added). 11 tests (was 8), incl. a
+  real-`/rest/u/`-body deser regression + a non-matching-developer guard,
+  git-stash-proven (compile error pre-fix). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4610 lib tests). Live-verified
+  end-to-end against the REAL API: a real `jonelo` scan recovers the confirmed
+  handle, profile URL, and the real name "Johann N. Löfflmann" (from
+  `developers[].name`) with the real 2011-03-12 creation date — was 0 pre-fix.
+  Paired: `PROBLEM_TREE` T2.50 — same commit.
