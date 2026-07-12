@@ -350,8 +350,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   destination).
 - **`[x]` SOL-REDACT · Credential redaction** — `redact_credentials` (param + literal
   `HUNTSMAN_*` passes) on error bodies/URLs; only `key_tail` (last-4) is ever logged.
-  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap:* the archived
-  **success body** isn't run through `redact_literal_secrets` — **§7 S4** residual. ◑
+  *Closes:* the key-in-URL **log** exposure (S4 mostly mitigated). *Gap (closed
+  2026-07-12):* the archived success body isn't run through
+  `redact_literal_secrets` on disk — and, investigated this cycle, that is a
+  **deliberate operator policy** (`util::raw_archive`'s own doc comment: "never
+  encrypted, hashed, or redacted" for the paid-data retention archive), not a
+  gap to close by touching the archive file. The residual EXPOSURE was instead
+  in the dossier's rendering of that archive: `cli::export::renderers::
+  render_full`'s "RAW SOURCE RECORDS" section pretty-printed the raw body
+  verbatim with no masking, and while the auto-written dossier is 0600, an
+  explicit `hse export -o <path>` is deliberately left to the user's umask
+  (this same node's note above) — so an upstream provider echoing our
+  `api_key=…` back in its response body could ride a shared/exported dossier
+  out to a world-readable file. Fixed at the render site, not the archive: new
+  `render_raw_response_body` runs `redact_credentials` over the pretty-printed
+  body before embedding it, leaving `raw/*.json` on disk byte-for-byte
+  untouched. **§7 S4** ✅ fully closed.
 - **`[x]` SOL-INSTALL-INTEGRITY · sha256 sidecar required for auto-discovered prebuilt** —
   `_validate_prebuilt` in `install.sh` accepts a second arg `require_sha` (default 1 for
   auto-discovered binaries, 0 for explicitly-set `HSE_PREBUILT`). When `require_sha=1`:
@@ -1202,7 +1216,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-LIVE-DISPATCH-BUDGET | T2.11 LOW over-dispatch | `[x]` |
 | SOL-SSRF / -WHOIS | §6 (HTTP) · §7 S2 | `[x]`/`[x]` |
 | SOL-SECRETS / -EXTEND | env/pool/archive · §7 S3 | `[x]`/`[x]` |
-| SOL-REDACT | §7 S4 | ◑ |
+| SOL-REDACT | §7 S4 | `[x]` |
 | SOL-EMBED | §7 S1 (accepted) | `[-]` |
 | SOL-CLI-CONTRACT / -DIFF / -CACHE | T2.12 | `[x]`/`[x]`/`[x]` |
 | SOL-ROI-HINT | T2.13 | `[x]` |
@@ -1264,8 +1278,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   rewrite parsers on `bstr`/`aho-corasick`, saved real responses per source).
   **Elevated (cycle 17):** ahpra/acma_rrl/trove_au/`austlii` widen the scraper
   surface; priority remains raised.
-- **§7 S4** — SOL-REDACT residual: archived success body not run through
-  `redact_literal_secrets` (LOW). Contained.
+- ~~**§7 S4**~~ — **delivered** ✅ (SOL-REDACT extended, 2026-07-12). Investigation
+  found the archive FILE itself (`raw/*.json`) is deliberately never redacted
+  (an explicit operator retention policy in `util::raw_archive`'s own doc
+  comment), so the real residual was the dossier's *rendering* of that
+  archive, which an explicit `hse export -o <path>` can carry out to a
+  world-readable file. Fixed at the render site (`redact_credentials` over the
+  pretty-printed body in `render_full`), archive file untouched. Off the open
+  queue.
   *(T2.10/SOL-SCHEMA-VERSION + S5/SOL-INSTALL-INTEGRITY delivered cycle 16 — both off
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
@@ -4763,3 +4783,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   honestly. 1 new regression test. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4584 lib tests, +1).
   Paired: `PROBLEM_TREE` C5, §8 — same commit.
+- **2026-07-12** — **SOL-REDACT extended, closing §7 S4: the dossier's
+  embedded raw-archive body is now redacted at render time, archive file
+  untouched.** Investigating S4's suggested fix surfaced a policy conflict:
+  `util::raw_archive`'s own doc comment declares the on-disk `raw/*.json`
+  retention "never encrypted, hashed, or redacted" — a deliberate operator
+  directive for paid-for data, not an oversight. Redacting the archive file
+  itself would violate that. The real residual was one step downstream:
+  `render_full`'s "RAW SOURCE RECORDS" section embeds the archived body
+  verbatim, and an explicit `hse export -o <path>` is deliberately left to
+  the user's umask (unlike the auto-written 0600 dossier), so an echoed
+  `api_key=…` could leave the device via a shared/exported dossier. Fixed at
+  that render site: new `render_raw_response_body` runs the existing
+  `redact_credentials` over the pretty-printed body before embedding it. 1
+  new regression test (structural `api_key=` masking, no env mutation —
+  deterministic under parallel test execution). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4585 lib tests, +1).
+  Paired: `PROBLEM_TREE` S4, §8 — same commit.

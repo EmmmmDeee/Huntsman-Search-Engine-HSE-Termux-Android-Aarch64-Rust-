@@ -2190,15 +2190,31 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `hse export -o <path>` is left to the user's umask — they chose the destination
   (often to share), so forcing 0600 there would surprise; the internal auto-written
   files are the ones locked down.
-- **S4 · `[ ]` P3 (LOW) — key-in-URL (mostly mitigated, one residual).** ~7 modules
-  put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
-  `opencellid`/`opencorporates`/`mls`). Well-contained: no module logs the keyed URL,
-  `redact_credentials` masks `key=`/`token=` + literal `HUNTSMAN_*` on error paths,
-  `raw_archive` stores only `provider/endpoint/query` (not the URL). *Residual:* the
-  archived success **body** is verbatim, so a key echoed by an upstream persists in
-  `raw/*.json` (0600, but pulled into the non-0600 DB/dossiers via S3). → prefer
-  header auth where supported; optionally `redact_literal_secrets(body,
-  own_api_keys())` the archived body.
+- **S4 · `[x]` P3 (LOW) — key-in-URL (mostly mitigated, one residual, now closed).**
+  ~7 modules put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/
+  `numverify`/`opencellid`/`opencorporates`/`mls`). Well-contained: no module logs
+  the keyed URL, `redact_credentials` masks `key=`/`token=` + literal
+  `HUNTSMAN_*` on error paths, `raw_archive` stores only `provider/endpoint/query`
+  (not the URL). *Residual (closed 2026-07-12):* the archived success **body**
+  is verbatim, so a key echoed by an upstream persists in `raw/*.json` (0600).
+  Investigated before fixing: `util::raw_archive`'s own doc comment states an
+  explicit, deliberate operator policy — *"never encrypted, hashed, or
+  redacted"* — for that on-disk file, since it's the record of data the
+  operator PAID for; redacting it there would override that directive. The
+  real residual risk was one step downstream: `cli::export::renderers::
+  render_full`'s "RAW SOURCE RECORDS" section embeds the archived body
+  verbatim into the dossier, and while the auto-written dossier is 0600, an
+  explicit `hse export -o <path>` is deliberately left to the user's umask
+  (S3's own note) — so an echoed key could ride a shared/exported dossier out
+  to a world-readable file. ✅ **Fixed at the render site, not the archive:**
+  new `render_raw_response_body` runs the existing `redact_credentials` over
+  the pretty-printed body before embedding it in the dossier text; `raw/*.json`
+  on disk stays byte-for-byte untouched, honouring the archive's own retention
+  policy. 1 new regression test (structural `api_key=` masking, no env
+  mutation — deterministic, no parallel-test race). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4585 lib tests, +1).
+  **Paired:** `SOLUTION_TREE` §7 S4 delivered + SOL-REDACT `◑`→`[x]`, §5 — same
+  commit.
 - **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
@@ -6609,3 +6625,23 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   test. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4584 lib tests, +1). **Paired:** `SOLUTION_TREE` §4a cell_local
   auto-sync gap, §5 — same commit.
+- **2026-07-12** — **S4 closed: the dossier's embedded raw-archive body is now
+  redacted at render time, without touching the archive file itself.**
+  Investigating S4's suggested fix ("redact the archived success body")
+  surfaced a real policy conflict: `util::raw_archive`'s own doc comment
+  states the on-disk `raw/*.json` retention is a deliberate, explicit
+  operator directive — *"never encrypted, hashed, or redacted"* — because
+  it's the record of paid-for data. Redacting the archive file would violate
+  that directive. The genuine residual risk was one step downstream instead:
+  `cli::export::renderers::render_full` embeds the archived body verbatim
+  into the dossier's "RAW SOURCE RECORDS" section, and while the
+  auto-written dossier is 0600, an explicit `hse export -o <path>` is
+  deliberately left to the user's umask (S3), so an upstream provider
+  echoing our `api_key=…` back in its response could ride a shared/exported
+  dossier out to a world-readable file. Fixed at that render site: new
+  `render_raw_response_body` runs the existing `redact_credentials` over the
+  pretty-printed body before embedding it; `raw/*.json` on disk stays
+  untouched. 1 new regression test (structural `api_key=` masking, no env
+  mutation). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4585 lib tests, +1). **Paired:** `SOLUTION_TREE` §7 S4 delivered
+  + SOL-REDACT closed, §5 — same commit.

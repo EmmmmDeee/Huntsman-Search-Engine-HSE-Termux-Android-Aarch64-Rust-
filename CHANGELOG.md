@@ -64,6 +64,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **The full dossier's embedded raw-archive body is now redacted before
+  rendering, closing a key-exfiltration path via `hse export -o <path>`.**
+  `render_full`'s "RAW SOURCE RECORDS" section previously embedded each
+  archived API response verbatim; since an explicit export is left to the
+  user's umask (unlike the auto-written 0600 dossier), an upstream provider
+  echoing our request's `api_key=…` back in its response could ride a
+  shared/exported dossier out to a world-readable file. New
+  `render_raw_response_body` runs the existing `redact_credentials` pass
+  over the pretty-printed body first. The on-disk raw archive itself
+  (`raw/*.json`) is untouched — its own documented policy is to retain paid
+  provider data verbatim, never redacted.
 - **`core::exposure`'s Financial disclosure flag no longer scores from a
   drifted, narrower copy of the bank-account-number evidence-attribute-key
   vocabulary.** `FINANCIAL_KEYS` only recognised the bare `bank_account`
