@@ -224,7 +224,6 @@ async fn app_links_live_resolves_apple_team() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = AppLinks
         .process(&Target::new(TargetKind::Domain, "paypal.com"), &ctx)

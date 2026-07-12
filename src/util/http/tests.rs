@@ -105,7 +105,6 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
         http: reqwest::Client::new(),
         keys: HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let resp = |code: u16| {
         reqwest::Response::from(

@@ -182,7 +182,6 @@ async fn process_decodes_npub_offline() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = Nostr
         .process(&Target::new(TargetKind::Username, NPUB), &ctx)
@@ -224,7 +223,6 @@ async fn nostr_live_resolves_nip05() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Email, "_@fiatjaf.com");
     let r = Nostr

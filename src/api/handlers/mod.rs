@@ -97,8 +97,8 @@ pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response:
 /// Wires up everything the background run needs: a [`crate::core::cancel::CancelHandle`]
 /// registered so `POST /scans/{id}/cancel` can stop it, a per-scan HTTP client
 /// stamped with the scan id (`x-huntsman-trace`) so outbound calls correlate in
-/// upstream logs, the shared proxy pool, and the scan-concurrency semaphore that
-/// bounds how many scans run at once on a low-RAM device.
+/// upstream logs, and the scan-concurrency semaphore that bounds how many scans
+/// run at once on a low-RAM device.
 pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, target: Target) {
     let sid = scan.id.clone();
     let cancel = crate::core::cancel::CancelHandle::new();
@@ -111,7 +111,6 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
     // Per-scan client stamped with the scan id (x-huntsman-trace) so outbound
     // calls correlate to this scan in a proxy/upstream log, mirroring the CLI.
     let http_clone = crate::util::http::build_client_with_trace(&sid);
-    let proxy_clone = std::sync::Arc::clone(&state.proxy_pool);
     let engine = Arc::clone(&state.engine);
     let sem = Arc::clone(&state.scan_semaphore);
     let store_clone = Arc::clone(&state.store);
@@ -124,7 +123,6 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
             http: http_clone,
             keys: api_keys,
             cancel,
-            proxy_pool: proxy_clone,
         };
         let Ok(_permit) = sem.acquire().await else {
             tracing::warn!(scan_id = %sid, "scan semaphore closed");

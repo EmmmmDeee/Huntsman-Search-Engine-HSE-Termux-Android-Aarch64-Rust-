@@ -159,7 +159,6 @@ async fn single_token_name_makes_no_request() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = AsicPersons
         .process(&Target::new(TargetKind::FullName, "Madonna"), &ctx)
@@ -191,7 +190,6 @@ async fn asic_persons_live_finds_a_banned_person() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     // A long-standing public entry in the Banned & Disqualified register.
     let r = AsicPersons

@@ -87,7 +87,6 @@ fn test_app(suffix: &str) -> axum::Router {
         http: reqwest::Client::new(),
         allow_key_write: false,
         cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        proxy_pool: Default::default(),
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
         )),
@@ -125,7 +124,6 @@ fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
         http: reqwest::Client::new(),
         allow_key_write: false,
         cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        proxy_pool: Default::default(),
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
         )),

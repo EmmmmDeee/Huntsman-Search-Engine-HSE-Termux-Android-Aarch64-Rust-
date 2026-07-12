@@ -1132,7 +1132,6 @@ async fn radar_persistent_ledger_does_not_re_query_paid_apis_on_covered_seeds() 
         http: build_client(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
 
     // Radar: ONE ledger threaded across three sweeps of the SAME seed → the
@@ -2578,7 +2577,6 @@ async fn entities_are_checkpointed_each_round_for_durability() {
         http: build_client(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
     // depth=1: seed round (email -> username) then expansion (username -> phone).
     let opts = ScanOptions {

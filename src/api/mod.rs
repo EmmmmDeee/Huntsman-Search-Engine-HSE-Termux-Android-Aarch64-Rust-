@@ -189,7 +189,6 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub allow_key_write: bool,
     pub cancellations: CancelRegistry,
-    pub proxy_pool: Arc<crate::util::proxy::ProxyPool>,
     /// Bounds the number of scans running concurrently via the API.
     /// Prevents resource exhaustion from rapid `POST /scans` calls.
     pub scan_semaphore: Arc<tokio::sync::Semaphore>,

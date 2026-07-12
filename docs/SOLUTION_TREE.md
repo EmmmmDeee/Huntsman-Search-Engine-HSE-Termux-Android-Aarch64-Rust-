@@ -1585,9 +1585,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (re-exported-but-uncalled, delete), `TACTIC_ID`/`TACTIC_NAME` (dead attack-vocab
   consts), and the wire-in-vs-delete judgement calls (`refresh_pool`/
   `prune_degraded`/`host_state`/`set_private`/`validate_for_kind`/`shortest_path`
-  + `storage` low-confidence trio) — one careful decision each. **Paired:**
+  + `storage` low-confidence trio) — one careful decision each. **Slice 7
+  delivered — the inert `util::proxy` rotation subsystem (a whole "looks built
+  but isn't" trap):** a re-run wide sweep + hand-verification found
+  `util::proxy::ProxyPool` constructed in every runtime and threaded into
+  `ModuleContext.proxy_pool` with a doc claiming `next()` is called to rotate —
+  but `refresh_pool` (the sole `pool.replace()` caller) has 0 call sites and
+  `next()` has 0 call sites; no module, CLI flag, or route touches it. The
+  earlier sweeps missed it because a `pub` FIELD never trips `dead_code`. The
+  SSRF guards live in `util::preflight`/`util::http::ssrf` (not `util::proxy`),
+  and the live `HUNTSMAN_SEARCH_PROXY` → `fetch_via_proxy` single-proxy path is
+  independent — so the subsystem is self-contained. Decision: DELETE (full
+  auto-harvest+rotation wire-in exceeds one safe pass and can't be proven against
+  flaky free proxies; delete-unwired-scaffolding precedent). Removed
+  `src/util/proxy/` (311 LOC), the field from `ModuleContext`/`AppState`, 8
+  construction sites, ~45 test initializers, stale comments; TIGHTENED
+  `tests/architecture.rs` (removed the now-dead `util::proxy` import exception —
+  a strengthening). ✅ Compiler + clippy `--all-targets` prove completeness;
+  live-verified the deletion left the pipeline intact — the rebuilt binary runs
+  `hse selftest` 9/9 and `hse scan -v Kylo4kylo` dispatched 46 modules → 96
+  entities. Gate green (4565 lib tests, −4 — the proxy module's own tests).
+  *Backlog still banked:* shortest_path / validate_for_kind / prune_degraded /
+  host_state / set_private (empirically redundant — DB already 0600) / TACTIC
+  consts / store_api_credential_from_item. **Paired:**
   `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
-  (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) — each slice its own commit.
+  (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) / T2.70 (slice 7) — each slice
+  its own commit.
 - **`[x]` SOL-ROLE-MAILBOX-COMPOUND · Suppress provider-prefixed system
   mailboxes (DNS SOA / registrar desks) from posing as the subject's email** →
   **T2.68**. Found by a PRIORITY-5 LIVE end-to-end pass (real binary vs the
@@ -5769,6 +5792,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clean, full suite 0 failures (4560 lib tests, unchanged — no tests referenced
   them). No live run applies (unreachable code — that IS the finding). Paired:
   `PROBLEM_TREE` T2.63 — same commit.
+- **2026-07-12** — **SOL-DEADCODE-SWEEP slice 7: deleted the inert proxy-rotation
+  subsystem — a whole "looks built but isn't" trap the earlier sweeps missed
+  because it hides behind a `pub` FIELD, not a `dead_code` lint.** A re-run wide
+  reference-count sweep + hand-verification found `util::proxy::ProxyPool`
+  constructed as `ProxyPool::new()` in every runtime (scan/serve/live/radar/
+  provision/api) and threaded into `ModuleContext.proxy_pool` with a doc-comment
+  asserting "modules call `ctx.proxy_pool.next()` to rotate" — but NOTHING fills
+  the pool (`refresh_pool`, the sole `pool.replace()` caller, has 0 call sites)
+  and NOTHING reads it (`next()` has 0 call sites; no module, CLI flag, or
+  route). A stale `search_engines/fetch` comment claimed a proxy-pool fallback
+  that was never wired; the real live proxy path is the independent
+  `HUNTSMAN_SEARCH_PROXY` → `util::curl::fetch_via_proxy` single upstream, which
+  stays. The SSRF guards live in `util::preflight`/`util::http::ssrf`, NOT
+  `util::proxy`, so the subsystem is self-contained. Decision: DELETE — wiring
+  auto-harvest+rotation fully (fill on startup AND route every module's HTTP
+  through `next()`, then validate against live proxies) exceeds one safe pass and
+  can't be reliably proven (free-proxy harvesting is flaky), and the doctrine's
+  precedent is to delete unwired scaffolding. Removed `src/util/proxy/` (311
+  LOC), the field from `ModuleContext`/`AppState`, all 8 construction sites, ~45
+  test-harness initializers, and the stale comments; TIGHTENED
+  `tests/architecture.rs` by removing the now-obsolete `util::proxy::ProxyPool`
+  exception to "core must not import util" (a strengthening, never a weaken).
+  Compiler + clippy `-D warnings` across `--all-targets` prove the removal
+  complete (no dangling refs, no newly-dead cascade). ✅ Live-verified (a deletion
+  has no wire-in run, but the field was threaded through every dispatch, so the
+  live scan path IS the proof): the rebuilt binary runs `hse selftest` 9/9 and
+  `hse scan -v Kylo4kylo` dispatched 46 modules → 96 entities — the
+  `ModuleContext` pipeline intact without the field. Gate green: fmt/clippy/
+  rustdoc clean, full suite 0 failures (4565 lib tests, −4 — the proxy module's
+  own tests, deleted with it). Paired: `PROBLEM_TREE` T2.70 — same commit.
 - **2026-07-12** — **New SOL-RANDOMIZED-MAC: the OUI classifier now flags
   randomized (private) MAC addresses instead of attributing them as real
   devices.** Surfaced by a real 1,643-device Android BLE-radar export the

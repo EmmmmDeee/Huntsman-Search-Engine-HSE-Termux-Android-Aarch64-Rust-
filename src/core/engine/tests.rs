@@ -1579,7 +1579,6 @@ async fn run_bench_scan(max_entities: usize) -> (usize, std::time::Duration) {
         http: crate::util::http::build_client(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
     let start = std::time::Instant::now();
     let _ = engine.run(scan, target, ctx).await;
@@ -1970,7 +1969,6 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
             http: crate::util::http::build_client(),
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
         let cx = DispatchCx {
@@ -2106,7 +2104,6 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
         http: crate::util::http::build_client(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
     let cx = DispatchCx {
         scan_id: "overdispatch-scan",

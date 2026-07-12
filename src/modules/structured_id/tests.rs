@@ -129,7 +129,6 @@ async fn process_decodes_uuid_v1_to_mac_and_time() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = StructuredId
         .process(&Target::new(TargetKind::Username, &u), &ctx)

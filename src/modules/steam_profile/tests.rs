@@ -116,7 +116,6 @@ async fn steam_profile_live_resolves_a_public_vanity() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     // A well-known public vanity reliably resolves to a profile (the Url is
     // emitted whenever the SteamID64 is visible, regardless of privacy).

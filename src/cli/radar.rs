@@ -135,7 +135,6 @@ pub(super) async fn cmd_radar(
             http: build_client(),
             keys: sweep_keys,
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
         let sweep_result =
@@ -225,7 +224,6 @@ pub(super) async fn cmd_radar(
                     http: build_client(),
                     keys: pivot_keys,
                     cancel: crate::core::cancel::CancelHandle::new(),
-                    proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
                 };
 
                 let result =

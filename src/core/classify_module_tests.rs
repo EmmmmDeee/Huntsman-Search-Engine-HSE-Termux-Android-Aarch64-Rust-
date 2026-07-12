@@ -12,7 +12,6 @@ fn ctx_with_rx() -> (ModuleContext, tokio::sync::broadcast::Receiver<Event>) {
         http: reqwest::Client::new(),
         keys: HashMap::new(),
         cancel: CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     (ctx, rx)
 }

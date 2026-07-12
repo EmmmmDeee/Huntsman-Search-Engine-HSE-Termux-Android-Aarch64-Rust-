@@ -162,8 +162,8 @@ async fn curl_exec(
         cmd.args(["-d", data]);
     }
 
-    // Override (from the proxy pool) wins; otherwise rotate through the
-    // HUNTSMAN_SEARCH_PROXY list (single value behaves as before).
+    // An explicit override (from `fetch_via_proxy`) wins; otherwise rotate
+    // through the HUNTSMAN_SEARCH_PROXY list (single value behaves as before).
     let proxy = proxy_override
         .map(str::to_string)
         .or_else(rotating_search_proxy);

@@ -24,7 +24,6 @@
 //! path, not just parsing.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
 use huntsman_search_engine::{
     core::{
@@ -33,7 +32,7 @@ use huntsman_search_engine::{
         scan::{Target, TargetKind},
     },
     modules,
-    util::{http::build_client, proxy::ProxyPool},
+    util::http::build_client,
 };
 
 /// A real, network-capable module context — the production SSRF-guarded client,
@@ -49,7 +48,6 @@ fn live_ctx() -> ModuleContext {
         http: CLIENT.get_or_init(build_client).clone(),
         keys: HashMap::new(),
         cancel: CancelHandle::new(),
-        proxy_pool: Arc::new(ProxyPool::new()),
     }
 }
 

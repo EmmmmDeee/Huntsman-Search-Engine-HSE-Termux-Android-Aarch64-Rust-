@@ -61,7 +61,6 @@ async fn missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty() {
         http: crate::util::http::build_client(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
     let err = OpenCorporates
         .process(&Target::new(TargetKind::Organisation, "Atlassian"), &ctx)

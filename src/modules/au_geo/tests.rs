@@ -111,7 +111,6 @@ async fn non_au_or_malformed_coordinate_makes_no_request() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let london = AuGeo
         .process(&Target::new(TargetKind::Coordinates, "51.5074,-0.1276"), &ctx)
@@ -150,7 +149,6 @@ async fn au_geo_live_resolves_sydney() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     // Sydney Opera House.
     let r = AuGeo

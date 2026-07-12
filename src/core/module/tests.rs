@@ -9,7 +9,6 @@ use super::*;
             http: reqwest::Client::new(),
             keys,
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Default::default(),
         }
     }
 

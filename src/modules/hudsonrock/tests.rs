@@ -26,7 +26,6 @@ use super::*;
             http: crate::util::http::build_client(),
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
         let r = HudsonRock
             .process(&Target::new(TargetKind::Username, "javery88"), &ctx)
@@ -50,7 +49,6 @@ use super::*;
             http: crate::util::http::build_client(),
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
         let r = HudsonRock
             .process(
@@ -228,7 +226,6 @@ use super::*;
             http: crate::util::http::build_client(),
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
         let r = HudsonRock
             .process(&Target::new(TargetKind::Email, "notanemail"), &ctx)

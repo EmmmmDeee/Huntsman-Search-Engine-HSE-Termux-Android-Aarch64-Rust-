@@ -238,7 +238,6 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
         http: crate::util::http::build_client_with_trace(&sid),
         keys,
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
 
     // Wire an operator Ctrl-C to the engine's cooperative cancel flag — without

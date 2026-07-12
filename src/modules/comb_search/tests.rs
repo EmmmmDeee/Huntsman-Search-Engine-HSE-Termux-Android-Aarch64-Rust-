@@ -110,7 +110,6 @@ async fn comb_search_live_fetches_real_credentials_for_a_domain() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Domain, "example.com");
     let result = CombSearch

@@ -41,7 +41,6 @@ pub mod oui;
 pub mod phone;
 pub mod postcode_au;
 pub mod preflight;
-pub mod proxy;
 pub mod raw_archive;
 pub mod response_cache;
 pub mod scan;

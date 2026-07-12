@@ -146,7 +146,6 @@ async fn github_commits_live_resolves_a_known_email() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Email, "torvalds@linux-foundation.org");
     let r = GithubCommits

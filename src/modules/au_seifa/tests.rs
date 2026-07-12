@@ -69,7 +69,6 @@ async fn non_au_or_malformed_coordinate_makes_no_request() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     // Outside the AU bbox → returns before any network I/O (offline in CI).
     let london = AuSeifa
@@ -107,7 +106,6 @@ async fn au_seifa_live_resolves_sydney() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = AuSeifa
         .process(&Target::new(TargetKind::Coordinates, "-33.8568,151.2153"), &ctx)

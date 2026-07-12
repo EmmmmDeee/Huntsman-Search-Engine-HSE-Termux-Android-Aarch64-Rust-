@@ -38,6 +38,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Removed
+- **Removed the inert proxy-rotation subsystem.** An automatic proxy
+  harvest-and-rotate pool was plumbed through the scan engine's module context
+  (and constructed by every entry point) but was never actually used: nothing
+  filled the pool and nothing read from it — no module, CLI flag, or route ever
+  routed a request through it. It was dead scaffolding that made the code look
+  like it had a live proxy-rotation feature when it did not. The whole subsystem
+  is deleted; the real, working proxy option — the `HUNTSMAN_SEARCH_PROXY`
+  environment variable for a single upstream proxy on search fetches — is
+  unchanged. No user-facing behavior change.
 - **Removed two unused internal helper functions** — `util::curl::fetch_post`
   (a redundant POST variant; the user-agent-specific `fetch_post_with_ua` is
   still used) and `util::key_pool::pool::set_environment` (post-hoc key

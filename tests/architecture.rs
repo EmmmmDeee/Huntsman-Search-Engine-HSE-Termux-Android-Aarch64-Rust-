@@ -86,8 +86,7 @@ fn core_does_not_import_util_directly() {
     let allowed: Vec<String> = v
         .into_iter()
         .filter(|line| {
-            !line.contains("util::proxy::ProxyPool")
-                && !line.contains("util::key_pool")
+            !line.contains("util::key_pool")
                 && !line.contains("util::key_roi")
                 && !line.contains("util::geohash")
                 // Pure, offline computational geometry (convex hull, geometric
@@ -251,7 +250,7 @@ fn core_does_not_import_util_directly() {
         .collect();
     assert!(
         allowed.is_empty(),
-        "core/ must not import util/ (except proxy::ProxyPool on ModuleContext).\nViolations:\n{}",
+        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\nViolations:\n{}",
         allowed.join("\n")
     );
 }

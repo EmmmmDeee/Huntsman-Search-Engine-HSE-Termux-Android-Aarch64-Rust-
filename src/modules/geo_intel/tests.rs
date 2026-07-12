@@ -86,7 +86,6 @@ fn offline_ctx() -> ModuleContext {
         http: crate::util::http::build_client(),
         keys: std::collections::HashMap::default(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     }
 }
 
