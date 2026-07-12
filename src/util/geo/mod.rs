@@ -38,7 +38,7 @@ pub fn parse_coords(value: &str) -> Result<(f64, f64)> {
 /// Canonical validity check for a geographic coordinate, shared by every
 /// module that turns an external lat/lon into a `Coordinates` entity (the
 /// forward geocoders `geocode`/`photon`/`overpass`, the precise-fix sources
-/// `geo_intel`/`exif_geo`/`wifi_intel`/`cell_intel`/`mls`, …). Modules
+/// `geo_intel`/`exif_geo`/`wifi_intel`/`cell_intel`, …). Modules
 /// previously hand-rolled some subset of these guards — most only rejected
 /// `0,0` and let out-of-range/NaN values through, which then became
 /// high-confidence false fixes that poison the geo-cluster correlator. One

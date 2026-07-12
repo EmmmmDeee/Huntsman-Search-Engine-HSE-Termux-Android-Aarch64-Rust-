@@ -37,6 +37,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `search_engines`/… — any module with 3+ consecutive failures across
   recent scans, with its last-success date and last error).
 
+### Removed
+- **The `mls` module (Mozilla Location Service) was deleted** — Mozilla
+  permanently decommissioned the service (its geolocate endpoint now 404s),
+  so the module always returned nothing. BSSID geolocation is unaffected:
+  `mylnikov` (free) and `wigle` already cover the same lookup. The module
+  total is now 161.
+
 ### Changed
 - **`domainsdb` moved from the free tier to key-gated** (its provider
   disabled anonymous access — see Fixed) — it now appears in the Settings

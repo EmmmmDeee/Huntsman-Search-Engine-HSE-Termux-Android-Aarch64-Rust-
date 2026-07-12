@@ -105,7 +105,6 @@ pub mod leakix;
 pub mod lobsters;
 pub mod local_net;
 pub mod mastodon_user;
-pub mod mls;
 pub mod mylnikov;
 pub mod name_intel;
 pub mod netblock;
@@ -417,7 +416,6 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(numverify::NumVerify),
             Arc::new(photon::Photon),
             Arc::new(mylnikov::Mylnikov),
-            Arc::new(mls::Mls),
             Arc::new(exif_geo::ExifGeo),
             Arc::new(overpass::Overpass),
             Arc::new(qld_cadastre::QldCadastre),

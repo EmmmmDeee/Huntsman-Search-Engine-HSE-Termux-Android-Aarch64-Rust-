@@ -2087,6 +2087,40 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   behaviour, which is what every unconfigured operator now hits, is what was
   broken and is verified.) **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL
   (slice 4), §5 — same commit.
+- **`[x]` T2.52 · `mls` (Mozilla Location Service) permanently decommissioned —
+  a dead module always returning nothing — deleted** — fifth and final slice
+  of the provider-integration overhaul, closing the audit's confirmed
+  break-set. Mozilla retired MLS; a `POST
+  https://location.services.mozilla.com/v1/geolocate` now returns **`404`**
+  (host still resolves via Fastly, root path 200s — so it's the API that's
+  gone, not connectivity). The module (`accepts` `MacAddress` → `Coordinates`)
+  swallowed the 404 into an empty result, so every BSSID geolocation via it
+  emitted nothing. Its own doc described it as a redundant "third
+  corroboration source alongside WiGLE and Mylnikov" — and **`mylnikov`**
+  (`api.mylnikov.org`, free, no key, live-confirmed `200`) plus **`wigle`**
+  already cover the identical `MacAddress`→`Coordinates` lookup, so the
+  capability is fully preserved. **Decision: delete** (per the dead-code
+  doctrine: a permanently-dead module is a "looks built but isn't" trap, and
+  repointing it would merely duplicate `mylnikov`). **P2** (codebase-health +
+  honesty — a registered module that can never produce a result).
+  → **Solution:** removed `src/modules/mls/` (mod.rs + tests.rs), the
+  `pub mod mls;` + `Arc::new(mls::Mls)` registry wiring, and two stale
+  doc-comment mentions (`util::geo`, `util::keys::tests`). Reconciled the
+  module counts the deletion (and this session's two earlier Free→KeyGated
+  reclassifications — `domainsdb`, `opencorporates` — which had left the tier
+  split stale) touched: README `162`→`161` modules (all 3 headline mentions,
+  guarded by `readme_module_overview_count_matches_registry`) with the tier
+  split corrected to `126 free, 35 key-gated/paid`; `docs/MODULES.md`
+  catalogue header to `161 modules: 126 free · 30 key-gated · 5 paid`, the
+  `mls` row removed (still passes `modules_md_lists_every_registered_module`),
+  and the `domainsdb`/`opencorporates` rows' stale `free`→`key_gated` cost
+  corrected. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4601 lib tests, −5 with the module's own tests; the two count
+  arch-tests confirm 161). Live-verified: `hse modules` no longer lists `mls`
+  while `mylnikov` + `wigle` remain, so BSSID geolocation still has two live
+  sources. **This closes the provider-integration audit's full confirmed
+  break-set (T2.48–T2.52).** **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL
+  `[~]`→`[x]` (slice 5), §5 — same commit.
 
 ---
 
@@ -7337,3 +7371,20 @@ way, so this specific drift class can't recur silently again.
   tests). Live-verified against the REAL API: no key → `skipped — needs key
   HUNTSMAN_OPENCORP_KEY` on a real `Atlassian` scan. **Paired:**
   `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 4), §5 — same commit.
+- **2026-07-12** — **T2.52: `mls` (Mozilla Location Service) permanently
+  decommissioned — deleted; slice 5, closing the provider-overhaul audit's
+  confirmed break-set (T2.48–T2.52).** Mozilla retired MLS; its `geolocate`
+  endpoint now 404s (host resolves, root 200s — the API is gone). The module
+  swallowed the 404 into empty, so BSSID geolocation via it always produced
+  nothing. Its own doc called it a redundant "third source alongside WiGLE
+  and Mylnikov," and `mylnikov` (free, live) + `wigle` already cover the same
+  `MacAddress`→`Coordinates` lookup, so deleting it loses no capability —
+  the honest call for a permanently-dead "looks built but isn't" module.
+  Removed the module + registry wiring + 2 doc-comment mentions; reconciled
+  the module counts (README/MODULES.md `162`→`161`, tier split corrected for
+  this and the earlier domainsdb/opencorporates reclassifications; `mls` row
+  removed; stale free→key_gated labels fixed). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4601 lib tests; the two
+  module-count arch-tests confirm 161). Live-verified: `hse modules` no
+  longer lists `mls`; `mylnikov` + `wigle` remain. **Paired:** `SOLUTION_TREE`
+  SOL-PROVIDER-OVERHAUL `[~]`→`[x]`, §5 — same commit.

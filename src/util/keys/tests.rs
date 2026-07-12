@@ -8,7 +8,7 @@ fn resolve_or_default_policy() {
     assert_eq!(resolve_or_default(Some("real-key"), "default"), "real-key");
     assert_eq!(resolve_or_default(None, "default"), "default");
     // A present-but-empty value falls back to the default rather than being
-    // used verbatim — the bug the wigle/wifi_intel/mls modules had before
+    // used verbatim — the bug the wigle/wifi_intel modules had before
     // they were routed through this function.
     assert_eq!(resolve_or_default(Some(""), "default"), "default");
 }

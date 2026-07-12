@@ -1318,7 +1318,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   exercised live — deliberately forcing one against a real account would be
   abusive and was not attempted, named honestly as the fallback the
   local-server test covers instead.
-- **`[~]` SOL-PROVIDER-OVERHAUL · Audit & repair the entire external
+- **`[x]` SOL-PROVIDER-OVERHAUL · Audit & repair the entire external
   provider-integration layer** → **T2.48** (first slice), an operator-directed
   program: "completely overhaul and automatically populate the entire API
   system" (scope confirmed via `AskUserQuestion` = external OSINT provider
@@ -1386,10 +1386,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   git-stash-proven (runtime assertion failure pre-fix); gate green (4611 lib
   tests); live-verified against the REAL API (no key → `skipped — needs key
   HUNTSMAN_OPENCORP_KEY` on a real `Atlassian` scan).
-  *Remaining (tracked):* `mls` (Mozilla Location Service decommissioned — a
-  delete-or-repoint decision, its own slice). **Paired:** `PROBLEM_TREE`
-  T2.48 (slice 1), T2.49 (slice 2), T2.50 (slice 3), T2.51 (slice 4) — each
-  its own commit.
+  **Slice 5 delivered — `mls` deleted (node now `[x]`):** Mozilla Location
+  Service was permanently decommissioned (its `geolocate` endpoint 404s); the
+  module swallowed the 404 into empty, so BSSID geolocation via it always
+  produced nothing. Its own doc called it a redundant "third source alongside
+  WiGLE and Mylnikov," and `mylnikov` (free, live) + `wigle` already cover the
+  same `MacAddress`→`Coordinates` lookup — so it was deleted (no capability
+  lost; a permanently-dead "looks built but isn't" module removed per the
+  dead-code doctrine, rather than repointed into a duplicate of `mylnikov`).
+  Removed the module + registry wiring + 2 doc-comment mentions, and
+  reconciled the module counts across README/`MODULES.md` (`162`→`161`; tier
+  split corrected for this deletion and the earlier domainsdb/opencorporates
+  reclassifications). ✅ gate green (4601 lib tests; the two module-count
+  arch-tests confirm 161); live-verified (`hse modules` no longer lists
+  `mls`; `mylnikov`+`wigle` remain).
+  **All five audit-confirmed breaks (T2.48–T2.52) are now closed**, so the
+  node is complete `[x]` — the entire external provider-integration layer was
+  live-audited and every confirmed break repaired or retired. (Provider APIs
+  drift over time; a future live audit finding new breakage would open a
+  fresh node rather than reopen this one.) **Paired:** `PROBLEM_TREE` T2.48
+  (slice 1), T2.49 (slice 2), T2.50 (slice 3), T2.51 (slice 4), T2.52
+  (slice 5) — each its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5252,3 +5269,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   needs key HUNTSMAN_OPENCORP_KEY` on a real `Atlassian` organisation scan;
   `--free-only` filters it out up front. Paired: `PROBLEM_TREE` T2.51 — same
   commit.
+- **2026-07-12** — **SOL-PROVIDER-OVERHAUL slice 5 (node `[~]`→`[x]`): deleted
+  the decommissioned `mls` module, closing the audit's confirmed break-set
+  (T2.48–T2.52).** Mozilla retired MLS; its `geolocate` endpoint 404s and the
+  module swallowed that into empty, so BSSID geolocation via it always
+  produced nothing. Its own doc called it a redundant "third source alongside
+  WiGLE and Mylnikov," and `mylnikov` (free, live) + `wigle` already cover the
+  identical `MacAddress`→`Coordinates` lookup — so it was deleted rather than
+  repointed into a duplicate. Removed the module + registry wiring + 2 stale
+  doc-comment mentions, and reconciled the module counts across
+  README/`MODULES.md` (`162`→`161`, tier split corrected for this deletion and
+  the earlier domainsdb/opencorporates Free→KeyGated reclassifications; `mls`
+  row removed; stale free→key_gated labels fixed). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4601 lib tests; the two
+  module-count arch-tests confirm the live registry is 161). Live-verified:
+  `hse modules` no longer lists `mls`, while `mylnikov` + `wigle` remain.
+  With all five audit-confirmed breaks now repaired or retired, the entire
+  external provider-integration layer has been live-audited and reconciled;
+  the node is complete. Paired: `PROBLEM_TREE` T2.52 — same commit.

@@ -4,7 +4,7 @@ A **module** is a self-contained collector that takes one `Target`, hits a
 data source (or runs a local computation), and emits zero-or-more `Entity`
 records. The engine knows nothing else — every module is a one-file change.
 
-## Catalogue (162 modules: 129 free · 28 key-gated · 5 paid)
+## Catalogue (161 modules: 126 free · 30 key-gated · 5 paid)
 
 > Generated from `hse modules --json`; kept honest by the
 > `modules_md_lists_every_registered_module` CI test. Each module's
@@ -135,7 +135,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `asic_banned_orgs` | organisation | free | no | 112 | organisation, abn_acn |
 | `au_unclaimed` | full_name, organisation | free | no | 114 | address, coordinates, organisation, person |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
-| `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
+| `opencorporates` | full_name, organisation, abn_acn | key_gated | no | 116 | organisation, abn_acn, address |
 | `acnc_charities` | organisation | free | no | 112 | organisation, abn_acn, address, domain |
 | `gleif_lei` | organisation | free | no | 111 | organisation, abn_acn, address |
 | `sanctions_ofac` | full_name, organisation | free | no | 111 | person, organisation |
@@ -159,7 +159,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `crtsh` | email, domain, url | free | no | 29 | domain, email, organisation |
 | `typosquat` | domain | free | no | 34 | domain |
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
-| `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
+| `domainsdb` | full_name, domain, organisation | key_gated | no | 19 | domain |
 
 ### infrastructure (20)
 
@@ -220,7 +220,6 @@ records. The engine knows nothing else — every module is a one-file change.
 | `mylnikov` | mac_address | free | no | 17 | coordinates |
 | `overpass` | coordinates | free | no | 15 | coordinates |
 | `social_location` | — | free | no | 15 | address |
-| `mls` | mac_address | free | no | 12 | coordinates |
 | `wigle` | coordinates, mac_address, ssid | key_gated | no | 10 | coordinates, address, mac_address, organisation |
 | `sunrise_sunset` | coordinates | free | no | 10 | coordinates |
 | `breach_timezone` | email, username, phone | free | **yes** | 7 | address |
