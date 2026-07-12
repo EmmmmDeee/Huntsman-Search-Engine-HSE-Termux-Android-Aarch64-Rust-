@@ -39,6 +39,38 @@ fn module_metadata() {
     // Government / public-records band (see priority() doc).
     assert_eq!(OpenCorporates.priority(), 116);
     assert_eq!(OpenCorporates.max_timeout_ms(), 10_000);
+    // Key-gated since OpenCorporates withdrew its keyless public tier (2023);
+    // a `Free` classification silently swallowed the 401 on every scan.
+    assert!(matches!(
+        OpenCorporates.cost(),
+        crate::core::module::ModuleCost::KeyGated
+    ));
+}
+
+#[tokio::test]
+async fn missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty() {
+    // Regression: the keyless public tier is gone (every anonymous request
+    // 401s), so an unconfigured scan must surface `Error::MissingKey` — which
+    // dispatch renders as a "needs API key" skip with the signup hint — NOT
+    // the `Ok(empty)` the pre-fix `key_opt` + 401-swallow path produced on
+    // every scan, hiding the fact a key is required.
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+    };
+    let err = OpenCorporates
+        .process(&Target::new(TargetKind::Organisation, "Atlassian"), &ctx)
+        .await
+        .expect_err("an unconfigured key must be a MissingKey skip, not a silent empty result");
+    assert!(
+        matches!(err, crate::core::error::Error::MissingKey(ref k) if k == KEY_ENV),
+        "must name the OpenCorporates key env so the operator sees the signup hint: {err:?}"
+    );
 }
 
 #[test]

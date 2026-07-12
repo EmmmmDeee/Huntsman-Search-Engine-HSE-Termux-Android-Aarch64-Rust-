@@ -1375,10 +1375,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   green (4610 lib tests, +3); live-verified end-to-end — a real `jonelo` scan
   recovers the confirmed handle, profile URL, and the real name "Johann N.
   Löfflmann" with the real 2011 creation date (was 0 pre-fix).
-  *Remaining (tracked):* `opencorporates` (Free→KeyGated, domainsdb
-  template), `mls` (Mozilla Location Service decommissioned — a
-  delete-or-repoint decision). **Paired:** `PROBLEM_TREE` T2.48 (slice 1),
-  T2.49 (slice 2), T2.50 (slice 3) — each its own commit.
+  **Slice 4 delivered — `opencorporates`:** OpenCorporates withdrew its
+  keyless public tier (2023) — a keyless request now returns `401 {"Invalid
+  Api Token"}` — but the module used `key_opt` at `Free`, firing a doomed
+  request and swallowing the 401 into an empty result with no needs-key
+  notice. Applied the T2.48 template: `Free`→`KeyGated`, `key_opt`→required
+  `ctx.key(KEY_ENV)?` (clean "needs key" skip when unset), configured-key
+  401/403 reported to the pool instead of swallowed. ✅ 2 tests
+  (`module_metadata` asserts KeyGated + a missing-key process test),
+  git-stash-proven (runtime assertion failure pre-fix); gate green (4611 lib
+  tests); live-verified against the REAL API (no key → `skipped — needs key
+  HUNTSMAN_OPENCORP_KEY` on a real `Atlassian` scan).
+  *Remaining (tracked):* `mls` (Mozilla Location Service decommissioned — a
+  delete-or-repoint decision, its own slice). **Paired:** `PROBLEM_TREE`
+  T2.48 (slice 1), T2.49 (slice 2), T2.50 (slice 3), T2.51 (slice 4) — each
+  its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5226,3 +5237,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   handle, profile URL, and the real name "Johann N. Löfflmann" (from
   `developers[].name`) with the real 2011-03-12 creation date — was 0 pre-fix.
   Paired: `PROBLEM_TREE` T2.50 — same commit.
+- **2026-07-12** — **SOL-PROVIDER-OVERHAUL slice 4: key-gated `opencorporates`
+  (same class as domainsdb).** OpenCorporates withdrew its keyless public tier
+  (2023) — a keyless request now returns `401 {"Invalid Api Token"}` — but the
+  module used `key_opt` at `Free`, firing a doomed request and swallowing the
+  401 into an empty result with no needs-key notice. Applied the T2.48
+  template: `Free`→`KeyGated`, `key_opt`→required `ctx.key(KEY_ENV)?` (clean
+  "needs key" skip when unset), and a configured-key 401/403 reported to the
+  key pool for rotation instead of swallowed. 2 tests (`module_metadata` now
+  asserts KeyGated — a runtime assertion git-stash-proven to fail against the
+  pre-fix `Free`; + a missing-key process test). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4611 lib tests).
+  Live-verified against the REAL API: no key → `dispatch` then `skipped —
+  needs key HUNTSMAN_OPENCORP_KEY` on a real `Atlassian` organisation scan;
+  `--free-only` filters it out up front. Paired: `PROBLEM_TREE` T2.51 — same
+  commit.

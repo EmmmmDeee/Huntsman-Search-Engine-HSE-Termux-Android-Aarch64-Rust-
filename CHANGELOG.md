@@ -42,6 +42,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   disabled anonymous access — see Fixed) — it now appears in the Settings
   key grid and `hse doctor`'s key recommendations, and is skipped by
   `--free-only`.
+- **`opencorporates` moved from the free tier to key-gated** — OpenCorporates
+  withdrew its keyless public tier in 2023, so a keyless scan only ever got a
+  401. An unconfigured scan now cleanly reports that it needs
+  `HUNTSMAN_OPENCORP_KEY` (with a signup hint) instead of silently returning
+  nothing, and `--free-only` skips it up front.
 - **The SPA's UI now runs on a from-scratch dark-console design system —
   Bootstrap 3, jQuery, tablesorter, and alertify (SpiderFoot's original
   vendor stack) are gone entirely.** New `src/web/css/app.css`: dark-first
@@ -78,6 +83,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`opencorporates` no longer silently returns nothing on a keyless scan.**
+  OpenCorporates withdrew its keyless public tier in 2023, so every
+  unauthenticated request 401s; the module was still classified as free and
+  swallowed that 401. It is now key-gated (`HUNTSMAN_OPENCORP_KEY`): an
+  unconfigured scan gives a clean "needs key" skip, and a bad configured key
+  is reported to the key pool for rotation.
 - **`sourceforge_user` works again — and returns more — after SourceForge
   removed its legacy user API.** The old `/api/user/username={h}/json`
   endpoint now 404s for every real user, so the module had been silently

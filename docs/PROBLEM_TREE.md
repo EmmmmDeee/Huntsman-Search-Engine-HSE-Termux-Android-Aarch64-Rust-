@@ -2054,6 +2054,39 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `2011-03-12` creation date — where the pre-fix module emitted ZERO.
   **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 3), §5 — same
   commit.
+- **`[x]` T2.51 · `opencorporates` was a `Free` module against an endpoint
+  that requires a key — silently no-op on every scan; key-gated** — fourth
+  slice of the provider-integration overhaul, same class as T2.48
+  (`domainsdb`). OpenCorporates withdrew its keyless public tier in late
+  2023; a keyless `GET https://api.opencorporates.com/v0.4/companies/search`
+  now returns **`401 {"error":{"message":"Invalid Api Token…"}}`**
+  (live-confirmed). The module used `key_opt` (optional key) at
+  `ModuleCost::Free`, so a no-key scan fired a doomed request and swallowed
+  the 401 into `Ok(empty)` — the module's own doc already acknowledged the
+  keyless tier was gone, but the operator was still never told a key was
+  required (no `ModuleSkipped`). **P2** (silent coverage loss on a global
+  company-registry / officer-graph source — the pivot behind
+  people→companies-they-direct correlation). Unlike domainsdb the swallow
+  was deliberate (no error spam), but the honesty gap is identical.
+  → **Solution:** applied the T2.48 template — reclassified
+  `Free`→`KeyGated`, and switched `process()` from `key_opt` to the required
+  `ctx.key(KEY_ENV)?` so an unconfigured scan is a clean "needs key" skip
+  (with the existing `HUNTSMAN_OPENCORP_KEY` signup hint) rather than a
+  silent empty; a configured key that 401/403s is now reported to the key
+  pool (`ctx.report_key_exhausted`) for rotation instead of being swallowed.
+  2 new/changed tests (`module_metadata` now asserts `KeyGated` — a runtime
+  assertion git-stash-proven to fail against the pre-fix `Free`; and
+  `missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty` driving the
+  real `process()` with an empty key map). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4611 lib tests). Live-verified
+  against the REAL API with the real binary: no key → `dispatch` then
+  `skipped — needs key HUNTSMAN_OPENCORP_KEY` on a real `Atlassian`
+  organisation scan; `--free-only` filters it out up front via the engine's
+  key-gate. (The authenticated data path is unchanged and already tested;
+  it wasn't exercised live as no OpenCorporates key is held — the keyless
+  behaviour, which is what every unconfigured operator now hits, is what was
+  broken and is verified.) **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL
+  (slice 4), §5 — same commit.
 
 ---
 
@@ -7289,3 +7322,18 @@ way, so this specific drift class can't recur silently again.
   "Johann N. Löfflmann" with the real 2011-03-12 creation date — was 0
   pre-fix. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 3), §5 —
   same commit.
+- **2026-07-12** — **T2.51: `opencorporates` was a `Free` module against a
+  key-required endpoint — silent no-op on every scan — key-gated; slice 4 of
+  the provider-integration overhaul (same class as T2.48).** OpenCorporates
+  withdrew its keyless public tier (2023); a keyless request now returns `401
+  {"Invalid Api Token"}` (live-confirmed). The module used `key_opt` at
+  `Free`, firing a doomed request and swallowing the 401 into `Ok(empty)` —
+  no needs-key notice. Applied the domainsdb template: `Free`→`KeyGated`,
+  `key_opt`→required `ctx.key(KEY_ENV)?` (clean "needs key" skip when unset),
+  and a configured-key 401/403 reported to the pool instead of swallowed. 2
+  tests (`module_metadata` now asserts KeyGated, git-stash-proven as a
+  runtime failure pre-fix; + a missing-key process test). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4611 lib
+  tests). Live-verified against the REAL API: no key → `skipped — needs key
+  HUNTSMAN_OPENCORP_KEY` on a real `Atlassian` scan. **Paired:**
+  `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 4), §5 — same commit.
