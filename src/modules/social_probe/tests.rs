@@ -72,6 +72,44 @@ fn negative_patterns_field_compiles_and_defaults_empty() {
 }
 
 #[test]
+fn detection_strength_matches_negative_pattern_presence() {
+    // No negative pattern → bare status-code guess → weak/unverified.
+    let weak = Platform {
+        name: "x",
+        url_pattern: "https://x.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &[],
+    };
+    assert_eq!(detection_strength(&weak), (0.74, false));
+
+    // A negative pattern means the body was actually inspected → verified.
+    let strong = Platform {
+        name: "y",
+        url_pattern: "https://y.com/{}",
+        exists_codes: &[200],
+        negative_patterns: &["user not found"],
+    };
+    assert_eq!(detection_strength(&strong), (0.92, true));
+}
+
+#[test]
+fn every_standard_platform_is_weak_and_every_high_risk_platform_is_verified() {
+    // Cross-check against the F2.4 high-risk/standard split: every platform
+    // without a negative pattern must be classified weak (matching the
+    // "fast path, no body capture" intent), and every one with a pattern
+    // must be classified verified.
+    for p in USERNAME_PLATFORMS {
+        let (_, verified) = detection_strength(p);
+        assert_eq!(
+            verified,
+            !p.negative_patterns.is_empty(),
+            "platform {} detection_strength disagrees with its negative_patterns",
+            p.name
+        );
+    }
+}
+
+#[test]
 fn accepts_username_and_fullname() {
     let m = SocialProbe;
     assert!(m.accepts(&Target::new(TargetKind::Username, "test")));

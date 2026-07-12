@@ -1615,6 +1615,61 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   universal `*,*::before,*::after{box-sizing:border-box}` reset (screenshot-
   confirmed before/after). Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite (lib + integration + doc tests) 0 failures.
+- **`[x]` T2.43 · Correlator "confirmed"/"verified"/"CRITICAL" claims
+  (AU-003/AU-038/AU-045/AU-055) manufactured certainty from bare
+  status-only username-existence guesses** — found investigating a real
+  scan (an OSINT username-alias lookup against a Brisbane/QLD target): a
+  guessed handle produced `AU-055 [CRITICAL] "Subject's own confirmed
+  account(s)/profile(s)... primary sources the subject controls"` across
+  64–71 platforms, and `AU-003 "corroborated by 6 independent source(s)
+  (C_eff=1.000)"` for a single guessed URL — yet every one of those
+  hits was tagged `weak-detection`: `username_search`/`streaming_probe`
+  self-report exactly this (a bare HTTP-status match — a soft-404/SPA-shell
+  can return 200 for almost any handle — 0.74 PROBABLE, vs. 0.92 for a real
+  body-marker confirmation), but AU-003/AU-038/AU-055 checked only the
+  `social-profile`/`confirmed-profile` tag, never the accompanying
+  `weak-detection` one, so the rules' own "confirmed"/"verified" wording
+  directly contradicted the evidence backing them. A second, distinct root
+  cause compounded it: `webserver_banner`, given a `Url` target, extracts
+  just the host and HEADs the domain **root** (`extract_host_port` discards
+  the path) but re-emitted the entity via `target.to_entity()`, which reuses
+  the full original path — so its evidence (identical for ANY guessed
+  handle on that host) counted as an "independent source" corroborating a
+  specific, never-actually-checked path. A third gap: `social_probe` (a
+  THIRD module doing the same status-code-existence check, 30 of its 36
+  platforms with no body-marker verification at all) had no weak/verified
+  distinction whatsoever, so fixing only the correlator rules would have
+  left this module's identical hits un-discounted. **P1** (evidentiary-
+  integrity: a `CRITICAL` "accounts the subject controls" claim built from
+  unverified guesses is the same manufactured-corroboration shape as
+  T2.36/T2.37/T2.40, on the correlator's synthesis layer rather than a
+  single extractor). → **Solution:** (1) `webserver_banner` rebases a `Url`
+  target to a `Domain` entity keyed on the host (the only thing the probe
+  actually confirms) instead of re-emitting the full path via `to_entity()`;
+  (2) AU-055 and AU-038 now exclude `weak-detection`-tagged URLs from their
+  "confirmed"/"verified" platform counts; AU-003 and AU-045 exclude
+  weak-detection-only entities/sources from "high cross-source
+  corroboration" and cross-family diversity respectively (AU-045 needed a
+  new `strong_corroborating_families` helper since family classification is
+  per-source, not per-entity-tag); (3) `social_probe` gained the same
+  `detection_strength()` weak/verified split (0.74 unverified / 0.92
+  body-marker-verified) `username_search`/`streaming_probe` already use, so
+  its hits are honestly tagged rather than silently reopening the same gap
+  the correlator-side fix just closed. A genuinely `verified-detection`
+  hit still fires every rule exactly as before — only unverified guesses are
+  discounted. **Fixed:** verified via `git stash` that each new regression
+  test fails against its pre-fix rule and passes against the fix. 8 new
+  tests across `core::correlator::tests` (AU-003/AU-038/AU-045/AU-055,
+  each with a weak-only-excludes and a still-fires-on-real-evidence case),
+  `modules::webserver_banner::tests` (2, pinning the host-rebase), and
+  `modules::social_probe::tests` (2, pinning the weak/verified split
+  against every registered platform). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite (lib + integration + doc tests) 0
+  failures. **P1 closed.**
+
+---
+
+## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
 
 Grounded in the existing modules and the BUILD set of `OSINT_MATRIX_GAP_ANALYSIS`.
 Each node: **current → target → solution**. Everything here is built on §3.F
@@ -6402,3 +6457,29 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite (lib +
   integration + doc) 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-SPA-VENDOR-DROP, §5 — same commit.
+- **2026-07-11** — **T2.43: correlator rules AU-003/AU-038/AU-045/AU-055
+  were manufacturing "confirmed"/"verified"/"CRITICAL" certainty from bare
+  status-only username guesses — found via a real OSINT scan.** A Brisbane/
+  QLD username-alias lookup produced `AU-055 [CRITICAL]` claiming 64–71
+  "confirmed" platforms and `AU-003` reporting `C_eff=1.000` "corroborated
+  by 6 independent sources" for one guessed URL, when every hit backing
+  those claims was tagged `weak-detection` (a bare HTTP-status match a
+  soft-404/SPA-shell fakes for almost any handle). Three distinct root
+  causes: `webserver_banner` mis-attributing a domain-root check to a
+  path-specific `Url` entity via `to_entity()` (now rebased to a `Domain`
+  entity keyed on the actually-probed host); AU-003/AU-038/AU-055 checking
+  only the `social-profile`/`confirmed-profile` tag and never the
+  accompanying `weak-detection` one (now excluded); AU-045's family-diversity
+  count treating two differently-categorised weak modules
+  (`username_search`/"presence", `social_probe`/"social") as independent
+  confirmation (now needs at least one non-status-only hit per family via a
+  new `strong_corroborating_families` helper); and `social_probe` itself
+  having no weak/verified distinction at all across 30 of its 36 platforms
+  (now carries the same `detection_strength()` split its sibling modules
+  use). **P1** (evidentiary-integrity: a `CRITICAL` "accounts the subject
+  controls" claim built from unverified guesses is the manufactured-
+  corroboration shape of T2.36/T2.37/T2.40, now on the correlator's
+  synthesis layer). 8 new regression tests, each confirmed via `git stash`
+  to fail against its pre-fix rule/module and pass against the fix. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-WEAK-DETECTION-DISCOUNT, §5 — same commit.

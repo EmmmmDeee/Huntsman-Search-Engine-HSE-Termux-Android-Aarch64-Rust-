@@ -70,6 +70,41 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     }]
 }
 
+/// Distinct provider families across an entity's corroborating evidence,
+/// EXCLUDING any source whose only contribution is a `weak-detection`
+/// (status-only) hit — the bare HTTP-status guess `username_search`/
+/// `social_probe`/`streaming_probe` self-report via a `detection: status-only`
+/// evidence attribute when there's no body-marker to confirm the match. A
+/// live scan against a guessed handle showed exactly this: `username_search`
+/// (family "presence") and `social_probe` (family "social") both hit the same
+/// unverified handle via a bare status-code check, and — being classified
+/// into two DIFFERENT families purely by platform category, not by detection
+/// rigour — satisfied AU-045's "two distinct service families" bar despite
+/// neither one being an actual confirmation. A source counts toward family
+/// diversity only if at least one of its evidence records for this entity is
+/// NOT status-only.
+fn strong_corroborating_families(e: &Entity) -> std::collections::BTreeSet<&'static str> {
+    use std::collections::BTreeMap;
+    let mut strong_by_source: BTreeMap<&str, bool> = BTreeMap::new();
+    for ev in &e.evidence {
+        let src = ev.source.as_str();
+        if crate::core::entity::is_non_corroborating_source(src) {
+            continue;
+        }
+        let status_only = ev.attributes.get("detection").map(String::as_str) == Some("status-only");
+        let entry = strong_by_source.entry(src).or_insert(false);
+        if !status_only {
+            *entry = true;
+        }
+    }
+    strong_by_source
+        .into_iter()
+        .filter(|(_, strong)| *strong)
+        .map(|(src, _)| source_family(src))
+        .filter(|f| *f != "other")
+        .collect()
+}
+
 /// AU-045 — Multi-service identity confirmation.
 ///
 /// An identity value (email / username / person) whose corroborating sources
@@ -89,7 +124,6 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::BTreeSet;
     const MIN_FAMILIES: usize = 2;
     entities
         .iter()
@@ -104,15 +138,9 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
             _ => false,
         })
         .filter_map(|e| {
-            // Distinct provider families across this entity's corroborating
-            // sources, ignoring the unclassified `other` bucket so a stray
-            // unknown source can't fabricate diversity.
-            let families: BTreeSet<&'static str> = e
-                .corroborating_sources()
-                .iter()
-                .map(|s| source_family(s))
-                .filter(|f| *f != "other")
-                .collect();
+            // Distinct STRONG provider families — see `strong_corroborating_families`
+            // for why a status-only hit can't contribute one.
+            let families = strong_corroborating_families(e);
             if families.len() < MIN_FAMILIES {
                 return None;
             }
@@ -279,6 +307,22 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     entities
         .iter()
         .filter_map(|e| {
+            // A `weak-detection`-only entity (a bare status-code guess from
+            // `username_search`/`streaming_probe` — no accompanying
+            // `verified-detection` from a body-marker check or another
+            // strong source) is not "high cross-source corroboration" no
+            // matter how many modules independently ran the same shallow
+            // check: a real scan against a guessed handle showed several
+            // status-only probes (plus `webserver_banner`, which — before
+            // its own fix — mis-attributed a domain-root HTTP-header check
+            // to the specific guessed path) reaching `source_count() >= 3`
+            // and a reported `C_eff=1.000` (VERIFIED-tier certainty) for a
+            // handle that was never actually confirmed. If the entity also
+            // carries `verified-detection` from some other source, that IS
+            // real corroboration and still counts.
+            if e.has_tag("weak-detection") && !e.has_tag("verified-detection") {
+                return None;
+            }
             // Compute the distinct-source count ONCE and reuse it for the gate,
             // the message, AND the C_eff. `source_count()` re-scans the whole
             // evidence chain (O(k²)) on every call; the prior form paid for it

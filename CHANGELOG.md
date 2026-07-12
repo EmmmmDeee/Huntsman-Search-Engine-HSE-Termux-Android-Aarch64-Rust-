@@ -46,6 +46,23 @@ versions can include breaking changes; patch versions are bug-fix-only.
   scan (zero console/page errors). `/static/{file}` became the wildcard
   route `/static/{*file}` to serve the new nested module paths.
 
+### Fixed
+- **Correlator rules `AU-003`/`AU-038`/`AU-045`/`AU-055` no longer report a
+  bare status-only username-existence guess as a "confirmed"/"verified"
+  account, found via a real scan that produced a `CRITICAL` "primary-source
+  accounts... the subject controls" finding across 64+ platforms almost
+  entirely backed by unverified HTTP-status checks (a soft-404/SPA-shell
+  can return 200 for nearly any handle).** Three root causes: (1)
+  `webserver_banner` was re-emitting a `Url` target verbatim even though its
+  probe only ever checks the domain root, so its evidence falsely
+  corroborated a specific, never-checked path — now rebased to the actually-
+  probed `Domain`; (2) the four correlator rules checked only the
+  `social-profile`/`confirmed-profile` tag and never the `weak-detection`
+  one those probing modules already attach — now excluded; (3) `social_probe`
+  had no weak/verified distinction at all across most of its platforms and
+  now carries the same split its sibling modules use. A genuinely confirmed
+  (body-marker-verified) hit still fires every rule unchanged.
+
 ### Added
 - **Two new regression tests pin the geo-corroboration logic against a
   real-scan-derived US breach address / Australian subject pairing, and the

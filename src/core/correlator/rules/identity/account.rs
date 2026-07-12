@@ -419,6 +419,12 @@ pub(in crate::core::correlator) fn rule_au_036_email_alias_convergence(
 /// `username_search`'s `platforms_count`: AU-038 fires from the search-engine or
 /// social-probe signal alone, so either source surfaces the cross-platform
 /// identity on its own.
+///
+/// Excludes `weak-detection`-tagged URLs for the same reason as AU-055: a
+/// `social-profile` tag is applied to a bare HTTP-status guess just as readily
+/// as to a body-marker-confirmed hit, and this rule's own name promises
+/// "verified" — a claim only the latter earns. See AU-055's doc comment for
+/// the real-scan finding that surfaced this.
 pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
     entities: &[Entity],
     scan_id: &str,
@@ -430,6 +436,7 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
         .filter(|e| {
             e.kind == EntityKind::Url
                 && (e.has_tag("confirmed-profile") || e.has_tag("social-profile"))
+                && !e.has_tag("weak-detection")
         })
         .collect();
     // Distinct registrable-ish hosts among the confirmed profiles (www-stripped).
@@ -671,6 +678,18 @@ pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
 /// is the broker's listing, not the subject's account, and belongs to AU-054
 /// (low-credibility), never here.
 ///
+/// Also excludes `weak-detection`-tagged URLs: `username_search`/
+/// `streaming_probe` tag a hit `social-profile` regardless of whether the
+/// match came from a body-marker check (`verified-detection`) or a bare
+/// HTTP-status guess (`weak-detection` — a soft-404/SPA-shell can fake this
+/// for almost any handle). A real scan against a guessed handle produced a
+/// `CRITICAL "primary-source accounts... the subject controls"` finding
+/// across 60+ platforms where nearly every one was `weak-detection` — status-
+/// only guesses presented as confirmed ownership. Requiring the absence of
+/// that tag means a lone `verified-detection` hit (or a tag-only source with
+/// no strength marker at all, e.g. a real account API) still fires this rule
+/// the same as before; only the unverified guesses are excluded.
+///
 /// Severity puts primary sources above brokers by construction: High for one or
 /// two confirmed accounts, Critical for a confirmed footprint across ≥3 distinct
 /// platforms — always outranking AU-054's Low/Medium broker findings.
@@ -691,13 +710,15 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
 
     // Distinct platform hosts (www-stripped) of confirmed owned-account URLs,
     // and the backing uids. Broker hosts are excluded — a broker listing is not
-    // an account the subject controls.
+    // an account the subject controls. `weak-detection`-tagged hits are
+    // excluded too — a bare status-code guess is not a confirmed account.
     let mut platforms: BTreeSet<String> = BTreeSet::new();
     let mut uids: Vec<String> = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Url && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t)))
-    {
+    for e in entities.iter().filter(|e| {
+        e.kind == EntityKind::Url
+            && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t))
+            && !e.has_tag("weak-detection")
+    }) {
         let Some(host) = url::Url::parse(&e.value).ok().and_then(|u| {
             u.host_str()
                 .map(|h| h.trim_start_matches("www.").to_lowercase())

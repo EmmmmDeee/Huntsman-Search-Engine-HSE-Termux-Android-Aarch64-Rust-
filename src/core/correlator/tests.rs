@@ -779,6 +779,60 @@ fn au003_uses_distinct_sources_not_summed_corroboration() {
     );
 }
 
+#[test]
+fn au003_excludes_weak_detection_only_entities() {
+    // Regression: a real scan against a guessed username handle showed a
+    // `Url` entity (a guessed profile page) reach `source_count() = 6` and a
+    // reported `C_eff=1.000` purely from status-only guesses (username_search,
+    // streaming_probe) plus `webserver_banner`'s domain-root check
+    // mis-attributed to the guessed path (fixed separately) — "high
+    // cross-source corroboration" for a handle that was never confirmed to
+    // exist. An entity tagged `weak-detection` with no accompanying
+    // `verified-detection` must not fire AU-003 no matter how many distinct
+    // modules ran the same shallow check.
+    let mut weak = Entity::new(
+        EntityKind::Url,
+        "https://onlyfans.com/rob_dorito",
+        0.74,
+        "s",
+    );
+    weak.tag("weak-detection");
+    weak.add_evidence(crate::core::entity::Evidence::new(
+        "username_search",
+        "status 200",
+    ));
+    weak.add_evidence(crate::core::entity::Evidence::new(
+        "streaming_probe",
+        "status 200",
+    ));
+    weak.add_evidence(crate::core::entity::Evidence::new("web_crawler", "linked"));
+    assert!(
+        rule_au_003_high_corroboration(&[weak], "s", 0).is_empty(),
+        "weak-detection-only entity must not fire AU-003 regardless of distinct-source count"
+    );
+
+    // A `verified-detection` tag (a real body-marker confirmation) alongside
+    // the same evidence chain means genuine corroboration is present, so the
+    // rule still fires.
+    let mut verified = Entity::new(EntityKind::Url, "https://github.com/rob_dorito", 0.92, "s");
+    verified.tag("weak-detection"); // some sources were still weak…
+    verified.tag("verified-detection"); // …but at least one was confirmed
+    verified.add_evidence(crate::core::entity::Evidence::new(
+        "username_search",
+        "body match",
+    ));
+    verified.add_evidence(crate::core::entity::Evidence::new(
+        "streaming_probe",
+        "status 200",
+    ));
+    verified.add_evidence(crate::core::entity::Evidence::new("web_crawler", "linked"));
+    assert_eq!(
+        rule_au_003_high_corroboration(&[verified], "s", 0).len(),
+        1,
+        "a genuinely verified-detection entity must still fire AU-003"
+    );
+}
+
 // ── AU-004 ──────────────────────────────────────────────────────────
 
 #[test]
@@ -1032,6 +1086,57 @@ fn au038_fires_on_social_probe_profiles() {
     let r = rule_au_038_verified_cross_platform_identity(&[probe, searched], "s", 0);
     assert_eq!(r.len(), 1);
     assert!(r[0].description.contains("2 distinct platforms"));
+}
+
+#[test]
+fn au038_excludes_weak_detection_status_only_guesses() {
+    // Same regression as AU-055: `social-profile` is tagged on a bare
+    // status-code guess just as readily as on a body-marker-confirmed hit,
+    // and this rule's OWN NAME promises "verified" — a claim only the latter
+    // earns. `weak-detection`-tagged hits, even across several platforms,
+    // must not fire this rule.
+    let mk_weak = |url: &str| {
+        let mut e = Entity::new(EntityKind::Url, url, 0.74, "s");
+        e.tag("social-profile");
+        e.tag("weak-detection");
+        e
+    };
+    let r = rule_au_038_verified_cross_platform_identity(
+        &[
+            mk_weak("https://onlyfans.com/rob_dorito"),
+            mk_weak("https://twitch.tv/rob_dorito"),
+            mk_weak("https://tiktok.com/@rob_dorito"),
+        ],
+        "s",
+        0,
+    );
+    assert!(
+        r.is_empty(),
+        "weak-detection hits must not fire a rule named 'Verified cross-platform identity'"
+    );
+
+    // A verified-detection hit alongside a weak one still needs a SECOND
+    // distinct platform (the rule's own ≥2 contract) — one strong platform
+    // alone doesn't fire AU-038 (that's AU-055's job).
+    let mut strong1 = Entity::new(EntityKind::Url, "https://github.com/rob_dorito", 0.92, "s");
+    strong1.tag("social-profile");
+    strong1.tag("verified-detection");
+    let mut strong2 = Entity::new(
+        EntityKind::Url,
+        "https://reddit.com/user/rob_dorito",
+        0.92,
+        "s",
+    );
+    strong2.tag("social-profile");
+    strong2.tag("verified-detection");
+    let r = rule_au_038_verified_cross_platform_identity(
+        &[strong1, strong2, mk_weak("https://onlyfans.com/rob_dorito")],
+        "s",
+        0,
+    );
+    assert_eq!(r.len(), 1);
+    assert!(r[0].description.contains("2 distinct platforms"));
+    assert!(!r[0].description.contains("onlyfans"));
 }
 
 // ── AU-010 ──────────────────────────────────────────────────────────
@@ -2532,6 +2637,67 @@ fn au_055_flags_owned_primary_accounts_excluding_brokers() {
 }
 
 #[test]
+fn au_055_excludes_weak_detection_status_only_guesses() {
+    // Regression: a real scan against a guessed username handle produced a
+    // CRITICAL "primary-source accounts... the subject controls" finding
+    // across 60+ platforms where nearly every hit was `username_search`'s
+    // bare-status-code guess (`weak-detection`) — a soft-404/SPA-shell can
+    // return HTTP 200 for almost any handle, so this is not a confirmed
+    // account. `weak-detection`-tagged hits, even 3+ of them, must not fire
+    // this rule at all — a pile of unverified guesses is not a primary
+    // source, confirmed or otherwise.
+    use super::rules::rule_au_055_primary_source_accounts;
+
+    let all_weak = vec![
+        mk_tagged(
+            EntityKind::Url,
+            "https://onlyfans.com/rob_dorito",
+            "streaming_probe",
+            &["fans-profile", "weak-detection"],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://twitch.tv/rob_dorito",
+            "username_search",
+            &["social-profile", "weak-detection"],
+        ),
+        mk_tagged(
+            EntityKind::Url,
+            "https://tiktok.com/@rob_dorito",
+            "username_search",
+            &["social-profile", "weak-detection"],
+        ),
+    ];
+    assert!(
+        rule_au_055_primary_source_accounts(&all_weak, "scan", 0).is_empty(),
+        "weak-detection (status-only) hits must never count as confirmed primary-source accounts"
+    );
+
+    // A single body-marker-verified hit alongside the weak guesses still
+    // fires — only the unverified ones are excluded, not the whole rule.
+    let mut mixed = all_weak.clone();
+    mixed.push(mk_tagged(
+        EntityKind::Url,
+        "https://github.com/rob_dorito",
+        "username_search",
+        &["social-profile", "verified-detection"],
+    ));
+    let out = rule_au_055_primary_source_accounts(&mixed, "scan", 0);
+    assert_eq!(out.len(), 1);
+    assert_eq!(
+        out[0].entity_uids.len(),
+        1,
+        "only the verified-detection hit counts, none of the weak-detection ones"
+    );
+    assert!(out[0].description.contains("github.com"));
+    assert_eq!(
+        out[0].severity,
+        super::Severity::High,
+        "one confirmed platform is High, not Critical"
+    );
+}
+
+#[test]
 fn au_043_fires_on_paste_exposure() {
     let ents = vec![
         mk_tagged(
@@ -2649,6 +2815,55 @@ fn au045_multi_service_identity_requires_cross_family_agreement() {
     assert!(
         super::rules::rule_au_045_multi_service_identity(&[d], "scan", 0).is_empty(),
         "AU-045 binds identity kinds only"
+    );
+}
+
+#[test]
+fn au045_excludes_status_only_hits_even_across_distinct_families() {
+    // Regression: a real scan against a guessed handle showed `username_search`
+    // (family "presence") and `social_probe` (family "social") both hit the
+    // SAME unverified handle via a bare status-code check — and because they
+    // classify into two DIFFERENT families purely by platform category, not
+    // by detection rigour, that satisfied AU-045's "two distinct service
+    // families" bar despite neither one being an actual confirmation. A
+    // status-only hit must not contribute its family to the diversity count.
+    let mut weak = Entity::new(EntityKind::Username, "rob_dorito", 0.6, "scan");
+    weak.add_evidence(
+        Evidence::new("username_search", "status 200").with_attr("detection", "status-only"),
+    );
+    weak.add_evidence(
+        Evidence::new("social_probe", "status 200").with_attr("detection", "status-only"),
+    );
+    assert!(
+        super::rules::rule_au_045_multi_service_identity(&[weak], "scan", 0).is_empty(),
+        "two status-only hits in different families must not satisfy the cross-family bar"
+    );
+
+    // The same two sources, but at least one with a real body-marker
+    // confirmation, DOES count — the fix discounts the *hit*, not the module.
+    let mut strong = Entity::new(EntityKind::Username, "rob_dorito", 0.6, "scan");
+    strong.add_evidence(
+        Evidence::new("username_search", "body match").with_attr("detection", "body-marker"),
+    );
+    strong.add_evidence(
+        Evidence::new("social_probe", "status 200").with_attr("detection", "status-only"),
+    );
+    assert_eq!(
+        super::rules::rule_au_045_multi_service_identity(&[strong], "scan", 0).len(),
+        0,
+        "one verified source alone is still only ONE family (presence) — needs a second"
+    );
+
+    // Two genuinely verified sources in distinct families fire normally.
+    let mut both_strong = Entity::new(EntityKind::Username, "rob_dorito", 0.6, "scan");
+    both_strong.add_evidence(
+        Evidence::new("username_search", "body match").with_attr("detection", "body-marker"),
+    );
+    both_strong.add_evidence(Evidence::new("hibp", "breach row"));
+    assert_eq!(
+        super::rules::rule_au_045_multi_service_identity(&[both_strong], "scan", 0).len(),
+        1,
+        "a verified presence hit + a breach hit are two real independent families"
     );
 }
 

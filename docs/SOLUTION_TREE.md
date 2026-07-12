@@ -1069,6 +1069,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `*,*::before,*::after` reset, screenshot-confirmed before/after. *Closes:*
   **T2.42**. ✅ 0 regressions; gate green (fmt/clippy `-D warnings`/rustdoc/
   full suite).
+- **`[x]` SOL-WEAK-DETECTION-DISCOUNT · Correlator rules stop treating a
+  status-only username guess as a confirmed/verified account** — closes
+  **T2.43**. Found via a real OSINT scan (a Brisbane/QLD username-alias
+  lookup): AU-055 fired `CRITICAL "Subject's own confirmed account(s)...
+  primary sources the subject controls"` across 64–71 platforms that were
+  almost entirely `weak-detection`-tagged (a bare HTTP-status match — a
+  soft-404/SPA-shell fakes this for nearly any handle), and AU-003 reported
+  `C_eff=1.000` "corroborated by 6 independent sources" for one guessed URL.
+  Three fixes, one root cause each: (1) `webserver_banner` was re-emitting a
+  `Url` target verbatim via `to_entity()` even though its own probe HEADs
+  only the domain *root* (`extract_host_port` discards the path) — its
+  domain-root evidence was landing on the path-specific entity, "confirming"
+  a check that never happened; now rebased to a `Domain` entity keyed on the
+  host it actually probed (new pure helper `banner_entity`, unit-tested).
+  (2) AU-055/AU-038 now exclude `weak-detection`-tagged URLs from their
+  "confirmed"/"verified" platform counts; AU-003 excludes weak-detection-only
+  entities from "high cross-source corroboration"; AU-045 gained a new
+  `strong_corroborating_families` helper (family classification is
+  per-source, so the fix discounts per-evidence-record, not per-tag) since
+  `username_search` (family "presence") and `social_probe` (family "social")
+  both hitting the same unverified handle via a bare status check otherwise
+  satisfied AU-045's "two distinct service families" bar despite neither
+  being a real confirmation. (3) `social_probe` — a THIRD module doing the
+  identical status-code-existence check on 30 of its 36 platforms with zero
+  body-marker verification — had no weak/verified distinction at all; gained
+  the same `detection_strength()` split (0.74 unverified / 0.92
+  body-marker-verified) `username_search`/`streaming_probe` already use, so
+  fixing the correlator alone wouldn't have closed the gap this module
+  independently reopens. A genuinely `verified-detection` hit still fires
+  every rule exactly as before. *Closes:* **T2.43**. ✅ 8 new regression
+  tests (2 per AU rule + 2 `webserver_banner` + 2 `social_probe`), each
+  confirmed via `git stash` to fail against its pre-fix rule and pass
+  against the fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -4606,3 +4640,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the way (screenshot-confirmed before/after). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures. Paired: `PROBLEM_TREE`
   T2.42, §8 — same commit.
+- **2026-07-11** — **SOL-WEAK-DETECTION-DISCOUNT: AU-003/AU-038/AU-045/
+  AU-055 no longer treat a status-only username guess as a confirmed/
+  verified account, closing T2.43.** Found via a real OSINT scan (Brisbane/
+  QLD username-alias lookup) that produced a `CRITICAL` "confirmed
+  accounts" finding across 64–71 platforms and a `C_eff=1.000` "6
+  independent sources" claim, both built almost entirely from
+  `weak-detection`-tagged (bare HTTP-status) hits. Three root causes fixed:
+  `webserver_banner` mis-attributing a domain-root-only check to a
+  path-specific `Url` entity (now rebased to `Domain`, keyed on the actually-
+  probed host, via a new pure `banner_entity` helper); the four AU rules
+  checking only the profile tag and never the accompanying weak-detection
+  one (AU-003/AU-055 now exclude weak-detection entities/hits outright;
+  AU-045 gained `strong_corroborating_families`, discounting per-evidence-
+  record since family classification is per-source, not per-tag); and
+  `social_probe` — a third module doing the identical check with zero
+  weak/verified distinction across most of its platforms — gaining the same
+  `detection_strength()` split its siblings already use. A genuinely
+  `verified-detection` hit still fires every rule unchanged. 8 new
+  regression tests, each confirmed via `git stash` to fail pre-fix and pass
+  post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures. Paired: `PROBLEM_TREE` T2.43, §8 — same commit.
