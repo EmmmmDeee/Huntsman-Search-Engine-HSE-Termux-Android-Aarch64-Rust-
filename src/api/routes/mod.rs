@@ -9,6 +9,7 @@
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
+//! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
@@ -314,6 +315,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/modules", get(handlers::modules_list))
         .route("/modules/graph", get(handlers::modules_graph))
         .route("/engines/health", get(handlers::engines_health))
+        .route("/health/scrapers", get(handlers::scraper_health))
         .route("/stats", get(handlers::stats))
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))

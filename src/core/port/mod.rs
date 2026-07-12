@@ -80,6 +80,15 @@ pub trait StoragePort: Send + Sync {
     fn insert_event(&self, event: &Event) -> Result<()>;
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
 
+    /// Recent `ModuleDone`/`ModuleError` outcome events across ALL scans,
+    /// newest-first, bounded to `limit` — the substrate for
+    /// `util::scraper_health`'s per-source health signal (`hse doctor`'s
+    /// "Scraper health" section and the SPA's Engines-page panel). Default
+    /// empty for test doubles; the real impl lives on `Store`.
+    fn recent_module_outcome_events(&self, _limit: usize) -> Result<Vec<Event>> {
+        Ok(Vec::new())
+    }
+
     // ── Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN) ────────────────
     /// Persist a module result under `key` with a TTL. Called after a
     /// successful `process()` when `module.cache_ttl_secs() > 0`. Best-effort:

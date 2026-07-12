@@ -383,12 +383,27 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   message. Live-verified: a real `hse doctor` run against the operator's own
   scan database renders the new section (currently "0 source(s) tracked... no
   drifted sources" — an honest empty state for this database, not a fabricated
-  result). *Remaining on T2.7:* the SPA panel; the `parse_rate`/zero-yield leg
-  (a module that completes but silently returns fewer/zero results because a
-  page layout drifted needs a per-source historical-yield baseline to
-  distinguish from a target that's genuinely empty — deliberately not invented
-  under cycle-scope pressure); and the golden-fixture corpus itself (saved real
-  responses per scraper, so a layout change fails a test deterministically).
+  result).
+  **SPA panel delivered (2026-07-12):** new `GET /api/v1/health/scrapers`
+  handler (`aggregate_source_health` over `Store::recent_module_outcome_events`,
+  routed through `StoragePort` — a new default-empty trait method, since the
+  API layer only ever holds `Arc<dyn StoragePort>`, never the concrete
+  `Store`, and the aggregation previously lived only in the `hse doctor` CLI
+  path) plus a "Scraper health" panel on the Engines page, between the
+  search-engine liveness table and the module capability map: same
+  cross-scan failure-streak signal `hse doctor` prints, now visible to the
+  web operator without a shell. Live-verified against this session's own
+  real scan history (92 tracked sources, 481 outcome events, 6 genuinely
+  drifted from this sandbox's network restrictions — crtsh/github_code_search/
+  pypi_user/reddit_user/social_probe/wayback) with zero console/page errors.
+  New integration test pins the honest-empty-state contract for a fresh
+  database (0 tracked, 0 drifted — never fabricated). *Remaining on T2.7:*
+  the `parse_rate`/zero-yield leg (a module that completes but silently
+  returns fewer/zero results because a page layout drifted needs a
+  per-source historical-yield baseline to distinguish from a target that's
+  genuinely empty — deliberately not invented under cycle-scope pressure);
+  and the golden-fixture corpus itself (saved real responses per scraper, so
+  a layout change fails a test deterministically).
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -6483,3 +6498,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   to fail against its pre-fix rule/module and pass against the fix. Gate
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures.
   **Paired:** `SOLUTION_TREE` SOL-WEAK-DETECTION-DISCOUNT, §5 — same commit.
+- **2026-07-12** — **T2.7: delivered the SPA leg of the scraper-health
+  signal — new `GET /api/v1/health/scrapers` + an Engines-page panel.** The
+  aggregation (`util::scraper_health::aggregate_source_health` over
+  `Store::recent_module_outcome_events`) already existed for `hse doctor`;
+  the API layer holds only `Arc<dyn StoragePort>`, never the concrete
+  `Store`, so reaching it from the web server needed a new default-empty
+  trait method (`recent_module_outcome_events`) rather than a storage
+  rewrite. Live-verified against this session's own real scan history (92
+  tracked sources, 481 outcome events, 6 genuinely drifted from this
+  sandbox's network restrictions) with zero console/page errors. New
+  integration test pins the honest-empty-state contract for a fresh
+  database. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures. **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL extended, §5 —
+  same commit.

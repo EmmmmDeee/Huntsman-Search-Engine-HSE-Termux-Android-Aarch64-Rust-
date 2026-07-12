@@ -297,6 +297,49 @@ pub async fn engines_health() -> Json<Value> {
     }))
 }
 
+/// `GET /api/v1/health/scrapers` — per-source scraper health (`PROBLEM_TREE`
+/// T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL), the SPA counterpart of `hse
+/// doctor`'s "Scraper health" section: derived from the persisted
+/// `ModuleDone`/`ModuleError` event log across ALL scans (a rolling window,
+/// not just the current one — see [`crate::util::scraper_health`]'s doc), so
+/// a source that has errored on every one of its last N dispatches is
+/// visible even if those scans ran days ago in unrelated invocations. Powers
+/// the Engines page's "Scraper health" panel.
+pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    use crate::util::scraper_health::{RECENT_EVENTS_WINDOW, aggregate_source_health};
+
+    let store = Arc::clone(&s.store);
+    let events = match tokio::task::spawn_blocking(move || {
+        store.recent_module_outcome_events(RECENT_EVENTS_WINDOW)
+    })
+    .await
+    {
+        Ok(Ok(events)) => events,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("scraper health query failed: {e}")),
+    };
+    let health = aggregate_source_health(&events);
+    let drifted: Vec<Value> = health
+        .iter()
+        .filter(|h| h.is_drifted())
+        .map(|h| {
+            json!({
+                "module": h.module,
+                "consecutive_failures": h.consecutive_failures,
+                "last_success_at": h.last_success_at,
+                "last_error": h.last_error,
+            })
+        })
+        .collect();
+    Json(json!({
+        "tracked": health.len(),
+        "events_checked": events.len(),
+        "drifted_threshold": crate::util::scraper_health::DRIFTED_THRESHOLD,
+        "drifted": drifted,
+    }))
+    .into_response()
+}
+
 /// `GET /api/v1/selftest` — run the full module + feature self-validation suite
 /// on demand and return the structured report. Powers the Settings page's
 /// "Run self-test" button. Offline + side-effect-free (a throwaway temp DB).

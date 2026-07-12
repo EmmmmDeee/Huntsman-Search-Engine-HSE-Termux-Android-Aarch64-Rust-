@@ -10,6 +10,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
 
 ## [Unreleased]
 
+### Added
+- **Per-source scraper health is now visible in the web UI** — new `GET
+  /api/v1/health/scrapers` endpoint and a "Scraper health" panel on the
+  Engines page surface the same cross-scan failure-streak signal `hse
+  doctor` already printed (`au_people`/`au_electoral`/`username_search`/
+  `search_engines`/… — any module with 3+ consecutive failures across
+  recent scans, with its last-success date and last error).
+
 ### Changed
 - **The SPA's UI now runs on a from-scratch dark-console design system —
   Bootstrap 3, jQuery, tablesorter, and alertify (SpiderFoot's original

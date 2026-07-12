@@ -618,13 +618,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `hse doctor`: reports source count tracked, flags any module with
   `consecutive_failures ≥ 3` (a single transient timeout doesn't page the
   operator; three does), shows its last success date and last error.
-  *Remaining:* the SPA health panel (CLI-only for now); the `parse_rate`/
-  zero-yield leg — a module that runs to completion but silently returns fewer
-  results because a page layout drifted (`ModuleDone{found:0}` on a source that
-  used to yield) needs a per-source historical-yield baseline to distinguish
-  from a genuinely empty target, which this slice deliberately did not invent
-  under cycle-scope pressure; and the golden-fixture corpus itself (T2.7's
-  other named leg) remains unbuilt. **(§4a)**
+  *SPA panel delivered (2026-07-12):* new `GET /api/v1/health/scrapers`
+  handler calls the same `aggregate_source_health` over
+  `Store::recent_module_outcome_events`, routed through `StoragePort` (a new
+  default-empty trait method — the API layer holds only `Arc<dyn
+  StoragePort>`, never the concrete `Store`, so the aggregation that
+  previously lived solely in the `hse doctor` CLI path needed a trait-level
+  seam to reach the web server too). New "Scraper health" panel on the
+  Engines page renders the same streak/last-success/last-error data `hse
+  doctor` prints. Live-verified with zero console/page errors against this
+  session's own real scan history. New integration test pins the honest-
+  empty-state contract (0 tracked, 0 drifted for a fresh database).
+  *Remaining:* the `parse_rate`/zero-yield leg — a module that runs to
+  completion but silently returns fewer results because a page layout
+  drifted (`ModuleDone{found:0}` on a source that used to yield) needs a
+  per-source historical-yield baseline to distinguish from a genuinely
+  empty target, which this slice deliberately did not invent under
+  cycle-scope pressure; and the golden-fixture corpus itself (T2.7's other
+  named leg) remains unbuilt. **(§4a)**
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -4661,3 +4672,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   regression tests, each confirmed via `git stash` to fail pre-fix and pass
   post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures. Paired: `PROBLEM_TREE` T2.43, §8 — same commit.
+- **2026-07-12** — **SOL-HEALTH-SIGNAL extended: the SPA panel leg, closing
+  the last "CLI-only for now" gap on T2.7's health signal.** New `GET
+  /api/v1/health/scrapers` handler + a "Scraper health" panel on the Engines
+  page render the same cross-scan failure-streak data `hse doctor` already
+  printed. Reaching it from the API layer needed a new default-empty
+  `StoragePort::recent_module_outcome_events` trait method, since `AppState`
+  only ever holds `Arc<dyn StoragePort>`. Live-verified against this
+  session's own real scan history, zero console/page errors. New
+  integration test pins the honest-empty-state contract. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures. Paired:
+  `PROBLEM_TREE` T2.7, §8 — same commit.

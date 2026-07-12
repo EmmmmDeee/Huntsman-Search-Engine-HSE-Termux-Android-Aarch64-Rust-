@@ -850,6 +850,10 @@ impl crate::core::port::StoragePort for Store {
         Store::events_for_scan(self, scan_id)
     }
 
+    fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
+        Store::recent_module_outcome_events(self, limit)
+    }
+
     fn archive_module_result(&self, key: &str, ttl_secs: u64, entities: &[Entity]) -> Result<()> {
         Store::archive_module_result(self, key, ttl_secs, entities)
     }

@@ -1246,6 +1246,25 @@ async fn stats_returns_counts() {
     assert!(json.get("version").is_some(), "stats must include version");
 }
 
+#[tokio::test]
+async fn scraper_health_reports_an_honest_empty_state_for_a_fresh_database() {
+    // The SPA counterpart of `hse doctor`'s "Scraper health" section
+    // (T2.7 / SOL-HEALTH-SIGNAL): a brand-new test database has dispatched no
+    // modules at all, so this must report a genuine empty state — zero
+    // tracked sources, zero drifted — never a fabricated result.
+    let app = test_app("scraper_health_empty");
+    let resp = app.oneshot(get("/api/v1/health/scrapers")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["tracked"], 0);
+    assert_eq!(json["events_checked"], 0);
+    assert!(json["drifted"].as_array().unwrap().is_empty());
+    assert!(
+        json.get("drifted_threshold").is_some(),
+        "must surface the drift threshold so the SPA panel can explain the bar"
+    );
+}
+
 // ── 16. Settings keys GET ─────────────────────────────────────────────────
 
 #[tokio::test]

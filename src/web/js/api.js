@@ -17,6 +17,7 @@ export const API = {
   health:    ()=>API._req('/api/v1/health'),
   modules:   ()=>API._req('/api/v1/modules'),
   engines:   ()=>API._req('/api/v1/engines/health'),
+  scraperHealth: ()=>API._req('/api/v1/health/scrapers'),
   scans:     ()=>API._req('/api/v1/scans'),
   scan:      id=>API._req('/api/v1/scans/'+encodeURIComponent(id)),
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),

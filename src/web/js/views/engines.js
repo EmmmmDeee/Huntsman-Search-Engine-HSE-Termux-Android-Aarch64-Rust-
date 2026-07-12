@@ -4,8 +4,13 @@ import { S } from '/static/js/state.js';
 import { clearEnginesTimer } from '/static/js/timers.js';
 
 export async function renderEngines(v){
-  let health, toggles;
-  try { [health, toggles] = await Promise.all([API.engines(), API.togglesGet()]); }
+  let health, toggles, scraperHealth;
+  try {
+    [health, toggles, scraperHealth] = await Promise.all([
+      API.engines(), API.togglesGet(),
+      API.scraperHealth().catch(()=>null), // best-effort — a stale/empty DB must not blank the whole page
+    ]);
+  }
   catch(e){ v.innerHTML = `<div class="alert alert-danger"><strong>Could not load engine liveness.</strong> ${esc(e.message)}</div>`; return; }
   const when = health.checked_at ? new Date(health.checked_at*1000).toLocaleString() : '—';
   // Probe results for currently-enabled engines, keyed by engine name.
@@ -62,11 +67,50 @@ export async function renderEngines(v){
       <thead><tr><th>Engine</th><th>Status</th><th class="text-right">Latency</th><th class="text-right">Results</th><th>Diagnosis</th><th class="text-right">Action</th></tr></thead>
       <tbody>${rows || '<tr><td colspan="6" class="text-center text-muted">No engines</td></tr>'}</tbody>
     </table></div>
+    <div id="scraper-health-host"></div>
     <div id="modgraph-host"></div>`;
   wireEngineToggles();
+  renderScraperHealth($('#scraper-health-host'), scraperHealth);
   renderModuleGraph($('#modgraph-host'));
   clearEnginesTimer();
   S.enginesTimer = setInterval(refreshEngines, 30000);
+}
+
+/* Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL): the au_people /
+   au_electoral / username_search / search_engines family parse churning
+   third-party HTML, so a source can silently break (layout change, endpoint
+   retirement) with no operator-visible signal beyond re-reading verbose
+   per-scan logs. GET /api/v1/health/scrapers surfaces the same cross-scan
+   failure-streak signal `hse doctor` already prints, so the web operator
+   gets it too without dropping to a shell. */
+export function renderScraperHealth(host, data){
+  if (!host) return;
+  if (!data){
+    host.innerHTML = `<p class="text-muted" style="margin-top:18px">Scraper health unavailable (could not read the event log).</p>`;
+    return;
+  }
+  const drifted = data.drifted || [];
+  const rows = drifted.map(d=>{
+    const lastOk = d.last_success_at ? new Date(d.last_success_at*1000).toLocaleString() : 'no success in this window';
+    return `<tr>
+      <td><b>${esc(d.module)}</b></td>
+      <td class="text-right"><span class="status-pill s-failed">${esc(String(d.consecutive_failures))} failures</span></td>
+      <td>${esc(lastOk)}</td>
+      <td style="color:var(--text-dim);font-size:12px">${esc(d.last_error||'')}</td>
+    </tr>`;
+  }).join('');
+  host.innerHTML = `
+    <div class="page-header" style="margin-top:26px;border-bottom:1px solid #eee;padding-bottom:8px">
+      <h3 style="margin:0"><i class="glyphicon glyphicon-flash"></i>&nbsp;Scraper health
+        <small class="text-muted">${data.tracked||0} source(s) tracked over ${data.events_checked||0} recent outcome event(s)</small></h3>
+    </div>
+    <p class="text-muted">Cross-scan failure streaks for the HTML-parsing modules (au_people, au_electoral, username_search, search_engines, …) — a source flagged here has failed on its last ${esc(String(data.drifted_threshold||3))}+ dispatches with no success in between, across ALL recent scans, not just this one.</p>
+    ${drifted.length
+      ? `<div class="table-responsive"><table class="table table-striped table-condensed">
+           <thead><tr><th>Module</th><th class="text-right">Streak</th><th>Last success</th><th>Last error</th></tr></thead>
+           <tbody>${rows}</tbody>
+         </table></div>`
+      : `<div class="empty-state"><h3>No drifted sources</h3><p>Every tracked module has succeeded recently.</p></div>`}`;
 }
 
 /* Module capability map (GET /modules/graph): for every seed/target kind, how
