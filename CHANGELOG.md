@@ -90,6 +90,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Correlator rule AU-081 no longer manufactures corroboration from the
+  tool's own name derivation.** The "canonical person-name match" rule fires a
+  "same individual" identity bridge when two person records normalise to one
+  name from independent sources, but it computed source independence over the
+  raw evidence list without excluding the non-corroborating enrichment passes.
+  Because `name_intel` derives a person from the seed name (and maps to a real
+  source family), a genuine record plus a same-name `name_intel`-only entity
+  could fire a High "independently-sourced records for the same individual" —
+  the tool corroborating its own guess. Both independence checks now run over
+  `corroborating_sources()` (the same honest set the rest of the engine uses)
+  and a match is rejected when either side has no genuine source, so a
+  tool-derived name can no longer stand in for an independent record.
 - **`crates_io` now records the account-creation date it used to drop.** The
   live crates.io user API returns a top-level `created_at` on every account,
   but the module never decoded it — so the account-age signal every sibling

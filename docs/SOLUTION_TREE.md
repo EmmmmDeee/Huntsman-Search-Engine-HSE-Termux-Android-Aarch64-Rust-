@@ -1468,6 +1468,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   live-reachable field-decode drifts (hexpm / codeberg+gitea / crates) are
   repaired.** **Paired:** `PROBLEM_TREE` T2.54 (slice 1) / T2.55 (slice 2) /
   T2.56 (slice 3) — each slice its own commit.
+- **`[x]` SOL-CORRELATOR-INTEGRITY · Close manufactured-corroboration gaps
+  found by an exhaustive rule-family audit** → **T2.57** (slice 1). A fresh
+  discovery cluster distinct from SOL-CORR (which builds correlation *depth*);
+  this audits the existing rule set's evidentiary *integrity* — that no rule
+  lets a finding outrun its evidence. Method: one finder per rule family fanned
+  out via the Workflow tool, each finding adversarially re-verified through two
+  independent lenses (correctness + evidentiary-materiality), only double-lens
+  CONFIRMED findings counted. **Slice 1 delivered — AU-081:**
+  `rule_au_081_canonical_person_name_match` hand-rolled its two independence
+  gates from the raw `evidence` list (source-string set + `source_family` set)
+  with NO `is_non_corroborating_source` filter, diverging from every sibling
+  (`source_families`/`source_count`/`corroborating_sources`). `name_intel`
+  derives a `Person` from the seed and maps to the real `identity_registry`
+  family, so a genuine record + a same-name `name_intel`-only entity cleared
+  both gates and fired a High "same individual" bridge — the tool corroborating
+  its own guess. Fixed by routing both gates through
+  `Entity::corroborating_sources()` and adding a gate (0) rejecting any side
+  with no corroborating source; labelled by the genuine source, not the
+  enrichment pass. ✅ 2 adversarial tests (must-not-fire git-stash-proven to
+  fire pre-fix; must-fire control that survives a name_intel-enriched side);
+  gate green (4614 lib tests, +2). Real-evidence anchor: a live `name_intel`-only
+  scan of "Ada Lovelace" confirmed the `name_intel`-sourced `Person` shape;
+  the full cross-source firing was deliberately not staged against a real
+  private individual (evidentiary/privacy), so it is unit-proven instead.
+  *Remaining (banked for later cycles):* AU-017/030/048/056/085/099/105 among
+  the audit's other candidate findings — one live-verified commit each.
+  **Paired:** `PROBLEM_TREE` T2.57 (slice 1) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5421,3 +5448,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   pre-fix). This closes the SOL-PROVIDER-FIELD-DECODE cluster — all three
   live-reachable field-decode drifts (hexpm / codeberg+gitea / crates)
   repaired. Paired: `PROBLEM_TREE` T2.56 — same commit.
+- **2026-07-12** — **New SOL-CORRELATOR-INTEGRITY slice 1: AU-081 counted the
+  tool's own name derivation as an independent record — manufactured
+  corroboration in the identity core.** An exhaustive correlator
+  evidentiary-integrity audit (one finder per rule family fanned out via the
+  Workflow tool, each finding adversarially re-verified through two independent
+  lenses — correctness + evidentiary-materiality) found that
+  `rule_au_081_canonical_person_name_match` built its two independence gates by
+  hand from the raw `evidence` list (source-string set + `source_family` set)
+  with NO `is_non_corroborating_source` filter, diverging from every sibling
+  (`source_families`/`source_count`/`corroborating_sources`) that build the
+  honest cross-correlation set precisely to exclude the deterministic
+  self-enrichment passes. `name_intel` DERIVES a `Person` from the seed name and
+  maps to the real `identity_registry` family, so a genuine record
+  (`github_user`→"code" / `oathnet_pro`→"breach") plus a same-name
+  `name_intel`-only entity cleared both gates (different source string, different
+  family) and fired a High "independently-sourced records for the same
+  individual" — the tool corroborating its own guess, the exact "finding
+  outruns its evidence" failure this engine forbids. Fixed by routing both gates
+  through `Entity::corroborating_sources()` and adding a gate (0) that skips when
+  either side has no corroborating source at all; the match is now labelled by
+  its first genuine source, never the enrichment pass. Uses only already-collected
+  data. 2 adversarial tests: must-not-fire (`github_user`+`name_intel`-only →
+  empty; git-stash-proven to FIRE against the pre-fix rule) and a must-fire
+  control (a real code+breach match survives even when `name_intel` also
+  enriched one side, and is labelled by the genuine source). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4614 lib tests,
+  +2). Real-evidence anchor: a live `name_intel`-only scan of the public figure
+  "Ada Lovelace" confirmed the module emits a `Person` sourced solely by
+  `name_intel` (the full cross-source firing was NOT staged against a real
+  private individual — evidentiary/privacy — the firing path is unit-proven).
+  The audit banked further candidates (AU-017/030/048/056/085/099/105) for later
+  cycles; this cycle closes exactly one gap. Paired: `PROBLEM_TREE` T2.57 — same
+  commit.

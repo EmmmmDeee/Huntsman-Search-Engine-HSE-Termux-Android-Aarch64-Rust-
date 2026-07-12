@@ -8139,6 +8139,61 @@ fn au081_common_name_is_a_medium_lead_not_a_high_assert() {
 }
 
 #[test]
+fn au081_tool_derived_name_is_not_independent_corroboration() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // The manufactured-corroboration hole: one Person is a REAL record from a
+    // code-hosting profile (`github_user` → family "code"); the other carries the
+    // SAME canonical name but its ONLY evidence is `name_intel` — the tool's own
+    // firstname/lastname permutation of the seed (a non-corroborating enrichment
+    // pass that maps to the real "identity_registry" family). Their source
+    // strings differ AND their families differ, so the old raw-`evidence` gates
+    // both passed and AU-081 fired a High "independently-sourced records for the
+    // same individual". But `name_intel` did not independently OBSERVE anyone — it
+    // derived the name from the seed — so this is the tool corroborating itself.
+    // The finding must NOT fire.
+    let mut real = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    real.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
+    let mut derived = Entity::new(EntityKind::Person, "Bamford, Haigen", 0.7, "s");
+    derived.add_evidence(Evidence::new("name_intel", "Derived from name".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&[real, derived], "s", 0);
+    assert!(
+        r.is_empty(),
+        "a name known only from the tool's own derivation (name_intel) is not an \
+         independent record — AU-081 must not manufacture corroboration from it"
+    );
+}
+
+#[test]
+fn au081_still_fires_when_a_genuine_second_source_is_also_name_enriched() {
+    use super::rules::rule_au_081_canonical_person_name_match;
+    // Control for the fix: a legitimate cross-source match must survive even when
+    // `name_intel` ALSO enriched one side. `e1` carries a REAL code-hosting source
+    // (`github_user` → "code") PLUS the tool's `name_intel` derivation; `e2` is a
+    // REAL breach record (`oathnet_pro` → "breach"). After filtering the
+    // non-corroborating `name_intel`, both sides still hold a genuine, distinct
+    // source family (code vs breach), so the match is real and must fire — the fix
+    // refuses `name_intel` as the SOLE independence, it does not blunt a real one.
+    let mut e1 = Entity::new(EntityKind::Person, "Haigen Bamford", 0.8, "s");
+    e1.add_evidence(Evidence::new("github_user", "GitHub profile".to_string()));
+    e1.add_evidence(Evidence::new("name_intel", "Derived from name".to_string()));
+    let mut e2 = Entity::new(EntityKind::Person, "Bamford Haigen", 0.75, "s");
+    e2.add_evidence(Evidence::new("oathnet_pro", "Breach record".to_string()));
+    let r = rule_au_081_canonical_person_name_match(&[e1, e2], "s", 0);
+    assert!(
+        !r.is_empty(),
+        "a genuine code+breach cross-source match must still fire even when \
+         name_intel also enriched one side"
+    );
+    assert_eq!(r[0].severity, super::Severity::High);
+    // The human-readable label must name the genuine source, never `name_intel`.
+    assert!(
+        r[0].description.contains("github_user") && !r[0].description.contains("name_intel"),
+        "the match must be labelled by its genuine source, not the enrichment pass: {}",
+        r[0].description
+    );
+}
+
+#[test]
 fn au082_api_key_dual_pathway_fires_on_code_plus_breach() {
     use super::rules::rule_au_082_api_key_dual_pathway;
     use crate::core::entity::{Entity, EntityKind, Evidence};

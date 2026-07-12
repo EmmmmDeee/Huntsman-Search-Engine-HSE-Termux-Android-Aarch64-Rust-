@@ -1376,25 +1376,31 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
             let e1 = persons[i].1;
             let e2 = persons[j].1;
 
-            // Independence: require at least one source family that differs.
-            let fam1: HashSet<&str> = e1
-                .evidence
-                .iter()
-                .map(|ev| source_family(ev.source.as_str()))
-                .collect();
-            let fam2: HashSet<&str> = e2
-                .evidence
-                .iter()
-                .map(|ev| source_family(ev.source.as_str()))
-                .collect();
-            // Independence gate, in two parts — "independent" means the two
-            // records were collected by genuinely different methods, not merely
-            // two rows of one database:
-            //
-            // (1) Skip when the exact source SETS are equal — literally the same
-            //     source(s) re-derived the name (e.g. two `name_intel` outputs).
-            let src1: HashSet<&str> = e1.evidence.iter().map(|ev| ev.source.as_str()).collect();
-            let src2: HashSet<&str> = e2.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            // Independence gate. "Independent" means the two records were
+            // collected by genuinely different real-world methods — so every part
+            // of the gate runs over CORROBORATING sources only
+            // ([`Entity::corroborating_sources`]), NOT the raw `evidence` list.
+            // The deterministic self-enrichment passes (`name_intel`'s own
+            // firstname/lastname permutation of the seed, `geo_normalize`) and the
+            // `recall` / `cross_scan_history` replays attach useful evidence but
+            // are NOT independent observations — `name_intel` in particular DERIVES
+            // a `Person` from the seed name and maps to the real `identity_registry`
+            // family, so hand-rolling the sets from raw `evidence` (as this rule
+            // used to) let the tool's OWN name derivation pose as a second,
+            // independently-sourced record and manufacture a High "same individual"
+            // match. This is the identical honest set `source_families` /
+            // `source_count` already build on.
+            let src1 = e1.corroborating_sources();
+            let src2 = e2.corroborating_sources();
+            // (0) A name known ONLY from the tool's own derivation (`name_intel`)
+            //     or a prior-scan replay (`recall`) is not an independently
+            //     collected record at all — a side with no corroborating source
+            //     can never be one half of an "independent match".
+            if src1.is_empty() || src2.is_empty() {
+                continue;
+            }
+            // (1) Skip when the exact corroborating-source SETS are equal —
+            //     literally the same source(s) re-derived the name.
             if src1 == src2 {
                 continue; // exactly the same source(s) — not independent
             }
@@ -1404,6 +1410,8 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
             //     least one differing family (e.g. breach + social). This is
             //     stricter than gate (1): identical families can still have
             //     different `source` strings, which (1) alone would let through.
+            let fam1: HashSet<&str> = src1.iter().map(|s| source_family(s)).collect();
+            let fam2: HashSet<&str> = src2.iter().map(|s| source_family(s)).collect();
             if fam1 == fam2 {
                 continue;
             }
@@ -1414,14 +1422,19 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 continue;
             }
 
-            let src1_label = e1
-                .evidence
-                .first()
-                .map_or("unknown", |ev| ev.source.as_str());
-            let src2_label = e2
-                .evidence
-                .first()
-                .map_or("unknown", |ev| ev.source.as_str());
+            // Label the match with the first genuine (corroborating) source, never
+            // a `name_intel`/`recall` pass — the gate above guarantees both sides
+            // carry one, so the `"unknown"` fallback is purely defensive. A local
+            // `fn` (not a closure) so the returned `&str` borrows from its argument.
+            fn corr_label(e: &Entity) -> &str {
+                e.evidence
+                    .iter()
+                    .map(|ev| ev.source.as_str())
+                    .find(|s| !crate::core::entity::is_non_corroborating_source(s))
+                    .unwrap_or("unknown")
+            }
+            let src1_label = corr_label(e1);
+            let src2_label = corr_label(e2);
 
             let mut uids = vec![e1.uid.clone(), e2.uid.clone()];
             uids.sort_unstable();
