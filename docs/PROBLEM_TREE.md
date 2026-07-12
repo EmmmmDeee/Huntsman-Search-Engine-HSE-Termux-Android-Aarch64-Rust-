@@ -2415,6 +2415,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   descriptions). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
   0 failures (4560 lib tests). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
   (slice 4), §5 — same commit.
+- **`[x]` T2.62 · Dead scaffolding consts inside the *surviving*
+  `see_know::enterprise_config` — the last of the see_know cleanup.** Slice 5
+  of the dead-code sweep. T2.58 kept `enterprise_config` because `budget.rs`
+  reads its `ENTERPRISE` plan config, but the file still carried 7 speculative
+  hardcoded tables — `WORKFLOWS`, `DAILY_RECOMMENDATIONS`, `API_KEY_PATTERNS`,
+  `ENTITY_EXTRACTORS`, `MONITORING_THRESHOLDS`, `SLA`, `WORKFLOW_RECOMMENDATIONS`
+  — each with its own dedicated struct (`ScanProfile`/`DailyRecommendation`/
+  `ApiKeyPattern`/`EntityExtractor`/`MonitoringThreshold`/
+  `ServiceLevelAgreement`/`WorkflowRecommendation`). Verified: every one of the
+  7 consts AND its struct has **0** references outside the file; each struct is
+  instantiated only by its own dead const. They duplicate capability HSE has
+  natively (`API_KEY_PATTERNS`/`ENTITY_EXTRACTORS` overlap the real
+  `util::found_keys`/`oathnet_pro::key_harvest` and `core::entity` extraction;
+  `WORKFLOWS`/`WORKFLOW_RECOMMENDATIONS` overlap `core::profiles`). **P2**
+  (codebase health). → **Decision: DELETE** — trimmed the file to just the live
+  `EnterprisePlan` struct + `ENTERPRISE` const (~406 lines removed). The
+  compiler + clippy `-D warnings` PROVE it safe (build clean, and clippy
+  confirms no `EnterprisePlan` field became newly-unused). Gate green:
+  fmt/clippy/rustdoc clean, full suite 0 failures (4560 lib tests, unchanged —
+  the dead consts had no tests). No live run applies (unreachable data — that IS
+  the finding). This finishes the see_know cleanup (T2.58 deleted the four dead
+  submodules; T2.62 removes the dead consts from the one kept file, leaving it
+  100% live). *Remaining dead-code backlog:* scattered dead/wire-in fns
+  (`fetch_post`/`set_environment` delete; `refresh_pool`/`prune_degraded`/
+  `host_state`/`set_private`/`validate_for_kind` wire-in), `core`
+  (`TACTIC_NAME`/`shortest_path` delete), `modules::…::store_api_credential_from_item`
+  (delete), `storage` low-confidence trio (wire-in). **Paired:** `SOLUTION_TREE`
+  SOL-DEADCODE-SWEEP (slice 5), §5 — same commit.
 
 ---
 
@@ -7860,3 +7888,19 @@ way, so this specific drift class can't recur silently again.
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4560 lib
   tests). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 4), §5 — same
   commit.
+- **2026-07-12** — **T2.62: trimmed dead scaffolding consts from the surviving
+  `see_know::enterprise_config` — finishes the see_know cleanup (dead-code sweep
+  slice 5).** T2.58 kept this file because `budget.rs` reads its `ENTERPRISE`
+  plan config, but it still carried 7 speculative hardcoded tables (`WORKFLOWS`,
+  `DAILY_RECOMMENDATIONS`, `API_KEY_PATTERNS`, `ENTITY_EXTRACTORS`,
+  `MONITORING_THRESHOLDS`, `SLA`, `WORKFLOW_RECOMMENDATIONS`), each with its own
+  struct instantiated only by its own dead const. Verified every const AND
+  struct has 0 refs outside the file; they duplicate native capability
+  (`util::found_keys`/key_harvest, `core::entity` extraction, `core::profiles`).
+  Decision: DELETE — trimmed to just the live `EnterprisePlan` + `ENTERPRISE`
+  (~406 lines). Compiler + clippy `-D warnings` prove it safe (build clean, no
+  `EnterprisePlan` field newly-unused). Gate green: fmt/clippy/rustdoc clean,
+  full suite 0 failures (4560 lib tests, unchanged — dead consts had no tests).
+  No live run applies (unreachable data — that IS the finding). Leaves the one
+  kept see_know file 100% live. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
+  (slice 5), §5 — same commit.

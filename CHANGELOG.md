@@ -38,6 +38,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Removed
+- **Trimmed dead scaffolding tables from `see_know::enterprise_config`.** The
+  file is kept for the live `ENTERPRISE` plan config the SeekNow budget reads,
+  but it also carried seven speculative hardcoded tables (workflow budgets,
+  daily-usage recommendations, API-key patterns, entity extractors, monitoring
+  thresholds, an SLA, and workflow recommendations, ~406 lines) that nothing
+  referenced and that duplicated capability the engine already has natively.
+  Only the live plan configuration remains.
 - **Deleted the dead `util::autonomous_validation` module.** A self-contained
   file whose stated purpose was to "prove multi-API orchestration works
   end-to-end" — i.e. it validated the `multi_api_*` orchestration removed

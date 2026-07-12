@@ -1542,13 +1542,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `name — description`, single-sourcing the help. Proved against a REAL target
   (`hse scan … --profile bogus` prints all six profiles + descriptions,
   previously invisible); drift-guard test git-stash-proven. Gate green (4560 lib
-  tests). *Remaining dead-code backlog (banked, verified by the sweep):* the 7
-  dead consts in the surviving `see_know::enterprise_config` (keeping
-  `ENTERPRISE`); scattered dead fns (`fetch_post`/`set_environment` delete;
-  `refresh_pool`/`prune_degraded`/`host_state`/`set_private` wire-in) and
-  `core`/`storage`/`modules` items — one decision each. **Paired:**
-  `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
-  (slice 4) — each slice its own commit.
+  tests). **Slice 5 delivered — the dead consts in the surviving
+  `see_know::enterprise_config` (finishes the see_know cleanup):** T2.58 kept
+  the file for its live `ENTERPRISE` plan config, but it still carried 7
+  speculative hardcoded tables (`WORKFLOWS`/`DAILY_RECOMMENDATIONS`/
+  `API_KEY_PATTERNS`/`ENTITY_EXTRACTORS`/`MONITORING_THRESHOLDS`/`SLA`/
+  `WORKFLOW_RECOMMENDATIONS`), each with a struct instantiated only by its own
+  dead const — all 0-ref, all duplicating native capability. Decision: DELETE —
+  trimmed to just `EnterprisePlan` + `ENTERPRISE` (~406 lines). ✅ Compiler +
+  clippy `-D warnings` prove it safe (no field newly-unused); gate green (4560
+  lib tests). *Remaining dead-code backlog (banked, verified by the sweep):*
+  scattered dead fns (`fetch_post`/`set_environment` delete; `refresh_pool`/
+  `prune_degraded`/`host_state`/`set_private`/`validate_for_kind` wire-in),
+  `core` (`TACTIC_NAME`/`shortest_path` delete),
+  `modules::…::store_api_credential_from_item` (delete), `storage`
+  low-confidence trio (wire-in) — one decision each. **Paired:** `PROBLEM_TREE`
+  T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61 (slice 4) / T2.62
+  (slice 5) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5638,3 +5648,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   to fail against the pre-wire hardcoded error (which carried no descriptions).
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4560 lib tests). Paired: `PROBLEM_TREE` T2.61 — same commit.
+- **2026-07-12** — **SOL-DEADCODE-SWEEP slice 5: trimmed dead scaffolding consts
+  from the surviving `see_know::enterprise_config` — finishes the see_know
+  cleanup.** T2.58 kept this file because `budget.rs` reads its `ENTERPRISE`
+  plan config, but it still carried 7 speculative hardcoded tables (`WORKFLOWS`,
+  `DAILY_RECOMMENDATIONS`, `API_KEY_PATTERNS`, `ENTITY_EXTRACTORS`,
+  `MONITORING_THRESHOLDS`, `SLA`, `WORKFLOW_RECOMMENDATIONS`), each with its own
+  dedicated struct (`ScanProfile`/`DailyRecommendation`/`ApiKeyPattern`/
+  `EntityExtractor`/`MonitoringThreshold`/`ServiceLevelAgreement`/
+  `WorkflowRecommendation`) instantiated only by that dead const. Verified every
+  const AND struct has 0 references outside the file; they duplicate capability
+  HSE has natively (`API_KEY_PATTERNS`/`ENTITY_EXTRACTORS` overlap
+  `util::found_keys`/`oathnet_pro::key_harvest` + `core::entity` extraction;
+  `WORKFLOWS`/`WORKFLOW_RECOMMENDATIONS` overlap `core::profiles`). Decision:
+  DELETE — trimmed the file to just the live `EnterprisePlan` struct +
+  `ENTERPRISE` const (~406 lines removed). The compiler + clippy `-D warnings`
+  prove the trim safe (build clean, and clippy confirms no `EnterprisePlan`
+  field became newly-unused). Gate green: fmt/clippy/rustdoc clean, full suite 0
+  failures (4560 lib tests, unchanged — the dead consts had no tests). No live
+  run applies (unreachable data — that IS the finding). This finishes the
+  see_know cleanup: T2.58 removed the four dead submodules, T2.62 removes the
+  dead consts from the one kept file, leaving it 100% live. Paired:
+  `PROBLEM_TREE` T2.62 — same commit.
