@@ -398,6 +398,9 @@ const RULES: &[RuleFn] = &[
     // AU-108: the subject's breach-listed accounts across >=2 platforms — a stated
     // cross-platform footprint from the `platform:handle` breach Usernames.
     rule_au_108_breach_social_footprint,
+    // AU-111: a CDN-fronted domain's SPF-authorised mail-sender IP is a likely
+    // origin/hosting-network candidate — mail isn't proxied by the CDN edge.
+    rule_au_111_cdn_origin_candidate,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

@@ -7658,6 +7658,96 @@ fn au110_no_fire_on_shared_hosting_fanout() {
     );
 }
 
+// ─── AU-111 tests (CDN origin candidate) ──────────────────────────────────────
+
+fn cdn_fronted_domain(value: &str, provider: &str) -> Entity {
+    let mut d = Entity::new(EntityKind::Domain, value, 0.9, "s");
+    d.tag("waf-detected");
+    d.tag(format!("waf:{provider}"));
+    d.add_evidence(Evidence::new(
+        "waf_detect",
+        format!("WAF/CDN detected: {provider}"),
+    ));
+    d
+}
+
+fn spf_ip(value: &str, for_domain: &str) -> Entity {
+    let mut ip = Entity::new(EntityKind::IpAddress, value, 0.75, "s");
+    ip.tag("dns");
+    ip.tag("spf");
+    ip.add_evidence(
+        Evidence::new(
+            "dns_intel",
+            format!("SPF authorised sender for {for_domain}"),
+        )
+        .with_attr("domain", for_domain),
+    );
+    ip
+}
+
+#[test]
+fn au111_fires_on_cloudflare_fronted_domain_with_spf_ip() {
+    let dom = cdn_fronted_domain("example.com", "Cloudflare");
+    let ip = spf_ip("203.0.113.9", "example.com");
+    let r = rule_au_111_cdn_origin_candidate(&[dom.clone(), ip.clone()], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-111");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("example.com"));
+    assert!(r[0].description.contains("203.0.113.9"));
+    assert!(r[0].description.contains("Cloudflare"));
+    assert_eq!(
+        r[0].entity_uids,
+        vec![dom.uid.clone(), ip.uid.clone()],
+        "the fronted domain and the origin-candidate IP are both cited"
+    );
+}
+
+#[test]
+fn au111_does_not_fire_without_cdn_fingerprint() {
+    // A domain with no `waf-detected` tag at all — no CDN evidence, no fire
+    // even though an SPF IP exists for it.
+    let mut dom = Entity::new(EntityKind::Domain, "plain.com", 0.9, "s");
+    dom.tag("mx"); // some other, unrelated dns_intel tag
+    let ip = spf_ip("203.0.113.9", "plain.com");
+    assert!(rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty());
+}
+
+#[test]
+fn au111_does_not_fire_for_onprem_waf_appliances() {
+    // F5 BIG-IP is fingerprinted by the same module but is NOT a global
+    // anycast CDN — treating it as "the DNS record isn't the origin" would be
+    // an unsupported generalisation, so it must not fire.
+    let dom = cdn_fronted_domain("example.com", "F5 BIG-IP");
+    let ip = spf_ip("203.0.113.9", "example.com");
+    assert!(
+        rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty(),
+        "an on-premise WAF appliance must not be treated as a DNS-fronting CDN"
+    );
+}
+
+#[test]
+fn au111_does_not_fire_for_an_unrelated_domains_spf_ip() {
+    // The SPF IP is authorised for a DIFFERENT domain than the CDN-fronted
+    // one — must not cross-attribute.
+    let dom = cdn_fronted_domain("example.com", "Cloudflare");
+    let ip = spf_ip("203.0.113.9", "other-site.com");
+    assert!(rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty());
+}
+
+#[test]
+fn au111_ignores_a_non_spf_ip_address() {
+    // An IpAddress entity with no `spf` tag (e.g. a plain A record) must not
+    // be treated as an origin candidate.
+    let dom = cdn_fronted_domain("example.com", "Cloudflare");
+    let mut ip = Entity::new(EntityKind::IpAddress, "203.0.113.9", 0.9, "s");
+    ip.tag("ipv4");
+    ip.add_evidence(
+        Evidence::new("dns_intel", "A record for example.com").with_attr("domain", "example.com"),
+    );
+    assert!(rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty());
+}
+
 // ─── AU-084 tests (cell tower dual-source) ────────────────────────────────────
 
 fn cell_tower(tower_id: &str, sources: &[&str]) -> Entity {

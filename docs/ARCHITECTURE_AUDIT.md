@@ -13,7 +13,7 @@
 | Version / edition / MSRV | 1.13.0 · edition 2024 · 1.88 |
 | Source | ~231k lines · 807 `.rs` files |
 | Modules | **162** registered — 129 Free · 28 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **108** deterministic — 96 entity-only (`correlator::RULES`) + 12 graph-aware (`RELATION_RULES`), one function per distinct `AU-###` finding |
+| Correlation rules | **109** deterministic — 97 entity-only (`correlator::RULES`) + 12 graph-aware (`RELATION_RULES`), one function per distinct `AU-###` finding |
 | Tests | **4,561** lib tests (`cargo test --lib -- --list`) + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`; `[lints.rust] unsafe_code = "forbid"` in `Cargo.toml`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml [profile.release]`) + per-module `catch_unwind` at the dispatch boundary — a hostile/drifted provider tripping a panic degrades to one module error, not a downed `hse serve` process |
@@ -41,7 +41,7 @@ Phone 4 · Threat 3 · Other 3 · Search 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (108 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (109 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
  modules (162) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
@@ -85,7 +85,7 @@ The `core → modules` edge was inverted via `core::hooks` in **T1.4**
   (dedup/lineage). A panicking module is caught at the dispatch boundary
   (`run_module_guarded`), so it degrades to a module error rather than
   aborting the process.
-- **`core::correlator`** (`src/core/correlator/rules/`) — 108 deterministic
+- **`core::correlator`** (`src/core/correlator/rules/`) — 109 deterministic
   rules across `assoc`/`breach`/`broker`/`crypto`/`gap`/`geo`/`infra`/
   `identity`/`integrity`/`location`/`multipath`/`org`/`resolved`/`sim`/
   `template`/`transitive`, synthesising entities into findings;
@@ -157,7 +157,7 @@ The `core → modules` edge was inverted via `core::hooks` in **T1.4**
   fragile single-pathway link whose route shape is proven in ≥2 prior scans
   is resolved by the engine-emitted AU-066 cross-scan gap-fill). Both are
   storage-dependent, so they are emitted by the engine at finalise, not by
-  pure correlator rules, and are distinct from the 108 correlator rules.
+  pure correlator rules, and are distinct from the 109 correlator rules.
   `StoragePort` is compile-time proven `Send + Sync + 'static` and dyn-safe
   (`assert_dyn_send_sync_static::<dyn StoragePort>()`) — ~11 call sites
   share one `Arc<dyn StoragePort>` across tokio tasks.

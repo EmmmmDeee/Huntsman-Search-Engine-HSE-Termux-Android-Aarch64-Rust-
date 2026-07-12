@@ -493,6 +493,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   + `ripestat` both present — also listed in error).
   *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
   Cloudflare/CDN cert-hash origin-unmasking.
+  *Delivered (2026-07-12) — the MX/SPF leg of CDN origin-unmasking, new
+  correlator rule AU-111:* built from data two existing modules already
+  collect, zero new external dependency. `waf_detect`'s CDN fingerprint
+  (`waf-detected` + `waf:<Provider>` tags) combined with `dns_intel`'s SPF
+  parse (an `IpAddress` tagged `spf`, given a new structured `domain`
+  evidence attribute so the correlator matches it without parsing prose):
+  when a domain sits behind one of 8 well-known global anycast CDNs and its
+  SPF record authorises a mail-sender IP, that IP surfaces as a
+  Medium-severity origin/hosting-network candidate (mail isn't proxied by a
+  CDN edge). Deliberately excludes on-premise WAF appliances (F5 BIG-IP,
+  Citrix NetScaler, Barracuda, ModSecurity) `waf_detect` also fingerprints,
+  where the unmasking assumption doesn't hold. The original sketch's "emit a
+  tagged `origin-candidate` IP" is realised as a correlation finding instead
+  of a literal entity tag — the same mechanism every other cross-module
+  AU-0xx inference in this codebase uses, since a rule function only
+  borrows `&[Entity]` and can't retag an entity another module emitted. 5
+  new regression tests, confirmed via `git stash` (compile error pre-fix,
+  not a silent pass — the rule didn't exist). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4590 lib tests, +5).
+  *Still remaining:* passive-DNS history; the SSL-cert-hash pivot (needs a
+  live TLS handshake + a new provider query type — a materially bigger
+  build, correctly left separate).
 - **`[x]` SOL-CACHE-INTERSCAN · Inter-scan entity cache** → **C9**: `raw_archive`
   SQLite table (`id TEXT PRIMARY KEY, archived_at INTEGER NOT NULL, ttl_secs INTEGER
   NOT NULL, result_json TEXT NOT NULL`), keyed by `archive_key =
@@ -4800,3 +4822,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   deterministic under parallel test execution). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4585 lib tests, +1).
   Paired: `PROBLEM_TREE` S4, §8 — same commit.
+- **2026-07-12** — **SOL-NETINT extended: the MX/SPF leg of CDN
+  origin-unmasking, new correlator rule AU-111.** Built from two signals
+  already collected — `waf_detect`'s CDN fingerprint and `dns_intel`'s SPF
+  parse (given a new structured `domain` evidence attribute) — with zero
+  new external dependency. Fires only for 8 well-known global anycast CDNs
+  (Cloudflare, Akamai, Fastly, CloudFront, Sucuri, Incapsula, StackPath,
+  KeyCDN), deliberately excluding the on-premise WAF appliances the same
+  module fingerprints (F5 BIG-IP, Citrix NetScaler, Barracuda, ModSecurity)
+  where the unmasking assumption doesn't hold — precision over recall. A
+  correlation finding, not a literal `origin-candidate` entity tag (a rule
+  function only borrows `&[Entity]`; matches every other cross-module
+  AU-0xx inference in this codebase). 5 new regression tests, confirmed via
+  `git stash` — a compile error pre-fix (the rule didn't exist), not a
+  silent pass. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4590 lib tests, +5). Correlator rule count 108→109,
+  reconciled in `ARCHITECTURE_AUDIT.md`. Still remaining on C4: passive-DNS
+  history, SSL-cert-hash pivot. Paired: `PROBLEM_TREE` C4, §8 — same commit.

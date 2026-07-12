@@ -576,3 +576,86 @@ pub(in crate::core::correlator) fn rule_au_097_au_isp_network(
         })
         .collect()
 }
+
+/// CDN/reverse-proxy providers known to front DNS **globally**, via an anycast
+/// edge network — the visible A/AAAA record is always the CDN's edge, never
+/// the origin. Deliberately excludes the on-premise WAF appliances
+/// `waf_detect` also fingerprints (F5 BIG-IP, Citrix NetScaler, Barracuda,
+/// ModSecurity): those typically sit in front of infrastructure that still
+/// resolves directly on the operator's own network, so treating their
+/// presence as "the DNS record isn't the origin" would be an unsupported
+/// generalisation — precision over recall, matching this codebase's stance
+/// that a false unmasking claim is worse than a missed one.
+const DNS_FRONTING_CDN_PROVIDERS: &[&str] = &[
+    "Cloudflare",
+    "Akamai",
+    "Fastly",
+    "CloudFront",
+    "Sucuri",
+    "Incapsula",
+    "StackPath",
+    "KeyCDN",
+];
+
+/// AU-111 — CDN-fronted domain's SPF-authorised sender IP is a likely origin
+/// candidate.
+///
+/// `waf_detect` fingerprints a domain sitting behind a global anycast CDN
+/// (Cloudflare et al.) from its HTTP response headers/cookies. When
+/// `dns_intel` finds that same domain's SPF record authorising a specific IP
+/// as a mail sender, that IP is genuine mail infrastructure — SMTP isn't
+/// proxied the way HTTP/HTTPS is, so a CDN reverse-proxy never fronts it —
+/// making it a likely member of the same network as the true web origin the
+/// CDN is hiding. This is `PROBLEM_TREE` C4's named "MX/SPF/TXT records (mail
+/// isn't proxied → origin leak)" origin-unmasking signal, built from data
+/// both modules already collect (no new external API/network dependency).
+///
+/// Not a certainty — a subject may run mail on infrastructure entirely
+/// separate from their web origin — so this is Medium, an operator pivot
+/// point rather than a confirmed unmasking.
+pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    let fronted: Vec<(&Entity, &str)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("waf-detected"))
+        .filter_map(|e| {
+            DNS_FRONTING_CDN_PROVIDERS
+                .iter()
+                .find(|p| e.has_tag(&format!("waf:{p}")))
+                .map(|p| (e, *p))
+        })
+        .collect();
+    if fronted.is_empty() {
+        return Vec::new();
+    }
+
+    let mut out = Vec::new();
+    for (dom, provider) in fronted {
+        let candidates = entities.iter().filter(|e| {
+            e.kind == EntityKind::IpAddress
+                && e.has_tag("spf")
+                && e.evidence
+                    .iter()
+                    .any(|ev| ev.attributes.get("domain").is_some_and(|d| d == &dom.value))
+        });
+        for ip in candidates {
+            out.push(Correlation::new(
+                "AU-111",
+                "CDN origin candidate",
+                Severity::Medium,
+                format!(
+                    "'{}' is CDN-fronted ({provider}); its SPF-authorised mail sender {} is not \
+                     proxied by the CDN and is a likely origin/hosting-network candidate",
+                    dom.value, ip.value
+                ),
+                vec![dom.uid.clone(), ip.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}

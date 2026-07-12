@@ -1873,6 +1873,37 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   hostnames); ASN/BGP org/prefix pivots (`bgpview` + `ripestat` both present).
   *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
   Cloudflare/CDN cert-hash origin-unmasking.
+  *Delivered (2026-07-12) — the MX/SPF leg of Cloudflare/CDN origin-unmasking:*
+  new correlator rule **AU-111** combines two signals both already collected
+  with zero new external dependency: `waf_detect`'s CDN fingerprint (a
+  `Domain` tagged `waf-detected` + `waf:<Provider>`) and `dns_intel`'s SPF
+  parse (an `IpAddress` tagged `spf`, now carrying a structured `domain`
+  evidence attribute so the correlator can match it back without parsing
+  prose). When a domain is fronted by one of 8 well-known **global anycast**
+  CDNs (Cloudflare, Akamai, Fastly, CloudFront, Sucuri, Incapsula, StackPath,
+  KeyCDN — deliberately excluding the on-premise WAF appliances the same
+  module also fingerprints, F5 BIG-IP/Citrix NetScaler/Barracuda/
+  ModSecurity, where "the DNS record isn't the origin" doesn't hold) and its
+  SPF record authorises a specific mail-sender IP, that IP is surfaced as a
+  Medium-severity origin/hosting-network candidate — SMTP isn't proxied the
+  way HTTP/HTTPS is, so a CDN's edge network never fronts it. The doc's
+  sketch said "emit a tagged `origin-candidate` IP"; the actual mechanism is
+  a correlation finding (like every other cross-module AU-0xx inference in
+  this codebase — e.g. AU-004/AU-097 — since a rule function only ever
+  borrows `&[Entity]`, it cannot retroactively tag an entity another module
+  already emitted), not a literal entity tag. 5 new regression tests
+  (fires on Cloudflare+SPF; does not fire without a CDN fingerprint; does
+  not fire for an on-prem WAF appliance; does not cross-attribute an
+  unrelated domain's SPF IP; ignores a non-SPF IP), confirmed via `git
+  stash` to fail to compile pre-fix (the rule function didn't exist) and
+  pass post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4590 lib tests, +5). Correlator rule count 108→**109**
+  (reconciled in `ARCHITECTURE_AUDIT.md`). *Remaining on C4:* passive-DNS
+  history, and the SSL-cert-hash pivot on Censys/Shodan (a materially
+  bigger build — needs a live TLS handshake to extract the leaf cert plus a
+  new cert-hash search query against an existing provider — correctly left
+  as separate future work rather than folded in here). **Paired:**
+  `SOLUTION_TREE` SOL-NETINT extended, §5 — same commit.
 - **`[~]` C5 · GEOINT convergence — *already ahead; widen the lead*** — *Current:*
   multi-source fusion (WiGLE + EXIF + cell + IP + address→coords) with AU-state
   attribution and convergence rules (AU-052/056/057/059). Neither competitor
@@ -6645,3 +6676,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   mutation). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4585 lib tests, +1). **Paired:** `SOLUTION_TREE` §7 S4 delivered
   + SOL-REDACT closed, §5 — same commit.
+- **2026-07-12** — **C4: delivered the MX/SPF leg of Cloudflare/CDN
+  origin-unmasking — new correlator rule AU-111.** Combines two signals
+  already collected with zero new external dependency: `waf_detect`'s CDN
+  fingerprint (`waf-detected` + `waf:<Provider>` tags) and `dns_intel`'s SPF
+  parse (an `IpAddress` tagged `spf`, now carrying a structured `domain`
+  evidence attribute instead of only prose, so the correlator can match it
+  reliably). When a domain is fronted by one of 8 well-known global anycast
+  CDNs and its SPF record authorises a mail-sender IP, that IP surfaces as a
+  Medium-severity origin/hosting-network candidate — mail isn't proxied by a
+  CDN edge the way HTTP/HTTPS is. Deliberately excludes the on-premise WAF
+  appliances the same module fingerprints (F5 BIG-IP, Citrix NetScaler,
+  Barracuda, ModSecurity), where the "DNS record isn't the origin"
+  assumption doesn't hold — precision over recall. 5 new regression tests,
+  confirmed via `git stash` (the rule didn't exist pre-fix — a compile
+  error, not a silent pass). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4590 lib tests, +5). Correlator rule count
+  108→109, reconciled in `ARCHITECTURE_AUDIT.md`. **Paired:**
+  `SOLUTION_TREE` SOL-NETINT extended, §5 — same commit.

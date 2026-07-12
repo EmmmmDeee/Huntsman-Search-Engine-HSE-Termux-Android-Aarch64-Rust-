@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New correlator rule AU-111 surfaces a CDN-fronted domain's likely origin
+  IP.** When `waf_detect` fingerprints a domain behind a well-known global
+  anycast CDN (Cloudflare, Akamai, Fastly, CloudFront, Sucuri, Incapsula,
+  StackPath, or KeyCDN) and `dns_intel` finds that domain's SPF record
+  authorising a mail-sender IP, that IP is surfaced as a Medium-severity
+  origin/hosting-network candidate — SMTP isn't proxied by a CDN edge the
+  way HTTP/HTTPS is. Built entirely from data both modules already collect;
+  no new external dependency. Deliberately does not fire for on-premise WAF
+  appliances (F5 BIG-IP, Citrix NetScaler, Barracuda, ModSecurity) the same
+  detector also fingerprints, where the unmasking assumption doesn't hold.
 - **`hse doctor` now flags a stale local cell-tower database.** New "Cell
   tower database" section reports tower count and import age, and a
   `STALE` line once the last `hse cells import` is more than 180 days old,

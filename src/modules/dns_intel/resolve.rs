@@ -203,10 +203,16 @@ pub(super) async fn resolve_records(target: &Target, ctx: &ModuleContext) -> Res
                                     Entity::new(EntityKind::IpAddress, ip, 0.75, &ctx.scan_id);
                                 ie.tag("dns");
                                 ie.tag("spf");
-                                ie.add_evidence(Evidence::new(
-                                    SRC,
-                                    format!("SPF authorised sender for {domain}"),
-                                ));
+                                ie.add_evidence(
+                                    Evidence::new(
+                                        SRC,
+                                        format!("SPF authorised sender for {domain}"),
+                                    )
+                                    // Structured, not just prose in the message: lets a
+                                    // correlator rule (AU-111) match this IP back to the
+                                    // domain that authorised it without parsing text.
+                                    .with_attr("domain", domain),
+                                );
                                 entities.push(ie);
                             }
                             crate::util::spf::Member::Include(inc) => {
