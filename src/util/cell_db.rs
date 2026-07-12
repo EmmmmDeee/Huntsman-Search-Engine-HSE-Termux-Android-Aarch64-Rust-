@@ -230,6 +230,22 @@ pub fn record_import(
     Ok(())
 }
 
+/// A local cell-tower import is considered **stale** once this many days have
+/// elapsed since the last import. OpenCelliD's public dataset changes as
+/// towers are added/decommissioned, and this project has no auto-resync —
+/// `hse cells import` is a manual trigger only (`SOLUTION_TREE` §4a's
+/// "cell_local auto-sync" gap notes no scheduler exists yet) — so a database
+/// that has gone quiet for 6+ months is a genuine "consider refreshing"
+/// signal for the operator, not noise.
+pub const STALE_THRESHOLD_DAYS: u32 = 180;
+
+/// Whether an import at `imported_at` (unix seconds) is stale as of `now_unix`.
+/// Pure so it is unit-testable without a live DB or a wall-clock dependency.
+#[must_use]
+pub fn is_stale(imported_at: i64, now_unix: i64) -> bool {
+    now_unix.saturating_sub(imported_at) > i64::from(STALE_THRESHOLD_DAYS) * 86_400
+}
+
 /// The most recent import record, if any.
 pub fn last_import(conn: &Connection) -> rusqlite::Result<Option<ImportRecord>> {
     let result = conn.query_row(
@@ -404,6 +420,16 @@ mod tests {
         // 505 has 2 entries, 310 has 1 — sorted desc
         assert_eq!(by_mcc[0], (505, 2));
         assert_eq!(by_mcc[1], (310, 1));
+    }
+
+    #[test]
+    fn is_stale_true_past_the_threshold_false_before_it() {
+        let now: i64 = 1_800_000_000;
+        let just_under = now - i64::from(STALE_THRESHOLD_DAYS) * 86_400 + 1;
+        let just_over = now - i64::from(STALE_THRESHOLD_DAYS) * 86_400 - 1;
+        assert!(!is_stale(just_under, now), "not yet stale");
+        assert!(is_stale(just_over, now), "past the threshold");
+        assert!(!is_stale(now, now), "a fresh import is never stale");
     }
 
     #[test]

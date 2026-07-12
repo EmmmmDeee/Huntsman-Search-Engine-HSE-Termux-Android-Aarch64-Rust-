@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse doctor` now flags a stale local cell-tower database.** New "Cell
+  tower database" section reports tower count and import age, and a
+  `STALE` line once the last `hse cells import` is more than 180 days old,
+  naming the command to refresh it. `hse cells import` has no
+  auto-scheduled re-sync (and none is planned — this codebase has no
+  cron/daemon infrastructure, and Termux/Android has no reliable
+  persistent-process story to hang one on), so this at least surfaces when
+  GEOINT cell-tower correlation is working from an aging dataset instead of
+  leaving it silent.
 - **Per-source scraper health is now visible in the web UI** — new `GET
   /api/v1/health/scrapers` endpoint and a "Scraper health" panel on the
   Engines page surface the same cross-scan failure-streak signal `hse

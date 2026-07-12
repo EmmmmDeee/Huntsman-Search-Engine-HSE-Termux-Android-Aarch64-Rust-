@@ -1306,6 +1306,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   manual trigger and a BYO OpenCelliD key; no auto-scheduled re-sync exists. A
   recurring `hse cells import --country world` cron/daemon path would keep the local
   DB fresh without user intervention. No solution node yet.
+  *Partially addressed (2026-07-12) — a lighter-weight step, not the full
+  gap:* actually scheduling a re-sync needs cron/daemon infrastructure this
+  codebase carries none of anywhere, and Termux/Android has no reliable
+  persistent-process story to hang one off, so building a scheduler stays
+  out of scope. What was buildable and real: the risk the gap names — a
+  local dataset silently going stale with nothing to flag it (`hse cells
+  status` shows the age but never calls it out) — is now surfaced. New
+  `util::cell_db::is_stale`/`STALE_THRESHOLD_DAYS` (180 days) plus a "Cell
+  tower database" section in `hse doctor`, mirroring T2.7's scraper-health
+  signal exactly (tower count, import age, a `STALE` line past the
+  threshold naming the fix command). Live-verified against a not-populated
+  DB, a fresh import, and a fabricated 200-day-old import. 1 new regression
+  test, gate green. **The scheduled-re-sync half of this gap remains open
+  by design** (no scheduler infrastructure to build it on).
 - ~~**hse update --check changelog (cycle 22 S→P gap): `--check` reports only a
   commit count, no subject lines.**~~ **Delivered, stale note (found
   2026-07-01).** `cli/update.rs::changelog_lines` runs exactly the suggested
@@ -4735,3 +4749,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `git stash` to fail pre-fix and pass post-fix. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4583 lib tests, +1).
   Paired: `PROBLEM_TREE` C1, §8 — same commit.
+- **2026-07-12** — **§4a cell_local auto-sync gap partially addressed: `hse
+  doctor` now flags a stale local cell-tower database.** The full gap (a
+  scheduled re-sync) needs cron/daemon infrastructure this codebase has
+  none of, and Termux/Android has no reliable persistent-process story to
+  hang one off — so that half stays open by design. The other half — the
+  dataset silently going stale with nothing to flag it — was real and
+  buildable: new `util::cell_db::is_stale`/`STALE_THRESHOLD_DAYS` (180
+  days) plus a "Cell tower database" section in `hse doctor`, mirroring
+  T2.7's scraper-health signal (tower count, import age, a `STALE` line
+  naming the fix command). Live-verified against a not-populated DB, a
+  fresh import, and a fabricated 200-day-old import — all three render
+  honestly. 1 new regression test. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4584 lib tests, +1).
+  Paired: `PROBLEM_TREE` C5, §8 — same commit.

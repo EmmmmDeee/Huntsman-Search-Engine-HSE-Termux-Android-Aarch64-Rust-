@@ -3,16 +3,19 @@
 //! Reports Termux detection, DB path, key path, module/cost counts,
 //! HUNTSMAN_* keys loaded, a per-source scraper health signal derived from
 //! the persisted event log (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
-//! SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]), and a live WiGLE
-//! account introspection that surfaces the email-unverified throttling
-//! warning before it starts silently truncating result sets.
+//! SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]), the local
+//! cell-tower database's freshness (no auto-resync exists yet, so a
+//! months-stale import is a real "check for a refresh" signal — see
+//! [`crate::util::cell_db::is_stale`]), and a live WiGLE account
+//! introspection that surfaces the email-unverified throttling warning
+//! before it starts silently truncating result sets.
 
 use crate::core::error::Result;
 use crate::{
     default_db_path, is_termux,
     modules::registry,
     storage::Store,
-    util::{keys, scraper_health, timefmt},
+    util::{cell_db, keys, scraper_health, timefmt},
 };
 
 use super::cost_label;
@@ -169,6 +172,38 @@ pub(super) async fn cmd_doctor() -> Result<()> {
             Err(e) => println!("  could not read event log — {e}"),
         },
         Err(_) => println!("  skipped — database did not open (see Storage above)"),
+    }
+
+    // ── Cell tower database freshness ──────────────────────────────────
+    // `hse cells import` is a manual trigger with no auto-resync (a named,
+    // unbuilt gap in SOLUTION_TREE §4a) — surfacing staleness here at least
+    // makes an operator relying on GEOINT cell-tower correlation (AU-084,
+    // `cell_intel`/`cell_local`) aware their local dataset may no longer
+    // reflect current tower deployments, rather than trusting it silently.
+    println!("\nCell tower database:");
+    match cell_db::open_ro() {
+        Ok(conn) => match cell_db::last_import(&conn) {
+            Ok(Some(rec)) => {
+                let total = cell_db::total_count(&conn).unwrap_or(0);
+                let now = crate::core::entity::unix_now() as i64;
+                let age_days = now.saturating_sub(rec.imported_at).max(0) / 86_400;
+                println!("  {total} towers, last import {age_days}d ago");
+                if cell_db::is_stale(rec.imported_at, now) {
+                    println!(
+                        "  STALE (>= {}d since last import) — GEOINT cell-tower correlation \
+                         is working from data that old; consider `hse cells import --country \
+                         <CODE>` to refresh.",
+                        cell_db::STALE_THRESHOLD_DAYS
+                    );
+                }
+            }
+            Ok(None) => println!("  populated but no import history recorded"),
+            Err(e) => println!("  could not read import history — {e}"),
+        },
+        Err(_) => println!(
+            "  not populated — run `hse cells import --country AU` (or --file PATH) to enable \
+             local cell-tower lookups"
+        ),
     }
 
     // ── WiGLE account health (network call, best-effort) ──────────────

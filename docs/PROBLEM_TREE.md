@@ -1922,6 +1922,23 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   closely-clustered fixtures where the two estimators don't meaningfully
   diverge).
   *Remaining:* tighter AU bounding; movement/timeline geo.
+  *Delivered (2026-07-12) — a lighter-weight step on the cell-DB auto-sync gap
+  (cycle 21, 2026-06-18):* building a true scheduler was judged out of scope
+  (no cron/daemon infrastructure exists anywhere in this codebase, and
+  Termux/Android has no reliable persistent-process story to hang one off),
+  but the underlying risk — an operator's local OpenCelliD dataset silently
+  going stale with nothing to say so — was still real and unaddressed
+  (`hse cells status` shows the import age, but nothing *flags* it). `hse
+  doctor` gained a "Cell tower database" section mirroring T2.7's scraper
+  health signal: reports tower count + import age, and a `STALE` line once
+  the last import is `> 180` days old (`util::cell_db::is_stale`,
+  `STALE_THRESHOLD_DAYS`), naming `hse cells import` as the fix. Live-verified
+  against a fresh (not-populated), a fresh-import, and a 200-day-stale local
+  DB — all three render honestly. 1 new regression test. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4584 lib
+  tests, +1). Auto-scheduled re-sync itself remains unbuilt and is correctly
+  still open. **Paired:** `SOLUTION_TREE` §4a cell_local auto-sync gap, §5 —
+  same commit.
 - **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -6576,3 +6593,19 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   stash` to fail pre-fix and pass post-fix. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4583 lib tests, +1).
   **Paired:** `SOLUTION_TREE` SOL-CORR extended, §5 — same commit.
+- **2026-07-12** — **C5: `hse doctor` now flags a stale local cell-tower
+  database, a lighter-weight step on the cycle-21 "cell_local auto-sync"
+  gap.** A true scheduled re-sync needs cron/daemon infrastructure this
+  codebase has none of (and Termux/Android has no reliable persistent-process
+  story to hang one off), so building it was out of scope; but the risk it
+  was meant to address — an operator's OpenCelliD dataset silently going
+  stale, with only `hse cells status`'s unflagged "age" field to notice —
+  was still real. New `util::cell_db::is_stale`/`STALE_THRESHOLD_DAYS` (180
+  days) plus a "Cell tower database" section in `hse doctor`, mirroring
+  T2.7's scraper-health signal: tower count, import age, and a `STALE` line
+  past the threshold naming `hse cells import` as the fix. Live-verified
+  against a not-populated DB, a fresh 5-day-old import, and a fabricated
+  200-day-old import — all three render the honest state. 1 new regression
+  test. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4584 lib tests, +1). **Paired:** `SOLUTION_TREE` §4a cell_local
+  auto-sync gap, §5 — same commit.
