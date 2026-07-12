@@ -1221,6 +1221,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   cache-clear and rate-limit tests each confirmed via `git stash` to fail
   pre-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4601 lib tests, +11).
+- **`[x]` SOL-CIRCUIT-TOKEN-ANCHOR · Rate-limit classifier hardened against
+  bare-substring false positives** → **T2.45**, surfaced by the background
+  data-freshness/pacing audit. `core::engine::circuit::is_rate_limited`'s
+  vocabulary included the bare single words `"exceeded"`/`"credit"` and
+  unanchored `429`/`402` digit matching — each matches text with nothing to
+  do with a rate limit: a tokio timeout's "deadline exceeded", scraped
+  "credit card" content, or an echoed subject phone number merely
+  *containing* 429/402 (`+61429551402`, a shape this project's own scans
+  routinely surface). Any one coincidence hard-tripped a healthy module for
+  the full 600s `RATE_LIMIT_COOLDOWN`, silently dropping every subsequent
+  finding it would otherwise have produced for the rest of the scan. A fix
+  for this exact defect existed on an unmerged sibling branch (`a5c5fac3`)
+  but never reached `main` — confirmed via `git merge-base
+  --is-ancestor`/`git branch --all --contains`. Reimplemented fresh this
+  cycle (not cherry-picked): a curated `QUOTA_PROSE` list of distinctive
+  multi-word compounds (`"too many requests"`, `"rate limit"`, `"quota"`,
+  `"payment required"`, `"count exceeded"`, `"limit exceeded"`, `"requests
+  exceeded"`, `"credit exhausted"`, `"out of credit"`, `"insufficient
+  credit"`, `"credit exceeded"`) replaces the bare tokens; `429`/`402` now
+  match only as a standalone token (message split on non-alphanumeric
+  bytes). Anything not caught still falls through to the existing 3-strike
+  soft-failure path, so a false negative here costs at most a retry or two,
+  never a wrongly-benched healthy provider. ✅ 3 new regression tests (2
+  pure-classifier, 1 full stateful `record_error`/`is_open` integration),
+  all confirmed via `git stash` to fail pre-fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4604 lib tests, +3).
+  Live-verified: real `hse` binary, real dispatch path, the project's own
+  canonical acceptance-test seed (`Kylo4kylo`) — the exact coincidental
+  false-positive substring was not naturally reproduced in that specific
+  run, noted honestly rather than overclaimed as full live reproduction.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -4959,3 +4989,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `git stash` to fail pre-fix. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4601 lib tests, +11). Paired: `PROBLEM_TREE`
   T2.44 — same commit.
+- **2026-07-12** — **New SOL-CIRCUIT-TOKEN-ANCHOR: hardened
+  `core::engine::circuit::is_rate_limited` against bare-substring false
+  positives, a regression surfaced by the background data-freshness/pacing
+  audit.** The vocabulary's bare `"exceeded"`/`"credit"` tokens and
+  unanchored `429`/`402` digit matching could hard-trip a healthy module for
+  600s on pure coincidence — a tokio timeout's "deadline exceeded", scraped
+  "credit card" text, or an echoed subject phone number merely containing
+  429/402. A fix for this had already been written and tested on an
+  unmerged sibling branch (`a5c5fac3`) but never landed on `main` —
+  confirmed via `git merge-base --is-ancestor` (fails) and `git branch --all
+  --contains` (only the sibling). Reimplemented fresh this cycle rather
+  than cherry-picked, so the fix is authored and reviewed under this
+  cycle's own hand: a curated `QUOTA_PROSE` list of multi-word compounds
+  replaces the bare tokens, and `429`/`402` now match only as a standalone,
+  non-alphanumeric-delimited token. Anything else still falls through to
+  the existing 3-strike soft-failure path. 3 new regression tests (2
+  pure-classifier, 1 full `record_error`/`is_open` stateful integration),
+  all confirmed via `git stash` to fail pre-fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4604 lib tests, +3).
+  Live-verified against the real `hse` binary and the project's canonical
+  acceptance-test seed (`Kylo4kylo`); the exact coincidental false-positive
+  substring was not naturally reproduced in that specific live run, noted
+  honestly rather than overclaimed. Paired: `PROBLEM_TREE` T2.45 — same
+  commit.

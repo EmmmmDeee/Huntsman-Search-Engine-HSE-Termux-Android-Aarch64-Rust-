@@ -74,6 +74,32 @@ use super::*;
         assert!(!is_open(m));
     }
 
+    #[test]
+    fn record_error_with_an_echoed_identifier_does_not_hard_trip_the_breaker() {
+        // Full end-to-end regression through the SAME public API the real
+        // dispatch finaliser calls (`record_error`), not just the pure
+        // classifier: a module whose own error text happens to echo a real AU
+        // phone number (a shape this project's own scans routinely surface)
+        // must NOT be hard-tripped for 600s on that coincidence -- it's a
+        // single soft failure like any other transient error, so it takes two
+        // more before the module is benched.
+        let m = "t_echoed_identifier_soft";
+        record_error(m, "module reported: subject phone +61429551402");
+        assert!(
+            !is_open(m),
+            "one error containing an echoed 429/402 digit run must not hard-trip"
+        );
+        // Confirm it really did fall through to the soft path (not silently
+        // ignored): two more of the SAME shape complete the 3-strike soft trip.
+        record_error(m, "module reported: subject phone +61429551402");
+        record_error(m, "module reported: subject phone +61429551402");
+        assert!(
+            is_open(m),
+            "three consecutive soft failures must still trip, just via the \
+             soft path and its shorter cooldown"
+        );
+    }
+
     // ── is_rate_limited ───────────────────────────────────────────────────────
 
     #[test]
@@ -97,4 +123,43 @@ use super::*;
         assert!(!is_rate_limited("connection reset by peer"));
         assert!(!is_rate_limited("404 not found"));
         assert!(!is_rate_limited(""));
+    }
+
+    #[test]
+    fn is_rate_limited_does_not_misfire_on_timeouts_or_echoed_identifiers() {
+        // Regression: the old vocabulary included the BARE tokens "429"/"402"/
+        // "exceeded"/"credit". A tokio transport timeout's own message ("deadline
+        // exceeded"), a breach/stealer record echoing a phone number that merely
+        // *contains* the digits 429 or 402, or scraped text mentioning "credit
+        // card" each one-shot the hard 600s RATE_LIMIT_COOLDOWN via record_error
+        // -- silently dropping every subsequent finding a healthy module would
+        // have produced for the rest of the scan, on a coincidental substring
+        // that has nothing to do with an actual rate limit.
+        assert!(
+            !is_rate_limited("deadline exceeded while connecting"),
+            "a transport timeout must not be read as a rate limit"
+        );
+        assert!(
+            !is_rate_limited("subject phone: +61429551402"),
+            "a phone number that merely contains 429/402 must not trip the breaker"
+        );
+        assert!(
+            !is_rate_limited("record note: paid by credit card ending 4021"),
+            "'credit card' in scraped content must not be read as a quota signal"
+        );
+        assert!(
+            !is_rate_limited("order id 4029991402 not found"),
+            "a bare digit run containing 429/402 must not match as the HTTP status"
+        );
+    }
+
+    #[test]
+    fn is_rate_limited_still_matches_429_402_as_a_standalone_token() {
+        // The token-anchoring in the fix above must not overcorrect: an actual
+        // HTTP 429/402 status code, appearing as its own token (delimited by
+        // whitespace/punctuation), must still trip the breaker.
+        assert!(is_rate_limited("HTTP 429"));
+        assert!(is_rate_limited("status=429"));
+        assert!(is_rate_limited("error: 402"));
+        assert!(is_rate_limited("(402)"));
     }

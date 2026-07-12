@@ -74,6 +74,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`core::engine::circuit`'s rate-limit classifier no longer false-positives
+  on coincidental substrings.** Its vocabulary previously included the bare
+  words `exceeded`/`credit` and unanchored `429`/`402` digit matching, any of
+  which could hard-trip a healthy module for the full 600s cooldown on text
+  unrelated to a rate limit — a transport timeout's "deadline exceeded", a
+  breach record mentioning "credit card", or an echoed subject phone number
+  merely containing the digits 429/402. A curated `QUOTA_PROSE` list of
+  distinctive multi-word phrases replaces the bare tokens, and `429`/`402`
+  now match only as a standalone token. Anything else still falls through to
+  the existing 3-strike soft-failure path.
 - **SeekNow and OathNet no longer silently serve stale cross-scan breach
   data.** Both providers' response cache dedups identical queries within
   one scan, but the per-scan reset never cleared it — a long-lived `hse

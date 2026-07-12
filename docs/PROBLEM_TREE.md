@@ -1764,6 +1764,60 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   exists for the curl-subprocess client, consistent with its pre-existing,
   already-untested coverage). Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4601 lib tests, +11).
+- **`[x]` T2.45 · `core::engine::circuit::is_rate_limited` bare-substring
+  vocabulary false-positive-hard-tripped healthy modules on coincidental
+  text** — surfaced by the background data-freshness/pacing audit run this
+  cycle. The classifier's vocabulary included the BARE single words
+  `"exceeded"` and `"credit"`, plus unanchored `"429"`/`"402"` digit
+  matching. Any of these could appear inside text that has nothing to do
+  with a rate limit: a tokio transport timeout's own message ("deadline
+  exceeded"), scraped breach/record content mentioning "credit card", or —
+  concretely, for an OSINT tool whose own scans routinely surface phone
+  numbers — an echoed subject phone number that merely *contains* the
+  digits 429 or 402 (e.g. `+61429551402`). Any single such coincidence
+  hard-tripped the module for the full 600s `RATE_LIMIT_COOLDOWN` via
+  `record_error`, silently dropping every subsequent finding a healthy
+  provider would otherwise have produced for the rest of the scan — on a
+  substring, not an actual rate limit. **P2** (a false-positive circuit trip
+  degrades coverage exactly like a real rate limit, but is entirely
+  avoidable). A fix for this exact defect (`is_rate_limited` token-anchoring)
+  had previously been written and tested on a sibling, unmerged branch
+  (`claude/huntsman-seeknow-api-config-65ow5q`, commit `a5c5fac3`) but never
+  landed on `main` — confirmed via `git merge-base --is-ancestor a5c5fac3
+  HEAD` (fails) and `git branch --all --contains a5c5fac3` (only the sibling
+  branch) — so the regression was live on `main` the whole time.
+  → **Solution:** reimplemented fresh (not cherry-picked, so the fix is
+  authored and reviewed in this cycle rather than mechanically replayed): a
+  new `QUOTA_PROSE` list of distinctive multi-word/compound phrases only
+  (`"too many requests"`, `"rate limit"`, `"quota"`, `"payment required"`,
+  `"count exceeded"`, `"limit exceeded"`, `"requests exceeded"`, `"credit
+  exhausted"`, `"out of credit"`, `"insufficient credit"`, `"credit
+  exceeded"`, …) replaces the bare `"exceeded"`/`"credit"` tokens, and `429`/
+  `402` now match only as a standalone token — the message is split on
+  non-alphanumeric bytes and compared whole, so a digit run that merely
+  *contains* either number can't match. Anything not caught still falls
+  through to the existing soft-failure path (3-strike, shorter cooldown),
+  so a false negative here costs at most a couple of retries, never a
+  wrongly-benched healthy provider. 3 new regression tests in
+  `core::engine::circuit::tests`: 2 pure-classifier
+  (`is_rate_limited_does_not_misfire_on_timeouts_or_echoed_identifiers`,
+  `is_rate_limited_still_matches_429_402_as_a_standalone_token`) plus one
+  full stateful integration test through the real public API
+  (`record_error_with_an_echoed_identifier_does_not_hard_trip_the_breaker`),
+  all three confirmed via `git stash` to fail against the pre-fix classifier
+  and pass against the fix. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4604 lib tests, +3). Live-verified: built
+  the real `hse` binary and ran `hse scan --kind username --value
+  Kylo4kylo --depth 1 --output json` against a fresh throwaway `$HOME`
+  (the project's own canonical acceptance-test seed, per
+  `scripts/standard-test.sh`) to confirm the fixed classifier sits cleanly
+  in the live dispatch path with real network-call error text flowing
+  through `record_error`; the exact coincidental false-positive substring
+  (a real response body happening to contain "credit card" or an echoed
+  429/402 digit run) was not naturally reproduced in this specific live run
+  — noted honestly rather than overclaimed, since reproducing it depends on
+  real provider response content outside this run's control. **Paired:**
+  `SOLUTION_TREE` SOL-CIRCUIT-TOKEN-ANCHOR (new node), §5 — same commit.
 
 ---
 
@@ -6864,3 +6918,27 @@ way, so this specific drift class can't recur silently again.
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4601 lib
   tests, +11). **Paired:** `SOLUTION_TREE` SOL-STALE-CACHE-BACKOFF (new
   node), §5 — same commit.
+- **2026-07-12** — **T2.45: `circuit::is_rate_limited` bare-substring false
+  positives fixed — a regression the background data-freshness/pacing audit
+  surfaced.** The vocabulary's bare `"exceeded"`/`"credit"` tokens and
+  unanchored `429`/`402` digit matching could hard-trip a healthy module for
+  600s on pure coincidence: a tokio timeout's "deadline exceeded", scraped
+  "credit card" text, or — concretely, for a tool whose own scans surface
+  phone numbers — an echoed number merely containing 429/402
+  (`+61429551402`). A fix for this had already been written on an unmerged
+  sibling branch (commit `a5c5fac3`) but never landed on `main` — confirmed
+  via `git merge-base --is-ancestor` (fails) and `git branch --all
+  --contains` (only the sibling). Reimplemented fresh this cycle rather
+  than cherry-picked: a curated `QUOTA_PROSE` list of multi-word compounds
+  replaces the bare tokens, and `429`/`402` now match only as a standalone,
+  non-alphanumeric-delimited token. Anything else still falls through to
+  the existing 3-strike soft path. 3 new tests (2 pure-classifier, 1 full
+  `record_error`/`is_open` stateful integration), all confirmed via `git
+  stash` to fail pre-fix. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4604 lib tests, +3). Live-verified against
+  the real `hse` binary and the project's canonical acceptance-test seed
+  (`Kylo4kylo`) to confirm the fix sits cleanly in the live dispatch path;
+  the exact coincidental false-positive substring was not naturally
+  reproduced in that specific run, noted honestly rather than overclaimed.
+  **Paired:** `SOLUTION_TREE` SOL-CIRCUIT-TOKEN-ANCHOR (new node), §5 —
+  same commit.
