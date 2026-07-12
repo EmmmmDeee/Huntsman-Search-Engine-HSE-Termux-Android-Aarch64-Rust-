@@ -48,9 +48,6 @@ pub mod scan;
 pub mod scraper_health;
 pub mod see_know;
 
-// Leftover from an earlier autonomous-validation experiment; unwired.
-pub mod autonomous_validation;
-
 pub mod service_defs;
 pub mod settings;
 pub mod sim_anonymity;

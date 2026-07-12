@@ -38,6 +38,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Removed
+- **Deleted the dead `util::autonomous_validation` module.** A self-contained
+  file whose stated purpose was to "prove multi-API orchestration works
+  end-to-end" — i.e. it validated the `multi_api_*` orchestration removed
+  above, so it was left validating a subsystem that no longer exists. Nothing
+  referenced any of its symbols. This closes out the earlier autonomous-
+  validation experiment (three unwired islands — the see_know scaffolding, the
+  multi_api orchestration, and this validation harness — now all removed).
 - **Deleted the dead `util::multi_api_*` "enterprise orchestration"
   subsystem.** Four modules — `multi_api_config`, `multi_api_workflows`,
   `multi_api_orchestrator`, and `multi_api_integration_tests` (~2,443 lines) —

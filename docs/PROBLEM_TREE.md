@@ -2358,6 +2358,37 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   same experiment) + the isolated dead fns (`fetch_post`/`refresh_pool`/
   `set_environment`) — one decision each. **Paired:** `SOLUTION_TREE`
   SOL-DEADCODE-SWEEP (slice 2), §5 — same commit.
+- **`[x]` T2.60 · Dead `util::autonomous_validation` module — the last island
+  of the autonomous-validation experiment, now validating a subsystem that no
+  longer exists.** Slice 3 of the dead-code sweep. A single self-contained file
+  (`pub mod autonomous_validation`) whose own doc-comment states its purpose:
+  "Proves multi-API orchestration works end-to-end with real OSINT data" — i.e.
+  it exists to validate the `multi_api_*` orchestration deleted in T2.59, so it
+  is now definitively dead. Verified: all seven public symbols (`OsintEntity`,
+  `AutonomousValidationReport`, `parse_osint_entity`, `detect_apis_from_entities`,
+  `find_dedup_candidates`, `find_correlation_groups`, `validate_orchestration`)
+  have **0** references outside the file; the module path is imported nowhere,
+  so nothing can reach them. It carried 9 of its own `#[test]`s exercising only
+  itself. **P2** (codebase health). → **Decision: DELETE** — the subsystem it
+  validated is gone, and its dedup/correlation heuristics are a toy parallel to
+  the real `core::correlator` + GREATEST-merge identity model; nothing consumes
+  it. Deleted the file + its `pub mod` decl. The compiler PROVES the deletion
+  safe (lib + full suite build clean). Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4560 lib tests, −9 — every removed test
+  lived in the deleted module and exercised ONLY it; no production test lost).
+  No live run applies — the code was unreachable, which IS the finding. This
+  closes out the autonomous-validation experiment (T2.58 see_know scaffolding /
+  T2.59 multi_api / T2.60 autonomous_validation — all three unwired islands
+  removed). *Remaining dead-code backlog (banked, verified by the sweep):* the
+  7 dead consts in the surviving `see_know::enterprise_config`
+  (`WORKFLOWS`/`DAILY_RECOMMENDATIONS`/`API_KEY_PATTERNS`/`ENTITY_EXTRACTORS`/
+  `MONITORING_THRESHOLDS`/`SLA`/`WORKFLOW_RECOMMENDATIONS`, keeping `ENTERPRISE`);
+  the isolated dead fns (`fetch_post`/`set_environment`, delete; `refresh_pool`/
+  `prune_degraded`/`host_state`/`set_private`, wire-in candidates); `core`
+  (`TACTIC_NAME`/`shortest_path` delete; `list_profiles`/`validate_for_kind`
+  wire-in); `modules::…::store_api_credential_from_item` (delete); `storage`
+  low-confidence-evidence trio (wire-in) — one decision each. **Paired:**
+  `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 3), §5 — same commit.
 
 ---
 
@@ -7767,3 +7798,22 @@ way, so this specific drift class can't recur silently again.
   (a separate dead island) + the dead fns `fetch_post`/`refresh_pool`/
   `set_environment`. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 2),
   §5 — same commit.
+- **2026-07-12** — **T2.60: deleted the dead `util::autonomous_validation`
+  module — the last island of the autonomous-validation experiment (dead-code
+  sweep slice 3).** A single self-contained file whose own doc-comment states it
+  exists to "prove multi-API orchestration works end-to-end" — i.e. it validated
+  the `multi_api_*` orchestration deleted in T2.59, so it is now definitively
+  dead. Verified all 7 public symbols (`OsintEntity`, `validate_orchestration`,
+  `parse_osint_entity`, …) have 0 external refs; the module path is imported
+  nowhere. It carried 9 of its own tests exercising only itself. Decision: DELETE
+  (the subsystem it validated is gone; its dedup/correlation heuristics are a toy
+  parallel to the real `core::correlator`). Removed the file + its `pub mod`
+  decl. The compiler proves the deletion safe (lib + full suite build clean).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4560 lib tests, −9 — every removed test lived in the deleted module; no
+  production test lost). No live run applies (unreachable code — that IS the
+  finding). Closes the autonomous-validation experiment cleanup (T2.58/T2.59/
+  T2.60 — all three unwired islands removed, ~4,000 dead lines total). Backlog
+  banked: `enterprise_config` dead consts, scattered dead/wire-in fns, `core`/
+  `storage`/`modules` items. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
+  (slice 3), §5 — same commit.

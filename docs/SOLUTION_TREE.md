@@ -1524,11 +1524,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   + the obsolete `docs/MULTI_API_ENTERPRISE_ORCHESTRATION.md`). ✅ Compiler proves
   it safe (build clean); gate green (4569 lib tests, −45 — all removed tests
   lived in the deleted `integration_tests` and exercised only the dead code).
-  *Remaining (banked, verified dead by the sweep for later cycles):*
-  `util::autonomous_validation` (a separate dead island) + the isolated dead
-  `pub` fns (`fetch_post`/`refresh_pool`/`set_environment`) — one decision each.
-  **Paired:** `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) — each slice its
-  own commit.
+  **Slice 3 delivered — `util::autonomous_validation`:** the last island of the
+  autonomous-validation experiment; its own doc-comment says it exists to
+  "prove multi-API orchestration works end-to-end", i.e. it validated the
+  `multi_api_*` orchestration deleted in slice 2, so it is now definitively
+  dead. All 7 public symbols have 0 external refs; the module path is imported
+  nowhere; it carried 9 self-referential tests. Decision: DELETE. ✅ Compiler
+  proves it safe (build clean); gate green (4560 lib tests, −9 — all removed
+  tests exercised only the deleted module). This closes the autonomous-validation
+  experiment cleanup (slices 1–3 = see_know scaffolding + multi_api +
+  autonomous_validation, ~4,000 dead lines removed). *Remaining dead-code
+  backlog (banked, verified by the sweep):* the 7 dead consts in the surviving
+  `see_know::enterprise_config` (keeping `ENTERPRISE`); scattered dead fns
+  (`fetch_post`/`set_environment` delete; `refresh_pool`/`prune_degraded`/
+  `host_state`/`set_private` wire-in) and `core`/`storage`/`modules` items — one
+  decision each. **Paired:** `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) /
+  T2.60 (slice 3) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5575,3 +5586,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `util::autonomous_validation` (a separate self-contained dead island) + the
   dead fns `fetch_post`/`refresh_pool`/`set_environment`. Paired: `PROBLEM_TREE`
   T2.59 — same commit.
+- **2026-07-12** — **SOL-DEADCODE-SWEEP slice 3: deleted the dead
+  `util::autonomous_validation` module — the last island of the
+  autonomous-validation experiment.** A single self-contained file whose own
+  doc-comment states it exists to "prove multi-API orchestration works
+  end-to-end" — i.e. it validated the `multi_api_*` orchestration deleted in
+  slice 2, so it is now definitively dead. Verified all 7 public symbols
+  (`OsintEntity`, `AutonomousValidationReport`, `parse_osint_entity`,
+  `detect_apis_from_entities`, `find_dedup_candidates`, `find_correlation_groups`,
+  `validate_orchestration`) have 0 references outside the file; the module path
+  is imported nowhere; it carried 9 self-referential tests. Decision: DELETE —
+  the subsystem it validated is gone, and its dedup/correlation heuristics are a
+  toy parallel to the real `core::correlator` + GREATEST-merge identity model.
+  Removed the file + its `pub mod` decl. The compiler proves the deletion safe
+  (lib + full suite build clean). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4560 lib tests, −9 — every removed test lived in
+  the deleted module and exercised only it; no production test lost). No live
+  run applies — the code was unreachable (that IS the finding). This closes the
+  autonomous-validation experiment cleanup: slices 1–3 (see_know scaffolding /
+  multi_api / autonomous_validation) removed ~4,000 dead lines total. Backlog
+  banked: `enterprise_config` dead consts, scattered dead/wire-in fns, and
+  `core`/`storage`/`modules` items surfaced by the sweep. Paired: `PROBLEM_TREE`
+  T2.60 — same commit.
