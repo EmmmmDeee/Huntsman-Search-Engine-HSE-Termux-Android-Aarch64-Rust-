@@ -1279,6 +1279,45 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   need a longer live session than this pass covered, noted honestly rather
   than overclaimed — the guarantee itself (the map is fully cleared) is
   what the regression test pins regardless.
+- **`[x]` SOL-WIGLE-RETRY-AFTER · WiGLE acts on its own real `Retry-After`
+  instead of discarding it** → **T2.47**, the third and final finding from
+  the same background data-freshness/pacing audit, re-confirmed this cycle
+  against a fresh real-scan debug bundle the operator supplied.
+  `fetch_wigle_typed`/`fetch_wigle_ssid` computed `retry_secs` from a 429's
+  real `Retry-After` header purely to log it, then discarded the value and
+  returned a hard error whose message embeds the standalone token `429` —
+  so the shared per-module circuit breaker (correctly, post-T2.45)
+  hard-trips WiGLE for the fixed 600s `RATE_LIMIT_COOLDOWN` regardless of
+  what the server actually asked for, over-throttling whenever its real
+  hint was shorter (WiGLE's documented burst limits reset well under
+  600s). New `get_with_retry` — shared by both search endpoints, replacing
+  the near-duplicated inline 429/412/error handling each previously
+  carried verbatim — retries a 429 **once**, sleeping the server's real
+  value bounded to a new `RATE_LIMIT_RETRY_CAP_SECS` (4s) so the sleep
+  always fits inside the module's 20s `max_timeout_ms` even when several of
+  its four sub-fetches (WiFi bbox, WiFi SSID, cell, Bluetooth) each hit
+  their own 429 in the same `process()` call — mirroring the same "cap the
+  server's real hint to the caller's own budget" discipline
+  `util::http::handle_keyed_error` already established for keyed modules. A
+  persistent 429 (the retry ALSO rate-limited) still degrades to
+  `Error::RateLimited` and the prior module-error/circuit-breaker path — no
+  infinite retrying, no change to T2.45's already-correct classification.
+  ✅ 2 new regression tests
+  (`get_with_retry_recovers_from_a_429_using_the_servers_real_retry_after`,
+  `get_with_retry_gives_up_after_one_retry_on_a_persistent_429`) drive a
+  REAL local `tokio::net::TcpListener` server — the same pattern
+  `util::http::tests` already established for exactly this class of
+  HTTP-status test, no new mock-server dependency — through the real,
+  unmodified `get_with_retry` function over real sockets, both confirmed
+  via `git stash` as a compile error pre-fix and a pass post-fix. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4607 lib tests, +2). Live-verified: a real `hse scan --kind coordinates`
+  run against a real Brisbane target completed a genuine WiGLE round-trip
+  to `api.wigle.net` through the fixed code path with zero errors; the live
+  API did not itself return a 429 in this run, so the retry branch wasn't
+  exercised live — deliberately forcing one against a real account would be
+  abusive and was not attempted, named honestly as the fallback the
+  local-server test covers instead.
 
 ### S.PROCESS — The methodology itself ⚑
 

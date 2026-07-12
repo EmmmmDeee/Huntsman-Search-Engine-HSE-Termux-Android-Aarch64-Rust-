@@ -74,6 +74,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **WiGLE now acts on its own server-computed `Retry-After` on a 429 instead
+  of discarding it.** A single burst rate-limit previously threw away the
+  server's real cooldown hint, hard-failed, and let the shared per-module
+  circuit breaker latch its fixed 600s cooldown regardless of what WiGLE
+  actually asked for. A 429 now retries once, sleeping the server's real
+  value (bounded to fit the module's own timeout budget) before giving up —
+  the same "act on the real hint instead of a fixed worst case" pattern
+  already applied to SeekNow/OathNet earlier this cycle.
 - **Search-engine liveness state no longer leaks across scans in a
   long-lived `hse serve`/`hse live` process.** `search_engines`' per-engine
   block-streak silencing and "proven live" tolerant-threshold exemption are

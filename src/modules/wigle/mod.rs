@@ -35,6 +35,8 @@ use crate::core::{
 use crate::util::budget::{BudgetSnapshot, QuotaBudget};
 
 use emit::{emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel};
+#[cfg(test)]
+use fetch::get_with_retry;
 use fetch::{fetch_detail, fetch_wigle, fetch_wigle_ssid, fetch_wigle_typed};
 
 // WiGLE credentials (env names + embedded fallbacks) are resolved by the

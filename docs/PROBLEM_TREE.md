@@ -1864,6 +1864,65 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   cleared, proven by the regression test) is what the fix guarantees
   regardless. **Paired:** `SOLUTION_TREE` SOL-SEARCH-LIVENESS-RESET (new
   node), §5 — same commit.
+- **`[x]` T2.47 · WiGLE discarded its own server-computed `retry_secs` on a
+  429 instead of acting on it, over-throttling the module far past its real
+  rate-limit contract** — the third and final finding from the background
+  data-freshness/pacing audit, re-confirmed this cycle against a fresh
+  real-scan debug bundle (a live "Riley Morley" investigation) supplied by
+  the operator. `fetch_wigle_typed`/`fetch_wigle_ssid`
+  (`src/modules/wigle/fetch.rs`) computed `retry_secs` from the response's
+  real `Retry-After` header purely to log it, then discarded the value and
+  immediately returned a hard `Error::module` — no backoff, no retry. That
+  error's `to_string()` embeds the standalone token `429`
+  (`core::engine::circuit::is_rate_limited` correctly matches it post-T2.45),
+  so a single 429 hard-trips the shared per-module circuit breaker for the
+  full, fixed 600s `RATE_LIMIT_COOLDOWN` — regardless of whether the server's
+  own `Retry-After` asked for something far shorter. **P2**
+  (throughput/coverage: WiGLE loses far more of its own scan than its actual
+  rate-limit contract requires whenever the real hint is under 600s). The
+  supplied real debug bundle's own self-audit flagged 3 `see_know` module
+  errors in one scan (a real, unrelated transient DNS failure, correctly
+  classified as a soft failure post-T2.45 — investigated and confirmed
+  sound, not a bug) but did not itself exercise WiGLE (no `wigle` module
+  events in that bundle — its target never satisfied WiGLE's
+  `Coordinates`/`MacAddress`/`Ssid` `accepts()` gate), so this fix's own
+  live verification used a separate real scan (below) rather than the
+  supplied bundle.
+  → **Solution:** new `get_with_retry` (shared by both WiGLE search
+  endpoints, replacing near-duplicated inline 429/412/error handling) retries
+  a 429 **once**, sleeping for the server's real `Retry-After` value bounded
+  to a new `RATE_LIMIT_RETRY_CAP_SECS` (4s) — short enough that the sleep
+  always fits inside the module's 20s `max_timeout_ms` even when several of
+  its four sub-fetches (WiFi bbox, WiFi SSID, cell, Bluetooth) each hit their
+  own 429 in the same `process()` call, mirroring the same "cap the server's
+  real hint to the caller's own budget" discipline `util::http::
+  handle_keyed_error` already established for keyed modules. A persistent
+  429 (the retry ALSO rate-limited) still degrades to `Error::RateLimited`
+  and the same module-error/circuit-breaker path as before — no infinite
+  retrying, no change to the already-correct T2.45 classification. 2 new
+  regression tests (`get_with_retry_recovers_from_a_429_using_the_servers_
+  real_retry_after`, `get_with_retry_gives_up_after_one_retry_on_a_
+  persistent_429`) drive a REAL local HTTP server (the same
+  `tokio::net::TcpListener` pattern `util::http::tests` already established
+  for exactly this class of status-code test — no new mock-server
+  dependency) through the real, unmodified `get_with_retry` function over
+  real sockets; both confirmed via `git stash` to fail (a compile error —
+  the function didn't exist pre-fix) and pass post-fix. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4607 lib
+  tests, +2). Live-verified: built the real `hse` binary and ran `hse scan
+  --kind coordinates --value -27.4698,153.0251 --depth 1 --output json`
+  (Brisbane CBD, a real target) against a fresh throwaway `$HOME`; the log
+  confirms WiGLE made real HTTP round-trips to `api.wigle.net` through the
+  exact fixed `get_with_retry`/`classify_and_decode` path and completed
+  cleanly (`"done","module":"wigle","found":0`) with zero errors or panics —
+  a genuine 429 was not naturally returned by the live API in this run
+  (WiGLE's real account wasn't currently rate-limited), so the retry branch
+  itself wasn't exercised live; deliberately hammering a real paid provider
+  to force a genuine 429 on demand would be abusive to a real account and
+  was not attempted — noted honestly as the named, responsible fallback the
+  local-server test covers instead, per this project's own precedent for
+  this exact class of HTTP-status test. **Paired:** `SOLUTION_TREE`
+  SOL-WIGLE-RETRY-AFTER (new node), §5 — same commit.
 
 ---
 
@@ -7011,3 +7070,31 @@ way, so this specific drift class can't recur silently again.
   real block streak would need a longer live session than this pass
   covered, noted honestly rather than overclaimed. **Paired:**
   `SOLUTION_TREE` SOL-SEARCH-LIVENESS-RESET (new node), §5 — same commit.
+- **2026-07-12** — **T2.47: WiGLE discarded its own server-computed
+  `retry_secs` on a 429 instead of acting on it, fixed — the third and final
+  finding from the background data-freshness/pacing audit, re-confirmed this
+  cycle against a fresh real-scan debug bundle the operator supplied.**
+  `fetch_wigle_typed`/`fetch_wigle_ssid` computed `retry_secs` from the real
+  `Retry-After` header purely to log it, then discarded it and returned a
+  hard error whose `to_string()` contains the standalone token `429` — so
+  the shared per-module circuit breaker (correctly, post-T2.45) hard-trips
+  WiGLE for the full fixed 600s cooldown regardless of what the server
+  actually asked for, over-throttling whenever the real hint was shorter.
+  New `get_with_retry` (shared by both endpoints, replacing near-duplicated
+  429/412/error handling) retries once, sleeping for the server's real value
+  bounded to a new `RATE_LIMIT_RETRY_CAP_SECS` (4s) so it always fits inside
+  the module's 20s budget across its four sub-fetches; a persistent 429
+  still degrades to `Error::RateLimited` and the prior module-error path —
+  no infinite retrying. 2 new regression tests drive a REAL local
+  `tokio::net::TcpListener` server (the same pattern `util::http::tests`
+  already established) through the real, unmodified function over real
+  sockets, both confirmed via `git stash` as a compile error pre-fix and a
+  pass post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4607 lib tests, +2). Live-verified: a real `hse scan
+  --kind coordinates` run against a real Brisbane target completed a genuine
+  WiGLE round-trip to `api.wigle.net` through the fixed code path with zero
+  errors; the live API did not itself return a 429 in this run, so the
+  retry branch wasn't exercised live — deliberately forcing one against a
+  real account would be abusive and was not attempted, noted honestly as
+  the named fallback the local-server test covers instead. **Paired:**
+  `SOLUTION_TREE` SOL-WIGLE-RETRY-AFTER (new node), §5 — same commit.

@@ -673,3 +673,118 @@ fn is_generic_ssid_rejects_custom_names() {
     assert!(!is_generic_ssid("Bamford-Residence"));
     assert!(!is_generic_ssid(""));
 }
+
+/// A one-shot local server: first connection answers 429 with a real
+/// `Retry-After` header, second answers 200. Returns the address plus a
+/// counter the caller can read after the exchange to confirm a retry
+/// actually happened (not just a single request).
+async fn serve_429_then_200(
+    retry_after_secs: u64,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::atomic::AtomicU32>,
+) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicU32::new(0));
+    let hits_srv = hits.clone();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let n = hits_srv.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                let body = b"{}";
+                let head = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {retry_after_secs}\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            } else {
+                let body = br#"{"success":true,"resultCount":0,"results":[]}"#;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            }
+            let _ = sock.flush().await;
+        }
+    });
+    (addr, hits)
+}
+
+#[tokio::test]
+async fn get_with_retry_recovers_from_a_429_using_the_servers_real_retry_after() {
+    // Regression: `retry_secs` used to be computed from the response purely to
+    // log it, then thrown away — the module failed on the FIRST 429 with no
+    // retry at all, discarding a real, server-specified cooldown. Now a 429
+    // retries once, honouring the server's own (bounded) Retry-After.
+    let (addr, hits) = serve_429_then_200(1).await;
+    let client = reqwest::Client::new();
+    let started = std::time::Instant::now();
+    let resp = get_with_retry(&client, "user", "token", &format!("http://{addr}/"))
+        .await
+        .expect("must recover on the retried request");
+    let elapsed = started.elapsed();
+
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "must have retried exactly once, not given up after the first 429"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(900),
+        "must actually wait for the server's real 1s Retry-After, not skip the sleep: {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "must use the server's short real hint, not the old up-to-120s ceiling: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn get_with_retry_gives_up_after_one_retry_on_a_persistent_429() {
+    // A second consecutive 429 must still surface as an error (no infinite
+    // retrying) — the module-level circuit breaker's soft/hard classification
+    // takes over from there, exactly as before this fix.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = b"{}";
+            let head = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let err = get_with_retry(&client, "user", "token", &format!("http://{addr}/"))
+        .await
+        .expect_err("a persistent 429 must still fail after the one retry");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "must classify as RateLimited so the shared circuit breaker paces it correctly: {err:?}"
+    );
+}
