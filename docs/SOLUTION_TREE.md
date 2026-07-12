@@ -1318,6 +1318,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   exercised live — deliberately forcing one against a real account would be
   abusive and was not attempted, named honestly as the fallback the
   local-server test covers instead.
+- **`[~]` SOL-PROVIDER-OVERHAUL · Audit & repair the entire external
+  provider-integration layer** → **T2.48** (first slice), an operator-directed
+  program: "completely overhaul and automatically populate the entire API
+  system" (scope confirmed via `AskUserQuestion` = external OSINT provider
+  integrations; "populate" = wire in the tool's existing key machinery —
+  embedded defaults / operator keys / `api_key_probe` / key pool — **not**
+  external account registration or credential harvesting). Every keyed/paid
+  provider client is to be checked against its live current contract
+  (endpoint URL, auth scheme, anonymous-access policy, response shape) and
+  repaired, with each provider its own focused, live-verified commit.
+  **Slice 1 delivered — `domainsdb`:** a live probe caught the provider had
+  disabled anonymous access (`401 "Anonymous access is disabled"`), and the
+  module — registered `Free` — was silently swallowing the 401 on every scan
+  and emitting nothing. Reclassified `Free`→`KeyGated`, registered
+  `HUNTSMAN_DOMAINSDB_KEY` (KNOWN_KEYS + signup_hint), key resolved first
+  (clean "needs key" skip when unset), `Authorization: Bearer` sent when
+  configured, and a `401`/`403` on a configured key reported to the pool +
+  loop-break instead of swallowed. ✅ 2 git-stash-proven tests; gate green
+  (4608 lib tests, +1); live-verified against the REAL `api.domainsdb.info`
+  (no-key clean skip on a real `github.com` scan; bogus-key → real Bearer
+  dial → `403 {"Insufficient credits"}` broken-on after one zone).
+  *Remaining:* audit the other ~32 keyed/paid provider clients for the same
+  class of live-contract breakage (task tracked). **Paired:** `PROBLEM_TREE`
+  T2.48 — same commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5103,3 +5127,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   genuine block streak would need a longer live session than this pass
   covered, noted honestly rather than overclaimed. Paired: `PROBLEM_TREE`
   T2.46 — same commit.
+- **2026-07-12** — **New SOL-PROVIDER-OVERHAUL (`[~]`): began the
+  operator-directed "overhaul the entire external provider-integration layer"
+  program; first slice repaired `domainsdb`.** Scope confirmed via
+  `AskUserQuestion` — external OSINT provider integrations, "populate" =
+  wire in the tool's existing key machinery, not external account
+  registration or credential harvesting. A live probe of the real
+  `api.domainsdb.info` caught that the provider had disabled anonymous
+  access (`401 "Anonymous access is disabled"`), and the module — registered
+  `Free` — silently swallowed that 401 on every scan and emitted nothing.
+  Reclassified `Free`→`KeyGated`, registered `HUNTSMAN_DOMAINSDB_KEY`
+  (KNOWN_KEYS + signup_hint), key resolved first (clean "needs key" skip
+  when unset), `Authorization: Bearer` sent when configured, `401`/`403` on
+  a configured key reported to the pool + loop-break instead of swallowed.
+  2 git-stash-proven tests; gate green (4608 lib tests, +1); live-verified
+  against the REAL provider (no-key clean skip on a real `github.com` scan;
+  bogus-key → real Bearer dial → `403 {"Insufficient credits"}` broken-on
+  after one zone). Remaining: audit the other ~32 keyed/paid provider
+  clients for the same live-contract breakage class (tracked). Paired:
+  `PROBLEM_TREE` T2.48 — same commit.

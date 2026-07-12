@@ -1,9 +1,22 @@
-//! domainsdb.info — free domain registration search (no key, unlimited).
+//! domainsdb.info — domain registration search (keyed).
 //!
 //! Endpoint: `GET https://api.domainsdb.info/v1/domains/search?domain={query}&zone={tld}&limit=20`
+//! Auth:     `Authorization: Bearer <HUNTSMAN_DOMAINSDB_KEY>`.
 //!
 //! Searches registered domains matching a keyword — useful for finding
 //! related/typosquatting domains from an Organisation or FullName target.
+//!
+//! **Key-gated (2026):** the provider disabled anonymous access — a keyless
+//! request now returns `401 {"error":"API key required","message":"Anonymous
+//! access is disabled. Please sign in to obtain an API key…"}` (live-confirmed
+//! against real keyword/zone queries). The module was previously registered
+//! Free and, once anonymous access was cut, silently returned nothing on every
+//! scan: each 401 failed the success check and was swallowed by the loop's
+//! `continue`, so the operator was never told the source had stopped working.
+//! It is now [`ModuleCost::KeyGated`]: an unconfigured key yields a clean
+//! "needs key" skip (via `ctx.key`'s `Error::MissingKey`), and a configured
+//! key is sent as a Bearer token; a `401`/`403` on a configured key is
+//! reported to the key pool for rotation instead of being silently dropped.
 //!
 //! Both response fields are used: `update_date` is surfaced (a recently-updated
 //! look-alike domain is a live-threat signal), and the per-zone `total` gates a
@@ -19,9 +32,14 @@ use std::collections::HashSet;
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     error::Result,
-    module::{Module, ModuleCategory, ModuleContext, ModuleResult},
+    module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
+
+/// Env var holding the operator's domainsdb.info API key. Registered in
+/// `util::keys::KNOWN_KEYS` with a signup hint so an unconfigured scan tells
+/// the operator where to obtain one.
+const KEY_ENV: &str = "HUNTSMAN_DOMAINSDB_KEY";
 
 const SRC: &str = "domainsdb";
 
@@ -106,6 +124,12 @@ impl Module for DomainsDb {
     fn priority(&self) -> u8 {
         19
     }
+    /// Key-gated since the provider disabled anonymous access (2026). Was
+    /// `Free`; leaving it Free meant every keyless request 401'd and was
+    /// silently dropped, so the source vanished without a word to the operator.
+    fn cost(&self) -> ModuleCost {
+        ModuleCost::KeyGated
+    }
     fn accepts(&self, t: &Target) -> bool {
         matches!(
             t.kind,
@@ -131,6 +155,13 @@ impl Module for DomainsDb {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        // Key-gated: an unconfigured key returns `Error::MissingKey`, which the
+        // dispatch finaliser turns into a clean "needs key" skip (with the
+        // signup hint) — NOT a silent zero-yield. This is the honest state the
+        // module lacked while it was still classified Free against an endpoint
+        // that had already disabled anonymous access.
+        let key = ctx.key(KEY_ENV)?;
+
         let query = match target.kind {
             TargetKind::Domain => {
                 let base = target
@@ -175,10 +206,23 @@ impl Module for DomainsDb {
             let resp = ctx
                 .http
                 .get(&url)
+                .header("Authorization", format!("Bearer {key}"))
                 .timeout(std::time::Duration::from_secs(8))
                 .send()
                 .await;
             let Ok(r) = resp else { continue };
+            let status = r.status().as_u16();
+            // An auth failure on a configured key is retry-futile for every
+            // remaining zone (same key, same rejection), and it must not be
+            // swallowed the way the pre-fix loop swallowed the anonymous 401:
+            // report the key to the pool so a later scan rotates to another,
+            // then stop — the surfaced error is the operator's signal that the
+            // configured domainsdb key is bad/expired, not that the subject has
+            // no look-alike domains.
+            if status == 401 || status == 403 {
+                ctx.report_key_exhausted(SRC, key, status);
+                break;
+            }
             if !r.status().is_success() {
                 continue;
             }

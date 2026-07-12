@@ -37,6 +37,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_WHOISXML_KEY",
     "HUNTSMAN_BREACHDIR_KEY",
     "HUNTSMAN_C99_KEY",
+    "HUNTSMAN_DOMAINSDB_KEY",
     // Validation / enrichment
     "HUNTSMAN_NUMVERIFY_KEY",
     "HUNTSMAN_HLR_KEY",
@@ -92,6 +93,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
             "Censys — free tier at https://accounts.censys.io/register"
         }
         "HUNTSMAN_WHOISXML_KEY" => "WhoisXML — free tier at https://whois.whoisxmlapi.com",
+        "HUNTSMAN_DOMAINSDB_KEY" => {
+            "domainsDB — key required (anonymous access disabled); obtain one at https://domainsdb.info"
+        }
         "HUNTSMAN_ONYPHE_KEY" => "ONYPHE — free tier at https://www.onyphe.io/login/#register",
         "HUNTSMAN_NETLAS_KEY" => "Netlas — free tier at https://app.netlas.io/registration",
         "HUNTSMAN_PULSEDIVE_KEY" => "Pulsedive — free key at https://pulsedive.com/about/api",

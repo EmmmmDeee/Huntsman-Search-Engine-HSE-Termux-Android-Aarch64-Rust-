@@ -14,11 +14,41 @@ use super::*;
     }
 
     #[test]
-    fn cost_is_free() {
+    fn cost_is_keygated() {
+        // Key-gated since the provider disabled anonymous access (2026). A
+        // `Free` classification here silently swallowed every 401 and returned
+        // nothing; KeyGated makes the "needs key" state honest and lets
+        // `--free-only` skip it cleanly.
         assert!(matches!(
             DomainsDb.cost(),
-            crate::core::module::ModuleCost::Free
+            crate::core::module::ModuleCost::KeyGated
         ));
+    }
+
+    #[tokio::test]
+    async fn missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty() {
+        // Regression: with anonymous access disabled upstream, an unconfigured
+        // domainsdb must surface `Error::MissingKey` (→ dispatch renders a
+        // "needs API key" skip with the signup hint), NOT `Ok(empty)` — which
+        // is what the pre-fix Free module produced on every scan once its 401s
+        // began, hiding the dead source from the operator entirely.
+        let (bus, _rx) = tokio::sync::broadcast::channel(8);
+        let ctx = ModuleContext {
+            scan_id: "t".into(),
+            bus,
+            http: crate::util::http::build_client(),
+            keys: std::collections::HashMap::new(),
+            cancel: crate::core::cancel::CancelHandle::new(),
+            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
+        };
+        let err = DomainsDb
+            .process(&Target::new(TargetKind::Domain, "example.com"), &ctx)
+            .await
+            .expect_err("an unconfigured key must be a MissingKey skip, not a silent empty result");
+        assert!(
+            matches!(err, crate::core::error::Error::MissingKey(ref k) if k == KEY_ENV),
+            "must name the domainsdb key env so the operator sees the signup hint: {err:?}"
+        );
     }
 
     #[test]

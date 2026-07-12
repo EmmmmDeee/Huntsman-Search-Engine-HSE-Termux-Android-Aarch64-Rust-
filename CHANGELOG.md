@@ -38,6 +38,10 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Changed
+- **`domainsdb` moved from the free tier to key-gated** (its provider
+  disabled anonymous access — see Fixed) — it now appears in the Settings
+  key grid and `hse doctor`'s key recommendations, and is skipped by
+  `--free-only`.
 - **The SPA's UI now runs on a from-scratch dark-console design system —
   Bootstrap 3, jQuery, tablesorter, and alertify (SpiderFoot's original
   vendor stack) are gone entirely.** New `src/web/css/app.css`: dark-first
@@ -74,6 +78,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`domainsdb` no longer silently returns nothing after its provider
+  disabled anonymous access.** A live probe found `api.domainsdb.info` now
+  answers keyless requests with `401 "Anonymous access is disabled"`; the
+  module was registered as a free source and swallowed that 401 on every
+  scan, emitting nothing with no error or skip notice. It is now key-gated
+  (`HUNTSMAN_DOMAINSDB_KEY`): an unconfigured key gives a clean "needs key"
+  skip with a signup hint, a configured key is sent as a Bearer token, and a
+  401/403 on a configured key is reported to the key pool for rotation
+  instead of being silently dropped. First repair in a broader overhaul of
+  the external provider-integration layer.
 - **WiGLE now acts on its own server-computed `Retry-After` on a 429 instead
   of discarding it.** A single burst rate-limit previously threw away the
   server's real cooldown hint, hard-failed, and let the shared per-module

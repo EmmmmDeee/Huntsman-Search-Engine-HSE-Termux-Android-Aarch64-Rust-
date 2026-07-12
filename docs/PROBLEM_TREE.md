@@ -1923,6 +1923,53 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   local-server test covers instead, per this project's own precedent for
   this exact class of HTTP-status test. **Paired:** `SOLUTION_TREE`
   SOL-WIGLE-RETRY-AFTER (new node), §5 — same commit.
+- **`[x]` T2.48 · `domainsdb` silently died when its provider disabled
+  anonymous access — a dead free module presenting as a working source** —
+  first repair in the operator-directed "overhaul the entire external
+  provider-integration layer" program. The module was registered
+  [`ModuleCost::Free`] and documented "free, no key, unlimited," but a live
+  probe of the real `api.domainsdb.info/v1/domains/search` endpoint (three
+  real brand keywords × zones — `google/com`, `microsoft/net`, `amazon/io`)
+  returned a consistent **`401 {"error":"API key required","message":
+  "Anonymous access is disabled. Please sign in to obtain an API key…"}`**.
+  The proxy was confirmed healthy (no relay failures; domainsdb.info not
+  proxy-blocked), so this is the provider's own policy, not a sandbox
+  artifact. Against that 401, the module's per-zone loop did
+  `if !r.status().is_success() { continue; }` — swallowing the auth failure
+  silently — so on **every** scan of a Domain/Organisation/FullName target
+  it made six doomed requests and emitted nothing, with the operator never
+  told the source had stopped working (no `ModuleError`, no
+  `ModuleSkipped`, a phantom zero-yield). **P2** (robustness/coverage +
+  honesty: a silently-dead source is worse than a disclosed one — it reads
+  as "no look-alike domains exist" when the truth is "the source was never
+  queried successfully"). Ranks above the open capability (C-) nodes in §5's
+  P2-before-CAP order, same precedent as T2.44–T2.47 this session.
+  → **Solution:** reclassified `[`ModuleCost::Free`]`→[`ModuleCost::KeyGated`]
+  (per-tier counts are computed dynamically from `cost()`, so no guarded
+  count drifts; the total module count is unchanged). New `HUNTSMAN_DOMAINSDB_KEY`
+  registered in `util::keys::KNOWN_KEYS` with a `signup_hint`. `process()`
+  now resolves the key first via `ctx.key(KEY_ENV)?` — an unconfigured key
+  returns `Error::MissingKey`, which the dispatch finaliser renders as a
+  clean "needs API key" `ModuleSkipped` (with the signup hint), NOT a silent
+  empty. A configured key is sent as `Authorization: Bearer <key>`; a
+  `401`/`403` on a configured key is reported to the key pool
+  (`ctx.report_key_exhausted`) for rotation and the zone loop breaks (a bad
+  key can't work for the other five zones either), instead of being
+  swallowed. 2 new/changed regression tests in `modules::domainsdb::tests`
+  (`cost_is_keygated` replacing `cost_is_free`, and
+  `missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty` driving the
+  real `process()` with an empty key map and asserting `Error::MissingKey`),
+  git-stash-proven to fail against the pre-fix module (compile error — the
+  fix's `KEY_ENV`/`KeyGated` don't exist) and pass against the fix. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4608
+  lib tests, +1). Live-verified against the REAL provider with the real
+  binary: (1) no key → `dispatch` then `skipped — needs key
+  HUNTSMAN_DOMAINSDB_KEY` for a real `github.com` scan (the corrected
+  honest state); (2) a bogus key → one real Bearer-authenticated dial to
+  `api.domainsdb.info` returning `403 {"Insufficient credits"}`, detected
+  and broken-on after a single zone (not six wasted requests), key reported
+  to the pool. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (new node),
+  §5 — same commit.
 
 ---
 
@@ -7098,3 +7145,25 @@ way, so this specific drift class can't recur silently again.
   real account would be abusive and was not attempted, noted honestly as
   the named fallback the local-server test covers instead. **Paired:**
   `SOLUTION_TREE` SOL-WIGLE-RETRY-AFTER (new node), §5 — same commit.
+- **2026-07-12** — **T2.48: `domainsdb` was a dead free module presenting as
+  a working source — its provider disabled anonymous access; first repair in
+  the operator-directed provider-integration overhaul.** A live probe of the
+  real `api.domainsdb.info` endpoint (three real brand keyword/zone queries)
+  returned a consistent `401 {"error":"API key required","message":
+  "Anonymous access is disabled…"}`; the proxy was confirmed healthy, so this
+  is the provider's real policy. The module's per-zone loop swallowed the
+  auth failure with a bare `continue`, so every Domain/Organisation/FullName
+  scan silently emitted nothing with no error or skip notice. Fixed:
+  reclassified `Free`→`KeyGated`, registered `HUNTSMAN_DOMAINSDB_KEY`
+  (KNOWN_KEYS + signup_hint), resolve the key first (`ctx.key(KEY_ENV)?` →
+  clean "needs key" skip when unset), send `Authorization: Bearer`, and
+  report a `401`/`403` on a configured key to the key pool + break instead
+  of swallowing it. 2 git-stash-proven tests (`cost_is_keygated`,
+  `missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty`). Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4608
+  lib tests, +1). Live-verified against the REAL provider: no key → clean
+  `skipped — needs key HUNTSMAN_DOMAINSDB_KEY` on a real `github.com` scan;
+  bogus key → one real Bearer dial to `api.domainsdb.info` returning `403
+  {"Insufficient credits"}`, detected and broken-on after a single zone.
+  **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (new node), §5 — same
+  commit.
