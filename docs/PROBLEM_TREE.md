@@ -2322,6 +2322,42 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   the compiler-proved-safe deletion + green suite stand as the documented
   verification. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (new node), §5 —
   same commit.
+- **`[x]` T2.59 · Dead `util::multi_api_*` "enterprise orchestration"
+  subsystem — a 2,443-line parallel reimplementation wired to zero production
+  call sites.** Slice 2 of the dead-code sweep (per the per-directory Workflow
+  scan). Four files — `multi_api_config.rs` (717), `multi_api_workflows.rs`
+  (656), `multi_api_orchestrator.rs` (477), `multi_api_integration_tests.rs`
+  (593) — declared `pub mod` in `util/mod.rs`, from the same
+  earlier autonomous-validation experiment as the T2.58 see_know scaffolding
+  (see the T2.14 log: this subsystem was only ever lint-swept to pass the gate,
+  never wired). Verified provably unwired: **every** public symbol
+  (`generate_multi_api_plan`, `MultiApiOrchestrator`, `ADVANCED_WORKFLOWS`,
+  `BUDGET_ALLOCATION`, `API_RELIABILITY`, `UNIFIED_SCAN_PROFILES`,
+  `CORRELATION_SCORES`, `execute_workflow`, …) has **0** references outside the
+  four files; the only consumer of `multi_api_config`/`multi_api_orchestrator`
+  is `multi_api_integration_tests` (a `#[cfg(test)]` module), and
+  `multi_api_workflows` is used by nothing at all. The subsystem re-implements —
+  from a hardcoded, stale "12 paid APIs" table — the orchestration, budgeting,
+  intelligent-chaining, and entity-dedup that HSE's real `core::engine::dispatch`
+  already does natively against the live 160+ module registry. **P2** (codebase
+  health: a 2.4k-line "orchestration system" with its own passing integration
+  tests but zero production wiring is the strongest "looks built but isn't" trap
+  in the tree — the tests give false assurance of real, exercised capability).
+  → **Decision: DELETE** (not wire-in — wiring would replace the live engine's
+  orchestration with a hardcoded parallel planner predating the current module
+  registry; a massive change duplicating live capability, not evidence-grounded).
+  Deleted the four files (~2,443 lines) + their `pub mod` decls + the obsolete,
+  unreferenced `docs/MULTI_API_ENTERPRISE_ORCHESTRATION.md` (514 lines). The
+  compiler PROVES the deletion safe (lib + full suite build clean). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4569 lib tests,
+  −45 — every removed test lived in `multi_api_integration_tests` and exercised
+  ONLY the deleted code; no production test was lost). No live run applies — the
+  code was unreachable, which IS the finding; the compiler-proved-safe deletion
+  + green suite are the documented verification. *Remaining (banked):*
+  `util::autonomous_validation` (a separate self-contained dead island from the
+  same experiment) + the isolated dead fns (`fetch_post`/`refresh_pool`/
+  `set_environment`) — one decision each. **Paired:** `SOLUTION_TREE`
+  SOL-DEADCODE-SWEEP (slice 2), §5 — same commit.
 
 ---
 
@@ -7706,3 +7742,28 @@ way, so this specific drift class can't recur silently again.
   unreachable — that IS the finding); compiler-proved-safe deletion + green
   suite are the documented verification. **Paired:** `SOLUTION_TREE`
   SOL-DEADCODE-SWEEP (new node), §5 — same commit.
+- **2026-07-12** — **T2.59: deleted the dead `util::multi_api_*` "enterprise
+  orchestration" subsystem — 2,443 lines of parallel reimplementation wired to
+  zero production call sites (dead-code sweep slice 2).** Four `pub mod`s
+  (`multi_api_config`/`multi_api_workflows`/`multi_api_orchestrator`/
+  `multi_api_integration_tests`) from the same earlier autonomous-validation
+  experiment as T2.58. Verified provably unwired: every public symbol
+  (`generate_multi_api_plan`, `MultiApiOrchestrator`, `ADVANCED_WORKFLOWS`,
+  `BUDGET_ALLOCATION`, …) has 0 refs outside the four files; `config`/
+  `orchestrator` are consumed only by the `#[cfg(test)]` `integration_tests`,
+  and `workflows` by nothing. The subsystem re-implements — from a hardcoded,
+  stale "12 paid APIs" table — the orchestration/budgeting/chaining/dedup that
+  `core::engine::dispatch` already does natively against the live module
+  registry. Decision: DELETE (wiring would replace the live engine with a
+  hardcoded parallel planner — a massive change duplicating live capability).
+  Removed the four files (~2,443 lines) + their `pub mod` decls + the obsolete,
+  unreferenced `docs/MULTI_API_ENTERPRISE_ORCHESTRATION.md`. The compiler proves
+  the deletion safe (lib + full suite build clean). Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4569 lib tests, −45 —
+  every removed test lived in `multi_api_integration_tests` and exercised ONLY
+  the deleted code; no production test lost). No live run applies (the code was
+  unreachable — that IS the finding); compiler-proved-safe deletion + green
+  suite are the documented verification. Banked for later: `autonomous_validation`
+  (a separate dead island) + the dead fns `fetch_post`/`refresh_pool`/
+  `set_environment`. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 2),
+  §5 — same commit.

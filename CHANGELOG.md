@@ -38,6 +38,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Removed
+- **Deleted the dead `util::multi_api_*` "enterprise orchestration"
+  subsystem.** Four modules — `multi_api_config`, `multi_api_workflows`,
+  `multi_api_orchestrator`, and `multi_api_integration_tests` (~2,443 lines) —
+  formed a self-contained parallel reimplementation of multi-source
+  orchestration, budgeting, chaining, and entity-dedup, driven by a hardcoded
+  "12 paid APIs" table. Nothing in production called any of it (its only
+  consumer was its own `#[cfg(test)]` integration tests), while the real scan
+  engine already provides all of that natively against the live module
+  registry. The obsolete `docs/MULTI_API_ENTERPRISE_ORCHESTRATION.md` was
+  removed with it.
 - **Deleted the unwired `util::see_know` "enterprise optimization"
   scaffolding.** Four public submodules — `force_multiplier`, `monitoring`,
   `orchestration`, and `endpoint_matrix` (~1,529 lines) — were built but never

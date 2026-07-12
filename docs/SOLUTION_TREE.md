@@ -1512,10 +1512,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   obsolete, unreferenced `docs/HARDCODED_ENTERPRISE_OPTIMIZATION.md`;
   `enterprise_config` kept. ✅ The compiler proves the deletion safe (lib + full
   suite build clean, 4614 lib tests unchanged — the dead code had no live
-  tests); gate green. *Remaining (banked, verified dead by the sweep for later
-  cycles):* the `util::multi_api_*` dead consts/module and the isolated dead
+  tests); gate green. **Slice 2 delivered — the `util::multi_api_*` "enterprise
+  orchestration" subsystem:** four `pub mod`s (`multi_api_config`/
+  `multi_api_workflows`/`multi_api_orchestrator`/`multi_api_integration_tests`,
+  2,443 lines) from the same autonomous-validation experiment. Verified provably
+  unwired — every public symbol has 0 refs outside the four files;
+  `config`/`orchestrator` are consumed only by the `#[cfg(test)]`
+  `integration_tests`, `workflows` by nothing. It re-implements from a hardcoded
+  stale "12 paid APIs" table the orchestration/budgeting/chaining/dedup that
+  `core::engine::dispatch` already does natively. Decision: DELETE (~2,443 lines
+  + the obsolete `docs/MULTI_API_ENTERPRISE_ORCHESTRATION.md`). ✅ Compiler proves
+  it safe (build clean); gate green (4569 lib tests, −45 — all removed tests
+  lived in the deleted `integration_tests` and exercised only the dead code).
+  *Remaining (banked, verified dead by the sweep for later cycles):*
+  `util::autonomous_validation` (a separate dead island) + the isolated dead
   `pub` fns (`fetch_post`/`refresh_pool`/`set_environment`) — one decision each.
-  **Paired:** `PROBLEM_TREE` T2.58 (slice 1) — each slice its own commit.
+  **Paired:** `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) — each slice its
+  own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5533,3 +5546,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   banked `util::multi_api_*` dead consts/module and the dead fns
   `fetch_post`/`refresh_pool`/`set_environment` for later cycles. Paired:
   `PROBLEM_TREE` T2.58 — same commit.
+- **2026-07-12** — **SOL-DEADCODE-SWEEP slice 2: deleted the dead
+  `util::multi_api_*` "enterprise orchestration" subsystem — 2,443 lines of
+  parallel reimplementation wired to zero production call sites.** Four `pub
+  mod`s (`multi_api_config`/`multi_api_workflows`/`multi_api_orchestrator`/
+  `multi_api_integration_tests`) from the same earlier autonomous-validation
+  experiment as slice 1 (T2.58). Verified provably unwired: every public symbol
+  (`generate_multi_api_plan`, `MultiApiOrchestrator`, `ADVANCED_WORKFLOWS`,
+  `BUDGET_ALLOCATION`, `API_RELIABILITY`, …) has 0 references outside the four
+  files; `config`/`orchestrator` are consumed only by the `#[cfg(test)]`
+  `integration_tests` module, and `workflows` by nothing at all. The subsystem
+  re-implements, from a hardcoded stale "12 paid APIs" table, the
+  orchestration/budgeting/intelligent-chaining/entity-dedup that
+  `core::engine::dispatch` already does natively against the live 160+ module
+  registry — so its passing integration tests gave false assurance of real,
+  exercised capability. Decision: DELETE (wiring would replace the live engine's
+  orchestration with a hardcoded parallel planner predating the current
+  registry — a massive change duplicating live capability). Removed the four
+  files (~2,443 lines) + their `pub mod` decls + the obsolete, unreferenced
+  `docs/MULTI_API_ENTERPRISE_ORCHESTRATION.md` (514 lines). The compiler proves
+  the deletion safe (lib + full suite build clean). Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4569 lib tests, −45 —
+  every removed test lived in the deleted `integration_tests` and exercised ONLY
+  the deleted code; no production test lost). No live run applies — the code was
+  unreachable, which IS the finding; the compiler-proved-safe deletion + green
+  suite are the documented verification (an explicit exception to the live-run
+  preference — no reachable path exists to exercise). Banked for later cycles:
+  `util::autonomous_validation` (a separate self-contained dead island) + the
+  dead fns `fetch_post`/`refresh_pool`/`set_environment`. Paired: `PROBLEM_TREE`
+  T2.59 — same commit.
