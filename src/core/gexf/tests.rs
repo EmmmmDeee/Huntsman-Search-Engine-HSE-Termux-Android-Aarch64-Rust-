@@ -18,14 +18,56 @@ use super::*;
     }
 
     #[test]
-    fn gexf_creates_edges_for_shared_sources() {
+    fn gexf_creates_edges_for_a_shared_evidence_record() {
+        // Two selectors that appear in the SAME breach record (identical source
+        // AND summary) genuinely co-occur → one edge, labelled by the source.
         let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        a.add_evidence(Evidence::new("hibp", "breach"));
+        a.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
         let mut b = Entity::new(EntityKind::Domain, "x.com", 0.7, "s");
-        b.add_evidence(Evidence::new("hibp", "domain breach"));
+        b.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
         let xml = entities_to_gexf(&[a, b], &[], "test-scan");
-        assert!(xml.contains("<edge"), "shared source should create edge");
-        assert!(xml.contains("hibp"));
+        assert!(
+            xml.contains("<edge"),
+            "a shared evidence record should create an edge"
+        );
+        assert!(xml.contains(r#"label="hibp""#));
+    }
+
+    #[test]
+    fn gexf_co_occurrence_is_record_level_not_source_level() {
+        // MUST-NOT-FIRE: a one-to-many fan-out enumeration (`username_search`
+        // probing one handle across platforms) attaches a DISTINCT per-platform
+        // summary to a separate entity each — independent existence-proofs of the
+        // same selector, not a joint sighting. They must NOT be wired together.
+        // Under the old source-NAME key both carried `username_search` and an edge
+        // was drawn; this is the regression guard for that false clique (which, on
+        // a real username scan, was ~80% of all export edges).
+        let mut insta = Entity::new(EntityKind::Url, "https://instagram.com/h", 0.6, "s");
+        insta.add_evidence(Evidence::new(
+            "username_search",
+            "@h has a profile on Instagram",
+        ));
+        let mut tiktok = Entity::new(EntityKind::Url, "https://tiktok.com/@h", 0.6, "s");
+        tiktok.add_evidence(Evidence::new("username_search", "@h has a profile on TikTok"));
+        let xml = entities_to_gexf(&[insta, tiktok], &[], "s");
+        assert!(
+            !xml.contains(r#"<edge "#),
+            "same source name but different per-platform records must NOT co-occur:\n{xml}"
+        );
+
+        // MUST-FIRE: the SAME source AND SAME summary is one shared record — a
+        // genuine joint sighting → exactly one edge, labelled by that source.
+        let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+        a.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+        let mut b = Entity::new(EntityKind::Username, "aaa", 0.6, "s");
+        b.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+        let xml = entities_to_gexf(&[a, b], &[], "s");
+        assert_eq!(
+            xml.matches(r#"<edge "#).count(),
+            1,
+            "one shared breach record → exactly one edge:\n{xml}"
+        );
+        assert!(xml.contains(r#"label="hibp""#));
     }
 
     #[test]

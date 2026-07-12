@@ -706,6 +706,34 @@ impl Entity {
             .collect()
     }
 
+    /// The set of DISTINCT corroborating evidence *records* — `(source, summary)`
+    /// pairs whose source counts toward corroboration (see
+    /// [`is_non_corroborating_source`]). Unlike [`Self::corroborating_sources`],
+    /// which collapses every record to the bare source NAME, this keeps
+    /// per-record granularity: two entities share a record only when the same
+    /// source produced the *same finding* for both.
+    ///
+    /// This is the correct key for **co-occurrence** (does an independent source
+    /// name entities A and B *together*?). Keying co-occurrence on the source
+    /// name alone conflates genuine joint sightings with one-to-many *fan-out
+    /// enumeration*: a module like `username_search` probes a single handle
+    /// across dozens of platforms and attaches a distinct per-platform summary
+    /// (`"@h has a profile on Threads"`, `"… on OnlyFans"`, …) to a separate
+    /// entity each — independent existence-proofs of one selector, not a shared
+    /// sighting. Under the name-level key those N entities collapse to one shared
+    /// `username_search` source and wire into a false N-clique; under the
+    /// record-level key their summaries differ, so no spurious edge is drawn. A
+    /// genuine joint record (both selectors in the *same* breach — identical
+    /// `("hibp", "Breach 'Apollo'")` — or on the same crawled page) is shared
+    /// verbatim, so the real co-occurrence edge survives.
+    pub fn corroborating_records(&self) -> std::collections::HashSet<(&str, &str)> {
+        self.evidence
+            .iter()
+            .filter(|ev| !is_non_corroborating_source(&ev.source))
+            .map(|ev| (ev.source.as_str(), ev.summary.as_str()))
+            .collect()
+    }
+
     pub fn has_evidence_from(&self, source: &str) -> bool {
         self.evidence.iter().any(|ev| ev.source == source)
     }

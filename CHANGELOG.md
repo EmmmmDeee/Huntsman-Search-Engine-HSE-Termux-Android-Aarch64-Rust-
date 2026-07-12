@@ -136,6 +136,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **The Gephi graph export (`graph.gexf`) no longer wires a username's
+  platform-presence results into a false cluster.** Co-occurrence edges — the
+  "these two entities were named by the same source" links — were keyed on the
+  source *name*, so a fan-out probe like the cross-platform username search,
+  which checks one handle across dozens of sites and records each hit
+  separately, connected all of its results into a fully-connected clique. On a
+  real username scan that single clique was ~80% of every edge in the export,
+  drowning out the genuine structure a Gephi analyst needs to see. Edges are now
+  keyed on the specific evidence *record* (source **and** finding), so two
+  entities link only when a source named them in the *same* record — a shared
+  breach dump or a shared crawled page still links, but a handle merely found on
+  many separate platforms no longer does. The typed relationship edges
+  (same-identity, hosted-on, derived-from, …) are unchanged.
 - **A DNS zone's admin mailbox no longer leaks into a scan as the subject's
   email.** The infrastructure-email filter matched role mailboxes only when the
   whole local-part was a role word, so a provider-prefixed system address like

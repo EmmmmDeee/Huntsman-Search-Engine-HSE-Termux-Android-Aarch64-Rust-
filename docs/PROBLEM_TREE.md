@@ -2597,6 +2597,44 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `is_role_localpart("privacy")` is already true — a separate emitter-side fix.
   **Paired:** `SOLUTION_TREE` SOL-ROLE-MAILBOX-COMPOUND (new node), §5 — same
   commit.
+- **`[x]` T2.69 · the GEXF export's co-occurrence edges keyed on the source
+  NAME, so a one-to-many fan-out probe wired its results into a false clique
+  that dominated the graph — found by a LIVE export, not a self-audit.**
+  Driving the real binary (PRIORITY-5) and exporting the canonical `Kylo4kylo`
+  scan's `graph.gexf` gave **2973 edges over 118 nodes** while every other view
+  (metrics/relations/network) reports **39** typed relations. Decomposed live:
+  `write_shared_evidence_edges` drew a co-occurrence edge for every entity pair
+  that shared ≥1 `corroborating_sources()` (source *name*), and `username_search`
+  — which checks ONE handle across ~70 platforms and emits a distinct
+  per-platform entity — was carried by 70 entities, wiring them into a complete
+  70-clique = **2415 edges (81%)**; `social_probe`/`streaming_probe` added two
+  more cliques. Those are independent existence-proofs of one selector, NOT a
+  joint sighting — precisely the *"dense web of false 'related' clusters that
+  swamps the genuine structure in Gephi"* the function's own doc-comment claims
+  to avoid. The claim contradicted the live artifact. **P2** (evidentiary
+  integrity — a false-relatedness signal in an analyst-facing export). →
+  **Solution:** co-occurrence now keys on the evidence *record* — new
+  `Entity::corroborating_records()` returns the `(source, summary)` pairs (still
+  filtered by `is_non_corroborating_source`), and two entities co-occur only when
+  they share an IDENTICAL record. Fan-out enumeration carries a distinct summary
+  per platform, so its false clique vanishes; a genuine joint record (both
+  selectors in the same breach dump — identical `("hibp","Breach 'Apollo'")` — or
+  the same crawled page) is shared verbatim, so the real edge survives. Typed
+  relations are untouched (they carry the structural links). **Live-proven FIRST**
+  (per the PRIORITY-5 order): rebuilt and re-exported the SAME stored scan —
+  **2973 → 46 edges** (all 39 typed relations kept: same_identity 16 /
+  derived_from 11 / hosted_on 9 / …; + 7 genuine co-occurrence: hibp same-breach
+  ×5, same search-result ×1, multipath ×1), still well-formed XML. THEN the
+  git-stash-proven regression test
+  (`gexf_co_occurrence_is_record_level_not_source_level`: same source name +
+  different per-platform summaries must NOT co-occur — fails pre-fix; same
+  source AND summary → exactly one edge), the byte-stable golden test unchanged
+  (identical summaries), and the coarse `gexf_creates_edges_for_shared_sources`
+  test refined to a same-record case. `corroborating_sources()` and its many
+  correlator/coref/export callers are untouched (new method, gexf-only). Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4569 lib tests, +1). **Paired:** `SOLUTION_TREE` SOL-GEXF-COOCCURRENCE-RECORD
+  (new node), §5 — same commit.
 
 ---
 
@@ -8150,3 +8188,27 @@ way, so this specific drift class can't recur silently again.
   (4568 lib tests, +1). Banked: WHOIS-registrant emitters emit `privacy@`-style
   role mailboxes with no guard (separate emitter-side fix). **Paired:**
   `SOLUTION_TREE` SOL-ROLE-MAILBOX-COMPOUND (new node), §5 — same commit.
+- **2026-07-12** — **T2.69: the GEXF export's co-occurrence edges keyed on the
+  source NAME, so a fan-out probe wired its results into a false clique that
+  dominated the graph — found by a LIVE export (PRIORITY-5), not the self-audit.**
+  Exporting the canonical `Kylo4kylo` scan's `graph.gexf` gave 2973 edges over
+  118 nodes while every other view reports 39 typed relations.
+  `write_shared_evidence_edges` drew an edge for every pair sharing a
+  `corroborating_sources()` NAME, and `username_search` (one handle → ~70
+  platforms, one entity each) was carried by 70 entities → a 70-clique = 2415
+  edges (81%); `social_probe`/`streaming_probe` added two more. Those are
+  independent existence-proofs of one selector, not a joint sighting — exactly
+  the "dense web of false clusters" the function's own doc-comment claims to
+  avoid. Fix: co-occurrence now keys on the evidence *record* — new
+  `Entity::corroborating_records()` returns `(source, summary)` pairs (same
+  non-corroborating filter), so entities co-occur only when they share an
+  IDENTICAL record; fan-out's distinct per-platform summaries no longer clique,
+  while a genuine same-breach / same-page record survives. Live-proven FIRST:
+  rebuilt, re-exported the SAME stored scan → 2973 → 46 edges (39 typed relations
+  + 7 real co-occurrence kept), well-formed XML. THEN the git-stash-proven
+  regression test (`gexf_co_occurrence_is_record_level_not_source_level`), golden
+  test byte-unchanged, coarse shared-source test refined to a same-record case.
+  `corroborating_sources()` and its correlator/coref/export callers untouched
+  (new method, gexf-only). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4569 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-GEXF-COOCCURRENCE-RECORD (new node), §5 — same commit.

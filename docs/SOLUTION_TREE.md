@@ -1603,6 +1603,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (4568 lib tests, +1). *Banked:* WHOIS-registrant emitters (`whoisxml`/`netlas`/
   `ripestat`) emit registrant `privacy@`-style role mailboxes with no guard — a
   separate emitter-side fix. **Paired:** `PROBLEM_TREE` T2.68 — same commit.
+- **`[x]` SOL-GEXF-COOCCURRENCE-RECORD · Co-occurrence edges key on the evidence
+  RECORD, not the source name, so a fan-out probe can't clique its results** →
+  **T2.69**. Found by a PRIORITY-5 LIVE export, not a self-audit: the canonical
+  `Kylo4kylo` scan's `graph.gexf` had **2973 edges over 118 nodes** while every
+  other view reports **39** typed relations. `write_shared_evidence_edges` drew a
+  co-occurrence edge for every pair sharing a `corroborating_sources()` NAME, and
+  `username_search` (one handle → ~70 platform probes, one entity each) was
+  carried by 70 entities → a 70-clique = **2415 edges (81%)**; `social_probe`/
+  `streaming_probe` two more. Independent existence-proofs of one selector are
+  not a joint sighting — exactly the *"dense web of false 'related' clusters"*
+  the function's doc-comment claims to avoid. Fix: new
+  `Entity::corroborating_records()` returns the `(source, summary)` pairs (same
+  `is_non_corroborating_source` filter); co-occurrence keys on shared RECORDS, so
+  fan-out's distinct per-platform summaries draw no edge while a genuine
+  same-breach (identical `("hibp","Breach 'Apollo'")`) or same-crawled-page record
+  survives. Typed relations untouched. ✅ Live-proven first (rebuilt, re-exported
+  the SAME stored scan: **2973 → 46 edges** — 39 typed relations + 7 real
+  co-occurrence, still valid XML), THEN git-stash-proven regression test
+  (`gexf_co_occurrence_is_record_level_not_source_level`); golden test
+  byte-unchanged; `corroborating_sources()` + its correlator/coref/export callers
+  untouched (new method, gexf-only). Gate green (4569 lib tests, +1). **Paired:**
+  `PROBLEM_TREE` T2.69 — same commit.
 - **`[x]` SOL-RANDOMIZED-MAC · Flag randomized/private MAC addresses instead of
   attributing them as real devices** → **T2.64**. Surfaced by a real
   1,643-device Android BLE-radar export the operator supplied: `util::oui::
@@ -5859,3 +5881,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   registrant emails with no infra/role guard, so `privacy@…` leaks even though
   `is_role_localpart("privacy")` is already true — a separate emitter-side fix.
   Paired: `PROBLEM_TREE` T2.68 — same commit.
+- **2026-07-12** — **New SOL-GEXF-COOCCURRENCE-RECORD: a fan-out probe cliqued
+  its own results in the GEXF export — found by the PRIORITY-5 LIVE export.**
+  Exporting the canonical `Kylo4kylo` scan's `graph.gexf` gave **2973 edges over
+  118 nodes** while metrics/relations/network all report **39** typed relations.
+  `write_shared_evidence_edges` drew a co-occurrence edge for every entity pair
+  sharing a `corroborating_sources()` NAME; `username_search` — which probes ONE
+  handle across ~70 platforms and emits a distinct per-platform entity — was
+  carried by 70 entities, wiring them into a complete 70-clique = **2415 edges
+  (81%)**, with `social_probe`/`streaming_probe` two more cliques. Those are
+  independent existence-proofs of one selector, NOT a joint sighting — exactly
+  the "dense web of false 'related' clusters that swamps the genuine structure in
+  Gephi" the function's own doc-comment claims to avoid; the claim contradicted
+  the live artifact. Fix: co-occurrence keys on the evidence RECORD — new
+  `Entity::corroborating_records()` returns the `(source, summary)` pairs (still
+  filtered by `is_non_corroborating_source`), and two entities co-occur only when
+  they share an IDENTICAL record. Fan-out's distinct per-platform summaries no
+  longer clique; a genuine joint record (both selectors in one breach dump —
+  identical `("hibp","Breach 'Apollo'")` — or the same crawled page) is shared
+  verbatim, so the real edge survives; typed relations are untouched. Live-proven
+  FIRST (per PRIORITY-5's order): rebuilt and re-exported the SAME stored scan —
+  **2973 → 46 edges** (all 39 typed relations kept — same_identity 16 /
+  derived_from 11 / hosted_on 9 / …; + 7 genuine co-occurrence: hibp same-breach
+  ×5, same search-result ×1, multipath ×1), still well-formed XML. THEN the
+  git-stash-proven regression test
+  (`gexf_co_occurrence_is_record_level_not_source_level`: same source name but
+  different per-platform summaries must NOT co-occur — fails pre-fix; same source
+  AND summary → exactly one edge), the byte-stable golden test unchanged
+  (identical summaries), and the coarse `gexf_creates_edges_for_shared_sources`
+  test refined to `gexf_creates_edges_for_a_shared_evidence_record`.
+  `corroborating_sources()` and its many correlator/coref/export callers are
+  untouched (new method, gexf-only). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4569 lib tests, +1). Paired: `PROBLEM_TREE` T2.69
+  — same commit.
