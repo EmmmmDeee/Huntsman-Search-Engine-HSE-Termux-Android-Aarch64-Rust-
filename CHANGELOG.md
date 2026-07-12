@@ -90,6 +90,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Two `see_know` cache tests no longer flake under the parallel test suite**
+  (internal/CI reliability). Their read-after-write on the process-global
+  SeekNow response cache could be cleared by an unrelated concurrent
+  scan-running test; the assertions are now robust to that, so the full test
+  suite is stable across runs.
 - **`opencorporates` no longer silently returns nothing on a keyless scan.**
   OpenCorporates withdrew its keyless public tier in 2023, so every
   unauthenticated request 401s; the module was still classified as free and

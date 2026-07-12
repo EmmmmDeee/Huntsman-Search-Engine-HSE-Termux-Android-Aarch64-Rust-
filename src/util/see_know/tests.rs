@@ -47,11 +47,28 @@ fn reset_budget_clears_the_cross_module_response_cache() {
     // the FIRST scan's cached SeekNow records for every later re-scan of the
     // same email/username/phone, forever, with no live re-check.
     // reset_budget() must also clear the cache.
+    //
+    // Isolation note: RESPONSE_CACHE is a process-global `static` that ANY
+    // concurrent scan-running test clears via `reset_per_scan` →
+    // `see_know::reset_budget` — a lock inside this file cannot serialise
+    // against those. So the "value present" sanity below can be cleared out
+    // from under us by an unrelated test (an observed CI flake). Retry the put
+    // until we observe our own UNIQUE entry (tolerating a rare external clear
+    // landing in the window); the real contract — that reset_budget() then
+    // clears it — is the final assertion, which no external test can spuriously
+    // satisfy for this unique key (nothing else ever puts it).
     let key = "reset_budget_clears_cache_test_key";
-    cache_put(key.to_string(), vec![json!({"stale": true})]);
+    let mut observed_present = false;
+    for _ in 0..200 {
+        cache_put(key.to_string(), vec![json!({"stale": true})]);
+        if cache_get(key).is_some() {
+            observed_present = true;
+            break;
+        }
+    }
     assert!(
-        cache_get(key).is_some(),
-        "sanity: the cache must actually hold the value before reset"
+        observed_present,
+        "sanity: a non-empty put must be observable at least once in 200 tries"
     );
     reset_budget();
     assert!(
@@ -257,6 +274,12 @@ fn empty_results_are_never_cached_but_non_empty_are() {
     // Regression for the transient-empty poisoning bug: cache_put() must
     // refuse an empty result so a transient `total:0` cannot poison later
     // lookups of the same query, while a real hit is memoised.
+    //
+    // Isolation note (see `reset_budget_clears_the_cross_module_response_cache`):
+    // RESPONSE_CACHE is a process-global cleared by any concurrent scan-running
+    // test, so the `hit_key` read-after-write below is retried until observed;
+    // the empty-key assertion is robust either way (an empty result is never
+    // cached, and no external test ever puts these unique keys).
     let empty_key = typed_cache_key("search", "transient-empty-probe", "name");
     cache_put(empty_key.clone(), Vec::new());
     assert!(
@@ -265,12 +288,19 @@ fn empty_results_are_never_cached_but_non_empty_are() {
     );
 
     let hit_key = typed_cache_key("search", "real-hit-probe", "name");
-    cache_put(
-        hit_key.clone(),
-        vec![serde_json::json!({"email": "x@y.com"})],
-    );
+    let mut hit_len = None;
+    for _ in 0..200 {
+        cache_put(
+            hit_key.clone(),
+            vec![serde_json::json!({"email": "x@y.com"})],
+        );
+        hit_len = cache_get(&hit_key).map(|v| v.len());
+        if hit_len.is_some() {
+            break;
+        }
+    }
     assert_eq!(
-        cache_get(&hit_key).map(|v| v.len()),
+        hit_len,
         Some(1),
         "a non-empty result must be cached and retrievable"
     );

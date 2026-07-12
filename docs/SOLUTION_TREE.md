@@ -1408,6 +1408,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (slice 1), T2.49 (slice 2), T2.50 (slice 3), T2.51 (slice 4), T2.52
   (slice 5) — each its own commit.
 
+- **`[x]` SOL-CACHE-TEST-ISOLATION · Robust read-after-write on the
+  process-global SeekNow cache in tests** → **T2.53**. Two `util::see_know`
+  tests asserted a `cache_put` was observable before continuing, but
+  `RESPONSE_CACHE` is a process-global `static` that any concurrent
+  scan-running test clears via `reset_per_scan` — so the sanity read flaked
+  (~1-in-3 full-suite runs). The in-file `BUDGET_TEST_LOCK` can't serialise
+  against out-of-file clearers. Fixed by retrying the put/get up to 200× until
+  the unique key is observed present, then keeping the real contract assertion
+  (`reset_budget()` clears it — robust, as no other test puts the key)
+  unchanged. ✅ diagnosed via a deterministic stress reproduction (since
+  removed); full lib suite now passes 8/8 consecutive runs (was ~1-in-3
+  flaky); gate green. Paired: `PROBLEM_TREE` T2.53 — same commit.
+
 ### S.PROCESS — The methodology itself ⚑
 
 - **`[x]` SOL-PAIRED-TREES · The problem/solution pair + gap analysis** ⚑ — *this
@@ -5287,3 +5300,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   With all five audit-confirmed breaks now repaired or retired, the entire
   external provider-integration layer has been live-audited and reconciled;
   the node is complete. Paired: `PROBLEM_TREE` T2.52 — same commit.
+- **2026-07-12** — **New SOL-CACHE-TEST-ISOLATION: fixed two flaky
+  `util::see_know` cache tests — a real CI-reliability defect surfaced during
+  the provider overhaul.** A full `cargo test` run failed once on
+  `reset_budget_clears_the_cross_module_response_cache` (~1-in-3 repro).
+  `RESPONSE_CACHE` is a process-global `static` cleared by any concurrent
+  scan-running test (via `reset_per_scan`), so two tests' read-after-write on
+  it could be cleared out from under them; the in-file `BUDGET_TEST_LOCK`
+  can't serialise against out-of-file clearers (confirmed via a deterministic
+  stress reproduction, since removed). Fixed by retrying the put/get until the
+  unique key is observed present, keeping the real contract assertion
+  unchanged. Gate green; the full lib suite, previously ~1-in-3 flaky, now
+  passes 8/8 consecutive runs (4601 lib tests). Paired: `PROBLEM_TREE` T2.53 —
+  same commit.

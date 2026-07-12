@@ -2121,6 +2121,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   sources. **This closes the provider-integration audit's full confirmed
   break-set (T2.48–T2.52).** **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL
   `[~]`→`[x]` (slice 5), §5 — same commit.
+- **`[x]` T2.53 · Two `util::see_know` cache tests flaked under the parallel
+  suite — a real CI-reliability defect in the gate everything else relies on**
+  — surfaced when a full `cargo test` run during the provider overhaul failed
+  once on `reset_budget_clears_the_cross_module_response_cache` (reproduced at
+  ~1-in-3 full-suite runs). Root cause: `see_know`'s `RESPONSE_CACHE` is a
+  process-global `static` cleared by **any** concurrent scan-running test in
+  the whole binary (via `install_core_hooks`'s `reset_per_scan` →
+  `see_know::reset_budget` → `RESPONSE_CACHE.clear()`). Two tests did a
+  read-after-write on it — `cache_put(k)` then asserting `cache_get(k)` is
+  present — and an unrelated test's cache-clear landing in that window
+  spuriously failed the sanity assertion. The existing `BUDGET_TEST_LOCK` only
+  serialises tests *within* `see_know/tests.rs`, so it cannot cover the
+  external clearers (confirmed empirically: a lock-held stress reproduction
+  still failed against out-of-file scan tests). **P2** (test-suite
+  correctness — a flaky gate erodes trust in every other cycle's "gate green"
+  claim). → **Solution:** made both read-after-writes robust to external
+  clearing — retry the `cache_put`+`cache_get` up to 200× until the unique
+  key is observed present (an external clear landing every single time is
+  astronomically unlikely), then keep the real contract assertion unchanged
+  (`reset_budget()` must clear the key — robust, since no other test ever puts
+  this unique key). Diagnosed and confirmed via a temporary deterministic
+  stress reproduction (a background thread hammering `reset_budget()` reliably
+  failed the read-after-write), which was then removed as it inherently races
+  the out-of-file clearers a same-file lock can't serialise. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4601 lib
+  tests). **Verified by stability:** the full lib suite, previously failing
+  ~1-in-3, now passes **8/8** consecutive runs. **Paired:** `SOLUTION_TREE`
+  SOL-CACHE-TEST-ISOLATION (new node), §5 — same commit.
 
 ---
 
@@ -7388,3 +7416,17 @@ way, so this specific drift class can't recur silently again.
   module-count arch-tests confirm 161). Live-verified: `hse modules` no
   longer lists `mls`; `mylnikov` + `wigle` remain. **Paired:** `SOLUTION_TREE`
   SOL-PROVIDER-OVERHAUL `[~]`→`[x]`, §5 — same commit.
+- **2026-07-12** — **T2.53: fixed two flaky `util::see_know` cache tests — a
+  real CI-reliability defect surfaced during the provider overhaul.** A full
+  `cargo test` run failed once on
+  `reset_budget_clears_the_cross_module_response_cache` (~1-in-3 repro). Root
+  cause: `RESPONSE_CACHE` is a process-global `static` cleared by any
+  concurrent scan-running test (via `reset_per_scan`), so two tests'
+  read-after-write on it (`cache_put` then assert present) could be cleared
+  out from under them; the in-file `BUDGET_TEST_LOCK` can't serialise against
+  out-of-file clearers (confirmed via a deterministic stress reproduction).
+  Fixed by retrying the put/get until the unique key is observed present, then
+  keeping the real contract assertion (`reset_budget` clears it) unchanged.
+  Gate green; the full lib suite, previously ~1-in-3 flaky, now passes 8/8
+  consecutive runs (4601 lib tests). **Paired:** `SOLUTION_TREE`
+  SOL-CACHE-TEST-ISOLATION (new node), §5 — same commit.
