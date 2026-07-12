@@ -136,6 +136,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Correlator rules AU-056/AU-085 no longer let a datacentre address decide the
+  subject's jurisdiction.** The jurisdiction cross-checks reconcile a
+  coordinate's state against an address's state (or a phone's region), but the
+  address side didn't exclude infrastructure geo the way the coordinate side
+  and the sibling address rules already did. A hosting/registrant datacentre
+  address (e.g. a WHOIS "Sydney NSW" host location) could therefore manufacture
+  a false jurisdiction "agreement" — or a false "conflict" against the subject's
+  real interstate home. Both rules now skip infrastructure addresses.
 - **Randomized/private MAC addresses are no longer attributed as real devices.**
   The OUI classifier (used by the WiGLE module to label Bluetooth/WiFi
   observations) now recognises locally-administered addresses — the randomized,

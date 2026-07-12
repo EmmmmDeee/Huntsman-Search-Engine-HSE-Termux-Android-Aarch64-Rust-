@@ -1492,9 +1492,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   scan of "Ada Lovelace" confirmed the `name_intel`-sourced `Person` shape;
   the full cross-source firing was deliberately not staged against a real
   private individual (evidentiary/privacy), so it is unit-proven instead.
-  *Remaining (banked for later cycles):* AU-017/030/048/056/085/099/105 among
-  the audit's other candidate findings — one live-verified commit each.
-  **Paired:** `PROBLEM_TREE` T2.57 (slice 1) — each slice its own commit.
+  **Slice 2 delivered — AU-056 + AU-085 (jurisdiction cross-checks):** the
+  COORDINATE side of both excludes infrastructure geo (`coord_state` →
+  `is_infrastructure_geo`) and so do the sibling AU-018/026/030 rollups, but the
+  Address branch of both had NO such guard — so a `hosting`/`registrant`
+  datacentre address ("Sydney NSW") manufactured a false jurisdiction agreement
+  (or a false conflict against the subject's real interstate home). Added
+  `&& !is_infrastructure_geo(e)` to both Address branches (twin omission = one
+  fix). ✅ 2 must-not-fire tests git-stash-proven; gate green (4565 lib tests,
+  +2). *Remaining (banked for later cycles):* AU-017/030/048/099/105 among the
+  audit's other candidate findings — one live-verified commit each.
+  **Paired:** `PROBLEM_TREE` T2.57 (slice 1) / T2.65 (slice 2) — each slice its
+  own commit.
 - **`[x]` SOL-DEADCODE-SWEEP · Resolve "looks built but isn't" dead code /
   unwired capability** → **T2.58** (slice 1). A per-directory sweep (one scanner
   per top-level module dir fanned out via the Workflow tool, each claimed-dead
@@ -5731,3 +5740,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   a manufacturer — the exact false attribution HSE now avoids. Real MACs kept OUT
   of the repo (committed tests use synthetic addresses; the real-data validation
   ran ad-hoc). Paired: `PROBLEM_TREE` T2.64 — same commit.
+- **2026-07-12** — **SOL-CORRELATOR-INTEGRITY slice 2: AU-056/AU-085 no longer
+  let an infrastructure address vote the subject's jurisdiction.** The
+  jurisdiction cross-checks reconcile a coordinate state against an address state
+  (AU-056) or a phone region (AU-085). The coordinate side runs through
+  `coord_state`, which excludes infrastructure geo (`is_infrastructure_geo` —
+  HOSTING / WHOIS-`registrant` / `infra:` tags), and the sibling AU-018/026/030
+  rollups exclude it too — but the Address branch of BOTH AU-056 and AU-085 had
+  no such guard, so a datacentre/registrant address (`hosting`-tagged "Sydney
+  NSW" from urlscan, or a WHOIS registrant location) entered the address-state
+  set and manufactured a false jurisdiction agreement, or a false conflict /
+  broken-unanimity downgrade against the subject's real interstate home. The
+  existing tests covered the coordinate side + the rollups, masking the open
+  address branch. Confirmed by the PRIORITY-3 correlator audit (double-lens) and
+  re-verified in code. Fix: added `&& !is_infrastructure_geo(e)` to the Address
+  branch of both rules — the twin omission is one coherent fix, mirroring
+  `coord_state` and the rollups. 2 adversarial must-not-fire tests
+  (`au_056_infrastructure_address_does_not_vote_jurisdiction`,
+  `au_085_infrastructure_address_does_not_corroborate_phone_region`),
+  git-stash-proven to FIRE against the pre-fix rules; the existing agreement
+  tests are the must-fire controls. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4565 lib tests, +2). Paired: `PROBLEM_TREE`
+  T2.65 — same commit.

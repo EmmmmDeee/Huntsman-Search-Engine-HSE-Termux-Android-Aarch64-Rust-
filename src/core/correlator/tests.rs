@@ -6009,6 +6009,56 @@ fn au_085_corroborates_when_phone_region_matches_address_state() {
 }
 
 #[test]
+fn au_056_infrastructure_address_does_not_vote_jurisdiction() {
+    use super::rules::rule_au_056_jurisdiction_cross_check;
+    // A hosting datacentre address is the HOST's location, not the subject's.
+    // Paired with the subject's real QLD coordinate, the pre-fix rule read the
+    // datacentre "Sydney NSW" as an address-state and fired a false NSW-vs-QLD
+    // "jurisdiction conflict". The address side must exclude infrastructure geo
+    // exactly as the coordinate side (`coord_state`) already does.
+    let ents = vec![
+        mk_tagged(
+            EntityKind::Coordinates,
+            "-27.4766,153.0166",
+            "geocode",
+            &["geoint", "au-state:QLD"],
+        ),
+        mk_tagged(
+            EntityKind::Address,
+            "Sydney NSW, AU",
+            "urlscan",
+            &[crate::core::tags::HOSTING],
+        ),
+    ];
+    assert!(
+        rule_au_056_jurisdiction_cross_check(&ents, "scan", 0).is_empty(),
+        "a hosting datacentre address must not vote the subject's jurisdiction"
+    );
+}
+
+#[test]
+fn au_085_infrastructure_address_does_not_corroborate_phone_region() {
+    use super::rules::rule_au_085_phone_region_jurisdiction;
+    // The AU-056 fix applies identically here: a WHOIS-registrant / hosting
+    // datacentre address must not corroborate the subject's phone region. A NSW
+    // landline + a registrant "Sydney NSW" address previously manufactured an NSW
+    // agreement from pure infrastructure geo.
+    let ents = vec![
+        mk_tagged(EntityKind::Phone, "+61 2 9876 5432", "phone_au", &[]),
+        mk_tagged(
+            EntityKind::Address,
+            "Sydney NSW, AU",
+            "whois",
+            &[crate::core::tags::REGISTRANT],
+        ),
+    ];
+    assert!(
+        rule_au_085_phone_region_jurisdiction(&ents, "scan", 0).is_empty(),
+        "a registrant datacentre address must not corroborate the phone region"
+    );
+}
+
+#[test]
 fn au_085_corroborates_against_a_tagless_coordinate_state() {
     use super::rules::rule_au_085_phone_region_jurisdiction;
 

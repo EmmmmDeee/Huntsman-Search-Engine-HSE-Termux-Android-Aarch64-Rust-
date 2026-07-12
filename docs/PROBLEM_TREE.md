@@ -2493,6 +2493,31 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   698 randomized / 945 real-OUI (real MACs kept OUT of the repo — tests use
   synthetic addresses). **Paired:** `SOLUTION_TREE` SOL-RANDOMIZED-MAC (new
   node), §5 — same commit.
+- **`[x]` T2.65 · AU-056 / AU-085 let an infrastructure address vote the
+  subject's jurisdiction — manufactured corroboration (2nd slice of the
+  correlator evidentiary-integrity audit).** The jurisdiction cross-checks
+  (`geo/jurisdiction.rs`) reconcile a `Coordinates` state against an `Address`
+  state (AU-056) or a phone region (AU-085). The COORDINATE side runs through
+  `coord_state`, which excludes infrastructure geo via `is_infrastructure_geo`
+  (HOSTING / WHOIS-`registrant` / `infra:` tags), and the sibling rollups
+  AU-018/026/030 exclude it too — but **the Address branch of both AU-056 and
+  AU-085 had no such guard**. So a datacentre / registrant address (e.g. a
+  `hosting`-tagged "Sydney NSW" from urlscan, or a WHOIS registrant location)
+  entered the address-state set and manufactured a false jurisdiction
+  *agreement* — or, against the subject's real interstate home, a false
+  *conflict* / a broken-unanimity severity downgrade. The existing tests covered
+  the coordinate side and the rollup rules, giving false assurance while the
+  address branch stayed open. Confirmed by the PRIORITY-3 audit (double-lens)
+  and re-verified in code. **P2** (evidentiary integrity — a finding outrunning
+  its evidence in the identity/geo core). → **Solution:** added
+  `&& !is_infrastructure_geo(e)` to the Address branch of BOTH rules (the twin
+  omission = one coherent fix), mirroring `coord_state` and AU-018/026/030. 2
+  adversarial must-not-fire tests (`au_056_infrastructure_address_does_not_vote_jurisdiction`,
+  `au_085_infrastructure_address_does_not_corroborate_phone_region`), git-stash-
+  proven to FIRE against the pre-fix rules; the existing agreement tests are the
+  must-fire controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4565 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-CORRELATOR-INTEGRITY (slice 2), §5 — same commit.
 
 ---
 
@@ -7984,3 +8009,18 @@ way, so this specific drift class can't recur silently again.
   MACs kept OUT of the repo — committed tests use synthetic addresses; the
   real-corpus split (698/945) validated the shipped U/L criterion. **Paired:**
   `SOLUTION_TREE` SOL-RANDOMIZED-MAC (new node), §5 — same commit.
+- **2026-07-12** — **T2.65: AU-056/AU-085 no longer let an infrastructure
+  address vote the subject's jurisdiction (correlator audit slice 2).** The
+  jurisdiction cross-checks guard the COORDINATE side against infrastructure geo
+  (`coord_state`→`is_infrastructure_geo`) and so do the sibling rollups
+  (AU-018/026/030), but the Address branch of both AU-056 and AU-085 had no such
+  guard — so a `hosting`/`registrant` datacentre address ("Sydney NSW" from
+  urlscan/WHOIS) manufactured a false jurisdiction agreement, or a false conflict
+  against the subject's real interstate home. Existing tests covered the
+  coordinate side + rollups, masking the open address branch. Confirmed by the
+  PRIORITY-3 audit (double-lens). Fix: added `&& !is_infrastructure_geo(e)` to
+  the Address branch of both rules (twin omission = one fix). 2 must-not-fire
+  tests, git-stash-proven to fire pre-fix; the existing agreement tests are the
+  controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4565 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-CORRELATOR-INTEGRITY (slice 2), §5 — same commit.
