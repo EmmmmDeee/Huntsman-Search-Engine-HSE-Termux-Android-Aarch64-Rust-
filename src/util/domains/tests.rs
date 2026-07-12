@@ -1,6 +1,24 @@
 use super::*;
 
     #[test]
+    fn noreply_email_domain_detects_forge_masking_addresses() {
+        // Masking is in the DOMAIN, not the local part — so is_role_localpart
+        // (which only checks the local part) misses these; this catches them.
+        assert!(is_noreply_email_domain("crystal@noreply.codeberg.org"));
+        assert!(is_noreply_email_domain("alice@users.noreply.github.com"));
+        assert!(is_noreply_email_domain(
+            "123456+alice@users.noreply.github.com"
+        ));
+        assert!(is_noreply_email_domain("bob@no-reply.gitlab.com"));
+        // A real personal address on an ordinary domain is NOT masked.
+        assert!(!is_noreply_email_domain("jose.valim@gmail.com"));
+        assert!(!is_noreply_email_domain("wojtek@wojtekmach.pl"));
+        // `noreply` as a LOCAL part (not the domain) is not this function's job.
+        assert!(!is_noreply_email_domain("noreply@example.com"));
+        assert!(!is_noreply_email_domain("not-an-email"));
+    }
+
+    #[test]
     fn infrastructure_email_detects_role_and_provider_mailboxes() {
         // Role local-parts on any domain.
         assert!(is_infrastructure_email("abuse@cloudflare.com"));

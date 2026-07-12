@@ -42,6 +42,11 @@ pub(super) struct CbUser {
     pub(super) login: String,
     #[serde(default)]
     pub(super) full_name: Option<String>,
+    /// Public email the user chose to show. Same top-level `email` field the
+    /// sibling `gitea_user` (identical Forgejo API) harvests — previously
+    /// dropped here, so a real published address was silently lost.
+    #[serde(default)]
+    pub(super) email: Option<String>,
     #[serde(default)]
     pub(super) description: Option<String>,
     #[serde(default)]
@@ -177,6 +182,27 @@ pub(super) fn build_entities(user: CbUser, scan_id: &str) -> Vec<Entity> {
         result.push(p);
     }
 
+    // Public email — the top-level `email` field (the sibling gitea_user
+    // harvests it; it was dropped here). Skip forge no-reply masking
+    // addresses (`user@noreply.codeberg.org`) — those are privacy
+    // placeholders, not a real contact pivot.
+    if let Some(email) = user.email.as_deref() {
+        let email = email.trim();
+        if email.contains('@') && !crate::util::domains::is_noreply_email_domain(email) {
+            let mut em = Entity::new(EntityKind::Email, email, 0.78, scan_id);
+            em.tag("codeberg");
+            em.tag("public-profile");
+            em.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Public email from Codeberg profile of '{}'", user.login),
+                )
+                .with_attr("source_field", "email"),
+            );
+            result.push(em);
+        }
+    }
+
     // Personal website URL + Domain. The Url and Domain carry distinct evidence,
     // so the kit's stable [Url, Domain] ordering is decorated per-kind.
     if let Some(site) = user.website.as_deref() {
@@ -272,12 +298,66 @@ mod tests {
         CbUser {
             login: login.to_string(),
             full_name: full_name.map(str::to_string),
+            email: None,
             description: description.map(str::to_string),
             location: location.map(str::to_string),
             website: website.map(str::to_string),
             html_url: Some(format!("https://codeberg.org/{login}")),
             created: Some("2021-03-15T00:00:00Z".to_string()),
         }
+    }
+
+    #[test]
+    fn emits_public_email_from_top_level_field() {
+        // The top-level `email` field the sibling gitea_user harvests but this
+        // module used to drop.
+        let mut user = make_user("alice", None, None, None, None);
+        user.email = Some("alice@personal.dev".to_string());
+        let ents = build_entities(user, "scan-cb-email");
+        let em = ents.iter().find(|e| e.kind == EntityKind::Email);
+        assert!(
+            em.is_some(),
+            "must emit Email from the top-level email field"
+        );
+        assert_eq!(em.unwrap().value, "alice@personal.dev");
+        assert!(em.unwrap().has_tag("codeberg"));
+    }
+
+    #[test]
+    fn skips_forge_noreply_masking_email() {
+        // A `@noreply.codeberg.org` masking address is a privacy placeholder,
+        // not a real contact — it must NOT become an Email finding (and both
+        // Forgejo siblings must agree on this).
+        let mut user = make_user("alice", None, None, None, None);
+        user.email = Some("alice@noreply.codeberg.org".to_string());
+        let ents = build_entities(user, "scan-cb-noreply");
+        assert!(
+            ents.iter().all(|e| e.kind != EntityKind::Email),
+            "a forge no-reply masking address must not seed an Email finding"
+        );
+    }
+
+    #[test]
+    fn deserialises_real_codeberg_shape_including_top_level_email() {
+        // Regression for the dropped field: the pre-fix `CbUser` had no `email`,
+        // so a real published address in the top-level field was lost.
+        let body = r#"{
+            "login": "alice",
+            "full_name": "Alice Dev",
+            "email": "alice@alice.dev",
+            "description": "FOSS developer",
+            "website": "https://alice.dev",
+            "html_url": "https://codeberg.org/alice",
+            "created": "2021-03-15T00:00:00Z"
+        }"#;
+        let user: CbUser = serde_json::from_str(body).expect("real codeberg body must deserialise");
+        assert_eq!(user.email.as_deref(), Some("alice@alice.dev"));
+        let ents = build_entities(user, "scan-cb-real");
+        assert!(
+            ents.iter()
+                .any(|e| e.kind == EntityKind::Email && e.value == "alice@alice.dev"),
+            "the real published email must be recovered from the top-level field"
+        );
     }
 
     #[test]

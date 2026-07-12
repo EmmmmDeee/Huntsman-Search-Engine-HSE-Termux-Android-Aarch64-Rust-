@@ -2187,6 +2187,39 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   and `twitter` tags) — where the pre-fix module emitted only the bare
   username, profile URL, and Person. **Paired:** `SOLUTION_TREE`
   SOL-PROVIDER-FIELD-DECODE (new node), §5 — same commit.
+- **`[x]` T2.55 · `codeberg_user` dropped the top-level `email` its Forgejo
+  sibling `gitea_user` harvests — and both emitted no-reply masking
+  placeholders as findings** — second slice of the field-decode cluster; a
+  single-sourcing (drifted-sibling) fix plus an evidentiary-quality fix.
+  Codeberg and gitea.com serve the **identical Forgejo `/api/v1/users/{u}`
+  schema**, but `codeberg_user`'s `CbUser` omitted the top-level `email`
+  field entirely (it only mined the bio), while `gitea_user`'s `GtUser`
+  parses and emits it — a drifted copy of the same API contract, so a
+  Codeberg user who published a real email had it silently dropped.
+  Separately, both platforms overwhelmingly return **no-reply masking
+  addresses** (`{user}@noreply.codeberg.org`, `{id}+{user}@noreply.gitea.com`
+  — live-confirmed across ~10 real users on each), and `gitea_user` emitted
+  those verbatim as `Email` findings (it guarded only on `contains('@')`) —
+  a low-value placeholder dressed as a contact pivot. **P2**
+  (single-sourcing/consistency + evidentiary quality). → **Solution:** added
+  `email` to `CbUser` and mirror gitea's emission; added one single-sourced
+  helper `util::domains::is_noreply_email_domain` (domain-label match for
+  `noreply`/`no-reply`/`donotreply`, distinct from the existing
+  local-part-only `is_role_localpart`) and wired **both** Forgejo modules to
+  it, so they now agree AND skip masking placeholders. 5 new tests (3 in
+  `codeberg_user` incl. a real-shape deser regression, 1 gitea noreply-skip,
+  1 `is_noreply_email_domain` unit test); the codeberg email tests
+  behaviourally proven (emission disabled → they fail). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4610 lib
+  tests, +5). Live-verified against the REAL API: `gitea_user` on
+  `techknowlogick` and `codeberg_user` on `earl-warren` (both real users with
+  `@noreply.*` emails) now dispatch cleanly and emit **no** Email entity for
+  the placeholder — for gitea a real behavioural improvement (it previously
+  emitted the placeholder). The real-email *emission* branch is unit/deser-
+  proven, not shown live: both Forgejo platforms mask emails by default, so
+  no reachable live user published a real address — noted honestly rather
+  than overclaimed. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-FIELD-DECODE
+  (slice 2), §5 — same commit.
 
 ---
 
@@ -7485,3 +7518,21 @@ way, so this specific drift class can't recur silently again.
   the GitHub + X/Twitter cross-platform pivots (was neither pre-fix).
   **Paired:** `SOLUTION_TREE` SOL-PROVIDER-FIELD-DECODE (new node), §5 — same
   commit.
+- **2026-07-12** — **T2.55: `codeberg_user` dropped the top-level `email` its
+  Forgejo sibling `gitea_user` harvests; both emitted no-reply masking
+  placeholders — fixed; field-decode cluster slice 2.** Codeberg/gitea.com
+  serve the identical Forgejo `/api/v1/users/{u}` schema, but codeberg's
+  `CbUser` omitted `email` (drifted sibling copy), and both platforms
+  overwhelmingly return `@noreply.*` masking addresses that gitea emitted
+  verbatim as findings. Added `email` to `CbUser` + gitea-style emission, and
+  a single-sourced `util::domains::is_noreply_email_domain` (domain-label
+  match, distinct from the local-part-only `is_role_localpart`) wired into
+  both modules so they agree and skip placeholders. 5 new tests
+  (git-stash/behaviourally proven). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4610 lib tests, +5).
+  Live-verified: `gitea_user`/`codeberg_user` on real users (`techknowlogick`,
+  `earl-warren`) now emit no Email entity for the `@noreply.*` placeholder
+  (a real improvement for gitea); the real-email emission branch is
+  unit/deser-proven since both platforms mask by default (no reachable live
+  user with a real address — noted honestly). **Paired:** `SOLUTION_TREE`
+  SOL-PROVIDER-FIELD-DECODE (slice 2), §5 — same commit.

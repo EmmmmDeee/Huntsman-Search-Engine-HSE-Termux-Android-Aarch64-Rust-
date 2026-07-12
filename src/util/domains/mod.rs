@@ -418,6 +418,25 @@ pub fn is_infrastructure_email(email: &str) -> bool {
         .any(|d| registrable == *d || is_or_subdomain_of(domain, d))
 }
 
+/// True if `email`'s **domain** is a platform-generated no-reply / masking
+/// address (`user@noreply.codeberg.org`, `user@users.noreply.github.com`,
+/// `123+user@users.noreply.github.com`, …). Distinct from
+/// [`is_role_localpart`], where the masking is in the *local* part: forges mint
+/// these domain-masked addresses for commit metadata when a user hides their
+/// real email, so they are never a real contact pivot and must not seed an
+/// Email finding. Matches any `noreply` / `no-reply` / `donotreply` domain
+/// label (case- and separator-insensitive).
+#[must_use]
+pub fn is_noreply_email_domain(email: &str) -> bool {
+    let Some((_, domain)) = email.trim().rsplit_once('@') else {
+        return false;
+    };
+    domain.to_ascii_lowercase().split('.').any(|label| {
+        let base: String = label.chars().filter(char::is_ascii_alphanumeric).collect();
+        base == "noreply" || base == "donotreply"
+    })
+}
+
 /// Registrable domains of CDN / cloud / registrar / DNS / ESP providers whose
 /// role mailboxes (`abuse@`, `noc@`, …) surface from WHOIS/RDAP/RIPE lookups.
 /// Mirrors the `INFRA_DOMAINS` intent in `core::scan` but lives in util so the

@@ -1438,10 +1438,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   10 others, git-stash-proven; gate green (4605 lib tests, +4); live-verified
   end-to-end — a real `wojtekmach` scan now recovers the email and the
   GitHub + X/Twitter cross-platform pivots (was neither pre-fix).
-  *Remaining (tracked):* `codeberg_user` (drops top-level `email` its Forgejo
-  sibling `gitea_user` harvests), `crates_io` (drops `created_at` its siblings
-  harvest) — one live-verified commit each. **Paired:** `PROBLEM_TREE` T2.54
-  (slice 1) — each slice its own commit.
+  **Slice 2 delivered — both Forgejo modules (`codeberg_user` + `gitea_user`):**
+  the top-level `email` the identical Forgejo API returns is either a real
+  address or a platform-minted masking placeholder (`user@noreply.codeberg.org`,
+  `user@users.noreply.gitea.io`). `codeberg_user` never decoded the field at
+  all (a real published address dropped on every scan); `gitea_user` emitted
+  the masking placeholder verbatim as a false-positive Email finding. Added a
+  single-sourced `util::domains::is_noreply_email_domain` (domain-label match,
+  which the local-part role checks miss), added the `email` field + a filtered
+  Email branch to `CbUser`, and gated `gitea_user`'s branch through the same
+  filter so both siblings agree. ✅ 5 new tests (helper unit coverage + both
+  modules' emit/skip/real-deser cases), git-stash-proven (codeberg tests
+  fail to compile against the field-less struct; gitea no-reply test fails
+  against the un-filtered branch); gate green (4610 lib tests, +5);
+  live-verified — `gitea_user`/`techknowlogick` and `codeberg_user`/`earl-warren`
+  (both `@noreply.*`) now emit NO Email for the placeholder.
+  *Remaining (tracked):* `crates_io` (drops `created_at` its siblings
+  harvest) — one live-verified commit. **Paired:** `PROBLEM_TREE` T2.54
+  (slice 1) / T2.55 (slice 2) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5353,3 +5367,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   REAL API: a real `wojtekmach` scan recovers `wojtek@wojtekmach.pl` and the
   GitHub + X/Twitter pivots (was neither pre-fix). Remaining in the cluster:
   `codeberg_user`, `crates_io`. Paired: `PROBLEM_TREE` T2.54 — same commit.
+- **2026-07-12** — **SOL-PROVIDER-FIELD-DECODE slice 2: fixed both Forgejo
+  modules' handling of the top-level profile `email` — a dropped field on
+  `codeberg_user`, a false-positive finding on `gitea_user`.** The identical
+  Forgejo API (Codeberg + Gitea) returns a top-level `email` that is either a
+  real address or a platform-minted masking placeholder
+  (`user@noreply.codeberg.org`, `user@users.noreply.gitea.io`) when the user
+  hides their email. Confirmed live on both hosts (`earl-warren`,
+  `techknowlogick`). `codeberg_user` had no `email` field at all, so a real
+  published address was silently dropped; `gitea_user` emitted the masking
+  placeholder verbatim as an Email finding — a fabricated contact pivot, exactly
+  what this evidentiary tool must not produce. The masking lives in the DOMAIN,
+  so the existing local-part role/infra checks missed it. Added a single-sourced
+  `util::domains::is_noreply_email_domain` (matches any `noreply`/`no-reply`/
+  `donotreply` domain label), added the `email` field + a filtered Email branch
+  to `codeberg_user`, and gated `gitea_user`'s existing branch through the same
+  filter so both siblings agree. 5 new tests (helper unit coverage +
+  emit/skip/real-deser on both modules), git-stash-proven (codeberg tests fail
+  to compile against the field-less struct; gitea no-reply test fails against
+  the un-filtered branch). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4610 lib tests, +5). Live-verified: both hosts' real
+  `@noreply.*` users now emit NO Email for the placeholder. Remaining in the
+  cluster: `crates_io`. Paired: `PROBLEM_TREE` T2.55 — same commit.

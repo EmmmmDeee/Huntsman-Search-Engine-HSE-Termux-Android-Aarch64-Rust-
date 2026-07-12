@@ -90,6 +90,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Both Forgejo modules now handle the profile email correctly — `codeberg_user`
+  recovers a real published address it used to drop, and `gitea_user` no longer
+  emits the forge's privacy-masking placeholder as a contact.** The Forgejo API
+  (Codeberg and Gitea) returns a top-level `email` that is either a real address
+  or a platform-minted masking address (`user@noreply.codeberg.org`,
+  `user@users.noreply.gitea.io`) when the user hides their email. `codeberg_user`
+  never decoded the field at all — a real published address was silently lost —
+  while `gitea_user` surfaced the masking placeholder verbatim as a false-positive
+  Email finding. A new shared `util::domains::is_noreply_email_domain` helper
+  detects the domain-level masking (which the existing local-part role checks
+  miss); both modules now emit an Email only for a genuine address and skip the
+  placeholder, so the two identical-API siblings agree.
 - **`hexpm_user` now recovers the published email and GitHub/X cross-platform
   handles again.** The hex.pm profile API returns a real personal email plus a
   `handles` map keyed by display names (`GitHub`, `X.com`) with profile-URL
