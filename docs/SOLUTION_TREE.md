@@ -1339,9 +1339,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (4608 lib tests, +1); live-verified against the REAL `api.domainsdb.info`
   (no-key clean skip on a real `github.com` scan; bogus-key → real Bearer
   dial → `403 {"Insufficient credits"}` broken-on after one zone).
-  *Remaining:* audit the other ~32 keyed/paid provider clients for the same
-  class of live-contract breakage (task tracked). **Paired:** `PROBLEM_TREE`
-  T2.48 — same commit.
+  **Comprehensive live audit run (background agent):** every module's real
+  external endpoint was live-probed. It confirmed **4 live breaks** —
+  `domainsdb` (slice 1), `huggingface_user` (slice 2, below), `sourceforge_user`
+  (legacy `/api/user/…/json` removed → Allura `/rest/u/{h}`),
+  `opencorporates` (Free tier requires a key since 2023, silent no-op → needs
+  key-gating), and `mls` (Mozilla Location Service decommissioned, `404` — a
+  delete-or-repoint decision) — and cleared the rest of the free-tier
+  external-API surface as healthy (bluesky/codeberg/gitea/gitlab/dockerhub/
+  crates/pypi/rubygems/hexpm/npm/keybase/gravatar/hackertarget/rdap/photon/
+  overpass/wayback/urlscan/… all live + expected shape). Proxy/transient
+  ambiguities (bgpview, reddit DC-IP block, crt.sh 502s, austlii Cloudflare)
+  were explicitly NOT called breaks.
+  **Slice 2 delivered — `huggingface_user`:** HF migrated its profile API —
+  `GET /api/users/{handle}` now `404`s for every real user — so the module
+  emitted nothing on every username scan. Repointed to `…/{handle}/overview`
+  (handle now in a `user` field, + `createdAt`, no email/website/twitter),
+  rewrote the deserializer + identity guard, added the real `account_created`
+  date as evidence, dropped the now-dead email/website/twitter extraction.
+  ✅ real-`/overview`-body deser regression + 6 others, git-stash-proven;
+  gate green (4607 lib tests); live-verified end-to-end — a real `julien-c`
+  scan now emits **70 real entities** (was 0 pre-fix) carrying the real 2019
+  account-creation date.
+  *Remaining (tracked):* `sourceforge_user`, `opencorporates`, `mls` — one
+  focused live-verified commit each. **Paired:** `PROBLEM_TREE` T2.48 (slice
+  1), T2.49 (slice 2) — each its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5146,3 +5168,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   after one zone). Remaining: audit the other ~32 keyed/paid provider
   clients for the same live-contract breakage class (tracked). Paired:
   `PROBLEM_TREE` T2.48 — same commit.
+- **2026-07-12** — **SOL-PROVIDER-OVERHAUL slice 2: repaired
+  `huggingface_user` after HF migrated its profile API endpoint; a
+  comprehensive live audit mapped the rest of the layer.** The background
+  audit live-probed every module's real external endpoint and confirmed 4
+  breaks (domainsdb ✅, huggingface_user ✅ here, sourceforge_user +
+  opencorporates + mls tracked) while clearing the rest of the free-tier
+  external-API surface as healthy. `huggingface_user`'s
+  `GET /api/users/{handle}` now 404s for every real user (live-confirmed
+  against julien-c/osanseviero/clem/thomwolf); `fetch_json_or_404` mapped
+  that to `Ok(None)`, so the module silently emitted nothing on every scan.
+  The live endpoint is `…/{handle}/overview`, whose shape moved the handle to
+  a `user` field and added `createdAt` while dropping the public email/
+  website/twitter fields entirely. Repointed the endpoint, rewrote the
+  `HfUser` deserializer + identity guard, added the real `account_created`
+  date as evidence, and removed the now-dead email/website/twitter
+  extraction (updating `produces()` to match). Real-`/overview`-body deser
+  regression + 6 others, git-stash-proven (compile error pre-fix). Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4607
+  lib tests). Live-verified end-to-end against the REAL API: a real
+  `julien-c` scan now emits 70 real entities (was 0 pre-fix), carrying the
+  real 2019 account-creation date. Paired: `PROBLEM_TREE` T2.49 — same
+  commit.

@@ -78,6 +78,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`huggingface_user` works again after Hugging Face migrated its profile
+  API.** The old `GET /api/users/{handle}` endpoint now returns 404 for every
+  real user, so the module had been silently emitting nothing on every
+  username scan. It now queries `…/{handle}/overview` (the live endpoint),
+  parses the new response shape, and additionally surfaces the account's
+  creation date. A live scan of a real Hugging Face handle now returns the
+  confirmed username, profile URL, full name, and org memberships again. (The
+  overview endpoint no longer exposes public email/website/Twitter fields, so
+  those are no longer extracted — they weren't in the response.)
 - **`domainsdb` no longer silently returns nothing after its provider
   disabled anonymous access.** A live probe found `api.domainsdb.info` now
   answers keyless requests with `401 "Anonymous access is disabled"`; the

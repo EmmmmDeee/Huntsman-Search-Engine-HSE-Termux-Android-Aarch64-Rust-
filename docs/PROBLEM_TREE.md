@@ -1970,6 +1970,49 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   and broken-on after a single zone (not six wasted requests), key reported
   to the pool. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (new node),
   §5 — same commit.
+- **`[x]` T2.49 · `huggingface_user` silently died when HF migrated its
+  profile API endpoint — restored by moving to `/overview`** — second slice
+  of the provider-integration overhaul (SOL-PROVIDER-OVERHAUL), surfaced by
+  its comprehensive live audit. The module queried
+  `GET https://huggingface.co/api/users/{handle}`, which now returns
+  **`404 {"error":"Sorry, we can't find the page you are looking for."}`**
+  for *every* real user — live-confirmed against `julien-c`, `osanseviero`,
+  `clem`, `thomwolf` (all real, active accounts). `fetch_json_or_404` maps
+  that 404 to `Ok(None)` and `process` returns empty, indistinguishable from
+  "no such user," so the module emitted nothing on every username scan with
+  no error. **P2** (silent coverage loss on a high-value `code`-family
+  corroboration source — HF handles resolve ML researchers/practitioners
+  who are frequently absent from GitHub/GitLab). The live endpoint is
+  `GET /api/users/{handle}/overview`, whose JSON has a different shape: the
+  handle is a top-level `user` string (the old shape called it `username`),
+  alongside `fullname`, `createdAt`, and `orgs[]` — and it **no longer
+  exposes** the public email/website/Twitter fields the pre-2026 API did
+  (verified by inspecting the real `/overview` body's full key set), so the
+  module's `email`/`website`/`twitter` extraction had been dead against the
+  live API regardless.
+  → **Solution:** repointed `process()` to `…/{handle}/overview`; rewrote the
+  `HfUser` deserializer to the overview shape (`user` handle field + a new
+  `createdAt`→`created_at` account-creation date); the identity guard now
+  matches on the echoed `user` field; dropped the email/website/twitter
+  extraction (the fields aren't in the response) and updated `produces()`
+  accordingly (`Username`/`Person`/`Url`/`Organisation` — `Email`/`Domain`
+  removed). Added a new capability from the migrated endpoint: the real
+  `account_created` date now rides along as evidence on every derived
+  record. 5 changed + 2 new regression tests in
+  `modules::huggingface_user::tests`, incl.
+  `deserialises_the_real_overview_response_shape` (a body trimmed verbatim
+  from a real `julien-c` `/overview` response) — git-stash-proven to fail
+  against the pre-fix module (compile error — the old `HfUser` has no
+  `user`/`created_at` field) and pass against the fix. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4607 lib
+  tests, net −1 from the removed dead email/website/twitter cases).
+  Live-verified end-to-end against the REAL API: `hse scan --kind username
+  --value julien-c --modules huggingface_user` now emits **70 real
+  entities** (confirmed handle, profile URL, the Person "Julien Chaumond",
+  and dozens of real org memberships) where the pre-fix module emitted
+  ZERO, with the real `account_created` `2019-11-23T17:38:57Z` carried on
+  the evidence. **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 2),
+  §5 — same commit.
 
 ---
 
@@ -7166,4 +7209,21 @@ way, so this specific drift class can't recur silently again.
   bogus key → one real Bearer dial to `api.domainsdb.info` returning `403
   {"Insufficient credits"}`, detected and broken-on after a single zone.
   **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (new node), §5 — same
+  commit.
+- **2026-07-12** — **T2.49: `huggingface_user` was silently dead — HF
+  migrated its profile API — restored by moving to `/overview`; slice 2 of
+  the provider-integration overhaul.** The module's `GET /api/users/{handle}`
+  now 404s for every real user (live-confirmed against julien-c/osanseviero/
+  clem/thomwolf), so `fetch_json_or_404` mapped it to `Ok(None)` and the
+  module emitted nothing on every scan. The live endpoint is
+  `…/{handle}/overview` with a new shape (handle in a `user` field, +
+  `createdAt`, no email/website/twitter). Repointed the endpoint, rewrote the
+  `HfUser` deserializer, matched the guard on `user`, added the real
+  `account_created` date as evidence, and dropped the now-dead email/website/
+  twitter extraction. 2 new + 5 changed tests (incl. a real-`/overview`-body
+  deser regression), git-stash-proven (compile error pre-fix). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4607 lib
+  tests). Live-verified end-to-end: a real `julien-c` scan now emits 70 real
+  entities (was 0 pre-fix), carrying the real 2019 account-creation date.
+  **Paired:** `SOLUTION_TREE` SOL-PROVIDER-OVERHAUL (slice 2), §5 — same
   commit.
