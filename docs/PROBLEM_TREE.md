@@ -2296,6 +2296,15 @@ legality, at-rest encryption, use disclaimer — the GPL `alertify` + missing
 with corrected free/paid labels, MODULES.md `wigle` priority fixed, the two root
 `OSINT_*` analyses refreshed to 118, FAULT_TREE stale facts corrected; the
 historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
+**Correlator rule count drift, guarded (2026-07-12):** README's "Deterministic
+correlator: N rules" line had already gone stale once this same session (cited
+108 immediately after a rule addition brought the live count to 109 — only
+`ARCHITECTURE_AUDIT.md` had been reconciled). Unlike the module count, which
+`readme_module_overview_count_matches_registry` already ties to
+`modules::registry().len()`, no equivalent guard existed for the correlator's
+rule split — new `correlator::rule_counts()` accessor + a new architecture
+test `readme_correlator_rule_count_matches_registry` close that gap the same
+way, so this specific drift class can't recur silently again.
 
 ## 8. Maintained log
 
@@ -6731,3 +6740,17 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   universal expansion loop). No code change — a pure status-accuracy
   correction. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE `[ ]`→`[~]` — same
   commit.
+- **2026-07-12** — **Guarded the correlator rule-count drift class: README's
+  "N rules" line had already gone stale once this session.** AU-111
+  (previous cycle) brought the live split to 97 entity + 12 relation = 109,
+  but only `ARCHITECTURE_AUDIT.md` got reconciled — README's own
+  "Deterministic correlator: 108 rules..." line was missed and found stale
+  on the very next orientation pass. Unlike the module count (already tied
+  to the live registry by `readme_module_overview_count_matches_registry`),
+  no equivalent guard existed for this count. New `pub fn
+  core::correlator::rule_counts() -> (usize, usize)` accessor + new
+  architecture test `readme_correlator_rule_count_matches_registry` close
+  the gap: confirmed via `git stash` to fail against the pre-fix README
+  text (108) and pass against the fix (109). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (31 architecture tests,
+  +1). Also updates the § "Docs" catch-all bullet above with this finding.

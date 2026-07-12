@@ -74,6 +74,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **README's "Deterministic correlator: N rules" count was stale (108,
+  should be 109) and is now guarded against recurring.** New `core::
+  correlator::rule_counts()` accessor plus an architecture test
+  (`readme_correlator_rule_count_matches_registry`) tie the README line to
+  the live rule registry, the same way the module count is already guarded.
 - **The full dossier's embedded raw-archive body is now redacted before
   rendering, closing a key-exfiltration path via `hse export -o <path>`.**
   `render_full`'s "RAW SOURCE RECORDS" section previously embedded each

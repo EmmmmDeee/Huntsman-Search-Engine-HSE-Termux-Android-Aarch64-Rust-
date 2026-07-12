@@ -508,6 +508,19 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_110_shared_hosting_ip,
 ];
 
+/// `(entity-only rule count, graph-aware relation rule count)` — the live,
+/// authoritative split behind every "N rules (E entity + R graph-aware
+/// relation)" prose mention (`README.md`, `docs/ARCHITECTURE_AUDIT.md`). A
+/// hand-maintained copy of this pair drifted silently every time a rule was
+/// added in this same session (four cycles' worth of manual reconciliation
+/// across the docs) — this accessor lets an architecture test tie the prose
+/// to the registry directly, the same guard `modules::registry().len()`
+/// already gives the module count.
+#[must_use]
+pub fn rule_counts() -> (usize, usize) {
+    (RULES.len(), RELATION_RULES.len())
+}
+
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed
 /// entity slice (see [`evaluate_rules_on`]). Lets `Correlator::run` reuse the
 /// single confirmed view it already built for the entity pass.

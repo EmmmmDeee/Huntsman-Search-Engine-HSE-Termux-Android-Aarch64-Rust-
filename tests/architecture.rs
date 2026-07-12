@@ -1646,6 +1646,29 @@ fn readme_module_overview_count_matches_registry() {
     );
 }
 
+/// The README's "Deterministic correlator: N rules (E entity + R graph-aware
+/// relation)" line is hand-maintained prose and had already drifted once
+/// (stated 108 while the registry held 109, immediately after a rule was
+/// added and only `docs/ARCHITECTURE_AUDIT.md` was reconciled). Tie it to
+/// [`huntsman_search_engine::core::correlator::rule_counts`] so it can't
+/// silently rot again — the same no-silent-drift guard as
+/// `readme_module_overview_count_matches_registry`.
+#[test]
+fn readme_correlator_rule_count_matches_registry() {
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist");
+    let (entity, relation) = huntsman_search_engine::core::correlator::rule_counts();
+    let total = entity + relation;
+    let needle = format!(
+        "Deterministic correlator: {total} rules ({entity} entity + {relation} graph-aware relation)"
+    );
+    assert!(
+        readme.contains(&needle),
+        "README must cite the live correlator rule split ({needle:?}); update \
+         README.md (and docs/ARCHITECTURE_AUDIT.md) after adding/removing a rule"
+    );
+}
+
 /// Runtime AI-independence guard (the `RUNTIME_INDEPENDENCE` charter): the
 /// compiled binary must carry NO AI / ML / LLM / cloud-inference / vector /
 /// embedding dependency, so every runtime capability is deterministic Rust that

@@ -1190,6 +1190,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-GATE · The verification gate** — `fmt --check` · `clippy --all-targets
   --locked -D warnings` · strict private-item rustdoc · `cargo test`; every fix lands
   with a regression test that fails against the unfixed code. ✅ (CLAUDE.md).
+  *Extended (2026-07-12) — closed a hand-maintained-count drift class the
+  gate itself couldn't catch:* the module-count guard
+  (`readme_module_overview_count_matches_registry`) already tied README's
+  module total to `modules::registry().len()`, but no equivalent existed for
+  the correlator's rule count — which went stale within the same session
+  (README still read 108 immediately after a rule addition brought the live
+  split to 97 entity + 12 relation = 109; only `ARCHITECTURE_AUDIT.md` had
+  been reconciled). New `pub fn core::correlator::rule_counts() ->
+  (usize, usize)` + a new architecture test
+  `readme_correlator_rule_count_matches_registry` ties the README prose to
+  the live registry the same way, so this specific drift class can't recur
+  silently. Confirmed via `git stash` to fail against the pre-fix (108)
+  README text. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (31 architecture tests, +1). Paired: `PROBLEM_TREE` §7
+  Docs — same commit.
 - **`[x]` SOL-AUDIT-CADENCE · Multi-agent adversarial re-audit** — parallel fan-out
   (parsers / storage-API / engine / correlator / SPA / security / internals) with
   honest "clean" verdicts; the source of T2.8–T2.12 and the §7 detail. ✅
@@ -4865,3 +4880,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   dedicated pivot mechanism found). No code change — pure status-accuracy
   correction, mirroring the C1/C5/AU-060-candidate stale-note corrections
   this register has made before. Paired: `PROBLEM_TREE` C6 — same commit.
+- **2026-07-12** — **SOL-GATE extended: guarded the correlator rule-count
+  drift class, found stale within this same session.** AU-111 (previous
+  cycle) brought the live split to 97 entity + 12 relation = 109, but only
+  `ARCHITECTURE_AUDIT.md` was reconciled — README's own "Deterministic
+  correlator: 108 rules..." line went unnoticed until this cycle's
+  orientation pass. Unlike the module count
+  (`readme_module_overview_count_matches_registry`), no equivalent guard
+  existed. New `pub fn core::correlator::rule_counts() -> (usize, usize)` +
+  new architecture test `readme_correlator_rule_count_matches_registry`
+  close the gap the same way. Confirmed via `git stash` to fail against the
+  pre-fix (108) README text. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (31 architecture tests, +1). Paired:
+  `PROBLEM_TREE` §7 Docs — same commit.
