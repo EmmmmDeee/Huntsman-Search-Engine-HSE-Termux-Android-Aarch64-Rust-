@@ -136,6 +136,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A DNS zone's admin mailbox no longer leaks into a scan as the subject's
+  email.** The infrastructure-email filter matched role mailboxes only when the
+  whole local-part was a role word, so a provider-prefixed system address like
+  `awsdns-hostmaster@amazon.com` (the standard AWS Route53 SOA contact) slipped
+  through and was treated as the subject's email — then breach-checked and
+  identity-clustered, polluting the graph with the DNS provider's desk. The
+  filter now also recognises an unambiguous system-role word
+  (`hostmaster`/`postmaster`/`abuse`/`dns`/…) as a hyphen/dot-separated segment,
+  while leaving ordinary words (`info`/`contact`/`sales`) alone so a real
+  subject email is never suppressed. Found by a live scan of a real domain.
 - **The shared-key finding (AU-048) no longer over-states how many accounts one
   person controls.** It proves a reused public key ties multiple accounts to one
   person, but it counted distinct identifier *spellings* — so if a key's evidence

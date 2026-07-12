@@ -1588,6 +1588,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   + `storage` low-confidence trio) — one careful decision each. **Paired:**
   `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
   (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) — each slice its own commit.
+- **`[x]` SOL-ROLE-MAILBOX-COMPOUND · Suppress provider-prefixed system
+  mailboxes (DNS SOA / registrar desks) from posing as the subject's email** →
+  **T2.68**. Found by a PRIORITY-5 LIVE end-to-end pass (real binary vs the
+  canonical seed `Kylo4kylo`, then `hse audit`), not a self-audit:
+  `awsdns-hostmaster@amazon.com` — the standard AWS Route53 SOA RNAME — was
+  present as a subject email. `dns_intel` guards with `!is_infrastructure_email`
+  → `is_role_localpart`, but that exact-matched only the WHOLE alphanumeric
+  local-part, missing the compound `awsdns-hostmaster`. Fix: segment-match an
+  UNAMBIGUOUS system-role token (`hostmaster`/`postmaster`/`abuse`/`dns`/… — NOT
+  the business tokens, to never suppress a real subject email). ✅ Live-proven
+  first (rebuilt binary: `dns_intel` on `amazon.com` now emits zero emails), THEN
+  git-stash-proven regression test with no-false-positive controls; gate green
+  (4568 lib tests, +1). *Banked:* WHOIS-registrant emitters (`whoisxml`/`netlas`/
+  `ripestat`) emit registrant `privacy@`-style role mailboxes with no guard — a
+  separate emitter-side fix. **Paired:** `PROBLEM_TREE` T2.68 — same commit.
 - **`[x]` SOL-RANDOMIZED-MAC · Flag randomized/private MAC addresses instead of
   attributing them as real devices** → **T2.64**. Surfaced by a real
   1,643-device Android BLE-radar export the operator supplied: `util::oui::
@@ -5814,3 +5829,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   against the pre-fix code; the existing firing/guard tests are unchanged
   controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4567 lib tests, +1). Paired: `PROBLEM_TREE` T2.67 — same commit.
+- **2026-07-12** — **New SOL-ROLE-MAILBOX-COMPOUND: a DNS SOA admin mailbox
+  leaked into a scan as the subject's email — found by the PRIORITY-5 LIVE
+  pass.** Driving the real release binary against the canonical seed `Kylo4kylo`
+  and running `hse audit` on the result surfaced `awsdns-hostmaster@amazon.com`
+  (and a WHOIS `privacy@…`) present as if they were the subject's email.
+  `dns_intel` DOES guard its SOA-RNAME email emission with
+  `!is_infrastructure_email` (`resolve.rs:139`), but that delegates to
+  `is_role_localpart`, which exact-matched only the alphanumeric-stripped WHOLE
+  local-part — so the compound `awsdns-hostmaster` (`awsdnshostmaster` ≠
+  `hostmaster`, the STANDARD AWS Route53 SOA format) slipped through and the
+  provider's DNS desk polluted the subject graph (it then gets breach-checked and
+  identity-clustered). Fix: `is_role_localpart` now also matches an UNAMBIGUOUS
+  system-role token (`hostmaster`/`postmaster`/`webmaster`/`namehost`/
+  `mailerdaemon`/`noreply`/`donotreply`/`abuse`/`dns`/`nic`) as a
+  hyphen/dot/underscore-delimited SEGMENT — deliberately NOT the business tokens
+  (`info`/`contact`/`sales`), which a real subject local-part can legitimately
+  contain, so a genuine subject email is never suppressed. Live-proven FIRST (per
+  PRIORITY-5's order): rebuilt the binary and ran `hse scan --kind domain --value
+  amazon.com --modules dns_intel` — the SOA is still processed (soa/dns-admin
+  tags present) but ZERO Email entities are emitted, the `awsdns-hostmaster`
+  address suppressed where the earlier real Kylo4kylo scan's audit had it present.
+  THEN the regression test
+  (`role_localpart_matches_provider_prefixed_system_mailboxes`, git-stash-proven
+  to fail pre-fix, with negative controls — `jane-info`/`john.contact`/`sam-sales`
+  — locking the no-false-positive design). Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4568 lib tests, +1). Banked (2nd finding,
+  same audit): WHOIS-registrant emitters (`whoisxml`/`netlas`/`ripestat`) emit
+  registrant emails with no infra/role guard, so `privacy@…` leaks even though
+  `is_role_localpart("privacy")` is already true — a separate emitter-side fix.
+  Paired: `PROBLEM_TREE` T2.68 — same commit.

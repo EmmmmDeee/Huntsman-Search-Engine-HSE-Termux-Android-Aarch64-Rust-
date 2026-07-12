@@ -59,6 +59,32 @@ use super::*;
     }
 
     #[test]
+    fn role_localpart_matches_provider_prefixed_system_mailboxes() {
+        // Regression (found by a live dns_intel scan of amazon.com, surfaced by
+        // `hse audit`): a provider-prefixed system mailbox — the standard AWS
+        // Route53 SOA RNAME `awsdns-hostmaster` and friends — is a role account
+        // that the whole-string match misses, so `awsdns-hostmaster@amazon.com`
+        // leaked into a scan as if it were the subject's email. A system-role
+        // token is now matched as a separator-delimited segment too.
+        assert!(is_role_localpart("awsdns-hostmaster"));
+        assert!(is_role_localpart("dns-hostmaster"));
+        assert!(is_role_localpart("cloudflare-abuse"));
+        assert!(is_role_localpart("hostmaster-aws"));
+        assert!(is_role_localpart("mail.postmaster"));
+        // …so is_infrastructure_email gates the SOA admin address, and
+        // dns_intel's `!is_infrastructure_email` guard suppresses it.
+        assert!(is_infrastructure_email("awsdns-hostmaster@amazon.com"));
+        // But a BUSINESS token as a segment is NOT segment-matched — a real
+        // subject's local-part can legitimately contain `info`/`contact`/`sales`,
+        // and suppressing a genuine subject email is worse than missing an infra
+        // one. These stay whole-string-only (so they do NOT match as a segment).
+        assert!(!is_role_localpart("jane-info"));
+        assert!(!is_role_localpart("john.contact"));
+        assert!(!is_role_localpart("sam-sales"));
+        assert!(!is_infrastructure_email("jane-info@example.com"));
+    }
+
+    #[test]
     fn freemail_basics() {
         assert!(is_freemail("gmail.com"));
         assert!(is_freemail("bigpond.com"));

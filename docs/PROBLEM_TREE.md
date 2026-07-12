@@ -2563,6 +2563,40 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   controls. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
   0 failures (4567 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-CORRELATOR-INTEGRITY (slice 4), §5 — same commit.
+- **`[x]` T2.68 · `is_role_localpart` missed provider-prefixed system mailboxes,
+  so a DNS SOA admin address leaked into a scan as the subject's email —
+  found by a LIVE end-to-end pass, not a self-audit.** Driving the real binary
+  against the canonical seed `Kylo4kylo` (PRIORITY-5 live verification) and then
+  `hse audit` on the result surfaced two role/provider mailboxes present as if
+  they were the subject's email — headline example `awsdns-hostmaster@amazon.com`.
+  Traced live: `dns_intel` DOES guard its SOA-RNAME email emission with
+  `!is_infrastructure_email` (`resolve.rs:139`), but `is_infrastructure_email`
+  delegates to `is_role_localpart`, which exact-matched only the
+  alphanumeric-stripped WHOLE local-part — so the compound `awsdns-hostmaster`
+  (`awsdnshostmaster` ≠ `hostmaster`), the STANDARD AWS Route53 SOA format,
+  slipped through and the SOA admin mailbox was emitted as a subject Email that
+  then gets breach-checked and identity-clustered. **P2** (evidentiary integrity
+  / infrastructure pollution — a provider's DNS desk polluting the subject
+  graph). → **Solution:** `is_role_localpart` now also matches an UNAMBIGUOUS
+  system-role token (`hostmaster`/`postmaster`/`webmaster`/`namehost`/
+  `mailerdaemon`/`noreply`/`donotreply`/`abuse`/`dns`/`nic`) as a
+  hyphen/dot/underscore-delimited SEGMENT — deliberately NOT the business tokens
+  (`info`/`contact`/`sales`), which a real subject local-part can contain, so a
+  genuine subject email is never suppressed. **Live-proven FIRST** (per the
+  PRIORITY-5 order): rebuilt the binary and ran `hse scan --kind domain --value
+  amazon.com --modules dns_intel` — the SOA is still processed (soa/dns-admin
+  tags present) but ZERO Email entities are emitted; the `awsdns-hostmaster`
+  address is suppressed, where the earlier real Kylo4kylo scan's audit had it
+  present. THEN the regression test
+  (`role_localpart_matches_provider_prefixed_system_mailboxes`, git-stash-proven
+  to fail pre-fix, with negative controls locking the no-false-positive design).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4568 lib tests, +1). *Banked (2nd finding, same audit):* WHOIS-registrant
+  emitters (`whoisxml`/`netlas`/`ripestat`) emit registrant emails with NO
+  infra/role guard, so `privacy@…` (registrar privacy desk) leaks even though
+  `is_role_localpart("privacy")` is already true — a separate emitter-side fix.
+  **Paired:** `SOLUTION_TREE` SOL-ROLE-MAILBOX-COMPOUND (new node), §5 — same
+  commit.
 
 ---
 
@@ -8096,3 +8130,23 @@ way, so this specific drift class can't recur silently again.
   report "3" pre-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4567 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-CORRELATOR-INTEGRITY (slice 4), §5 — same commit.
+- **2026-07-12** — **T2.68: a DNS SOA admin mailbox leaked into a scan as the
+  subject's email — found by a LIVE end-to-end pass (PRIORITY-5 live
+  verification), not the self-audit.** Driving the real binary against the
+  canonical seed `Kylo4kylo` then `hse audit` surfaced `awsdns-hostmaster@amazon.com`
+  present as a subject email. `dns_intel` guards SOA-email emission with
+  `!is_infrastructure_email`, which delegates to `is_role_localpart` — but that
+  exact-matched only the whole alphanumeric-stripped local-part, so the compound
+  `awsdns-hostmaster` (standard AWS Route53 SOA format) slipped through and the
+  provider's DNS desk polluted the subject graph (breach-checked, identity-
+  clustered). Fix: `is_role_localpart` now also matches an UNAMBIGUOUS system-role
+  token (`hostmaster`/`postmaster`/`abuse`/`dns`/…) as a separator-delimited
+  segment; business tokens (`info`/`contact`) stay whole-string-only so a real
+  subject email is never suppressed. Live-proven FIRST: rebuilt binary,
+  `hse scan --kind domain --value amazon.com --modules dns_intel` now emits ZERO
+  emails (SOA suppressed) where the Kylo4kylo scan had it present; THEN the
+  regression test (git-stash-proven, with no-false-positive negative controls).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4568 lib tests, +1). Banked: WHOIS-registrant emitters emit `privacy@`-style
+  role mailboxes with no guard (separate emitter-side fix). **Paired:**
+  `SOLUTION_TREE` SOL-ROLE-MAILBOX-COMPOUND (new node), §5 — same commit.
