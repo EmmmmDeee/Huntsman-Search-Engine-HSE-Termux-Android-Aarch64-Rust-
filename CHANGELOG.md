@@ -72,6 +72,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   total is now 161.
 
 ### Changed
+- **`hse scan`'s unknown-`--profile` error now lists every scan profile with
+  its description.** Previously it printed a hand-maintained list of profile
+  names only (which could drift from the actual set as profiles are added);
+  it now renders the single-sourced `core::profiles::list_profiles()` catalogue,
+  so a mistyped profile gets the authoritative, self-updating list of choices
+  and a one-line description of what each does (recommended, passive, footprint,
+  investigate, fast, skiptrace).
 - **`domainsdb` moved from the free tier to key-gated** (its provider
   disabled anonymous access — see Fixed) — it now appears in the Settings
   key grid and `hse doctor`'s key recommendations, and is skipped by

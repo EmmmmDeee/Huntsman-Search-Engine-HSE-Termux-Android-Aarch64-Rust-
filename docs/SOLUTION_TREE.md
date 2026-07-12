@@ -1533,13 +1533,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   proves it safe (build clean); gate green (4560 lib tests, −9 — all removed
   tests exercised only the deleted module). This closes the autonomous-validation
   experiment cleanup (slices 1–3 = see_know scaffolding + multi_api +
-  autonomous_validation, ~4,000 dead lines removed). *Remaining dead-code
-  backlog (banked, verified by the sweep):* the 7 dead consts in the surviving
-  `see_know::enterprise_config` (keeping `ENTERPRISE`); scattered dead fns
-  (`fetch_post`/`set_environment` delete; `refresh_pool`/`prune_degraded`/
-  `host_state`/`set_private` wire-in) and `core`/`storage`/`modules` items — one
-  decision each. **Paired:** `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) /
-  T2.60 (slice 3) — each slice its own commit.
+  autonomous_validation, ~4,000 dead lines removed). **Slice 4 delivered —
+  `core::profiles::list_profiles` (the first WIRE-IN, not a delete):** the
+  profile catalogue `(name, description)` had 0 callers despite its doc claiming
+  the CLI/API rendered it, while the CLI's unknown-`--profile` error hand-typed
+  a drifting name list that hid the descriptions. Decision: WIRE-IN (a real,
+  useful capability) — the error now renders `list_profiles()` as
+  `name — description`, single-sourcing the help. Proved against a REAL target
+  (`hse scan … --profile bogus` prints all six profiles + descriptions,
+  previously invisible); drift-guard test git-stash-proven. Gate green (4560 lib
+  tests). *Remaining dead-code backlog (banked, verified by the sweep):* the 7
+  dead consts in the surviving `see_know::enterprise_config` (keeping
+  `ENTERPRISE`); scattered dead fns (`fetch_post`/`set_environment` delete;
+  `refresh_pool`/`prune_degraded`/`host_state`/`set_private` wire-in) and
+  `core`/`storage`/`modules` items — one decision each. **Paired:**
+  `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
+  (slice 4) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5608,3 +5617,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   banked: `enterprise_config` dead consts, scattered dead/wire-in fns, and
   `core`/`storage`/`modules` items surfaced by the sweep. Paired: `PROBLEM_TREE`
   T2.60 — same commit.
+- **2026-07-12** — **SOL-DEADCODE-SWEEP slice 4: wired the unused
+  `core::profiles::list_profiles` catalogue into the CLI — the sweep's first
+  WIRE-IN decision (not a delete).** `list_profiles()` returns every scan
+  profile as `(name, one-line description)`; its doc-comment claimed the CLI
+  `--help` / API-SPA picker rendered it, but the sweep found 0 callers — the
+  wiring never existed. Meanwhile the CLI's unknown-`--profile` error hand-typed
+  its own name list ("try: recommended, passive, footprint, investigate, fast,
+  skiptrace"), a copy that would drift the next time a profile is added and that
+  never surfaced the descriptions. Unlike the T2.58–T2.60 scaffolding this is a
+  REAL capability that should be reachable, so the decision is WIRE-IN, not
+  delete: the error now renders `list_profiles()` as `name — description` lines,
+  so the help is sourced from the single catalogue `resolve_profile` is checked
+  against AND tells the operator what each profile does. Proved against a REAL
+  target: `hse scan --kind username --value testuser --profile bogus` prints all
+  six profiles with their descriptions (previously invisible anywhere in the
+  CLI) — genuine new observable output through the now-live path, not a synthetic
+  no-op. Extended `apply_named_profile_rejects_unknown_name` into a drift guard
+  (asserts every `list_profiles()` name AND description appears), git-stash-proven
+  to fail against the pre-wire hardcoded error (which carried no descriptions).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4560 lib tests). Paired: `PROBLEM_TREE` T2.61 — same commit.

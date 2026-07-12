@@ -411,10 +411,17 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
 /// values for those two fields, not because it was correct.
 fn apply_named_profile(name: &str, options: ScanOptions) -> Result<ScanOptions, String> {
     let p = crate::core::profiles::resolve_profile(name).ok_or_else(|| {
-        format!(
-            "unknown --profile '{name}' (try: recommended, passive, footprint, \
-             investigate, fast, skiptrace)"
-        )
+        // Render the SINGLE-SOURCED catalogue from `core::profiles::list_profiles`
+        // rather than a hand-typed name list: the previous literal
+        // ("recommended, passive, …") was a copy that would silently go stale the
+        // next time a profile is added, and it hid the one-line descriptions
+        // `list_profiles` carries — so the help now also tells the operator what
+        // each profile DOES, not just its name.
+        let mut msg = format!("unknown --profile '{name}'. Available profiles:");
+        for (pname, desc) in crate::core::profiles::list_profiles() {
+            msg.push_str(&format!("\n  {pname} — {desc}"));
+        }
+        msg
     })?;
     Ok(crate::core::profiles::apply_profile_overlay(options, p).clamp_depth())
 }
@@ -745,5 +752,23 @@ mod tests {
             err.starts_with("unknown --profile "),
             "error must carry the client-facing prefix, got: {err}"
         );
+        // The help is rendered from the single-sourced `core::profiles::list_profiles`
+        // catalogue, so it can't drift from the selectable set: every profile's
+        // NAME and its one-line DESCRIPTION must appear. This ties the CLI's
+        // unknown-profile help to the catalogue the way the module-count guard
+        // ties the README to the registry — add a profile and this fails until
+        // the help is sourced from the shared list, not a hand-typed literal.
+        // (Fails against the pre-wire error, which listed bare names and no
+        // descriptions at all.)
+        for (name, desc) in crate::core::profiles::list_profiles() {
+            assert!(
+                err.contains(name),
+                "unknown-profile help must list every profile name — missing '{name}': {err}"
+            );
+            assert!(
+                err.contains(desc),
+                "unknown-profile help must render each profile's description — missing '{name}'s: {err}"
+            );
+        }
     }
 }

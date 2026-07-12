@@ -2389,6 +2389,32 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   wire-in); `modules::…::store_api_credential_from_item` (delete); `storage`
   low-confidence-evidence trio (wire-in) — one decision each. **Paired:**
   `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 3), §5 — same commit.
+- **`[x]` T2.61 · `core::profiles::list_profiles` — a built profile catalogue
+  wired to nothing (the first WIRE-IN decision of the sweep).** Slice 4 of the
+  dead-code sweep. `list_profiles()` returns every selectable scan profile as
+  `(name, one-line description)`; its own doc-comment claimed it was "the
+  catalogue the CLI `--help` and the API/SPA profile picker render" — but the
+  sweep found **0** callers, so that wiring never existed. Meanwhile the CLI's
+  unknown-`--profile` error hand-typed its own name list ("try: recommended,
+  passive, footprint, investigate, fast, skiptrace"): a copy that would go stale
+  the next time a profile is added, and one that never showed the descriptions
+  `list_profiles` carries. Unlike the T2.58–T2.60 scaffolding, this is a REAL
+  capability that *should* be reachable, not redundant duplication. **P2**
+  (codebase health + a latent drift/vocabulary bug). → **Decision: WIRE-IN**
+  (not delete — the catalogue is genuinely useful and single-sources a list the
+  CLI was otherwise duplicating). Rebuilt the unknown-`--profile` error to render
+  `list_profiles()` as `name — description` lines, so the help is now sourced
+  from the one catalogue `resolve_profile` is checked against and additionally
+  tells the operator what each profile DOES. **Proved against a REAL target:**
+  `hse scan --kind username --value testuser --profile bogus` now prints all six
+  profiles with their descriptions (previously invisible anywhere in the CLI) —
+  genuine new observable output through the now-live path, not a synthetic call.
+  1 test extended to a drift guard (`apply_named_profile_rejects_unknown_name`
+  now asserts every `list_profiles()` name AND description appears), git-stash-
+  proven to fail against the pre-wire hardcoded error (which had no
+  descriptions). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4560 lib tests). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
+  (slice 4), §5 — same commit.
 
 ---
 
@@ -7817,3 +7843,20 @@ way, so this specific drift class can't recur silently again.
   banked: `enterprise_config` dead consts, scattered dead/wire-in fns, `core`/
   `storage`/`modules` items. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
   (slice 3), §5 — same commit.
+- **2026-07-12** — **T2.61: wired the unused `core::profiles::list_profiles`
+  catalogue into the CLI (dead-code sweep slice 4 — the first WIRE-IN, not a
+  delete).** `list_profiles()` returns every scan profile as
+  `(name, description)`; its doc claimed the CLI `--help`/API picker rendered
+  it, but it had 0 callers, while the CLI's unknown-`--profile` error hand-typed
+  its own name list (a copy that drifts, and that hid the descriptions).
+  Decision: WIRE-IN (a real capability, not redundant scaffolding) — the error
+  now renders `list_profiles()` as `name — description` lines, single-sourcing
+  the help and surfacing what each profile does. Proved against a REAL target:
+  `hse scan --kind username --value testuser --profile bogus` now prints all six
+  profiles with descriptions (previously invisible) — genuine observable output
+  through the now-live path. Extended `apply_named_profile_rejects_unknown_name`
+  into a drift guard asserting every `list_profiles()` name AND description
+  appears, git-stash-proven to fail against the pre-wire hardcoded error. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4560 lib
+  tests). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 4), §5 — same
+  commit.
