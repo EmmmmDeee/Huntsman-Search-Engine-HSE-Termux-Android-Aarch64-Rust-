@@ -83,11 +83,57 @@ use super::*;
             DeviceClass::Router,
             DeviceClass::Printer,
             DeviceClass::Beacon,
+            DeviceClass::Randomized,
             DeviceClass::Unknown,
             DeviceClass::Unregistered,
         ] {
             // Just assert the discriminant has a non-empty label.
             assert!(!c.as_str().is_empty());
+        }
+    }
+
+    #[test]
+    fn randomized_local_address_is_flagged_not_attributed() {
+        // A locally-administered address (U/L bit `0x02` set on the first octet)
+        // is a randomized / private address — modern phones, AirTags, etc. rotate
+        // it. Its prefix bytes are random, so it must NOT be attributed to a
+        // vendor; it is surfaced as Randomized instead. (This is the exact
+        // criterion that split a real BLE scan's recurring devices into
+        // 20 randomized vs the fixed home devices.)
+        for m in ["02:00:00:00:00:01", "06:11:22:33:44:55", "DA:A1:19:AB:CD:EF"] {
+            let info = classify_mac(m).unwrap();
+            assert_eq!(info.class, DeviceClass::Randomized, "{m} must be Randomized");
+            assert_eq!(info.vendor, "Randomized (private)", "{m}");
+        }
+    }
+
+    #[test]
+    fn universally_administered_mac_still_classifies_normally() {
+        // Control: a real IEEE OUI (U/L bit clear) is unaffected by the
+        // randomized-address guard and still resolves to its vendor.
+        let info = classify_mac("3C:07:54:AB:CD:EF").unwrap();
+        assert_eq!(info.vendor, "Apple");
+        assert_eq!(info.class, DeviceClass::Phone);
+        // A universally-administered but uncurated prefix stays Unregistered
+        // (NOT Randomized) — the distinction matters: unknown-vendor vs privacy.
+        let unk = classify_mac("00:11:22:33:44:55").unwrap();
+        assert_eq!(unk.class, DeviceClass::Unregistered);
+    }
+
+    #[test]
+    fn is_locally_administered_matches_classify_and_the_ul_bit() {
+        // Directly exercises the U/L-bit helper and its agreement with classify_mac.
+        assert_eq!(is_locally_administered("02:00:00:00:00:01"), Some(true));
+        assert_eq!(is_locally_administered("06:aa:bb:cc:dd:ee"), Some(true));
+        assert_eq!(is_locally_administered("3C:07:54:AB:CD:EF"), Some(false));
+        assert_eq!(is_locally_administered("00:11:22:33:44:55"), Some(false));
+        assert_eq!(is_locally_administered(""), None);
+        assert_eq!(is_locally_administered("zz"), None);
+        // The helper and the classifier must never disagree on the L/A verdict.
+        for m in ["02:00:00:00:00:01", "3C:07:54:00:00:00", "F8:B6:E9:00:11:22"] {
+            let random_by_helper = is_locally_administered(m).unwrap();
+            let random_by_class = classify_mac(m).unwrap().class == DeviceClass::Randomized;
+            assert_eq!(random_by_helper, random_by_class, "disagreement on {m}");
         }
     }
 

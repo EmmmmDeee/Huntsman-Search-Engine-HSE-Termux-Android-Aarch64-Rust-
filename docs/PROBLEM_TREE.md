@@ -2465,6 +2465,34 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `shortest_path`) and the `storage` low-confidence trio — each a careful
   wire-in-vs-delete decision of its own. **Paired:** `SOLUTION_TREE`
   SOL-DEADCODE-SWEEP (slice 6), §5 — same commit.
+- **`[x]` T2.64 · The OUI classifier attributed randomized (private) MAC
+  addresses as if they were real devices — an evidentiary error in the live
+  WiGLE path.** `util::oui::classify_mac` (called by `wigle` to tag every
+  `MacAddress` entity with `vendor:`/`device:`) had no notion of a
+  **locally-administered** address — one with the U/L bit (`0x02` on the first
+  octet) set. Those are randomized / private addresses that modern phones
+  (iOS 8+/Android 10+), AirTags/SmartTags, and privacy-hardened devices rotate
+  (often every ~15 min); their first three bytes are randomly generated, so an
+  OUI lookup is meaningless and treating the address as a persistent device
+  identity (for colocation/tracking, e.g. AU-032/AU-106) outruns the evidence.
+  Ground-truthed against a **real BLE scan** (a 1,643-device Android BLE-radar
+  export): **698 (42%) of the devices are randomized addresses**, and the source
+  app had even mislabelled 345 of them with a manufacturer — the exact false
+  attribution HSE was making. **P2** (evidentiary integrity + GEOINT quality).
+  → **Solution:** added `DeviceClass::Randomized` and a reusable
+  `util::oui::is_locally_administered(mac) -> Option<bool>`; `classify_mac` now
+  detects the U/L bit and returns `Randomized`/"Randomized (private)" WITHOUT a
+  lookup, so `wigle` tags such an entity `device:randomized` instead of
+  `vendor:Unknown` — a privacy address can no longer pose as a real device.
+  3 new tests (LA-set → Randomized; universally-administered control still
+  resolves its vendor / stays Unregistered-not-Randomized; helper⇄classifier
+  agreement), git-stash-proven (the must-flag test fails against the neutered
+  classifier). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4563 lib tests, +3). Validated against the real corpus: the same
+  U/L criterion the shipped fn implements splits the 1,643 real devices into
+  698 randomized / 945 real-OUI (real MACs kept OUT of the repo — tests use
+  synthetic addresses). **Paired:** `SOLUTION_TREE` SOL-RANDOMIZED-MAC (new
+  node), §5 — same commit.
 
 ---
 
@@ -7939,3 +7967,20 @@ way, so this specific drift class can't recur silently again.
   0 failures (4560 lib tests, unchanged). No live run applies (unreachable
   code). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 6), §5 — same
   commit.
+- **2026-07-12** — **T2.64: the OUI classifier now flags randomized (private)
+  MAC addresses instead of attributing them as real devices.**
+  `util::oui::classify_mac` (live via `wigle`'s `MacAddress` tagging) had no
+  concept of a locally-administered address (U/L bit `0x02` set) — the
+  randomized/private addresses modern phones, AirTags, etc. rotate. Attributing
+  one to a vendor or treating it as a persistent identity (for colocation/
+  tracking) outruns the evidence. Added `DeviceClass::Randomized` +
+  `is_locally_administered`; `classify_mac` returns `Randomized` for LA addresses
+  without a lookup, so `wigle` tags them `device:randomized` not `vendor:Unknown`.
+  Ground-truthed against a real 1,643-device Android BLE-radar export: 698 (42%)
+  are randomized addresses (the source app had mislabelled 345 with a
+  manufacturer — the exact error HSE was making). 3 new tests, git-stash-proven
+  (must-flag test fails against a neutered classifier). Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4563 lib tests, +3). Real
+  MACs kept OUT of the repo — committed tests use synthetic addresses; the
+  real-corpus split (698/945) validated the shipped U/L criterion. **Paired:**
+  `SOLUTION_TREE` SOL-RANDOMIZED-MAC (new node), §5 — same commit.

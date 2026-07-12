@@ -136,6 +136,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Randomized/private MAC addresses are no longer attributed as real devices.**
+  The OUI classifier (used by the WiGLE module to label Bluetooth/WiFi
+  observations) now recognises locally-administered addresses — the randomized,
+  rotating addresses modern phones, AirTags/SmartTags, and privacy-hardened
+  devices use — and flags them `device:randomized` instead of guessing a vendor.
+  Such an address is ephemeral (it changes ~every 15 minutes) and its bytes are
+  random, so it can no longer masquerade as a stable device or anchor a
+  colocation/tracking finding. Validated against a real 1,643-device Bluetooth
+  scan, of which 42% were randomized addresses.
 - **Correlator rule AU-081 no longer manufactures corroboration from the
   tool's own name derivation.** The "canonical person-name match" rule fires a
   "same individual" identity bridge when two person records normalise to one
