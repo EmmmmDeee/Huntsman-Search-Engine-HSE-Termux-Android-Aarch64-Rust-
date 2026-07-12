@@ -2258,6 +2258,45 @@ fn proven_engine_tolerates_long_block_streaks() {
 }
 
 #[test]
+fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
+    // Regression: SESSION_EMPTY_COUNTS is process-global (shared across every
+    // scan in one `hse serve`/`hse live` process), so a fresh scan against a
+    // DIFFERENT target must not inherit a prior scan's block-streak silencing
+    // or "proven live" exemptions. Before `reset_session_liveness` was wired
+    // into `modules::install_core_hooks`'s `reset_per_scan`, an engine
+    // silenced (or proven) in scan A stayed that way for every later scan in
+    // the same process, even though a fresh scan has no basis to assume the
+    // same engine will behave the same way against a new target.
+    const FAKE: &str = "__test_reset_session_liveness__";
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(FAKE);
+
+    // Silence it via the unproven threshold (as scan A's block streak would).
+    for _ in 0..SESSION_DEAD_THRESHOLD {
+        record_empty(FAKE);
+    }
+    assert!(is_session_dead(FAKE), "setup: engine must be silenced");
+
+    reset_session_liveness();
+
+    assert!(
+        !is_session_dead(FAKE),
+        "a per-scan reset must clear a prior scan's silencing"
+    );
+    assert!(
+        SESSION_EMPTY_COUNTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "reset must clear the ENTIRE map, not just the one test engine \
+         (a real scan boundary has no way to enumerate every engine name \
+         some earlier scan may have touched)"
+    );
+}
+
+#[test]
 fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
     use std::collections::BTreeSet;
 

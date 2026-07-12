@@ -273,6 +273,7 @@ fn install_core_hooks() {
             see_know::reset_budget();
             wigle::reset_budget();
             typosquat::reset_seen();
+            search_engines::reset_session_liveness();
             reset_found_keys(scan_id);
         },
         set_regional: search_engines::set_regional,

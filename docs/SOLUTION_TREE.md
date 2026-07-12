@@ -1251,6 +1251,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   canonical acceptance-test seed (`Kylo4kylo`) — the exact coincidental
   false-positive substring was not naturally reproduced in that specific
   run, noted honestly rather than overclaimed as full live reproduction.
+- **`[x]` SOL-SEARCH-LIVENESS-RESET · Per-scan reset for
+  `search_engines::SESSION_EMPTY_COUNTS`** → **T2.46**, the second finding
+  from the same background data-freshness/pacing audit, the same bug class
+  as SOL-STALE-CACHE-BACKOFF's cache fix. `SESSION_EMPTY_COUNTS` (a
+  process-global `Mutex<HashMap<..., EngineLiveness>>`) correctly silences
+  an engine for the rest of ONE scan after a genuine consecutive-empty block
+  streak, and correctly exempts a "proven live" engine from the aggressive
+  threshold — but it was never wired into `modules::install_core_hooks`'s
+  `reset_per_scan` hook, unlike `oathnet_pro`/`see_know`/`wigle`'s per-scan
+  state (confirmed by directly reading the hook body). Under a long-lived
+  `hse serve`/`hse live` process, both states leaked across scan boundaries:
+  an engine silenced against target A stayed silenced against target B in a
+  later scan, indefinitely, with no basis for assuming the failure carries
+  over; the milder "proven live" leak costs extra retries rather than lost
+  results. New `search_engines::reset_session_liveness()` clears the whole
+  map; called from `reset_per_scan` alongside the existing three providers.
+  ✅ 1 new regression test
+  (`reset_session_liveness_clears_silenced_and_proven_state_across_scans`),
+  confirmed via `git stash` as a compile error pre-fix (the function didn't
+  exist yet, not a silent pass) and a runtime pass post-fix. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4605 lib
+  tests, +1). Live-verified: a real `hse serve` process ran `reset_per_scan`
+  — including the new call — cleanly across two distinct real scan IDs
+  (`selftest`, then an issued API scan) with zero panics; reproducing the
+  exact silence-then-unsilence symptom across a genuine block streak would
+  need a longer live session than this pass covered, noted honestly rather
+  than overclaimed — the guarantee itself (the map is fully cleared) is
+  what the regression test pins regardless.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5013,3 +5041,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   substring was not naturally reproduced in that specific live run, noted
   honestly rather than overclaimed. Paired: `PROBLEM_TREE` T2.45 — same
   commit.
+- **2026-07-12** — **New SOL-SEARCH-LIVENESS-RESET: `search_engines::
+  SESSION_EMPTY_COUNTS` never reset per-scan — the second finding from the
+  same background data-freshness/pacing audit, the same bug class as
+  SOL-STALE-CACHE-BACKOFF.** The process-global engine-liveness map
+  correctly silences a block-streaking engine and correctly exempts a
+  proven-live one within one scan, but was never cleared by
+  `modules::install_core_hooks`'s `reset_per_scan`, unlike
+  `oathnet_pro`/`see_know`/`wigle`'s per-scan state — confirmed by reading
+  the hook body directly. Under a long-lived `hse serve`/`hse live` process
+  both a silencing and a proven-live exemption leaked across scan
+  boundaries: an engine silenced against one target stayed silenced against
+  a later, different target indefinitely. New `search_engines::
+  reset_session_liveness()` clears the whole map; wired into
+  `reset_per_scan` alongside the existing three providers. 1 new regression
+  test, confirmed via `git stash` as a compile error pre-fix (the function
+  didn't exist) and a runtime pass post-fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4605 lib tests, +1).
+  Live-verified: a real `hse serve` process ran `reset_per_scan` — including
+  the new call — cleanly across two distinct real scan IDs with zero
+  panics; reproducing the exact silence-then-unsilence symptom across a
+  genuine block streak would need a longer live session than this pass
+  covered, noted honestly rather than overclaimed. Paired: `PROBLEM_TREE`
+  T2.46 — same commit.

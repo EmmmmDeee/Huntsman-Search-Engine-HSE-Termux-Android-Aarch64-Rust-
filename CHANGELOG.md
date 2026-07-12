@@ -74,6 +74,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Search-engine liveness state no longer leaks across scans in a
+  long-lived `hse serve`/`hse live` process.** `search_engines`' per-engine
+  block-streak silencing and "proven live" tolerant-threshold exemption are
+  correct within one scan but were never reset at the start of the next —
+  an engine silenced against one target stayed silenced for every later
+  scan against a different target, indefinitely. New
+  `search_engines::reset_session_liveness()` clears this state, called from
+  the same per-scan reset hook that already resets the paid API clients'
+  state.
 - **`core::engine::circuit`'s rate-limit classifier no longer false-positives
   on coincidental substrings.** Its vocabulary previously included the bare
   words `exceeded`/`credit` and unanchored `429`/`402` digit matching, any of

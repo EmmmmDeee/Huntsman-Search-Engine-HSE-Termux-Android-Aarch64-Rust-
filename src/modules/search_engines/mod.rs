@@ -175,6 +175,24 @@ fn record_hit(name: &'static str) {
     live.ever_hit = true;
 }
 
+/// Clear all per-engine session liveness state. Called once per scan (see
+/// `modules::install_core_hooks`'s `reset_per_scan` hook) for the same reason
+/// `oathnet_pro`/`see_know`/`wigle` reset their own per-scan state there: under
+/// a long-lived `hse serve`/`hse live` process, [`SESSION_EMPTY_COUNTS`] is
+/// process-global and previously outlived the scan that built it — an engine
+/// silenced by a block streak against one target stayed silenced (and any
+/// engine "proven live" stayed exempt from the aggressive threshold) for every
+/// later scan in the same process, even against a completely different
+/// target where that engine might work fine. A fresh scan must start with a
+/// clean slate, exactly like the paid-API response caches this same hook
+/// already clears.
+pub(crate) fn reset_session_liveness() {
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clear();
+}
+
 /// Cap on the second-order (pivot / recycle) engine fan-out. The pivot grid is
 /// `pivots × engines`, so this bounds the request multiplier; the per-request
 /// deadline self-clamp remains the hard wall-time guarantee — this just keeps the

@@ -1818,6 +1818,52 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   — noted honestly rather than overclaimed, since reproducing it depends on
   real provider response content outside this run's control. **Paired:**
   `SOLUTION_TREE` SOL-CIRCUIT-TOKEN-ANCHOR (new node), §5 — same commit.
+- **`[x]` T2.46 · `search_engines::SESSION_EMPTY_COUNTS` never reset per-scan
+  — same "stale process-global state" bug class as T2.44's cache fix,
+  surfaced by the same background data-freshness/pacing audit.**
+  `SESSION_EMPTY_COUNTS` tracks each search engine's consecutive-empty-result
+  streak and whether it's ever produced a result, so a mid-scan block streak
+  silences it for the REST of that scan (§ doc comment on
+  [`SESSION_DEAD_THRESHOLD`]/[`SESSION_DEAD_THRESHOLD_PROVEN`]) — correct
+  and deliberate *within* one scan. But it is a `static` `Mutex<HashMap<...>>`
+  shared across every `process()` call in the binary's lifetime, and, unlike
+  `oathnet_pro`/`see_know`/`wigle`'s per-scan state, it was never wired into
+  `modules::install_core_hooks`'s `reset_per_scan` hook — confirmed via a
+  direct grep of the hook body. Under a long-lived `hse serve`/`hse live`
+  process, an engine silenced by a genuine block streak against target A
+  stayed silenced for every LATER scan against a completely different
+  target B, in the same process, for as long as the process runs — with no
+  basis for assuming the same engine will fail against a different target
+  the same way. Symmetrically, an engine "proven live" (exempted from the
+  aggressive 3-strike threshold in favour of the tolerant 10-strike one) in
+  scan A carries that exemption into every later scan too — a milder,
+  same-root-cause issue, since a wrongly-lenient threshold costs at most a
+  few extra retries rather than silently dropping results. **P2**
+  (throughput/coverage: identical failure mode and severity class to T2.44's
+  cache bug — a healthy engine goes silent for reasons that have nothing to
+  do with the scan currently running).
+  → **Solution:** new `search_engines::reset_session_liveness()` clears the
+  entire `SESSION_EMPTY_COUNTS` map; wired into `install_core_hooks`'s
+  `reset_per_scan` alongside the existing three providers' resets. 1 new
+  regression test
+  (`reset_session_liveness_clears_silenced_and_proven_state_across_scans`),
+  confirmed via `git stash` — a compile error pre-fix (the function didn't
+  exist), not a silent pass, then a runtime pass post-fix. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4605 lib
+  tests, +1). Live-verified: ran a real `hse serve` process and issued a
+  real depth-1 scan via the API against the project's own canonical
+  acceptance-test seed (`Kylo4kylo`), confirming `reset_per_scan` — and the
+  new call inside it — executes cleanly against the real dispatch pipeline
+  for two distinct real scan IDs (`selftest` at server startup, then the
+  issued scan) with zero panics or errors from the new code path. Naturally
+  reproducing the EXACT cross-scan-carryover symptom (an engine reaching its
+  real silence threshold from genuine block streaks in one scan, then
+  observed un-silenced at the start of a second scan) would require a
+  longer-running live session than this sandboxed pass covered — noted
+  honestly rather than overclaimed; the mechanism itself (the map is fully
+  cleared, proven by the regression test) is what the fix guarantees
+  regardless. **Paired:** `SOLUTION_TREE` SOL-SEARCH-LIVENESS-RESET (new
+  node), §5 — same commit.
 
 ---
 
@@ -6942,3 +6988,26 @@ way, so this specific drift class can't recur silently again.
   reproduced in that specific run, noted honestly rather than overclaimed.
   **Paired:** `SOLUTION_TREE` SOL-CIRCUIT-TOKEN-ANCHOR (new node), §5 —
   same commit.
+- **2026-07-12** — **T2.46: `search_engines::SESSION_EMPTY_COUNTS` never
+  reset per-scan, fixed — the second finding from the same background
+  data-freshness/pacing audit, same bug class as T2.44's cache fix.** A
+  process-global `static Mutex<HashMap<...>>` tracks each engine's
+  consecutive-empty streak and "ever proven live" flag so a mid-scan block
+  streak silences it for the rest of THAT scan — correct by design — but it
+  was never cleared by `modules::install_core_hooks`'s `reset_per_scan`
+  hook, unlike `oathnet_pro`/`see_know`/`wigle`'s per-scan state. Under a
+  long-lived `hse serve`/`hse live` process, an engine silenced against one
+  target stayed silenced for every later scan against a different target,
+  indefinitely; symmetrically a "proven live" exemption also leaked across
+  scan boundaries (milder — costs extra retries, not lost results). Fixed:
+  new `search_engines::reset_session_liveness()` clears the whole map, wired
+  into `reset_per_scan` alongside the existing three providers. 1 new
+  regression test, confirmed via `git stash` as a compile error pre-fix (the
+  function didn't exist) and a pass post-fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4605 lib tests, +1).
+  Live-verified: a real `hse serve` process ran `reset_per_scan` — including
+  the new call — cleanly for two distinct real scan IDs with zero panics;
+  naturally reproducing the exact silence-then-unsilence symptom across a
+  real block streak would need a longer live session than this pass
+  covered, noted honestly rather than overclaimed. **Paired:**
+  `SOLUTION_TREE` SOL-SEARCH-LIVENESS-RESET (new node), §5 — same commit.
