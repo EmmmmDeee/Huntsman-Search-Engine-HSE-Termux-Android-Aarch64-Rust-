@@ -427,6 +427,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   evidence names. Updated the two exhaustive `RelationKind` matches in
   `core::network` the new variant forced. *Remaining:* only further AU-0xx
   rule-gap fill — the last of C1's four sub-items.
+  *Delivered (2026-07-12) — the cycle-27-noted DOB-key single-sourcing
+  follow-on, 2 of 3 lists:* `core::exposure`'s own `DOB_KEYS`/`GOV_ID_KEYS`
+  had drifted to a narrow subset (3 of 9 DOB spellings; 5 of 22
+  government-ID spellings) of `breach_pii`'s canonical AU-073/AU-074
+  vocabularies, silently undercounting the exposure score for breach records
+  using an un-mirrored spelling. `breach_pii` promoted to `pub(crate)`
+  (mirroring `location`'s existing re-export pattern) and `exposure` now
+  references `breach_pii::DOB_KEYS`/`GOV_IDS` directly — one canonical list
+  each, structurally unable to drift again. `timeline::classify`'s list stays
+  separate on purpose (a first-party-module-only event-reconstruction
+  concern; several of `breach_pii`'s spellings are import-only and would
+  wrongly fire reconstructed-DOB timeline events off arbitrary third-party
+  breach dumps). 2 new regression tests, confirmed via `git stash` to fail
+  against the pre-fix `exposure` module and pass against the fix.
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -4683,3 +4697,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   integration test pins the honest-empty-state contract. Gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures. Paired:
   `PROBLEM_TREE` T2.7, §8 — same commit.
+- **2026-07-12** — **SOL-CORR extended: 2 of the 3 independently-drifted
+  DOB-key vocabularies (2026-07-05's deferred follow-on) single-sourced.**
+  `core::exposure`'s `DOB_KEYS`/`GOV_ID_KEYS` were a narrower, drifted copy
+  of AU-073/AU-074's canonical vocabularies in `breach_pii` (3/9 DOB
+  spellings; 5/22 government-ID spellings) — undercounting the exposure
+  score for breach records using an un-mirrored spelling like
+  `tax_file_number` or `date_birth`. `breach_pii` promoted to `pub(crate)`
+  (mirroring `location`'s existing re-export pattern); `exposure` now
+  references it directly instead of keeping a separate copy.
+  `timeline::classify`'s list stays separate on purpose (scoped to
+  first-party module spellings only; several `breach_pii` spellings are
+  import-only). 2 new regression tests, confirmed via `git stash` to fail
+  pre-fix and pass post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures. Paired: `PROBLEM_TREE` C1, §8 — same
+  commit.

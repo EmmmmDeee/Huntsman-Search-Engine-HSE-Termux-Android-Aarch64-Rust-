@@ -83,7 +83,11 @@ fn scan_evidence<'a>(entities: &'a [Entity], keys: &[&str]) -> Vec<(String, &'a 
 
 // ── AU-073 — Subject date of birth ───────────────────────────────────────────
 
-const DOB_KEYS: &[&str] = &[
+/// The canonical DOB evidence-attribute-key vocabulary — also the single
+/// source `core::exposure`'s sensitive-disclosure scan uses (see that
+/// module's doc comment), so a spelling added here is instantly visible to
+/// both consumers instead of silently undercounting one of them.
+pub(crate) const DOB_KEYS: &[&str] = &[
     "date_of_birth",
     "dob",
     "birthdate",
@@ -255,13 +259,20 @@ fn mask_tail(value: &str) -> String {
 
 /// One Australian government-ID class: the evidence keys it appears under, a
 /// human label, and an optional structural validator.
-struct GovId {
-    keys: &'static [&'static str],
+pub(crate) struct GovId {
+    pub(crate) keys: &'static [&'static str],
     label: &'static str,
     validate: Option<fn(&str) -> bool>,
 }
 
-const GOV_IDS: &[GovId] = &[
+/// The canonical AU government-ID evidence-attribute-key vocabulary, grouped
+/// by ID class (needed here for AU-074's per-class masking/labelling).
+/// `core::exposure`'s sensitive-disclosure scan flattens this to a plain
+/// "was any gov-ID key present" check (see that module's doc comment) rather
+/// than keeping its own separate, narrower copy — the drift that left it
+/// silently undercounting breach records naming e.g. `tax_file_number`
+/// instead of the bare `tfn` this list's first entry alone used to cover.
+pub(crate) const GOV_IDS: &[GovId] = &[
     GovId {
         keys: &["tfn", "tax_file_number", "taxfilenumber", "tax_file_no"],
         label: "Tax File Number",

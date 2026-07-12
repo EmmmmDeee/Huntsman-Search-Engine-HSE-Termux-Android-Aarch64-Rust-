@@ -1734,7 +1734,27 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   worthwhile follow-on but a distinct decision (the broader import-facing list
   may deliberately accept noisier spellings a first-party-module-only timeline
   key shouldn't), so left as a separate future node rather than scope-crept
-  into this fix. *Remaining on (c):* investigate whether `Generic`-bucketed
+  into this fix.
+  *Delivered (2026-07-12) — 2 of the 3 DOB-key vocabularies single-sourced,
+  the third deliberately kept separate:* `core::exposure`'s own `DOB_KEYS`
+  (3 spellings) and `GOV_ID_KEYS` (1 per government-ID class, 5 total) had
+  drifted to a narrow subset of AU-073/AU-074's canonical vocabularies in
+  `core::correlator::rules::breach_pii` (9 DOB spellings; 22 government-ID
+  spellings across 5 classes) — silently undercounting the exposure score's
+  "sensitive disclosure" flag for any breach record naming e.g.
+  `tax_file_number` or `date_birth` (OathNet/SeekNow's own DOB field, called
+  out in `breach_pii`'s own comment as "a major breach source the older key
+  list missed"). Both exposure lists now reference `breach_pii::DOB_KEYS`/
+  `GOV_IDS` directly (`breach_pii` promoted to `pub(crate)`, following the
+  same re-export pattern the `location` rules submodule already
+  established) — one canonical vocabulary each, not a copy to drift again.
+  `core::timeline::classify`'s list is intentionally left separate: it is
+  scoped to first-party MODULE spellings only (an event-reconstruction
+  concern, not a scoring one), and several of `breach_pii`'s spellings
+  (`dob`/`birthday`/`born`/etc.) are ones only arbitrary imported breach
+  data uses, never a first-party module — unifying it would make the
+  timeline fire reconstructed-DOB events from third-party dumps the feature
+  was never meant to cover. *Remaining on (c):* investigate whether `Generic`-bucketed
   keys warrant their own first-class kinds (e.g. a symmetric `DateOfDeath` next
   to `DateOfBirth`). (d) and the reused-secret facet are unstarted — the latter
   was assessed this cycle and needs a new `RelationKind` variant plus a
@@ -6512,3 +6532,21 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   database. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
   0 failures. **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL extended, §5 —
   same commit.
+- **2026-07-12** — **C1: single-sourced 2 of the 3 independently-drifted
+  DOB-key vocabularies a prior cycle (2026-07-05) found but deliberately
+  deferred.** `core::exposure`'s own `DOB_KEYS`/`GOV_ID_KEYS` had drifted to
+  a narrow subset (3 of 9 DOB spellings; 5 of 22 government-ID spellings) of
+  AU-073/AU-074's canonical vocabularies in `core::correlator::rules::
+  breach_pii` — silently undercounting the exposure score's "sensitive
+  disclosure" flag for any breach record naming e.g. `tax_file_number` or
+  `date_birth` (OathNet/SeekNow's own DOB spelling). `breach_pii` promoted
+  to `pub(crate)` (mirroring the `location` rules submodule's existing
+  re-export pattern), `exposure` now references `breach_pii::DOB_KEYS`/
+  `GOV_IDS` directly — one canonical list each. `core::timeline::classify`'s
+  list stays intentionally separate (first-party-module-only event
+  reconstruction; several `breach_pii` spellings are import-only and would
+  wrongly fire reconstructed-DOB events off arbitrary third-party breach
+  dumps). 2 new regression tests, confirmed via `git stash` to fail against
+  the unfixed module and pass against the fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-CORR extended, §5 — same commit.

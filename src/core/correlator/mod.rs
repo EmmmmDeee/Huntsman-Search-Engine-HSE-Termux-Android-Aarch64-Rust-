@@ -203,7 +203,7 @@ impl Correlator {
 
 type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
 
-mod rules;
+pub(crate) mod rules;
 pub(crate) use rules::location::{
     au_location_corroboration, au059_synergy_fix, best_au_location_estimate,
     is_anchoring_geo_source,

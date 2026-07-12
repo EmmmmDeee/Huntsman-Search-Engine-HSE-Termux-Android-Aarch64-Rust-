@@ -38,16 +38,15 @@ const MAX_SENSITIVE: u8 = 30;
 const MAX_IDENTIFIERS: u8 = 20;
 const MAX_CORRELATION: u8 = 15;
 
-/// Evidence-attribute keys that mark a sensitive disclosure. Kept local (small,
-/// self-contained) rather than reaching into the correlator's private rule sets —
-/// the canonical keys the breach/dossier producers stamp (`core::correlator::rules`
-/// AU-073/074 scan the same names).
-const GOV_ID_KEYS: &[&str] = &["tfn", "medicare", "crn", "drivers_licence", "passport"];
-/// `birth_date` is `wikidata`'s own canonical spelling (distinct from
-/// `date_of_birth`, which the breach/stealer producers normalise to) — a
-/// first-party producer this list's own doc comment says it tracks, so
-/// omitting it silently undercounted a Wikidata-sourced DOB disclosure.
-const DOB_KEYS: &[&str] = &["date_of_birth", "dob", "birth_date"];
+/// Evidence-attribute keys that mark a sensitive disclosure. `DOB_KEYS` and the
+/// government-ID keys are single-sourced from `core::correlator::rules::breach_pii`
+/// (AU-073/AU-074's own canonical vocabularies) rather than kept as a separate
+/// copy — the previous local copies had drifted to a narrower subset (5 of 22
+/// government-ID spellings; 3 of 9 DOB spellings), silently undercounting the
+/// exposure score for a breach record naming e.g. `tax_file_number` or
+/// `date_birth` (OathNet/SeekNow's own DOB field name — a major breach source)
+/// instead of the one spelling each list used to know about.
+use crate::core::correlator::rules::breach_pii::{DOB_KEYS, GOV_IDS};
 const FINANCIAL_KEYS: &[&str] = &["iban", "bank_account", "card_number"];
 
 /// Qualitative band for the headline number.
@@ -216,7 +215,7 @@ fn sensitive_component(confirmed: &[&Entity]) -> ExposureComponent {
         for ev in &e.evidence {
             for k in ev.attributes.keys() {
                 let kl = k.to_ascii_lowercase();
-                gov |= GOV_ID_KEYS.contains(&kl.as_str());
+                gov |= GOV_IDS.iter().any(|g| g.keys.contains(&kl.as_str()));
                 dob |= DOB_KEYS.contains(&kl.as_str());
                 fin |= FINANCIAL_KEYS.contains(&kl.as_str());
             }

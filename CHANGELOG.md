@@ -55,6 +55,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`core::exposure`'s Sensitive-PII component no longer scores from a
+  drifted, narrower copy of the DOB/government-ID evidence-attribute-key
+  vocabularies.** `DOB_KEYS`/`GOV_ID_KEYS` had silently narrowed to 3 of 9 DOB
+  spellings and 5 of 22 government-ID spellings versus AU-073/AU-074's
+  canonical lists in `core::correlator::rules::breach_pii` — despite
+  `exposure`'s own doc comment claiming they matched — undercounting the
+  score for a breach record naming e.g. `tax_file_number` or `date_birth`
+  (OathNet/SeekNow's own DOB field spelling) instead of the one spelling
+  each local copy still recognised. `breach_pii` is now `pub(crate)` and
+  `exposure` references it directly instead of keeping a second, driftable
+  copy; `timeline::classify`'s own list stays separate on purpose (scoped to
+  first-party module spellings, not third-party breach-dump spellings).
 - **Correlator rules `AU-003`/`AU-038`/`AU-045`/`AU-055` no longer report a
   bare status-only username-existence guess as a "confirmed"/"verified"
   account, found via a real scan that produced a `CRITICAL` "primary-source

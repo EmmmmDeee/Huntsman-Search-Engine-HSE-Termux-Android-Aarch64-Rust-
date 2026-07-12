@@ -521,7 +521,7 @@ fn shares_corroborating_source(a: &Entity, b: &Entity) -> bool {
 
 mod assoc;
 mod breach;
-mod breach_pii;
+pub(crate) mod breach_pii;
 mod broker;
 mod crypto;
 pub(crate) mod gap;
