@@ -1970,7 +1970,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   tests, +1). Auto-scheduled re-sync itself remains unbuilt and is correctly
   still open. **Paired:** `SOLUTION_TREE` §4a cell_local auto-sync gap, §5 —
   same commit.
-- **`[ ]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
+- **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
   **credential-reuse graph** (link accounts by shared salted hash / session token
@@ -1978,6 +1978,28 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   scanner + entropy gate; richer stealer-log cross-referencing
   (`oathnet_pro`/`see_know` presence → pivot). Active, authorised collection.
   **CAP-med**
+  *Audit correction (2026-07-12) — status was stale, `[ ]`→`[~]`:* investigated
+  while looking for the node's genuinely remaining work and found 2 of the 4
+  named solution items already fully delivered, just never credited back to
+  this node. **Credential-reuse graph maturity:** AU-047
+  (`rule_au_047_reused_secret_identity`)'s own doc comment already lists
+  "a salted hash / crypto address / API key, a reused high-entropy plaintext
+  password, and a session / cookie token" as its complete linkable-secret
+  set — `Secret::classify` routes a `session-token`-tagged `Credential` to
+  `Secret::SessionToken` and AU-047 consumes every classified secret kind
+  unconditionally (`entities.iter().filter_map(|e| Secret::classify(e)...)`,
+  `rules/breach.rs:341-347`). **Key-harvest precision:** SOL-F1's own
+  delivery note already lists key-harvest's `contains_excluded_context` as
+  one of its 7 aho-corasick consumers, and `key_harvest/crypto.rs`'s
+  `shannon_entropy` is the entropy gate — both named F.1 techniques are
+  already load-bearing in the module, not future work. *Genuinely remaining:*
+  broadening exposure-dork coverage (a real, substantial, but open-ended
+  existing capability in `search_engines/queries/exposure.rs` — always room
+  for more dork shapes) and richer stealer-log cross-referencing (no
+  dedicated `oathnet_pro`/`see_know`-presence-triggered pivot mechanism found
+  beyond the engine's universal entity-expansion loop). No code change — a
+  pure status-accuracy correction. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE
+  `[ ]`→`[~]`, same commit.
 - **`[ ]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
@@ -6694,3 +6716,18 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   clean, full suite 0 failures (4590 lib tests, +5). Correlator rule count
   108→109, reconciled in `ARCHITECTURE_AUDIT.md`. **Paired:**
   `SOLUTION_TREE` SOL-NETINT extended, §5 — same commit.
+- **2026-07-12** — **C6 status corrected `[ ]`→`[~]`: 2 of its 4 named
+  solution items were already delivered, uncredited.** Investigated while
+  looking for C6's genuinely remaining work. **Credential-reuse graph:**
+  AU-047's own doc comment already names salted-hash/crypto-address/API-key/
+  plaintext-password/session-token as its complete linkable-secret set, and
+  `Secret::classify` + AU-047 already consume every one of them
+  unconditionally. **Key-harvest precision:** SOL-F1's aho-corasick scanner
+  (`contains_excluded_context`) and a Shannon entropy gate
+  (`key_harvest/crypto.rs::shannon_entropy`) are both already load-bearing in
+  the module. *Genuinely remaining:* broader exposure-dork coverage
+  (open-ended, not a fixed target) and richer stealer-log
+  cross-referencing (no dedicated pivot mechanism found beyond the engine's
+  universal expansion loop). No code change — a pure status-accuracy
+  correction. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE `[ ]`→`[~]` — same
+  commit.

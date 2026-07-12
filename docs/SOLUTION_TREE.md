@@ -584,8 +584,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
   re-sync of the local cell DB (currently requires manual `hse cells import`
   trigger).
-- **`[ ]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
+- **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
+  *Audit correction (2026-07-12) — status was stale, `[ ]`→`[~]`:* the
+  credential-reuse graph and the aho-corasick+entropy key-harvest gate are
+  both already fully delivered (AU-047 already links every secret kind —
+  salted hash, session token, plaintext password, crypto address, API key —
+  unconditionally; `key_harvest` already uses SOL-F1's `MatchSet` +
+  `shannon_entropy`), just never credited back to this node. *Remaining:*
+  broader SERP exposure-dork coverage only (open-ended).
 - **`[ ]` SOL-FORENSIC · Reproducible intelligence product** → **C7**: byte-stable
   exports + evidence chains as the auditable, machine-diffable deliverable.
 
@@ -1251,7 +1258,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-CORR | C1 | `[~]` |
 | SOL-PERF-PUBLISH | C2 | `[ ]` |
 | SOL-GEOINT | C5 | `[~]` |
-| SOL-OFFENSIVE | C6 | `[ ]` |
+| SOL-OFFENSIVE | C6 | `[~]` |
 | SOL-FORENSIC | C7 | `[ ]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[~]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
@@ -1326,8 +1333,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   in-progress since cycle 26 (`identity_paths` + CONNECTIONS) and advanced
   again this cycle (timeline `classify` widened). *Remaining:* further AU-0xx
   rule-gap fill; the "controller behind reused secrets" link facet.
-- **C2/C6/C7** — capability nodes; solutions sketched, none started (gated on
+- **C2/C7** — capability nodes; solutions sketched, none started (gated on
   the §3.F enablers landing first, by design).
+- **C6** — `[~]` (SOL-OFFENSIVE), corrected stale note (found 2026-07-12):
+  this bullet previously grouped C6 with "none started," but 2 of its 4
+  named solution items (credential-reuse graph maturity, aho-corasick +
+  entropy key-harvest precision) were already fully delivered — just never
+  credited back to the node. *Remaining:* broader SERP exposure-dork
+  coverage (open-ended); richer stealer-log cross-referencing.
 - ~~**AU-060-candidate (cycle 20 S→P gap): `opencellid` × `cell_intel` cell-tower
   cross-validation.**~~ **Delivered, stale note (found 2026-07-01).** The gap was
   real when logged (cycle 20) but was built and shipped 2026-06-30
@@ -4839,3 +4852,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   suite 0 failures (4590 lib tests, +5). Correlator rule count 108→109,
   reconciled in `ARCHITECTURE_AUDIT.md`. Still remaining on C4: passive-DNS
   history, SSL-cert-hash pivot. Paired: `PROBLEM_TREE` C4, §8 — same commit.
+- **2026-07-12** — **SOL-OFFENSIVE/C6 status corrected `[ ]`→`[~]`: 2 of its
+  4 named solution items were already delivered, uncredited.** Investigated
+  while looking for C6's genuinely remaining work (this cycle's next unit
+  after AU-111). AU-047's own doc comment already names salted-hash/
+  session-token/plaintext-password/crypto-address/API-key as its complete
+  linkable-secret set, consumed unconditionally by `Secret::classify` +
+  the rule itself; `key_harvest` already uses SOL-F1's aho-corasick
+  `MatchSet` (`contains_excluded_context`) and a Shannon entropy gate
+  (`shannon_entropy`). *Genuinely remaining:* broader SERP exposure-dork
+  coverage (open-ended) and richer stealer-log cross-referencing (no
+  dedicated pivot mechanism found). No code change — pure status-accuracy
+  correction, mirroring the C1/C5/AU-060-candidate stale-note corrections
+  this register has made before. Paired: `PROBLEM_TREE` C6 — same commit.
