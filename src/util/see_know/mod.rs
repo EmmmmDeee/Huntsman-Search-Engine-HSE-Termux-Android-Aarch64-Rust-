@@ -28,12 +28,9 @@ mod budget;
 mod client;
 mod endpoints;
 
-// Hardcoded enterprise configuration and orchestration
-pub mod endpoint_matrix;
+// Enterprise plan parameters (the 15,000-daily-credit budget config the live
+// `budget` module reads via `enterprise_config::ENTERPRISE`).
 pub mod enterprise_config;
-pub mod force_multiplier;
-pub mod monitoring;
-pub mod orchestration;
 
 #[cfg(test)]
 mod tests;

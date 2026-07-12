@@ -1495,6 +1495,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Remaining (banked for later cycles):* AU-017/030/048/056/085/099/105 among
   the audit's other candidate findings — one live-verified commit each.
   **Paired:** `PROBLEM_TREE` T2.57 (slice 1) — each slice its own commit.
+- **`[x]` SOL-DEADCODE-SWEEP · Resolve "looks built but isn't" dead code /
+  unwired capability** → **T2.58** (slice 1). A per-directory sweep (one scanner
+  per top-level module dir fanned out via the Workflow tool, each claimed-dead
+  item adversarially re-verified by an agent trying to PROVE it live) targeting
+  the trap the `dead_code` lint misses: a `pub` item in a `pub mod` compiles
+  clean with zero consumers. **Slice 1 delivered — the `util::see_know`
+  "enterprise optimization" scaffolding:** four `pub mod`s (`force_multiplier`,
+  `monitoring`, `orchestration`, `endpoint_matrix`) that `mod.rs` re-exported
+  nothing from and nothing consumed. The real import graph (NOT a bare grep —
+  that FALSELY flagged the live `enterprise_config`, which `budget.rs` uses via
+  `ENTERPRISE`, and matched a same-named struct field) showed all four unwired;
+  each duplicates capability the live see_know client + engine already provide,
+  and the one useful artefact (`RETRY_STRATEGY` backoff numbers) was already
+  salvaged into `util::backoff` by T2.44. Decision: DELETE — ~1,529 lines + the
+  obsolete, unreferenced `docs/HARDCODED_ENTERPRISE_OPTIMIZATION.md`;
+  `enterprise_config` kept. ✅ The compiler proves the deletion safe (lib + full
+  suite build clean, 4614 lib tests unchanged — the dead code had no live
+  tests); gate green. *Remaining (banked, verified dead by the sweep for later
+  cycles):* the `util::multi_api_*` dead consts/module and the isolated dead
+  `pub` fns (`fetch_post`/`refresh_pool`/`set_environment`) — one decision each.
+  **Paired:** `PROBLEM_TREE` T2.58 (slice 1) — each slice its own commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -5481,3 +5502,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   The audit banked further candidates (AU-017/030/048/056/085/099/105) for later
   cycles; this cycle closes exactly one gap. Paired: `PROBLEM_TREE` T2.57 — same
   commit.
+- **2026-07-12** — **New SOL-DEADCODE-SWEEP slice 1: deleted the dead
+  `util::see_know` "enterprise optimization" scaffolding — 4 unwired `pub mod`s
+  that looked built but reached no live call site.** A per-directory dead-code
+  sweep (one scanner per top-level module dir fanned out via the Workflow tool,
+  each claimed-dead item adversarially re-verified by an agent trying to PROVE
+  it live) targeting the trap the `dead_code` lint misses: a `pub` item in a
+  `pub mod` compiles clean with zero consumers. Resolves the decision T2.44
+  explicitly deferred. `util::see_know` declared five `pub mod`s but `mod.rs`
+  re-exported nothing from four. Tracing the REAL import graph (a bare grep
+  falsely flagged the live `enterprise_config`, which `budget.rs` consumes via
+  `ENTERPRISE`, and matched a same-named struct field + unrelated comments):
+  `orchestration` has zero consumers; `endpoint_matrix` is used only by the dead
+  `orchestration`; `force_multiplier`/`monitoring` have zero path-refs anywhere
+  incl. tests. All four duplicate live capability (a hardcoded endpoint table,
+  an API-key cascade, an execution planner, an enterprise metrics dashboard) the
+  real see_know client (`budget`/`client`/`endpoints`) + the engine already
+  provide; the one useful artefact (`RETRY_STRATEGY` backoff numbers) was already
+  salvaged into `util::backoff` by T2.44. Decision: DELETE (wiring would invent
+  consumers for redundant speculative scaffolding). Removed
+  `force_multiplier.rs`/`monitoring.rs`/`orchestration.rs`/`endpoint_matrix.rs`
+  (~1,529 lines) + their `pub mod` decls + the obsolete, unreferenced
+  `docs/HARDCODED_ENTERPRISE_OPTIMIZATION.md`; `enterprise_config` kept. The
+  compiler proves the deletion safe (lib + full suite build clean). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4614 lib tests,
+  unchanged — the dead code had no live tests). No live run applies — the code
+  was unreachable, which IS the finding; the compiler-proved-safe deletion +
+  green suite are the documented verification (an explicit exception to the
+  live-run preference, since there is no reachable path to exercise). The sweep
+  banked `util::multi_api_*` dead consts/module and the dead fns
+  `fetch_post`/`refresh_pool`/`set_environment` for later cycles. Paired:
+  `PROBLEM_TREE` T2.58 — same commit.

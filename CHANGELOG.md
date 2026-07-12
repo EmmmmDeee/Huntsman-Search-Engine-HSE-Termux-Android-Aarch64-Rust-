@@ -38,6 +38,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Removed
+- **Deleted the unwired `util::see_know` "enterprise optimization"
+  scaffolding.** Four public submodules — `force_multiplier`, `monitoring`,
+  `orchestration`, and `endpoint_matrix` (~1,529 lines) — were built but never
+  wired to any live call site (a `pub` item inside a `pub mod` never trips the
+  dead-code lint, so they compiled clean while reaching no consumer). Each
+  re-implemented capability the live SeekNow client and the scan engine already
+  provide, and the one genuinely useful piece (its retry-backoff numbers) was
+  already folded into `util::backoff`. The live `enterprise_config` submodule
+  (used by the SeekNow budget) is unaffected. The obsolete
+  `docs/HARDCODED_ENTERPRISE_OPTIMIZATION.md` was removed with it.
 - **The `mls` module (Mozilla Location Service) was deleted** — Mozilla
   permanently decommissioned the service (its geolocate endpoint now 404s),
   so the module always returned nothing. BSSID geolocation is unaffected:

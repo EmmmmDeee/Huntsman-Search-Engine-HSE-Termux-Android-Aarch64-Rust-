@@ -1742,7 +1742,8 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `force_multiplier.rs` were left untouched — genuinely wiring in an entire
   execution-planning/monitoring/force-multiplier-cascade layer (or safely
   deleting it) is a substantial, separate decision, not a mechanical slice of
-  this fix.
+  this fix. **→ RESOLVED by T2.58 (deleted): after tracing the import graph the
+  whole layer was unwired scaffolding duplicating live capability — deleted.**
   *Separately investigated, no bug found:* "why HSE fails to use the full
   spectrum of modules" — every module-skip path in
   `core::engine::dispatch::module_skip_reason` is deliberate and disclosed
@@ -2283,6 +2284,43 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   +2). The broader audit surfaced further candidate findings (AU-017/030/048/056/
   085/099/105 among them) queued for subsequent cycles; this cycle closes exactly
   one gap. **Paired:** `SOLUTION_TREE` SOL-CORRELATOR-INTEGRITY (new node), §5 —
+  same commit.
+- **`[x]` T2.58 · Dead SeekNow "enterprise optimization" scaffolding — 4
+  unwired `pub mod`s that looked built but reached no live call site.**
+  Resolves the decision T2.44 explicitly deferred ("wiring in an entire
+  execution-planning/monitoring/force-multiplier-cascade layer, or safely
+  deleting it, is a substantial separate decision"). Found by a per-directory
+  dead-code sweep (one scanner per top-level module dir fanned out via the
+  Workflow tool, each finding adversarially re-verified). `util::see_know`
+  declared five `pub mod`s but `mod.rs` re-exported nothing from four of them;
+  because a `pub` item in a `pub mod` never trips rustc's `dead_code` lint they
+  compiled clean while reaching no consumer. Tracing the real import graph (not
+  a bare grep — the bare grep FALSELY flagged `enterprise_config` as dead and
+  matched a `force_multiplier` struct field + unrelated comments): `budget.rs`
+  (a live, re-exported module) uses `enterprise_config::ENTERPRISE`, so
+  **`enterprise_config` is live and kept**; `orchestration` (uses
+  `endpoint_matrix` + `enterprise_config`) has zero consumers; `endpoint_matrix`
+  is used only by the dead `orchestration`; `force_multiplier` and `monitoring`
+  have zero path-references anywhere (including tests). Each of the four
+  duplicates capability the live see_know client (`budget`/`client`/`endpoints`)
+  and the engine already provide — a hardcoded endpoint table, an API-key
+  cascade, an execution planner, and an enterprise metrics dashboard — none
+  wired to anything. The one genuinely useful artefact (the `RETRY_STRATEGY`
+  backoff numbers) was already salvaged into `util::backoff` by T2.44. **P2**
+  (codebase health: "looks built but isn't" erodes trust that reachable code is
+  real capability). → **Decision: DELETE** (not wire-in — wiring would mean
+  inventing consumers for speculative scaffolding that redundantly re-implements
+  live capability). Deleted `force_multiplier.rs`, `monitoring.rs`,
+  `orchestration.rs`, `endpoint_matrix.rs` (~1,529 lines) + their `pub mod`
+  declarations, plus the now-obsolete `docs/HARDCODED_ENTERPRISE_OPTIMIZATION.md`
+  (unreferenced; 4 of its 5 documented modules removed; the survivor
+  `enterprise_config` is self-documenting). The compiler PROVES the deletion is
+  safe — the lib + full suite build clean with the four files gone. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4614 lib tests,
+  unchanged — the dead code had no live tests). No live run applies (there was
+  no reachable path to exercise — the code was unreachable, which is the finding);
+  the compiler-proved-safe deletion + green suite stand as the documented
+  verification. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (new node), §5 —
   same commit.
 
 ---
@@ -7643,3 +7681,28 @@ way, so this specific drift class can't recur silently again.
   (4614 lib tests, +2). Broader audit banked AU-017/030/048/056/085/099/105 as
   candidates for later cycles; this cycle closed exactly one gap. **Paired:**
   `SOLUTION_TREE` SOL-CORRELATOR-INTEGRITY (new node), §5 — same commit.
+- **2026-07-12** — **T2.58: deleted dead SeekNow "enterprise optimization"
+  scaffolding — 4 unwired `pub mod`s that looked built but reached no live call
+  site (resolves the decision T2.44 deferred).** Found by a per-directory
+  dead-code sweep (one scanner per top-level module dir via the Workflow tool,
+  each finding adversarially re-verified). `util::see_know` declared five
+  `pub mod`s; a `pub` item in a `pub mod` never trips the `dead_code` lint, so
+  four compiled clean while reaching no consumer. Tracing the real import graph
+  (a bare grep FALSELY flagged the live `enterprise_config` and matched a
+  same-named struct field): `budget.rs` uses `enterprise_config::ENTERPRISE` so
+  that one is LIVE and kept; `orchestration` has zero consumers; `endpoint_matrix`
+  is used only by the dead `orchestration`; `force_multiplier`/`monitoring` have
+  zero path-refs anywhere incl. tests. All four duplicate live capability
+  (endpoint table, key cascade, execution planner, metrics dashboard) the real
+  see_know client + engine already provide; the one useful artefact
+  (`RETRY_STRATEGY` numbers) was already salvaged into `util::backoff` by T2.44.
+  Decision: DELETE (wiring would invent consumers for redundant scaffolding).
+  Removed `force_multiplier.rs`/`monitoring.rs`/`orchestration.rs`/
+  `endpoint_matrix.rs` (~1,529 lines) + their `pub mod` decls + the obsolete,
+  unreferenced `docs/HARDCODED_ENTERPRISE_OPTIMIZATION.md`. The compiler proves
+  the deletion safe (lib + full suite build clean). Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4614 lib tests, unchanged
+  — the dead code had no live tests). No live run applies (the code was
+  unreachable — that IS the finding); compiler-proved-safe deletion + green
+  suite are the documented verification. **Paired:** `SOLUTION_TREE`
+  SOL-DEADCODE-SWEEP (new node), §5 — same commit.
