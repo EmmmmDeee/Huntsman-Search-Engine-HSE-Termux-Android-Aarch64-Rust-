@@ -49,9 +49,8 @@ use passes::{
 };
 pub use ranking::{
     AutonomousPlan, AutonomousTarget, ClusteredTarget, DEFAULT_SWEEP_DIVERSITY, LeverageRanked,
-    autonomous_seed, autonomous_target_score, enrich_offline_geo, kind_pivot_value,
-    plan_autonomous_sweep, rank_autonomous_targets, rank_enrichment_leverage,
-    rank_identity_aware_targets,
+    autonomous_target_score, enrich_offline_geo, kind_pivot_value, plan_autonomous_sweep,
+    rank_autonomous_targets, rank_enrichment_leverage, rank_identity_aware_targets,
 };
 use writer::DbWriter;
 // The per-target dispatch context (`DispatchCx`) and the mutable accumulator

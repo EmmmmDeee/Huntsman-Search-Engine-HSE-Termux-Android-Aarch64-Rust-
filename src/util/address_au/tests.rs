@@ -1,5 +1,9 @@
 use super::*;
 
+    fn extract_first(text: &str) -> Option<AuAddress> {
+        extract_all(text).into_iter().next()
+    }
+
     #[test]
     fn parses_level_address() {
         let s = "Our office is at Level 11, 133 Mary Street, Brisbane City QLD 4000";
@@ -291,13 +295,10 @@ use super::*;
 
     #[test]
     fn au_line_type_predicates_split_personal_from_business() {
-        assert!(AuLineType::Mobile.is_personal());
-        assert!(AuLineType::GeographicFixed.is_personal());
         assert!(!AuLineType::Mobile.is_business_service());
         assert!(AuLineType::Freephone.is_business_service());
         assert!(AuLineType::LocalRate.is_business_service());
         assert!(AuLineType::Premium.is_business_service());
-        assert!(!AuLineType::Freephone.is_personal());
         // Slugs are stable.
         assert_eq!(AuLineType::Mobile.slug(), "mobile");
         assert_eq!(AuLineType::GeographicFixed.slug(), "geographic");

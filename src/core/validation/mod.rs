@@ -21,7 +21,6 @@
 //!    validator signatures, preserving binary compatibility for
 //!    downstream modules.
 
-mod composite;
 mod confusable;
 mod coordinates;
 mod domain;
@@ -34,10 +33,8 @@ mod report;
 #[cfg(test)]
 mod tests;
 
-pub use composite::validate_for_kind;
 pub use confusable::{
-    confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
-    strip_invisible,
+    is_confusable_mixed_script, looks_like_gibberish_name, skeleton, strip_invisible,
 };
 pub use coordinates::validate_coordinates;
 pub use domain::validate_domain_shape;

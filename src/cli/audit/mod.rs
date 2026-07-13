@@ -136,7 +136,6 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
         out.push(AuditEntity {
             kind,
             value,
-            confidence: conf,
             c_effective: ceff,
             corroboration: get(ci_corr).parse().unwrap_or(0),
             sources: split_pipe(get(ci_src)),

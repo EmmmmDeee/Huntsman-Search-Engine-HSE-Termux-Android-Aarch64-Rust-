@@ -490,21 +490,9 @@ fn domain_shape_rejects_invalid() {
     assert_eq!(validate_domain_shape("192.168.1.1").reason, "domain.is_ip");
 }
 
-#[test]
-fn validate_for_kind_dispatches() {
-    assert!(validate_for_kind("phone", "+61410959140").valid);
-    assert!(validate_for_kind("email", "x@y.com").valid);
-    assert!(validate_for_kind("domain", "goatlegal.com.au").valid);
-    assert!(validate_for_kind("coordinates", "-27.47,153.03").valid);
-    assert!(!validate_for_kind("coordinates", "junk").valid);
-    // Unknown kind passes through OK (validators are opt-in)
-    assert!(validate_for_kind("anything-else", "value").valid);
-}
-
 mod confusable_tests {
     use super::super::{
-        confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
-        strip_invisible,
+        is_confusable_mixed_script, looks_like_gibberish_name, skeleton, strip_invisible,
     };
     use std::borrow::Cow;
 
@@ -542,15 +530,6 @@ mod confusable_tests {
         assert!(!is_confusable_mixed_script(
             "\u{043F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}"
         ));
-    }
-
-    #[test]
-    fn confusable_report_fails_homograph_and_passes_clean() {
-        let bad = confusable_report("p\u{0430}ypal.com");
-        assert!(!bad.valid);
-        assert_eq!(bad.reason, "seed.confusable");
-        assert!(bad.detail.contains("paypal.com"));
-        assert!(confusable_report("paypal.com").valid);
     }
 
     #[test]

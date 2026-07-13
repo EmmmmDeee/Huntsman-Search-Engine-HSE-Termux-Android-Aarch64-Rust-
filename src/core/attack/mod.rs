@@ -29,11 +29,6 @@ pub struct Technique {
     pub name: &'static str,
 }
 
-/// The ATT&CK tactic these techniques belong to — Reconnaissance.
-pub const TACTIC_ID: &str = "TA0043";
-/// Human name of [`TACTIC_ID`].
-pub const TACTIC_NAME: &str = "Reconnaissance";
-
 /// The curated Reconnaissance technique catalogue, kept sorted by `id` for
 /// stable output and easy review. Every ID referenced by
 /// [`techniques_for_category`] (and any module override) must appear here — the

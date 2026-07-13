@@ -53,7 +53,6 @@ pub const VPN: &str = "vpn";
 pub const VULNERABLE: &str = "vulnerable";
 
 // Identity
-pub const DERIVED: &str = "derived";
 pub const SOCIAL_PROFILE: &str = "social-profile";
 pub const CANDIDATE: &str = "candidate";
 

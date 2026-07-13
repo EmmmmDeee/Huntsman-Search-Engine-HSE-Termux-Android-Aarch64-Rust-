@@ -2877,6 +2877,69 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   an additive `EventKind::EntityExcluded` field) as its own scoped decision.
   **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 11), §5 — same
   commit.
+- **`[x]` T2.75 · cleared the PRIORITY-4 sweep's banked 19-item DELETE batch —
+  but re-verification at implementation time found 7 of the 19 misclassified,
+  not truly dead.** Re-ran the reference count on all 19 banked candidates (5
+  commits had landed since the original sweep) — all 19 confirmed STILL
+  zero-production-caller. But implementing the deletions surfaced what the
+  original per-directory rg-based sweep's methodology structurally couldn't
+  see: whether a "test-only" caller is the item's OWN dedicated test (safe to
+  delete both together) or an ORACLE another kept function's test depends on
+  (deleting it silently guts real coverage), and whether a "dead" accessor is
+  genuinely redundant (as `set_private` — already established by T2.70, the
+  DB is 0600 under umask 0022) or a real unwired capability with no
+  substitute (as `is_quota_exhausted`/`is_unverified`, which mirror an
+  already-wired sibling gate in `oathnet` but are themselves never checked
+  before further billable/repeat lookups). **P3** (codebase health — a
+  mechanical rg-based sweep can misclassify test-oracle and
+  empirically-redundant-elsewhere items as simple dead code, and can miss
+  construction sites a scoped read/analysis pass covers). → **Decision:
+  reclassify 7, delete 12.** Reclassified, KEPT unchanged (code untouched):
+  `rank_autonomous_targets` (the correctness oracle two live tests compare
+  `plan_autonomous_sweep`'s `diversity=0.0` output and
+  `rank_identity_aware_targets`'s singleton case against — deleting it would
+  have silently duplicated its logic inline or lost the assertion);
+  `host_state` (the only introspection surface the circuit-breaker tests use
+  to assert `allow_host`/`record_failure`/`record_success`'s real
+  Closed→Open→HalfOpen→Closed transitions — a documented diagnostics
+  accessor, not dead scaffolding); `is_quota_exhausted` (see_know) and
+  `is_unverified` (wigle) — each mirrors an ALREADY-WIRED sibling gate
+  (`oathnet::is_quota_exhausted`) but is itself never checked before further
+  billable/repeat lookups, a real efficiency gap banked as its own future
+  WIRE-IN, not deleted or silently wired mid-batch; `LIVE_MAX_DEPTH`/
+  `LIVE_DEFAULT_CONCURRENT` (grouped with the already-banked
+  `LIVE_DEFAULT_THROTTLE_MS` WIRE-IN — deleting 2 of 3 sibling live-mode
+  tuning constants while banking the third would be incoherent). Deleted the
+  remaining 12, confirmed genuinely redundant with capability fully preserved
+  elsewhere: `confusable_report` (superseded by `is_confusable_mixed_script`),
+  `autonomous_seed` (subsumed by `plan_autonomous_sweep`/
+  `rank_identity_aware_targets`), `shortest_path` (superseded by
+  `paths_between`/`connect_values`, whose tests were re-pointed to preserve
+  the MAX_HOPS-bound and self-path coverage), `validate_for_kind` (the whole
+  `composite.rs` file — superseded by `Target::validate`), `TACTIC_ID`/
+  `TACTIC_NAME`, `DERIVED`, `store_api_credential_from_item` (redundant
+  wrapper), `extract_first` (redundant wrapper over the live `extract_all` —
+  inlined as a private test helper so its 4 regex-parsing tests keep their
+  only coverage), `is_personal` (`AuLineType`, no production caller —
+  `is_business_service` already covers the correlator's real gate),
+  `is_bsb_shaped` (redundant wrapper over `normalise_bsb`), `set_private`
+  (confirmed empirically redundant per T2.70's own established finding), and
+  `AuditEntity::confidence` — a write-only struct field. **Bonus finding
+  while fixing `confidence`:** the original sweep's re-verification agent
+  only checked `analysis.rs`/`events.rs`/`mod.rs` for reads and missed TWO
+  MORE construction sites that still set the dead field —
+  `cli/audit/mod.rs`'s CSV parser (`parse_csv`) and
+  `tests/audit_regression.rs`'s fixture builder — both fixed in this same
+  pass. **Live-verified** the one behavioural surface touched (the
+  `confidence` removal): a real `hse scan -k username -v Kylo4kylo -d 0` →
+  `hse export --format csv` → `hse audit --csv` round-trip scored 92/100 with
+  the correct 1-verified/0-probable/0-candidate tier breakdown, confirming
+  `c_effective` (the field that actually drives scoring) is untouched. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4566
+  lib tests). Net −286 lines across 23 files: 12 items removed, 7 correctly
+  retained with the reasoning now on record so they are never mis-swept
+  again. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 12), §5 — same
+  commit.
 
 ---
 
@@ -8597,3 +8660,39 @@ way, so this specific drift class can't recur silently again.
   drop needs a non-histogram-corrupting channel (debug log or an additive
   event field) — its own scoped decision. **Paired:** `SOLUTION_TREE`
   SOL-DEADCODE-SWEEP (slice 11), §5 — same commit.
+- **2026-07-13** — **T2.75: cleared the banked 19-item DELETE batch, but
+  re-verification at implementation time found 7 of the 19 misclassified.**
+  All 19 reconfirmed zero-production-caller (5 commits had landed since the
+  sweep), but implementing each deletion surfaced two blind spots a
+  per-directory rg-based reference count can't see: a "test-only" caller can
+  be the item's OWN dedicated test (safe to delete) or an ORACLE another kept
+  function's test depends on (deleting it guts real coverage); a "dead"
+  accessor can be genuinely redundant elsewhere (`set_private` — already
+  established, DB is 0600 under umask 0022) or mirror an already-wired
+  sibling gate with no substitute of its own (`is_quota_exhausted`/
+  `is_unverified`, unlike `oathnet`'s analogous already-checked latch).
+  Reclassified 7 (KEPT, code untouched): `rank_autonomous_targets` (the
+  flat-ranking oracle 2 live tests compare `plan_autonomous_sweep`/
+  `rank_identity_aware_targets` against), `host_state` (sole introspection
+  surface for the circuit-breaker's real Closed→Open→HalfOpen→Closed
+  transitions), `is_quota_exhausted`/`is_unverified` (genuine unwired
+  efficiency gates, banked as future WIRE-INs), `LIVE_MAX_DEPTH`/
+  `LIVE_DEFAULT_CONCURRENT` (grouped with the already-banked
+  `LIVE_DEFAULT_THROTTLE_MS` WIRE-IN). Deleted the remaining 12
+  (`confusable_report`, `autonomous_seed`, `shortest_path` — tests
+  re-pointed to `paths_between` so MAX_HOPS-bound/self-path coverage survive
+  — `validate_for_kind`/`composite.rs`, `TACTIC_ID`/`TACTIC_NAME`, `DERIVED`,
+  `store_api_credential_from_item`, `extract_first` — inlined as a private
+  test helper over the live `extract_all` — `is_personal`, `is_bsb_shaped`,
+  `set_private`, and the write-only `AuditEntity::confidence` field). Fixing
+  `confidence` found 2 more construction sites the original sweep's
+  re-verification missed (`cli/audit/mod.rs`'s CSV parser,
+  `tests/audit_regression.rs`'s fixture) — both fixed in the same pass.
+  Live-verified the one behavioural surface touched: a real `hse scan -k
+  username -v Kylo4kylo` → `hse export --format csv` → `hse audit --csv`
+  round-trip scored 92/100 with the correct 1-verified/0-probable/
+  0-candidate tiers, confirming `c_effective` (the field that actually
+  drives scoring) is untouched. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4566 lib tests). Net −286 lines, 23 files.
+  **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 12), §5 — same
+  commit.

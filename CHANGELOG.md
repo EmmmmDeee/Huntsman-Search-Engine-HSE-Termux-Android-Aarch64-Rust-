@@ -66,6 +66,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
   recent scans, with its last-success date and last error).
 
 ### Removed
+- **Removed 12 more confirmed-dead internal items from the PRIORITY-4 sweep's
+  banked backlog** — a redundant homograph-report wrapper, an unused
+  autonomous-seed picker, a superseded path-finder, a superseded validator
+  dispatcher, two unused MITRE ATT&CK constants, an unused entity tag, a
+  redundant API-key-storage wrapper, a redundant Australian-address
+  first-match wrapper, an unused phone-line-type predicate, a redundant BSB
+  shape-check wrapper, a redundant file-permission tightener (the database is
+  already created owner-only), and a write-only audit-entity confidence
+  field. None had any production caller; each superseded function's real
+  capability is unaffected. Re-verifying the batch before deleting also
+  caught 7 other banked items that looked dead by the same reference count
+  but were not — they either back real test assertions of other still-live
+  functions' behavior, or represent a genuinely unwired (not dead) capability
+  mirroring an already-active sibling elsewhere — those are left unchanged
+  and banked separately rather than deleted. No user-facing behavior change.
 - **Removed the inert proxy-rotation subsystem.** An automatic proxy
   harvest-and-rotate pool was plumbed through the scan engine's module context
   (and constructed by every entry point) but was never actually used: nothing

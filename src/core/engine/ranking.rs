@@ -117,28 +117,6 @@ pub fn rank_enrichment_leverage(
     out
 }
 
-/// Select the single best entity to investigate with **no operator input** — the
-/// autonomous-operation seed.
-///
-/// Given the leverage ranking ([`rank_enrichment_leverage`], strongest-first),
-/// pick the highest-leverage identifier that maps to a scan target. This is what
-/// lets the platform investigate on its own: rather than waiting for a seed, it
-/// reaches for the entity it already knows the most about across investigations —
-/// the one whose enrichment most empowers the rest of the intelligence base. Every
-/// cross-scan-candidate identifier (email / phone / username / full-name person /
-/// specific address / crypto) is a valid scan target, so in practice this is the
-/// top entry; the `find_map` only skips a (rare) non-pivotable kind. Pure and
-/// deterministic. `None` only when the local intelligence base holds no pivotable
-/// high-leverage identifier yet (a fresh install with no prior scans).
-#[must_use]
-pub fn autonomous_seed(
-    ranked: &[LeverageRanked],
-) -> Option<(crate::core::scan::TargetKind, String)> {
-    ranked.iter().find_map(|r| {
-        crate::core::scan::TargetKind::from_entity_kind(&r.kind).map(|tk| (tk, r.value.clone()))
-    })
-}
-
 /// Intrinsic pivot value of an identifier kind — how much investigative reach a
 /// scan seeded on it tends to unlock, independent of how many investigations have
 /// already touched it. The ordering encodes Interpol-style tradecraft: a unique
@@ -213,18 +191,19 @@ pub fn autonomous_target_score(
     kind_pivot_value(kind) * leverage * c_eff.clamp(0.0, 1.0)
 }
 
-/// Rank entities for fully autonomous investigation — the multi-factor successor
-/// to [`autonomous_seed`] that a continuous, no-operator-input loop drives.
+/// Rank entities for fully autonomous investigation — the multi-factor,
+/// no-operator-input ranking that a continuous loop drives.
 ///
-/// Unlike `autonomous_seed` (leverage-only, single pick), this scores every
-/// pivotable [`history::is_cross_scan_candidate`] identifier by
+/// Scores every pivotable [`history::is_cross_scan_candidate`] identifier by
 /// [`autonomous_target_score`] (pivot-value × leverage × confidence), letting the
 /// platform *classify and prioritise* the whole working set, then work down it.
 /// `degree_of` supplies each UID's cross-investigation degree (typically
 /// [`StoragePort::observation_count`]); `exclude` holds UIDs already investigated
 /// this cycle, so the loop never re-seeds the same target and converges. Results
 /// are strongest-first, ties broken by UID for determinism, truncated to `limit`.
-/// Pure given `degree_of` — no I/O of its own.
+/// Pure given `degree_of` — no I/O of its own. Also the flat-ranking oracle
+/// [`plan_autonomous_sweep`] (at `diversity = 0.0`) and
+/// [`rank_identity_aware_targets`] (for singleton identities) are tested against.
 pub fn rank_autonomous_targets<F: Fn(&str) -> usize>(
     entities: &[Entity],
     degree_of: F,

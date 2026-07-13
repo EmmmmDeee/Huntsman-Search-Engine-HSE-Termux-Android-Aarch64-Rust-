@@ -1722,6 +1722,52 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `confusable_homoglyph` drop needs a non-histogram-corrupting channel (a
   `tracing::debug!` line, or an additive `EventKind::EntityExcluded` field)
   — its own scoped decision. Paired: `PROBLEM_TREE` T2.74 — same commit.
+  **Slice 12 delivered — cleared the banked 19-item DELETE batch, but
+  re-verification at implementation time found 7 of the 19 misclassified.**
+  All 19 re-confirmed zero-production-caller (5 commits had landed since the
+  original sweep), but implementing each deletion surfaced two blind spots a
+  per-directory rg-based reference count structurally cannot see: whether a
+  "test-only" caller is the item's OWN dedicated test (safe to delete both
+  together) or an ORACLE another kept function's test depends on (deleting it
+  silently guts real coverage of a live function), and whether a "dead"
+  accessor is genuinely redundant (as `set_private` — the DB is already 0600
+  under umask 0022, per this same sweep's own T2.70 finding) or mirrors an
+  ALREADY-WIRED sibling gate elsewhere with no substitute of its own (as
+  `is_quota_exhausted`/`is_unverified`). Reclassified 7, KEPT unchanged:
+  `rank_autonomous_targets` (the flat-ranking oracle two live tests compare
+  `plan_autonomous_sweep`'s `diversity=0.0` output and
+  `rank_identity_aware_targets`'s singleton case against); `host_state` (the
+  only introspection surface the circuit-breaker tests use to assert
+  `allow_host`/`record_failure`/`record_success`'s real Closed→Open→HalfOpen→
+  Closed transitions); `is_quota_exhausted` (see_know) and `is_unverified`
+  (wigle) — each documents an intended gate (mirroring `oathnet`'s
+  already-wired quota latch) that is never actually checked before further
+  billable/repeat lookups — a real unwired efficiency gap, not dead code,
+  banked as its own future WIRE-IN rather than deleted or silently wired
+  mid-batch; `LIVE_MAX_DEPTH`/`LIVE_DEFAULT_CONCURRENT` (grouped with the
+  already-banked `LIVE_DEFAULT_THROTTLE_MS` WIRE-IN — deleting 2 of 3 sibling
+  live-mode tuning constants while banking the third would be incoherent).
+  Deleted the remaining 12, each confirmed genuinely redundant with capability
+  fully preserved elsewhere: `confusable_report`, `autonomous_seed`,
+  `shortest_path` (its tests re-pointed to `paths_between` so the MAX_HOPS-
+  bound and self-path coverage survive), `validate_for_kind` (whole
+  `composite.rs` file), `TACTIC_ID`/`TACTIC_NAME`, `DERIVED`,
+  `store_api_credential_from_item`, `extract_first` (inlined as a private
+  test helper over the live `extract_all` so its 4 regex-parsing tests keep
+  their only coverage), `is_personal`, `is_bsb_shaped`, `set_private`, and
+  `AuditEntity::confidence` — a write-only struct field. Fixing `confidence`
+  surfaced a THIRD- and FOURTH-order finding: the original sweep's
+  re-verification only checked `analysis.rs`/`events.rs`/`mod.rs` for reads
+  and missed two more construction sites still setting the dead field —
+  `cli/audit/mod.rs`'s CSV parser and `tests/audit_regression.rs`'s fixture
+  builder — both fixed in the same pass. ✅ Live-verified the one behavioural
+  surface touched (the `confidence` removal): a real `hse scan -k username -v
+  Kylo4kylo` → `hse export --format csv` → `hse audit --csv` round-trip
+  scored 92/100 with the correct 1-verified/0-probable/0-candidate tiers,
+  confirming `c_effective` (the field that actually drives scoring) is
+  untouched. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4566 lib tests). Net −286 lines across 23 files. Paired:
+  `PROBLEM_TREE` T2.75 — same commit.
 - **`[x]` SOL-ROLE-MAILBOX-COMPOUND · Suppress provider-prefixed system
   mailboxes (DNS SOA / registrar desks) from posing as the subject's email** →
   **T2.68**. Found by a PRIORITY-5 LIVE end-to-end pass (real binary vs the
@@ -6252,3 +6298,41 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   untouched (new method, gexf-only). Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4569 lib tests, +1). Paired: `PROBLEM_TREE` T2.69
   — same commit.
+- **2026-07-13** — **SOL-DEADCODE-SWEEP slice 12: cleared the banked 19-item
+  DELETE batch — but re-verification at implementation time found 7 of the 19
+  misclassified, not truly dead.** Re-ran the reference count on all 19
+  candidates (5 commits had landed since the original sweep); all 19
+  reconfirmed zero-production-caller. But implementing the deletions one by
+  one surfaced what a per-directory rg-based sweep structurally can't see:
+  whether a "test-only" reference is the item's OWN dedicated test (safe to
+  delete together) or an ORACLE another kept function's test depends on
+  (deleting it silently guts real coverage), and whether a "dead" accessor is
+  genuinely redundant elsewhere (`set_private` — already established, DB is
+  0600 under umask 0022) or mirrors an already-wired sibling gate with no
+  substitute of its own (`is_quota_exhausted`/`is_unverified`, unlike
+  `oathnet`'s analogous already-checked quota latch). Reclassified 7, KEPT:
+  `rank_autonomous_targets` (flat-ranking oracle 2 live tests compare
+  `plan_autonomous_sweep`/`rank_identity_aware_targets` against),
+  `host_state` (sole introspection surface for the circuit-breaker's real
+  Closed→Open→HalfOpen→Closed transitions), `is_quota_exhausted` (see_know)
+  and `is_unverified` (wigle) — each a genuine unwired efficiency gate,
+  banked as its own future WIRE-IN rather than deleted or wired mid-batch,
+  and `LIVE_MAX_DEPTH`/`LIVE_DEFAULT_CONCURRENT` (grouped with the
+  already-banked `LIVE_DEFAULT_THROTTLE_MS` WIRE-IN — deleting 2 of 3 sibling
+  tuning constants while banking the third would be incoherent). Deleted the
+  remaining 12 (`confusable_report`, `autonomous_seed`, `shortest_path` —
+  tests re-pointed to `paths_between` so MAX_HOPS-bound/self-path coverage
+  survive — `validate_for_kind`/`composite.rs`, `TACTIC_ID`/`TACTIC_NAME`,
+  `DERIVED`, `store_api_credential_from_item`, `extract_first` — inlined as a
+  private test helper over the live `extract_all` — `is_personal`,
+  `is_bsb_shaped`, `set_private`, and the write-only `AuditEntity::confidence`
+  field). Fixing `confidence` found 2 MORE construction sites the original
+  sweep's re-verification missed (`cli/audit/mod.rs`'s CSV parser,
+  `tests/audit_regression.rs`'s fixture) — both fixed in the same pass.
+  Live-verified the one behavioural surface touched: a real `hse scan -k
+  username -v Kylo4kylo` → `hse export --format csv` → `hse audit --csv`
+  round-trip scored 92/100 with the correct 1-verified/0-probable/0-candidate
+  tiers, confirming `c_effective` (the field that actually drives scoring) is
+  untouched. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4566 lib tests). Net −286 lines, 23 files. Paired: `PROBLEM_TREE`
+  T2.75 — same commit.

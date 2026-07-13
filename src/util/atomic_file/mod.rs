@@ -102,23 +102,6 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
     }
 }
 
-/// Best-effort restrict an **existing** file to owner-only (`0600` on unix). For
-/// files a third party creates for us — e.g. SQLite opens its own DB / `-wal` /
-/// `-shm`, so we can't pass `mode` at create time. No-op off unix; the caller
-/// decides whether a missing file is an error.
-pub fn set_private(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

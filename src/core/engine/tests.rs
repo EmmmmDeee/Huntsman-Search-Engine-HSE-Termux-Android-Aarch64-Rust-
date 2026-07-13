@@ -2244,65 +2244,6 @@ fn enrich_offline_geo_is_a_noop_without_geocodable_addresses() {
     );
 }
 
-/// Autonomous-operation seed selection: with no operator input, the platform
-/// picks the highest cross-investigation-leverage identifier that maps to a scan
-/// target — skipping any non-pivotable kind, and `None` only on an empty base.
-#[test]
-fn autonomous_seed_picks_the_highest_leverage_pivotable_identifier() {
-    use super::{LeverageRanked, autonomous_seed};
-    use crate::core::entity::EntityKind;
-    use crate::core::scan::TargetKind;
-    // Strongest-first, as rank_enrichment_leverage returns: the top pivotable wins.
-    let ranked = vec![
-        LeverageRanked {
-            entity_uid: "u1".into(),
-            kind: EntityKind::Email,
-            value: "a@b.com".into(),
-            cross_scan_degree: 5,
-        },
-        LeverageRanked {
-            entity_uid: "u2".into(),
-            kind: EntityKind::Phone,
-            value: "+61400000000".into(),
-            cross_scan_degree: 3,
-        },
-    ];
-    assert_eq!(
-        autonomous_seed(&ranked),
-        Some((TargetKind::Email, "a@b.com".to_string()))
-    );
-}
-
-#[test]
-fn autonomous_seed_skips_non_pivotable_kinds() {
-    use super::{LeverageRanked, autonomous_seed};
-    use crate::core::entity::EntityKind;
-    use crate::core::scan::TargetKind;
-    let ranked = vec![
-        LeverageRanked {
-            entity_uid: "u0".into(),
-            kind: EntityKind::Credential, // not a scan target
-            value: "secret".into(),
-            cross_scan_degree: 9,
-        },
-        LeverageRanked {
-            entity_uid: "u1".into(),
-            kind: EntityKind::Username,
-            value: "alice".into(),
-            cross_scan_degree: 2,
-        },
-    ];
-    assert_eq!(
-        autonomous_seed(&ranked),
-        Some((TargetKind::Username, "alice".to_string()))
-    );
-}
-
-#[test]
-fn autonomous_seed_is_none_on_an_empty_base() {
-    assert_eq!(super::autonomous_seed(&[]), None);
-}
-
 /// The composite autonomous priority must reward all three axes: stronger pivot
 /// kind, more cross-investigation leverage, and higher confidence — and none of
 /// them alone can top a target that is weak on the others.

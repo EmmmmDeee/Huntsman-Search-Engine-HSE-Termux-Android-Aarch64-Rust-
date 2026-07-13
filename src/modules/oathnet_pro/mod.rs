@@ -24,7 +24,6 @@ use crate::util::target_match::TargetMatch;
 
 pub mod key_harvest;
 mod validate;
-pub use key_harvest::store_api_credential_from_item;
 use validate::*;
 mod stealer;
 use stealer::*;

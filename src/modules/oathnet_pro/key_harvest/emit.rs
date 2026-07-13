@@ -164,11 +164,6 @@ pub(super) fn emit_key_with(
     crate::util::key_pool::save_pool_best_effort(&pool);
 }
 
-pub fn store_api_credential_from_item(item: &Value) {
-    store_api_credential(item);
-}
-
-/// Same as `store_api_credential_from_item` but pub for peer-module use.
 /// Routes a stealer/breach record to the key pool when the URL matches
 /// a known service domain.
 pub fn store_api_credential(item: &Value) {

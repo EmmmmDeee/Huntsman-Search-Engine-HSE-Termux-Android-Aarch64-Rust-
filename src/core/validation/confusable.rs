@@ -31,8 +31,6 @@
 
 use std::borrow::Cow;
 
-use crate::core::validation::ValidationReport;
-
 /// True for a codepoint that is invisible / a formatting control with no
 /// legitimate place in a seed value (see the module docs for why each is
 /// stripped). Kept as a single predicate so [`strip_invisible`] can test it
@@ -166,24 +164,6 @@ pub fn is_confusable_mixed_script(value: &str) -> bool {
         }
     }
     false
-}
-
-/// Validation report for a seed value's mixed-script homograph status: fails
-/// with reason `seed.confusable` when [`is_confusable_mixed_script`] holds
-/// (the detail names the ASCII skeleton), otherwise
-/// [`ValidationReport::ok`](crate::core::validation::ValidationReport::ok).
-pub fn confusable_report(value: &str) -> ValidationReport {
-    if is_confusable_mixed_script(value) {
-        ValidationReport::fail(
-            "seed.confusable",
-            format!(
-                "mixed-script homograph; ascii skeleton: {}",
-                skeleton(value)
-            ),
-        )
-    } else {
-        ValidationReport::ok()
-    }
 }
 
 /// True when a `Person` value looks like a **random/gibberish string** rather

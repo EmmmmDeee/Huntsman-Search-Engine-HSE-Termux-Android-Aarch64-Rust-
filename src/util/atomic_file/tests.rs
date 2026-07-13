@@ -55,9 +55,8 @@ use super::*;
 
     #[test]
     #[cfg(unix)]
-    fn create_dir_private_is_0700_and_set_private_is_0600() {
-        // §7 S3: the ~/.huntsman tree must be owner-only, and a file SQLite
-        // created for us (the DB) must be restrictable after the fact.
+    fn create_dir_private_is_0700() {
+        // §7 S3: the ~/.huntsman tree must be owner-only.
         use std::os::unix::fs::PermissionsExt;
         let dir = tempdir().unwrap();
         // Recursive private dir → every created component is 0700.
@@ -65,11 +64,4 @@ use super::*;
         create_dir_private(&nested).unwrap();
         let dmode = std::fs::metadata(&nested).unwrap().permissions().mode();
         assert_eq!(dmode & 0o777, 0o700, "private dir must be owner-only");
-        // set_private tightens an existing 0644 file to 0600.
-        let f = dir.path().join("db.sqlite");
-        std::fs::write(&f, b"x").unwrap();
-        std::fs::set_permissions(&f, std::fs::Permissions::from_mode(0o644)).unwrap();
-        set_private(&f).unwrap();
-        let fmode = std::fs::metadata(&f).unwrap().permissions().mode();
-        assert_eq!(fmode & 0o777, 0o600, "existing file must be restricted to owner-only");
     }
