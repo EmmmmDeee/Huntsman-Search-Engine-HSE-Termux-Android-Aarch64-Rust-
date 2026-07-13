@@ -851,6 +851,41 @@ fn validate_rejects_mixed_script_homograph() {
 }
 
 #[test]
+fn validate_verbose_names_the_ascii_skeleton_for_a_homograph() {
+    // The operator-facing detail `validate`'s bare &'static str can't carry:
+    // WHAT the spoofed value normalizes to, not just that it was rejected.
+    let err = Target::new(TargetKind::Domain, "p\u{0430}ypal.com")
+        .validate_verbose()
+        .expect_err("a mixed-script homograph must still be rejected");
+    assert!(
+        err.contains("mixed-script homograph"),
+        "must keep validate()'s original reason: {err}"
+    );
+    assert!(
+        err.contains("ascii skeleton: paypal.com"),
+        "must name the normalized ASCII form: {err}"
+    );
+
+    // Every OTHER rejection reuses validate()'s exact static message, unchanged.
+    assert_eq!(
+        Target::new(TargetKind::Email, "x@y\ncom").validate_verbose(),
+        Target::new(TargetKind::Email, "x@y\ncom")
+            .validate()
+            .map_err(std::borrow::Cow::Borrowed)
+    );
+
+    // The clean ASCII seed still passes (no behavioural change for legitimate
+    // input) and allocates nothing (Cow::Borrowed on the Ok/other-error path
+    // is the whole point — this is a happy-path capability add, not a hot-path
+    // regression).
+    assert!(
+        Target::new(TargetKind::Domain, "paypal.com")
+            .validate_verbose()
+            .is_ok()
+    );
+}
+
+#[test]
 fn sanitise_strips_invisible_unicode() {
     // A zero-width joiner padded into a value is removed at the ingestion
     // boundary so the two spellings finally normalise to one (fixes silent

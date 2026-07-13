@@ -76,7 +76,7 @@ pub(super) async fn cmd_scan(cmd: ScanCmd) -> crate::core::error::Result<()> {
     // domain --value example.com` would dispatch every module against a reserved
     // documentation domain — exactly the "example anything" the engine must not
     // scan.
-    if let Err(msg) = target.validate() {
+    if let Err(msg) = target.validate_verbose() {
         return Err(crate::core::error::Error::Other(format!(
             "invalid target '{}': {msg}",
             target.value

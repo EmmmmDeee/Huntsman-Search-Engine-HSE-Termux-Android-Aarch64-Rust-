@@ -1627,7 +1627,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   consts / store_api_credential_from_item. **Paired:**
   `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
   (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) / T2.70 (slice 7) / T2.71
-  (slice 8) / T2.72 (slice 9) / T2.73 (slice 10) — each slice its own commit.
+  (slice 8) / T2.72 (slice 9) / T2.73 (slice 10) / T2.74 (slice 11) — each
+  slice its own commit.
   **Slice 8
   delivered — the second WIRE-IN: the scan-completion webhook that was
   configured but never fired.** The sweep
@@ -1692,6 +1693,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   predicate is neutered to always return `false`, all passing restored. Gate
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4573
   lib tests, +3). Paired: `PROBLEM_TREE` T2.73 — same commit.
+  **Slice 11 delivered — a correct rejection with an under-informative
+  message: `confusable::skeleton` had zero callers.** `Target::validate`
+  correctly rejects a mixed-script homograph seed but only says "possible
+  spoof," never naming what the value actually normalizes to — the data
+  `skeleton()` already computes. Two enrichment designs assessed and
+  rejected: enriching the admission-gate's `Option<&'static str>` reason
+  would fragment `hse audit`'s `excluded_reasons` histogram (keyed on the
+  exact string) into one bucket per distinct spoofed value; converting
+  `validate`'s return type wholesale touches 27 `Err` arms for one arm's
+  benefit. Decision: WIRE-IN, narrowly — a new `Target::validate_verbose()
+  -> Result<(), Cow<'static, str>>` that calls `validate()` unchanged and
+  enriches ONLY the homograph arm (matched against a shared
+  `HOMOGRAPH_REASON` const, so the two can never textually drift) with the
+  ASCII skeleton; every other rejection reuses `validate`'s exact message via
+  `Cow::Borrowed` — zero new allocation on the other 26 arms. All 3 real call
+  sites (`cli/scan`, `cli/live`, the HTTP API's `validated_target`) switched
+  to the verbose form, 1 line each; `validate()` itself untouched. ✅
+  Live-verified on all 3 real paths with a genuine real-world spoof (the
+  textbook Cyrillic-`а` `pаypal.com` PayPal-phishing homograph): `hse scan`,
+  `hse live`, and `POST /api/v1/scans` all now print "...possible spoof) —
+  ascii skeleton: paypal.com" where they previously stopped short.
+  Git-stash-proven regression test: neutering `validate_verbose`'s
+  enrichment fails it; restored, it passes; also pins every OTHER rejection
+  byte-identical to `validate`'s original message. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4574 lib tests, +1).
+  Banked: the same enrichment at the admission-gate's mid-scan
+  `confusable_homoglyph` drop needs a non-histogram-corrupting channel (a
+  `tracing::debug!` line, or an additive `EventKind::EntityExcluded` field)
+  — its own scoped decision. Paired: `PROBLEM_TREE` T2.74 — same commit.
 - **`[x]` SOL-ROLE-MAILBOX-COMPOUND · Suppress provider-prefixed system
   mailboxes (DNS SOA / registrar desks) from posing as the subject's email** →
   **T2.68**. Found by a PRIORITY-5 LIVE end-to-end pass (real binary vs the
@@ -6038,6 +6068,45 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `false` (all 3 fail; restored, all pass). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4573 lib tests, +3).
   Paired: `PROBLEM_TREE` T2.73 — same commit.
+- **2026-07-13** — **SOL-DEADCODE-SWEEP slice 11: a spoofed-domain seed was
+  correctly rejected but the operator was never told what it normalizes to —
+  `confusable::skeleton` had zero callers.** `Target::validate` already
+  correctly rejects a mixed-script homograph seed (Cyrillic-`а` `pаypal.com`)
+  but only says "possible spoof," never naming the ASCII form — data
+  `skeleton()` already computes; its only prior caller, `confusable_report`,
+  is itself dead (superseded by the boolean `is_confusable_mixed_script` at
+  every real call site). Two enrichment designs assessed and rejected: (a)
+  enriching the admission-gate's `Option<&'static str>` reason
+  (`dispatch.rs`'s `admission_rejection`) would corrupt `hse audit`'s
+  `excluded_reasons` histogram (`audit/events.rs:15-17` counts occurrences
+  keyed on the EXACT reason string; a per-value dynamic skeleton would
+  fragment one "confusable_homoglyph: N" bucket into N one-off buckets); (b)
+  converting `Target::validate`'s return type wholesale (27 `Err` arms) to
+  carry dynamic detail would touch a function with 3 live callers for one
+  arm's benefit. Decision: WIRE-IN, narrowly — a new `Target::validate_verbose()
+  -> Result<(), Cow<'static, str>>` that calls `validate()` unchanged and
+  enriches ONLY the homograph arm (matched against a shared
+  `HOMOGRAPH_REASON` const so the two can never textually drift) with `—
+  ascii skeleton: {value normalized}`; every other rejection stays
+  `Cow::Borrowed` — zero new allocation on the other 26 arms. All 3 real call
+  sites (`cli/scan`, `cli/live`, the HTTP API's `validated_target`) switched
+  to the verbose form, 1 line each; `validate()` itself untouched. ✅
+  Live-verified on all 3 real paths with a genuine real-world spoof target —
+  Cyrillic-`а` `pаypal.com`, the textbook PayPal-phishing homograph: `hse
+  scan -k domain -v pаypal.com`, `hse live -k domain -v pаypal.com`, and
+  `POST /api/v1/scans` with the same value all now print "...possible spoof)
+  — ascii skeleton: paypal.com" where they previously stopped short. THEN the
+  git-stash-proven regression test
+  (`validate_verbose_names_the_ascii_skeleton_for_a_homograph`): neutering
+  `validate_verbose`'s enrichment fails it; restored, it passes; also pins
+  every OTHER rejection byte-identical to `validate`'s original message
+  (`assert_eq!` between the two calls). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4574 lib tests, +1). Banked
+  (deliberately out of scope this cycle): the same enrichment at the
+  admission-gate's mid-scan `confusable_homoglyph` drop needs a
+  non-histogram-corrupting channel (a `tracing::debug!` line, or an additive
+  `EventKind::EntityExcluded` field) — its own scoped decision. Paired:
+  `PROBLEM_TREE` T2.74 — same commit.
 - **2026-07-12** — **New SOL-RANDOMIZED-MAC: the OUI classifier now flags
   randomized (private) MAC addresses instead of attributing them as real
   devices.** Surfaced by a real 1,643-device Android BLE-radar export the

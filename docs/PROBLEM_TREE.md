@@ -2832,6 +2832,51 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `false` (all 3 fail; restored, all pass). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4573 lib tests, +3).
   **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 10), §5 — same commit.
+- **`[x]` T2.74 · a spoofed-domain seed was correctly REJECTED but the operator
+  was never told what it actually normalizes to — `confusable::skeleton` was
+  fully built with zero callers.** The dead-code sweep surfaced `skeleton`
+  (validation/confusable.rs) as unwired; its only caller, `confusable_report`,
+  is itself dead (superseded by the boolean `is_confusable_mixed_script` at
+  every real call site). `Target::validate` correctly rejects a mixed-script
+  homograph seed (e.g. Cyrillic-`а` `pаypal.com`) with a static, structured
+  reason — but that reason never names the ASCII form the value spoofs, so an
+  operator sees only "possible spoof," not the concrete "this is `paypal.com`
+  in disguise" the tool already has the data to say. **P3** (evidentiary
+  clarity — a correct rejection with an under-informative message). →
+  **Decision: WIRE-IN, narrowly.** Two designs considered and rejected first:
+  (a) enriching the ADMISSION-GATE reason (`dispatch.rs`'s
+  `admission_rejection`, `Option<&'static str>`) would corrupt `hse audit`'s
+  `excluded_reasons` histogram — `src/audit/events.rs:15-17` counts
+  occurrences keyed on the EXACT reason string, so a per-value dynamic
+  skeleton would fragment one clean "confusable_homoglyph: N" bucket into N
+  one-off buckets; (b) converting `Target::validate`'s return type wholesale
+  (27 `Err` arms) to carry dynamic detail would touch a function with 3 live
+  callers for one arm's benefit. Landed instead: a NEW, small
+  `Target::validate_verbose() -> Result<(), Cow<'static, str>>` that calls
+  `validate()` unchanged and, ONLY on the homograph arm (matched against a
+  shared `HOMOGRAPH_REASON` const so the two can never textually drift),
+  appends `— ascii skeleton: {skeleton(value)}`; every other rejection reuses
+  `validate`'s exact static message via `Cow::Borrowed` (zero-cost — no new
+  allocation for the other 26 arms). All 3 real call sites (`cli/scan`,
+  `cli/live`, the HTTP API's `validated_target`) switched to the verbose form
+  — a 1-line change each, `validate()` itself untouched. **Live-verified on
+  all 3 real paths** with a genuine real-world spoof target (Cyrillic-`а`
+  `pаypal.com`, the textbook PayPal-phishing homograph): `hse scan -k domain
+  -v pаypal.com`, `hse live -k domain -v pаypal.com`, and `POST
+  /api/v1/scans` with the same value all now print `"...possible spoof) —
+  ascii skeleton: paypal.com"` where they previously stopped at "possible
+  spoof." THEN the git-stash-proven regression test
+  (`validate_verbose_names_the_ascii_skeleton_for_a_homograph`: neutering
+  `validate_verbose` to drop the enrichment fails the test; restored, it
+  passes; also asserts every OTHER rejection reuses `validate`'s message
+  byte-for-byte, unchanged). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4574 lib tests, +1). *Banked (deliberately
+  out of scope this cycle):* the SAME `skeleton()` enrichment at the
+  admission-gate's `confusable_homoglyph` drop (mid-scan, not seed-time) —
+  needs a non-histogram-corrupting channel (e.g. a `tracing::debug!` line, or
+  an additive `EventKind::EntityExcluded` field) as its own scoped decision.
+  **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 11), §5 — same
+  commit.
 
 ---
 
@@ -8527,3 +8572,28 @@ way, so this specific drift class can't recur silently again.
   all passing restored. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4573 lib tests, +3). **Paired:** `SOLUTION_TREE`
   SOL-DEADCODE-SWEEP (slice 10), §5 — same commit.
+- **2026-07-13** — **T2.74: a spoofed-domain seed was correctly rejected but
+  never told the operator what it normalizes to — `confusable::skeleton` had
+  zero callers.** `Target::validate` correctly rejects a mixed-script
+  homograph (Cyrillic-`а` `pаypal.com`) but only says "possible spoof," never
+  naming the ASCII form. Two enrichment designs rejected: enriching the
+  admission-gate's `Option<&'static str>` reason would fragment `hse audit`'s
+  `excluded_reasons` histogram (keyed on the exact string,
+  `audit/events.rs:15-17`) into one bucket per distinct value; converting
+  `validate`'s return type wholesale touches 27 `Err` arms for one arm's
+  benefit. Landed: new `Target::validate_verbose() -> Result<(), Cow<'static,
+  str>>`, calling `validate()` unchanged and enriching ONLY the homograph arm
+  (matched against a shared `HOMOGRAPH_REASON` const, never string-duplicated)
+  with `— ascii skeleton: {value normalized}`; every other rejection stays
+  `Cow::Borrowed`, zero new allocation. All 3 real call sites (`cli/scan`,
+  `cli/live`, HTTP API) switched over. Live-verified on all 3 with the
+  textbook real-world spoof (Cyrillic-`а` `pаypal.com`): each now prints
+  "...possible spoof) — ascii skeleton: paypal.com" where they previously
+  stopped at "possible spoof." Git-stash-proven regression test (neutering
+  the enrichment fails; restored, passes; also pins every other rejection
+  byte-identical to `validate`'s). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4574 lib tests, +1). Banked:
+  the same enrichment at the admission-gate's mid-scan `confusable_homoglyph`
+  drop needs a non-histogram-corrupting channel (debug log or an additive
+  event field) — its own scoped decision. **Paired:** `SOLUTION_TREE`
+  SOL-DEADCODE-SWEEP (slice 11), §5 — same commit.

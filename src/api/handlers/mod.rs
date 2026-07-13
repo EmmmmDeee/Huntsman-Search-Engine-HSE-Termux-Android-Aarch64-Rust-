@@ -37,7 +37,7 @@ use crate::util::keys;
 pub(crate) fn validated_target(kind: TargetKind, value: String) -> Result<Target, String> {
     let target = Target::new(kind, value);
     target
-        .validate()
+        .validate_verbose()
         .map_err(|msg| format!("invalid target: {msg}"))?;
     Ok(target)
 }

@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **A spoofed-domain seed now tells you what it's spoofing.** Scanning a
+  domain, email, or similar value that mixes real letters with foreign
+  lookalike characters (e.g. a Cyrillic letter standing in for a Latin one,
+  the classic `paypal.com` phishing trick) was already rejected as a possible
+  spoof — the rejection message now also names the real-looking form the
+  value normalizes to, so it's immediately clear what's actually being
+  impersonated. Applies to `hse scan`, `hse live`, and the web API.
 - **`hse doctor` now has a "Weak findings" section.** Every stored finding
   below the confidence review threshold, observed recently, is now listed
   (weakest first, capped at 20 rows with a remainder count) so an operator can

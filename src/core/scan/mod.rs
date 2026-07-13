@@ -437,7 +437,7 @@ impl Target {
         // Cyrillic-`а` in `paypal.com`). A legitimate all-one-script non-ASCII
         // value has no ASCII letters to mix, so it is not flagged.
         if crate::core::validation::is_confusable_mixed_script(v) {
-            return Err("value contains a mixed-script homograph (possible spoof)");
+            return Err(HOMOGRAPH_REASON);
         }
         match self.kind {
             TargetKind::Email => {
@@ -613,7 +613,30 @@ impl Target {
         }
         Ok(())
     }
+
+    /// Same rejection as [`Self::validate`], but the mixed-script-homograph
+    /// case additionally names the ASCII skeleton the value normalizes to
+    /// (e.g. `pаypal.com` → `paypal.com`) — the concrete, auditable detail an
+    /// operator needs to see *why* a spoofed seed was refused, which
+    /// `validate`'s `&'static str` return can't carry without an allocation.
+    /// Every other rejection reuses `validate`'s message unchanged (zero-cost
+    /// `Cow::Borrowed`). Matches on the shared `HOMOGRAPH_REASON` constant
+    /// rather than a duplicated string literal, so the two can never drift.
+    pub fn validate_verbose(&self) -> std::result::Result<(), std::borrow::Cow<'static, str>> {
+        match self.validate() {
+            Err(HOMOGRAPH_REASON) => Err(std::borrow::Cow::Owned(format!(
+                "{HOMOGRAPH_REASON} — ascii skeleton: {}",
+                crate::core::validation::skeleton(self.value.trim())
+            ))),
+            Err(msg) => Err(std::borrow::Cow::Borrowed(msg)),
+            Ok(()) => Ok(()),
+        }
+    }
 }
+
+/// The mixed-script-homograph rejection message, single-sourced so
+/// [`Target::validate`] and [`Target::validate_verbose`] can never drift.
+const HOMOGRAPH_REASON: &str = "value contains a mixed-script homograph (possible spoof)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
