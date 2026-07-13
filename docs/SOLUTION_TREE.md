@@ -720,6 +720,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   record) and the other 16 `search_engines` engines (lower marginal value —
   same shared parser this fixture already exercises; Bing's `<cite>`-based
   format is the next-highest-value addition). **(§4a)**
+  *Golden-fixture corpus — second slice delivered (2026-07-13):* Bing next,
+  per the first slice's own stated priority — the highest-risk engine for a
+  `<cite>`-format drift, a markup shape none of the other 16 engines use. A
+  REAL Bing SERP fetched live for the canonical seed `Kylo4kylo`, checked in
+  verbatim as `src/modules/search_engines/fetch/testdata/bing_kylo4kylo.html`
+  (75 KB, unmodified). This particular live capture happens to return zero
+  results actually about `Kylo4kylo` — Bing's own answer to this exact query
+  was five unrelated ESPN links — an honestly-observed real result, not a
+  fabricated one; the test's job (per T2.7's own doctrine) is only that
+  every real result block a live page contains is extracted without silent
+  drops or engine-chrome leakage, not relevance. New test
+  `parse_results_extracts_from_a_real_bing_serp_capture` pins the parser's
+  yield against this real page (exactly 5 organic results, three named
+  hosts present, zero `bing.com` chrome leakage), git-stash-proven (neutering
+  `parse_results` fails the test; restored, it passes). No production code
+  change — `parse_results`'s existing href+`<cite>` extraction handled this
+  real page correctly as-is. Gate green (4567 lib tests, +1). *Remaining
+  corpus slices, unchanged:* `au_people`/`au_electoral`/`au_property` (needs
+  a privacy-safe capture strategy) and the other 15 `search_engines` engines
+  (lower marginal value — same shared parser two fixtures now exercise).
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -6336,3 +6356,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   untouched. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4566 lib tests). Net −286 lines, 23 files. Paired: `PROBLEM_TREE`
   T2.75 — same commit.
+- **2026-07-13** — **SOL-HEALTH-SIGNAL: T2.7's golden-fixture corpus, second
+  slice — a REAL Bing SERP, per the first slice's own named priority (the
+  highest `<cite>`-format drift risk).** Fetched live for the canonical seed
+  `Kylo4kylo`, checked in verbatim as `testdata/bing_kylo4kylo.html` (75 KB).
+  This exact capture happens to return zero results actually about
+  `Kylo4kylo` — Bing's own real answer was five unrelated ESPN links —
+  disclosed honestly as observed, not re-fetched or adjusted to look better:
+  the new test only asserts extraction correctness (exactly 5 results, 3
+  pinned real hosts, zero `bing.com` chrome), never relevance, which stays
+  the correlator/audit's job. Git-stash-proven: neutering `parse_results`
+  fails the test; restored, it passes. No production code change needed —
+  the existing href+`<cite>` extraction handled this real page correctly
+  as-is. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4567 lib tests, +1). *Remaining corpus slices, unchanged:*
+  `au_people`/`au_electoral`/`au_property` and the other 15 `search_engines`
+  engines. Paired: `PROBLEM_TREE` T2.7 (second slice) — same commit.

@@ -31,6 +31,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   and used to verify the parser still extracts the expected results from it.
   This catches a real layout change silently breaking result extraction, which
   the hand-written snippets could never do. No behavior change; test-only.
+- **Added a second real-world regression fixture for the search-engine result
+  parser: a genuine Bing results page.** Bing uses a different display-URL
+  markup shape than the first fixture (Brave) covered, so this exercises a
+  distinct extraction path the existing tests didn't reach. No behavior
+  change; test-only.
 - **Scan-completion webhooks now actually fire.** Setting `HUNTSMAN_WEBHOOK_URL`
   (or a per-scan webhook URL) was already accepted and stored, but the engine
   never sent the notification — so a configured webhook silently did nothing. On

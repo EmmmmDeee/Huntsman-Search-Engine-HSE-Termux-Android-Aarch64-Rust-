@@ -247,3 +247,66 @@ use super::*;
             results.len()
         );
     }
+
+    // `testdata/bing_kylo4kylo.html` is a REAL Bing SERP response, fetched live
+    // (2026-07-13) for the project's own canonical test seed `Kylo4kylo` and
+    // checked in verbatim. Bing is the second slice of the golden-fixture
+    // corpus (Brave was the first, T2.75-1) and specifically the highest-risk
+    // engine for a `<cite>`-format drift: `parse_results`' secondary extraction
+    // path reads Bing's `<cite>` tags for the display URL, a markup shape none
+    // of the other 16 engines use. This real capture happens to return zero
+    // results actually about `Kylo4kylo` — Bing's own answer for this exact
+    // query, on this exact page, was five unrelated ESPN links — which is
+    // itself a genuine, honestly-observed result: this test is not about
+    // recall or relevance (that's the correlator/audit's job), only that the
+    // parser extracts every real result block a live page contains without
+    // silently dropping some or leaking engine chrome, exactly the failure
+    // mode T2.7 exists to catch.
+    const GOLDEN_BING_KYLO4KYLO: &str = include_str!("testdata/bing_kylo4kylo.html");
+
+    /// If Bing's `<cite>`-based markup drifts enough to break extraction, this
+    /// fails deterministically instead of the silent-empty-results failure mode
+    /// T2.7 exists to catch.
+    #[test]
+    fn parse_results_extracts_from_a_real_bing_serp_capture() {
+        let results = parse_results(GOLDEN_BING_KYLO4KYLO, "bing", "Kylo4kylo");
+        assert!(
+            !results.is_empty(),
+            "a layout change silently broke extraction from this real, \
+             previously-working Bing capture"
+        );
+
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        // Pin the specific real hosts present in this exact capture.
+        assert!(
+            urls.iter().any(|u| u.contains("espn.com")),
+            "expected the espn.com hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("facebook.com/ESPN")),
+            "expected the Facebook hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("espn.co.uk")),
+            "expected the espn.co.uk hit, got: {urls:?}"
+        );
+        // Every extracted URL is a genuine organic result, never the engine's
+        // own account/CDN/branding chrome — `is_engine_domain` must still be
+        // doing its job against this real page's `bing.com`-hosted assets
+        // (this capture's own `<link>`/`<script>` CDN paths).
+        for u in &urls {
+            assert!(
+                !u.contains("bing.com"),
+                "engine chrome link leaked into results: {u}"
+            );
+        }
+        // Deterministic count: pins the exact yield so a change that silently
+        // drops (or duplicates) even one real result is caught, not just a
+        // change that empties the page entirely.
+        assert_eq!(
+            results.len(),
+            5,
+            "expected exactly 5 organic results from this fixture, got {}: {urls:?}",
+            results.len()
+        );
+    }

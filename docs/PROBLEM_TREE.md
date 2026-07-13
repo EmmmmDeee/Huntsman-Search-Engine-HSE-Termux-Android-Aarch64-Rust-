@@ -433,6 +433,31 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   marginal robustness gain per additional engine is smaller — a markup-drift
   risk on Bing's `<cite>` format specifically would be the next-highest-value
   addition).
+  **Golden-fixture corpus — second slice delivered (2026-07-13):** Bing next,
+  exactly the priority the first slice named — the highest-risk engine for a
+  `<cite>`-format drift, a markup shape none of the other 16 engines use.
+  Fetched a REAL Bing SERP live for the canonical seed `Kylo4kylo` and
+  checked it in verbatim as `src/modules/search_engines/fetch/testdata/
+  bing_kylo4kylo.html` (75 KB, unmodified). This live capture happens to
+  return zero results actually about `Kylo4kylo` — Bing's own answer for
+  this exact query was five unrelated ESPN links — an honestly-observed real
+  result, not a fabricated one: the test's job (per T2.7's own doctrine) is
+  that every real result block a live page contains is extracted without a
+  silent drop or engine-chrome leak, never relevance (that's the
+  correlator/audit's job). New test
+  `parse_results_extracts_from_a_real_bing_serp_capture` asserts the parser
+  extracts exactly 5 organic results from this exact capture (pinning three
+  specific real hosts — espn.com, facebook.com/ESPN, espn.co.uk — plus a
+  zero-leaked-`bing.com`-chrome check and the exact count). Git-stash-proven:
+  neutering `parse_results` to return early makes the test fail; restored,
+  it passes. No production code change — the existing href+`<cite>`
+  extraction handled this real page correctly as-is. Gate green (4567 lib
+  tests, +1). *Remaining corpus slices, unchanged:* `au_people`/
+  `au_electoral`/`au_property` (needs a privacy-safe capture strategy) and
+  the other 15 `search_engines` engines (lower marginal value — same shared
+  parser two fixtures now exercise). **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, second slice), §5 — same
+  commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -8696,3 +8721,18 @@ way, so this specific drift class can't recur silently again.
   clean, full suite 0 failures (4566 lib tests). Net −286 lines, 23 files.
   **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 12), §5 — same
   commit.
+- **2026-07-13** — **T2.7's golden-fixture corpus, second slice: a REAL Bing
+  SERP, the highest-`<cite>`-drift-risk engine, per the first slice's own
+  named priority.** Fetched live for the canonical seed `Kylo4kylo`, checked
+  in verbatim as `testdata/bing_kylo4kylo.html` (75 KB). This exact live
+  capture happens to return zero results actually about `Kylo4kylo` — Bing's
+  own real answer was five unrelated ESPN links — disclosed honestly as an
+  observed result, not adjusted or re-fetched to look better: the new test
+  (`parse_results_extracts_from_a_real_bing_serp_capture`) only asserts
+  extraction correctness (exactly 5 results, 3 pinned real hosts, zero
+  `bing.com` chrome), never relevance. Git-stash-proven: neutering
+  `parse_results` fails it; restored, it passes. No production code change —
+  the existing extraction path handled this real page correctly already.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4567 lib tests, +1). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7
+  golden-fixture corpus, second slice), §5 — same commit.
