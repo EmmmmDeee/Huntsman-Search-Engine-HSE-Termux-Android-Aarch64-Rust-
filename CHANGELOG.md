@@ -161,6 +161,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   total is now 161.
 
 ### Changed
+- **Internal: the username/social/streaming enumeration modules now share one
+  confidence-scoring rule instead of each hardcoding its own copy.** All three
+  independently defined the same "body-verified detections outrank
+  status-code-only ones" confidence tiering; it now lives in one place so
+  they can't silently drift apart. No visible behavior change.
 - **`hse scan`'s unknown-`--profile` error now lists every scan profile with
   its description.** Previously it printed a hand-maintained list of profile
   names only (which could drift from the actual set as profiles are added);

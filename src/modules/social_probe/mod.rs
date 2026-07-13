@@ -55,11 +55,7 @@ pub(super) struct Platform {
 /// account — the exact false signal a real scan against a guessed handle
 /// produced across 30+ status-only platforms.
 fn detection_strength(platform: &Platform) -> (f64, bool) {
-    if platform.negative_patterns.is_empty() {
-        (0.74, false)
-    } else {
-        (0.92, true)
-    }
+    crate::util::probe_confidence::detection_strength(!platform.negative_patterns.is_empty())
 }
 
 pub(super) const USERNAME_PLATFORMS: &[Platform] = &[

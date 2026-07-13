@@ -260,10 +260,10 @@ struct ProbeTally {
 /// confirmed hit. Emitting a flat 0.92 on a status-only cam/adult match fabricates a
 /// high-confidence, sensitive identity association from an unverified 200.
 fn detection_strength(detect: &Detect) -> (f64, bool) {
-    match detect {
-        Detect::StatusAndNotBody(..) => (0.92, true),
-        Detect::StatusEq(_) => (0.74, false),
-    }
+    crate::util::probe_confidence::detection_strength(matches!(
+        detect,
+        Detect::StatusAndNotBody(..)
+    ))
 }
 
 /// Build the per-hit `Url` entities and the summary `Username` entity from the

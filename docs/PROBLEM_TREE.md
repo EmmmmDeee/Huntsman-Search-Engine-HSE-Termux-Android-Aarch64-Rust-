@@ -3309,6 +3309,45 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   it passes. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
   0 failures (4597 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **`[x]` T2.81 · `username_search`, `social_probe`, and `streaming_probe`
+  each independently defined a `detection_strength` function computing the
+  IDENTICAL `(0.92, verified) / (0.74, unverified)` presence-confidence
+  tiering from their own per-module detection-rule types.** Second operator
+  refactor/merge pass ("REFACTOR and merge again"), following an Explore-
+  agent sweep of the wider codebase now that the API-key pipeline (T2.78–
+  T2.80) is fully covered. All three functions encode the same evidentiary
+  judgement — a detection rule that actually inspected response BODY
+  content for a positive/negative marker earns full confidence + verified;
+  a bare HTTP-status-code match is a weaker, unverified lead, since a soft-
+  404/SPA-shell/login-wall can return 200 for any handle regardless of
+  existence — with the exact same magic-number pair hardcoded three times,
+  each doc comment explicitly cross-referencing the other two modules by
+  name as the reason for the shared design. → **Solution:** extracted the
+  shared judgement into `util::probe_confidence::detection_strength(body_
+  verified: bool) -> (f64, bool)`, matching this project's established
+  "promote a pure/leaf classifier into `util`" precedent (`util::geohash`,
+  `util::domains`, `util::key_harvest`). Each module's own `detection_
+  strength` kept its existing per-module signature (`&Platform` /
+  `&Detect` — three structurally different enum/struct types, so a single
+  shared signature isn't possible) but now computes its one boolean
+  ("did this rule inspect the body?") and delegates to the shared
+  function — reducing each to a one-line wrapper. **P3/hygiene**
+  (duplicated evidentiary-confidence logic — CONVENTIONS.md's single-
+  sourced-vocabulary rule — no behavior change, all three modules'
+  pre-existing tests pass unchanged). Regression-proven by corrupting the
+  shared function (swapping which branch returns which tuple) and
+  confirming it breaks 5 pre-existing tests across all 3 modules
+  simultaneously plus the 2 new `util::probe_confidence` unit tests — 7
+  failures from one bad edit, proving the three modules are now genuinely
+  single-sourced and can no longer silently drift apart from each other;
+  restored, all pass. Live-verified: a real `hse scan --kind username
+  --value octocat --modules username_search,social_probe,streaming_probe`
+  run completes cleanly with both body-verified (0.92) and status-only
+  (0.74) tiers correctly represented among the entities and correlator
+  output, zero errors across all three merged call paths. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4599 lib
+  tests, +2). **Paired:** `SOLUTION_TREE` SOL-PROBE-CONFIDENCE-DEDUP (new
+  node), §5 — same commit.
 
 ---
 
@@ -9347,3 +9386,28 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4597 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **2026-07-13** — **T2.81: merged `username_search`'s, `social_probe`'s,
+  and `streaming_probe`'s identical `detection_strength` presence-
+  confidence tiering into `util::probe_confidence`.** Second operator
+  refactor/merge pass ("REFACTOR and merge again"), following an Explore-
+  agent sweep of the wider codebase. All three modules independently
+  hardcoded the same `(0.92, verified) / (0.74, unverified)` tuple pair
+  for the identical evidentiary judgement (a detection rule that actually
+  inspected response body content earns full confidence; a bare status-
+  code match is a weaker, unverified lead), each computed from a different
+  per-module `Detect`/`Platform` type. Fix: extracted the shared judgement
+  into `util::probe_confidence::detection_strength(body_verified: bool)`;
+  each module's own function kept its existing signature (a single shared
+  signature isn't possible — the three input types are structurally
+  different) but now computes its own boolean and delegates, reducing each
+  to a one-line wrapper. Regression-proven by corrupting the shared
+  function (swapping which branch returns which tuple) — 7 tests failed
+  simultaneously across `probe_confidence`'s own 2 new unit tests plus 5
+  pre-existing tests spanning all 3 modules, proving they're now genuinely
+  single-sourced; restored, all pass. Live-verified: a real `hse scan
+  --kind username --value octocat --modules
+  username_search,social_probe,streaming_probe` run completes cleanly with
+  both confidence tiers correctly represented in the output, zero errors.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4599 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-PROBE-CONFIDENCE-DEDUP (new node), §5 — same commit.

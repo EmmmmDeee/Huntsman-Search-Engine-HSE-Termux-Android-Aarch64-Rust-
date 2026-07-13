@@ -991,6 +991,43 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   warnings`/rustdoc clean, full suite 0 failures (4597 lib tests, +1).
   **Paired:** `PROBLEM_TREE` T2.80 — same commit.
 
+- **`[x]` SOL-PROBE-CONFIDENCE-DEDUP · `username_search`, `social_probe`, and
+  `streaming_probe` each independently hardcoded the identical presence-
+  confidence tiering** → **T2.81**. Second operator refactor/merge pass
+  ("REFACTOR and merge again"), following an Explore-agent sweep of the
+  wider codebase now that the API-key pipeline (T2.78–T2.80) was fully
+  covered. All three modules defined their own `detection_strength`
+  function mapping a detection rule to the same `(0.92, verified) /
+  (0.74, unverified)` tuple pair — full confidence when the rule actually
+  inspected response BODY content for a positive/negative marker, a
+  weaker unverified tier when it only matched a bare HTTP status code
+  (since a soft-404/SPA-shell/login-wall can return 200 for any handle
+  regardless of real existence) — each computed from a different
+  per-module `Detect`/`Platform` type, with each doc comment explicitly
+  cross-referencing the other two modules by name as the shared design's
+  rationale. Fix: extracted the shared judgement into
+  `util::probe_confidence::detection_strength(body_verified: bool) ->
+  (f64, bool)`, matching this project's established "promote a pure/leaf
+  classifier into `util`" precedent (`util::geohash`, `util::domains`,
+  `util::key_harvest`). Each module's own `detection_strength` kept its
+  existing per-module signature — a single shared signature across all
+  three isn't possible, since `&Platform` and the two distinct `&Detect`
+  enums are structurally different types — but now computes its own
+  single boolean ("did this rule inspect the body?") and delegates,
+  reducing each to a one-line wrapper. Regression-proven by corrupting the
+  shared function (swapping which branch returns which tuple): 7 tests
+  failed simultaneously — `util::probe_confidence`'s own 2 new unit tests
+  plus 5 pre-existing tests spanning all 3 modules — proving the three
+  modules are now genuinely single-sourced and can no longer silently
+  drift apart from each other the way three independent copies could;
+  restored, all pass. Live-verified: a real `hse scan --kind username
+  --value octocat --modules username_search,social_probe,streaming_probe`
+  run completes cleanly with both body-verified (0.92) and status-only
+  (0.74) tiers correctly represented among the entities and correlator
+  output, zero errors across all three merged call paths. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4599 lib
+  tests, +2). **Paired:** `PROBLEM_TREE` T2.81 — same commit.
+
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
   then `~/hse` / `~/.local/share/hse`, then binary-parent traversal; re-runs the

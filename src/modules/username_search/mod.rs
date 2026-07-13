@@ -393,10 +393,10 @@ enum ProbeResult {
 /// floor — a status-200 hit is still worth pivoting on — but ranks visibly below
 /// a body-confirmed 0.92 so the correlator and SPA can weight it accordingly.
 fn detection_strength(detect: &Detect) -> (f64, bool) {
-    match detect {
-        Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..) => (0.92, true),
-        Detect::StatusEq(_) => (0.74, false),
-    }
+    crate::util::probe_confidence::detection_strength(matches!(
+        detect,
+        Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..)
+    ))
 }
 
 /// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
