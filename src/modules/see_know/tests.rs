@@ -897,3 +897,35 @@ use crate::core::entity::Entity;
             "no pivot IDs ⇒ no dispatch, no growth, clean halt"
         );
     }
+
+    #[test]
+    fn extract_pivot_entities_also_harvests_a_leaked_key_from_a_pivot_response() {
+        // The identity-pivot responses (discord/user, discord/to-roblox,
+        // gaming/steam) were the one SeekNow data-ingestion point that skipped
+        // the key-harvest pass every other endpoint already runs every item
+        // through. A linked account's own response can carry a `token`/
+        // `password`/`note` field exactly like a breach/search row does —
+        // this proves `extract_pivot_entities` now reaches it too, not just
+        // identity/geo/message extraction.
+        let items = vec![(
+            "discord_user",
+            vec![serde_json::json!({
+                "id": "123456789012345678",
+                // AWS access-key shape — the same synthetic fixture
+                // `util::key_harvest`'s own orchestrator tests use.
+                "token": "AKIAJK28SLQQV61MNG9X",
+            })],
+        )];
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_pivot_entities(&items, "seed", "t", "see-know.eu:test", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::ApiKey && e.has_tag("service:aws")),
+            "expected an AWS ApiKey entity harvested from the pivot response's \
+             `token` field, got: {:?}",
+            result.entities.iter().map(|e| &e.kind).collect::<Vec<_>>()
+        );
+    }

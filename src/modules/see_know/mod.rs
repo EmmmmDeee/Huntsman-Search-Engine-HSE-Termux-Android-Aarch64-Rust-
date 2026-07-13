@@ -424,18 +424,45 @@ async fn resolve_identity_pivots(
         }
 
         let before = result.entities.len();
-        for (endpoint, items) in &pivot_results {
-            for item in items {
-                extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
-                extract_geo_entities(item, endpoint, scan_id, seen, result);
-                if *endpoint == "discord_messages" {
-                    extract_message_emails(item, scan_id, seen, result);
-                    extract_message_mentions(item, scan_id, seen, result);
-                }
-            }
-        }
+        extract_pivot_entities(&pivot_results, seed_value, scan_id, key_fp, seen, result);
         if result.entities.len() == before {
             break; // a hop that surfaced nothing new — stop chasing
+        }
+    }
+}
+
+/// Extract entities (identity + geo + message + API-key) from one hop's
+/// worth of identity-pivot responses (discord/user, discord/to-roblox,
+/// gaming/steam). Split out of [`resolve_identity_pivots`] — which requires a
+/// live network round-trip to populate `pivot_results` — so this pure mapping
+/// step is directly unit-testable against synthetic response shapes.
+///
+/// The key-harvest pass (`store_api_credential` + `extract_api_keys_from_item`)
+/// was, until this fix, the one SeekNow data-ingestion point that skipped it:
+/// every other endpoint in this module (the broad `/search` call and the
+/// per-seed endpoint matrix) already runs every returned item through it. The
+/// identity-pivot chase is SeekNow's own stated "unique value" over the free
+/// username stack — a linked account's own `password`/`token`/`note` field
+/// leaking a credential was silently missed here while a structurally
+/// identical field in every other SeekNow response was already caught.
+fn extract_pivot_entities(
+    pivot_results: &[(&'static str, Vec<Value>)],
+    seed_value: &str,
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    for (endpoint, items) in pivot_results {
+        for item in items {
+            extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
+            extract_geo_entities(item, endpoint, scan_id, seen, result);
+            if *endpoint == "discord_messages" {
+                extract_message_emails(item, scan_id, seen, result);
+                extract_message_mentions(item, scan_id, seen, result);
+            }
+            store_api_credential(item, SRC);
+            extract_api_keys_from_item(item, scan_id, SRC, seen, result);
         }
     }
 }

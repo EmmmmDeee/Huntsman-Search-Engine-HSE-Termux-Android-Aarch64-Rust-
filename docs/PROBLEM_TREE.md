@@ -3694,6 +3694,47 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   regression to the existing pages. Gate green: fmt/clippy `-D warnings`/
   rustdoc clean, full suite 0 failures (4613 lib tests, +3). **Paired:**
   `SOLUTION_TREE` SOL-KEYHARVEST-UI (new node), §5 — same commit.
+- **`[x]` T2.87 · `see_know`'s identity-pivot chase (discord/user,
+  discord/to-roblox, gaming/steam) was the ONE remaining SeekNow data-
+  ingestion point that never ran its returned items through the shared
+  key-harvest pipeline.** Operator instruction: "Focus purely on utilising
+  Oathnet and Seek-Know to find more API keys." Audited every item-
+  processing loop in both `oathnet_pro` (breach page + stealer search —
+  both already call `store_api_credential`/`extract_api_keys_from_item` on
+  every row) and `see_know` (the broad `/search` loop, the per-seed
+  endpoint-matrix loop, and the identity-pivot loop). The first two `see_know`
+  loops already harvest; `resolve_identity_pivots`'s pivot-response loop did
+  not — a real gap, not a stylistic inconsistency: this pivot chase is
+  SeekNow's own doc comment's stated "unique value" over the free username
+  stack (resolving a Discord snowflake / SteamID64 to its linked accounts),
+  so a leaked credential surfacing in a linked account's own response (a
+  `password`/`token`/`note` field, structurally identical to what every
+  other SeekNow endpoint already scans) was silently missed. →
+  **Solution:** extracted the pivot loop's per-item processing into a new
+  pure(-ish) `extract_pivot_entities` (split from `resolve_identity_pivots`,
+  which needs a live network round-trip to populate its input — this makes
+  the mapping step directly unit-testable against synthetic response
+  shapes, the same testability-refactor already used throughout this
+  session for network-calling functions), and added the same
+  `store_api_credential`/`extract_api_keys_from_item` calls the other two
+  loops already make. **P2/capability**, closing the last gap in this
+  theme's coverage sweep of both paid providers. New regression test
+  `extract_pivot_entities_also_harvests_a_leaked_key_from_a_pivot_response`
+  feeds a synthetic `discord_user`-shaped item with an AWS-shaped key in its
+  `token` field (the same fixture shape `util::key_harvest`'s own
+  orchestrator tests use) and asserts an `ApiKey` entity with `service:aws`
+  comes out — git-stash-proven: neutering the two new call sites makes it
+  fail (only a generic `Other("token")` entity survives, no `ApiKey`);
+  restored, it passes. Live-verification note (honest disclosure): a real
+  `hse scan --kind username --value Kylo4kylo --modules see_know` run in
+  this sandbox confirms the operator's SeekNow key is still the T2.83-
+  confirmed-dead key (`invalid_api_key`, `found: 0`), so `resolve_identity_
+  pivots` cannot be exercised end-to-end here regardless of this fix — an
+  environmental constraint, not a defect in the change, disclosed rather
+  than papered over; the fix itself is proven by the git-stash-proven unit
+  test above. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4615 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE (extended), §5 — same commit.
 
 ---
 
@@ -9978,3 +10019,32 @@ way, so this specific drift class can't recur silently again.
   `-D warnings`/rustdoc clean, full suite 0 failures (4614 lib tests, +1).
   **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
   corpus, fourth slice), §5 — same commit.
+- **2026-07-13** — **T2.87: `see_know`'s identity-pivot chase (discord/user,
+  discord/to-roblox, gaming/steam) was the one remaining SeekNow data-
+  ingestion point that never ran through the key-harvest pipeline.**
+  Operator instruction: "Focus purely on utilising Oathnet and Seek-Know to
+  find more API keys." Audited every item-processing loop in both
+  `oathnet_pro` (breach page + stealer search — both already harvest every
+  row) and `see_know` (broad `/search`, per-seed endpoint matrix, and
+  identity-pivot loops). The first two `see_know` loops already call
+  `store_api_credential`/`extract_api_keys_from_item`; the pivot loop did
+  not, despite SeekNow's own doc comment naming this pivot chase as its
+  "unique value" — a linked Discord/Roblox/Steam account's own response can
+  carry a `password`/`token`/`note` field exactly like a breach row does,
+  and it was silently missed. Fix: extracted the loop body into a new
+  `extract_pivot_entities` (split from the network-calling
+  `resolve_identity_pivots` for direct unit-testability, mirroring this
+  session's established pattern) and added the same two harvest calls the
+  sibling loops already make. New regression test feeds a synthetic
+  `discord_user`-shaped item with an AWS-shaped key in its `token` field and
+  asserts an `ApiKey` entity comes out, git-stash-proven (neutering the two
+  new lines leaves only a generic `Other` entity, no `ApiKey`; restored, it
+  passes). Live-verification note (honest disclosure): a real `hse scan
+  --kind username --value Kylo4kylo --modules see_know` run confirms this
+  sandbox's SeekNow key is still the T2.83-confirmed-dead key
+  (`invalid_api_key`, found: 0), so the pivot chase cannot be exercised
+  end-to-end here regardless of this fix — an environmental constraint,
+  disclosed rather than hidden; the fix itself is proven by the git-stash-
+  proven unit test. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4615 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE (extended), §5 — same commit.

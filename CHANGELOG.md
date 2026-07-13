@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **SeekNow's Discord/Steam/Roblox account-linking lookups now also recover
+  leaked API keys, not just linked-account identities.** This was the one
+  remaining SeekNow data source that skipped the key-recovery pass every
+  other SeekNow query already goes through, despite being the source
+  SeekNow itself highlights as its standout feature (turning a Discord ID
+  found in breach data into every account it's linked to). A leaked key
+  pasted into one of those linked accounts is now caught too.
 - **New "Key Harvest" page in the web console** — a dedicated dashboard for
   the API-key-harvesting pipeline, its own nav entry and route (`#/harvest`),
   not a panel tucked into an existing page. Shows the permanent cross-scan

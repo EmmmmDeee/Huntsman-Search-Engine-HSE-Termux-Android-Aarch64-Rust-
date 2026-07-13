@@ -1179,6 +1179,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   handling. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
   0 failures (4610 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.85 — same
   commit.
+  *Extended (2026-07-13) — `see_know`'s identity-pivot chase now harvests
+  keys too, T2.87:* operator instruction: "Focus purely on utilising
+  Oathnet and Seek-Know to find more API keys." Audited every item-
+  processing loop in both providers: `oathnet_pro`'s breach-page and
+  stealer-search loops both already harvest every row; `see_know`'s broad
+  `/search` loop and per-seed endpoint-matrix loop both already harvest
+  too — but its THIRD loop, `resolve_identity_pivots`'s discord/user +
+  discord/to-roblox + gaming/steam pivot chase, did not. A real gap, not a
+  stylistic inconsistency: this pivot chase is SeekNow's own doc comment's
+  stated "unique value" over the free username stack (resolving a Discord
+  snowflake / SteamID64 to its linked accounts), so a leaked credential in
+  a linked account's own `password`/`token`/`note` field — structurally
+  identical to what every other SeekNow endpoint already scans — was
+  silently missed. Fix: split the pivot loop's per-item processing into a
+  new `extract_pivot_entities`, separated from the network-calling
+  `resolve_identity_pivots` for direct unit-testability (the same
+  testability refactor this session already applies to every network-
+  calling function), and added the identical `store_api_credential`/
+  `extract_api_keys_from_item` calls the other two loops already make. New
+  regression test feeds a synthetic `discord_user`-shaped item with an
+  AWS-shaped key in its `token` field (the same fixture shape
+  `util::key_harvest`'s own orchestrator tests use) and asserts an `ApiKey`
+  entity with `service:aws` tag comes out. Git-stash-proven: neutering the
+  two new lines leaves only a generic `Other("token")` entity, no `ApiKey`;
+  restored, it passes. Live-verification note (honest disclosure): a real
+  `hse scan --kind username --value Kylo4kylo --modules see_know` run
+  confirms this sandbox's SeekNow key is still the T2.83-confirmed-dead key
+  (`invalid_api_key`, found: 0), so the pivot chase cannot be exercised
+  end-to-end here regardless of this fix — an environmental constraint,
+  disclosed rather than hidden; the fix is proven by the git-stash-proven
+  unit test instead. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4615 lib tests, +1). **Paired:** `PROBLEM_TREE`
+  T2.87 — same commit.
 
 - **`[x]` SOL-KEYHARVEST-UI · The T2.78–T2.85 harvest pipeline's own
   intelligence products — the permanent `key_vault` bank and `key_roi`
