@@ -254,6 +254,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **MetaGer search results no longer include MetaGer's own homepage, footer,
+  and nonprofit-operator links disguised as genuine hits about your search
+  subject.** MetaGer is one of only three engines this tool always queries
+  as a reliable fallback, so this was a false positive on effectively every
+  scan — every single one of a real capture's 30 extracted "results" turned
+  out to be MetaGer's own chrome, not a real hit. Fixed by recognizing that
+  chrome for what it is. Also discovered along the way: MetaGer's legacy
+  search endpoint no longer works at all (it now just redirects to their
+  marketing homepage), so it currently contributes nothing either way —
+  that's disclosed honestly rather than papered over.
 - **A long API key/token scraped from a crawled web page or a username-search
   profile page no longer gets silently dropped.** Both the web crawler's and
   the username-search module's key-scanning passes hardcoded a 200-character

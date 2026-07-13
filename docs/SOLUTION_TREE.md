@@ -869,6 +869,59 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   engines (lower marginal value — same shared parser three fixtures now
   exercise). **(§4a)** **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture
   corpus, third slice), §8 — same commit.
+  *Golden-fixture corpus — fourth slice delivered (2026-07-13): MetaGer, and
+  a real false-positive defect on one of only THREE `RELIABLE_ENGINE_NAMES`.*
+  Re-prioritised ahead of the remaining 14 lower-value engines this node's
+  own prior slices named, because `metager` (with `swisscows`/`dogpile`) is
+  the reliable core `pivot_engine_set` always unions in — the guaranteed
+  floor of every scan's second-order pivot/recycle discovery pass — so a
+  silent defect here has outsized real impact. Fetched a REAL MetaGer
+  response live for `eingabe=Kylo4kylo` (following its redirect, matching
+  the production `curl -L` fetch path exactly) and checked it in verbatim as
+  `src/modules/search_engines/fetch/testdata/metager_kylo4kylo.html`
+  (21 KB). Unlike the three prior slices, this one surfaced a genuine defect
+  rather than confirming the happy path: ALL 30 raw hits `parse_results`
+  extracted were MetaGer's own homepage/language-switcher/footer/about-page
+  chrome (`metager.org`, the distinct-TLD `metager.de` subdomains
+  `maps.metager.de`/`gitlab.metager.de`, `suma-ev.de` — MetaGer's own
+  nonprofit operator, self-disclosed in the captured page's own "MetaGer is
+  developed and run by our nonprofit organization, SUMA-EV" text — plus a
+  hosting-provider sustainability credit and donation-affiliate widget link),
+  none of it a genuine organic result — a false positive on every single
+  MetaGer query, silently fabricating fake Domain/Url entities attributed to
+  the scan subject. Root cause: none of these five domains were in
+  `ENGINE_DOMAINS`. Fix: added all five (`helpers/urls.rs`). New test
+  `parse_results_excludes_metagers_own_chrome_from_a_real_serp_capture`
+  asserts EMPTY results from this real fixture — every hit is chrome, unlike
+  the prior three slices' specific nonzero pins — git-stash-proven:
+  reverting the `ENGINE_DOMAINS` addition leaks all 30 fake hits back
+  through; restored, 0. The same investigation, run with the same rigor as
+  the au_electoral/au_people findings above (two independent real queries —
+  `Kylo4kylo` and Anthony Albanese — plus a GET/POST check), also confirmed
+  the legacy `/meta/meta.ger3` endpoint this module targets is permanently
+  dead: it unconditionally 302-redirects to the plain marketing homepage
+  regardless of query/cookies/method, and MetaGer's own `robots.txt`
+  explicitly `Disallow`s `/meta/` and `/*/meta/` — the identical "legacy
+  endpoint retired for a client-rendered app" root cause already found twice
+  in this same node (au_electoral's AEC leg, au_people's White Pages AU
+  leg). *Deliberately NOT done this slice, to avoid scope creep on an
+  already-substantial finding:* demoting `metager` out of
+  `RELIABLE_ENGINE_NAMES` and correcting its now-disproven "100% hit, 0%
+  blocked, 20 results/call" doc comment — a real, separate follow-on
+  touching the pivot/recycle guaranteed-floor semantics and ~5 dependent
+  test call sites (`reliable_engines_resolve_by_name`,
+  `pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic`,
+  and others asserting the 3-name reliable set), named explicitly as T2.7's
+  next remaining item rather than bundled in here. Live-verified: a real
+  `hse scan --kind name --value Kylo4kylo --modules search_engines` run now
+  reports `metager: outcome=empty, results=0` (previously `ok` with 30 fake
+  hits), confirmed zero `metager.org`/`suma-ev.de`/`hetzner.de`/
+  `wecanhelp.de` entities in the scan output. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4614 lib tests, +1).
+  *Remaining corpus slices, unchanged:* `au_people`/`au_electoral`/
+  `au_property` (still proxy-blocked) and the other 14 `search_engines`
+  engines. **(§4a)** **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture corpus,
+  fourth slice), §8 — same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found

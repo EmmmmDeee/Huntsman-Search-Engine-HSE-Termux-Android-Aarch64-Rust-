@@ -605,6 +605,66 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   parser three fixtures now exercise). **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, third slice), §5 — same
   commit.
+  **Golden-fixture corpus — fourth slice delivered (2026-07-13): MetaGer,
+  and a real false-positive defect found on one of the pivot/recycle pass's
+  only THREE guaranteed-floor engines.** Re-prioritised ahead of the
+  remaining 14 lower-value `search_engines` engines this node's own prior
+  slice named: `metager` is one of `RELIABLE_ENGINE_NAMES` (with `swisscows`/
+  `dogpile`) — the reliable core `pivot_engine_set` always unions in,
+  guaranteeing the second-order pivot/recycle pass (the core cross-platform
+  OSINT linkage: username→profiles, email/person→address) never runs on an
+  empty engine set — so a silent defect here degrades every scan's core
+  discovery pass, not just one engine's coverage. Fetched a REAL MetaGer
+  response live for `eingabe=Kylo4kylo` (following its redirect, exactly as
+  the production `curl -L` fetch path does) and checked it in verbatim as
+  `src/modules/search_engines/fetch/testdata/metager_kylo4kylo.html`
+  (21 KB, unmodified). Unlike the three prior slices, this one did NOT
+  merely confirm the happy path: ALL 30 raw hits `parse_results` extracted
+  from this real capture were MetaGer's own homepage/language-switcher/
+  footer/about-page chrome (`metager.org`, the distinct-TLD `maps.metager.de`/
+  `gitlab.metager.de` subdomains, `suma-ev.de` — MetaGer's own nonprofit
+  operator, self-disclosed on the captured page's own text — plus its
+  hosting-provider sustainability credit and donation-affiliate widget
+  links), none of it a genuine organic result — a false positive on every
+  single MetaGer query, the defect class this project's own evidentiary
+  doctrine treats as worse than missing coverage, silently fabricating fake
+  Domain/Url entities attributed to the scan subject. Root cause: none of
+  these domains were in `ENGINE_DOMAINS` (the `is_engine_domain` exclusion
+  list every one of the other 16 engines' chrome is filtered through).
+  Confirmed with TWO independent real requests (`Kylo4kylo` and Anthony
+  Albanese) plus a GET/POST check that this isn't per-query flakiness: the
+  legacy `/meta/meta.ger3` endpoint this module's `build_url` targets
+  unconditionally 302-redirects to the plain marketing homepage regardless
+  of query, cookies, or HTTP method, and MetaGer's own `robots.txt`
+  explicitly `Disallow`s `/meta/` and `/*/meta/` — the same "legacy static
+  endpoint retired for a client-rendered app" root cause already confirmed
+  twice this session (au_electoral's AEC leg, au_people's White Pages AU
+  leg). Fix (this slice, scope-bounded): added `metager.org`, `metager.de`,
+  `suma-ev.de`, `hetzner.de`, and `wecanhelp.de` to `ENGINE_DOMAINS` so this
+  chrome is now correctly excluded — converting a 100%-false-positive
+  "success" into an honest zero-result outcome. New test
+  `parse_results_excludes_metagers_own_chrome_from_a_real_serp_capture`
+  asserts EMPTY results from this fixture (not a specific nonzero count
+  like the prior three slices — every hit in this real capture is chrome),
+  git-stash-proven: reverting the `ENGINE_DOMAINS` addition makes it fail
+  (30 leaked results); restored, it passes. *Deliberately NOT done this
+  slice, to avoid scope creep on top of an already-substantial finding:*
+  demoting `metager` out of `RELIABLE_ENGINE_NAMES` and correcting its
+  stale "100% hit, 0% blocked, 20 results/call" doc comment (now disproven —
+  this engine's legacy endpoint returns zero genuine results, confirmed
+  above) — a real, separate follow-on that touches the pivot/recycle
+  guaranteed-floor semantics and ~5 dependent test call sites, named
+  explicitly here as T2.7's next remaining item rather than bundled in.
+  Live-verified: a real `hse scan --kind name --value Kylo4kylo --modules
+  search_engines` run now reports `engine: metager, outcome: empty, results:
+  0` (previously would have reported `ok` with 30 fake hits) — confirmed
+  zero `metager.org`/`suma-ev.de`/`hetzner.de`/`wecanhelp.de` entities in
+  the scan output. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4614 lib tests, +1). *Remaining corpus slices,
+  unchanged:* `au_people`/`au_electoral`/`au_property` (still blocked by
+  this sandbox's proxy) and the other 14 `search_engines` engines. **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, fourth
+  slice — MetaGer chrome-leak defect), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -9888,3 +9948,33 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4613 lib tests, +3).
   **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-UI (new node), §5 — same
   commit.
+- **2026-07-13** — **T2.7: golden-fixture corpus fourth slice (MetaGer) found
+  and fixed a real false-positive defect on one of only THREE
+  `RELIABLE_ENGINE_NAMES` — the guaranteed floor of every scan's pivot/
+  recycle discovery pass.** A real live capture of MetaGer's response to
+  `eingabe=Kylo4kylo` (followed through its redirect, matching the
+  production `curl -L` fetch path) showed ALL 30 raw hits `parse_results`
+  extracted were MetaGer's own homepage/footer/about-page chrome
+  (`metager.org`, `metager.de`, `suma-ev.de` — MetaGer's own self-disclosed
+  nonprofit operator — plus a hosting-provider credit and donation-affiliate
+  link), none genuine — a false positive on every single MetaGer query.
+  Fixed by adding the 5 missing domains to `ENGINE_DOMAINS`
+  (`helpers/urls.rs`). New regression test asserts EMPTY results from this
+  real fixture, git-stash-proven (reverting the addition leaks 30 fake
+  hits; restored, 0). The same investigation also confirmed, with two
+  independent real queries + a GET/POST check + MetaGer's own
+  `robots.txt Disallow: /meta/`, that the legacy endpoint this module
+  targets is permanently dead (redirects to the marketing homepage
+  unconditionally) — the same "legacy endpoint retired for a client-
+  rendered app" root cause already found twice this session (au_electoral,
+  au_people). Deliberately scoped OUT of this slice: demoting `metager`
+  from `RELIABLE_ENGINE_NAMES` and correcting its now-disproven "100% hit"
+  doc comment — a real, separate follow-on touching the pivot/recycle
+  guaranteed-floor semantics and ~5 dependent tests, named explicitly as
+  T2.7's next item rather than bundled in. Live-verified: a real `hse scan
+  --kind name --value Kylo4kylo --modules search_engines` run now reports
+  `metager: outcome=empty, results=0` (previously `ok` with 30 fake hits),
+  zero leaked chrome entities in the scan output. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4614 lib tests, +1).
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
+  corpus, fourth slice), §5 — same commit.

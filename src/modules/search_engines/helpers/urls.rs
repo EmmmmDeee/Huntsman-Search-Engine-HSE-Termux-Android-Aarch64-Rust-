@@ -59,6 +59,24 @@ pub(in crate::modules::search_engines) const ENGINE_DOMAINS: &[&str] = &[
     "dogpile.com",
     "swisscows.com",
     "system1.com",
+    // MetaGer's own homepage/language-switcher/footer chrome — a real live
+    // capture (`fetch/testdata/metager_kylo4kylo.html`) showed EVERY hit the
+    // parser extracted from a genuine `eingabe=` response was one of these,
+    // not a single actual organic result. `metager.de` is a distinct TLD from
+    // `metager.org` (not covered by the same entry) and hosts the
+    // `maps.metager.de`/`gitlab.metager.de` sub-products; `suma-ev.de` is
+    // MetaGer's own nonprofit operator, self-disclosed on the captured page
+    // itself ("MetaGer is developed and run by our nonprofit organization,
+    // SUMA-EV"); `hetzner.de` and `wecanhelp.de` appear only as MetaGer's own
+    // about-page hosting-provider sustainability credit and donation-affiliate
+    // widget respectively in this same capture — engine-adjacent chrome, the
+    // same category as the app-store/Tor entries below, not a claim that
+    // either is never a legitimate third-party finding elsewhere.
+    "metager.org",
+    "metager.de",
+    "suma-ev.de",
+    "hetzner.de",
+    "wecanhelp.de",
     "flocdn.com",
     "cookielaw.org",
     "onetrust.com",

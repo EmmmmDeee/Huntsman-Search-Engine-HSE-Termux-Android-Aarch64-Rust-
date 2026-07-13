@@ -377,3 +377,42 @@ use super::*;
             results.len()
         );
     }
+
+    /// Golden-fixture corpus, fourth slice: MetaGer, one of only THREE engines
+    /// in [`super::super::engines::RELIABLE_ENGINE_NAMES`] — the guaranteed
+    /// floor `pivot_engine_set` falls back to when nothing else has proven
+    /// live yet, so a silent defect here degrades the core cross-platform
+    /// pivot/recycle pass on every scan, not just one engine's coverage.
+    ///
+    /// A REAL live capture of this exact fixture (`eingabe=Kylo4kylo`,
+    /// followed through its redirect) surfaced a genuine, previously-unknown
+    /// defect rather than merely proving the happy path: MetaGer's own
+    /// homepage/language-switcher/footer chrome (`metager.org`, the separate
+    /// `maps.metager.de` subdomain, and `suma-ev.de` — MetaGer's own
+    /// nonprofit operator, self-disclosed in this exact page's "MetaGer is
+    /// developed and run by our nonprofit organization, SUMA-EV" text) was
+    /// **not** in [`super::super::helpers::ENGINE_DOMAINS`], so all 30 of
+    /// those self-referential links were extracted as fake organic
+    /// "results" — false positives, the defect class this project's own
+    /// evidentiary doctrine treats as worse than missing coverage. Fixed by
+    /// adding the three domains to `ENGINE_DOMAINS`.
+    const GOLDEN_METAGER_KYLO4KYLO: &str = include_str!("testdata/metager_kylo4kylo.html");
+
+    /// Pins the fix: every one of this real capture's 30 raw hits is
+    /// MetaGer's own chrome, so post-fix extraction is correctly EMPTY, not a
+    /// specific non-empty count like the Brave/Bing/DuckDuckGo slices. A
+    /// regression that drops any of the three `ENGINE_DOMAINS` entries this
+    /// fix added would silently reopen the false-positive leak on every
+    /// MetaGer query. Git-stash-proven: reverting the `ENGINE_DOMAINS`
+    /// addition makes this fail (30 leaked results); restored, it passes.
+    #[test]
+    fn parse_results_excludes_metagers_own_chrome_from_a_real_serp_capture() {
+        let results = parse_results(GOLDEN_METAGER_KYLO4KYLO, "metager", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        assert!(
+            urls.is_empty(),
+            "every hit in this real capture is MetaGer's own homepage/footer/nonprofit-\
+             operator chrome, none of it a genuine organic result — a fix that leaves any \
+             leaking through is a false-positive regression: {urls:?}"
+        );
+    }
