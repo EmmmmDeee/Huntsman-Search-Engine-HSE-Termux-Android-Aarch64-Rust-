@@ -213,6 +213,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **The electoral-roll lookup (`au_electoral`) no longer wastes a request on
+  the retired national AEC name-search endpoint.** That endpoint stopped
+  supporting name-based lookups (confirmed against real live traffic — a
+  test name and a real enrolled public figure both got the same generic
+  error page); the AEC's real "Check your enrolment" tool now works by
+  address instead of name. The state electoral commission checks (NSW, VIC,
+  QLD) are unaffected and still run.
 - **A WiGLE account no longer stays flagged "unverified" after you fix it.**
   WiGLE's account-verification status is learned from ordinary query
   traffic (a specific error response means the account's email isn't

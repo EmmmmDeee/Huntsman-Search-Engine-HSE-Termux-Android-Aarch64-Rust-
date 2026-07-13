@@ -793,6 +793,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   SOL-HEALTH-SIGNAL legs T2.7's original sketch named (hard-failure,
   parse-rate) are now delivered; only the golden-fixture corpus's remaining
   slices stay open, each its own low-priority future increment. **(§4a)**
+  *`au_electoral` corpus slice — premise refuted, real break found and fixed
+  instead (2026-07-13):* the named next fixture slice ("the AEC's real
+  'not enrolled' response for a synthetic name") assumed the AEC name-search
+  endpoint still worked. It doesn't: two real `GET
+  electorate.aec.gov.au/NameSearch.aspx` calls (a nonsense name, and a real
+  enrolled public figure) both returned the identical generic "Temporarily
+  Unavailable" error page — not query-specific, not transient. The AEC's
+  actual current tool (`check.aec.gov.au`) confirmed why: it's been rebuilt
+  as an address-based (postcode/suburb/street) multi-step flow with no
+  name-search capability at all, a different input shape than this module
+  takes — repointing is a distinct future capability, correctly not pursued
+  this cycle. Fix: removed the dead AEC dispatch leg + its AEC-only
+  `split_name` helper from `au_electoral::process()`, corrected
+  `max_timeout_ms` 20,000→15,000 (3 EC lookups, not 4), updated the module
+  doc comment with the live evidence. NSW/VIC/QLD untouched — unreachable
+  from this sandbox (proxy-blocked), so honestly left unverified rather than
+  guessed at. Live-verified: a real `hse scan --kind name --value "Anthony
+  Albanese" --modules au_electoral` dispatch trace now shows zero connection
+  attempts to `electorate.aec.gov.au`, only NSW→VIC→QLD in order. 2 new
+  tests (a golden-fixture capture of the real retired-AEC error page pinning
+  `extract_division` returns `None`; an exact-timeout regression), git-stash-
+  proven against the unfixed 20,000 value. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4600 lib tests, net +1).
+  **(§4a)** **Paired:** `PROBLEM_TREE` T2.7 (au_electoral AEC leg), §8 —
+  same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found

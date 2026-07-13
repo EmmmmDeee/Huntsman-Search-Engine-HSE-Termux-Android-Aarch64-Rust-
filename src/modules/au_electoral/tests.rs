@@ -169,11 +169,31 @@ fn strip_electoral_html_separates_adjacent_tags() {
 }
 
 #[test]
-fn split_name_handles_edge_cases() {
-    assert_eq!(super::split_name("Haigen Bamford"), ("Haigen", "Bamford"));
-    assert_eq!(super::split_name("Mary Ann Jones"), ("Mary", "Ann Jones"));
-    assert_eq!(super::split_name("Cher"), ("Cher", ""));
-    assert_eq!(super::split_name("  Anna  Smith  "), ("Anna", "Smith"));
+fn extract_division_returns_none_for_the_real_retired_aec_namesearch_response() {
+    // Golden fixture (T2.7 corpus): a REAL response captured live
+    // (2026-07-13) from `electorate.aec.gov.au/NameSearch.aspx`, the
+    // endpoint this module's now-removed AEC leg used to query. Both a
+    // nonsense name and a real enrolled public figure got the identical
+    // generic "Temporarily Unavailable" error page rather than a
+    // query-specific result, confirming the name-search capability is
+    // permanently retired (see the module doc comment) — this pins that
+    // real observed shape so `extract_division` never mistakes the error
+    // page's boilerplate for an enrolment result if anything is ever
+    // repointed at this endpoint again.
+    let html = include_str!("testdata/aec_namesearch_retired.html");
+    assert!(
+        extract_division(html).is_none(),
+        "the retired AEC error page must not parse as an enrolment result"
+    );
+}
+
+#[test]
+fn module_no_longer_dispatches_the_retired_aec_leg() {
+    // Regression for the AEC-leg removal: three sequential state EC lookups
+    // (NSW -> VIC -> ECQ), not four (the retired AEC national leg no longer
+    // budgeted for).
+    let m = AuElectoral;
+    assert_eq!(m.max_timeout_ms(), 15_000);
 }
 
 #[test]

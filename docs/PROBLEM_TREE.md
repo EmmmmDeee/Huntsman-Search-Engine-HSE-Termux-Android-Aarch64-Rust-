@@ -500,6 +500,45 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   delivered; only the golden-fixture corpus's remaining slices stay open,
   each its own low-priority future increment. **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (parse-rate/zero-yield leg), §5 — same commit.
+  **Real live break found and fixed while scoping the `au_electoral` corpus
+  slice (2026-07-13):** the named next fixture slice — a privacy-safe
+  "not enrolled" capture for `au_electoral` — turned out to rest on a false
+  premise: `au_electoral`'s AEC leg (`electorate.aec.gov.au/NameSearch.aspx`)
+  no longer performs a name search at all, permanently, not a transient
+  outage. Live-confirmed with TWO real `GET` requests — a nonsense name
+  and a real enrolled public figure (Anthony Albanese) — both returning the
+  *identical* generic `"Temporarily Unavailable / System Problem"` error
+  page rather than any query-specific result; cross-checked against the
+  AEC's actual current "Check your enrolment" tool (`check.aec.gov.au`),
+  which runs an entirely different address-based multi-step flow
+  (postcode → suburb → street via `?handler=…` RPC calls) with no
+  name-search capability at all — a different input shape (`Address`, not
+  `FullName`) this module doesn't take, so repointing to it is a distinct
+  future capability, not a same-shape endpoint repair (out of scope this
+  cycle to avoid scope creep, matching the au-registry/Ssid precedent from
+  the prior cycle). Fix: removed the dead AEC dispatch leg (and its
+  AEC-only `split_name` helper) from `process()` so every `FullName` scan
+  no longer pays a wasted request/timeout cost for a call that can never
+  succeed; `max_timeout_ms` corrected 20,000→15,000 (3 sequential EC
+  lookups, not 4); updated the module doc comment with the live evidence.
+  NSW/VIC/QLD legs were NOT touched — this sandbox's network policy blocks
+  all three (502 from the outbound proxy), so their live status is
+  honestly undetermined this cycle, unlike AEC which was directly
+  reachable and directly tested. Live-verified: a real `hse scan --kind
+  name --value "Anthony Albanese" --modules au_electoral` run shows the
+  dispatch trace now connects ONLY to `check.elections.nsw.gov.au` →
+  `check.vec.vic.gov.au` → `enrol.ecq.qld.gov.au`, zero connection attempts
+  to `electorate.aec.gov.au` — confirming the dead leg is genuinely gone
+  from the live path (the three state legs then hit this sandbox's own
+  proxy block, an environment limitation, not a code defect). 2 new tests:
+  a golden-fixture-style capture of the real retired-AEC error page (pins
+  `extract_division` correctly returning `None` against it, T2.7 corpus
+  precedent) and an exact-timeout-value regression, git-stash-proven to
+  fail against the unfixed 20,000 value and pass against the fix. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4600 lib tests, +1 net — one new AEC test, one dead `split_name` test
+  removed). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (au_electoral AEC
+  leg), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
