@@ -11,6 +11,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The Hacker News module now also recovers leaked API keys from a user's
+  bio and their comment/post history, not just emails and links.** It
+  already fetches both for identity extraction; that same already-downloaded
+  text is now also checked for a leaked API key or credential someone
+  accidentally pasted in a comment or their profile bio — recovered at no
+  extra network cost.
 - **`hse doctor` now checks whether your SeekNow API key actually works.**
   Previously a dead or rejected SeekNow key failed completely silently —
   every scan just reported finding nothing from it, indistinguishable from

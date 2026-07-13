@@ -3496,6 +3496,51 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4606 lib tests, +5). **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE
   extended, §5 — same commit.
+- **`[x]` T2.84 · `hacker_news` fetches a user's free-text bio AND their full
+  Algolia-indexed submissions (comments/Show-HN posts) but never ran either
+  through the universal `found_keys`/`key_harvest` key-scanner.** Continuing
+  the "proactively harvesting APIs" theme (T2.82 wayback, T2.83 SeekNow).
+  Investigated the remaining candidate modules
+  (`pypi_user`/`hacker_news`/`reddit_user`/`subdomain_takeover`/`pgp`) and
+  found `hacker_news` the strongest: its Algolia `search` endpoint response
+  (already fully fetched into memory for `algolia_domain_entities`'s domain
+  extraction) carries a `comment_text`/`story_text` field per hit — real,
+  unmoderated developer free text, live-confirmed via a direct query against
+  `hn.algolia.com` (a real comment's full HTML-escaped body was present
+  verbatim in the response) — exactly the kind of place a pasted code
+  snippet with a live key would surface, the same "developer free text"
+  category that justified the wayback and HN-bio candidates. The account's
+  `about` bio (already deserialized into `HnUser.about`) is the same
+  category at smaller scale. → **Solution:** extracted a new
+  `mine_keys_from_text(pool, text, username, source_label)` — reusing the
+  identical `found_keys::key_tokens`/`key_harvest::identify_api_key`/
+  `key_pool` pipeline `web_crawler`/`username_search`/`wayback` already
+  established — called once over the bio (inside the already-pure
+  `build_entities`, label `"bio"`) and once over the raw Algolia response
+  body (inside `fetch_algolia_submissions`, label `"submissions"`), both
+  bodies already in memory, zero extra network cost. **P2/capability** (a
+  real, zero-extra-cost proactive-harvesting gap in a module that already
+  downloads both bodies). 2 new regression tests: one exercises
+  `mine_keys_from_text` directly (a synthetic BinaryEdge-shaped poolable
+  key in submission-shaped text reaches `pool.add` with
+  `discovered_by: "hacker_news:<user>"` and `notes` naming the
+  `"submissions"` label), the other exercises the SAME path end-to-end
+  through `build_entities` with a bio-embedded key, asserting the notes
+  correctly say `"bio"` instead — proving the two call sites are
+  independently distinguishable, not a single generic "found a key"
+  no-op. Git-stash-proven by neutering `mine_keys_from_text` to a no-op,
+  which fails both new tests; restored, both pass. All 12 pre-existing
+  `hacker_news` tests continue to pass unchanged (the 5 `build_entities`
+  call sites needed only a new `&pool` argument, no behavior change to
+  their own assertions). Live-verified: a real `hse scan --kind username
+  --value pg --modules hacker_news` run (the project's own consented
+  canonical public-figure test account) completes cleanly through both new
+  call sites against a REAL 13-entity Algolia submissions response and a
+  real bio, zero errors — an honest true-negative (no leaked key in this
+  real, already-audited public account), not a fabricated result. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4608 lib tests, +2). **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE
+  extended, §5 — same commit.
 
 ---
 
@@ -9656,4 +9701,33 @@ way, so this specific drift class can't recur silently again.
   configured key was rejected..." — the exact diagnostic that was silently
   missing before. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4606 lib tests, +5). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **2026-07-13** — **T2.84: `hacker_news` now scans its already-fetched bio
+  and Algolia submissions text for leaked API keys.** Continuing the
+  "proactively harvesting APIs" theme (T2.82 wayback, T2.83 SeekNow).
+  Investigated the remaining candidates (`pypi_user`/`hacker_news`/
+  `reddit_user`/`subdomain_takeover`/`pgp`); `hacker_news` was strongest —
+  its Algolia `search` response (already fully fetched for
+  `algolia_domain_entities`) carries a `comment_text`/`story_text` field
+  per hit, live-confirmed via a direct query against `hn.algolia.com` (a
+  real comment's full body was present verbatim) — real, unmoderated
+  developer free text, the same category that justified wayback. The
+  account bio (already deserialized into `HnUser.about`) is the same
+  category at smaller scale. Fix: new `mine_keys_from_text(pool, text,
+  username, source_label)` — reusing the identical `found_keys`/
+  `key_harvest`/`key_pool` pipeline `web_crawler`/`username_search`/
+  `wayback` already established — called over the bio (label `"bio"`,
+  inside `build_entities`) and the raw Algolia body (label `"submissions"`,
+  inside `fetch_algolia_submissions`), both already in memory, zero extra
+  network cost. 2 new regression tests prove the two call sites are
+  independently distinguishable by their `notes` label, not a single
+  generic "found a key" no-op — git-stash-proven by neutering
+  `mine_keys_from_text`, which fails both; restored, both pass. All 12
+  pre-existing `hacker_news` tests pass unchanged. Live-verified: a real
+  `hse scan --kind username --value pg --modules hacker_news` run (the
+  project's own consented canonical public-figure account) completes
+  cleanly through both new call sites against a real 13-entity response
+  and a real bio, zero errors — an honest true-negative, not fabricated.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4608 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.

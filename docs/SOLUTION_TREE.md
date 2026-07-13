@@ -1079,6 +1079,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the exact diagnostic that was silently missing before. Gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4606 lib
   tests, +5). **Paired:** `PROBLEM_TREE` T2.83 — same commit.
+  *Extended (2026-07-13) — `hacker_news` now proactively harvests keys from
+  its own fetched bio/submissions text, T2.84:* continuing the "proactively
+  harvesting APIs" theme. Investigated the remaining candidates
+  (`pypi_user`/`hacker_news`/`reddit_user`/`subdomain_takeover`/`pgp`);
+  `hacker_news` was strongest — its Algolia `search` response (already
+  fully fetched for `algolia_domain_entities`) carries a `comment_text`/
+  `story_text` field per hit, live-confirmed via a direct query against
+  `hn.algolia.com` (a real comment's full body was present verbatim) — real
+  developer free text, the same category that justified `wayback`. The
+  account bio (already deserialized into `HnUser.about`) is the same
+  category at smaller scale. Fix: new `mine_keys_from_text(pool, text,
+  username, source_label)` — reusing the identical `found_keys`/
+  `key_harvest`/`key_pool` pipeline already established — called over the
+  bio (label `"bio"`) and the raw Algolia body (label `"submissions"`),
+  both already in memory, zero extra network cost. 2 new regression tests
+  prove the two call sites are independently distinguishable by their
+  `notes` label — git-stash-proven by neutering `mine_keys_from_text`,
+  which fails both; restored, both pass. All 12 pre-existing `hacker_news`
+  tests pass unchanged. Live-verified: a real `hse scan --kind username
+  --value pg --modules hacker_news` run completes cleanly through both new
+  call sites against a real 13-entity response and a real bio, zero
+  errors — an honest true-negative. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4608 lib tests, +2).
+  **Paired:** `PROBLEM_TREE` T2.84 — same commit.
 
 - **`[x]` SOL-PROBE-CONFIDENCE-DEDUP · `username_search`, `social_probe`, and
   `streaming_probe` each independently hardcoded the identical presence-
