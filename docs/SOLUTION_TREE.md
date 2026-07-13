@@ -969,6 +969,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fails it. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
   0 failures (4596 lib tests, +1). **Paired:** `PROBLEM_TREE` T2.79 — same
   commit.
+  *Extended (2026-07-13) — merged web_crawler/username_search's duplicate
+  key-tokenizers, T2.80:* concluding the same "merge where advantageous"
+  pass, found `web_crawler::extract_api_keys_from_body` and
+  `username_search::scan_text_for_keys` each hand-rolling the identical
+  `body.split(whitespace/quote-chars)` + `16..=200`-char-window loop
+  instead of reusing `found_keys::key_tokens` — the canonical tokenizer
+  already used elsewhere for this exact job. Two real defects followed: a
+  stricter length cap (200 vs `found_keys::MAX_TOKEN` = 4096, silently
+  dropping any longer real key/PAT/JWT scraped from a page or profile
+  body) and a narrower delimiter set (missing `>`, `<`, `=`, `;`, `,`,
+  `&`, `?`, `{`, `}`, `[`, `]`, so a `token=VALUE`-shaped or JSON/HTML-
+  embedded key stayed glued to surrounding text). Deleted both ad hoc
+  loops; both functions now iterate
+  `found_keys::key_tokens(body, found_keys::MAX_TOKEN)` directly, keeping
+  only their own caller-specific metadata. New regression test proves a
+  234-char BinaryEdge-shaped poolable key — longer than the old 200-char
+  cap but under the real one — now survives the tokenizer and reaches
+  `pool.add`, git-stash-proven by reverting to the old inline `16..=200`
+  split, which fails it; restored, it passes. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4597 lib tests, +1).
+  **Paired:** `PROBLEM_TREE` T2.80 — same commit.
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),

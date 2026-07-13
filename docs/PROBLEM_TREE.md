@@ -3280,6 +3280,35 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   it passes. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4596 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **`[x]` T2.80 · `web_crawler::extract_api_keys_from_body` and
+  `username_search::scan_text_for_keys` each hand-rolled a near-identical,
+  strictly WORSE tokenizer than the shared `util::found_keys::key_tokens`
+  both already had reason to use.** Concluding the same operator refactor/
+  merge request. Both functions split page text on whitespace + `"`/`'`/
+  `` ` `` and hardcoded a `16..=200` char length window, instead of reusing
+  `found_keys::key_tokens` (the canonical per-response tokenizer already
+  used by `util::extract`/`util::http::keys` for the identical job). Two
+  real defects followed from the duplication: (1) the 200-char cap is
+  stricter than `found_keys::MAX_TOKEN` (4096), silently dropping any
+  longer real-world key/PAT/JWT scraped from a page body or profile page;
+  (2) the ad hoc delimiter set is missing `>`, `<`, `=`, `;`, `,`, `&`, `?`,
+  `{`, `}`, `[`, `]` — so e.g. a key embedded as `token=VALUE` or inside a
+  JSON/HTML attribute stays glued to its neighbouring text as one token
+  instead of splitting cleanly. → **Solution:** deleted both ad hoc
+  `body.split(...)` loops; both functions now iterate
+  `found_keys::key_tokens(body, found_keys::MAX_TOKEN)` directly, keeping
+  only their own per-caller metadata (domain-scoped notes/logging for
+  `web_crawler`, the plain "Profile page body" note for `username_search`).
+  **P3/hygiene** (duplicated inferior logic — CONVENTIONS.md's
+  single-sourced-vocabulary rule — plus a real truncation bug: long
+  credentials were silently unrecoverable from either scrape path). New
+  regression test `extract_api_keys_from_body_does_not_truncate_at_the_old_
+  200_char_cap` proves a 234-char BinaryEdge-shaped (poolable) key now
+  survives the tokenizer and reaches `pool.add` — git-stash-proven by
+  reverting to the old inline `16..=200` split, which fails it; restored,
+  it passes. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4597 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
 
 ---
 
@@ -9294,3 +9323,27 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4596 lib tests, +1).
   **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same
   commit.
+- **2026-07-13** — **T2.80: merged `web_crawler`'s and `username_search`'s
+  duplicate, inferior key-tokenizer loops onto the shared
+  `util::found_keys::key_tokens`, fixing a real long-credential truncation
+  bug.** Concluding the same operator refactor/merge request. Both
+  `extract_api_keys_from_body` and `scan_text_for_keys` hand-rolled the
+  identical `body.split(whitespace/quote-chars)` + `16..=200`-char-window
+  loop instead of reusing `found_keys::key_tokens` — the canonical
+  tokenizer already used elsewhere for this exact job. That duplication
+  carried two real defects: a stricter length cap (200 vs
+  `found_keys::MAX_TOKEN` = 4096, silently dropping any longer real key/
+  PAT/JWT scraped from a page or profile body) and a narrower delimiter set
+  (missing `>`, `<`, `=`, `;`, `,`, `&`, `?`, `{`, `}`, `[`, `]`, so a
+  `token=VALUE`-shaped or JSON/HTML-embedded key stayed glued to
+  surrounding text). Fix: deleted both ad hoc loops; both functions now
+  iterate `found_keys::key_tokens(body, found_keys::MAX_TOKEN)` directly,
+  keeping only their own caller-specific metadata (domain-scoped notes for
+  `web_crawler`, the plain profile-body note for `username_search`). New
+  regression test proves a 234-char BinaryEdge-shaped poolable key —
+  longer than the old 200-char cap but under the real one — now survives
+  the tokenizer and reaches `pool.add` — git-stash-proven by reverting to
+  the old inline `16..=200` split, which fails it; restored, it passes.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4597 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.

@@ -213,6 +213,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A long API key/token scraped from a crawled web page or a username-search
+  profile page no longer gets silently dropped.** Both the web crawler's and
+  the username-search module's key-scanning passes hardcoded a 200-character
+  cap and a narrower set of word-boundary characters than the shared key
+  scanner they should have been using; a real API key/personal-access-token/
+  JWT longer than 200 characters, or one immediately adjacent to characters
+  like `=`, `<`, `>`, or `{`/`}`, was invisible to both. They now reuse the
+  same scanner already used elsewhere, matching its higher length limit and
+  full character set.
 - **Discovered API keys for SecurityTrails, VirusTotal, and GreyNoise are now
   tested against the correct endpoint.** Two internal tables for checking
   whether a discovered key actually works had drifted apart over time; each

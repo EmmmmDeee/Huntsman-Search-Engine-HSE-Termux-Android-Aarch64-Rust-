@@ -544,14 +544,11 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
 }
 
 pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
     use crate::util::key_harvest::identify_api_key;
 
     let pool = crate::util::key_pool::global_pool();
-    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
-        let trimmed = word.trim();
-        if trimmed.len() < 16 || trimmed.len() > 200 {
-            continue;
-        }
+    for trimmed in key_tokens(body, MAX_TOKEN) {
         if let Some((service, key_val)) = identify_api_key(trimmed) {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.notes = Some(format!("Web-scraped from {domain}"));

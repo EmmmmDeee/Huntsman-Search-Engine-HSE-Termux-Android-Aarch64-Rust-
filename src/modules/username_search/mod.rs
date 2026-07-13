@@ -430,14 +430,11 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
 impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
 
 fn scan_text_for_keys(body: &str) {
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
     use crate::util::key_harvest::identify_api_key;
     let pool = crate::util::key_pool::global_pool();
-    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
-        let t = word.trim();
-        if t.len() >= 16
-            && t.len() <= 200
-            && let Some((service, key_val)) = identify_api_key(t)
-        {
+    for t in key_tokens(body, MAX_TOKEN) {
+        if let Some((service, key_val)) = identify_api_key(t) {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.status = crate::util::key_pool::KeyStatus::Untested;
             entry.notes = Some("Profile page body".into());
