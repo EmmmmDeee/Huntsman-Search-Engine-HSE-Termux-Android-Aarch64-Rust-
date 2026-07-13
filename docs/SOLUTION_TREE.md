@@ -465,6 +465,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (AU-104 is BSB/domestic-account-number scoped, no card/IBAN concept at
   all). 1 new regression test, confirmed via `git stash` to fail pre-fix and
   pass post-fix.
+  *Delivered (2026-07-13) — the `Cidr` rule-gap named in cycle 30's search,
+  closing C1's last named thread:* new AU-112
+  (`rule_au_112_shared_cidr_infrastructure`) reuses `util::spf`'s existing
+  `Ipv4Cidr`/`Ipv6Cidr::contains` (built for SPF parsing, overflow-safe,
+  tested) rather than re-implementing CIDR-containment maths — the exact
+  prerequisite cycle 30 flagged as missing. An independently-discovered
+  `IpAddress` entity found inside a `Cidr` entity from the same scan is a
+  shared-hosting-infrastructure signal (Medium, infra not ownership), gated
+  to narrow blocks (`/22` IPv4, `/48` IPv6) so a broad ISP/cloud allocation
+  can't manufacture noise, and skipping pairs `netblock`'s host-expansion
+  already makes explicit via its `cidr` evidence attribute. Added
+  `prefix_len()` to both `util::spf` CIDR types and one new
+  `core_does_not_import_util_directly` allow-list entry for `util::spf::`
+  (same pure/leaf category as `util::geohash`/`util::geometry`). Live-
+  verified against real `github.com` infrastructure via `dns_intel`/
+  `ripestat`: fired correctly on genuine narrow-block containments
+  (`140.82.112.3` in `140.82.112.0/24`), correctly silent on the same scan's
+  broader `/17`/`/18` blocks. 6 new tests, 2 confirmed via a neutered-rebuild
+  git-stash-style proof to fail pre-fix, pass post-fix. *Remaining:* `Ssid`
+  (needs the import-extractor attribution change identified in cycle 30
+  first — a two-part change, deliberately not pursued this cycle).
 - **`[ ]` SOL-PERF-PUBLISH · Reproducible on-device benchmark** → **C2**: with SOL-F3
   benches + SOL-BLOCKING throughput + SOL-F2 flat-RAM, publish "N selectors, on a
   phone, in T s, M MB".
@@ -2223,7 +2244,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; AU bounding precision, movement/timeline layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28; only AU-0xx rule-gap fill remains); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; AU bounding precision, movement/timeline layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -6525,3 +6546,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   test instead. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4577 lib tests, +1). Paired: `PROBLEM_TREE` T2.77 —
   same commit.
+- **2026-07-13** — **SOL-CORR: AU-112 closes the `Cidr` rule-gap from cycle
+  30's search, reusing `util::spf`'s CIDR-containment maths.** New
+  `rule_au_112_shared_cidr_infrastructure`: an independently-discovered
+  `IpAddress` entity found inside a `Cidr` entity from the same scan is a
+  shared-hosting-infrastructure signal, gated to narrow blocks only (`/22`
+  IPv4, `/48` IPv6) so a broad ISP/cloud allocation can't manufacture noise,
+  skipping pairs `netblock` already makes explicit. Reused
+  `util::spf::Ipv4Cidr`/`Ipv6Cidr` (built for SPF parsing, already tested)
+  rather than duplicating containment maths in `core` — added the two
+  missing `prefix_len()` accessors and one new architecture allow-list entry
+  for `util::spf::` (same pure/leaf category as `util::geohash`/
+  `util::geometry`, not a weakened guard). Live-verified against real
+  `github.com` infrastructure via `dns_intel`/`ripestat`: fired on genuine
+  containments (`140.82.112.3` in `140.82.112.0/24`), correctly silent on
+  the same scan's broader `/17`/`/18` blocks. 6 new tests, 2 confirmed via a
+  neutered-rebuild git-stash-style proof to fail pre-fix, pass post-fix.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4599 lib tests, +6; correlator rule count 109→110). Paired: `PROBLEM_TREE`
+  C1 — same commit.

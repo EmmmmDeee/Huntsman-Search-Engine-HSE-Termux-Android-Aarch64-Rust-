@@ -93,6 +93,13 @@ fn core_does_not_import_util_directly() {
                 // median, …) — the geo correlation rules' location estimators.
                 // Same justification as `util::geohash`: no I/O, no deps.
                 && !line.contains("util::geometry")
+                // Pure, dependency-free, overflow-safe CIDR-containment maths
+                // (`Ipv4Cidr`/`Ipv6Cidr::parse`/`.contains`/`.prefix_len`), same
+                // leaf category as `util::geohash`/`util::geometry`: no state, no
+                // I/O. Built for SPF `ip4:`/`ip6:` mechanism parsing but reused
+                // as-is by AU-112 (shared CIDR infrastructure) rather than
+                // duplicating the containment logic in `core`.
+                && !line.contains("util::spf::")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")

@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New correlator rule AU-112 surfaces shared CIDR-block hosting
+  infrastructure.** An IP address discovered one way (e.g. DNS resolution)
+  that falls within a network block discovered another way (e.g. an ASN/BGP
+  lookup) in the same scan is now flagged as likely shared hosting
+  infrastructure — framed as shared infra, not personal ownership. Scoped to
+  narrow blocks only (`/22` or smaller for IPv4, `/48` or smaller for IPv6)
+  so a broad ISP/cloud-provider allocation spanning thousands of unrelated
+  customers doesn't manufacture noise, and skips any pair the netblock
+  expansion module already links explicitly. Reuses the CIDR-containment
+  maths already built for SPF record parsing rather than duplicating it.
 - **`hse doctor` and the web UI now flag scrapers that silently stop finding
   anything.** The existing scraper-health signal already caught a source that
   errors repeatedly; it's now joined by a signal for a source that runs to

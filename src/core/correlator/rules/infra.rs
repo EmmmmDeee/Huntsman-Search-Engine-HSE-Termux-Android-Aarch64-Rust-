@@ -659,3 +659,114 @@ pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
     }
     out
 }
+
+/// Narrowest-permitted (largest) IPv4 block this rule will treat as a
+/// meaningful shared-infrastructure signal: `/22`, the same "largest block a
+/// single operator typically owns end-to-end" floor `netblock`'s `MAX_HOSTS`
+/// comment already establishes. A `Cidr` entity broader than this (an ISP or
+/// cloud-provider allocation spanning many unrelated customers) would turn
+/// "these two IPs are in the same block" into noise rather than signal.
+const MIN_IPV4_CIDR_PREFIX: u8 = 22;
+
+/// The IPv6 analogue of [`MIN_IPV4_CIDR_PREFIX`]: `/48` is the conventional
+/// smallest end-site allocation (RFC 6177), so anything broader is provider-
+/// scale address space, not a single shared deployment.
+const MIN_IPV6_CIDR_PREFIX: u8 = 48;
+
+/// True if `ip_entity` is already explicitly linked to `block` by another
+/// module's own evidence (e.g. `netblock`'s host-expansion, which tags each
+/// emitted `IpAddress` `netblock-member` and records the parent block as a
+/// `cidr` evidence attribute). Re-deriving that as a fresh AU-112 correlation
+/// would just restate an already-explicit parent/child relationship as if it
+/// were a new inference.
+fn already_linked_to_block(ip_entity: &Entity, block: &str) -> bool {
+    ip_entity
+        .evidence
+        .iter()
+        .any(|ev| ev.attributes.get("cidr").is_some_and(|c| c == block))
+}
+
+/// AU-112 — an independently-discovered IP address falls within a network
+/// block (`Cidr` entity) also discovered in this scan — shared hosting
+/// infrastructure, not personal ownership.
+///
+/// `bgpview`/`ripestat`/`netblock` surface `Cidr` entities (an ASN's announced
+/// prefix, or an explicit netblock target) using the CIDR-containment maths
+/// [`crate::util::spf`] already built (and tests) for SPF `ip4:`/`ip6:`
+/// mechanisms — reused here rather than re-implemented, per this project's
+/// one-classifier-per-concern convention. An `IpAddress` entity reached by a
+/// *different* route (DNS resolution, a banner grab, a second subdomain) that
+/// happens to fall inside that same block is evidence the two share a hosting
+/// network/provider — useful for infrastructure mapping, but explicitly not a
+/// personal-ownership or co-location claim, so this stays Medium and framed as
+/// a hosting/infra pivot, matching AU-111's precedent for inferred
+/// infrastructure signals. Scoped to narrow blocks only
+/// ([`MIN_IPV4_CIDR_PREFIX`]/[`MIN_IPV6_CIDR_PREFIX`]) so a broad ISP/cloud
+/// allocation containing thousands of unrelated customers can't manufacture
+/// noise, and skips pairs [`already_linked_to_block`] already makes explicit.
+pub(in crate::core::correlator) fn rule_au_112_shared_cidr_infrastructure(
+    entities: &[Entity],
+    scan_id: &str,
+    ts: u64,
+) -> Vec<Correlation> {
+    use crate::util::spf::{Ipv4Cidr, Ipv6Cidr};
+    use std::net::{Ipv4Addr, Ipv6Addr};
+
+    enum Block {
+        V4(Ipv4Cidr),
+        V6(Ipv6Cidr),
+    }
+
+    let blocks: Vec<(&Entity, Block)> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Cidr)
+        .filter_map(|e| {
+            let v = e.value.trim();
+            if v.contains(':') {
+                let c = Ipv6Cidr::parse(v)?;
+                (c.prefix_len() >= MIN_IPV6_CIDR_PREFIX).then_some((e, Block::V6(c)))
+            } else {
+                let c = Ipv4Cidr::parse(v)?;
+                (c.prefix_len() >= MIN_IPV4_CIDR_PREFIX).then_some((e, Block::V4(c)))
+            }
+        })
+        .collect();
+    if blocks.is_empty() {
+        return Vec::new();
+    }
+
+    let ips: Vec<&Entity> = entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::IpAddress)
+        .collect();
+
+    let mut out = Vec::new();
+    for (block_entity, block) in &blocks {
+        for ip in &ips {
+            if already_linked_to_block(ip, &block_entity.value) {
+                continue;
+            }
+            let contained = match block {
+                Block::V4(c) => ip.value.parse::<Ipv4Addr>().is_ok_and(|a| c.contains(a)),
+                Block::V6(c) => ip.value.parse::<Ipv6Addr>().is_ok_and(|a| c.contains(a)),
+            };
+            if !contained {
+                continue;
+            }
+            out.push(Correlation::new(
+                "AU-112",
+                "Shared CIDR infrastructure",
+                Severity::Medium,
+                format!(
+                    "IP {} falls within network block {} also discovered this scan — likely \
+                     shared hosting infrastructure, not necessarily common ownership",
+                    ip.value, block_entity.value
+                ),
+                vec![block_entity.uid.clone(), ip.uid.clone()],
+                scan_id,
+                ts,
+            ));
+        }
+    }
+    out
+}

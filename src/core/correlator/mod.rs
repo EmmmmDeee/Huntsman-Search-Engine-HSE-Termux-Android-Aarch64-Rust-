@@ -401,6 +401,10 @@ const RULES: &[RuleFn] = &[
     // AU-111: a CDN-fronted domain's SPF-authorised mail-sender IP is a likely
     // origin/hosting-network candidate — mail isn't proxied by the CDN edge.
     rule_au_111_cdn_origin_candidate,
+    // AU-112: an independently-discovered IP address falling within a narrow
+    // network block also discovered this scan — shared hosting infrastructure,
+    // reusing util::spf's CIDR-containment maths rather than duplicating it.
+    rule_au_112_shared_cidr_infrastructure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {

@@ -3243,6 +3243,41 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   regression test, confirmed via `git stash` to fail pre-fix and pass
   post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures. **Paired:** `SOLUTION_TREE` SOL-CORR extended, §5 — same commit.
+  *Delivered (2026-07-13) — the `Cidr` gap from the 2026-07-05 rule-gap search,
+  now unblocked:* the "needs real CIDR-containment computation" prerequisite
+  named above already existed — `util::spf::Ipv4Cidr`/`Ipv6Cidr` (`.parse`/
+  `.contains`), built for SPF `ip4:`/`ip6:` mechanism parsing, overflow-safe,
+  tested. New **AU-112** (`rule_au_112_shared_cidr_infrastructure`) reuses it
+  as-is (Rule 4: one classifier, no duplicate CIDR maths in `core`) rather than
+  re-implementing containment: an independently-discovered `IpAddress` entity
+  falling inside a `Cidr` entity also found this scan is a shared-hosting-
+  infrastructure signal, framed as infra not ownership (Medium, matching
+  AU-111's precedent for inferred infrastructure signals). Scoped conservatively
+  — a narrow-block floor (`/22` IPv4, the same "largest block a single operator
+  typically owns end-to-end" `netblock`'s own `MAX_HOSTS` comment already
+  establishes; `/48` IPv6, RFC 6177's smallest end-site allocation) so a broad
+  ISP/cloud allocation spanning thousands of unrelated customers can't
+  manufacture noise, and skips any pair `netblock`'s own host-expansion already
+  makes explicit via a `cidr` evidence attribute, so the rule adds a genuinely
+  new inference rather than restating one. Added `Ipv4Cidr::prefix_len`/
+  `Ipv6Cidr::prefix_len` accessors to `util::spf` (the only gap in that
+  primitive) and one new `core_does_not_import_util_directly` allow-list entry
+  for `util::spf::` (same pure/leaf-no-I/O justification as `util::geohash`/
+  `util::geometry`). Live-verified against real infrastructure: a scan of
+  `github.com` (public organisational infra, not a private individual) through
+  `dns_intel`/`ripestat` resolved real A records and RIPEstat network-info
+  blocks; AU-112 correctly fired on genuine containments (e.g. IP
+  `140.82.112.3` inside `140.82.112.0/24`) and correctly did not fire on the
+  scan's broader `/17`/`/18` blocks. 6 new tests (fires on a narrow IPv4/IPv6
+  block, does not fire outside the block, does not fire on a broad ISP-scale
+  v4/v6 allocation, does not fire when `netblock` already made the link
+  explicit), 2 confirmed via `git stash`-style neutering to fail pre-fix and
+  pass post-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (README/`ARCHITECTURE_AUDIT` rule counts 109→110, 97→98 entity).
+  *This closes C1's last named thread from the 2026-07-05 rule-gap search
+  (`Ssid` remains the one legitimate deferred gap, needing the import-extractor
+  change named above first).* **Paired:** `SOLUTION_TREE` SOL-CORR extended,
+  §5 — same commit.
 - **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
@@ -8946,3 +8981,31 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4577 lib tests, +1).
   **Paired:** `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (WiGLE account-status
   leg), §5 — same commit.
+- **2026-07-13** — **C1: new AU-112 closes the `Cidr` correlator gap, reusing
+  `util::spf`'s CIDR-containment maths instead of re-implementing it.** The
+  2026-07-05 rule-gap search named `Cidr` a plausible gap blocked on "real
+  CIDR-containment computation, a new capability" — that primitive already
+  existed (`Ipv4Cidr`/`Ipv6Cidr::parse`/`.contains`, built for SPF `ip4:`/
+  `ip6:` parsing, overflow-safe, tested), just unused outside `util::spf`.
+  New `rule_au_112_shared_cidr_infrastructure`: an independently-discovered
+  `IpAddress` entity falling inside a `Cidr` entity also found this scan is
+  a shared-hosting-infrastructure signal (Medium, framed as infra not
+  ownership, matching AU-111's precedent), gated to narrow blocks only
+  (`/22` IPv4 — `netblock`'s own "largest block a single operator typically
+  owns end-to-end" floor; `/48` IPv6 — RFC 6177's smallest end-site
+  allocation) so a broad ISP/cloud allocation can't manufacture noise, and
+  skipping any pair `netblock`'s own host-expansion already makes explicit.
+  Added the two missing `prefix_len()` accessors to `util::spf`'s CIDR types
+  and one new `core_does_not_import_util_directly` allow-list entry for
+  `util::spf::` (same pure/leaf-no-I/O justification as `util::geohash`/
+  `util::geometry` — not a weakened guard, the same precedented exemption
+  category). Live-verified against REAL infrastructure: a scan of
+  `github.com` (public organisational infra) through `dns_intel`/`ripestat`
+  resolved real A records and RIPEstat network-info blocks; AU-112 fired
+  correctly on genuine narrow-block containments (e.g. `140.82.112.3` inside
+  `140.82.112.0/24`) and correctly did not fire on the same scan's broader
+  `/17`/`/18` RIPEstat blocks. 6 new tests, 2 confirmed via a git-stash-style
+  neutered rebuild to fail pre-fix and pass post-fix. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4599 lib tests, +6;
+  correlator rule count 109→110, README/`ARCHITECTURE_AUDIT` updated).
+  **Paired:** `SOLUTION_TREE` SOL-CORR extended, §5 — same commit.

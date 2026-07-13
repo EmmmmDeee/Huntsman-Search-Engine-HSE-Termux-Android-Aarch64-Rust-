@@ -7853,6 +7853,89 @@ fn au111_ignores_a_non_spf_ip_address() {
     assert!(rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty());
 }
 
+// ─── AU-112 tests (shared CIDR infrastructure) ────────────────────────────────
+
+fn cidr_block(value: &str) -> Entity {
+    Entity::new(EntityKind::Cidr, value, 0.75, "s")
+}
+
+fn plain_ip(value: &str) -> Entity {
+    let mut ip = Entity::new(EntityKind::IpAddress, value, 0.7, "s");
+    ip.tag("banner-grab");
+    ip.add_evidence(Evidence::new(
+        "banner_grab",
+        format!("Open port on {value}"),
+    ));
+    ip
+}
+
+#[test]
+fn au112_fires_when_an_independently_discovered_ip_falls_in_a_narrow_block() {
+    let block = cidr_block("203.0.113.0/24");
+    let ip = plain_ip("203.0.113.42");
+    let r = rule_au_112_shared_cidr_infrastructure(&[block.clone(), ip.clone()], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].rule_id, "AU-112");
+    assert_eq!(r[0].severity, super::Severity::Medium);
+    assert!(r[0].description.contains("203.0.113.42"));
+    assert!(r[0].description.contains("203.0.113.0/24"));
+    assert_eq!(r[0].entity_uids, vec![block.uid.clone(), ip.uid.clone()]);
+}
+
+#[test]
+fn au112_does_not_fire_for_an_ip_outside_the_block() {
+    let block = cidr_block("203.0.113.0/24");
+    let ip = plain_ip("198.51.100.7");
+    assert!(rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty());
+}
+
+#[test]
+fn au112_does_not_fire_for_a_broad_isp_scale_block() {
+    // /16 is well above the MIN_IPV4_CIDR_PREFIX floor — an ISP/cloud
+    // allocation spanning thousands of unrelated customers must not fire.
+    let block = cidr_block("203.0.0.0/16");
+    let ip = plain_ip("203.0.113.42");
+    assert!(
+        rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty(),
+        "a broad /16 block must not be treated as a shared-infrastructure signal"
+    );
+}
+
+#[test]
+fn au112_does_not_fire_when_already_explicitly_linked() {
+    // The `netblock` module already tags a host it expanded from this exact
+    // block with a `cidr` evidence attribute — re-deriving that as a fresh
+    // AU-112 inference would just restate an already-explicit relationship.
+    let block = cidr_block("203.0.113.0/24");
+    let mut ip = Entity::new(EntityKind::IpAddress, "203.0.113.42", 0.7, "s");
+    ip.tag("netblock-member");
+    ip.add_evidence(
+        Evidence::new(
+            "netblock",
+            "Host 203.0.113.42 in network block 203.0.113.0/24",
+        )
+        .with_attr("cidr", "203.0.113.0/24"),
+    );
+    assert!(rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty());
+}
+
+#[test]
+fn au112_fires_for_a_narrow_ipv6_block() {
+    let block = cidr_block("2001:db8:1::/64");
+    let ip = plain_ip("2001:db8:1::42");
+    let r = rule_au_112_shared_cidr_infrastructure(&[block.clone(), ip.clone()], "s", 0);
+    assert_eq!(r.len(), 1);
+    assert_eq!(r[0].entity_uids, vec![block.uid.clone(), ip.uid.clone()]);
+}
+
+#[test]
+fn au112_does_not_fire_for_a_broad_ipv6_allocation() {
+    // /32 is a typical ISP-scale IPv6 allocation, well above the /48 floor.
+    let block = cidr_block("2001:db8::/32");
+    let ip = plain_ip("2001:db8:1::42");
+    assert!(rule_au_112_shared_cidr_infrastructure(&[block, ip], "s", 0).is_empty());
+}
+
 // ─── AU-084 tests (cell tower dual-source) ────────────────────────────────────
 
 fn cell_tower(tower_id: &str, sources: &[&str]) -> Entity {

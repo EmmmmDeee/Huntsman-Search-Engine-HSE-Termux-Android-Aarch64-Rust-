@@ -13,7 +13,7 @@
 | Version / edition / MSRV | 1.13.0 · edition 2024 · 1.88 |
 | Source | ~231k lines · 807 `.rs` files |
 | Modules | **162** registered — 129 Free · 28 KeyGated · 5 Paid · 14 categories |
-| Correlation rules | **109** deterministic — 97 entity-only (`correlator::RULES`) + 12 graph-aware (`RELATION_RULES`), one function per distinct `AU-###` finding |
+| Correlation rules | **110** deterministic — 98 entity-only (`correlator::RULES`) + 12 graph-aware (`RELATION_RULES`), one function per distinct `AU-###` finding |
 | Tests | **4,561** lib tests (`cargo test --lib -- --list`) + API/integration + architecture guards |
 | Unsafe | **0** — `#![forbid(unsafe_code)]` (`src/lib.rs:22`; `[lints.rust] unsafe_code = "forbid"` in `Cargo.toml`) |
 | Panic strategy | `panic = "unwind"` (`Cargo.toml [profile.release]`) + per-module `catch_unwind` at the dispatch boundary — a hostile/drifted provider tripping a panic degrades to one module error, not a downed `hse serve` process |
@@ -41,7 +41,7 @@ Phone 4 · Threat 3 · Other 3 · Search 2.
  bin (main.rs) ─▶ cli ─┐
                        ├─▶ core ─▶ util (http, keys, geo, datasets, …)
  http (api/axum) ──────┘    │
- web (embedded SPA) ◀─ api  ├─▶ correlator (109 rules)
+ web (embedded SPA) ◀─ api  ├─▶ correlator (110 rules)
                             └─▶ storage (rusqlite WAL + FTS5, via StoragePort)
  modules (162) ─▶ core types + core::hooks (fn-ptr registry, installed at startup)
 ```
