@@ -539,6 +539,40 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   (4600 lib tests, +1 net — one new AEC test, one dead `split_name` test
   removed). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (au_electoral AEC
   leg), §5 — same commit.
+  **A second real live break found in the same corpus-scoping investigation
+  (2026-07-13): `au_people`'s White Pages AU leg is also dead.** Live-
+  confirmed with THREE real `GET` requests to
+  `whitepages.com.au/residential/search/{name}` — a nonsense name, the
+  common real name "John Smith", and the bare `/residential/search/` root —
+  every one returning a generic HTTP 404, not a query-specific result,
+  ruling out "this particular name has no match." The site's own markup
+  confirms why: it now serves a Nuxt.js client-rendered SPA (no server-
+  rendered search form left at all), the same "legacy static URL scheme
+  retired for a client-rendered app" root cause as the AEC finding above.
+  `process()` already gated the parse on `resp.status().is_success()`, so
+  this never risked misparsing the 404 page — it only ever silently
+  contributed nothing while still paying a request/timeout cost on every
+  scan. Fix: removed the dead White Pages AU dispatch from `process()`;
+  deleted `parse_whitepages_html` and its `clean_au_locality` helper
+  outright rather than keep them dormant — per this session's own dead-code
+  doctrine (T2.52 `mls`, T2.58–63), and because a future SPA-API repoint
+  would need an entirely new parser for whatever data shape the real API
+  returns anyway (this parser is built for the retired server-rendered HTML
+  specifically, not reusable against a JSON API response); corrected
+  `max_timeout_ms` 12,000→6,000 (one remaining lookup, TPS AU, not two);
+  fixed the Person-anchor's evidence `"source"` attribute (was hardcoded
+  `"whitepages_au+tps_au"` — now wrong 100% of the time since White Pages
+  can never contribute, corrected to `"tps_au"`). True People Search AU was
+  NOT touched — unreachable from this sandbox (502 from the outbound
+  proxy), so its live status is honestly undetermined this cycle. Live-
+  verified: a real `hse scan --kind name --value "Anthony Albanese"
+  --modules au_people` dispatch trace shows a connection attempt ONLY to
+  `truepeoplesearch.com.au`, zero attempts to `whitepages.com.au`. 7 dead
+  White-Pages-specific tests removed, 1 new exact-timeout regression added
+  (net −6), git-stash-proven to fail against the unfixed 12,000 value and
+  pass against the fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4594 lib tests). **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (au_people White Pages AU leg), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -9048,3 +9082,51 @@ way, so this specific drift class can't recur silently again.
   `-D warnings`/rustdoc clean, full suite 0 failures (4599 lib tests, +6;
   correlator rule count 109→110, README/`ARCHITECTURE_AUDIT` updated).
   **Paired:** `SOLUTION_TREE` SOL-CORR extended, §5 — same commit.
+- **2026-07-13** — **T2.7: `au_electoral`'s AEC leg was permanently dead, not
+  transiently down — found while scoping the next golden-fixture corpus
+  slice.** The named next slice assumed `electorate.aec.gov.au/
+  NameSearch.aspx` still performed a name search and just needed a captured
+  "not enrolled" response. Two real `GET` requests disproved that — a
+  nonsense name and a real enrolled public figure (Anthony Albanese) both
+  got the identical generic `"Temporarily Unavailable"` error page. The
+  AEC's real current "Check your enrolment" tool (`check.aec.gov.au`)
+  confirmed why: it's an address-based multi-step flow now, with no
+  name-search capability left at all — a different input shape than this
+  module takes, so repointing is a distinct future capability, correctly
+  deferred rather than scope-crept into this fix. Removed the dead AEC
+  dispatch leg + its AEC-only `split_name` helper from `process()`;
+  corrected `max_timeout_ms` 20,000→15,000 (3 EC lookups, not 4); updated
+  the module doc comment. NSW/VIC/QLD untouched — proxy-blocked from this
+  sandbox, honestly undetermined this cycle. Live-verified: a real `hse
+  scan --kind name --value "Anthony Albanese" --modules au_electoral`
+  dispatch trace shows connections ONLY to NSW→VIC→QLD, zero to
+  `electorate.aec.gov.au`. 2 new tests (a golden-fixture capture of the
+  real retired-AEC error page; an exact-timeout regression), git-stash-
+  proven against the unfixed 20,000 value. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4600 lib tests, net +1).
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (au_electoral AEC leg), §5 —
+  same commit.
+- **2026-07-13** — **T2.7: `au_people`'s White Pages AU leg is also dead —
+  the same root cause class as the AEC finding above.** Three real `GET`
+  requests to `whitepages.com.au/residential/search/{name}` (a nonsense
+  name, the real common name "John Smith", and the bare search root) all
+  returned a generic HTTP 404, not a query-specific result; the site's own
+  markup confirms it now serves a Nuxt.js client-rendered SPA with no
+  server-rendered search form left. `process()` already gated the parse on
+  `resp.status().is_success()`, so this only ever silently contributed
+  nothing while still paying a request/timeout cost. Removed the dead
+  dispatch; deleted `parse_whitepages_html` + its `clean_au_locality`
+  helper outright (per this session's dead-code doctrine — a future SPA-API
+  repoint would need an entirely new parser for a different data shape
+  anyway, not a revived HTML one); corrected `max_timeout_ms` 12,000→6,000;
+  fixed the Person-anchor's evidence `"source"` attribute (was hardcoded
+  `"whitepages_au+tps_au"`, now wrong 100% of the time — corrected to
+  `"tps_au"`). True People Search AU untouched — proxy-blocked from this
+  sandbox. Live-verified: a real `hse scan --kind name --value "Anthony
+  Albanese" --modules au_people` dispatch trace shows a connection attempt
+  ONLY to `truepeoplesearch.com.au`, zero to `whitepages.com.au`. 7 dead
+  tests removed, 1 new exact-timeout regression added (net −6), git-stash-
+  proven against the unfixed 12,000 value. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4594 lib tests). **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL (au_people White Pages AU leg), §5 —
+  same commit.

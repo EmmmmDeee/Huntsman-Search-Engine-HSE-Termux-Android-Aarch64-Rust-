@@ -818,6 +818,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   warnings`/rustdoc clean, full suite 0 failures (4600 lib tests, net +1).
   **(§4a)** **Paired:** `PROBLEM_TREE` T2.7 (au_electoral AEC leg), §8 —
   same commit.
+  *`au_people` corpus slice — a second real break, same root cause class
+  (2026-07-13):* three real `GET whitepages.com.au/residential/search/
+  {name}` calls (a nonsense name, the real common name "John Smith", and
+  the bare search root) all returned a generic HTTP 404 — the site now
+  serves a Nuxt.js client-rendered SPA with no server-rendered search form
+  left, the same "legacy static URL retired for a client-rendered app"
+  cause as the AEC finding. `process()` already gated the parse on
+  `resp.status().is_success()`, so this only ever silently contributed
+  nothing while paying a request/timeout cost. Removed the dead dispatch;
+  deleted `parse_whitepages_html` + `clean_au_locality` outright (per this
+  session's dead-code doctrine — a future repoint needs an entirely new
+  parser for whatever data shape the real API returns, not a revived HTML
+  one); corrected `max_timeout_ms` 12,000→6,000; fixed the Person-anchor's
+  evidence `"source"` attribute (was hardcoded `"whitepages_au+tps_au"`,
+  now wrong 100% of the time — corrected to `"tps_au"`). True People Search
+  AU untouched — proxy-blocked from this sandbox. Live-verified: a real
+  `hse scan --kind name --value "Anthony Albanese" --modules au_people`
+  dispatch trace shows a connection attempt ONLY to
+  `truepeoplesearch.com.au`, zero to `whitepages.com.au`. 7 dead tests
+  removed, 1 new exact-timeout regression added (net −6), git-stash-proven
+  against the unfixed 12,000 value. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4594 lib tests). **(§4a)**
+  **Paired:** `PROBLEM_TREE` T2.7 (au_people White Pages AU leg), §8 — same
+  commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found

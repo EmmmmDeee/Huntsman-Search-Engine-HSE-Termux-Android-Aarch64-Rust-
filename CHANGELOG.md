@@ -213,6 +213,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **The AU residential people-finder (`au_people`) no longer wastes a
+  request on the retired White Pages AU search page.** That legacy search
+  URL now returns a not-found page for every name (the site moved to a
+  client-rendered app with no equivalent server-rendered search left,
+  confirmed against real live traffic). True People Search AU is
+  unaffected and still runs. A leftover evidence label that always claimed
+  White Pages AU as a source, even when it found nothing, is also fixed to
+  correctly name only the source that actually contributed.
 - **The electoral-roll lookup (`au_electoral`) no longer wastes a request on
   the retired national AEC name-search endpoint.** That endpoint stopped
   supporting name-based lookups (confirmed against real live traffic — a
