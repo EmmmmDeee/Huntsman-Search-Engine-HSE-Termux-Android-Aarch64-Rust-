@@ -203,6 +203,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A WiGLE account no longer stays flagged "unverified" after you fix it.**
+  WiGLE's account-verification status is learned from ordinary query
+  traffic (a specific error response means the account's email isn't
+  verified). Once seen, that status previously stuck for the life of the
+  running server or live session — even after you completed WiGLE's
+  email-verify step and every later query started succeeding. A successful
+  query now also clears the flag, so `hse doctor` and the Settings/stats
+  view reflect the account's current state rather than the first thing it
+  ever saw.
 - **`hse audit`'s search-coverage finding no longer attributes CURRENT
   engine status to a past scan.** The audit's "N search engine(s) down or
   blocked" finding was drawn from live, continuously-refreshed engine

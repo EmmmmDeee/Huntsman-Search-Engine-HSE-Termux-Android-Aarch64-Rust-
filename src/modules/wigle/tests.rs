@@ -1,6 +1,6 @@
 use super::account::{
     ProfileUserResp, WigleAccountStatus, account_status, account_status_cache, is_unverified,
-    status_from_profile,
+    mark_unverified, mark_verified, status_from_profile,
 };
 use super::emit::{
     emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel,
@@ -546,6 +546,42 @@ fn account_status_state_transitions_and_unverified_detection() {
     let json = serde_json::to_string(&s).unwrap();
     assert!(json.contains("\"verified\":true"));
     assert!(json.contains("\"user\":\"MattDieg\""));
+}
+
+/// A stale `unverified` latch from an earlier 412 must self-correct the
+/// moment a later query succeeds — `mark_verified` is the symmetric
+/// counterpart of `mark_unverified`, both learned from live traffic in
+/// `fetch.rs::classify_and_decode`, never a dedicated poll.
+#[test]
+fn mark_verified_clears_a_stale_unverified_latch() {
+    struct CacheGuard;
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            if let Ok(mut g) = account_status_cache().lock() {
+                *g = WigleAccountStatus::default();
+            }
+        }
+    }
+    let _guard = CacheGuard;
+
+    // Simulate an earlier 412: the account looks unverified.
+    mark_unverified(1_000);
+    assert!(is_unverified(), "a 412 must latch unverified");
+
+    // A later query succeeds — e.g. the operator completed WiGLE's
+    // email-verify step mid-process — and must un-latch the stale flag.
+    mark_verified(2_000);
+    assert!(
+        !is_unverified(),
+        "a successful query must clear the stale unverified latch"
+    );
+    let s = account_status();
+    assert_eq!(s.verified, Some(true));
+    assert_eq!(
+        s.last_polled_ts,
+        Some(2_000),
+        "last_polled_ts tracks the most recent signal, not the first"
+    );
 }
 
 #[test]

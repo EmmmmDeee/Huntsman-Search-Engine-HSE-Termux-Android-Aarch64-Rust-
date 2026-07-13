@@ -809,6 +809,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   weeks-later test; restored, passes. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4576 lib tests, +4).
   **Paired:** `PROBLEM_TREE` T2.76 — same commit.
+  *WiGLE account-status leg delivered (2026-07-13, T2.77):* continuing the
+  PRIORITY-2 sweep, a SIBLING stale-attribution bug in the same family —
+  `wigle::account`'s `verified: Some(false)` latch (set as a side effect of
+  a real 412 in `fetch.rs::classify_and_decode`) had no symmetric way back
+  to `true`, so a long-lived process kept reporting the account as
+  unverified (via `hse doctor`/`/api/v1/stats`) forever after one 412, even
+  once the operator fixed it and every later query succeeded. Fix: new
+  `account::mark_verified`, mirroring `mark_unverified` exactly, called
+  from the success branch of `classify_and_decode` — same reactive
+  learned-from-traffic channel, no new persistence. Live-verified against a
+  REAL WiGLE account and a real public-landmark query (Sydney Opera House
+  coordinates): `/api/v1/stats` went from `verified: null` to `verified:
+  false` after a genuine HTTP 412 from this sandbox's actually-unverified
+  account, confirming the existing half of the mechanism end-to-end against
+  real traffic. Honestly disclosed: the NEW half (`mark_verified` firing
+  from a real 200) wasn't live-reachable since the real account here is
+  persistently unverified — verified instead via the git-stash-proven unit
+  test `mark_verified_clears_a_stale_unverified_latch`. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4577 lib
+  tests, +1). **Paired:** `PROBLEM_TREE` T2.77 — same commit.
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -6488,3 +6508,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   it to always return `true` fails the weeks-later test; restored, passes.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4576 lib tests, +4). Paired: `PROBLEM_TREE` T2.76 — same commit.
+- **2026-07-13** — **SOL-AUDIT-TEMPORAL-SCOPE, WiGLE account-status leg
+  (T2.77): a sibling stale-attribution bug in the same PRIORITY-2 family.**
+  `wigle::account`'s `verified: Some(false)` latch (set by a real 412 in
+  `fetch.rs::classify_and_decode`) had no way back to `true`, so a
+  long-lived process kept reporting the account unverified forever after
+  one 412, even after the operator fixed it and later queries succeeded.
+  Fix: new `mark_verified`, mirroring `mark_unverified`, called from the
+  success branch — same reactive channel, no new persistence. Live-verified
+  against a REAL WiGLE account and a real public-landmark query (Sydney
+  Opera House coordinates): `/api/v1/stats` went from `verified: null` to
+  `verified: false` after a genuine 412 from this sandbox's
+  actually-unverified account, confirming the existing half end-to-end.
+  Honestly disclosed: the NEW half wasn't live-reachable (the real account
+  here is persistently unverified) — verified via the git-stash-proven unit
+  test instead. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4577 lib tests, +1). Paired: `PROBLEM_TREE` T2.77 —
+  same commit.

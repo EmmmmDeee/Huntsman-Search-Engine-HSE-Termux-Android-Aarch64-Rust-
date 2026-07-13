@@ -87,8 +87,12 @@ pub(super) async fn get_with_retry(
 
 /// Classify a completed WiGLE response: `412` (unverified account) maps to a
 /// clean empty result, any other non-success is a hard error, and a success
-/// is decoded + scanned for leaked keys. Shared tail for every WiGLE search
-/// endpoint once [`get_with_retry`] has resolved the 429 question.
+/// is decoded + scanned for leaked keys. A success ALSO records the account
+/// as verified (the symmetric counterpart of the 412 branch below) — see
+/// [`super::account::mark_verified`] — so a stale unverified latch from
+/// earlier in the process self-corrects the moment traffic proves otherwise.
+/// Shared tail for every WiGLE search endpoint once [`get_with_retry`] has
+/// resolved the 429 question.
 async fn classify_and_decode(resp: reqwest::Response) -> crate::core::error::Result<Resp> {
     use crate::core::error::Error;
 
@@ -98,6 +102,7 @@ async fn classify_and_decode(resp: reqwest::Response) -> crate::core::error::Res
     if !resp.status().is_success() {
         return Err(crate::util::http::http_status_error(SRC, resp).await);
     }
+    super::account::mark_verified(crate::core::entity::unix_now());
     crate::util::http::json_scanned(resp, SRC)
         .await
         .map_err(|e| Error::module(SRC, e))

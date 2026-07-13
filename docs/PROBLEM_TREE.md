@@ -3061,6 +3061,50 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   warnings`/rustdoc clean, full suite 0 failures (4576 lib tests, +4).
   **Paired:** `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (new node), §5 — same
   commit.
+- **`[x]` T2.77 · WiGLE's `verified: Some(false)` account-status latch had no
+  way back to `true` — once seen, a stale "unverified" diagnostic could
+  persist for the rest of a long-lived process even after the real
+  condition self-resolved.** Found continuing the PRIORITY-2 cache/TTL/
+  retry-backoff sweep. `fetch.rs::classify_and_decode` learns account
+  verification status as a side effect of ordinary WiGLE traffic: an HTTP
+  412 (`"Email is not verified for account"`) calls
+  `account::mark_unverified`, latching `ACCOUNT_STATUS_CACHE.verified =
+  Some(false)` — but the SUCCESS branch (any 200) did nothing symmetric, so
+  once a 412 fired once, `is_unverified()`/`account_status()` (surfaced via
+  `hse doctor` and `GET /api/v1/stats`) would keep reporting the account as
+  unverified for the rest of the process even after the operator completed
+  WiGLE's email-verify step and every later query started succeeding. **P3**
+  (evidentiary/diagnostic accuracy — narrow real-world impact today, since
+  `is_unverified()` currently has no production caller besides diagnostics
+  display; but a live-blocking gate is exactly the kind of thing this
+  banked-as-future-WIRE-IN function is FOR, and it would inherit this same
+  staleness the moment it's wired). → **Decision: symmetric fix, no new
+  primitive needed.** New `account::mark_verified(now)` — mirrors
+  `mark_unverified` exactly, called from `classify_and_decode`'s existing
+  success branch. No new persistence, no TTL, no invented threshold: the
+  SAME reactive "learned from live traffic" channel that sets the stale
+  flag now also clears it. **Live-verified against a REAL WiGLE account and
+  a real public-landmark query** (Sydney Opera House public coordinates,
+  not a private individual's location) via `hse serve`'s HTTP API: before
+  any query this process, `GET /api/v1/stats` reported
+  `{"verified":null,"last_polled_ts":null}`; a real dispatched WiGLE scan
+  against those coordinates got a genuine HTTP 412 from WiGLE (this
+  sandbox's configured account is actually, persistently unverified),
+  after which `/api/v1/stats` correctly showed
+  `{"verified":false,"last_polled_ts":<real timestamp>}` — confirming the
+  existing `mark_unverified` half of the mechanism fires correctly
+  end-to-end against real traffic. **Honestly disclosed:** because this
+  sandbox's real WiGLE account is genuinely unverified, a real 200 success
+  response (needed to observe the NEW `mark_verified` half firing from live
+  traffic) was not reachable here — verifying that half relies on the
+  git-stash-proven unit test instead, not a live trigger. Git-stash-proven:
+  new test `mark_verified_clears_a_stale_unverified_latch` (latch via
+  `mark_unverified`, confirm `is_unverified()`, then `mark_verified`,
+  confirm it clears and `last_polled_ts` advances) — neutering
+  `mark_verified` to a no-op fails it; restored, it passes. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4577 lib
+  tests, +1). **Paired:** `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (WiGLE
+  account-status leg), §5 — same commit.
 
 ---
 
@@ -8882,3 +8926,23 @@ way, so this specific drift class can't recur silently again.
   test; restored, passes. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4576 lib tests, +4). **Paired:**
   `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (new node), §5 — same commit.
+- **2026-07-13** — **T2.77: WiGLE's `verified: Some(false)` account-status
+  latch had no way back to `true` — continuing the PRIORITY-2 sweep.**
+  `fetch.rs::classify_and_decode` learns account verification as a side
+  effect of live traffic — a 412 calls `mark_unverified` — but the success
+  branch did nothing symmetric, so one 412 anywhere in a long-lived process
+  latched "unverified" (surfaced via `hse doctor`/`/api/v1/stats`) forever,
+  even after the operator fixed it and every later query succeeded. Fix:
+  new `mark_verified`, mirroring `mark_unverified` exactly, called from the
+  success branch — same reactive channel, no new persistence, no invented
+  threshold. Live-verified against a REAL WiGLE account and a real
+  public-landmark query (Sydney Opera House coordinates): `/api/v1/stats`
+  went from `verified: null` to `verified: false` after a genuine HTTP 412
+  from this sandbox's actually-unverified account, confirming the existing
+  half of the mechanism end-to-end. Honestly disclosed: a real 200 success
+  (needed to observe the NEW half firing live) wasn't reachable since the
+  real account is persistently unverified here — that half is verified via
+  the git-stash-proven unit test instead. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4577 lib tests, +1).
+  **Paired:** `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (WiGLE account-status
+  leg), §5 — same commit.
