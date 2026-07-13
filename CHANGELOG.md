@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New "Key Harvest" page in the web console** — a dedicated dashboard for
+  the API-key-harvesting pipeline, its own nav entry and route (`#/harvest`),
+  not a panel tucked into an existing page. Shows the permanent cross-scan
+  key vault (every foreign API key ever harvested, masked, with discovery
+  counts and first/last-seen timestamps), the key pool with each service's
+  ROI tier (which services are worth prioritising because finding their
+  keys unlocks more keys downstream), and live account health for SeekNow
+  and WiGLE — the same checks `hse doctor` runs, now visible in the browser
+  without a CLI hop. Loopback-only, like the rest of the key-management
+  surface.
 - **The Reddit module now also recovers leaked API keys from a user's bio
   and their post history, not just emails and links.** It already fetches
   both for identity extraction; that same already-downloaded text is now

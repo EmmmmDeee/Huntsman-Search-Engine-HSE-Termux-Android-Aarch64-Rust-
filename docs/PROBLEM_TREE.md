@@ -3584,6 +3584,56 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   warnings`/rustdoc clean, full suite 0 failures (4610 lib tests, +2).
   **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same
   commit.
+- **`[x]` T2.86 · Everything the "proactively harvesting APIs" theme (T2.78–
+  T2.85) built — the permanent cross-scan `key_vault` bank, `key_roi`'s
+  Multiplier/Expansion/Terminal cascade tiering, and live SeekNow/OathNet/
+  WiGLE account health — had NO dedicated web-UI surface.** Operator
+  request (following a live end-to-end demonstration of the harvest
+  pipeline against real OathNet/SeekNow queries): "Make this its own
+  independent feature with its own unique part of the UI." An Explore-
+  agent architecture map confirmed `util::key_vault` (the harvested-key
+  bank) and `util::key_roi::classify()` were fully `pub`, tested, and
+  wired into the CLI's `hse keys bank`/`hse doctor`, but reachable from
+  **zero** API handlers or SPA views — an operator could only see them via
+  a shell. → **Solution:** a new, dedicated `#/harvest` page (nav entry +
+  router case + dispatcher case + its own view module — not a panel
+  bolted onto Settings or Engines), backed by one new loopback-only
+  endpoint, `GET /api/v1/keys/harvest`, that composes three existing,
+  already-tested primitives into one feed: the vault's `total_count` +
+  `osint_provider_census` + masked `osint_entries` (each row's ROI tier
+  attached via `key_roi::classify`), the key pool's per-service health
+  (reusing `settings_handlers::summarize_pool` — no duplicate
+  aggregation), and a **live** probe of SeekNow (`query_credits`/
+  `is_key_invalid`) + WiGLE (`refresh_account_status`) — the identical
+  network calls `hse doctor` already makes, now reachable without a CLI
+  hop — plus OathNet's process-local budget/quota snapshot (OathNet has
+  no live account endpoint, disclosed as such in both the API doc comment
+  and the UI card rather than presented as a probe that doesn't exist).
+  **P2/capability** (closes the last CLI-only gap the T2.78–T2.85 arc
+  left, aspirationally "infallible" translated per this project's no-
+  overclaiming discipline into: every section degrades to an honest empty/
+  unreachable state rather than blanking the page or fabricating data —
+  a 403 from a non-loopback peer, an empty vault, a dead SeekNow key, and
+  an unverified WiGLE account are all rendered as first-class states, not
+  errors). 3 new unit tests (`vault_block`/`pool_block`/`accounts_block`)
+  assert the response shape is always well-formed — including that a
+  masked value is never empty (guards against accidentally serialising
+  `key_value` unmasked) and that every pooled/vaulted service carries a
+  valid ROI tier — without depending on the local vault/pool actually
+  holding data. Live-verified three ways: (1) `curl`'d the real endpoint
+  against this operator's own live environment — correctly reported the
+  SeekNow key as INVALID (confirming the T2.83 finding still holds), the
+  WiGLE account as unverified (confirming T2.77's), OathNet's real budget
+  snapshot, and an honestly-empty vault (0 keys — this environment's
+  scans haven't harvested any OSINT-provider keys yet, not a bug); (2) a
+  headless Chromium screenshot of `#/harvest` rendered against the real
+  running `hse serve` showed all three account-health cards, the ROI-
+  tiered pool table (14 services, correct Multiplier/Terminal badges) and
+  zero console/page errors; (3) the same headless pass over `#/dash`,
+  `#/opts`, `#/engines` confirmed the new nav entry and route caused no
+  regression to the existing pages. Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4613 lib tests, +3). **Paired:**
+  `SOLUTION_TREE` SOL-KEYHARVEST-UI (new node), §5 — same commit.
 
 ---
 
@@ -9801,3 +9851,40 @@ way, so this specific drift class can't recur silently again.
   fabricated live claim. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4610 lib tests, +2). **Paired:**
   `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **2026-07-13** — **T2.86: new dedicated Key Harvest page — the
+  T2.78–T2.85 harvest pipeline's first web-UI surface.** Operator request,
+  following a live demonstration of the harvest pipeline against real
+  OathNet/SeekNow queries: "Make this its own independent feature with its
+  own unique part of the UI. It must be extremely comprehensive and
+  infallible." `util::key_vault` (the permanent cross-scan harvested-key
+  bank) and `util::key_roi::classify()` (Multiplier/Expansion/Terminal
+  cascade tiering) were fully built, tested, and CLI-reachable
+  (`hse keys bank`, `hse doctor`) but exposed through **zero** API
+  handlers or SPA views. Fix: one new loopback-only endpoint,
+  `GET /api/v1/keys/harvest` (`src/api/key_harvest_handlers.rs`),
+  composing the vault census + masked recent entries (ROI tier attached
+  per row), the pool's per-service health (reusing
+  `settings_handlers::summarize_pool`, no duplicate aggregation), and a
+  live SeekNow/WiGLE account-health probe identical to `hse doctor`'s
+  (plus OathNet's process-local budget/quota, honestly labelled as *not*
+  a live probe — OathNet has no account-health endpoint) — and a new
+  dedicated `#/harvest` SPA page (`src/web/js/views/key_harvest.js`) with
+  its own nav entry, router case, and dispatcher case, following the
+  `opts.js` best-effort-parallel-fetch + `.panel` composition pattern.
+  "Infallible" translated per this project's no-overclaiming discipline
+  into: every section renders an honest degraded state (403 for a
+  non-loopback peer, an empty vault, an invalid key, an unreachable
+  account) rather than blanking the page or inventing data. 3 new unit
+  tests assert the JSON shape is always well-formed (never panics on an
+  empty vault/pool) and that a masked value is never empty (guards
+  against accidentally serialising the raw key). Live-verified: `curl`
+  against the real running server showed the true current state of this
+  operator's own environment (SeekNow key INVALID, WiGLE unverified,
+  OathNet budget snapshot, an honestly-empty vault) exactly matching
+  earlier findings this session; a headless-Chromium screenshot of
+  `#/harvest` against the real server rendered all three panels with zero
+  console/page errors; the same headless pass over `#/dash`/`#/opts`/
+  `#/engines` confirmed no regression. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4613 lib tests, +3).
+  **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-UI (new node), §5 — same
+  commit.

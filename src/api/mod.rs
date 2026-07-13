@@ -9,6 +9,7 @@
 //! The router is wired in `cli::serve::cmd_serve` (a private `pub(super)` fn).
 
 pub mod handlers;
+pub mod key_harvest_handlers;
 pub mod routes;
 pub mod scan_export;
 pub mod scan_handlers;

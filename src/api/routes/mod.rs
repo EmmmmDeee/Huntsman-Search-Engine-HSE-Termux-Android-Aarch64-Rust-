@@ -11,6 +11,7 @@
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
 //! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
+//! | GET    | `/api/v1/keys/harvest`            | `keys_harvest`           |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
 //! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
@@ -50,7 +51,10 @@ use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers, scan_export, scan_handlers, settings_handlers, update_handlers};
+use super::{
+    AppState, handlers, key_harvest_handlers, scan_export, scan_handlers, settings_handlers,
+    update_handlers,
+};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
@@ -266,6 +270,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/views/engines.js"),
     ),
     (
+        "js/views/key_harvest.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/key_harvest.js"),
+    ),
+    (
         "js/views/live.js",
         "application/javascript",
         include_bytes!("../../web/js/views/live.js"),
@@ -323,6 +332,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(settings_handlers::keys_patterns))
         .route("/keys/status", get(settings_handlers::keys_status))
+        .route("/keys/harvest", get(key_harvest_handlers::keys_harvest))
         .route("/keys/pool", get(settings_handlers::keys_pool_get))
         .route(
             "/keys/pool/revoke",

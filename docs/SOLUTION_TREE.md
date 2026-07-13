@@ -1127,6 +1127,57 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   0 failures (4610 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.85 — same
   commit.
 
+- **`[x]` SOL-KEYHARVEST-UI · The T2.78–T2.85 harvest pipeline's own
+  intelligence products — the permanent `key_vault` bank and `key_roi`
+  cascade tiering — had no web-UI surface at all** → **T2.86**. Operator
+  request, after a live demonstration of the harvest pipeline against real
+  OathNet/SeekNow queries: "Make this its own independent feature with its
+  own unique part of the UI. It must be extremely comprehensive and
+  infallible." An Explore-agent map of the SPA/API architecture confirmed
+  every `key_vault`/`key_roi` function was already `pub`, unit-tested, and
+  reachable from `hse keys bank`/`hse doctor`, but zero API handlers or
+  SPA views touched them — and that `hse doctor`'s live SeekNow/WiGLE
+  account-health probes were CLI-only, with no HTTP equivalent. →
+  **Solution:** one new handler module, `src/api/key_harvest_handlers.rs`,
+  exposing `GET /api/v1/keys/harvest` (loopback-only, mirroring the
+  existing `keys_status`/`keys_pool_get` guard) that composes three
+  already-built primitives rather than inventing new aggregation: the
+  vault's `total_count`/`osint_provider_census`/masked `osint_entries`
+  (each row's ROI tier attached via `key_roi::classify`), the pool's
+  per-service health (reusing `settings_handlers::summarize_pool`
+  directly — no parallel implementation to drift), and a live SeekNow
+  (`query_credits`/`is_key_invalid`) + WiGLE (`refresh_account_status`)
+  probe identical to `hse doctor`'s own calls, plus OathNet's process-
+  local `budget_snapshot`/`is_quota_exhausted` (OathNet has no live
+  account endpoint — the response and the UI both label this explicitly
+  as budget state, not a network probe, rather than implying a check that
+  doesn't exist). Paired with a genuinely new SPA page — nav `<li>`,
+  `router.js` case, `main.js` dispatcher case, and
+  `src/web/js/views/key_harvest.js` — rather than a panel on an existing
+  page, per the operator's explicit "its own unique part of the UI".
+  Follows `opts.js`'s established best-effort-parallel-fetch + `.panel`
+  composition pattern; every panel (account health, vault, pool) renders
+  its own honest degraded state (unreachable/invalid/empty) instead of
+  blanking the page, translating the operator's "infallible" into this
+  project's actual no-overclaiming discipline: robust and honest about
+  failure, not a literal absolute-perfection claim. **P2/capability.** 3
+  new unit tests (`vault_block`/`pool_block`/`accounts_block`) assert the
+  JSON shape is always well-formed against whatever vault/pool state the
+  test box happens to have — including empty — and that a masked value is
+  never empty (the regression this guards: accidentally serialising the
+  raw `key_value` instead of running it through `mask_secret`). Live-
+  verified three ways: `curl` against the real running server reproduced
+  this operator's actual current account state (SeekNow key INVALID per
+  T2.83, WiGLE unverified per T2.77's still-latched status, OathNet's real
+  budget snapshot, an honestly-empty vault — no OSINT-provider keys
+  harvested in this environment yet, a true negative not a bug); a
+  headless-Chromium screenshot of `#/harvest` against the real server
+  rendered all three panels correctly with zero console/page errors; the
+  same headless pass over `#/dash`/`#/opts`/`#/engines` confirmed the new
+  nav entry and route caused no regression. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4613 lib tests, +3).
+  **Paired:** `PROBLEM_TREE` T2.86 — same commit.
+
 - **`[x]` SOL-PROBE-CONFIDENCE-DEDUP · `username_search`, `social_probe`, and
   `streaming_probe` each independently hardcoded the identical presence-
   confidence tiering** → **T2.81**. Second operator refactor/merge pass

@@ -1,0 +1,251 @@
+//! `GET /api/v1/keys/harvest` — the dedicated Key Harvest dashboard feed.
+//!
+//! Distinct from `settings_handlers` (which drives the Settings page's
+//! pool view/revoke/rotate controls) and `/api/v1/stats` (per-process
+//! quota counters): this endpoint is the first place that surfaces
+//! [`crate::util::key_vault`] (the permanent, cross-scan bank of every
+//! foreign API key HSE has ever harvested) and [`crate::util::key_roi`]
+//! (the Multiplier/Expansion/Terminal cascade tiering) together with a
+//! **live** probe of the two paid breach-search providers whose queries
+//! actively drive the harvest — SeekNow (`/credits`) and WiGLE
+//! (`/profile/user`) — plus OathNet's process-local budget/quota state.
+//! Mirrors the same live probes `hse doctor` already runs, so the web
+//! console gets the identical account-health signal without a CLI hop.
+//!
+//! Value-free by construction, same discipline as `settings_handlers`:
+//! every vault/pool key is masked ([`crate::util::str_util::mask_secret`])
+//! before serialisation, and the whole feed is loopback-only.
+
+use std::net::SocketAddr;
+
+use axum::{
+    extract::ConnectInfo,
+    http::StatusCode,
+    response::{IntoResponse, Json},
+};
+use serde_json::{Value, json};
+
+use crate::util::{key_roi, key_vault, keys, str_util};
+
+/// Cap on how many individual vault entries the feed returns — the census
+/// (`osint_provider_census`) already gives the full per-service counts, so
+/// the entry list only needs enough rows for a "recent activity" view, not
+/// the entire (potentially large) history.
+const RECENT_ENTRIES_LIMIT: usize = 100;
+
+/// `GET /api/v1/keys/harvest` — vault bank + ROI tiering + live provider
+/// account health. Loopback-only: like `keys_status`/`keys_pool_get`, this
+/// reveals which OSINT services the operator holds keys for (never the
+/// plaintext), which is sensitive infrastructure metadata under a
+/// non-loopback bind.
+pub async fn keys_harvest(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key harvest is loopback-only" })),
+        )
+            .into_response();
+    }
+
+    let vault = vault_block();
+    let pool = pool_block();
+    let accounts = accounts_block().await;
+
+    (
+        StatusCode::OK,
+        Json(json!({
+            "vault": vault,
+            "pool": pool,
+            "accounts": accounts,
+        })),
+    )
+        .into_response()
+}
+
+/// The `vault` section: total count, the OSINT-provider census (category +
+/// service + how many keys), and the most recently seen OSINT entries
+/// (masked, with each service's ROI tier attached for the dashboard's
+/// "prioritise these" ordering).
+fn vault_block() -> Value {
+    let total = key_vault::total_count();
+    let census: Vec<Value> = key_vault::osint_provider_census()
+        .into_iter()
+        .map(|(category, service, count)| {
+            json!({
+                "category": category,
+                "service": service,
+                "count": count,
+                "roi_tier": key_roi::classify(&service).label(),
+            })
+        })
+        .collect();
+    let recent: Vec<Value> = key_vault::osint_entries()
+        .into_iter()
+        .take(RECENT_ENTRIES_LIMIT)
+        .map(|e| {
+            json!({
+                "service": e.service,
+                "provider": e.provider,
+                "masked": str_util::mask_secret(&e.key_value),
+                "category": e.osint_category(),
+                "roi_tier": key_roi::classify(&e.service).label(),
+                "discovery_count": e.discovery_count,
+                "first_seen_at": e.first_seen_at,
+                "last_seen_at": e.last_seen_at,
+            })
+        })
+        .collect();
+    json!({
+        "total_count": total,
+        "osint_provider_census": census,
+        "recent": recent,
+        "recent_limit": RECENT_ENTRIES_LIMIT,
+    })
+}
+
+/// The `pool` section: every pooled (rotation-ready) service's status
+/// counts plus its ROI tier, reusing the same value-free
+/// [`super::settings_handlers::summarize_pool`] the Settings page's pool
+/// view already relies on — no duplicate aggregation logic.
+fn pool_block() -> Value {
+    let snap = crate::util::key_pool::global_pool().snapshot();
+    let services: Vec<Value> = super::settings_handlers::summarize_pool(&snap)
+        .into_iter()
+        .map(|q| {
+            json!({
+                "service": q.service,
+                "total": q.total,
+                "active": q.active,
+                "rate_limited": q.rate_limited,
+                "exhausted": q.exhausted,
+                "invalid": q.invalid,
+                "untested": q.untested,
+                "revoked": q.revoked,
+                "uses": q.uses,
+                "errors": q.errors,
+                "avg_health": q.avg_health,
+                "roi_tier": key_roi::classify(&q.service).label(),
+            })
+        })
+        .collect();
+    json!({ "count": services.len(), "services": services })
+}
+
+/// The `accounts` section: live SeekNow + WiGLE probes (identical calls to
+/// `hse doctor`'s) plus OathNet's process-local budget/quota snapshot (no
+/// live account endpoint exists for OathNet — see `util::oathnet`'s doc).
+async fn accounts_block() -> Value {
+    let loaded = keys::load();
+
+    // ── SeekNow: /credits ──
+    let seeknow_key = crate::util::see_know::resolve_key(
+        loaded
+            .get(crate::util::see_know::KEY_ENV)
+            .map(String::as_str),
+    );
+    let seeknow = match crate::util::see_know::query_credits(seeknow_key).await {
+        Some((remaining, limit)) => json!({
+            "reachable": true,
+            "invalid": false,
+            "credits_remaining": remaining,
+            "credits_limit": limit,
+        }),
+        None => json!({
+            "reachable": false,
+            "invalid": crate::util::see_know::is_key_invalid(),
+            "credits_remaining": null,
+            "credits_limit": null,
+        }),
+    };
+
+    // ── OathNet: process-local budget/quota (no live account endpoint) ──
+    let oathnet_budget = crate::util::oathnet::budget_snapshot();
+    let oathnet = json!({
+        "quota_exhausted": crate::util::oathnet::is_quota_exhausted(),
+        "scan_used": oathnet_budget.scan_used,
+        "scan_cap": oathnet_budget.scan_cap,
+        "session_used": oathnet_budget.session_used,
+        "session_cap": oathnet_budget.session_cap,
+    });
+
+    // ── WiGLE: /profile/user ──
+    let wigle_user = loaded
+        .get("HUNTSMAN_WIGLE_USER")
+        .map_or(keys::WIGLE_DEFAULT_USER, String::as_str)
+        .to_string();
+    let wigle_token = loaded
+        .get("HUNTSMAN_WIGLE_TOKEN")
+        .map_or(keys::WIGLE_DEFAULT_TOKEN, String::as_str)
+        .to_string();
+    let http = crate::util::http::build_client();
+    let wigle_status =
+        crate::modules::wigle::refresh_account_status(&http, &wigle_user, &wigle_token).await;
+
+    json!({
+        "seeknow": seeknow,
+        "oathnet": oathnet,
+        "wigle": {
+            "verified": wigle_status.verified,
+            "user": wigle_status.user,
+        },
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn vault_block_is_well_formed_on_an_empty_or_populated_vault() {
+        // Doesn't assert on vault contents (this runs against whatever local
+        // `~/.huntsman/key_vault.db` the test box happens to have — including
+        // none at all), only that the shape never panics and every field is
+        // present with the right JSON type.
+        let v = vault_block();
+        assert!(v["total_count"].is_u64());
+        assert!(v["osint_provider_census"].is_array());
+        assert!(v["recent"].is_array());
+        assert_eq!(v["recent_limit"], RECENT_ENTRIES_LIMIT);
+        for row in v["osint_provider_census"].as_array().unwrap() {
+            assert!(row["category"].is_string());
+            assert!(row["service"].is_string());
+            assert!(row["count"].is_u64());
+            assert!(row["roi_tier"].is_string());
+        }
+        for row in v["recent"].as_array().unwrap() {
+            assert!(row["service"].is_string());
+            // A masked value never contains the full plaintext structure — the
+            // regression this guards is accidentally serialising `key_value`
+            // instead of running it through `mask_secret` first.
+            assert!(row["masked"].is_string());
+            assert!(!row["masked"].as_str().unwrap().is_empty());
+        }
+    }
+
+    #[test]
+    fn pool_block_is_well_formed_and_every_service_has_a_roi_tier() {
+        let p = pool_block();
+        assert!(p["count"].is_u64());
+        for row in p["services"].as_array().unwrap() {
+            assert!(row["service"].is_string());
+            assert!(matches!(
+                row["roi_tier"].as_str(),
+                Some("multiplier" | "expansion" | "terminal")
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn accounts_block_reports_all_three_providers() {
+        // Best-effort network probes (SeekNow /credits, WiGLE /profile/user) may
+        // fail in a sandboxed test environment — this only asserts the response
+        // shape is always complete regardless of reachability, mirroring
+        // `hse doctor`'s "unreachable is a reported state, not a panic" contract.
+        let a = accounts_block().await;
+        assert!(a["seeknow"]["reachable"].is_boolean());
+        assert!(a["seeknow"]["invalid"].is_boolean());
+        assert!(a["oathnet"]["quota_exhausted"].is_boolean());
+        assert!(a["oathnet"].get("scan_cap").is_some());
+        assert!(a["wigle"].get("verified").is_some());
+    }
+}

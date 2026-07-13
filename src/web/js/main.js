@@ -33,6 +33,7 @@ import { toggleCorrMembers, pivotToEntity } from '/static/js/scan_info/correlati
 import { renderOpts, pollUpdateBadge } from '/static/js/views/opts.js';
 import { globalSearch, renderSearch } from '/static/js/views/search.js';
 import { renderEngines, refreshEngines } from '/static/js/views/engines.js';
+import { renderHarvest, refreshHarvest } from '/static/js/views/key_harvest.js';
 import { renderLive, closeLiveStream } from '/static/js/views/live.js';
 import { initCompatShims, initNavbarToggle, initModals } from '/static/js/ui.js';
 
@@ -70,7 +71,7 @@ export async function render(){
   clearEnginesTimer();
   S.route = parseHash();
   $$('#main-navbar-collapse li').forEach(li=>li.classList.remove('active'));
-  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines'};
+  const navMap = {dash:'nav-dash', scans:'nav-scans', live:'nav-live', newscan:'nav-newscan', opts:'nav-opts', scaninfo:'nav-scans', engines:'nav-engines', harvest:'nav-harvest'};
   const navEl = $('#'+navMap[S.route.name]); if (navEl) navEl.classList.add('active');
 
   const v = $('#view');
@@ -84,6 +85,7 @@ export async function render(){
     if (S.route.name==='search')   return await renderSearch(v);
     if (S.route.name==='live')     return await renderLive(v);
     if (S.route.name==='engines')  return await renderEngines(v);
+    if (S.route.name==='harvest')  return await renderHarvest(v);
     if (S.route.name==='diff')     return await renderDiff(v);
   } catch(e){
     v.innerHTML = `<div class="alert alert-danger"><strong>Error.</strong> ${esc(e.message)}
@@ -100,7 +102,7 @@ Object.assign(window, {
   render, nav, globalSearch, previewPlan, uploadDossier, autoInvestigate,
   autoQueuePreview, autoSweepGo, submitWizard, submitBatch, entityPivot,
   toggleDetail, toggleCorrMembers, pivotToEntity, refreshEngines,
-  closeLiveStream,
+  closeLiveStream, refreshHarvest,
 });
 
 /* ═══════════ Bootstrap ═══════════ */

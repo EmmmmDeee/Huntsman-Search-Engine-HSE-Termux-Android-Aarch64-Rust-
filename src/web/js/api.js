@@ -90,6 +90,9 @@ export const API = {
   // coverage catalogue. Surfaced read-only in Settings (loopback-only).
   keysStatus:   ()=>API._req('/api/v1/keys/status'),
   keysPatterns: ()=>API._req('/api/v1/keys/patterns'),
+  // Key Harvest dashboard feed: vault bank + ROI tiering + live SeekNow/
+  // OathNet/WiGLE account health. Loopback-only.
+  keysHarvest:  ()=>API._req('/api/v1/keys/harvest'),
   togglesGet: ()=>API._req('/api/v1/settings/toggles'),
   togglesPut: body=>API._req('/api/v1/settings/toggles',{method:'PUT',body}),
   stats:     ()=>API._req('/api/v1/stats'),
