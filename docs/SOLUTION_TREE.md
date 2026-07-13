@@ -922,6 +922,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `au_property` (still proxy-blocked) and the other 14 `search_engines`
   engines. **(§4a)** **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture corpus,
   fourth slice), §8 — same commit.
+  *Named follow-on closed (2026-07-13): `metager` demoted from
+  `RELIABLE_ENGINE_NAMES`.* The fourth slice's finding (permanently dead
+  legacy endpoint) disproved the doc comment's "100% hit, 0% blocked, 20
+  results/call" claim outright, not just made it stale. Demoted `metager`
+  from the reliable core (3→2: `swisscows`, `dogpile` remain) — the
+  guaranteed floor `pivot_engine_set` always falls back to — since it
+  currently contributes zero genuine results; left it registered in
+  `ENGINES` so the primary pass still tries it (now correctly yielding zero
+  rather than 30 fake chrome-leak hits) in case a future cycle finds a
+  working replacement endpoint. Updated the 4 dependent test call sites
+  that hardcoded the 3-name reliable set
+  (`reliable_engines_resolve_by_name`,
+  `primary_engine_order_floats_reliable_and_proven_engines_first` — which
+  used `metager` as its "declared late" example, now `swisscows` —,
+  `pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic`).
+  Live-verified: a real `hse scan --kind name --value Kylo4kylo --modules
+  search_engines` run confirms `metager` is still dispatched normally in
+  the primary pass, unaffected by this change — only the pivot/recycle
+  floor's membership changed. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4615 lib tests, net 0 — 4 tests edited in
+  place). **Paired:** `PROBLEM_TREE` T2.7 (reliable-core correction), §8 —
+  same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found

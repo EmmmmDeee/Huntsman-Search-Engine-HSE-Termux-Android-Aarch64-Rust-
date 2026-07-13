@@ -261,6 +261,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **MetaGer is no longer treated as one of the three "always-reliable"
+  fallback search engines.** Its search feature turned out to have stopped
+  working entirely (see below) — it was still one of the guaranteed
+  fallback engines every scan's deeper cross-platform discovery pass
+  depends on, wasting one of only three guaranteed slots on an engine that
+  currently contributes nothing. It's still queried normally like every
+  other engine, just no longer counted on as a guaranteed source.
 - **MetaGer search results no longer include MetaGer's own homepage, footer,
   and nonprofit-operator links disguised as genuine hits about your search
   subject.** MetaGer is one of only three engines this tool always queries

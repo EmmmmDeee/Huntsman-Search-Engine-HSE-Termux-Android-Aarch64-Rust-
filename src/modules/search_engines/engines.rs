@@ -343,15 +343,28 @@ pub(super) const ENGINES: &[EngineSpec] = &[
 /// Order here is the order they're tried.
 ///
 /// Live scan evidence (depth-2 "Onur Ada", 6,688 engine dispatches each):
-///   metager:   100% hit, 0% blocked, 20 results/call (DC + residential)
 ///   swisscows: 100% hit, 0% blocked,  4 results/call (DC + residential)
 ///   dogpile:    97% hit, 0% blocked,  1 result/call  (DC + residential)
 ///   yahoo/bing/brave: killed by SESSION_DEAD after <400 dispatches from DC IPs
-pub(super) const RELIABLE_ENGINE_NAMES: [&str; 3] = ["metager", "swisscows", "dogpile"];
+///
+/// `metager` was demoted from this set (T2.7 golden-fixture corpus, fourth
+/// slice, 2026-07-13): a real live capture proved its legacy `/meta/meta.ger3`
+/// endpoint now unconditionally redirects to MetaGer's own marketing homepage
+/// regardless of query, cookies, or HTTP method — confirmed with two
+/// independent real queries plus MetaGer's own `robots.txt Disallow: /meta/`
+/// — so the "100% hit, 0% blocked, 20 results/call" figure this comment used
+/// to quote for it is disproven, not merely stale. `metager` stays registered
+/// in [`ENGINES`] (still dispatched normally in the primary pass, now
+/// correctly yielding zero rather than 30 fake chrome-leak "results" — see
+/// `helpers::urls::ENGINE_DOMAINS`) in case a future cycle finds a working
+/// replacement endpoint; it is no longer trusted as part of the GUARANTEED
+/// floor `pivot_engine_set` always falls back to, since it currently
+/// contributes zero genuine results to that floor.
+pub(super) const RELIABLE_ENGINE_NAMES: [&str; 2] = ["swisscows", "dogpile"];
 
 /// Resolve [`RELIABLE_ENGINE_NAMES`] to their [`EngineSpec`]s, preserving that
 /// order. A name absent from [`ENGINES`] is skipped; the
-/// `reliable_engines_resolve_by_name` test asserts all three resolve, so a
+/// `reliable_engines_resolve_by_name` test asserts both resolve, so a
 /// rename/removal in [`ENGINES`] fails CI instead of silently shrinking the
 /// reliable set at runtime.
 pub(super) fn reliable_engines() -> Vec<&'static EngineSpec> {

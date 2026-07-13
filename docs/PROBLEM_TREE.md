@@ -665,6 +665,33 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   this sandbox's proxy) and the other 14 `search_engines` engines. **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, fourth
   slice — MetaGer chrome-leak defect), §5 — same commit.
+  **Named follow-on closed (2026-07-13):** demoted `metager` out of
+  `RELIABLE_ENGINE_NAMES` (3→2: `swisscows`, `dogpile`) and corrected its
+  doc comment, which previously quoted stale "100% hit, 0% blocked, 20
+  results/call" evidence now disproven by the fourth slice's finding — the
+  legacy endpoint is permanently dead, so the figure is factually wrong, not
+  merely out of date. `metager` stays registered in `ENGINES` (still
+  dispatched normally in the primary pass, now correctly yielding zero
+  rather than 30 fake chrome-leak results) in case a future cycle finds a
+  working replacement endpoint; it no longer counts toward the GUARANTEED
+  floor `pivot_engine_set` always falls back to, since it currently
+  contributes zero genuine results to that floor. Updated the 4 dependent
+  test call sites that assumed a 3-name reliable set
+  (`reliable_engines_resolve_by_name`,
+  `primary_engine_order_floats_reliable_and_proven_engines_first`,
+  `pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic`)
+  to assert the corrected 2-name set instead of hand-waving past the
+  change. Live-verified: a real `hse scan --kind name --value Kylo4kylo
+  --modules search_engines` run confirms `metager` is still dispatched in
+  the primary pass and still correctly reports `outcome: empty, results: 0`
+  (unaffected by this change, as intended — only the pivot/recycle floor's
+  membership changed). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4615 lib tests, net 0 — 4 tests edited in place,
+  none added/removed). **T2.7 remains `[~]`** — only the golden-fixture
+  corpus's remaining slices stay open (`au_people`/`au_electoral`/
+  `au_property`, still proxy-blocked; the other 14 `search_engines`
+  engines). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (reliable-core
+  correction), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10048,3 +10075,24 @@ way, so this specific drift class can't recur silently again.
   proven unit test. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4615 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE (extended), §5 — same commit.
+- **2026-07-13** — **T2.7: closed the named follow-on from the MetaGer
+  golden-fixture fourth slice — demoted `metager` out of
+  `RELIABLE_ENGINE_NAMES`.** The fourth slice proved `metager`'s legacy
+  search endpoint is permanently dead (redirects to its own marketing
+  homepage regardless of query/cookies/method); its doc comment still
+  quoted stale "100% hit, 0% blocked, 20 results/call" evidence, now
+  factually disproven rather than merely out of date. Demoted it from the
+  reliable core (3→2: `swisscows`, `dogpile`) — the GUARANTEED floor the
+  pivot/recycle pass always falls back to — since it currently contributes
+  zero genuine results there; left it registered in `ENGINES` (still
+  dispatched normally in the primary pass, now correctly yielding zero
+  instead of 30 fake chrome-leak hits) in case a future cycle finds a
+  working replacement endpoint. Updated the 4 dependent test call sites
+  that assumed a 3-name reliable set. Live-verified: a real `hse scan
+  --kind name --value Kylo4kylo --modules search_engines` run confirms
+  `metager` is still dispatched normally in the primary pass, unaffected by
+  this change — only the pivot/recycle floor's membership changed. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4615 lib tests, net 0). T2.7 remains `[~]` — only the golden-fixture
+  corpus's remaining slices stay open. **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (reliable-core correction), §5 — same commit.

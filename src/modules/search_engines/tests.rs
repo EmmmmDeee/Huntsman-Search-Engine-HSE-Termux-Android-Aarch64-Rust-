@@ -9,8 +9,8 @@ use super::*;
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {
     use std::collections::BTreeSet;
-    // The reliable core (dogpile/swisscows/metager) is declared LATE in ENGINES,
-    // so in raw order it never makes the first ENGINE_CONCURRENCY batch and is the
+    // The reliable core (dogpile/swisscows) is declared LATE in ENGINES, so in
+    // raw order it never makes the first ENGINE_CONCURRENCY batch and is the
     // first cut under a deadline. order_engines_for_primary must float it — plus
     // any engine proven productive this run — to the front.
     let live: Vec<&'static EngineSpec> = ENGINES.iter().collect();
@@ -38,14 +38,13 @@ fn primary_engine_order_floats_reliable_and_proven_engines_first() {
         }
     }
     let pos = |name: &str| ordered.iter().position(|e| e.name == name).unwrap();
-    // The key win: a reliable engine declared late (metager) now precedes an
+    // The key win: a reliable engine declared late (swisscows) now precedes an
     // unproven engine declared early (bing).
-    assert!(pos("metager") < pos("bing"));
+    assert!(pos("swisscows") < pos("bing"));
     // Declaration order is preserved WITHIN the front group (stable sort):
-    // yahoo(30) < dogpile(241) < swisscows(255) < metager(306).
+    // yahoo(30) < dogpile(241) < swisscows(255).
     assert!(pos("yahoo") < pos("dogpile"));
     assert!(pos("dogpile") < pos("swisscows"));
-    assert!(pos("swisscows") < pos("metager"));
 
     // With nothing proven and an empty reliable set, order is unchanged
     // (declaration order) — qi==0 first-target behaviour degrades gracefully.
@@ -2096,13 +2095,16 @@ fn canonicalize_url_strips_trailing_slash() {
 fn reliable_engines_resolve_by_name() {
     // The secondary pivot + recycler passes select these engines by NAME,
     // not by `ENGINES[..]` index, so reordering/inserting into `ENGINES`
-    // can't silently repoint them. Assert all three resolve, in order —
-    // a rename/removal fails CI instead of degrading silently at runtime.
+    // can't silently repoint them. Assert both resolve, in order — a
+    // rename/removal fails CI instead of degrading silently at runtime.
     let names: Vec<&str> = reliable_engines().iter().map(|e| e.name).collect();
-    // Live scan data: metager/swisscows/dogpile are 97-100% hit / 0% blocked
-    // from DC IPs; yahoo/bing/brave get killed by SESSION_DEAD within ~400
-    // dispatches. Reliable pass now uses the DC-stable engines.
-    assert_eq!(names, vec!["metager", "swisscows", "dogpile"]);
+    // Live scan data: swisscows/dogpile are 97-100% hit / 0% blocked from DC
+    // IPs; yahoo/bing/brave get killed by SESSION_DEAD within ~400 dispatches.
+    // `metager` was demoted (T2.7 golden-fixture corpus, fourth slice): its
+    // legacy search endpoint is confirmed permanently dead (redirects to its
+    // own marketing homepage regardless of query/cookies/method), so it no
+    // longer earns a place in the guaranteed-floor set.
+    assert_eq!(names, vec!["swisscows", "dogpile"]);
 }
 
 #[test]
@@ -2315,7 +2317,7 @@ fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
     // Proven engines union in alongside the reliable core.
     let proven: BTreeSet<&'static str> = ["yahoo", "bing", "ecosia"].into_iter().collect();
     let names: Vec<&str> = pivot_engine_set(&proven).iter().map(|e| e.name).collect();
-    for r in ["metager", "swisscows", "dogpile"] {
+    for r in ["swisscows", "dogpile"] {
         assert!(names.contains(&r), "reliable core engine {r} must remain");
     }
     for p in ["yahoo", "bing", "ecosia"] {
