@@ -310,3 +310,70 @@ use super::*;
             results.len()
         );
     }
+
+    // `testdata/duckduckgo_kylo4kylo.html` is a REAL DuckDuckGo HTML-endpoint
+    // (`html.duckduckgo.com/html/`) response, fetched live (2026-07-13) for the
+    // project's own canonical test seed `Kylo4kylo` and checked in verbatim.
+    // DuckDuckGo is the third slice of the golden-fixture corpus (Brave then
+    // Bing) and specifically exercises the primary `href=` extraction path's
+    // `resolve_href` redirect-unwrap step against DDG's own
+    // `//duckduckgo.com/l/?uddg=...` wrapper links (already unit-tested with
+    // hand-written fragments elsewhere in this module, but never against a
+    // real, full DDG results page with its actual chrome/nav/footer links
+    // alongside the wrapped organic hits). This real capture happens to
+    // return four results unrelated to `Kylo4kylo` specifically — an
+    // honestly-observed real result, not a fabricated one: this test is about
+    // extraction completeness, never relevance (that's the correlator/audit's
+    // job).
+    const GOLDEN_DUCKDUCKGO_KYLO4KYLO: &str = include_str!("testdata/duckduckgo_kylo4kylo.html");
+
+    /// If DDG's `uddg=`-wrapped href markup drifts enough to break the redirect
+    /// unwrap, this fails deterministically instead of the silent-empty-results
+    /// failure mode T2.7 exists to catch.
+    #[test]
+    fn parse_results_extracts_from_a_real_duckduckgo_serp_capture() {
+        let results = parse_results(GOLDEN_DUCKDUCKGO_KYLO4KYLO, "duckduckgo", "Kylo4kylo");
+        assert!(
+            !results.is_empty(),
+            "a layout change silently broke extraction from this real, \
+             previously-working DuckDuckGo capture"
+        );
+
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        // Pin the specific real hosts present in this exact capture.
+        assert!(
+            urls.iter().any(|u| u.contains("teamk4l.com")),
+            "expected the teamk4l.com hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("tiktok.com")),
+            "expected the TikTok hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("youtube.com")),
+            "expected the YouTube hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("watch.plex.tv")),
+            "expected the plex.tv hit, got: {urls:?}"
+        );
+        // Every extracted URL is a genuine organic result, never DDG's own
+        // account/CDN/branding chrome or an un-unwrapped redirect wrapper —
+        // `is_engine_domain` + `resolve_href`'s `uddg=` unwrap must both still
+        // be doing their job against this real page's nav/footer links.
+        for u in &urls {
+            assert!(
+                !u.contains("duckduckgo.com"),
+                "engine chrome or un-unwrapped redirect link leaked into results: {u}"
+            );
+        }
+        // Deterministic count: pins the exact yield so a change that silently
+        // drops (or duplicates) even one real result is caught, not just a
+        // change that empties the page entirely.
+        assert_eq!(
+            results.len(),
+            4,
+            "expected exactly 4 organic results from this fixture, got {}: {urls:?}",
+            results.len()
+        );
+    }

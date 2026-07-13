@@ -573,6 +573,38 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   pass against the fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4594 lib tests). **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (au_people White Pages AU leg), §5 — same commit.
+  **Golden-fixture corpus — third slice delivered (2026-07-13):** DuckDuckGo
+  next — reachable from this sandbox (unlike the `au_people`/`au_electoral`/
+  `au_property` legs, still blocked by the proxy per the two findings
+  above) and, unlike Brave/Bing, exercises `parse_results`' primary `href=`
+  path against DDG's own `//duckduckgo.com/l/?uddg=...` redirect-wrapper
+  links specifically — previously covered only by hand-written fragments in
+  `helpers/tests.rs`, never a full real page's worth of nav/footer chrome
+  around the wrapped organic hits. Fetched a REAL DuckDuckGo HTML-endpoint
+  (`html.duckduckgo.com/html/`) response live for the canonical seed
+  `Kylo4kylo` and checked it in verbatim as
+  `src/modules/search_engines/fetch/testdata/duckduckgo_kylo4kylo.html`
+  (16 KB, unmodified). This capture happens to return 4 results unrelated
+  to `Kylo4kylo` specifically (teamk4l.com, a TikTok video, a YouTube
+  channel, a Plex show page) — an honestly-observed real result, matching
+  the same non-fabrication discipline the Bing slice established. New test
+  `parse_results_extracts_from_a_real_duckduckgo_serp_capture` asserts the
+  parser extracts exactly 4 organic results from this exact capture
+  (pinning all 4 real hosts plus a zero-leaked-`duckduckgo.com`-chrome-or-
+  un-unwrapped-redirect check). Git-stash-proven: neutering `parse_results`
+  to return early makes the test fail; restored, it passes. No production
+  code change — the existing `href=`/`resolve_href` redirect-unwrap handled
+  this real page correctly as-is. Live-verified: a real `hse scan --kind
+  name --value Kylo4kylo --modules search_engines` run dispatches DuckDuckGo
+  live through this exact code path (`outcome: ok_retry`, 2 real results),
+  zero errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4600 lib tests, +1). *Remaining corpus slices,
+  unchanged:* `au_people`/`au_electoral`/`au_property` (still blocked by
+  this sandbox's proxy — needs the operator's own device to capture) and
+  the other 14 `search_engines` engines (lower marginal value — same shared
+  parser three fixtures now exercise). **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, third slice), §5 — same
+  commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -9411,3 +9443,28 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4599 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-PROBE-CONFIDENCE-DEDUP (new node), §5 — same commit.
+- **2026-07-13** — **T2.7: golden-fixture corpus, third slice — DuckDuckGo.**
+  Resumed the in-progress T2.7 node per step 1 of the standing cycle
+  (finish an open `[~]` node before picking new work). Re-confirmed the
+  au_people/au_electoral/au_property legs are still proxy-blocked from this
+  sandbox (fresh `curl` attempts against all three state ECs returned the
+  same 502 CONNECT-tunnel failure the prior cycle logged), so picked the
+  next-highest-value reachable target instead: DuckDuckGo, which — unlike
+  Brave/Bing — exercises `parse_results`' primary `href=` path against
+  DDG's own `uddg=`-wrapped redirect links, previously covered only by
+  hand-written fragments, never a full real page. Fetched a REAL
+  `html.duckduckgo.com/html/` response live for the canonical seed
+  `Kylo4kylo`, checked in verbatim as
+  `src/modules/search_engines/fetch/testdata/duckduckgo_kylo4kylo.html`
+  (16 KB). New test `parse_results_extracts_from_a_real_duckduckgo_serp_
+  capture` pins the exact 4 real hosts this capture contains (teamk4l.com,
+  TikTok, YouTube, a Plex show page — honestly unrelated to `Kylo4kylo`,
+  not fabricated) plus a zero-leaked-chrome/un-unwrapped-redirect check.
+  Git-stash-proven: neutering `parse_results` to return early fails the
+  test; restored, it passes. No production code change. Live-verified: a
+  real `hse scan --kind name --value Kylo4kylo --modules search_engines`
+  run dispatches DuckDuckGo live through this exact path (`ok_retry`, 2
+  real results), zero errors. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4600 lib tests, +1). **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, third
+  slice), §5 — same commit.

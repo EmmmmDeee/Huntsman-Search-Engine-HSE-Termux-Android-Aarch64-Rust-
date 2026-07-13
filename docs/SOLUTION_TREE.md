@@ -842,6 +842,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   warnings`/rustdoc clean, full suite 0 failures (4594 lib tests). **(§4a)**
   **Paired:** `PROBLEM_TREE` T2.7 (au_people White Pages AU leg), §8 — same
   commit.
+  *Golden-fixture corpus — third slice delivered (2026-07-13):* resumed this
+  in-progress node per the standing cycle's own step-1 priority (finish an
+  open node before picking new work). Re-confirmed au_people/au_electoral/
+  au_property are still proxy-blocked from this sandbox (fresh `curl`
+  attempts against all three state ECs reproduced the same 502
+  CONNECT-tunnel failure), so picked DuckDuckGo instead — reachable, and
+  unlike Brave/Bing it exercises `parse_results`' primary `href=` path
+  against DDG's own `uddg=`-wrapped redirect links, previously covered only
+  by hand-written fragments, never a full real page. Fetched a REAL
+  `html.duckduckgo.com/html/` response live for the canonical seed
+  `Kylo4kylo`, checked in verbatim as `src/modules/search_engines/fetch/
+  testdata/duckduckgo_kylo4kylo.html` (16 KB). New test
+  `parse_results_extracts_from_a_real_duckduckgo_serp_capture` pins the
+  exact 4 real hosts this capture contains (teamk4l.com, TikTok, YouTube, a
+  Plex show page — honestly unrelated to `Kylo4kylo`, not fabricated) plus
+  a zero-leaked-chrome/un-unwrapped-redirect check. Git-stash-proven:
+  neutering `parse_results` to return early fails the test; restored, it
+  passes. No production code change. Live-verified: a real `hse scan --kind
+  name --value Kylo4kylo --modules search_engines` run dispatches
+  DuckDuckGo live through this exact path (`ok_retry`, 2 real results),
+  zero errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4600 lib tests, +1). *Remaining corpus slices,
+  unchanged:* `au_people`/`au_electoral`/`au_property` (still proxy-blocked
+  — needs the operator's own device) and the other 14 `search_engines`
+  engines (lower marginal value — same shared parser three fixtures now
+  exercise). **(§4a)** **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture
+  corpus, third slice), §8 — same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found
