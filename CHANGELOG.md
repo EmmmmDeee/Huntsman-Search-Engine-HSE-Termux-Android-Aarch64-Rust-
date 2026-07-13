@@ -11,6 +11,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse doctor` now has a "Weak findings" section.** Every stored finding
+  below the confidence review threshold, observed recently, is now listed
+  (weakest first, capped at 20 rows with a remainder count) so an operator can
+  see what should not yet be trusted as evidence before relying on it. This
+  spans the whole local database (not one scan), matching the section's
+  neighbor, the existing per-source scraper-health signal.
 - **The search-engine result parser now has a real-world regression test.**
   Previously every test for the SERP-parsing logic used small, hand-written
   HTML snippets. A real search results page — with its actual footer

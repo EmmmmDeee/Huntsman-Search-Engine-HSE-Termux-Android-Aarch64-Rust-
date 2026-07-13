@@ -78,3 +78,53 @@ use super::*;
         );
         assert_eq!(ranked.len(), keys::KNOWN_KEYS.len() - 1);
     }
+
+    #[test]
+    fn format_weak_findings_empty_is_a_clean_no_op_message() {
+        let out = format_weak_findings(&[]);
+        assert!(out.contains("no weak findings"), "{out}");
+    }
+
+    #[test]
+    fn format_weak_findings_lists_each_anomaly_weakest_first() {
+        let anomalies = vec![
+            EvidenceAnomaly {
+                entity_uid: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+                    .to_string(),
+                module_name: "username_search".to_string(),
+                confidence: 0.20,
+                created_at: 0,
+            },
+            EvidenceAnomaly {
+                entity_uid: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+                    .to_string(),
+                module_name: "name_intel".to_string(),
+                confidence: 0.25,
+                created_at: 0,
+            },
+        ];
+        let out = format_weak_findings(&anomalies);
+        assert!(out.contains("2 weak finding"), "{out}");
+        assert!(out.contains("username_search"), "{out}");
+        assert!(out.contains("name_intel"), "{out}");
+        assert!(out.contains("0.20"), "{out}");
+        assert!(out.contains("0.25"), "{out}");
+        // Never the full 64-char uid — the truncated cross-reference form only.
+        assert!(!out.contains(&anomalies[0].entity_uid), "{out}");
+        assert!(out.contains(&anomalies[0].entity_uid[..12]), "{out}");
+    }
+
+    #[test]
+    fn format_weak_findings_caps_the_printed_list_and_notes_the_remainder() {
+        let anomalies: Vec<EvidenceAnomaly> = (0..25)
+            .map(|i| EvidenceAnomaly {
+                entity_uid: format!("{i:064}"),
+                module_name: "search_engines".to_string(),
+                confidence: 0.10 + (i as f64) * 0.001,
+                created_at: 0,
+            })
+            .collect();
+        let out = format_weak_findings(&anomalies);
+        assert_eq!(out.matches("conf=").count(), 20, "must cap the printed rows at 20: {out}");
+        assert!(out.contains("… and 5 more"), "{out}");
+    }

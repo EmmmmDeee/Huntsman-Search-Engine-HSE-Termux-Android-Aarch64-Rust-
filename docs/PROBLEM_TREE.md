@@ -2739,6 +2739,48 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   regional flag. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4566 lib tests, +1). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
   (slice 8), §5 — same commit.
+- **`[x]` T2.72 · weak (sub-0.30-confidence) findings had a real triage query
+  with zero callers — `hse doctor` never surfaced them for analyst review
+  (another WIRE-IN from the banked dead-code sweep).** `Store::
+  low_confidence_evidence(threshold, since_seconds)` — every stored entity
+  below the review threshold, observed recently, weakest-first, resolved to
+  its producing module — was fully implemented and tested but never called
+  from anywhere. Its own doc frames it as *"the audit trail an LE/defence
+  reviewer reads to find what should NOT yet be trusted."* The sweep's
+  original recommendation was to wire it into `hse audit`, but that command
+  is per-scan/per-source (`--scan-id`/`--csv`), while the query has **no**
+  `scan_id` filter at all — it is deliberately cross-scan, the whole local
+  intelligence DB. Wiring a cross-scan query into a single scan's audit
+  report would silently blend OTHER, unrelated investigations' weak entities
+  into this one's evidentiary score — exactly the wrong-scope evidentiary
+  contamination this project's own correlator audits (AU-056/AU-085, AU-105,
+  the T2.69 GEXF co-occurrence fix) have repeatedly closed elsewhere. **P3**
+  (unwired capability; correctly re-scoped during implementation, not
+  blindly wired to the sweep's literal suggestion). → **Decision: WIRE-IN**,
+  but into `hse doctor` — the established cross-scan operator dashboard
+  (T2.7/SOL-HEALTH-SIGNAL's scraper-health signal is the precedent), not
+  `hse audit`. New "Weak findings" section, right after Scraper health,
+  reusing the already-open `Store` handle; a new pure `format_weak_findings`
+  helper (mirroring `aggregate_source_health`'s query/presentation split)
+  renders weakest-first, capped at 20 rows with a remainder count, each row
+  showing confidence / resolved module / a 12-char uid prefix / observed
+  date. `EvidenceAnomaly` re-exported from `storage::entities` (was
+  unreachable outside its own file — private `mod entities;`) via a new
+  `pub use entities::EvidenceAnomaly;`. **Live-proven FIRST** (per the
+  cycle's order): a fresh empty DB correctly reports "no weak findings"; a
+  real 96-entity `Kylo4kylo` username scan (all entities ≥0.40) ALSO
+  correctly reports "no weak findings" — the honest-empty-state contract
+  holds, nothing fabricated; a real name-seed scan that genuinely triggers
+  `name_intel`'s permutation-pivot path (confidence 0.20, below the
+  `PIVOT_CONF` floor) makes the section populate with real data — "117 weak
+  finding(s)," weakest-first, `name_intel` correctly resolved, capped at 20 +
+  "and 97 more." THEN the git-stash-proven regression tests (3, testing the
+  pure formatter: empty case, weakest-first + module/uid/confidence
+  rendering, the 20-row cap + remainder count — neutering the formatter to
+  always return the empty message fails the two non-empty-case tests).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4570 lib tests, +3). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
+  (slice 9), §5 — same commit.
 
 ---
 
@@ -8383,3 +8425,27 @@ way, so this specific drift class can't recur silently again.
   exercises; Bing's distinct `<cite>`-based format is the next-highest-value
   addition). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
   slice), §5 — same commit.
+- **2026-07-13** — **T2.72: `Store::low_confidence_evidence` had zero callers —
+  wired into `hse doctor`, NOT `hse audit` as the sweep first suggested (another
+  WIRE-IN from the banked dead-code backlog).** The query (every stored entity
+  below the review threshold, weakest-first, module-resolved) was fully built
+  and tested but unreachable. Its own doc calls it cross-scan triage ("the
+  audit trail an LE/defence reviewer reads"); `hse audit` is per-scan
+  (`--scan-id`/`--csv`), and the query has NO `scan_id` filter at all — wiring
+  it there would blend unrelated scans' weak entities into one investigation's
+  score, the wrong-scope contamination class this project's correlator audits
+  (AU-056/085, AU-105, T2.69) have repeatedly closed. Re-scoped during
+  implementation to `hse doctor` — the established cross-scan dashboard
+  (T2.7/SOL-HEALTH-SIGNAL is the precedent). New "Weak findings" section reuses
+  the already-open `Store` handle; pure `format_weak_findings` helper (query/
+  presentation split, mirroring `aggregate_source_health`) renders weakest-
+  first, capped at 20 + remainder count. `EvidenceAnomaly` re-exported from
+  `storage` (was unreachable outside its own private `mod entities;`).
+  Live-proven FIRST: fresh empty DB → "no weak findings"; a real 96-entity
+  `Kylo4kylo` scan (all ≥0.40) → ALSO "no weak findings" (honest-empty-state
+  holds); a real name-seed scan hitting `name_intel`'s permutation-pivot path
+  (0.20 conf) → "117 weak finding(s)," weakest-first, module resolved, capped +
+  "and 97 more." THEN 3 git-stash-proven tests (neutering the formatter fails
+  the two non-empty cases). Gate green: fmt/clippy/rustdoc clean, full suite 0
+  failures (4570 lib tests, +3). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
+  (slice 9), §5 — same commit.

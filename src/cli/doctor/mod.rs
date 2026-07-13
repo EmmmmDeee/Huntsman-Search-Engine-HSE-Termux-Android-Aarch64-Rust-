@@ -3,8 +3,10 @@
 //! Reports Termux detection, DB path, key path, module/cost counts,
 //! HUNTSMAN_* keys loaded, a per-source scraper health signal derived from
 //! the persisted event log (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
-//! SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]), the local
-//! cell-tower database's freshness (no auto-resync exists yet, so a
+//! SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]), a cross-scan
+//! **weak findings** review list (every stored entity below the confidence
+//! review threshold — see [`crate::storage::Store::low_confidence_evidence`]),
+//! the local cell-tower database's freshness (no auto-resync exists yet, so a
 //! months-stale import is a real "check for a refresh" signal — see
 //! [`crate::util::cell_db::is_stale`]), and a live WiGLE account
 //! introspection that surfaces the email-unverified throttling warning
@@ -14,7 +16,7 @@ use crate::core::error::Result;
 use crate::{
     default_db_path, is_termux,
     modules::registry,
-    storage::Store,
+    storage::{EvidenceAnomaly, Store},
     util::{cell_db, keys, scraper_health, timefmt},
 };
 
@@ -174,6 +176,31 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         Err(_) => println!("  skipped — database did not open (see Storage above)"),
     }
 
+    // ── Weak findings review (cross-scan) ───────────────────────────────
+    // `Store::low_confidence_evidence` has no `scan_id` filter by design — it
+    // queries the WHOLE local intelligence DB, not one investigation. That is
+    // exactly why this lives here, in the cross-scan operator dashboard
+    // (alongside the scraper-health signal just above), and NOT as an `hse
+    // audit` report section: `hse audit` scores one scan/source's evidentiary
+    // quality, and silently blending in weak entities from OTHER, unrelated
+    // scans would itself be the wrong-scope evidentiary contamination this
+    // project's correlator audits (AU-056/AU-085, AU-105, the GEXF
+    // co-occurrence fix) have repeatedly closed elsewhere.
+    println!(
+        "\nWeak findings (last 7 days, confidence < {:.2}):",
+        Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD
+    );
+    match &store_result {
+        Ok(store) => match store.low_confidence_evidence(
+            Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+            crate::core::port::EVENTS_RETENTION_SECS as i64,
+        ) {
+            Ok(anomalies) => print!("{}", format_weak_findings(&anomalies)),
+            Err(e) => println!("  could not query weak findings — {e}"),
+        },
+        Err(_) => println!("  skipped — database did not open (see Storage above)"),
+    }
+
     // ── Cell tower database freshness ──────────────────────────────────
     // `hse cells import` is a manual trigger with no auto-resync (a named,
     // unbuilt gap in SOLUTION_TREE §4a) — surfacing staleness here at least
@@ -299,6 +326,37 @@ fn rank_unset_keys(
     // Highest ROI first (Terminal < Expansion < Multiplier), ties broken by name.
     missing.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     missing
+}
+
+/// Render the "Weak findings" doctor section body. `anomalies` is expected
+/// already weakest-first ([`crate::storage::Store::low_confidence_evidence`]'s
+/// own `ORDER BY confidence ASC`); this only formats, so it is unit-testable
+/// without a store — mirroring [`scraper_health::aggregate_source_health`]'s
+/// separation of query (impure) from presentation (pure).
+fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
+    if anomalies.is_empty() {
+        return "  no weak findings in the tracked window\n".to_string();
+    }
+    const SHOWN: usize = 20;
+    let mut out = format!(
+        "  {} weak finding(s) — review before trusting as evidence:\n",
+        anomalies.len()
+    );
+    for a in anomalies.iter().take(SHOWN) {
+        let observed = timefmt::ymd_utc(a.created_at).unwrap_or_else(|| "unknown date".to_string());
+        // uid is a SHA-256 hex digest; the first 12 chars are enough to
+        // cross-reference against `hse export`/`--output json` without
+        // flooding the terminal with the full 64-char hash per row.
+        let short_uid = &a.entity_uid[..a.entity_uid.len().min(12)];
+        out.push_str(&format!(
+            "    - conf={:.2}  {:<24} {}…  observed {}\n",
+            a.confidence, a.module_name, short_uid, observed
+        ));
+    }
+    if anomalies.len() > SHOWN {
+        out.push_str(&format!("    … and {} more\n", anomalies.len() - SHOWN));
+    }
+    out
 }
 
 #[cfg(test)]

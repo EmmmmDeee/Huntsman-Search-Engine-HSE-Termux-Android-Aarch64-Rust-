@@ -1627,8 +1627,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   consts / store_api_credential_from_item. **Paired:**
   `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
   (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) / T2.70 (slice 7) / T2.71
-  (slice 8) — each slice its own commit. **Slice 8 delivered — the second WIRE-IN:
-  the scan-completion webhook that was configured but never fired.** The sweep
+  (slice 8) / T2.72 (slice 9) — each slice its own commit. **Slice 8
+  delivered — the second WIRE-IN: the scan-completion webhook that was
+  configured but never fired.** The sweep
   surfaced `core::webhook::notify_scan_complete` (the fire-and-forget
   `scan_complete` POST) with zero callers — but NOT dead-to-delete:
   `webhook_url_from_env()` is wired (`cli/scan`/`cli/live` read
@@ -1642,6 +1643,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   + `HUNTSMAN_WEBHOOK_URL` + `hse scan -v Kylo4kylo` captured the real POST
   (entity_count 141 / status aborted / correlations 7) where the pre-fix binary
   sent nothing; git-stash-proven regression test with a one-shot TCP sink.
+  **Slice 9 delivered — the third WIRE-IN, and a mid-implementation re-scope:
+  weak-findings triage, wired into `hse doctor` instead of the sweep's original
+  `hse audit` suggestion.** `Store::low_confidence_evidence` (every stored
+  entity below the review threshold, weakest-first, module-resolved) had zero
+  callers despite being fully built and tested. Its own doc frames it as
+  cross-scan triage ("the audit trail an LE/defence reviewer reads"); `hse
+  audit` is per-scan, and the query has NO `scan_id` filter — wiring it there
+  would blend unrelated scans' weak entities into one investigation's score,
+  the wrong-scope contamination this project's correlator audits (AU-056/085,
+  AU-105, T2.69) have repeatedly closed. Re-scoped to `hse doctor` — the
+  established cross-scan dashboard (T2.7/SOL-HEALTH-SIGNAL is the precedent).
+  New "Weak findings" section, pure `format_weak_findings` helper (query/
+  presentation split), `EvidenceAnomaly` newly re-exported from `storage`
+  (was unreachable outside its own private submodule). ✅ Live-proven FIRST: a
+  fresh empty DB and a real 96-entity `Kylo4kylo` scan (all entities ≥0.40)
+  BOTH correctly report "no weak findings" (honest-empty-state holds); a real
+  name-seed scan hitting `name_intel`'s permutation-pivot path (0.20 conf)
+  populates the section with "117 weak finding(s)," weakest-first, module
+  resolved, capped at 20 + "and 97 more." THEN 3 git-stash-proven tests.
 - **`[x]` SOL-ROLE-MAILBOX-COMPOUND · Suppress provider-prefixed system
   mailboxes (DNS SOA / registrar desks) from posing as the subject's email** →
   **T2.68**. Found by a PRIORITY-5 LIVE end-to-end pass (real binary vs the
@@ -5909,6 +5929,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   identical parser this fixture already exercises; Bing's distinct
   `<cite>`-based format is the next-highest-value addition). Paired:
   `PROBLEM_TREE` T2.7 — same commit.
+- **2026-07-13** — **SOL-DEADCODE-SWEEP slice 9: wired weak-findings triage into
+  `hse doctor`, re-scoping the sweep's original `hse audit` suggestion.**
+  `Store::low_confidence_evidence` (every stored entity below the review
+  threshold, weakest-first, module-resolved) was fully built and tested with
+  zero callers. Its own doc frames it as cross-scan triage ("the audit trail
+  an LE/defence reviewer reads to find what should NOT yet be trusted"); `hse
+  audit` scores one scan/source and the query has NO `scan_id` filter at all,
+  so wiring it there would blend unrelated scans' weak entities into a single
+  investigation's evidentiary score — the wrong-scope contamination this
+  project's correlator audits (AU-056/AU-085, AU-105, T2.69's GEXF
+  co-occurrence fix) have repeatedly closed elsewhere. Decision: WIRE-IN, into
+  `hse doctor` instead — the established cross-scan operator dashboard
+  (T2.7/SOL-HEALTH-SIGNAL's scraper-health signal is the direct precedent: same
+  "query, impure" / "format, pure and testable" split, same already-open
+  `Store` handle reused). New "Weak findings" section right after Scraper
+  health; new pure `format_weak_findings(&[EvidenceAnomaly]) -> String` caps
+  the printed list at 20 rows with a remainder count; `EvidenceAnomaly`
+  newly re-exported from `storage` (`pub use entities::EvidenceAnomaly;` —
+  it was unreachable outside its own private `mod entities;` before this).
+  ✅ Live-proven FIRST (per the cycle's order): a fresh empty DB correctly
+  reports "no weak findings"; a real 96-entity `Kylo4kylo` username scan
+  (every entity ≥0.40 confidence) ALSO correctly reports "no weak findings" —
+  the honest-empty-state contract holds, nothing fabricated; a real name-seed
+  scan that genuinely triggers `name_intel`'s permutation-pivot path
+  (`PIVOT_CONF = 0.20`, below the 0.30 threshold) makes the section populate
+  with real data: "117 weak finding(s)," weakest-first, `name_intel` correctly
+  resolved as the producing module, capped at 20 rows + "and 97 more." THEN 3
+  git-stash-proven regression tests on the pure formatter (empty case;
+  weakest-first + confidence/module/uid/date rendering; the 20-row cap +
+  remainder count — neutering the formatter to always return the empty
+  message fails the two non-empty-case tests, restored it passes). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4570 lib
+  tests, +3). Paired: `PROBLEM_TREE` T2.72 — same commit.
 - **2026-07-12** — **New SOL-RANDOMIZED-MAC: the OUI classifier now flags
   randomized (private) MAC addresses instead of attributing them as real
   devices.** Surfaced by a real 1,643-device Android BLE-radar export the

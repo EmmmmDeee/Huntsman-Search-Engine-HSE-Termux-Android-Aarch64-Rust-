@@ -13,6 +13,8 @@ mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
 mod templates; // `impl Store`: cross-scan pathway-template learning
 
+pub use entities::EvidenceAnomaly;
+
 pub struct Store {
     conn: Mutex<Connection>,
 }
