@@ -261,6 +261,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Dogpile and Swisscows results no longer include those engines' own
+  official social-media pages disguised as genuine hits about your search
+  subject.** Dogpile's own mascot's Facebook page, and all four of
+  Swisscows' own branded Facebook/Instagram/LinkedIn/Twitter accounts,
+  were showing up as if they were real results about whoever you searched
+  for. Fixed precisely — by recognizing those specific known pages, not by
+  blocking the platforms outright, so a real target's own genuine social
+  media profiles on those same sites are unaffected.
 - **MetaGer is no longer treated as one of the three "always-reliable"
   fallback search engines.** Its search feature turned out to have stopped
   working entirely (see below) — it was still one of the guaranteed

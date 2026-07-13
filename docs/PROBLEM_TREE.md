@@ -692,6 +692,48 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `au_property`, still proxy-blocked; the other 14 `search_engines`
   engines). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (reliable-core
   correction), §5 — same commit.
+  **Golden-fixture corpus — fifth slice delivered (2026-07-13): Dogpile and
+  Swisscows, now the ENTIRE `RELIABLE_ENGINE_NAMES` core after `metager`'s
+  demotion.** Re-prioritised ahead of the remaining lower-value engines:
+  with only 2 engines left in the guaranteed pivot/recycle floor, a defect
+  on either is now twice as consequential as before. Fetched REAL live
+  captures of both (`dogpile.com/serp?q=`, `swisscows.com/en/web?query=`,
+  both followed through redirects exactly as the production `curl -L`
+  fetch path does) for the canonical seed `Kylo4kylo`, checked in verbatim
+  as `fetch/testdata/dogpile_kylo4kylo.html` (77 KB) and
+  `swisscows_kylo4kylo.html` (86 KB). Surfaced the SAME false-positive
+  defect class as the MetaGer fourth slice, on a DIFFERENT kind of chrome:
+  Dogpile's own mascot "Arfie"'s Facebook page
+  (`facebook.com/ArfieFromDogpile`) and all 4 of Swisscows' own branded
+  social-media handles (Facebook/Instagram/LinkedIn/Twitter) bled through
+  as fake organic hits. Unlike MetaGer's own-domain chrome (fixable via a
+  blanket `ENGINE_DOMAINS` entry), these sit on GENERIC third-party
+  platforms — `facebook.com`, `instagram.com`, `linkedin.com`,
+  `twitter.com` — that a real target could also have a genuine profile on,
+  so a blanket domain exclusion was not an option (it would also hide a
+  real target's own social presence, the exact false-negative regression
+  this project's evidentiary doctrine is equally strict about). Fix: added
+  5 specific full-path entries to `is_tracking_url` (already the
+  mechanism this codebase uses for path-scoped, not domain-scoped, chrome
+  exclusion — e.g. `dogpile.com/click`, `swisscows.com/api` already lived
+  there) — a full-URL-substring match on each specific known handle, never
+  a bare-domain match. New tests
+  `parse_results_excludes_dogpiles_own_mascot_facebook_page` and
+  `parse_results_excludes_swisscows_own_social_handles` assert these exact
+  5 leaks no longer appear in the real captures. Git-stash-proven:
+  reverting the `is_tracking_url` additions leaks all 5 back through;
+  restored, they pass. Live-verified: a real `hse scan --kind name --value
+  Kylo4kylo --modules search_engines` run confirms both `dogpile` and
+  `swisscows` now correctly report `outcome: empty, results: 0` (previously
+  would have leaked their own social handles as fake hits), with zero
+  trace of any of the 5 excluded handles anywhere in the scan output. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4617 lib tests, +2). *Remaining corpus slices, unchanged:*
+  `au_people`/`au_electoral`/`au_property` (still proxy-blocked) and the
+  other 14 `search_engines` engines (now truly lower marginal value — the
+  entire reliable core has fixture coverage). **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, fifth slice), §5 — same
+  commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10096,3 +10138,25 @@ way, so this specific drift class can't recur silently again.
   (4615 lib tests, net 0). T2.7 remains `[~]` — only the golden-fixture
   corpus's remaining slices stay open. **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (reliable-core correction), §5 — same commit.
+- **2026-07-13** — **T2.7: golden-fixture corpus fifth slice — Dogpile and
+  Swisscows, now the entire `RELIABLE_ENGINE_NAMES` core after `metager`'s
+  demotion, both leaked their own social-media chrome as fake results.**
+  Real live captures for the canonical seed `Kylo4kylo` (followed through
+  redirects exactly as the production fetch path does) showed Dogpile's
+  own mascot's Facebook page and all 4 of Swisscows' branded social
+  handles (Facebook/Instagram/LinkedIn/Twitter) leaking through as fake
+  organic hits — the same false-positive defect class as the MetaGer
+  fourth slice, but on GENERIC third-party platforms this time, so a
+  blanket domain exclusion (like MetaGer's fix) was not safe — it would
+  also hide a real target's own genuine profile on those same platforms.
+  Fixed with 5 specific full-path entries in `is_tracking_url` (the
+  existing path-scoped, not domain-scoped, exclusion mechanism this
+  codebase already used for `dogpile.com/click`/`swisscows.com/api`). New
+  tests pin all 5 leaks closed against the real captures, git-stash-proven.
+  Live-verified: a real `hse scan --kind name --value Kylo4kylo --modules
+  search_engines` run confirms both engines now correctly report
+  `outcome: empty, results: 0` with zero trace of the excluded handles.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4617 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, fifth slice), §5 — same
+  commit.

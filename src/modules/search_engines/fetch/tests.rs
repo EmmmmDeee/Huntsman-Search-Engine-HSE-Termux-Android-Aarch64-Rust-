@@ -416,3 +416,60 @@ use super::*;
              leaking through is a false-positive regression: {urls:?}"
         );
     }
+
+    /// Golden-fixture corpus, fifth slice: Dogpile and Swisscows — now the
+    /// ENTIRE `RELIABLE_ENGINE_NAMES` core after `metager`'s demotion (the
+    /// prior slice), so a defect on either is now twice as consequential to
+    /// the pivot/recycle pass's guaranteed floor as before.
+    ///
+    /// Real live captures of both (`eingabe`/`query=Kylo4kylo`, followed
+    /// through redirects exactly as the production `curl -L` fetch path
+    /// does) surfaced the SAME defect class as the MetaGer slice: each
+    /// engine's own official social-media account bled through as a fake
+    /// organic result — Dogpile's own mascot's Facebook page, and all four
+    /// of Swisscows' branded social handles (Facebook/Instagram/LinkedIn/
+    /// Twitter). Unlike MetaGer's own-domain chrome, these sit on GENERIC
+    /// third-party platforms a real target could also have a genuine
+    /// profile on, so the fix is a specific full-path `is_tracking_url`
+    /// entry per known handle (`helpers/urls.rs`), not a blanket domain
+    /// exclusion that would also hide a real target's own social presence.
+    const GOLDEN_DOGPILE_KYLO4KYLO: &str = include_str!("testdata/dogpile_kylo4kylo.html");
+    const GOLDEN_SWISSCOWS_KYLO4KYLO: &str = include_str!("testdata/swisscows_kylo4kylo.html");
+
+    /// Pins the fix: Dogpile's own mascot Facebook page is excluded from this
+    /// real capture, not emitted as a fake organic hit. Git-stash-proven:
+    /// reverting the `is_tracking_url` addition leaks it back through.
+    #[test]
+    fn parse_results_excludes_dogpiles_own_mascot_facebook_page() {
+        let results = parse_results(GOLDEN_DOGPILE_KYLO4KYLO, "dogpile", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        assert!(
+            !urls
+                .iter()
+                .any(|u| u.to_lowercase().contains("arfiefromdogpile")),
+            "Dogpile's own mascot Facebook page must not leak through as a \
+             fake organic result: {urls:?}"
+        );
+    }
+
+    /// Pins the fix: every one of Swisscows' 4 branded social-media handles
+    /// this real capture surfaces is excluded, not emitted as fake organic
+    /// hits. Git-stash-proven: reverting the `is_tracking_url` additions
+    /// leaks all 4 back through.
+    #[test]
+    fn parse_results_excludes_swisscows_own_social_handles() {
+        let results = parse_results(GOLDEN_SWISSCOWS_KYLO4KYLO, "swisscows", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        for leak in [
+            "facebook.com/swisscows",
+            "instagram.com/swisscows.official",
+            "linkedin.com/company/swisscows",
+            "twitter.com/swisscows_ch",
+        ] {
+            assert!(
+                !urls.iter().any(|u| u.to_lowercase().contains(leak)),
+                "Swisscows' own {leak} handle must not leak through as a fake \
+                 organic result: {urls:?}"
+            );
+        }
+    }

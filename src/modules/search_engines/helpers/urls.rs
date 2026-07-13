@@ -260,6 +260,24 @@ pub(in crate::modules::search_engines) fn is_tracking_url(url: &str) -> bool {
                 "guce.aol.com",
                 "advertising.yahoo.com",
                 "feedback.yahoo.com",
+                // Dogpile's and Swisscows' own official social-media accounts —
+                // unlike their SERP chrome (already covered by the
+                // `dogpile.com`/`swisscows.com` `ENGINE_DOMAINS` entries), these
+                // sit on generic third-party platforms (facebook/instagram/
+                // linkedin/twitter) this codebase can't blanket-exclude without
+                // also hiding a real target's own genuine profile on those same
+                // platforms. Real live captures (`fetch/testdata/
+                // dogpile_kylo4kylo.html`, `swisscows_kylo4kylo.html`) showed
+                // every one of these leaking through as fake "organic" hits for
+                // an unrelated query — Dogpile's mascot page and Swisscows'
+                // branded handles are specific, known, never-the-subject's-own
+                // URLs, so a full-path match is safe here in a way a bare
+                // `facebook.com` entry would not be.
+                "facebook.com/arfiefromdogpile",
+                "facebook.com/swisscows",
+                "instagram.com/swisscows.official",
+                "linkedin.com/company/swisscows",
+                "twitter.com/swisscows_ch",
             ])
         });
     TRACKING.is_match(url)

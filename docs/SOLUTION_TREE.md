@@ -944,6 +944,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clean, full suite 0 failures (4615 lib tests, net 0 — 4 tests edited in
   place). **Paired:** `PROBLEM_TREE` T2.7 (reliable-core correction), §8 —
   same commit.
+  *Golden-fixture corpus — fifth slice delivered (2026-07-13): Dogpile and
+  Swisscows, now the entire reliable core.* With `metager` demoted, only 2
+  engines remain in the guaranteed pivot/recycle floor — doubling the
+  consequence of a defect on either. Real live captures for `Kylo4kylo`
+  (followed through redirects exactly as the production fetch path does),
+  checked in as `dogpile_kylo4kylo.html` (77 KB) /
+  `swisscows_kylo4kylo.html` (86 KB), surfaced the SAME false-positive
+  defect class as the MetaGer slice, on different chrome: Dogpile's own
+  mascot "Arfie"'s Facebook page and all 4 of Swisscows' branded social
+  handles (Facebook/Instagram/LinkedIn/Twitter) leaked through as fake
+  organic hits. Unlike MetaGer's own-domain chrome, these sit on GENERIC
+  third-party platforms a real target could also have a genuine profile
+  on, so a blanket domain exclusion was not safe (it would create the
+  opposite defect — hiding a real target's own social presence). Fix:
+  added 5 specific full-path entries to `is_tracking_url` — the existing
+  path-scoped exclusion mechanism this codebase already used for
+  `dogpile.com/click`/`swisscows.com/api` — a full-URL-substring match on
+  each known handle, never a bare-domain match. Two new tests pin all 5
+  leaks closed against the real captures, git-stash-proven (reverting the
+  additions leaks all 5 back through; restored, they pass). Live-verified:
+  a real `hse scan --kind name --value Kylo4kylo --modules search_engines`
+  run confirms both engines now correctly report `outcome: empty,
+  results: 0`, zero trace of any excluded handle in the scan output. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4617 lib tests, +2). *Remaining corpus slices, unchanged:*
+  `au_people`/`au_electoral`/`au_property` (still proxy-blocked) and the
+  other 14 `search_engines` engines. **Paired:** `PROBLEM_TREE` T2.7
+  (golden-fixture corpus, fifth slice), §8 — same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found
