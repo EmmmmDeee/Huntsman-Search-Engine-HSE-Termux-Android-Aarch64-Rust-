@@ -170,8 +170,11 @@ pub(super) fn mark_quota_exhausted() {
     tracing::warn!("SeekNow daily quota exhausted — skipping remaining queries");
 }
 
-/// True once see-know.eu has rejected the key. The diagnostic accessor for
-/// `hse doctor` / the selftest to report it as an actionable problem.
+/// True once see-know.eu has rejected the key. The diagnostic accessor
+/// `hse doctor`'s "SeekNow account" section reads after probing `/credits` —
+/// that probe (`endpoints::query_credits`) is the one call site that can
+/// classify+latch this from a FRESH process (before any data-bearing
+/// `search`/`get_path` call has had the chance to).
 pub fn is_key_invalid() -> bool {
     KEY_INVALID.load(Ordering::Relaxed)
 }

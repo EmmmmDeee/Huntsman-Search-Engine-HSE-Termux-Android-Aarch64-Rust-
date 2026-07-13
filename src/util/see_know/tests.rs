@@ -8,7 +8,9 @@ use super::client::{
     CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
     key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
-use super::endpoints::{SEARCH_LIMIT, build_search_body, extract_items};
+use super::endpoints::{
+    CreditsOutcome, SEARCH_LIMIT, build_search_body, extract_items, parse_credits_body,
+};
 use crate::util::curl_client::AuthScheme;
 
 #[test]
@@ -531,4 +533,89 @@ fn client_auth_scheme_is_x_api_key_header() {
         crate::util::curl_client::AuthScheme::XApiKey,
         "SeekNow MUST use X-API-Key header per spec"
     );
+}
+
+// ── `/credits` response classification (hse doctor's SeekNow diagnostic) ──
+//
+// `query_credits` is also the probe `hse doctor`'s "SeekNow account" section
+// uses to catch a dead/rejected key from a FRESH process — before this fix,
+// only a data-bearing `search`/`get_path` call ever classified+latched an
+// auth rejection, so a process that only ever called `query_credits` (like
+// `hse doctor`) could never detect a dead key. These tests pin the pure
+// classification `parse_credits_body` performs, live-verified against this
+// operator's actual embedded SeekNow key: a real `hse scan --modules
+// see_know` run against `see-know.icu` confirmed it currently returns
+// exactly the `{"error":"invalid_api_key",...}` shape the AuthError case
+// below models.
+
+#[test]
+fn credits_body_classifies_an_auth_rejection_as_auth_error() {
+    let body = r#"{"error":"invalid_api_key","message":"Invalid API key"}"#;
+    assert!(matches!(
+        parse_credits_body(body),
+        CreditsOutcome::AuthError
+    ));
+}
+
+#[test]
+fn credits_body_classifies_plan_required_as_auth_error_too() {
+    // A recognised key whose account lacks a paid plan is terminal for the
+    // held key in the exact same way an outright-invalid key is (see
+    // `client::is_auth_error`'s own doc comment) — the fix isn't a header
+    // change, the account needs a plan, so both classify identically here.
+    let body = r#"{"error":"plan_required","message":"Upgrade your plan"}"#;
+    assert!(matches!(
+        parse_credits_body(body),
+        CreditsOutcome::AuthError
+    ));
+}
+
+#[test]
+fn credits_body_extracts_remaining_and_daily_limit_from_every_known_shape() {
+    let shapes = [
+        r#"{"credits_remaining": 4200, "daily_limit": 5000, "plan": "enterprise"}"#,
+        r#"{"data": {"credits_remaining": 4200, "daily_limit": 5000}}"#,
+        r#"{"remaining": 4200, "total": 5000}"#,
+        r#"{"credits": {"remaining": 4200, "daily": 5000}}"#,
+    ];
+    for body in shapes {
+        match parse_credits_body(body) {
+            CreditsOutcome::Data {
+                remaining,
+                daily_limit,
+            } => {
+                assert_eq!(remaining, 4200, "shape: {body}");
+                assert_eq!(daily_limit, Some(5000), "shape: {body}");
+            }
+            _ => panic!("expected Data outcome for shape: {body}"),
+        }
+    }
+}
+
+#[test]
+fn credits_body_missing_daily_limit_still_returns_remaining() {
+    let body = r#"{"credits_remaining": 100}"#;
+    match parse_credits_body(body) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 100);
+            assert_eq!(daily_limit, None);
+        }
+        _ => panic!("expected Data outcome"),
+    }
+}
+
+#[test]
+fn credits_body_garbage_is_unparseable_not_auth_error() {
+    // A network blip / HTML error page / truncated body must NEVER be
+    // mistaken for a confirmed dead key — only a genuine, classified auth
+    // rejection may latch `mark_key_invalid`.
+    for body in ["", "not json", "<html>502 Bad Gateway</html>", "{}"] {
+        assert!(
+            matches!(parse_credits_body(body), CreditsOutcome::Unparseable),
+            "body {body:?} must classify as Unparseable, not AuthError"
+        );
+    }
 }

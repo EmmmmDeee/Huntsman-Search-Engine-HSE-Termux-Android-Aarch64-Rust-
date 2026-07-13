@@ -3437,6 +3437,65 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   fabricated live claim. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4601 lib tests, +1). **Paired:**
   `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **`[x]` T2.83 · SeekNow — `see_know`'s highest-priority paid source and its
+  proactive API-key-harvesting engine (`extract_api_keys_from_item` on
+  every returned record) — currently returns ZERO keys for any operator
+  running the zero-config embedded default key, silently: the key is
+  DEAD, and `hse doctor` had no way to detect it.** Operator instruction:
+  "Focus on utilising seek to harvest and proactively discover API keys to
+  use." Investigation confirmed `see_know`'s passive per-item key-harvest
+  wiring is already complete (both call sites — the universal `/search`
+  results and the per-seed endpoint matrix — already invoke
+  `extract_api_keys_from_item`/`store_api_credential`; there is no
+  undocumented "keyword search" endpoint to wire, per this project's own
+  prior dead-code sweep (`T2.58`/`T2.62`) which already removed speculative,
+  unverified endpoint scaffolding). The real, verified blocker: `base_url()`
+  resolves to `see-know.icu` (not the `.eu` domain this sandbox has always
+  had proxy-blocked, and which the embedded key's OWN doc comment
+  previously — incorrectly — blamed for "can't live-verify here"); `.icu`
+  IS reachable from this sandbox, and a real `hse scan --modules see_know`
+  run against it logs "SeekNow (see-know.eu) lookups disabled: the API key
+  was rejected (invalid_api_key)" via the actual production client code
+  path — the embedded `SEEKNOW_DEFAULT_KEY` is confirmed dead. Worse: this
+  failure is completely silent from the operator's perspective — a scan
+  just reports `see_know: found 0`, indistinguishable from a legitimate
+  empty result, and `budget::is_key_invalid()`'s own doc comment claimed it
+  was "the diagnostic accessor for `hse doctor`" — but `hse doctor` never
+  actually called it. → **Solution:** (1) fixed `query_credits` (the
+  free, budget-free `/credits` meta-query `hse doctor` can call from a
+  FRESH process, before any data-bearing call) to classify+latch an
+  auth-rejection via the same `is_auth_error`/`mark_key_invalid` machinery
+  `search`/`get_path` already use — previously `query_credits` silently
+  swallowed an auth-error response as an unparseable `None`, never updating
+  the global latch, so a process that only ever called it (exactly `hse
+  doctor`'s case) could never detect a dead key; (2) added a new "SeekNow
+  account" section to `hse doctor`, mirroring the existing WiGLE
+  account-health block, that probes `/credits` and reports `INVALID — the
+  configured key was rejected...` when `is_key_invalid()` is true after the
+  probe, or the remaining/daily-limit credits otherwise; (3) corrected the
+  `SEEKNOW_DEFAULT_KEY` doc comment (previously blamed the wrong domain for
+  an untested status) to record the confirmed-dead finding, so a future
+  cycle rotating in a fresh key has an honest starting point. **P2/silent-
+  breakage** (a completely dark failure mode on this project's own stated
+  highest-priority paid source, previously undiagnosable even by the tool
+  built to diagnose it). Refactored the credits-body parsing into a pure,
+  independently-testable `parse_credits_body`/`CreditsOutcome` (3-way:
+  `Data`/`AuthError`/`Unparseable` — kept distinct so a network blip can
+  never be conflated with a confirmed dead key and wrongly latch
+  `mark_key_invalid`). 5 new regression tests pin every classification path
+  (an invalid-key body, a plan-required body, all 4 known credits-response
+  shapes, a missing-daily-limit shape, and 4 garbage/non-JSON bodies that
+  must NOT classify as an auth error) — git-stash-proven by neutering the
+  `is_auth_error` check inside `parse_credits_body`, which fails 2 of the 5
+  tests; restored, all pass. Live-verified end-to-end: a real `hse doctor`
+  run against this operator's own actual `~/.huntsman.env` (which has no
+  operator override, so resolves to the embedded default) now prints
+  `SeekNow account:\n  INVALID — the configured key was rejected. Set a
+  valid, plan-enabled key via HUNTSMAN_SEEKNOW_KEY or the UI Settings
+  panel.` — the exact diagnostic that was silently missing before this fix.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4606 lib tests, +5). **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE
+  extended, §5 — same commit.
 
 ---
 
@@ -9559,4 +9618,42 @@ way, so this specific drift class can't recur silently again.
   proven by the git-stash-proven unit test rather than a fabricated live
   claim. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4601 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **2026-07-13** — **T2.83: `hse doctor` can now detect a dead SeekNow key —
+  previously the tool's own code comment claimed this diagnostic already
+  existed, but it was never wired, and the embedded default key turned out
+  to actually BE dead.** Operator instruction: "Focus on utilising seek to
+  harvest and proactively discover API keys to use." Investigation found
+  `see_know`'s passive key-harvest wiring already complete at both call
+  sites (no undocumented endpoint to add — a prior dead-code sweep already
+  removed speculative, unverified endpoint scaffolding). The real blocker:
+  `base_url()` resolves to `see-know.icu`, reachable from this sandbox
+  (unlike `.eu`, which the embedded key's own doc comment previously —
+  incorrectly — blamed for "can't verify here"); a real `hse scan --modules
+  see_know` run against `.icu` logs "the API key was rejected
+  (invalid_api_key)" via the actual production client — the embedded
+  `SEEKNOW_DEFAULT_KEY` is confirmed dead, and this failure is completely
+  silent (a scan just reports `found 0`, indistinguishable from a
+  legitimate empty result). `is_key_invalid()`'s doc comment claimed it was
+  "the diagnostic accessor for `hse doctor`," but doctor never called it.
+  Fix: `query_credits` (the free, budget-free `/credits` meta-query doctor
+  can call from a fresh process) now classifies+latches an auth-rejection
+  via the same machinery `search`/`get_path` already use — previously it
+  silently swallowed an auth error as an unparseable `None`, so a
+  process that only ever calls it (exactly doctor's case) could never
+  detect a dead key. New "SeekNow account" section in `hse doctor`, mirroring
+  the existing WiGLE block, probes `/credits` and reports `INVALID — the
+  configured key was rejected...` or the remaining/daily-limit credits.
+  Corrected the `SEEKNOW_DEFAULT_KEY` doc comment's stale, wrong-domain
+  excuse to record the confirmed-dead finding. Refactored the credits-body
+  parsing into a pure `parse_credits_body`/`CreditsOutcome` (3-way:
+  `Data`/`AuthError`/`Unparseable`, kept distinct so a network blip can
+  never be mistaken for a confirmed dead key). 5 new regression tests pin
+  every classification path — git-stash-proven by neutering the
+  `is_auth_error` check, which fails 2 of 5; restored, all pass.
+  Live-verified end-to-end: a real `hse doctor` run against this operator's
+  own actual `~/.huntsman.env` now prints "SeekNow account: INVALID — the
+  configured key was rejected..." — the exact diagnostic that was silently
+  missing before. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4606 lib tests, +5). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.

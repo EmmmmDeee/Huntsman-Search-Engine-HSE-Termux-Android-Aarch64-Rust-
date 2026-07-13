@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse doctor` now checks whether your SeekNow API key actually works.**
+  Previously a dead or rejected SeekNow key failed completely silently —
+  every scan just reported finding nothing from it, indistinguishable from
+  a legitimate empty result. `hse doctor` now probes the account and prints
+  either your remaining daily credits or a clear `INVALID` notice with
+  instructions to set a working key, before you discover the problem the
+  hard way.
 - **The Wayback Machine module now also recovers leaked API keys from
   archived pages, not just old contact emails/phone numbers.** It already
   downloads historical snapshots of a site's contact/about/team pages to

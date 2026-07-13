@@ -5,8 +5,10 @@ use serde_json::Value;
 use crate::core::error::{Error, Result};
 use crate::util::backoff::BackoffPolicy;
 
-use super::budget::{budget_try_increment, is_key_invalid};
-use super::client::{base_url, cache_get, cache_put, get_json, post_json, typed_cache_key};
+use super::budget::{budget_try_increment, is_key_invalid, mark_key_invalid};
+use super::client::{
+    base_url, cache_get, cache_put, get_json, is_auth_error, post_json, typed_cache_key,
+};
 
 /// Retry pacing for a transient see-know.eu rate-limit response
 /// (`Error::RateLimited`, distinct from true quota exhaustion — see
@@ -311,6 +313,13 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 /// NOT consume a budget slot — it is a meta-query used to scale the scan cap
 /// dynamically to the operator's actual plan, not a data lookup.
 ///
+/// Also the diagnostic probe `hse doctor` uses to catch a dead/rejected key
+/// BEFORE a scan discovers it only as SeekNow silently returning nothing:
+/// an `invalid_api_key`/`plan_required` response here now latches
+/// [`mark_key_invalid`] (previously only the data-bearing `search`/`get_path`
+/// calls did this classification — a fresh process that only ever calls
+/// `query_credits`, like `hse doctor`, could not detect a dead key at all).
+///
 /// Handles several observed response shapes:
 /// ```json
 /// {"credits_remaining": 4200, "daily_limit": 5000, "plan": "…"}
@@ -322,15 +331,61 @@ pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
     let url = format!("{}/credits", base_url());
     // Direct HTTP call — no budget gate, no archive (meta-query, not paid data).
     let body = super::client::CLIENT.get(&url, key).await.ok()?;
-    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    match parse_credits_body(&body) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => Some((remaining, daily_limit)),
+        // A genuine, classified auth rejection — latch it so `is_key_invalid()`
+        // reflects reality even when `query_credits` (not a data-bearing
+        // `search`/`get_path` call) is the first-ever call this process made.
+        CreditsOutcome::AuthError => {
+            mark_key_invalid(&body);
+            None
+        }
+        // Network noise / an unrecognised schema — NOT a confirmed dead key,
+        // so this must never latch `mark_key_invalid`.
+        CreditsOutcome::Unparseable => None,
+    }
+}
+
+/// The three distinguishable outcomes of parsing a raw `/credits` response
+/// body. Kept separate from `Option<(u32, Option<u32>)>` specifically so an
+/// auth rejection (a REAL, classified "this key is dead" signal) can never
+/// be conflated with a merely-unparseable body (network noise, a schema this
+/// function doesn't recognise) — the two must not both collapse to a bare
+/// `None` the caller can't tell apart, since only the former should latch
+/// [`mark_key_invalid`].
+pub(super) enum CreditsOutcome {
+    Data {
+        remaining: u32,
+        daily_limit: Option<u32>,
+    },
+    AuthError,
+    Unparseable,
+}
+
+/// Parse a raw `/credits` response body. Pure (no network, no global state)
+/// so the classification is unit-tested directly, without a live HTTP
+/// round-trip.
+pub(super) fn parse_credits_body(body: &str) -> CreditsOutcome {
+    if is_auth_error(body) {
+        return CreditsOutcome::AuthError;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return CreditsOutcome::Unparseable;
+    };
     // Walk candidate shapes to find (remaining, daily_limit).
     let root = if let Some(d) = v.get("data") { d } else { &v };
     let inner = root.get("credits").unwrap_or(root);
 
-    let remaining = inner
+    let Some(remaining) = inner
         .get("credits_remaining")
         .or_else(|| inner.get("remaining"))
-        .and_then(serde_json::Value::as_u64)? as u32;
+        .and_then(serde_json::Value::as_u64)
+    else {
+        return CreditsOutcome::Unparseable;
+    };
 
     let daily_limit = inner
         .get("daily_limit")
@@ -339,7 +394,10 @@ pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
         .and_then(serde_json::Value::as_u64)
         .map(|v| v as u32);
 
-    Some((remaining, daily_limit))
+    CreditsOutcome::Data {
+        remaining: remaining as u32,
+        daily_limit,
+    }
 }
 
 /// Escape `s` for embedding inside a JSON string literal — the two body-builder

@@ -155,14 +155,19 @@ pub const HIBP_DEFAULT_KEY: &str = "42587552dce6424a87312941c8a2c3c5";
 pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
-/// SeekNow (see-know.eu) key — the current embedded default, supplied directly
-/// by the operator. NOT live-verified from this build environment: the sandbox
-/// this key was rotated in has its own outbound proxy policy that rejects
-/// `see-know.eu` (a `CONNECT` denial at the proxy, unrelated to the key or the
-/// operator's own device network), so a live probe could not be run here. The
-/// key still becomes the one embedded default via the rotation below; verify
-/// with `hse doctor` (or the next live scan's `see_know` module status) on the
-/// operator's own device, which has no such proxy restriction.
+/// SeekNow key — the current embedded default, supplied directly by the
+/// operator. **Confirmed DEAD (2026-07-13, this build environment):** the
+/// actual `base_url()` the client calls is `see-know.icu` (not `.eu` — the
+/// `.eu` domain this comment previously blamed for blocking live
+/// verification is itself proxy-blocked from this sandbox, but unrelated to
+/// this key's real status), which IS reachable here; a real `POST /search`
+/// and `GET /credits` against it both return `{"error":"invalid_api_key"}`
+/// via the actual production `see_know` client code path (not just a raw
+/// probe) — confirmed by a live `hse scan --modules see_know` run logging
+/// "SeekNow (see-know.eu) lookups disabled: the API key was rejected". Until
+/// the operator rotates in a working key (`hse doctor`'s new "SeekNow
+/// account" section now reports this status explicitly), every zero-config
+/// install's highest-priority paid source silently returns nothing.
 pub const SEEKNOW_DEFAULT_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live

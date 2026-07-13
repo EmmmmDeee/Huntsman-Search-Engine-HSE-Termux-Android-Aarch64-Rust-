@@ -8,9 +8,12 @@
 //! review threshold — see [`crate::storage::Store::low_confidence_evidence`]),
 //! the local cell-tower database's freshness (no auto-resync exists yet, so a
 //! months-stale import is a real "check for a refresh" signal — see
-//! [`crate::util::cell_db::is_stale`]), and a live WiGLE account
-//! introspection that surfaces the email-unverified throttling warning
-//! before it starts silently truncating result sets.
+//! [`crate::util::cell_db::is_stale`]), a live WiGLE account introspection
+//! that surfaces the email-unverified throttling warning before it starts
+//! silently truncating result sets, and a live SeekNow account probe that
+//! catches a dead/plan-lacking key before it silently zeroes out HSE's
+//! highest-priority paid source (and its proactive API-key-harvesting
+//! reach — see [`crate::util::key_harvest`]) on every scan.
 
 use crate::core::error::Result;
 use crate::{
@@ -284,6 +287,34 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
     if let Some(user) = status.user.as_deref() {
         println!("  user:           {user}");
+    }
+
+    // ── SeekNow account health (network call, best-effort) ──────────────
+    // Probes /credits — a free meta-query, no scan budget spent — so a dead
+    // or plan-lacking key is caught HERE, before an operator discovers it
+    // only via SeekNow (HSE's highest-priority paid source, and its
+    // proactive API-key-harvesting engine — see `util::key_harvest`)
+    // silently returning nothing on every scan. `query_credits` now also
+    // latches `is_key_invalid()` on an auth rejection — previously only the
+    // data-bearing `search`/`get_path` calls did that classification, so a
+    // fresh process (like this one) that only ever calls `query_credits`
+    // could never detect a dead key at all.
+    println!("\nSeekNow account:");
+    let seeknow_key = crate::util::see_know::resolve_key(
+        loaded
+            .get(crate::util::see_know::KEY_ENV)
+            .map(String::as_str),
+    );
+    match crate::util::see_know::query_credits(seeknow_key).await {
+        Some((remaining, Some(limit))) => println!("  credits remaining: {remaining}/{limit}"),
+        Some((remaining, None)) => {
+            println!("  credits remaining: {remaining} (daily limit not reported by this plan)");
+        }
+        None if crate::util::see_know::is_key_invalid() => println!(
+            "  INVALID — the configured key was rejected. Set a valid, plan-enabled key \
+             via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
+        ),
+        None => println!("  could not reach SeekNow (network error or unexpected response)"),
     }
 
     Ok(())

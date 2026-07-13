@@ -1049,6 +1049,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   rather than a fabricated live claim. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4601 lib tests, +1).
   **Paired:** `PROBLEM_TREE` T2.82 — same commit.
+  *Extended (2026-07-13) — `hse doctor` can now detect a dead SeekNow key,
+  T2.83:* operator instruction: "Focus on utilising seek to harvest and
+  proactively discover API keys to use." `see_know`'s passive key-harvest
+  wiring was already complete at both call sites (no undocumented endpoint
+  to add — a prior dead-code sweep already removed speculative endpoint
+  scaffolding). The real blocker, confirmed live: `base_url()` resolves to
+  `see-know.icu`, reachable from this sandbox (unlike `.eu`, which the
+  embedded key's own doc comment previously — incorrectly — blamed for
+  "can't verify here"); a real `hse scan --modules see_know` run against
+  `.icu` logs an `invalid_api_key` rejection via the actual production
+  client — the embedded `SEEKNOW_DEFAULT_KEY` is confirmed dead, and this
+  failure was completely silent (a scan just reports `found 0`). Fixed
+  `query_credits` (the free `/credits` meta-query doctor can call from a
+  fresh process) to classify+latch an auth-rejection via the same machinery
+  `search`/`get_path` already use — previously it silently swallowed an
+  auth error, so a process that only ever calls `query_credits` (exactly
+  doctor's case) could never detect a dead key, despite
+  `is_key_invalid()`'s own doc comment claiming this diagnostic already
+  existed. New "SeekNow account" section in `hse doctor`, mirroring the
+  existing WiGLE block. Refactored credits-body parsing into a pure
+  `parse_credits_body`/`CreditsOutcome` (3-way `Data`/`AuthError`/
+  `Unparseable`, kept distinct so a network blip can never be mistaken for
+  a confirmed dead key). 5 new regression tests pin every classification
+  path — git-stash-proven by neutering the `is_auth_error` check, which
+  fails 2 of 5; restored, all pass. Live-verified end-to-end: a real `hse
+  doctor` run against this operator's own actual `~/.huntsman.env` now
+  prints "SeekNow account: INVALID — the configured key was rejected..." —
+  the exact diagnostic that was silently missing before. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4606 lib
+  tests, +5). **Paired:** `PROBLEM_TREE` T2.83 — same commit.
 
 - **`[x]` SOL-PROBE-CONFIDENCE-DEDUP · `username_search`, `social_probe`, and
   `streaming_probe` each independently hardcoded the identical presence-
