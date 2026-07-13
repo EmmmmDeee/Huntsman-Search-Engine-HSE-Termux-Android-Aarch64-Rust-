@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The Wayback Machine module now also recovers leaked API keys from
+  archived pages, not just old contact emails/phone numbers.** It already
+  downloads historical snapshots of a site's contact/about/team pages to
+  mine contacts that have since been removed; those same downloaded pages
+  are now also checked for a leaked API key or credential the live site has
+  since scrubbed but an old archived snapshot still preserves — recovered
+  at no extra network cost since the page was already being fetched.
 - **New correlator rule AU-112 surfaces shared CIDR-block hosting
   infrastructure.** An IP address discovered one way (e.g. DNS resolution)
   that falls within a network block discovered another way (e.g. an ASN/BGP

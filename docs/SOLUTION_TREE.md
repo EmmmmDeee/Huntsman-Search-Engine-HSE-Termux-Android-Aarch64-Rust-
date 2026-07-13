@@ -1017,6 +1017,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   split, which fails it; restored, it passes. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4597 lib tests, +1).
   **Paired:** `PROBLEM_TREE` T2.80 — same commit.
+  *Extended (2026-07-13) — `wayback` now proactively harvests keys from its
+  own fetched bodies, T2.82:* operator instruction: "Focus on proactively
+  harvesting APIs." Audited all 18 modules that fetch a response body
+  against whether they also ran the universal `found_keys`/`key_harvest`
+  classifier — only `web_crawler`/`username_search`/`search_engines` did.
+  `wayback` was the clearest gap: it already downloads up to 10 archived
+  contact/about/team snapshots per scan purely for email/phone mining, and
+  an archived snapshot is exactly where a since-scrubbed leaked credential
+  survives — zero extra network cost to also scan it. The other 15
+  body-fetching modules were correctly left untouched: the AU government/
+  regulator registries return official structured data (scanning them
+  would be pure noise, not real coverage), and `cloud_storage` lists object
+  filenames but never fetches object content (no body to scan yet —
+  extending it is a bigger, separate future capability, not folded in here
+  to avoid scope creep). Extracted the per-snapshot body-handling into a
+  new pure, independently-testable `mine_keys_from_body()`, reusing the
+  identical `found_keys::key_tokens`/`key_harvest::identify_api_key`/
+  `key_pool` pipeline `web_crawler`/`username_search` already established.
+  Each pooled hit carries wayback-specific provenance (`discovered_by:
+  "wayback:<domain>"`, notes with the archive timestamp + original URL).
+  New regression test proves a synthetic poolable key embedded in an
+  archived-page body reaches `pool.add` with correct provenance —
+  git-stash-proven by neutering the new function to a no-op, which fails
+  it; restored, it passes. Live-verification note: `wayback` is already one
+  of this sandbox's documented network-restricted sources; a real scan
+  against it timed out reaching `web.archive.org`'s CDX API here but
+  completed cleanly with a graceful `module error` (no panic/corruption) —
+  confirming no regression to existing error handling, with the
+  classify-and-pool logic itself proven by the git-stash-proven unit test
+  rather than a fabricated live claim. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4601 lib tests, +1).
+  **Paired:** `PROBLEM_TREE` T2.82 — same commit.
 
 - **`[x]` SOL-PROBE-CONFIDENCE-DEDUP · `username_search`, `social_probe`, and
   `streaming_probe` each independently hardcoded the identical presence-

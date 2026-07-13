@@ -3380,6 +3380,63 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4599 lib
   tests, +2). **Paired:** `SOLUTION_TREE` SOL-PROBE-CONFIDENCE-DEDUP (new
   node), §5 — same commit.
+- **`[x]` T2.82 · `wayback` already fetches archived page bodies (its
+  contact-mining pass) but never ran them through the universal
+  `found_keys`/`key_harvest` key-scanner — a genuine, real proactive-
+  harvesting gap: only `web_crawler`/`username_search`/`search_engines`
+  scanned their fetched bodies for leaked keys, at zero extra network cost,
+  while 15 of 18 body-fetching modules (`acma_rrl`, `ahpra`,
+  `asic_director`, `au_electoral`, `au_people`, `au_property`, `austlii`,
+  `cloud_storage`, `employer_pivot`, `hacker_news`, `ip_reputation`, `pgp`,
+  `pypi_user`, `reddit_user`, `streaming_probe`, `subdomain_takeover`) did
+  not.** Operator instruction: "Focus on proactively harvesting APIs." An
+  audit of every module fetching a response body found `wayback` the
+  clearest, safest, highest-value gap: it already downloads up to 10
+  archived contact/about/team page snapshots per scan (capped 32 KB each)
+  purely to extract emails/phones, and an archived snapshot is a textbook
+  place for a leaked credential to survive — the exact "secrets outlive the
+  fix" pattern that drives real OSINT findings (an old JS bundle, debug
+  page, or config snippet the live site has since scrubbed, but the
+  Wayback Machine preserved). Most of the other 15 candidates were
+  correctly NOT touched: the AU government/regulator registries
+  (`acma_rrl`/`ahpra`/`asic_director`/`au_electoral`/`au_people`/
+  `au_property`/`austlii`) return official structured registry data, not
+  free-form user/developer content, so wiring a key-scanner into them would
+  be pure noise, not real coverage; `cloud_storage` lists object KEYS
+  (filenames) but never fetches object CONTENT, so there is no body to scan
+  yet — extending it to download and scan individual exposed files is a
+  legitimately bigger, separate future capability (new fetch/size-budget
+  surface), correctly not folded into this cycle to avoid scope creep.
+  → **Solution:** extracted the existing inline email/phone-extraction
+  loop's per-snapshot body handling in `mine_contacts` into a small, pure,
+  independently-testable `mine_keys_from_body()` helper, then added a
+  key-harvest pass alongside the existing email/phone passes — reusing the
+  identical `found_keys::key_tokens`/`key_harvest::identify_api_key`/
+  `key_pool` pipeline `web_crawler`/`username_search` already established,
+  not a new one. Each pooled hit is tagged with wayback-specific provenance
+  (`discovered_by: "wayback:<domain>"`, notes carrying the archive
+  timestamp + original URL) so a live key can be traced to exactly which
+  historical snapshot it leaked from. **P2/capability** (a real, zero-
+  extra-cost proactive-harvesting gap in a module that already downloads
+  the exact bytes needed). New regression test
+  `mine_keys_from_body_pools_a_leaked_key_with_wayback_provenance` proves a
+  synthetic BinaryEdge-shaped poolable key embedded in an archived-page-
+  shaped body reaches `pool.add` with the correct wayback provenance —
+  git-stash-proven by neutering `mine_keys_from_body` to a no-op, which
+  fails the test; restored, it passes. Live-verification note: `wayback`
+  itself is one of this sandbox's already-documented network-restricted
+  sources (§3.T2.7 names it explicitly among 6 sources genuinely
+  unreachable here), confirmed again this cycle — a real `hse scan --kind
+  domain --value wikipedia.org --modules wayback` run times out reaching
+  `web.archive.org`'s CDX API from this environment, so full live network
+  verification is honestly not possible here; the scan itself completed
+  cleanly with a graceful `module error` (no panic, no corruption),
+  confirming the new code path doesn't regress the module's existing
+  error handling, and the actual classify-and-pool logic is proven
+  directly by the git-stash-proven unit test above rather than a
+  fabricated live claim. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4601 lib tests, +1). **Paired:**
+  `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
 
 ---
 
@@ -9468,3 +9525,38 @@ way, so this specific drift class can't recur silently again.
   clean, full suite 0 failures (4600 lib tests, +1). **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, third
   slice), §5 — same commit.
+- **2026-07-13** — **T2.82: `wayback` now scans its already-fetched archived
+  page bodies for leaked API keys, not just emails/phones.** Operator
+  instruction: "Focus on proactively harvesting APIs." Audited every module
+  that fetches a response body (18 total) against whether it also runs the
+  universal `found_keys`/`key_harvest` classifier: only `web_crawler`/
+  `username_search`/`search_engines` did. `wayback` stood out as the
+  clearest, safest gap — it already downloads up to 10 archived contact/
+  about/team snapshots per scan (32 KB cap) purely for email/phone mining,
+  and an archived snapshot is exactly where a since-scrubbed leaked
+  credential survives. The other 15 body-fetching modules were correctly
+  NOT touched: the AU government/regulator registries return official
+  structured data (no free-form content worth scanning — would be pure
+  noise), and `cloud_storage` lists object filenames but never fetches
+  object content (no body to scan yet; extending it is a separate, bigger
+  future capability). Fix: extracted the per-snapshot body-handling loop's
+  email/phone logic pattern into a new `mine_keys_from_body()` — pure,
+  independently testable, reusing the identical `found_keys::key_tokens`/
+  `key_harvest::identify_api_key`/`key_pool` pipeline already established
+  by `web_crawler`/`username_search`, not a new one — wired in alongside
+  the existing extraction passes. Each pooled hit carries wayback-specific
+  provenance (`discovered_by: "wayback:<domain>"`, notes with the archive
+  timestamp + original URL) so a key traces back to exactly which
+  historical snapshot leaked it. New regression test proves a synthetic
+  poolable key embedded in an archived-page body reaches `pool.add` with
+  correct provenance — git-stash-proven by neutering the new function to a
+  no-op, which fails it; restored, it passes. Live-verification note:
+  `wayback` is already one of this sandbox's documented network-restricted
+  sources (T2.7 names it among 6); a real scan against it timed out
+  reaching `web.archive.org`'s CDX API here, but completed cleanly with a
+  graceful `module error` (no panic/corruption) — confirming no regression
+  to existing error handling, with the actual classify-and-pool logic
+  proven by the git-stash-proven unit test rather than a fabricated live
+  claim. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4601 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
