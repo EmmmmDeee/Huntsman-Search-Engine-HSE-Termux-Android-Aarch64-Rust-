@@ -18,6 +18,12 @@
 //! here adds genuine cross-service agreement to the correlator's AU-045
 //! multi-service identity confirmation. Anonymous calls are rate-limited; the
 //! engine's circuit breaker trips on the 429 so a busy run stops re-hitting it.
+//!
+//! Both the bio and the user's `submitted.json` listing (post titles/self-text
+//! — real, unmoderated free text) are also run through the universal
+//! `found_keys`/`key_harvest` classifier: redditors occasionally paste a code
+//! snippet containing a live key/token in a self-text post. No extra fetch —
+//! both bodies are already in memory for the entity extraction above.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -126,10 +132,11 @@ impl Module for RedditUser {
             return Ok(ModuleResult::new());
         };
 
+        let pool = crate::util::key_pool::global_pool();
         let mut result = ModuleResult::new();
-        result.entities = build_entities(data, &ctx.scan_id);
+        result.entities = build_entities(data, &ctx.scan_id, &pool);
 
-        let submitted = fetch_submitted(&ctx.http, handle, &ctx.scan_id).await;
+        let submitted = fetch_submitted(&ctx.http, handle, &ctx.scan_id, &pool).await;
         result.extend(submitted);
 
         Ok(result)
@@ -139,7 +146,11 @@ impl Module for RedditUser {
 /// Pure account→entity mapping. Separated from `process()` so every branch is
 /// unit-testable without I/O. Emits the confirmed Username with account metadata,
 /// the `verified` tag when set, and an Email and/or Url mined from the profile bio.
-pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
+pub(super) fn build_entities(
+    data: AboutData,
+    scan_id: &str,
+    pool: &crate::util::key_pool::KeyPool,
+) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     let mut u = Entity::new(EntityKind::Username, &data.name, 0.90, scan_id);
@@ -177,6 +188,13 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             sr.public_description.as_deref().unwrap_or(""),
             sr.title.as_deref().unwrap_or("")
         );
+
+        // Also scan the bio for a leaked API key/credential via the universal
+        // `found_keys`/`key_harvest` classifier — the same one `web_crawler`/
+        // `username_search`/`wayback`/`hacker_news` run over their own
+        // fetched text. No extra fetch — `bio` is already in memory.
+        mine_keys_from_text(pool, &bio, &data.name, "bio");
+
         // Extract ALL emails from the bio (not just the first).
         for email in crate::util::extract::emails(&bio) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.76, scan_id);
@@ -221,7 +239,12 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
     result.entities
 }
 
-async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) -> Vec<Entity> {
+async fn fetch_submitted(
+    http: &reqwest::Client,
+    username: &str,
+    scan_id: &str,
+    pool: &crate::util::key_pool::KeyPool,
+) -> Vec<Entity> {
     let url = format!(
         "https://www.reddit.com/user/{}/submitted.json?limit=25",
         crate::util::http::urlencode(username)
@@ -245,7 +268,45 @@ async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) 
         return Vec::new();
     };
 
+    // A user's post titles/self-text are real, unmoderated free text —
+    // redditors routinely paste code snippets in text posts, occasionally
+    // with a live key. Already-fetched bytes, no extra network cost.
+    mine_keys_from_text(pool, &body, username, "submitted");
+
     submitted_entities(&body, username, scan_id)
+}
+
+/// Scan Reddit text (a bio or a `submitted.json` body) for a leaked API key
+/// via the universal `found_keys`/`key_harvest` classifier — the same one
+/// `web_crawler`/`username_search`/`wayback`/`hacker_news` run over their own
+/// fetched bodies — and pool any poolable hit. No network I/O of its own, so
+/// it's exercised directly by tests without mocking HTTP.
+fn mine_keys_from_text(
+    pool: &crate::util::key_pool::KeyPool,
+    text: &str,
+    username: &str,
+    source_label: &str,
+) {
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
+
+    for token in key_tokens(text, MAX_TOKEN) {
+        if let Some((service, key_val)) = identify_api_key(token) {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!("Reddit {source_label} — user {username}"));
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(crate::core::entity::unix_now());
+            entry.discovered_by = Some(format!("reddit_user:{username}"));
+            if pool.add(service, entry) {
+                tracing::info!(
+                    service,
+                    username,
+                    source_label,
+                    "API key discovered in Reddit content"
+                );
+            }
+        }
+    }
 }
 
 /// Emit one `Organisation` entity per distinct subreddit a user posts in, parsed

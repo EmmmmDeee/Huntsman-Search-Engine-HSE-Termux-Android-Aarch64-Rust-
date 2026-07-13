@@ -80,7 +80,8 @@ fn data(name: &str, verified: bool) -> AboutData {
 
 #[test]
 fn build_entities_emits_username_with_metadata() {
-    let ents = build_entities(data("spez", false), "scan-1");
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(data("spez", false), "scan-1", &pool);
     assert_eq!(ents.len(), 1);
     let u = &ents[0];
     assert_eq!(u.kind, EntityKind::Username);
@@ -94,13 +95,15 @@ fn build_entities_emits_username_with_metadata() {
 
 #[test]
 fn build_entities_verified_account_carries_tag() {
-    let ents = build_entities(data("verified_user", true), "scan-2");
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(data("verified_user", true), "scan-2", &pool);
     assert!(ents[0].has_tag("verified"));
 }
 
 #[test]
 fn build_entities_unverified_account_lacks_tag() {
-    let ents = build_entities(data("plain_user", false), "scan-3");
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(data("plain_user", false), "scan-3", &pool);
     assert!(!ents[0].has_tag("verified"));
 }
 
@@ -111,7 +114,8 @@ fn build_entities_bio_email_emits_email_entity() {
         public_description: Some("Contact alice@example.com".to_string()),
         title: None,
     });
-    let ents = build_entities(d, "scan-4");
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(d, "scan-4", &pool);
     let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
     assert_eq!(email.value, "alice@example.com");
     assert!(email.has_tag("reddit") && email.has_tag("public-profile"));
@@ -124,7 +128,8 @@ fn build_entities_bio_url_emits_url_entity_without_trailing_punct() {
         public_description: Some("https://bob.dev/.".to_string()),
         title: None,
     });
-    let ents = build_entities(d, "scan-5");
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(d, "scan-5", &pool);
     let url = ents.iter().find(|e| e.kind == EntityKind::Url).unwrap();
     assert!(url.value.starts_with("https://"));
     assert!(!url.value.ends_with('.'), "trailing dot must be stripped");
@@ -133,7 +138,8 @@ fn build_entities_bio_url_emits_url_entity_without_trailing_punct() {
 
 #[test]
 fn build_entities_no_subreddit_yields_only_username() {
-    let ents = build_entities(data("quiet", false), "scan-6");
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(data("quiet", false), "scan-6", &pool);
     assert_eq!(ents.len(), 1);
     assert_eq!(ents[0].kind, EntityKind::Username);
 }
@@ -145,7 +151,8 @@ fn build_entities_title_field_also_mined_for_bio() {
         public_description: None,
         title: Some("contact carol@test.org".to_string()),
     });
-    let ents = build_entities(d, "scan-7");
+    let pool = crate::util::key_pool::global_pool();
+    let ents = build_entities(d, "scan-7", &pool);
     let email = ents.iter().find(|e| e.kind == EntityKind::Email).unwrap();
     assert_eq!(email.value, "carol@test.org");
 }
@@ -185,4 +192,92 @@ fn submitted_entities_emits_all_distinct_subreddits_deterministically() {
             .all(|e| e.kind == EntityKind::Organisation && e.has_tag("subreddit")),
         "each is a subreddit-tagged Organisation"
     );
+}
+
+// ── mine_keys_from_text ────────────────────────────────────────────────────
+
+#[test]
+fn mine_keys_from_text_pools_a_leaked_key_with_reddit_provenance() {
+    // A 234-char BinaryEdge-shaped (`bp0_`-prefixed, poolable) key — the same
+    // fixture shape used to prove the wayback (T2.82) and hacker_news (T2.84)
+    // key-mining passes — embedded in synthetic submitted.json-shaped text,
+    // proving this NEW pass reaches `pool.add` with Reddit-specific
+    // provenance, not just a generic "found it" no-op.
+    let leaked_key = format!(
+        "bp0_{}",
+        "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
+    );
+    let text = format!(r#"{{"selftext":"oops my config: {leaked_key}"}}"#);
+    let pool = crate::util::key_pool::global_pool();
+    let username = "reddit-keymine-test-user";
+
+    mine_keys_from_text(&pool, &text, username, "submitted");
+
+    let entry = pool
+        .snapshot()
+        .services
+        .get("binaryedge")
+        .into_iter()
+        .flatten()
+        .find(|e| e.value == leaked_key)
+        .cloned();
+    let found = entry.is_some();
+    if let Some(e) = &entry {
+        assert_eq!(
+            e.discovered_by.as_deref(),
+            Some(format!("reddit_user:{username}").as_str()),
+            "provenance must name reddit_user, not a generic/wrong source"
+        );
+        assert!(
+            e.notes.as_deref().is_some_and(|n| n.contains("submitted") && n.contains(username)),
+            "notes must carry the source label + username, got {:?}",
+            e.notes
+        );
+    }
+    if found {
+        pool.remove("binaryedge", &leaked_key);
+    }
+    assert!(
+        found,
+        "a leaked key in Reddit bio/submitted text must reach the key pool"
+    );
+}
+
+#[test]
+fn build_entities_bio_with_a_leaked_key_pools_it_with_bio_provenance() {
+    // End-to-end through build_entities (not the helper directly): a bio
+    // containing a leaked key must be classified with source_label "bio",
+    // distinguishing it from a "submitted"-sourced hit.
+    let leaked_key = format!(
+        "bp0_{}",
+        "zzBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmZ"
+    );
+    let mut d = data("bio-keytest", false);
+    d.subreddit = Some(Subreddit {
+        public_description: Some(format!("my key is {leaked_key} whoops")),
+        title: None,
+    });
+    let pool = crate::util::key_pool::global_pool();
+    build_entities(d, "scan-biokey", &pool);
+
+    let entry = pool
+        .snapshot()
+        .services
+        .get("binaryedge")
+        .into_iter()
+        .flatten()
+        .find(|e| e.value == leaked_key)
+        .cloned();
+    let found = entry.is_some();
+    if let Some(e) = &entry {
+        assert!(
+            e.notes.as_deref().is_some_and(|n| n.contains("bio")),
+            "notes must label this a bio-sourced hit, got {:?}",
+            e.notes
+        );
+    }
+    if found {
+        pool.remove("binaryedge", &leaked_key);
+    }
+    assert!(found, "a leaked key in the bio must reach the key pool");
 }

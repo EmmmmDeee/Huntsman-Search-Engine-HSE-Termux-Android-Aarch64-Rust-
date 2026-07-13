@@ -3541,6 +3541,49 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4608 lib tests, +2). **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE
   extended, §5 — same commit.
+- **`[x]` T2.85 · `reddit_user` fetches a user's free-text bio AND their full
+  `submitted.json` post listing (titles + self-text) but never ran either
+  through the universal `found_keys`/`key_harvest` key-scanner.** Continuing
+  the "proactively harvesting APIs" theme (T2.82 wayback, T2.83 SeekNow,
+  T2.84 hacker_news) — the last of the originally-named candidate modules
+  (`pypi_user`/`hacker_news`/`reddit_user`/`subdomain_takeover`/`pgp`).
+  `submitted.json` (already fully fetched into memory for the existing
+  `submitted_entities` subreddit extraction) is the Reddit analogue of HN's
+  Algolia submissions — real, unmoderated post text (self-text posts
+  routinely contain pasted code) — the same category T2.84 already
+  justified. The profile bio (`public_description`+`title`, already
+  deserialized and already mined for emails/URLs) is the same category at
+  smaller scale, mirroring T2.84's bio leg exactly. → **Solution:** new
+  `mine_keys_from_text(pool, text, username, source_label)` — reusing the
+  identical `found_keys`/`key_harvest`/`key_pool` pipeline `web_crawler`/
+  `username_search`/`wayback`/`hacker_news` already established — called
+  over the bio (label `"bio"`, inside `build_entities`) and the raw
+  `submitted.json` body (label `"submitted"`, inside `fetch_submitted`),
+  both already in memory, zero extra network cost. **P2/capability** (a
+  real, zero-extra-cost proactive-harvesting gap, completing the module
+  sweep this theme started). 2 new regression tests, structurally identical
+  to T2.84's: one exercises `mine_keys_from_text` directly (a synthetic
+  BinaryEdge-shaped poolable key in submitted-shaped text reaches
+  `pool.add` with `discovered_by: "reddit_user:<user>"` and notes naming
+  the `"submitted"` label), the other exercises the same path end-to-end
+  through `build_entities` with a bio-embedded key, correctly labelling its
+  notes `"bio"` — proving the two call sites are independently
+  distinguishable. Git-stash-proven by neutering `mine_keys_from_text` to a
+  no-op, which fails both; restored, both pass. All 14 pre-existing
+  `reddit_user` tests continue to pass unchanged (the 7 `build_entities`
+  call sites needed only a new `&pool` argument). Live-verification note:
+  `reddit_user` is already one of this sandbox's documented network-
+  restricted sources (§3.T2.7 names it explicitly among 6); a real `hse
+  scan --kind username --value spez --modules reddit_user` run confirms
+  this again — Reddit's own anti-bot layer 403s the FIRST call
+  (`about.json`) before either new key-mining call site even runs — the
+  module fails gracefully (no panic, no corruption), confirming the new
+  code doesn't regress existing error handling, with the actual classify-
+  and-pool logic proven directly by the git-stash-proven unit tests above
+  rather than a fabricated live claim. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4610 lib tests, +2).
+  **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same
+  commit.
 
 ---
 
@@ -9731,3 +9774,30 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4608 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
+- **2026-07-13** — **T2.85: `reddit_user` now scans its already-fetched bio
+  and `submitted.json` post text for leaked API keys — the last of the
+  originally-named "proactively harvesting APIs" candidates.** Continuing
+  T2.82 (wayback), T2.83 (SeekNow), T2.84 (hacker_news). `submitted.json`
+  (already fully fetched for the existing `submitted_entities` subreddit
+  extraction) is Reddit's analogue of HN's Algolia submissions — real,
+  unmoderated post/self-text — the same category T2.84 justified. The
+  profile bio (already deserialized, already mined for emails/URLs) is the
+  same category at smaller scale. Fix: new `mine_keys_from_text(pool, text,
+  username, source_label)` — reusing the identical `found_keys`/
+  `key_harvest`/`key_pool` pipeline already established — called over the
+  bio (label `"bio"`) and the raw `submitted.json` body (label
+  `"submitted"`), both already in memory, zero extra network cost. 2 new
+  regression tests (structurally identical to T2.84's) prove the two call
+  sites are independently distinguishable by their `notes` label —
+  git-stash-proven by neutering `mine_keys_from_text`, which fails both;
+  restored, both pass. All 14 pre-existing `reddit_user` tests pass
+  unchanged. Live-verification note: `reddit_user` is already one of this
+  sandbox's documented network-restricted sources; a real `hse scan --kind
+  username --value spez --modules reddit_user` run confirms Reddit's
+  anti-bot layer 403s the FIRST call before either new key-mining site
+  even runs — the module fails gracefully (no panic/corruption), no
+  regression to existing error handling, with the classify-and-pool logic
+  itself proven by the git-stash-proven unit tests rather than a
+  fabricated live claim. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4610 lib tests, +2). **Paired:**
+  `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.

@@ -1103,6 +1103,29 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   errors — an honest true-negative. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4608 lib tests, +2).
   **Paired:** `PROBLEM_TREE` T2.84 — same commit.
+  *Extended (2026-07-13) — `reddit_user` now proactively harvests keys from
+  its own fetched bio/submitted text, T2.85 (last of the originally-named
+  candidates):* `submitted.json` (already fully fetched for the existing
+  subreddit extraction) is Reddit's analogue of HN's Algolia submissions —
+  real, unmoderated post/self-text — the same category T2.84 justified.
+  The profile bio (already deserialized, already mined for emails/URLs) is
+  the same category at smaller scale. Fix: new `mine_keys_from_text(pool,
+  text, username, source_label)` — reusing the identical `found_keys`/
+  `key_harvest`/`key_pool` pipeline already established — called over the
+  bio (label `"bio"`) and the raw `submitted.json` body (label
+  `"submitted"`), both already in memory, zero extra network cost. 2 new
+  regression tests (structurally identical to T2.84's) prove the two call
+  sites are independently distinguishable by their `notes` label —
+  git-stash-proven by neutering `mine_keys_from_text`, which fails both;
+  restored, both pass. All 14 pre-existing `reddit_user` tests pass
+  unchanged. Live-verification note: `reddit_user` is already one of this
+  sandbox's documented network-restricted sources; a real `hse scan --kind
+  username --value spez --modules reddit_user` run confirms Reddit's
+  anti-bot layer 403s the first call before either new key-mining site
+  runs — the module fails gracefully, no regression to existing error
+  handling. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4610 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.85 — same
+  commit.
 
 - **`[x]` SOL-PROBE-CONFIDENCE-DEDUP · `username_search`, `social_probe`, and
   `streaming_probe` each independently hardcoded the identical presence-
