@@ -203,3 +203,47 @@ use super::*;
             TargetKind::Coordinates
         );
     }
+
+    // ── `snapshot_still_relevant_to` (stale engine-health-cache attribution) ──
+
+    #[test]
+    fn a_snapshot_taken_shortly_after_the_scan_is_relevant() {
+        // Audit run moments after the scan finished — the ordinary case.
+        assert!(snapshot_still_relevant_to(1_000, 1_000));
+        assert!(snapshot_still_relevant_to(1_500, 1_000));
+    }
+
+    #[test]
+    fn a_snapshot_from_well_before_the_relevance_window_expires_is_relevant() {
+        use crate::modules::search_engines::health::DEFAULT_REFRESH_SECS;
+        let scan_ts = 1_000;
+        let checked_at = scan_ts + DEFAULT_REFRESH_SECS * 2;
+        assert!(
+            snapshot_still_relevant_to(checked_at, scan_ts),
+            "exactly at the 2x-refresh-interval boundary is still relevant"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_from_long_after_the_scan_is_not_relevant() {
+        // The exact false-positive scenario the bug named: a scan that ran with
+        // full coverage, audited weeks later after engines broke — today's
+        // snapshot must NOT be attributed to that old scan's report.
+        use crate::modules::search_engines::health::DEFAULT_REFRESH_SECS;
+        let scan_ts = 1_000;
+        let two_weeks_later = scan_ts + 14 * 24 * 60 * 60;
+        assert!(two_weeks_later - scan_ts > DEFAULT_REFRESH_SECS * 2);
+        assert!(
+            !snapshot_still_relevant_to(two_weeks_later, scan_ts),
+            "a snapshot two weeks newer than the scan describes a different era"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_older_than_the_scan_is_never_rejected_here() {
+        // The cache hasn't caught up to a just-finished scan yet — that's the
+        // cache being incomplete (handled separately by `health::cached()`
+        // returning `None`), not a misattribution, so this helper must not
+        // reject it.
+        assert!(snapshot_still_relevant_to(500, 1_000));
+    }

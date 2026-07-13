@@ -79,7 +79,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&n| n >= 60)
-        .unwrap_or(900);
+        .unwrap_or(crate::modules::search_engines::health::DEFAULT_REFRESH_SECS);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(health_secs));
         loop {

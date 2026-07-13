@@ -3007,6 +3007,60 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   retained with the reasoning now on record so they are never mis-swept
   again. **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 12), §5 — same
   commit.
+- **`[x]` T2.76 · `hse audit`'s search-coverage finding silently attributed
+  CURRENT engine-liveness conditions to a scan that may have run at a
+  completely different time — a stale-attribution bug, found by a
+  cross-cutting PRIORITY-2 sweep of every cache/TTL/quota-budget/
+  retry-backoff mechanism in the engine.** `engine_health_signals()`
+  (`api/scan_handlers/diagnostics.rs`) reads
+  `search_engines::health::cached()` — a single, process-global snapshot
+  continuously refreshed by `hse serve`'s periodic sweep (every 900s
+  default) to reflect "conditions right now" — and stamps it into the audit
+  report for WHATEVER scan id was requested, with zero comparison to that
+  scan's own `finished_at`/`started_at`. `HealthSnapshot.checked_at` exists
+  precisely to let a caller judge a snapshot's age, but was never read by
+  this call site. **Two failure directions, both real:** a scan that ran
+  with full coverage, audited weeks later after 3 engines break upstream,
+  gets a spurious "reduced discovery coverage" Medium finding it never
+  actually had (false positive); a scan that genuinely ran during a real
+  engine outage, audited after those engines recover, gets NO coverage-gap
+  finding at all — silently hiding a real historical limitation the
+  operator should weigh (false negative). **P2** (evidentiary integrity —
+  the audit's whole purpose is explaining ONE scan's actual results, not
+  today's unrelated conditions). → **Decision: gate on temporal
+  relevance, no new persistence.** `scan_audit` now also reads the scan
+  record (already free — one more field off the same `spawn_blocking` batch
+  that already reads entities/events) and passes its
+  `finished_at.unwrap_or(started_at)` into `engine_health_signals`. New pure
+  `snapshot_still_relevant_to(checked_at, scan_reference_ts)` gates
+  application of the cached snapshot: `checked_at.saturating_sub(scan_ts) <=
+  DEFAULT_REFRESH_SECS * 2` — the sweep's OWN declared cadence (single-
+  sourced: `cli/serve`'s hardcoded `900` literal was replaced with
+  `health::DEFAULT_REFRESH_SECS` so the two can never drift), doubled for
+  one cycle of slack, not an invented threshold. A snapshot older than the
+  scan (cache hasn't caught up yet) is never rejected — that's the cache
+  being incomplete, a pre-existing and separately-handled case (`cached()`
+  returning `None`), not a misattribution. **Live-verified against REAL,
+  naturally-occurring conditions** (no synthetic fixture, no clock
+  manipulation): a real scan from ~2 hours earlier in this same session
+  (`finished_at` ~7,000s in the past — genuinely past the 1,800s tolerance
+  window) was audited immediately after a fresh live 17-engine sweep found
+  this sandbox's real, currently-degraded network conditions (11 blocked, 1
+  down, only 5 up). Pre-fix, this would have stamped that old scan's report
+  with 11 `engines_blocked` + 1 `engines_down`; post-fix, `GET
+  /api/v1/scans/{id}/audit` correctly returned `engines_down: []`,
+  `engines_blocked: []`, `engine_parser_defects: []` — the mismatched-era
+  snapshot honestly omitted rather than misattributed. Git-stash-proven: 4
+  new unit tests on the pure gating function (a scan audited shortly after
+  it ran keeps the signal; exactly 2× the refresh interval is still
+  relevant; a scan audited weeks later is correctly rejected — the exact
+  false-positive scenario named above; a cache lagging behind a
+  just-finished scan is never rejected) — neutering
+  `snapshot_still_relevant_to` to always return `true` fails the
+  long-after-the-scan test; restored, it passes. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4576 lib tests, +4).
+  **Paired:** `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (new node), §5 — same
+  commit.
 
 ---
 
@@ -8803,3 +8857,28 @@ way, so this specific drift class can't recur silently again.
   golden-fixture corpus's remaining slices stay open. **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL (parse-rate/zero-yield leg), §5 — same
   commit.
+- **2026-07-13** — **T2.76: `hse audit` silently attributed CURRENT
+  engine-liveness conditions to a scan that may have run at a completely
+  different time — found by a cross-cutting PRIORITY-2 sweep of every
+  cache/TTL/quota-budget/retry-backoff mechanism in the engine.**
+  `engine_health_signals()` read the process-global, continuously-refreshed
+  search-engine liveness cache with zero comparison to the audited scan's
+  own completion time — a false positive when engines break AFTER a
+  clean scan (audited later), a false negative when engines recover AFTER a
+  scan that genuinely ran degraded. Fix: `scan_audit` now reads the scan's
+  own `finished_at`/`started_at` (free — same `spawn_blocking` batch as
+  entities/events) and a new pure `snapshot_still_relevant_to()` gates the
+  cached snapshot's application to within 2× the health sweep's own
+  declared refresh cadence (`DEFAULT_REFRESH_SECS`, now single-sourced
+  between `cli/serve` and the health module) — no invented threshold, no
+  new persistence. Live-verified against REAL, naturally-occurring
+  conditions: a real ~2-hour-old scan from this session, audited
+  immediately after a fresh live sweep found this sandbox's genuinely
+  degraded network (11 blocked, 1 down of 17 engines) — pre-fix this would
+  have stamped that old scan's report with the current outage; post-fix,
+  the mismatched-era snapshot is honestly omitted (`engines_down: []`,
+  `engines_blocked: []`). Git-stash-proven: 4 new unit tests on the pure
+  gate; neutering it to always return `true` fails the long-after-the-scan
+  test; restored, passes. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4576 lib tests, +4). **Paired:**
+  `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (new node), §5 — same commit.

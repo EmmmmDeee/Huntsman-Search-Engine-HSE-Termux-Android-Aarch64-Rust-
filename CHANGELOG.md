@@ -203,6 +203,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`hse audit`'s search-coverage finding no longer attributes CURRENT
+  engine status to a past scan.** The audit's "N search engine(s) down or
+  blocked" finding was drawn from live, continuously-refreshed engine
+  liveness data with no check on when that data was captured versus when
+  the audited scan actually ran. A scan that had full coverage, audited
+  weeks after engines later broke, could get a spurious coverage-gap
+  finding it never had; a scan that ran during a real outage, audited after
+  those engines recovered, could get no coverage-gap finding at all. The
+  signal is now only applied when it's recent enough (relative to the
+  scan) to plausibly describe that scan's own conditions; otherwise it's
+  honestly omitted rather than misattributed.
 - **Breach lookups (`oathnet_pro`, `see_know`) no longer mint a fake person
   from a doubled username.** Some breach databases store a record's full name
   as the username repeated twice (e.g. `"someuser someuser"`) when no real

@@ -23,6 +23,14 @@ use super::helpers::FetchOutcome;
 /// never targets a real person and the query is comparable across engines.
 const PROBE_QUERY: &str = "example.com";
 
+/// Default periodic refresh cadence `hse serve`'s background sweep uses to
+/// keep [`cached`] current (overridable via `HUNTSMAN_ENGINE_HEALTH_SECS`,
+/// min 60s — see `cli::serve`). Single-sourced here so anywhere a cached
+/// snapshot's *age relative to a specific point in time* matters (not just
+/// "is it populated at all") can reuse the sweep's own real cadence instead
+/// of an invented number.
+pub(crate) const DEFAULT_REFRESH_SECS: u64 = 900;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum EngineStatus {
     /// Reachable and returning parseable results.

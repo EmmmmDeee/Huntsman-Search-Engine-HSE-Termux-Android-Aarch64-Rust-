@@ -39,6 +39,8 @@ pub use intel::{scan_communities, scan_leads, scan_path, scan_timeline, scan_tru
 // Re-exported for tests (private helper, only needed in the test module).
 #[cfg(test)]
 pub(crate) use core::radar_scan_spec;
+#[cfg(test)]
+pub(crate) use diagnostics::snapshot_still_relevant_to;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
