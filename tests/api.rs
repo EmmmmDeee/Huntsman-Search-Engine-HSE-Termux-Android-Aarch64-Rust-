@@ -1261,6 +1261,13 @@ async fn scraper_health_reports_an_honest_empty_state_for_a_fresh_database() {
         json.get("drifted_threshold").is_some(),
         "must surface the drift threshold so the SPA panel can explain the bar"
     );
+    // The silent zero-yield ("parse-rate") drift signal — same honest-empty
+    // contract, never fabricated for a database with no history.
+    assert!(json["yield_drifted"].as_array().unwrap().is_empty());
+    assert!(
+        json.get("yield_drift_threshold").is_some(),
+        "must surface the yield-drift threshold so the SPA panel can explain the bar"
+    );
 }
 
 // ── 16. Settings keys GET ─────────────────────────────────────────────────

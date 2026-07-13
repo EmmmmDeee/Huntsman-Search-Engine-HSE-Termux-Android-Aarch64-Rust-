@@ -170,6 +170,31 @@ pub(super) async fn cmd_doctor() -> Result<()> {
                         }
                     }
                 }
+
+                // ── Silent zero-yield ("parse-rate") drift ──────────────
+                // Distinct from a hard failure: the module completes
+                // without erroring but has quietly stopped finding
+                // anything, on a source proven capable of yielding —
+                // consistent with a layout change breaking extraction
+                // rather than the target genuinely having nothing.
+                let yield_drifted: Vec<_> =
+                    health.iter().filter(|h| h.is_yield_drifted()).collect();
+                if yield_drifted.is_empty() {
+                    println!("  no silent zero-yield (parse-rate) drift");
+                } else {
+                    println!(
+                        "  {} YIELD-DRIFTED (>= {} trailing zero-result runs on a source that has \
+                         previously found something):",
+                        yield_drifted.len(),
+                        scraper_health::YIELD_DRIFT_THRESHOLD
+                    );
+                    for h in &yield_drifted {
+                        println!(
+                            "    - {:<20} {} trailing zero-result runs",
+                            h.module, h.consecutive_zero_yield
+                        );
+                    }
+                }
             }
             Err(e) => println!("  could not read event log — {e}"),
         },

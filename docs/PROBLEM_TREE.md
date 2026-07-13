@@ -458,6 +458,48 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   parser two fixtures now exercise). **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, second slice), §5 — same
   commit.
+  **Parse-rate / zero-yield drift leg delivered (2026-07-13):** the second
+  named SOL-HEALTH-SIGNAL increment — a module that completes without
+  erroring but silently returns zero results, when it has yielded before.
+  The naive check (flag any `found: 0`) would misfire on the common,
+  legitimate case (most sources correctly find nothing for most seeds), so
+  this reuses the exact three-strikes shape the hard-failure leg already
+  validated: `SourceHealth::is_yield_drifted()` requires BOTH `ever_yielded`
+  (proof this source can find things, anywhere in the window) AND
+  `consecutive_zero_yield >= YIELD_DRIFT_THRESHOLD` (3, same rationale as
+  `DRIFTED_THRESHOLD`) — a source that has never yielded is never flagged,
+  no matter how many zeros; a source that recovers (its newest run yielded)
+  has its trailing streak correctly closed at 0, not inflated by older
+  history; `ModuleError` events are skipped (neither counted nor resetting)
+  since that failure mode is already `consecutive_failures`'s job. No new
+  persistence — reuses the `found: usize` field `EventKind::ModuleDone`
+  already carries. Wired into `hse doctor`'s "Scraper health" section (a new
+  "YIELD-DRIFTED" sub-report alongside the existing failure-streak one), the
+  `GET /api/v1/health/scrapers` response (`yield_drifted`/
+  `yield_drift_threshold`), and the SPA Engines page's Scraper health panel
+  (a second table). Deliberately scoped to the zero-yield case only —
+  detecting a *partial* yield drop (fewer, not zero, results) would need an
+  average/median historical-yield baseline and an arbitrary drop-percentage
+  threshold no real incident has yet justified, so that stays a future
+  increment if evidence appears, exactly as this leg itself was deferred
+  from the original hard-failure slice. Live-verified against the
+  operator's own real scan history (97 tracked sources, 211 recent outcome
+  events via both `hse doctor` and `GET /api/v1/health/scrapers`): both the
+  hard-failure and the new yield-drift sections correctly report the honest
+  empty state for this database (no drifted sources, no silent zero-yield
+  drift) — never a fabricated result. Git-stash-proven: neutering
+  `is_yield_drifted` to always return `false` fails the positive-detection
+  unit test; restored, it passes. 5 new unit tests (never-yielded is never
+  flagged; a proven-capable source going silent for 3 runs IS flagged; 2
+  trailing zeros is not yet flagged; a recovered source's streak is
+  correctly closed at 0; interspersed `ModuleError`s are skipped, not
+  counted) plus the existing SPA-panel honest-empty-state API test extended
+  to cover the new fields. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4572 lib tests, +5). Both SOL-HEALTH-SIGNAL
+  legs T2.7's original sketch named (hard-failure, parse-rate) are now
+  delivered; only the golden-fixture corpus's remaining slices stay open,
+  each its own low-priority future increment. **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (parse-rate/zero-yield leg), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -8736,3 +8778,28 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4567 lib tests, +1). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7
   golden-fixture corpus, second slice), §5 — same commit.
+- **2026-07-13** — **T2.7's parse-rate/zero-yield drift-detection leg: a
+  module that completes without erroring but silently returns zero results,
+  distinct from a genuinely-empty target.** Reused the exact three-strikes
+  shape the hard-failure leg already validated:
+  `SourceHealth::is_yield_drifted()` requires BOTH `ever_yielded` (proof
+  this source can find things somewhere in the window) AND
+  `consecutive_zero_yield >= YIELD_DRIFT_THRESHOLD` (3) — never flags a
+  source that's never yielded, correctly closes the streak at 0 when the
+  newest run recovers, and skips (never counts or resets on)
+  `ModuleError`s, which are already `consecutive_failures`'s job. No new
+  persistence — reuses `EventKind::ModuleDone`'s existing `found: usize`.
+  Wired into `hse doctor`, `GET /api/v1/health/scrapers`
+  (`yield_drifted`/`yield_drift_threshold`), and the SPA Engines panel.
+  Deliberately zero-yield only — a *partial* yield-drop detector needs an
+  average/median baseline and an unjustified drop-percentage threshold,
+  banked as a future increment if evidence appears. Live-verified against
+  the operator's own real scan history (97 sources, 211 events, via both
+  `hse doctor` and the HTTP API): honest empty state on both signals, never
+  fabricated. Git-stash-proven: neutering `is_yield_drifted` fails the
+  positive-detection test; restored, it passes. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4572 lib tests, +5). Both
+  SOL-HEALTH-SIGNAL legs T2.7 originally named are now delivered; only the
+  golden-fixture corpus's remaining slices stay open. **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL (parse-rate/zero-yield leg), §5 — same
+  commit.

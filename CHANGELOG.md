@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **`hse doctor` and the web UI now flag scrapers that silently stop finding
+  anything.** The existing scraper-health signal already caught a source that
+  errors repeatedly; it's now joined by a signal for a source that runs to
+  completion without erroring but has quietly returned zero results several
+  times in a row, despite having found something before — the signature of a
+  page layout change silently breaking extraction. A source that has never
+  found anything for this scan history is never flagged (that's a
+  legitimately empty target, not drift). Surfaced in `hse doctor`'s "Scraper
+  health" section, `GET /api/v1/health/scrapers`, and the Engines page's
+  Scraper health panel.
 - **A spoofed-domain seed now tells you what it's spoofing.** Scanning a
   domain, email, or similar value that mixes real letters with foreign
   lookalike characters (e.g. a Cyrillic letter standing in for a Latin one,

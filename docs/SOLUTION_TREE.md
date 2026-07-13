@@ -740,6 +740,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   corpus slices, unchanged:* `au_people`/`au_electoral`/`au_property` (needs
   a privacy-safe capture strategy) and the other 15 `search_engines` engines
   (lower marginal value — same shared parser two fixtures now exercise).
+  *Parse-rate/zero-yield drift leg delivered (2026-07-13):* the second named
+  increment — a module that completes without erroring but silently returns
+  zero results, distinct from a genuinely-empty target. Reused the exact
+  three-strikes shape the hard-failure leg validated rather than inventing a
+  statistical baseline: `SourceHealth::is_yield_drifted()` requires BOTH
+  `ever_yielded` (this source has found something, anywhere in the window)
+  AND `consecutive_zero_yield >= YIELD_DRIFT_THRESHOLD` (3) — a source that
+  has never yielded is never flagged (no matter how many zeros), a source
+  whose newest run recovers has its trailing streak correctly closed at 0
+  (not inflated by older zeros), and `ModuleError` events are skipped
+  entirely (neither counted nor resetting — that failure mode is already
+  `consecutive_failures`'s job). No new persistence: reuses
+  `EventKind::ModuleDone`'s existing `found: usize` field. Wired into `hse
+  doctor`'s "Scraper health" section, `GET /api/v1/health/scrapers`
+  (`yield_drifted`/`yield_drift_threshold`), and the SPA Engines panel
+  (second table). Deliberately zero-yield only — a *partial* yield-drop
+  detector needs an average/median historical baseline and an
+  unjustified drop-percentage threshold no real incident has yet
+  demonstrated a need for; banked as a future increment if evidence
+  appears, exactly as this leg itself was banked from the original
+  hard-failure slice. Live-verified against the operator's own real scan
+  history (97 tracked sources, 211 recent outcome events, via both `hse
+  doctor` and a live `GET /api/v1/health/scrapers` call): both signals
+  correctly report the honest empty state for this database — never
+  fabricated. Git-stash-proven: neutering `is_yield_drifted` to always
+  return `false` fails the positive-detection unit test; restored, it
+  passes. 5 new unit tests plus the existing SPA-panel honest-empty-state
+  API test extended to cover the new fields. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4572 lib tests, +5). Both
+  SOL-HEALTH-SIGNAL legs T2.7's original sketch named (hard-failure,
+  parse-rate) are now delivered; only the golden-fixture corpus's remaining
+  slices stay open, each its own low-priority future increment. **(§4a)**
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -6372,3 +6404,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   failures (4567 lib tests, +1). *Remaining corpus slices, unchanged:*
   `au_people`/`au_electoral`/`au_property` and the other 15 `search_engines`
   engines. Paired: `PROBLEM_TREE` T2.7 (second slice) — same commit.
+- **2026-07-13** — **SOL-HEALTH-SIGNAL: T2.7's parse-rate/zero-yield drift
+  leg — a module that completes without erroring but silently returns zero
+  results, distinct from a genuinely-empty target.** Reused the exact
+  three-strikes shape the hard-failure leg validated instead of inventing a
+  statistical baseline: `is_yield_drifted()` requires BOTH `ever_yielded`
+  (this source has found something, anywhere in the window) AND
+  `consecutive_zero_yield >= YIELD_DRIFT_THRESHOLD` (3) — never flags a
+  source that's never yielded, correctly closes the trailing streak at 0
+  when the newest run recovers, and skips `ModuleError`s entirely (already
+  `consecutive_failures`'s job). No new persistence — reuses
+  `EventKind::ModuleDone`'s existing `found: usize`. Wired into `hse
+  doctor`, `GET /api/v1/health/scrapers`, and the SPA Engines panel.
+  Deliberately zero-yield only — a partial yield-drop detector needs an
+  unjustified drop-percentage threshold, banked for a future increment if
+  evidence appears. Live-verified against the operator's own real scan
+  history (97 sources, 211 events, via `hse doctor` and a live HTTP call):
+  honest empty state on both signals. Git-stash-proven: neutering
+  `is_yield_drifted` fails the positive-detection test; restored, it
+  passes. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4572 lib tests, +5). Both SOL-HEALTH-SIGNAL legs T2.7's
+  original sketch named are now delivered; only the golden-fixture corpus's
+  remaining slices stay open. Paired: `PROBLEM_TREE` T2.7 (parse-rate leg)
+  — same commit.

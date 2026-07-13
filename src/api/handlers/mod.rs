@@ -329,11 +329,27 @@ pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse
             })
         })
         .collect();
+    // Silent zero-yield ("parse-rate") drift: a module that completes
+    // without erroring but has quietly stopped finding anything, on a
+    // source proven capable of yielding — distinct from `drifted` above.
+    let yield_drifted: Vec<Value> = health
+        .iter()
+        .filter(|h| h.is_yield_drifted())
+        .map(|h| {
+            json!({
+                "module": h.module,
+                "consecutive_zero_yield": h.consecutive_zero_yield,
+                "last_success_at": h.last_success_at,
+            })
+        })
+        .collect();
     Json(json!({
         "tracked": health.len(),
         "events_checked": events.len(),
         "drifted_threshold": crate::util::scraper_health::DRIFTED_THRESHOLD,
         "drifted": drifted,
+        "yield_drift_threshold": crate::util::scraper_health::YIELD_DRIFT_THRESHOLD,
+        "yield_drifted": yield_drifted,
     }))
     .into_response()
 }

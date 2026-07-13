@@ -99,6 +99,15 @@ export function renderScraperHealth(host, data){
       <td style="color:var(--text-dim);font-size:12px">${esc(d.last_error||'')}</td>
     </tr>`;
   }).join('');
+  const yieldDrifted = data.yield_drifted || [];
+  const yieldRows = yieldDrifted.map(d=>{
+    const lastOk = d.last_success_at ? new Date(d.last_success_at*1000).toLocaleString() : 'no success in this window';
+    return `<tr>
+      <td><b>${esc(d.module)}</b></td>
+      <td class="text-right"><span class="status-pill s-aborted">${esc(String(d.consecutive_zero_yield))} zero-result runs</span></td>
+      <td>${esc(lastOk)}</td>
+    </tr>`;
+  }).join('');
   host.innerHTML = `
     <div class="page-header" style="margin-top:26px;border-bottom:1px solid #eee;padding-bottom:8px">
       <h3 style="margin:0"><i class="glyphicon glyphicon-flash"></i>&nbsp;Scraper health
@@ -110,7 +119,14 @@ export function renderScraperHealth(host, data){
            <thead><tr><th>Module</th><th class="text-right">Streak</th><th>Last success</th><th>Last error</th></tr></thead>
            <tbody>${rows}</tbody>
          </table></div>`
-      : `<div class="empty-state"><h3>No drifted sources</h3><p>Every tracked module has succeeded recently.</p></div>`}`;
+      : `<div class="empty-state"><h3>No drifted sources</h3><p>Every tracked module has succeeded recently.</p></div>`}
+    <p class="text-muted" style="margin-top:18px">Silent zero-yield ("parse-rate") drift — a source that completes without erroring but has quietly stopped finding anything, on ${esc(String(data.yield_drift_threshold||3))}+ trailing runs, despite having found results before in this window. Distinct from a hard failure above: this is the signature of a layout change silently breaking extraction, not a target that genuinely has nothing.</p>
+    ${yieldDrifted.length
+      ? `<div class="table-responsive"><table class="table table-striped table-condensed">
+           <thead><tr><th>Module</th><th class="text-right">Streak</th><th>Last success</th></tr></thead>
+           <tbody>${yieldRows}</tbody>
+         </table></div>`
+      : `<div class="empty-state"><h3>No yield-drifted sources</h3><p>Every tracked module that has found something before is still finding something.</p></div>`}`;
 }
 
 /* Module capability map (GET /modules/graph): for every seed/target kind, how
