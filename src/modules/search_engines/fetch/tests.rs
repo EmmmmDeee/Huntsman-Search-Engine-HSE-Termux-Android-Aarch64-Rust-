@@ -185,3 +185,65 @@ use super::*;
         assert!(!is_captcha_page("<html><body>ok</body></html>"));
         assert!(!is_captcha_page(""));
     }
+
+    // ── Golden fixture (T2.7 "scraper resilience" — the corpus leg) ─────────
+    //
+    // `testdata/brave_kylo4kylo.html` is a REAL Brave SERP response, fetched
+    // live (2026-07-12) for the project's own canonical test seed `Kylo4kylo`
+    // and checked in verbatim — not a hand-written fragment. Real SERP HTML is
+    // where this parser actually breaks: engines ship SvelteKit/React shells,
+    // footer chrome, and result markup that drifts without notice, and the
+    // existing inline-literal tests above (small, hand-crafted `href=`/`<cite>`
+    // fragments) can't catch that because they're never wrong in the way a real
+    // page is. This is the first slice of the corpus this node calls for — one
+    // real engine, proving the pattern — not all 17 at once.
+    const GOLDEN_BRAVE_KYLO4KYLO: &str = include_str!("testdata/brave_kylo4kylo.html");
+
+    /// If Brave's markup drifts enough to break `href=` extraction, this fails
+    /// deterministically instead of the silent-empty-results failure mode T2.7
+    /// exists to catch (a scan that just quietly returns nothing from Brave).
+    #[test]
+    fn parse_results_extracts_from_a_real_brave_serp_capture() {
+        let results = parse_results(GOLDEN_BRAVE_KYLO4KYLO, "brave", "Kylo4kylo");
+        assert!(
+            !results.is_empty(),
+            "a layout change silently broke extraction from this real, \
+             previously-working Brave capture"
+        );
+
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        // Pin specific, known-present organic hits from this exact capture — a
+        // drift narrow enough to keep SOME results (so the emptiness check above
+        // stays green) but that silently drops a class of card (e.g. the
+        // Instagram-embed layout, or `<cite>`-based hosts) still fails here.
+        assert!(
+            urls.iter().any(|u| u.contains("instagram.com/kylo4k")),
+            "expected the Instagram profile hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("wikipedia.org/wiki/Kylo_Ren")),
+            "expected the Wikipedia hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("youtube.com")),
+            "expected a YouTube hit, got: {urls:?}"
+        );
+        // Every extracted URL is a genuine organic result, never the engine's
+        // own account/CDN/branding chrome — `is_engine_domain` must still be
+        // doing its job against this real page's footer links.
+        for u in &urls {
+            assert!(
+                !u.contains("brave.com") && !u.contains("cdn.search.brave"),
+                "engine chrome link leaked into results: {u}"
+            );
+        }
+        // Deterministic count: pins the exact yield so a change that silently
+        // drops (or duplicates) even one real result is caught, not just a
+        // change that empties the page entirely.
+        assert_eq!(
+            results.len(),
+            26,
+            "expected exactly 26 organic results from this fixture, got {}: {urls:?}",
+            results.len()
+        );
+    }

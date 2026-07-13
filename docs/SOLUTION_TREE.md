@@ -701,8 +701,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   drifted (`ModuleDone{found:0}` on a source that used to yield) needs a
   per-source historical-yield baseline to distinguish from a genuinely
   empty target, which this slice deliberately did not invent under
-  cycle-scope pressure; and the golden-fixture corpus itself (T2.7's other
-  named leg) remains unbuilt. **(§4a)**
+  cycle-scope pressure.
+  *Golden-fixture corpus — first slice delivered (2026-07-13):* one real
+  engine, proving the pattern before the rest of the corpus (depth over
+  breadth — all 17 `search_engines` engines + the three AU scrapers in one
+  pass would be scope creep). A REAL Brave SERP fetched live for the
+  canonical seed `Kylo4kylo`, checked in verbatim as `src/modules/
+  search_engines/fetch/testdata/brave_kylo4kylo.html` (210 KB, unmodified —
+  not a hand-crafted fragment like the existing inline-literal tests, which
+  can't reproduce a real SvelteKit-shell/footer-chrome page's failure modes).
+  New test `parse_results_extracts_from_a_real_brave_serp_capture` pins the
+  parser's yield against this real page (exactly 26 organic results, three
+  named hits present, zero engine-chrome leakage), git-stash-proven (neutering
+  `parse_results` fails the test; restored, it passes). Gate green (4567 lib
+  tests, +1). *Remaining corpus slices:* `au_people`/`au_electoral`/
+  `au_property` (needs a privacy-safe capture — e.g. the AEC's real
+  "not enrolled" response for a synthetic name, never a real citizen's
+  record) and the other 16 `search_engines` engines (lower marginal value —
+  same shared parser this fixture already exercises; Bing's `<cite>`-based
+  format is the next-highest-value addition). **(§4a)**
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
@@ -5865,6 +5882,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `search_engines::build_queries` unit tests on the process-global regional flag.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4566
   lib tests, +1). Paired: `PROBLEM_TREE` T2.71 — same commit.
+- **2026-07-13** — **SOL-HEALTH-SIGNAL: T2.7's golden-fixture corpus, first
+  slice — a REAL Brave SERP capture proving the pattern before the rest of
+  the corpus.** The node's other named leg ("saved real responses per
+  scraper, so a layout change fails a test deterministically") spans 17
+  `search_engines` engines plus three AU scrapers; landing all of them in one
+  cycle is breadth over depth, so this slice does ONE real engine first. Live
+  Brave SERP fetch for the canonical seed `Kylo4kylo`, checked in verbatim as
+  `src/modules/search_engines/fetch/testdata/brave_kylo4kylo.html` (210 KB,
+  unmodified — not a hand-crafted fragment like the module's existing
+  inline-literal tests, which can't reproduce a real SvelteKit-shell /
+  footer-chrome page's failure modes). New test
+  `parse_results_extracts_from_a_real_brave_serp_capture` pins the parser's
+  yield against this real page: exactly 26 organic results, three specific
+  known hits present (Instagram/Wikipedia/YouTube), zero engine-chrome
+  leakage. Git-stash-proven: neutering `parse_results` to return early fails
+  the test; restored, it passes. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4567 lib tests, +1). No PII concern — public
+  SERP for the project's own consented canonical seed; the one email/phone
+  the capture happens to contain is a Vienna restaurant's own public
+  Tripadvisor business listing, not a private individual's data. Remaining
+  corpus slices (each its own future cycle): the AU scrapers (needs a
+  privacy-safe capture — e.g. the AEC's real "not enrolled" response for a
+  guaranteed-no-match synthetic name, never a real citizen's record) and the
+  other 16 `search_engines` engines (lower marginal value — they share the
+  identical parser this fixture already exercises; Bing's distinct
+  `<cite>`-based format is the next-highest-value addition). Paired:
+  `PROBLEM_TREE` T2.7 — same commit.
 - **2026-07-12** — **New SOL-RANDOMIZED-MAC: the OUI classifier now flags
   randomized (private) MAC addresses instead of attributing them as real
   devices.** Surfaced by a real 1,643-device Android BLE-radar export the

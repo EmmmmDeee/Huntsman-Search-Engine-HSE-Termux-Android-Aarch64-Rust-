@@ -404,6 +404,35 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   genuinely empty — deliberately not invented under cycle-scope pressure);
   and the golden-fixture corpus itself (saved real responses per scraper, so
   a layout change fails a test deterministically).
+  **Golden-fixture corpus — first slice delivered (2026-07-13):** established
+  the pattern with ONE real engine (depth over breadth — landing all 17
+  `search_engines` parsers + `au_people`/`au_electoral`/`au_property` in one
+  pass would be scope creep on a single cycle). Fetched a REAL Brave SERP
+  live for the project's own canonical test seed (`Kylo4kylo`) and checked it
+  in verbatim as `src/modules/search_engines/fetch/testdata/
+  brave_kylo4kylo.html` (210 KB, unmodified) — not a hand-written fragment
+  like the existing inline-literal tests, which can never be wrong the way a
+  real SvelteKit-shell/footer-chrome page is. New test
+  `parse_results_extracts_from_a_real_brave_serp_capture` asserts the parser
+  still extracts 26 organic results from this exact capture (pinning three
+  specific known hits — Instagram, Wikipedia, YouTube — plus a zero-leaked-
+  chrome check and the exact count), so a markup drift narrow enough to keep
+  *some* results but silently drop a card class still fails, not just a
+  drift that empties the page outright. Git-stash-proven: neutering
+  `parse_results` to return early makes the test fail; restored, it passes.
+  Gate green (4567 lib tests, +1). No PII concern: the fixture is a public
+  SERP for the project's own consented canonical seed; the one email/phone
+  pair it happens to contain is a Vienna restaurant's own public Tripadvisor
+  business listing, not a private individual's data. *Remaining corpus
+  slices (each its own future cycle):* `au_people`/`au_electoral`/
+  `au_property` (a real fixture there needs a privacy-safe capture — e.g. a
+  guaranteed-no-match synthetic name against the AEC's real "not enrolled"
+  response, never a real citizen's actual record) and the other 16
+  `search_engines` engines (lower priority: they share the identical
+  `parse_results`/iterator code this fixture already exercises, so the
+  marginal robustness gain per additional engine is smaller — a markup-drift
+  risk on Bing's `<cite>` format specifically would be the next-highest-value
+  addition).
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -8328,3 +8357,29 @@ way, so this specific drift class can't recur silently again.
   on the process-global regional flag. Gate green: fmt/clippy/rustdoc clean, full
   suite 0 failures (4566 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-DEADCODE-SWEEP (slice 8), §5 — same commit.
+- **2026-07-13** — **T2.7 golden-fixture corpus, first slice: a REAL Brave SERP
+  capture for the canonical seed, proving the pattern on one engine before the
+  rest of the corpus.** The remaining T2.7 leg — "saved real responses per
+  scraper, so a layout change fails a test deterministically" — spans 17
+  `search_engines` engines plus `au_people`/`au_electoral`/`au_property`;
+  landing all of them in one cycle would be breadth over depth. Instead: live
+  Brave SERP fetch for `Kylo4kylo` checked in verbatim as `fetch/testdata/
+  brave_kylo4kylo.html` (210 KB, unmodified — not a hand-crafted fragment like
+  the module's existing inline-literal tests, which can't reproduce a real
+  SvelteKit shell / footer-chrome page's failure modes). New test
+  `parse_results_extracts_from_a_real_brave_serp_capture` pins the parser's
+  yield against this real page: exactly 26 organic results, three specific
+  known hits present (Instagram/Wikipedia/YouTube), zero engine-chrome leakage.
+  Git-stash-proven: neutering `parse_results` to return early fails the test;
+  restored, it passes. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4567 lib tests, +1). No PII concern — public SERP for the
+  project's own consented canonical seed; the one email/phone the capture
+  happens to contain is a Vienna restaurant's own public Tripadvisor business
+  listing. *Remaining corpus slices (each its own future cycle):* the AU
+  scrapers (needs a privacy-safe capture strategy — e.g. AEC's real
+  "not enrolled" response for a guaranteed-no-match synthetic name, never a
+  real citizen's record) and the other 16 `search_engines` engines (lower
+  marginal value — they share the identical parser this fixture already
+  exercises; Bing's distinct `<cite>`-based format is the next-highest-value
+  addition). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
+  slice), §5 — same commit.

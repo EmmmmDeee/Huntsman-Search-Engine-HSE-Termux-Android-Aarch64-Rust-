@@ -11,6 +11,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The search-engine result parser now has a real-world regression test.**
+  Previously every test for the SERP-parsing logic used small, hand-written
+  HTML snippets. A real search results page — with its actual footer
+  navigation, script-injected app shell, and result markup — is now checked in
+  and used to verify the parser still extracts the expected results from it.
+  This catches a real layout change silently breaking result extraction, which
+  the hand-written snippets could never do. No behavior change; test-only.
 - **Scan-completion webhooks now actually fire.** Setting `HUNTSMAN_WEBHOOK_URL`
   (or a per-scan webhook URL) was already accepted and stored, but the engine
   never sent the notification — so a configured webhook silently did nothing. On
