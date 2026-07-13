@@ -213,6 +213,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A key discovered in SeekNow breach data no longer gets credited to the
+  wrong source.** Every leaked API key/credential found in either paid
+  breach pool's results goes through the same shared detector; its origin
+  label was hardcoded to name only one of the two pools, so a key found via
+  SeekNow was incorrectly evidence-tagged as coming from OathNet. Both
+  pools now correctly label the entities and evidence they each produce.
+  (Also relocated that shared detector out of one specific module into the
+  general utility layer, matching where every other part of the codebase
+  that already reaches into it expects to find it — an internal
+  reorganization with no behavior change beyond the label fix above.)
 - **The AU residential people-finder (`au_people`) no longer wastes a
   request on the retired White Pages AU search page.** That legacy search
   URL now returns a not-found page for every name (the site moved to a

@@ -1,3 +1,27 @@
+//! Foreign API-key/credential classification and harvest — vendor-prefix
+//! identification, context-attributed OSINT-key rescue, PEM/crypto-address
+//! detection, and per-record breach/stealer-field extraction.
+//!
+//! Lives in `util` (not nested under any one module) because it is reused
+//! across every layer: `util::found_keys` (the universal response-body
+//! scanner), `util::http::keys`, several independent scrapers
+//! (`web_crawler`, `username_search`, `search_engines`), the two breach
+//! pools (`oathnet_pro`, `see_know` — via [`extract_api_keys_from_item`]/
+//! [`store_api_credential`]), `api::settings_handlers`, and `cli` import/
+//! key-management commands. It used to live under
+//! `modules::oathnet_pro::key_harvest`, which made every one of those
+//! `util`/`api`/`cli`/sibling-`modules` call sites reach into one specific
+//! module's internals — backwards from this project's `cli`/`api` → `core`
+//! → `util` layering, and the reverse of `modules` depending only on `core`
+//! types. Relocated 2026-07 with no behaviour change to the pure
+//! classification functions; [`extract_api_keys_from_item`]/
+//! [`store_api_credential`] gained an explicit `src` (caller module
+//! identity) parameter in the move — mirroring the established
+//! `modules::breach_rich::extract_rich_detail` pattern ("caller supplies
+//! its own source tag") — because the hardcoded `oathnet_pro` constant
+//! they read before the move silently mislabeled every key harvested from
+//! a `see_know` record as `oathnet_pro`-sourced.
+
 use serde_json::Value;
 use std::collections::HashSet;
 
@@ -6,8 +30,6 @@ use crate::core::{
     module::ModuleResult,
 };
 use crate::util::oathnet::val_str;
-
-use super::SRC;
 
 mod crypto;
 mod osint_keys;
@@ -645,12 +667,32 @@ fn record_provider_context(item: &Value) -> String {
         .unwrap_or_default()
 }
 
+/// Per-record context shared by every key emitted while scanning one item:
+/// which module found it and the scan it belongs to. Both are constant across
+/// a single [`extract_api_keys_from_item`] call, so bundling them (rather than
+/// threading two positional args through every `emit_key`/`emit_key_with`
+/// call) keeps those functions under clippy's argument-count lint the same
+/// way `core::engine`'s `DispatchCx` bundles its own per-dispatch constants
+/// (`PROBLEM_TREE` T2.5) — a struct, not an `#[allow]`.
+#[derive(Clone, Copy)]
+pub(super) struct HarvestCtx<'a> {
+    /// The calling module's own identity (its `SRC` constant, e.g.
+    /// `"oathnet_pro"` / `"see_know"`) — stamped as the evidence source and
+    /// (hyphenated) entity tag, so a harvest emitted on a peer module's
+    /// behalf is never misattributed to whichever module happens to own
+    /// this file.
+    pub(super) src: &'a str,
+    pub(super) scan_id: &'a str,
+}
+
 pub fn extract_api_keys_from_item(
     item: &Value,
     scan_id: &str,
+    src: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
+    let ctx = HarvestCtx { src, scan_id };
     let fields = [
         // Core credential fields (breach + stealer common)
         "password",
@@ -726,7 +768,7 @@ pub fn extract_api_keys_from_item(
                     } else {
                         format!("breach ({db})")
                     };
-                    emit_key_with(service, key_val, &source, detection, scan_id, seen, result);
+                    emit_key_with(&ctx, service, key_val, &source, detection, seen, result);
                 }
             }
             // Decode-through pass: same field, treat the value as
@@ -737,7 +779,7 @@ pub fn extract_api_keys_from_item(
             if let Some((service, decoded_key, depth)) = try_decode_through_scan(&val) {
                 let pre = result.entities.len();
                 let source = format!("{field} (base64-decoded, depth={depth})");
-                emit_key(service, &decoded_key, &source, scan_id, seen, result);
+                emit_key(&ctx, service, &decoded_key, &source, seen, result);
                 if result.entities.len() > pre
                     && let Some(last) = result.entities.last_mut()
                 {
@@ -772,11 +814,11 @@ pub fn extract_api_keys_from_item(
                             identify_with_context(raw_key, val)
                     {
                         emit_key_with(
+                            &ctx,
                             service,
                             key_val,
                             "dotenv line",
                             detection,
-                            scan_id,
                             seen,
                             result,
                         );
@@ -790,7 +832,7 @@ pub fn extract_api_keys_from_item(
     if let Some(user) = val_str(item, "username")
         && let Some((service, key_val)) = identify_api_key(&user)
     {
-        emit_key(service, key_val, "username field", scan_id, seen, result);
+        emit_key(&ctx, service, key_val, "username field", seen, result);
     }
 
     // Scan URL query parameters — stealer URLs often embed API keys:
@@ -811,11 +853,11 @@ pub fn extract_api_keys_from_item(
                         identify_with_context(context_host(&url), pval)
                 {
                     emit_key_with(
+                        &ctx,
                         service,
                         key_val,
                         "URL query parameter",
                         detection,
-                        scan_id,
                         seen,
                         result,
                     );
@@ -833,11 +875,11 @@ pub fn extract_api_keys_from_item(
                 && let Some((service, key_val, detection)) = identify_with_context(ekey, s)
             {
                 emit_key_with(
+                    &ctx,
                     service,
                     key_val,
                     "extra field",
                     detection,
-                    scan_id,
                     seen,
                     result,
                 );
@@ -877,7 +919,7 @@ pub fn extract_api_keys_from_item(
                 } else {
                     format!("cookie:{name}")
                 };
-                emit_key(service, key_val, &source, scan_id, seen, result);
+                emit_key(&ctx, service, key_val, &source, seen, result);
             }
         }
     }

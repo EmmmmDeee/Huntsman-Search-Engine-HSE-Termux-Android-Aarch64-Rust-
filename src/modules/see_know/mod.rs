@@ -49,7 +49,7 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::modules::oathnet_pro::key_harvest::{extract_api_keys_from_item, store_api_credential};
+use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know;
 use crate::util::target_match::TargetMatch;
@@ -283,8 +283,8 @@ impl Module for SeekNow {
                     &mut seen,
                     &mut result,
                 );
-                store_api_credential(item);
-                extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                store_api_credential(item, SRC);
+                extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
         }
 
@@ -347,8 +347,8 @@ impl Module for SeekNow {
                         &mut seen,
                         &mut result,
                     );
-                    store_api_credential(item);
-                    extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                    store_api_credential(item, SRC);
+                    extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
                     // location directly when the endpoint returns them.
                     extract_geo_entities(item, endpoint, &ctx.scan_id, &mut seen, &mut result);

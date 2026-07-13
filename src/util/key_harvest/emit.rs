@@ -8,15 +8,15 @@ use super::*;
 /// [`identify_api_key`] paths, which carry no corroborating context). Delegates
 /// to [`emit_key_with`] after deriving [`super::DetectionConfidence::for_service`].
 pub(super) fn emit_key(
+    ctx: &HarvestCtx,
     service: &'static str,
     key_val: &str,
     source: &str,
-    scan_id: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
     let detection = DetectionConfidence::for_service(service);
-    emit_key_with(service, key_val, source, detection, scan_id, seen, result);
+    emit_key_with(ctx, service, key_val, source, detection, seen, result);
 }
 
 /// Emit a key with an explicit [`super::DetectionConfidence`] — used by the
@@ -24,14 +24,15 @@ pub(super) fn emit_key(
 /// that the service tag alone cannot prove (Shodan/Censys also have prefix
 /// entries). Stamps a `detection:` tag and `detection_confidence` evidence attr.
 pub(super) fn emit_key_with(
+    ctx: &HarvestCtx,
     service: &'static str,
     key_val: &str,
     source: &str,
     detection: DetectionConfidence,
-    scan_id: &str,
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
+    let HarvestCtx { src, scan_id } = *ctx;
     // A cryptocurrency wallet address is NOT an API key — `identify_*` groups
     // it here only because both are high-entropy tokens. Emit it as a
     // first-class CryptoAddress (chain-tagged) and skip the API-key/ROI/key-pool
@@ -42,7 +43,7 @@ pub(super) fn emit_key_with(
             e.tag("crypto-address");
             e.tag(format!("chain:{chain}"));
             e.add_evidence(
-                Evidence::new(SRC, format!("{chain} wallet address from {source}"))
+                Evidence::new(src, format!("{chain} wallet address from {source}"))
                     .with_attr("chain", chain),
             );
             result.push(e);
@@ -71,7 +72,11 @@ pub(super) fn emit_key_with(
     let mut entity = Entity::new(EntityKind::ApiKey, key_val, 0.80, scan_id);
     entity.tag("api-key");
     entity.tag(format!("service:{service}"));
-    entity.tag("oathnet-pro");
+    // Hyphenated form, matching the caller's own entity-tagging convention
+    // elsewhere (e.g. `oathnet_pro::stealer`/`breach`'s `.tag("oathnet-pro")`,
+    // `see_know`'s `.tag("see-know")` — see `modules::breach_rich`'s identical
+    // "caller supplies its own source tag" pattern).
+    entity.tag(src.replace('_', "-"));
     entity.tag("auto-discovered");
     // Detection provenance (orthogonal to ROI/value): proven > probable > potential.
     entity.tag(format!("detection:{}", detection.as_str()));
@@ -117,7 +122,7 @@ pub(super) fn emit_key_with(
         entity.tag(format!("osint-category:{}", category.slug()));
     }
     entity.add_evidence(
-        Evidence::new(SRC, format!("API key ({service}) from {source}"))
+        Evidence::new(src, format!("API key ({service}) from {source}"))
             .with_attr("service", service)
             .with_attr("detection_confidence", detection.as_str())
             .with_attr("roi_tier", roi.label())
@@ -165,8 +170,8 @@ pub(super) fn emit_key_with(
 }
 
 /// Routes a stealer/breach record to the key pool when the URL matches
-/// a known service domain.
-pub fn store_api_credential(item: &Value) {
+/// a known service domain. See [`emit_key`] for `src`.
+pub fn store_api_credential(item: &Value, src: &str) {
     let url = val_str(item, "url")
         .or_else(|| val_str(item, "url_str"))
         .or_else(|| val_str(item, "domain"))
@@ -212,7 +217,7 @@ pub fn store_api_credential(item: &Value) {
 
     let mut entry = crate::util::key_pool::KeyEntry::new(&password);
     entry.notes = Some(format!(
-        "OathNet stealer: user={} url={}",
+        "{src} stealer: user={} url={}",
         &crate::util::str_util::truncate_safe(&username, 30),
         &crate::util::str_util::truncate_safe(&url, 60)
     ));

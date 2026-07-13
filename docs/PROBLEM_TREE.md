@@ -3178,6 +3178,56 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4577 lib
   tests, +1). **Paired:** `SOLUTION_TREE` SOL-AUDIT-TEMPORAL-SCOPE (WiGLE
   account-status leg), §5 — same commit.
+- **`[x]` T2.78 · The universal foreign-API-key classifier/harvester lived
+  nested inside `modules::oathnet_pro::key_harvest`, despite being reached
+  by `util`, `api`, `cli`, and 5+ sibling `modules` — backwards from this
+  project's `cli`/`api` → `core` → `util` layering (`modules` should depend
+  only on `core` types, never reach into a sibling module's internals). The
+  nesting also hid a real bug: `emit_key_with`'s `Evidence`/entity-tag
+  attribution was hardcoded to `oathnet_pro`'s own `SRC` constant, so every
+  key harvested from a `see_know` breach/stealer record was silently
+  mislabeled as `oathnet_pro`-sourced.** Operator request: "REFACTOR and
+  merge where it is advantageous." An Explore-agent mapping of the pipeline
+  (12 real, non-test `use crate::modules::oathnet_pro::key_harvest::…`
+  sites across every layer) confirmed the classifier itself
+  (`identify_api_key`/`identify_vendor_api_key`/`key_value_tier`/
+  `pattern_catalogue`) is fully pure (string/regex only, no OathNet-specific
+  response shape), and its only real coupling to `oathnet_pro` was
+  `emit.rs`'s `use super::SRC` — the exact hardcoded-attribution bug.
+  → **Solution:** relocated the whole directory to `util::key_harvest`
+  (`git mv`, zero logic changes to the pure classifiers), matching this
+  project's established "promote a pure/leaf classifier into `util`"
+  precedent (`util::geohash`, `util::geometry`, `util::domains`). Gave
+  `extract_api_keys_from_item`/`store_api_credential` an explicit `src`
+  parameter (the caller's own `SRC` constant) — mirroring the ALREADY-
+  established `modules::breach_rich::extract_rich_detail` convention
+  ("caller supplies its own source tag") this codebase already uses for
+  the identical oathnet_pro/see_know sharing problem — so the evidence
+  source and the (hyphenated) entity tag now correctly name whichever
+  module actually found the key. Bundled the two per-call constants
+  (`src`, `scan_id`) into one `HarvestCtx` struct rather than letting
+  `emit_key_with` grow to 8 positional args and need a clippy `#[allow]`
+  — the same "bundle, don't allow-list" discipline T2.5 already
+  established for `core::engine`'s dispatch functions. Updated all 12
+  real call sites (`oathnet_pro`, `see_know`, `web_crawler`,
+  `username_search`, `search_engines`, `util::found_keys`,
+  `util::http::keys`, `api::settings_handlers`, `cli::keys_cmd`,
+  `cli::import`) to the new import path; `oathnet_pro`/`see_know` now pass
+  their own `SRC`. New regression test
+  `emitted_key_is_attributed_to_the_caller_that_actually_found_it` asserts
+  BOTH the entity tag and the `Evidence.source` correctly name the caller
+  for both `"oathnet_pro"` and `"see_know"` — git-stash-proven by
+  reverting the tag line to the old hardcoded `"oathnet-pro"` literal,
+  which fails the `see_know` case; restored, it passes. **P2/hygiene**
+  (a `util`↔`modules` layering inversion reaching four layers deep, plus a
+  real, previously-undetected evidence-mislabeling bug). Live-verified: a
+  real `hse scan --kind domain --value wikipedia.org --modules web_crawler`
+  run completes cleanly end-to-end through the relocated
+  `key_harvest::identify_api_key` call path (a real `config_leak: exposed
+  file discovered` on `wikipedia.org/.well-known/security.txt` was
+  processed with zero errors). Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4595 lib tests, +1). **Paired:**
+  `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE (new node), §5 — same commit.
 
 ---
 
@@ -9130,3 +9180,31 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4594 lib tests). **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL (au_people White Pages AU leg), §5 —
   same commit.
+- **2026-07-13** — **T2.78: relocated the universal foreign-API-key
+  classifier/harvester out of `modules::oathnet_pro::key_harvest` into
+  `util::key_harvest`, fixing a real evidence-mislabeling bug the nesting
+  hid.** Operator request: "REFACTOR and merge where it is advantageous."
+  An Explore-agent mapping of the pipeline found 12 real, non-test call
+  sites across `util`, `api`, `cli`, and 5+ `modules` reaching into one
+  specific module's internals for a fully pure classifier — backwards from
+  `cli`/`api` → `core` → `util` layering. The one real coupling
+  (`emit.rs`'s `use super::SRC`) was also a live bug: every key harvested
+  from a `see_know` record was evidence/tag-attributed to `oathnet_pro`.
+  Fix: `git mv` the directory (zero logic change to the pure functions);
+  `extract_api_keys_from_item`/`store_api_credential` gained an explicit
+  `src` parameter (the caller's own `SRC`), mirroring the ALREADY-
+  established `modules::breach_rich::extract_rich_detail` "caller supplies
+  its own source tag" convention this codebase uses for the identical
+  oathnet_pro/see_know sharing problem; bundled `src`+`scan_id` into one
+  `HarvestCtx` struct (T2.5's "bundle, don't `#[allow]`" precedent) to keep
+  `emit_key_with` under clippy's argument-count lint. New regression test
+  asserts BOTH the entity tag and evidence source correctly name the
+  caller for `"oathnet_pro"` and `"see_know"` alike — git-stash-proven by
+  reverting to the old hardcoded tag, which fails the `see_know` case.
+  Live-verified: a real `hse scan --kind domain --value wikipedia.org
+  --modules web_crawler` run completes cleanly through the relocated
+  `key_harvest::identify_api_key` call path (a real exposed
+  `.well-known/security.txt` was discovered and scanned with zero errors).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4595 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE (new node), §5 — same commit.

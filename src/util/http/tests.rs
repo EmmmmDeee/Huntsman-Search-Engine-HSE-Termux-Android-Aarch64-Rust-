@@ -471,7 +471,7 @@ fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
             .any(|t: &&str| t.contains('&') || t.contains('?')),
         "no token may carry query separators: {tokens:?}"
     );
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
     let (svc, val) = identify_api_key("AKIAJK28SLQQV61MNG9X").expect("real-shape AWS key");
     assert_eq!(svc, "aws");
     assert_eq!(val, "AKIAJK28SLQQV61MNG9X");

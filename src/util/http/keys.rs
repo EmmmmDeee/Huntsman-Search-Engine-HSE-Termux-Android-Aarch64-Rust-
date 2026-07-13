@@ -8,8 +8,8 @@ pub fn scan_for_api_keys(text: &str) {
 }
 
 pub fn scan_for_api_keys_with_source(text: &str, source: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
     use crate::util::found_keys::key_tokens;
+    use crate::util::key_harvest::identify_api_key;
     // Upper bound on the length of a token fed to the generic-inclusive
     // classifier. `key_tokens` *filters* on length (it skips longer tokens, it
     // does not truncate), so a too-low bound silently DROPS — i.e. hides — any

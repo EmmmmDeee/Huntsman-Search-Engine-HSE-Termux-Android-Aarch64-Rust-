@@ -414,7 +414,7 @@ fn detect_and_create_api_key_entity(
     source_label: &str,
 ) -> Option<(&'static str, crate::core::entity::Entity)> {
     use crate::core::entity::{Entity, EntityKind, Evidence};
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
 
     let (service, _key_val) = identify_api_key(pw)?;
 

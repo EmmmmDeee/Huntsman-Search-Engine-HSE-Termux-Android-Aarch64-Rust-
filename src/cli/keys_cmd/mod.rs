@@ -610,7 +610,7 @@ fn run_tsv_import(
     dry_run: bool,
     pool: &crate::util::key_pool::KeyPool,
 ) -> TsvImportSummary {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
     use crate::util::key_pool::{KeyEntry, KeyStatus};
 
     let mut summary = TsvImportSummary {

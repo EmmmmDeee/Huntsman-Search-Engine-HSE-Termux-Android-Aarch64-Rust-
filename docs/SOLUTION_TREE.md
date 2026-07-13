@@ -900,6 +900,47 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4577 lib
   tests, +1). **Paired:** `PROBLEM_TREE` T2.77 — same commit.
 
+- **`[x]` SOL-KEYHARVEST-RELOCATE · The universal foreign-API-key
+  classifier lived nested inside one specific module, not `util`** →
+  **T2.78**. Operator request: "REFACTOR and merge where it is
+  advantageous." An Explore-agent mapping of `modules::oathnet_pro::
+  key_harvest` found 12 real, non-test call sites across `util`, `api`,
+  `cli`, and 5+ sibling `modules` — every layer reaching into one
+  module's internals for a fully pure classifier
+  (`identify_api_key`/`identify_vendor_api_key`/`key_value_tier`/
+  `pattern_catalogue` — string/regex only, no OathNet-specific response
+  shape), backwards from `cli`/`api` → `core` → `util` layering. The
+  one real coupling (`emit.rs`'s `use super::SRC`) was also a live bug:
+  `emit_key_with` stamped every emitted key's evidence source AND entity
+  tag with `oathnet_pro`'s own `SRC`/`"oathnet-pro"` literal regardless of
+  caller, so every key harvested from a `see_know` breach/stealer record
+  was silently mislabeled as `oathnet_pro`-sourced. Fix: relocated the
+  whole directory to `util::key_harvest` (`git mv`, zero logic change to
+  the pure functions) — matching this project's established "promote a
+  pure/leaf classifier into `util`" precedent (`util::geohash`,
+  `util::geometry`, `util::domains`). `extract_api_keys_from_item`/
+  `store_api_credential` gained an explicit `src` parameter (the caller's
+  own `SRC` constant) — mirroring the ALREADY-established
+  `modules::breach_rich::extract_rich_detail` "caller supplies its own
+  source tag" convention this codebase already uses for the identical
+  oathnet_pro/see_know sharing problem, so no new pattern was invented.
+  Bundled `src`+`scan_id` into one `HarvestCtx` struct rather than let
+  `emit_key_with` grow past clippy's argument-count lint — the same
+  "bundle, don't `#[allow]`" discipline T2.5 established for
+  `core::engine`'s dispatch functions. Updated all 12 real call sites;
+  `oathnet_pro`/`see_know` now pass their own `SRC`. New regression test
+  `emitted_key_is_attributed_to_the_caller_that_actually_found_it` asserts
+  both the entity tag and `Evidence.source` correctly name the caller for
+  `"oathnet_pro"` and `"see_know"` alike — git-stash-proven by reverting
+  to the old hardcoded `"oathnet-pro"` tag, which fails the `see_know`
+  case; restored, it passes. Live-verified: a real `hse scan --kind domain
+  --value wikipedia.org --modules web_crawler` run completes cleanly
+  end-to-end through the relocated `key_harvest::identify_api_key` call
+  path (a real exposed `.well-known/security.txt` was discovered and
+  scanned with zero errors). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4595 lib tests, +1). **Paired:**
+  `PROBLEM_TREE` T2.78 — same commit.
+
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),
   then `~/hse` / `~/.local/share/hse`, then binary-parent traversal; re-runs the

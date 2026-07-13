@@ -22,7 +22,6 @@ use crate::util::oathnet::{self, paths, val_str, val_str_coerce, val_str_or, val
 // `Entity::demote_to_candidate` (core) — matching stays orthogonal to tiering.
 use crate::util::target_match::TargetMatch;
 
-pub mod key_harvest;
 mod validate;
 use validate::*;
 mod stealer;
@@ -35,7 +34,7 @@ use breach::*;
 pub fn reset_budget() {
     crate::util::oathnet::reset_budget();
 }
-use key_harvest::{extract_api_keys_from_item, store_api_credential};
+use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
 
 const SRC: &str = "oathnet_pro";
 
@@ -230,8 +229,8 @@ impl Module for OathnetPro {
             result.entities.reserve(stealer_items.len());
             for item in &stealer_items {
                 extract_stealer_entities(item, &ctx.scan_id, &key_fp, &mut seen, &mut result);
-                store_api_credential(item);
-                extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                store_api_credential(item, SRC);
+                extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
         }
 

@@ -163,7 +163,7 @@ fn insert_own_for_test(key: &str) {
 /// value, provenance kept) — excluding our own auth credentials. Best-effort and
 /// infallible: safe to call on every response, JSON or not.
 ///
-/// Identification uses [`crate::modules::oathnet_pro::key_harvest::identify_vendor_api_key`]
+/// Identification uses [`crate::util::key_harvest::identify_vendor_api_key`]
 /// (recognised vendor prefixes /
 /// PEM / crypto), NOT the generic-hex heuristic. That is deliberate: this runs
 /// on EVERY response body, and entropy-scanning every 32/64-char hex token (of
@@ -171,7 +171,7 @@ fn insert_own_for_test(key: &str) {
 /// password-hash false positives. The hashes are already captured as `Password`
 /// entities by the breach modules; here we want only genuine third-party keys.
 pub fn scan_body(provider: &str, query: &str, body: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_vendor_api_key;
+    use crate::util::key_harvest::identify_vendor_api_key;
     if body.is_empty() {
         return;
     }

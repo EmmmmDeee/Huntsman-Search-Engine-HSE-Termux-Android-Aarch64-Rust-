@@ -228,7 +228,7 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
             // Rank by operational value (blast radius if live) so the harvested
             // key set is a value-ordered database: a leaked cloud secret /
             // private key / DB URI ranks above a publishable token or webhook.
-            let tier = oathnet_pro::key_harvest::key_value_tier(&fk.service);
+            let tier = crate::util::key_harvest::key_value_tier(&fk.service);
             let mut e = Entity::new(EntityKind::ApiKey, &fk.key, tier.confidence(), scan_id);
             e.tag("api-key");
             e.tag("foreign-key");
@@ -277,7 +277,7 @@ fn install_core_hooks() {
         },
         set_regional: search_engines::set_regional,
         refresh_round_budget: see_know::refresh_round_budget,
-        identify_api_key: oathnet_pro::key_harvest::identify_api_key,
+        identify_api_key: crate::util::key_harvest::identify_api_key,
         drain_found_keys: drain_found_key_entities,
     });
 }

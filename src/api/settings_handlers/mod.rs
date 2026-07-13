@@ -25,7 +25,7 @@ use crate::util::keys;
 /// see what shapes the scanner recognises — and so dashboards can
 /// surface per-service coverage stats.
 pub async fn keys_patterns() -> Json<Value> {
-    let patterns = crate::modules::oathnet_pro::key_harvest::pattern_catalogue();
+    let patterns = crate::util::key_harvest::pattern_catalogue();
     let by_service: std::collections::BTreeMap<&str, usize> =
         patterns
             .iter()

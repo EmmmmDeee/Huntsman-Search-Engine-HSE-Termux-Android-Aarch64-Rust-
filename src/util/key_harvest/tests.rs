@@ -550,10 +550,46 @@ fn extract_from_password_field_emits_key_entity() {
         "dbname": "TestBreach",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test-scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test-scan", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     assert_eq!(result.entities[0].kind, EntityKind::ApiKey);
     assert!(result.entities[0].has_tag("service:aws"));
+}
+
+#[test]
+fn emitted_key_is_attributed_to_the_caller_that_actually_found_it() {
+    // Regression: before `key_harvest` moved out of `modules::oathnet_pro`, the
+    // evidence source and entity tag were hardcoded to that module's own `SRC`,
+    // so a key harvested on `see_know`'s behalf was silently mislabeled as
+    // `oathnet_pro`-sourced. `src` must now flow through untouched to both the
+    // evidence source and the (hyphenated) entity tag, for every caller.
+    for (src, expected_tag) in [("oathnet_pro", "oathnet-pro"), ("see_know", "see-know")] {
+        let item = serde_json::json!({ "password": "AKIAJK28SLQQV61MNG9X" });
+        let (mut seen, mut result) = empty_state();
+        extract_api_keys_from_item(&item, "test-scan", src, &mut seen, &mut result);
+        let key = result
+            .entities
+            .iter()
+            .find(|e| e.kind == EntityKind::ApiKey)
+            .unwrap_or_else(|| panic!("{src}: expected an ApiKey entity"));
+        assert!(
+            key.has_tag(expected_tag),
+            "{src}: expected tag {expected_tag:?}, got {:?}",
+            key.tags
+        );
+        assert!(
+            !key.has_tag(if src == "oathnet_pro" {
+                "see-know"
+            } else {
+                "oathnet-pro"
+            }),
+            "{src}: must not carry the OTHER caller's tag"
+        );
+        assert_eq!(
+            key.evidence[0].source, src,
+            "{src}: evidence source must name the actual caller, not a hardcoded module"
+        );
+    }
 }
 
 #[test]
@@ -569,7 +605,7 @@ fn md5_password_hash_is_not_emitted_as_an_api_key() {
             "dbname": "TestBreach",
         });
         let (mut seen, mut result) = empty_state();
-        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
         assert!(
             !result.entities.iter().any(|e| e.kind == EntityKind::ApiKey),
             "{field}: md5 hash must not become an ApiKey, got {:?}",
@@ -581,7 +617,7 @@ fn md5_password_hash_is_not_emitted_as_an_api_key() {
     // real key and must be emitted.
     let item = serde_json::json!({ "password": "AKIAJK28SLQQV61MNG9X" });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert!(result.entities.iter().any(|e| e.kind == EntityKind::ApiKey));
 }
 
@@ -598,7 +634,7 @@ fn prefixless_osint_key_in_password_field_attributed_by_record_url() {
         "password": "kJ8mN2pQ7rT4vW9xZ1aB5cD3eF6gH0iL",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     let shodan = result
         .entities
         .iter()
@@ -622,7 +658,7 @@ fn random_password_without_osint_url_is_not_misattributed() {
         "password": "kJ8mN2pQ7rT4vW9xZ1aB5cD3eF6gH0iL",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert!(
         !result
             .entities
@@ -643,7 +679,7 @@ fn crypto_address_emits_as_crypto_address_not_api_key() {
         "dbname": "TestBreach",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     let crypto: Vec<_> = result
         .entities
         .iter()
@@ -666,7 +702,7 @@ fn extract_deduplicates_across_fields() {
         "api_key": key,
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1, "dedup should fire");
 }
 
@@ -676,7 +712,7 @@ fn extract_from_url_query_param() {
         "url": "https://api.shodan.io/host/1.1.1.1?key=AKIAJK28SLQQV61MNG9X",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     assert!(result.entities[0].has_tag("service:aws"));
 }
@@ -690,7 +726,7 @@ fn extract_from_extra_object_strings() {
         }
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     assert!(result.entities[0].has_tag("service:github"));
 }
@@ -721,7 +757,7 @@ fn extract_from_stealer_log_specific_fields() {
             field: "ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8",
         });
         let (mut seen, mut result) = empty_state();
-        extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+        extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
         assert_eq!(
             result.entities.len(),
             1,
@@ -740,7 +776,7 @@ fn extract_from_dotenv_blob_finds_every_key() {
                     GIBBERISH=short";
     let item = serde_json::json!({ "env_content": blob });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     // Two real prefixed keys + the 32-char hex generic_hex
     // catch from the SHODAN line.
     assert!(
@@ -772,7 +808,7 @@ fn extract_from_dotenv_handles_export_prefix_and_quoting() {
                     GH=`ghp_A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6Q7r8`";
     let item = serde_json::json!({ "env_content": blob });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     let svcs: Vec<String> = result
         .entities
         .iter()
@@ -801,7 +837,7 @@ fn extract_from_cookies_array_with_jwt_value() {
         ]
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     assert!(result.entities[0].has_tag("service:jwt_token"));
 }
@@ -815,7 +851,7 @@ fn extract_skips_short_or_empty_inputs() {
         "extra": {"x": "tiny"},
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert!(result.entities.is_empty());
 }
 
@@ -827,7 +863,7 @@ fn extract_from_username_when_log_misformatted() {
         "password": "plaintext-password-not-a-key",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "scan", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "scan", "oathnet_pro", &mut seen, &mut result);
     assert!(result.entities.iter().any(|e| e.has_tag("service:aws")));
 }
 
@@ -939,7 +975,7 @@ fn extract_from_clipboard_hijacker_app_data_picks_up_btc() {
     });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     // A wallet address is a first-class CryptoAddress, not an API key.
     assert_eq!(result.entities[0].kind, EntityKind::CryptoAddress);
@@ -956,7 +992,7 @@ fn extract_from_dotenv_with_mixed_crypto_and_api_keys() {
     let item = serde_json::json!({ "env_content": blob });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     // Both surface, each correctly typed: the ETH wallet as a
     // CryptoAddress (chain:eth), and the AWS-shape impostor (the operator's
     // deliberate `ETHERSCAN_KEY=` mis-naming — its value matches our AWS
@@ -1186,7 +1222,7 @@ fn pem_extracted_from_stealer_app_data_emits_correct_service() {
     });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     assert!(result.entities[0].has_tag("service:pem_openssh_private"));
 }
@@ -1315,7 +1351,7 @@ fn ported_prefixes_route_through_stealer_log_orchestrator() {
     });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 3);
     let services: Vec<&str> = result
         .entities
@@ -1422,7 +1458,7 @@ fn extract_orchestrator_finds_base64_wrapped_key_in_password_field() {
     let item = serde_json::json!({ "password": wrapped });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test-b64-1", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test-b64-1", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     let e = &result.entities[0];
     assert_eq!(e.value, plain);
@@ -1444,7 +1480,7 @@ fn extract_orchestrator_finds_base64_in_app_data_field() {
     let item = serde_json::json!({ "app_data": wrapped });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test-b64-2", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test-b64-2", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 1);
     assert_eq!(result.entities[0].value, plain);
     assert!(result.entities[0].has_tag("service:github"));
@@ -1463,7 +1499,7 @@ fn extract_orchestrator_dedupes_plaintext_and_base64_of_same_key() {
     });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test-b64-3", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test-b64-3", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(
         result.entities.len(),
         1,
@@ -1488,7 +1524,7 @@ fn extract_orchestrator_finds_two_independent_base64_keys() {
     });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test-b64-4", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test-b64-4", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 2);
     let services: Vec<&str> = result
         .entities
@@ -1513,7 +1549,7 @@ fn extract_orchestrator_emits_both_plaintext_and_base64_when_distinct_keys() {
     });
     let mut seen = HashSet::new();
     let mut result = ModuleResult::new();
-    extract_api_keys_from_item(&item, "test-b64-5", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test-b64-5", "oathnet_pro", &mut seen, &mut result);
     assert_eq!(result.entities.len(), 2);
     let plaintext = result
         .entities
@@ -1924,7 +1960,7 @@ fn osint_key_attributed_end_to_end_through_env_blob() {
     let blob = format!("DB_HOST=localhost\nSHODAN_API_KEY={key}\n");
     let item = serde_json::json!({ "env_content": blob });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     assert!(
         result.entities.iter().any(|e| e.has_tag("service:shodan")),
         "expected a service:shodan ApiKey entity, got {:?}",
@@ -2028,7 +2064,7 @@ fn detection_tag_stamped_on_emitted_keys() {
     let blob = format!("SHODAN_API_KEY={key}\n");
     let item = serde_json::json!({ "env_content": blob });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     let shodan = result
         .entities
         .iter()
@@ -2044,7 +2080,7 @@ fn detection_tag_stamped_on_emitted_keys() {
     // detection:probable.
     let item = serde_json::json!({ "password": "AKIAJK28SLQQV61MNG9X" });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     let aws = result
         .entities
         .iter()
@@ -2089,7 +2125,7 @@ fn osint_url_spoof_blocked_end_to_end() {
         "url": format!("https://evil.example/?ref=shodan&key={key}"),
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     assert!(
         !result.entities.iter().any(|e| e.has_tag("service:shodan")),
         "a query-string provider name must not spoof attribution: {:?}",
@@ -2100,7 +2136,7 @@ fn osint_url_spoof_blocked_end_to_end() {
         "url": format!("https://api.shodan.io/shodan/host/1.1.1.1?key={key}"),
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     assert!(
         result.entities.iter().any(|e| e.has_tag("service:shodan")),
         "a genuine OSINT host should attribute: {:?}",
@@ -2196,7 +2232,7 @@ fn jwt_validation_refines_tier_and_flags_alg_none() {
         "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJ4In0.c2ln",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     let e = result
         .entities
         .iter()
@@ -2212,7 +2248,7 @@ fn jwt_validation_refines_tier_and_flags_alg_none() {
         "token": "eyJhbGciOiJub25lIn0.eyJzdWIiOiJ4In0.c2ln",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     let e = result
         .entities
         .iter()
@@ -2227,7 +2263,7 @@ fn jwt_validation_refines_tier_and_flags_alg_none() {
         "token": "eyJabcdefghijklmnopqrstuvwxyz0123456789.payload.signature",
     });
     let (mut seen, mut result) = empty_state();
-    extract_api_keys_from_item(&item, "test", &mut seen, &mut result);
+    extract_api_keys_from_item(&item, "test", "oathnet_pro", &mut seen, &mut result);
     let e = result
         .entities
         .iter()

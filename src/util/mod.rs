@@ -28,6 +28,7 @@ pub mod hashcat;
 pub mod html;
 pub mod http;
 pub mod json;
+pub mod key_harvest;
 pub mod key_pool;
 pub mod key_roi;
 pub mod key_vault;

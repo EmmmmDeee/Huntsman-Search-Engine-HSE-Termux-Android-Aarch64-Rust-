@@ -202,9 +202,7 @@ pub(super) async fn probe_config_leaks(
             let mut found = Vec::new();
             for t in crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
             {
-                if let Some((service, key_val)) =
-                    crate::modules::oathnet_pro::key_harvest::identify_api_key(t)
-                {
+                if let Some((service, key_val)) = crate::util::key_harvest::identify_api_key(t) {
                     found.push((service, key_val.to_string()));
                 }
             }
@@ -546,7 +544,7 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
 }
 
 pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
 
     let pool = crate::util::key_pool::global_pool();
     for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {

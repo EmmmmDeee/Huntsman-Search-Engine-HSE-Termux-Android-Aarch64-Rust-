@@ -430,7 +430,7 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
 impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
 
 fn scan_text_for_keys(body: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
     let pool = crate::util::key_pool::global_pool();
     for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
         let t = word.trim();

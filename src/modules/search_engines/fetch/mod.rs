@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
-use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+use crate::util::key_harvest::identify_api_key;
 
 /// Per-request fetch ceiling (ms): the most any single SERP request may take.
 pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
