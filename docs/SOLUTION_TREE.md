@@ -940,6 +940,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   scanned with zero errors). Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4595 lib tests, +1). **Paired:**
   `PROBLEM_TREE` T2.78 — same commit.
+  *Extended (2026-07-13) — `api_key_probe`'s duplicate live-validation
+  table, T2.79:* the same "merge where advantageous" pass found
+  `api_key_probe/probes.rs` independently duplicating `util::service_defs`
+  (the table `key_pool::validation` already reads for the identical
+  purpose), already drifted 3 ways: `securitytrails`, `virustotal`, and
+  `greynoise` each tested a DIFFERENT URL in the two tables — one
+  objectively wrong each time (confirmed by `api_key_probe`'s own code
+  comments and each vendor's documented key-test endpoint). Also found
+  `censys`'s env var pointed at `HUNTSMAN_CENSYS_KEY`, which exists
+  nowhere else in the codebase. Extended `ServiceDef` with an optional
+  `probe_parser` (the one genuinely per-vendor part) and derived the
+  request generically from `test_url`+`key_header` via a new
+  `request_for()`, deleting the entire duplicate table rather than
+  reconciling it a second time — the 3 drifted URLs are now single-sourced
+  and can't re-drift. WiGLE's (and censys's) real two-credential Basic-Auth
+  limitation was explicitly documented as a pre-existing, out-of-scope gap
+  in BOTH source tables, not silently half-fixed. Live-verified: a real
+  `hse scan --kind apikey --modules api_key_probe` run against this
+  operator's own real, currently-configured HIBP key produced byte-for-byte
+  identical output before and after the merge (confirmed by reverting to
+  the pre-merge code and re-running the identical live scan) — the same
+  check also surfaced a separate, pre-existing `is_error_response`/
+  `parse_info` false-positive gap, confirmed unchanged by the same
+  before/after comparison and correctly logged as its own future finding
+  rather than folded into this merge. New regression test pins the 3
+  corrected URLs, git-stash-proven by reverting greynoise's URL, which
+  fails it. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite
+  0 failures (4596 lib tests, +1). **Paired:** `PROBLEM_TREE` T2.79 — same
+  commit.
 
 - **`[x]` SOL-UPDATE · Self-upgrade + CLI consolidation** — `hse update` locates
   `install.sh` via `HUNTSMAN_INSTALL_DIR` env (written by `install.sh` on every run),

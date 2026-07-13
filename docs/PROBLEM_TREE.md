@@ -3228,6 +3228,58 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   processed with zero errors). Gate green: fmt/clippy `-D warnings`/
   rustdoc clean, full suite 0 failures (4595 lib tests, +1). **Paired:**
   `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE (new node), §5 — same commit.
+- **`[x]` T2.79 · `api_key_probe`'s live-validation probe table
+  independently duplicated `util::service_defs` (the table
+  `key_pool::validation` reads for the SAME purpose) and had already
+  drifted on 3 real endpoints — one of every pair objectively wrong.**
+  Continuing the same operator request ("REFACTOR and merge where it is
+  advantageous"). The Explore-agent investigation found `securitytrails`
+  (`/v1/account/usage` vs the documented key-test endpoint `/v1/ping`),
+  `virustotal` (`/api/v3/urls`, which doesn't validate a bare key, vs
+  `/api/v3/users/me`, a real identity-check endpoint), and `greynoise`
+  (the free/unauthenticated `/v3/community/...` endpoint — which
+  `api_key_probe`'s own code comment already flagged as "works without
+  auth and would cause false positives" — vs the real paid `/v3/ip/...`
+  endpoint) each testing a DIFFERENT URL in the two tables. Also found:
+  `api_key_probe`'s censys entry referenced `HUNTSMAN_CENSYS_KEY`, an env
+  var that exists NOWHERE else in the codebase — the real censys module
+  and `.env.example` both use the paired `HUNTSMAN_CENSYS_ID`/
+  `HUNTSMAN_CENSYS_SECRET` that `service_defs` already had correct.
+  → **Solution:** extended `ServiceDef` with an optional `probe_parser`
+  field (the one genuinely per-vendor piece — each service's JSON
+  response shape) and derived the request (url + auth header) generically
+  from `test_url`+`key_header` via a new `request_for()`, since every
+  `KeyPlacement` variant maps onto exactly one request shape — deleting
+  `api_key_probe`'s entire parallel url/header/env_var table rather than
+  reconciling it by hand a second time. Fixed the 3 drifted URLs to their
+  more-correct (probes.rs) values — now single-sourced, so they can't
+  re-drift. Left WiGLE's (and censys's) real limitation undisturbed and
+  explicitly documented rather than half-fixed: both actually need HTTP
+  Basic Auth over a username:token PAIR, which neither table's
+  single-value `KeyPlacement` can express — a real, pre-existing gap in
+  BOTH tables (not introduced by this merge), needing a paired-credential
+  `KeyPlacement` variant as its own future fix. **P3/hygiene** (drift
+  between two tables serving the identical purpose — CONVENTIONS.md's
+  single-sourced-vocabulary rule — plus 4 real stale/wrong facts the
+  duplication let accumulate unnoticed). Live-verified: a real `hse scan
+  --kind apikey --modules api_key_probe` run against this operator's own
+  REAL, currently-configured HIBP key produced byte-for-byte IDENTICAL
+  output before and after the merge (confirming zero behaviour
+  regression) — a separate, PRE-EXISTING false-positive pattern this same
+  live check surfaced (several unrelated services also reporting
+  "validated" for a key only valid for HIBP) was confirmed unchanged by
+  reverting to the pre-merge code and re-running the identical live scan;
+  it is a genuine, deeper `is_error_response`/`parse_info` gap
+  (`process()` marks a probe "validated" once its response merely fails
+  to LOOK like an error, without requiring `parse_info` to have actually
+  extracted any real account field), correctly left as its own separate,
+  future finding rather than folded into this merge. New regression test
+  `probe_request_uses_the_single_sourced_service_def_not_a_duplicate_table`
+  pins the 3 corrected URLs — git-stash-proven by reverting greynoise's
+  `test_url` to the old wrong community endpoint, which fails it; restored,
+  it passes. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4596 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-KEYHARVEST-RELOCATE extended, §5 — same commit.
 
 ---
 
@@ -9208,3 +9260,37 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4595 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-KEYHARVEST-RELOCATE (new node), §5 — same commit.
+- **2026-07-13** — **T2.79: `api_key_probe`'s live-validation table
+  duplicated `util::service_defs` and had already drifted on 3 real
+  endpoints, one of each pair objectively wrong.** Continuing the same
+  operator refactor/merge request. `securitytrails` (account/usage vs the
+  documented ping endpoint), `virustotal` (a URL-analysis endpoint that
+  can't validate a bare key vs a real identity-check endpoint), and
+  `greynoise` (the free unauthenticated community endpoint — flagged by
+  `api_key_probe`'s own comment as a false-positive risk — vs the real
+  paid endpoint) each tested a different URL in the two tables. Also found
+  `censys`'s env var referenced `HUNTSMAN_CENSYS_KEY`, which exists
+  nowhere else in the codebase (the real module/`.env.example` use the
+  paired `HUNTSMAN_CENSYS_ID`/`_SECRET` `service_defs` already had
+  correct). Fix: extended `ServiceDef` with an optional `probe_parser` (the
+  one genuinely per-vendor part — JSON response shape) and derived the
+  request generically from `test_url`+`key_header`, deleting
+  `api_key_probe`'s entire parallel table. Fixed the 3 drifted URLs to
+  their more-correct values, now single-sourced. Left WiGLE's (and
+  censys's) real two-part Basic-Auth limitation explicitly documented, not
+  half-fixed — pre-existing in both tables, needs a paired-credential
+  `KeyPlacement` variant as its own future fix. Live-verified: a real `hse
+  scan --kind apikey --modules api_key_probe` run against this operator's
+  own real, currently-configured HIBP key produced byte-for-byte identical
+  output before and after the merge — confirmed by reverting to the
+  pre-merge code and re-running the identical live scan. That same live
+  check surfaced a separate, pre-existing false-positive pattern
+  (unrelated services also reporting "validated" for a key only valid for
+  HIBP, confirmed unchanged by the same before/after comparison) — a
+  genuine, deeper `is_error_response`/`parse_info` gap, correctly logged
+  as its own future finding rather than folded into this merge. New
+  regression test pins the 3 corrected URLs, git-stash-proven by
+  reverting greynoise's URL, which fails it. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4596 lib tests, +1).
+  **Paired:** `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE extended, §5 — same
+  commit.

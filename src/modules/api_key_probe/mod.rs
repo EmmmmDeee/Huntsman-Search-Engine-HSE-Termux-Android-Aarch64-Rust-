@@ -91,7 +91,7 @@ impl Module for ApiKeyProbe {
 
         for (i, probe) in all_probes.iter().enumerate() {
             let key = key.to_string();
-            let (url, headers) = (probe.url_builder)(&key);
+            let (url, headers) = probes::request_for(probe.def, &key);
             tasks.spawn(async move { (i, probe_endpoint(&url, &key, &headers).await) });
         }
 

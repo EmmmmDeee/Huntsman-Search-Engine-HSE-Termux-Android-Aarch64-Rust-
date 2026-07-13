@@ -30,7 +30,7 @@ use super::*;
         // an unauthenticated request and report a valid key as invalid.
         const SENTINEL: &str = "SENTINELKEY0123456789";
         for probe in &probes() {
-            let (url, headers) = (probe.url_builder)(SENTINEL);
+            let (url, headers) = super::probes::request_for(probe.def, SENTINEL);
             assert!(
                 url.starts_with("https://"),
                 "{}: probe URL is not https ({url}) — would leak the key in plaintext",
@@ -47,6 +47,33 @@ use super::*;
                 "{}: empty category",
                 probe.service
             );
+        }
+    }
+
+    #[test]
+    fn probe_request_uses_the_single_sourced_service_def_not_a_duplicate_table() {
+        // Regression: this probe table and `util::key_pool::validation`'s
+        // key-validation probe used to be two independently-maintained
+        // tables (this one in api_key_probe/probes.rs, the other in
+        // util::service_defs) that had already drifted on 3 real endpoints —
+        // securitytrails, virustotal, and greynoise each tested a DIFFERENT
+        // URL in the two tables, one of them wrong. Now both read the same
+        // `ServiceDef`, so a probe's derived URL is exactly `test_url` (plus
+        // the key for a query-param placement) — these three assert the
+        // corrected, no-longer-divergent values specifically.
+        let expected: &[(&str, &str)] = &[
+            ("securitytrails", "https://api.securitytrails.com/v1/ping"),
+            ("virustotal", "https://www.virustotal.com/api/v3/users/me"),
+            ("greynoise", "https://api.greynoise.io/v3/ip/8.8.8.8"),
+        ];
+        let p = probes();
+        for (service, expected_url) in expected {
+            let probe = p
+                .iter()
+                .find(|p| p.service == *service)
+                .unwrap_or_else(|| panic!("{service}: expected a probe"));
+            let (url, _headers) = super::probes::request_for(probe.def, "SENTINELKEY");
+            assert_eq!(url, *expected_url, "{service}: probe URL");
         }
     }
 

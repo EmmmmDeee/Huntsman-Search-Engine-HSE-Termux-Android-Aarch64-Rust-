@@ -213,6 +213,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Discovered API keys for SecurityTrails, VirusTotal, and GreyNoise are now
+  tested against the correct endpoint.** Two internal tables for checking
+  whether a discovered key actually works had drifted apart over time; each
+  of these three services was tested against a different URL in each
+  table, and one of the two was wrong. Both tables now read from a single,
+  shared source, so this can't happen again. A leftover reference to a
+  Censys environment variable name that didn't match any real setting is
+  also fixed.
 - **A key discovered in SeekNow breach data no longer gets credited to the
   wrong source.** Every leaked API key/credential found in either paid
   breach pool's results goes through the same shared detector; its origin
