@@ -1627,7 +1627,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   consts / store_api_credential_from_item. **Paired:**
   `PROBLEM_TREE` T2.58 (slice 1) / T2.59 (slice 2) / T2.60 (slice 3) / T2.61
   (slice 4) / T2.62 (slice 5) / T2.63 (slice 6) / T2.70 (slice 7) / T2.71
-  (slice 8) / T2.72 (slice 9) — each slice its own commit. **Slice 8
+  (slice 8) / T2.72 (slice 9) / T2.73 (slice 10) — each slice its own commit.
+  **Slice 8
   delivered — the second WIRE-IN: the scan-completion webhook that was
   configured but never fired.** The sweep
   surfaced `core::webhook::notify_scan_complete` (the fire-and-forget
@@ -1662,6 +1663,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   name-seed scan hitting `name_intel`'s permutation-pivot path (0.20 conf)
   populates the section with "117 weak finding(s)," weakest-first, module
   resolved, capped at 20 + "and 97 more." THEN 3 git-stash-proven tests.
+  **Slice 10 delivered — restoring a REAL, previously-fixed, previously-
+  QUANTIFIED bug lost off a diverged branch.** `is_username_derived_name`
+  (validation/placeholder.rs) was fully built with zero callers. Git
+  archaeology: commit `63d13142` (2026-06-24) already fixed this — a real
+  scan of `full_name = "rhino-ryno23 rhino-ryno23"` produced 123 entities,
+  94% noise, because `EntityKind::Person → TargetKind::FullName` spawns a
+  child scan on the garbage name — but that commit is not an ancestor of
+  `main`; only the (since-refined, hyphen+digit not bare-hyphen) predicate
+  survived, not the wiring. Both `oathnet_pro/breach.rs` AND
+  `see_know/extract/mod.rs` share the identical unguarded Person-construction
+  pattern (breach `full_name`/`display_name`/`name` → `Entity::new`, gated
+  only on length/whitespace) — a live gap on `main`, not hypothetical.
+  Decision: WIRE-IN at BOTH real construction sites (the historically-
+  validated insertion point, closer to the source than a generic admission
+  gate would be); dropped the predicate's permanently-unused
+  `_query_value: &str` parameter (reserved "for future tightening" in the
+  original commit, never read by either version of the body) since this is
+  its first real caller. ✅ Live-verified: a real scan of `Kylo4kylo` ran
+  cleanly through the fixed code with `oathnet_pro`/`see_know` enabled (both
+  executed genuine network round-trips, zero regressions); honestly
+  disclosed the exact garbage-name specimen wasn't organically reproducible
+  in this sandbox today (SeekNow's embedded key provider-rejected; OathNet's
+  live search returned 0 results this run) — so the git-stash-proven
+  regression tests, built from the EXACT real value the 2026-06-24 incident
+  observed (not invented), are the documented proof: 3 tests (the predicate;
+  `oathnet_pro`'s extractor; `see_know`'s extractor), all failing when the
+  predicate is neutered to always return `false`, all passing restored. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4573
+  lib tests, +3). Paired: `PROBLEM_TREE` T2.73 — same commit.
 - **`[x]` SOL-ROLE-MAILBOX-COMPOUND · Suppress provider-prefixed system
   mailboxes (DNS SOA / registrar desks) from posing as the subject's email** →
   **T2.68**. Found by a PRIORITY-5 LIVE end-to-end pass (real binary vs the
@@ -5962,6 +5992,52 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   message fails the two non-empty-case tests, restored it passes). Gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4570 lib
   tests, +3). Paired: `PROBLEM_TREE` T2.72 — same commit.
+- **2026-07-13** — **SOL-DEADCODE-SWEEP slice 10: restored a real,
+  previously-fixed, previously-quantified bug that got lost off a diverged
+  branch — `oathnet_pro`/`see_know` minting a spurious Person from a
+  doubled-username breach `full_name`.** `is_username_derived_name` was fully
+  built with zero callers. Git archaeology found commit `63d13142`
+  (2026-06-24, "reject username-derived Person entities from breach full_name
+  field") had already fixed this exact bug with a real call site and a
+  passing test, quantified by a real live scan: target `full_name =
+  "rhino-ryno23 rhino-ryno23"` produced 123 entities, 94% noise —
+  `EntityKind::Person → TargetKind::FullName` spawns a child scan that runs
+  free-text search AND `name_intel` permutation on the garbage name. That
+  commit sits on a branch that is not an ancestor of `main`, so only the
+  predicate survived into HEAD (since refined: hyphen+digit, not bare-hyphen
+  — a real improvement, `"Smith-Jones"` no longer false-positives) — the
+  wiring, the guard, and the paired tree entries (P-USERNAME-NAME /
+  SOL-USERNAME-NAME) did not. Both `oathnet_pro/breach.rs` AND
+  `see_know/extract/mod.rs` share the identical unguarded pattern (breach
+  `full_name`/`display_name`/`name` → `Entity::new(EntityKind::Person, ...)`,
+  gated only on length/whitespace) — a live gap on `main` right now, not
+  hypothetical. Decision: WIRE-IN at BOTH real construction sites — not the
+  generic `dispatch.rs` admission gate a first pass considered, but the
+  historically-validated insertion point at each module's own
+  entity-construction site (closer to the source, no wasted allocation).
+  Also dropped the predicate's permanently-unused second parameter
+  (`_query_value: &str` — reserved "for future tightening" in the original
+  commit, never read by either version of the body, and no current call site
+  has anything meaningful to pass) since this cycle is its first real caller
+  — simplified to `is_username_derived_name(name: &str) -> bool`. ✅
+  Live-verified: rebuilt the binary and ran a real scan of the canonical seed
+  `Kylo4kylo` with `oathnet_pro`/`see_know` explicitly enabled through the
+  fixed code — both modules executed a genuine network round-trip with zero
+  panics/regressions. Honestly disclosed (per the live-check discipline): the
+  exact garbage-`full_name` specimen was not organically reproducible in this
+  sandbox today — SeekNow's embedded key is currently provider-rejected
+  (`invalid_api_key`) and OathNet's live search for `kylo4kylo` returned 0
+  results this run, so no real breach record was available to test the guard
+  against live. Rather than fabricate a trigger, this relies on the
+  git-stash-proven regression tests as the documented exception — each built
+  from the EXACT real-world value the original 2026-06-24 incident observed
+  live (`"rhino-ryno23 rhino-ryno23"`), not invented: 3 tests (the predicate
+  itself; `oathnet_pro`'s extractor; `see_know`'s extractor — each asserting
+  the doubled/slug name mints NO Person while a real two-token name still
+  does), git-stash-proven by neutering the predicate to always return
+  `false` (all 3 fail; restored, all pass). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4573 lib tests, +3).
+  Paired: `PROBLEM_TREE` T2.73 — same commit.
 - **2026-07-12** — **New SOL-RANDOMIZED-MAC: the OUI classifier now flags
   randomized (private) MAC addresses instead of attributing them as real
   devices.** Surfaced by a real 1,643-device Android BLE-radar export the

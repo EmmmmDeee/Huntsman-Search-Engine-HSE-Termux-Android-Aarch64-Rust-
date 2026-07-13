@@ -184,6 +184,23 @@ fn placeholder_entity_filters_artifacts_but_keeps_secrets() {
 }
 
 #[test]
+fn username_derived_name_catches_doubled_and_slug_tokens_not_real_names() {
+    // The exact previously-observed live case: a breach DB storing
+    // `full_name = "{username} {username}"` when no real name is available.
+    assert!(is_username_derived_name("rhino-ryno23 rhino-ryno23"));
+    // Case-insensitive doubled-token match.
+    assert!(is_username_derived_name("Rhino-Ryno23 rhino-ryno23"));
+    // A lone hyphen+digit slug token (no second token needed).
+    assert!(is_username_derived_name("rhino-ryno23"));
+    // Real names must never trip this: a hyphenated surname carries NO digit,
+    // and two different real given+family names are neither doubled nor slugs.
+    assert!(!is_username_derived_name("Smith-Jones"));
+    assert!(!is_username_derived_name("Jordan Avery"));
+    assert!(!is_username_derived_name("Mary Smith-Jones"));
+    assert!(!is_username_derived_name("John Doe")); // caught by is_placeholder_person instead
+}
+
+#[test]
 fn phone_e164_accepts_valid() {
     assert!(validate_phone_e164("+61410959140").valid);
     assert!(validate_phone_e164("+14155552671").valid);

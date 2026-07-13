@@ -137,6 +137,54 @@ use super::*;
         assert_eq!(ev.attributes.get("postal_code").map(String::as_str), Some("4114"));
     }
 
+    /// The real, previously-observed failure mode: a breach DB stores
+    /// `full_name = "{username} {username}"` when no real name is available.
+    /// Emitting `Person("rhino-ryno23 rhino-ryno23")` maps to `TargetKind::
+    /// FullName` and spawns a spurious child scan — a real prior run of this
+    /// exact case produced 123 entities, 94% noise.
+    #[test]
+    fn doubled_username_full_name_is_rejected_not_minted_as_person() {
+        use serde_json::json;
+        let item = json!({
+            "full_name": "rhino-ryno23 rhino-ryno23",
+            "username": "rhino-ryno23",
+            "source": "TestDB"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_breach_entities(&item, "rhino-ryno23", "scan", "oathnet.org:test", &mut seen, &mut result);
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "a username doubled into the full_name field must never mint a Person: {:?}",
+            result.entities
+        );
+
+        // A lone hyphen+digit slug (no doubling) is caught the same way.
+        let item2 = json!({ "full_name": "rhino-ryno23 something", "source": "TestDB" });
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_breach_entities(&item2, "rhino-ryno23", "scan", "oathnet.org:test", &mut seen2, &mut result2);
+        assert!(
+            !result2.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "a hyphen+digit slug token must never mint a Person: {:?}",
+            result2.entities
+        );
+
+        // A real two-token name must still mint a Person (no false positive).
+        let item3 = json!({ "full_name": "Jordan Avery", "source": "TestDB" });
+        let mut seen3 = HashSet::new();
+        let mut result3 = ModuleResult::new();
+        extract_breach_entities(&item3, "jordan avery", "scan", "oathnet.org:test", &mut seen3, &mut result3);
+        assert!(
+            result3
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery"),
+            "a real name must still be admitted: {:?}",
+            result3.entities
+        );
+    }
+
     #[test]
     fn extract_stealer_entities_characterization() {
         use serde_json::json;

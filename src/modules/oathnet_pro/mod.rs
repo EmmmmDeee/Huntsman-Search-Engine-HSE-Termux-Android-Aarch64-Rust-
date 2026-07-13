@@ -253,6 +253,10 @@ impl Module for OathnetPro {
 // oathnet_pro and see_know share the policy so a target rejected
 // by one provider is rejected by the other.
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
+// Rejects a breach `full_name` that is actually the username doubled or
+// slugged (see `breach.rs`'s Person-creation guard) — both oathnet_pro and
+// see_know extract from the same breach-schema fields, so they share this too.
+use crate::core::validation::is_username_derived_name;
 
 /// True for inputs that empirically waste an OathNet lookup for `kind` — junk
 /// the breach/stealer corpora never match: test/example-TLD emails, placeholder

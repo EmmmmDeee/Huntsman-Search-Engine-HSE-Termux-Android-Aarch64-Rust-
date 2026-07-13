@@ -27,6 +27,7 @@ use crate::core::{
     entity::{Entity, EntityKind, Evidence},
     module::ModuleResult,
     tags,
+    validation::is_username_derived_name,
 };
 use crate::util::extract::EMAIL_RE;
 use crate::util::geo::is_valid_coords;
@@ -250,6 +251,11 @@ pub(super) fn extract_entities(
     }
     if let Some(name) = val_str(item, "full_name").or_else(|| val_str(item, "name"))
         && name.trim().contains(' ')
+        // Some breach databases store `full_name = "{username} {username}"`
+        // when no real name is available — reject before it reaches the graph
+        // (the sibling `oathnet_pro` extractor shares this exact schema and
+        // the same guard, `oathnet_pro/breach.rs`).
+        && !is_username_derived_name(name.trim())
         && seen.insert(name.to_lowercase())
     {
         let mut person = Entity::new(EntityKind::Person, name.trim(), 0.65, scan_id);

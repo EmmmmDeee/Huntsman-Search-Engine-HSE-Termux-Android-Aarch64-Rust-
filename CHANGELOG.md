@@ -166,6 +166,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Breach lookups (`oathnet_pro`, `see_know`) no longer mint a fake person
+  from a doubled username.** Some breach databases store a record's full name
+  as the username repeated twice (e.g. `"someuser someuser"`) when no real
+  name was ever collected. This was previously treated as a real name,
+  triggering a wasteful follow-up investigation into that fake name that
+  produced mostly irrelevant results. Both providers now recognize and skip
+  this pattern (and a similar "slug-style" username-as-name pattern), the
+  same protection they briefly had before an earlier change accidentally
+  dropped it.
 - **The Gephi graph export (`graph.gexf`) no longer wires a username's
   platform-presence results into a false cluster.** Co-occurrence edges — the
   "these two entities were named by the same source" links — were keyed on the

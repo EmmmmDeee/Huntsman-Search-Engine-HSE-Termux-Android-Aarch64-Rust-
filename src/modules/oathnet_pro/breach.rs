@@ -343,7 +343,17 @@ pub(super) fn extract_breach_entities_with(
 
     if let Some(n) = val_str_or(item, &["full_name", "display_name", "name"]) {
         let t = n.trim();
-        if t.len() >= 4 && t.contains(' ') && seen.insert(t.to_lowercase()) {
+        // Some breach databases store `full_name = "{username} {username}"`
+        // when no real name is available (previously observed live: a
+        // scan seeded on this field emitted `Person("rhino-ryno23
+        // rhino-ryno23")`, which the engine expanded into a 123-entity,
+        // 94%-noise child scan) — reject that shape before it ever reaches
+        // the graph.
+        if t.len() >= 4
+            && t.contains(' ')
+            && !is_username_derived_name(t)
+            && seen.insert(t.to_lowercase())
+        {
             push_oathnet_entity(
                 result,
                 Entity::new(EntityKind::Person, t, 0.70, scan_id),

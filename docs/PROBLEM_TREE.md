@@ -2781,6 +2781,57 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4570 lib tests, +3). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
   (slice 9), §5 — same commit.
+- **`[x]` T2.73 · `oathnet_pro`/`see_know` mint a spurious `Person` entity when
+  a breach DB stores `full_name = "{username} {username}"` — a REAL,
+  previously-fixed, previously-QUANTIFIED bug that got lost off a diverged
+  branch and silently regressed onto `main`.** The dead-code sweep surfaced
+  `is_username_derived_name` (validation/placeholder.rs) as fully built with
+  zero callers. Git archaeology explains why: commit `63d13142` ("reject
+  username-derived Person entities from breach full_name field", 2026-06-24)
+  fixed this exact bug with a real call site and a passing test — but that
+  commit sits on a branch that is **not an ancestor of current `main`**, so
+  only the predicate itself (since refined from bare-hyphen to hyphen+digit,
+  a real improvement — `"Smith-Jones"` no longer false-positives) survived
+  into HEAD; the wiring, the guard, and the tree entries (P-USERNAME-NAME /
+  SOL-USERNAME-NAME) did not. The original fix's own evidence is concrete: a
+  real prior scan (`79ec1b3f9226`, target `full_name = rhino-ryno23
+  rhino-ryno23`) produced **123 entities, 94% noise** — `EntityKind::Person →
+  TargetKind::FullName` spawns a child scan that runs free-text search AND
+  `name_intel` permutation on the garbage name. Both `oathnet_pro/breach.rs`
+  and `see_know/extract/mod.rs` share the identical unguarded pattern
+  (`full_name`/`display_name`/`name` → `Entity::new(EntityKind::Person, ...)`
+  gated only on length/whitespace) — a live gap on `main` right now, not
+  hypothetical. **P2** (evidentiary integrity — the exact "finding outruns
+  its evidence" failure this tool forbids: a garbage placeholder name treated
+  as real enough to re-investigate). → **Decision: WIRE-IN, at BOTH real
+  construction sites** (not the generic `dispatch.rs` admission gate a first
+  pass considered — gating at the module's own entity-construction site,
+  where the original fix put it, prevents the wasted allocation and matches
+  the historically-validated insertion point). Also dropped the predicate's
+  permanently-unused second parameter (`_query_value: &str` — reserved "for
+  future tightening" in the original commit, never read by either version of
+  the body, and no current call site has anything meaningful to pass) —
+  simplified to `is_username_derived_name(name: &str) -> bool`, the right
+  moment to fix it since this cycle is its first-ever real caller. Re-exported
+  via `core::validation` (unchanged from the original design).
+  **Live-verified**: rebuilt the binary and ran a real scan of the canonical
+  seed `Kylo4kylo` with `oathnet_pro`/`see_know` explicitly enabled through
+  the fixed code — both modules executed a genuine network round-trip with
+  zero panics/regressions. Honest disclosure (per the live-check discipline):
+  the EXACT garbage-`full_name` specimen was not organically reproducible in
+  this sandbox today — SeekNow's embedded key is currently provider-rejected
+  (`invalid_api_key`) and OathNet's live search for `kylo4kylo` returned 0
+  results this run, so no real breach record was available to test the guard
+  against live. Rather than fabricate a trigger, this relies on the
+  git-stash-proven regression tests as the documented exception — each built
+  from the EXACT real-world value the original 2026-06-24 incident observed
+  live (`"rhino-ryno23 rhino-ryno23"`), not an invented one: 3 tests (the
+  predicate itself; `oathnet_pro`'s extractor; `see_know`'s extractor — each
+  asserting the doubled/slug name mints NO Person while a real two-token name
+  still does), git-stash-proven by neutering the predicate to always return
+  `false` (all 3 fail; restored, all pass). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4573 lib tests, +3).
+  **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP (slice 10), §5 — same commit.
 
 ---
 
@@ -8449,3 +8500,30 @@ way, so this specific drift class can't recur silently again.
   the two non-empty cases). Gate green: fmt/clippy/rustdoc clean, full suite 0
   failures (4570 lib tests, +3). **Paired:** `SOLUTION_TREE` SOL-DEADCODE-SWEEP
   (slice 9), §5 — same commit.
+- **2026-07-13** — **T2.73: restored a real, previously-fixed, previously-
+  QUANTIFIED bug that got lost off a diverged branch — `oathnet_pro`/
+  `see_know` minting a spurious Person from a doubled-username breach
+  `full_name`.** `is_username_derived_name` was fully built with zero
+  callers; git archaeology found commit `63d13142` (2026-06-24) had already
+  fixed this exact bug with a real call site and passing test, quantified
+  live: a scan seeded on the garbage name produced 123 entities, 94% noise.
+  That commit is not an ancestor of `main` — only the (since-refined)
+  predicate survived; the wiring didn't. Both `oathnet_pro/breach.rs` AND
+  `see_know/extract/mod.rs` share the identical unguarded Person-construction
+  pattern — a live gap on `main`, not hypothetical. Fix: gated BOTH real
+  construction sites (not a generic admission-gate add — matching the
+  historically-validated insertion point, closer to the source, no wasted
+  allocation); dropped the predicate's permanently-unused second parameter
+  (`_query_value`, reserved for a "future tightening" neither version of the
+  code ever used) since this is its first real caller. Live-verified: a real
+  scan of `Kylo4kylo` ran cleanly through the fixed code with `oathnet_pro`/
+  `see_know` enabled (both executed genuine network round-trips, zero
+  regressions) — honestly disclosed that the exact garbage-name specimen
+  wasn't organically reproducible in this sandbox today (SeekNow's key
+  provider-rejected; OathNet's live search returned 0 results this run), so
+  the git-stash-proven regression tests — built from the EXACT real value the
+  2026-06-24 incident observed (not invented) — are the documented proof: 3
+  tests, all failing when the predicate is neutered to always return `false`,
+  all passing restored. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4573 lib tests, +3). **Paired:** `SOLUTION_TREE`
+  SOL-DEADCODE-SWEEP (slice 10), §5 — same commit.

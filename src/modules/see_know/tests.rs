@@ -315,6 +315,62 @@ use crate::core::entity::Entity;
         );
     }
 
+    /// Same real failure mode as `oathnet_pro` (they share this breach schema):
+    /// a breach DB stores `full_name = "{username} {username}"` when no real
+    /// name is available. Minting `Person("rhino-ryno23 rhino-ryno23")` maps to
+    /// `TargetKind::FullName` and spawns a spurious, noise-dominated child scan.
+    #[test]
+    fn doubled_username_full_name_is_rejected_not_minted_as_person() {
+        use serde_json::json;
+        let item = json!({
+            "full_name": "rhino-ryno23 rhino-ryno23",
+            "username": "rhino-ryno23",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "rhino-ryno23",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "a username doubled into the full_name field must never mint a Person: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.kind.to_string(), e.value.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // A real name must still be admitted (no false positive from the guard).
+        let item2 = json!({ "full_name": "Jordan Avery", "source": "snusbase" });
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_entities(
+            &item2,
+            "Jordan Avery",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            result2
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery"),
+            "a real name must still be admitted: {:?}",
+            result2.entities
+        );
+    }
+
     #[test]
     fn non_matching_record_is_quarantined_as_candidate() {
         use crate::core::entity::CANDIDATE_CONF;
