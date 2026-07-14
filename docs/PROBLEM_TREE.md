@@ -734,6 +734,50 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   entire reliable core has fixture coverage). **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, fifth slice), §5 — same
   commit.
+  **Golden-fixture corpus — sixth slice delivered (2026-07-14): Startpage —
+  reachable from this sandbox, and the first slice to exercise the
+  `build_post` (POST-request) path, previously covered only by the
+  hand-written `startpage_uses_post` unit test asserting the request body
+  shape, never a full real response.** Fetched a REAL Startpage response
+  live (`POST /sp/search`, `query=Kylo4kylo&cat=web&abp=1&abd=1&abe=1`,
+  matching `EngineSpec::build_post` exactly) and checked it in verbatim as
+  `fetch/testdata/startpage_kylo4kylo.html` (197 KB, unmodified). Surfaced
+  the SAME false-positive defect class as the MetaGer/Dogpile/Swisscows
+  slices: Startpage's own official social-media accounts
+  (`x.com/startpage`, `instagram.com/startpage/`,
+  `facebook.com/startpagesearch/`, `reddit.com/r/StartpageSearch/`) leaked
+  through as fake organic hits alongside a genuine hit
+  (`instagram.com/kylo4k/`, a real match for the canonical seed). Fixed the
+  same way as Dogpile/Swisscows (4 full-path `is_tracking_url` entries, not
+  a blanket domain exclusion — these sit on generic third-party platforms a
+  real target could also have a genuine profile on, confirmed by the
+  surviving genuine `instagram.com/kylo4k/` hit on the SAME platform as an
+  excluded handle). New test
+  `parse_results_excludes_startpages_own_social_handles` asserts all 4
+  leaks are gone while the genuine hit survives, git-stash-proven
+  (reverting the additions leaks all 4 back through). Live-verified: a real
+  `hse scan --kind name --value Kylo4kylo --modules search_engines` run
+  completes cleanly with zero errors and zero trace of the excluded
+  handles. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4620 lib tests, +1). *Investigated but deliberately deferred, to
+  avoid scope creep on this already-complete slice:* the SAME real capture
+  also surfaced a second, structurally different defect — 3 genuine (not
+  excluded) results carried the wrong title, "Visit in Anonymous View"
+  (Startpage's own adjacent proxy-link label, legitimately visible text
+  belonging to the PRECEDING result card) instead of their own real title.
+  Root cause: Startpage repeats the same `href` multiple times per result
+  (an icon-only "favicon-link" wrapper first, the real titled link later),
+  and `extract_anchor_text` matches only the FIRST occurrence — the
+  icon-only one, with no text — falling back to a ±300-char window that,
+  for this markup shape, reaches backward into the PRECEDING card's tail
+  rather than forward into this card's own (much further away) real title.
+  This is a real, distinct, likely-general bug (any engine repeating an
+  `href` for an icon-then-title pair could hit it) named explicitly here as
+  a next candidate, not silently dropped nor rushed into this commit.
+  *Remaining corpus slices, unchanged:* `au_people`/`au_electoral`/
+  `au_property` (still proxy-blocked) and the other 13 `search_engines`
+  engines. **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
+  corpus, sixth slice), §5 — same commit.
 - **`[x]` T2.88 · `extract_surrounding_text`'s fixed ±300-char fallback window
   could start strictly INSIDE a preceding `<svg>`/`<style>`/`<script>` block,
   leaking that block's raw markup/path data into a title or snippet as if it
@@ -10237,3 +10281,28 @@ way, so this specific drift class can't recur silently again.
   full suite 0 failures (4619 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (extract_surrounding_text straddle fix), §5 — same
   commit.
+- **2026-07-14** — **T2.7: golden-fixture corpus sixth slice — Startpage,
+  reachable from this sandbox and the first slice to exercise the
+  `build_post` request path.** A real live POST response (matching
+  `EngineSpec::build_post` exactly) surfaced the SAME false-positive defect
+  class as MetaGer/Dogpile/Swisscows: Startpage's own official social
+  accounts (`x.com/startpage`, `instagram.com/startpage/`,
+  `facebook.com/startpagesearch/`, `reddit.com/r/StartpageSearch/`) leaked
+  through as fake organic hits, alongside a genuine hit
+  (`instagram.com/kylo4k/`) on the SAME platform as one of the excluded
+  handles. Fixed with 4 full-path `is_tracking_url` entries (not a blanket
+  domain exclusion), new regression test proves both the leaks are gone and
+  the genuine hit survives, git-stash-proven. Live-verified: a real scan
+  completes cleanly, zero errors, zero leaked handles. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4620 lib
+  tests, +1). *Investigated but deliberately deferred:* the same capture
+  also showed 3 genuine results with the WRONG title ("Visit in Anonymous
+  View", the preceding card's own adjacent proxy-link label) — root cause:
+  Startpage repeats the same `href` per result (an icon-only wrapper first,
+  the real titled link later), and `extract_anchor_text` matches only the
+  first, textless occurrence, falling back to a window that reaches into
+  the wrong card. A real, likely-general bug (any engine repeating a
+  href for icon-then-title could hit it), named explicitly as a next
+  candidate rather than rushed into this commit. **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, sixth
+  slice), §5 — same commit.

@@ -278,6 +278,17 @@ pub(in crate::modules::search_engines) fn is_tracking_url(url: &str) -> bool {
                 "instagram.com/swisscows.official",
                 "linkedin.com/company/swisscows",
                 "twitter.com/swisscows_ch",
+                // Startpage's own official social-media accounts — same
+                // category as Dogpile's/Swisscows' above (generic third-party
+                // platforms, so a bare-domain `ENGINE_DOMAINS` entry would also
+                // hide a real target's own genuine profile there). A real live
+                // capture (`fetch/testdata/startpage_kylo4kylo.html`) showed
+                // all 4 leaking through as fake "organic" hits for an
+                // unrelated query.
+                "x.com/startpage",
+                "instagram.com/startpage/",
+                "facebook.com/startpagesearch",
+                "reddit.com/r/startpagesearch",
             ])
         });
     TRACKING.is_match(url)

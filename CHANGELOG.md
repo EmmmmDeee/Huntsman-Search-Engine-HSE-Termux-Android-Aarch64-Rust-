@@ -261,6 +261,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Startpage results no longer include Startpage's own official social-media
+  pages disguised as genuine hits about your search subject.** Startpage's
+  own X/Twitter, Instagram, Facebook, and Reddit accounts were showing up as
+  if they were real results about whoever you searched for. Fixed
+  precisely — by recognizing those specific known pages, not by blocking
+  the platforms outright, so a real target's own genuine social media
+  profiles on those same sites are unaffected.
 - **A search result's title can no longer come out as raw icon graphics data
   instead of readable text.** When a result's link had no visible text of
   its own (just an icon) and the page packed those icons close together, the

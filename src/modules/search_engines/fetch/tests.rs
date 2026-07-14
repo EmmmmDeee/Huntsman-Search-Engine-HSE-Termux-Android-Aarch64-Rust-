@@ -473,3 +473,52 @@ use super::*;
             );
         }
     }
+
+    /// Golden-fixture corpus, sixth slice: Startpage — reachable from this
+    /// sandbox and, unlike the prior five slices, exercises the `build_post`
+    /// path (Startpage is one of the few engines queried via POST rather than
+    /// GET; see `engines::EngineSpec::build_post`), previously covered only
+    /// by the hand-written `startpage_uses_post` unit test, never a full real
+    /// response body.
+    ///
+    /// A REAL Startpage response for `query=Kylo4kylo` (POST, following the
+    /// module's exact request shape) surfaced the SAME false-positive defect
+    /// class as the MetaGer/Dogpile/Swisscows slices: Startpage's own
+    /// official social-media accounts (`x.com/startpage`,
+    /// `instagram.com/startpage/`, `facebook.com/startpagesearch/`,
+    /// `reddit.com/r/StartpageSearch/`) leaked through as fake organic hits
+    /// for an unrelated query. Fixed the same way as Dogpile/Swisscows (full
+    /// path entries in `is_tracking_url`, not a blanket domain exclusion,
+    /// since these sit on generic third-party platforms a real target could
+    /// also have a genuine profile on).
+    const GOLDEN_STARTPAGE_KYLO4KYLO: &str = include_str!("testdata/startpage_kylo4kylo.html");
+
+    /// Pins the fix: none of Startpage's 4 own social-media handles leak
+    /// through, but the genuine `instagram.com/kylo4k/` hit (a real match for
+    /// the canonical seed) is still correctly extracted — proving the fix
+    /// excludes chrome without over-excluding a real result on the same
+    /// platform. Git-stash-proven: reverting the `is_tracking_url` additions
+    /// leaks all 4 handles back through.
+    #[test]
+    fn parse_results_excludes_startpages_own_social_handles() {
+        let results = parse_results(GOLDEN_STARTPAGE_KYLO4KYLO, "startpage", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        for leak in [
+            "x.com/startpage",
+            "instagram.com/startpage/",
+            "facebook.com/startpagesearch",
+            "reddit.com/r/startpagesearch",
+        ] {
+            assert!(
+                !urls.iter().any(|u| u.to_lowercase().contains(leak)),
+                "Startpage's own {leak} handle must not leak through as a \
+                 fake organic result: {urls:?}"
+            );
+        }
+        assert!(
+            urls.iter().any(|u| u.contains("instagram.com/kylo4k")),
+            "the genuine instagram.com/kylo4k hit (a real match for the seed, \
+             on the SAME platform as an excluded handle) must still survive: \
+             {urls:?}"
+        );
+    }

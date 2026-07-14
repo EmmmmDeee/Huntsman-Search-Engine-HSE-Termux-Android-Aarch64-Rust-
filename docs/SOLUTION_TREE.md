@@ -1008,6 +1008,45 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   live display. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4619 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.88,
   §8 — same commit.
+  *Golden-fixture corpus — sixth slice delivered (2026-07-14): Startpage,
+  the first slice to exercise the `build_post` (POST) request path.*
+  Fetched a REAL Startpage response live (`POST /sp/search`, matching
+  `EngineSpec::build_post` exactly) and checked it in verbatim as
+  `fetch/testdata/startpage_kylo4kylo.html` (197 KB). Surfaced the SAME
+  false-positive defect class as the MetaGer/Dogpile/Swisscows slices:
+  Startpage's own official social accounts (`x.com/startpage`,
+  `instagram.com/startpage/`, `facebook.com/startpagesearch/`,
+  `reddit.com/r/StartpageSearch/`) leaked through as fake organic hits
+  alongside a genuine hit (`instagram.com/kylo4k/`) on the SAME platform as
+  one of the excluded handles — direct evidence the fix excludes chrome
+  without over-excluding a real result. Fixed with 4 full-path
+  `is_tracking_url` entries (not a blanket domain exclusion). New test
+  `parse_results_excludes_startpages_own_social_handles` asserts both, git-
+  stash-proven (reverting the additions leaks all 4 back through; restored,
+  it passes). Live-verified: a real `hse scan --kind name --value
+  Kylo4kylo --modules search_engines` run completes cleanly, zero errors,
+  zero trace of the excluded handles. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4620 lib tests, +1).
+  *Investigated but deliberately deferred, to avoid scope creep on this
+  already-complete slice:* the same real capture also showed 3 genuine
+  (non-excluded) results with the WRONG title — "Visit in Anonymous View",
+  Startpage's own adjacent proxy-link label, legitimately visible text
+  belonging to the PRECEDING result card, not this one. Root cause:
+  Startpage repeats the same `href` multiple times per result (an
+  icon-only "favicon-link" wrapper first, the real titled link with actual
+  text much later), and `extract_anchor_text` matches only the FIRST
+  occurrence via a plain `html.find`, which is the textless icon wrapper —
+  falling back to `extract_surrounding_text`'s fixed ±300-char window,
+  which for this markup shape reaches backward into the tail of the
+  PRECEDING card (close enough to be "nearby") rather than forward into
+  this card's own real title (too far away to reach). A real, likely-
+  general defect — any engine whose markup repeats an `href` for an
+  icon-then-title pair could hit the same failure — named explicitly here
+  as the next candidate rather than folded into this already-complete
+  slice. *Remaining corpus slices, unchanged:* `au_people`/`au_electoral`/
+  `au_property` (still proxy-blocked) and the other 13 `search_engines`
+  engines. **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture corpus, sixth
+  slice), §8 — same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found
