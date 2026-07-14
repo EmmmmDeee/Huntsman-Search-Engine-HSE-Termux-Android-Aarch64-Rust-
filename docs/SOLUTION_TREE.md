@@ -2880,9 +2880,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `blockscout_tag_labels()`/`apply_scam_tags()` helpers, and new
   `is_scam`/`reputation`/`known_name`/`public_tags` evidence attributes —
   see `PROBLEM_TREE` T2.110 for the full investigation and fix detail.
-- **`[ ]` SOL-IPREP-SWALLOWED · Propagate `run_otx`/`run_tor_check`
+- **`[x]` SOL-IPREP-SWALLOWED · Propagate `run_otx`/`run_tor_check`
   transport/parse failures instead of swallowing them** → **T2.111**.
-  Queued, not yet started — see `PROBLEM_TREE` T2.111 for the finding.
+  Delivered 2026-07-14: `run_otx` propagates `fetch_json_or_404`'s `Err`
+  via `?`; `fetch_exit_set` now returns `Result<HashSet<String>>` with a
+  distinct error per failure mode (non-2xx, oversized/unreadable body,
+  timeout, zero-entries parse) instead of collapsing them all to `None`;
+  new pure `combine_result()` returns `Err` only when the module collected
+  zero entities AND a sub-check hard-failed, never discarding real
+  evidence a sibling sub-check already found — see `PROBLEM_TREE` T2.111
+  for the full fix and test detail.
 - **`[ ]` SOL-GRAVATAR-ERR-COLLAPSE · Narrow the empty-result collapse to
   the genuine-404 case only, propagate other `Err`s** → **T2.112**. Queued,
   not yet started — see `PROBLEM_TREE` T2.112 for the finding.
@@ -8518,3 +8525,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4680 lib
   tests, +6). **Paired:** `PROBLEM_TREE` T2.110 `[ ]`→`[x]` + §4b progress
   note updated — same commit.
+- **2026-07-14 (cycle 14):** Delivered **SOL-IPREP-SWALLOWED** (`[ ]`→
+  `[x]`), closing T2.111 — the next open node off the 2026-07-14
+  comprehensive-audit queue. `ip_reputation::run_otx`/`run_tor_check` each
+  swallowed every transport/parse failure with a bare `return`, and
+  `process()` always returned `Ok`, so a total OTX+Tor outage rendered
+  identically to a genuine "checked, found nothing." `run_otx` now
+  propagates `fetch_json_or_404`'s `Err` via `?` — its `Ok(None)` already
+  means a real 404/"no indicator," so the clean-negative path is
+  untouched. `fetch_exit_set` (the Tor exit-relay list fetch) previously
+  collapsed a non-2xx status, an oversized/unreadable body, a timeout, AND
+  a body that parses to zero `ExitAddress` lines all into the same silent
+  `None`; it now returns `Result<HashSet<String>>` with a distinct
+  `Error::module` message per failure mode, and takes the fetch URL as a
+  parameter (production still calls the real `TOR_EXIT_LIST_URL` via
+  `exit_set`) so tests can point it at a local server. `process()`'s two
+  sub-checks now return `Result<()>`; a new pure `combine_result()` folds
+  the collected entities and the last hard failure: zero entities + a
+  hard failure → `Err` (a real `ModuleError` event the operator and
+  circuit breaker can now see); but real evidence from EITHER sub-check
+  survives even when the OTHER sub-check failed, so a partial outage can
+  never discard genuine findings. The `OnceCell` retry-on-failure caching
+  for the Tor list is unchanged (a failed fetch still leaves the cache
+  uninitialised so the next scan retries). 6 new regression tests: 3 unit
+  tests on `combine_result` (empty+failure → `Err`; empty+no-failure →
+  `Ok(empty)`; data+sibling-failure → `Ok` with the data preserved) plus 3
+  tests that spin up a real local TCP server — the same `serve_once`-style
+  pattern `wigle`'s tests already use — to drive `fetch_exit_set` against
+  a genuine non-2xx status, a genuine empty/garbage body, and a genuine
+  well-formed body, exercising real (not mocked) HTTP behaviour on
+  localhost. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4686 lib tests, +6). **Paired:** `PROBLEM_TREE` T2.111
+  `[ ]`→`[x]` + §8 — same commit.

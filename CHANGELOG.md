@@ -344,6 +344,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`ip_reputation` could not tell a real source outage apart from a clean
+  "nothing found."** Both `run_otx` (AlienVault OTX threat-pulse lookup)
+  and `run_tor_check` (Tor exit-relay check) discarded every transport or
+  parse failure and the module always returned success either way — a
+  total OTX+Tor outage rendered identically to "checked, no threat intel,
+  not a Tor exit." A genuine failure (unreachable host, non-2xx status,
+  a timed-out or unreadable response, a garbled body) now surfaces as a
+  real module error the operator and the automatic per-source circuit
+  breaker can see, while any evidence a sub-check DID find is still kept
+  even if the other sub-check failed — a partial outage never discards
+  real findings.
 - **OathNet batch/search queries now fetch the entire result set, not just
   the first page.** The per-request page size was hardcoded well below
   what the API itself allows for free (its own docs say the max is 1000;

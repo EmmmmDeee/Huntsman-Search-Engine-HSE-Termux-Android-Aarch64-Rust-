@@ -1747,15 +1747,39 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   or a source that doesn't report a verdict can never be mistaken for a
   positive threat signal. **Paired:** `SOLUTION_TREE`
   SOL-CHAININTEL-BLOCKSCOUT-FIELDS `[ ]`→`[x]` — same commit.
-- **`[ ]` T2.111 · `ip_reputation`'s `run_otx`/`run_tor_check` discard all
+- **`[x]` T2.111 · `ip_reputation`'s `run_otx`/`run_tor_check` discard all
   transport/parse failures, and `process()` always returns `Ok`.**
   A total OTX+Tor outage looks identical to a clean "nothing found" result
   — the operator has no way to distinguish a real negative from a source
   outage. → **Solution:** propagate transport/parse errors (or a partial-
   failure marker) instead of swallowing them into an empty `Ok`. **P2**.
   *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-IPREP-SWALLOWED (new stub).
+  categories).* *Fixed 2026-07-14:* `run_otx` now propagates
+  `fetch_json_or_404`'s `Err` (the case it distinguishes from a genuine
+  404/"no indicator" `Ok(None)`) via `?` instead of a bare `return`.
+  `fetch_exit_set` (the Tor exit-relay fetch) previously collapsed a
+  non-2xx status, a body-read failure, a timeout, AND a parse-to-zero-
+  entries body all into the same silent `None` — it now returns
+  `Result<HashSet<String>>`, propagating a descriptive `Error::module` for
+  each distinct failure mode instead. `process()`'s two sub-checks now
+  return `Result<()>`; a new pure `combine_result()` folds them: if the
+  module collected zero entities AND a sub-check hard-failed, the module
+  now returns `Err` (surfacing a real `ModuleError` event the circuit
+  breaker and operator can see) — but if EITHER sub-check already produced
+  real evidence, that evidence is always kept even when the other sub-
+  check failed, so a partial outage can never cause genuine findings to be
+  discarded. The `OnceCell` retry-on-failure caching behaviour for the Tor
+  list is unchanged (a failed fetch still leaves the cache uninitialised
+  so the next scan retries). 6 new regression tests: 3 unit tests on
+  `combine_result` (empty+failure → `Err`, empty+no-failure → `Ok(empty)`,
+  data+sibling-failure → `Ok` with the data preserved) and 3 tests that
+  spin up a real local TCP server (the same pattern `wigle`'s tests use)
+  to exercise `fetch_exit_set` against a genuine non-2xx status, a
+  genuine empty/garbage body, and a genuine well-formed body — all
+  against real (not mocked) HTTP behaviour on localhost. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4686 lib
+  tests, +6). **Paired:** `SOLUTION_TREE` SOL-IPREP-SWALLOWED `[ ]`→`[x]`
+  — same commit.
 - **`[ ]` T2.112 · `gravatar::process()` collapses every `Err` from
   `fetch_json_or_404`, not just deserialize failures, into the same empty
   result as a legitimate 404.**
@@ -12621,3 +12645,33 @@ way, so this specific drift class can't recur silently again.
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4680 lib
   tests, +6). **Paired:** `SOLUTION_TREE` SOL-CHAININTEL-BLOCKSCOUT-FIELDS
   `[ ]`→`[x]` — same commit.
+- **2026-07-14 (cycle 14):** Closed T2.111, the next open node off the
+  2026-07-14 comprehensive-audit queue: `ip_reputation`'s `run_otx`/
+  `run_tor_check` swallowed every transport/parse failure with a bare
+  `return`, and `process()` always returned `Ok`, so a total OTX+Tor
+  outage was indistinguishable from a genuine "checked, nothing found."
+  `run_otx` now propagates `fetch_json_or_404`'s `Err` via `?` (its
+  `Ok(None)` already means a real 404/"no indicator", so this doesn't
+  touch that clean-negative path). `fetch_exit_set` (the Tor exit-relay
+  list fetch) previously collapsed a non-2xx status, an oversized/
+  unreadable body, a timeout, AND a parse-to-zero-`ExitAddress`-lines body
+  all into the same silent `None`; it now returns
+  `Result<HashSet<String>>` with a distinct `Error::module` message per
+  failure mode. `process()`'s two sub-checks now return `Result<()>`; a
+  new pure `combine_result()` folds the collected entities and the last
+  hard failure (if any): zero entities + a hard failure → `Err` (a real
+  `ModuleError` event the operator/circuit-breaker can see); but real
+  evidence from EITHER sub-check is always kept even when the OTHER
+  sub-check failed, so a partial outage never discards genuine findings.
+  The `OnceCell` retry-on-failure caching for the Tor list is unchanged —
+  a failed fetch still leaves the cache uninitialised so the next scan
+  retries. 6 new regression tests: 3 unit tests on `combine_result`
+  (empty+failure → `Err`; empty+no-failure → `Ok(empty)`, the clean-
+  negative path stays untouched; data+sibling-failure → `Ok` with the
+  data preserved) plus 3 tests that spin up a real local TCP server (the
+  same `serve_once`-style pattern `wigle`'s tests already use) to drive
+  `fetch_exit_set` against a genuine non-2xx status, a genuine empty/
+  garbage body, and a genuine well-formed body — real HTTP behaviour on
+  localhost, not a mock. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4686 lib tests, +6). **Paired:**
+  `SOLUTION_TREE` SOL-IPREP-SWALLOWED `[ ]`→`[x]` — same commit.
