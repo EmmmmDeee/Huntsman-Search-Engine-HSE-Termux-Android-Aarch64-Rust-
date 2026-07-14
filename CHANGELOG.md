@@ -280,6 +280,29 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Repaired GitHub Actions CI, which had been red on every push since
+  2026-07-12.** `cargo clippy --all-targets --locked -- -D warnings` was
+  failing on a newer clippy than was in use when the flagged lines were
+  written: a redundant `&` in three `format!`/`Some(format!(...))` arguments
+  (`src/cli/import/mod.rs`, `src/util/key_harvest/emit.rs` x2) and a
+  `.map(...).unwrap_or(0)` on a `Result` that clippy now prefers as
+  `.map_or(0, ...)` (`src/core/engine/mod.rs`). No behavior changed — purely
+  style-lint cleanups.
+- **Repaired the Security audit workflow, which had also been red.**
+  `cargo audit` was failing on RUSTSEC-2026-0204, a pointer-formatting
+  vulnerability in the transitive dependency `crossbeam-epoch` 0.9.18
+  (pulled in via `moka`); bumped to the fixed 0.9.20 via `cargo update -p
+  crossbeam-epoch`, no manifest change needed. That failure was masking a
+  second, independent breakage one step later in the same job: `cargo deny
+  check`'s license gate was flagging this crate itself (`huntsman-search-
+  engine`, `publish = false`) as `unlicensed`, because its bespoke
+  proprietary `LICENSE` text can't reach cargo-deny's 0.9 SPDX-match
+  confidence threshold — a threshold that exists to police *third-party*
+  dependency licensing, not our own unpublished crate. Added
+  `[licenses.private] ignore = true` to `deny.toml`, the idiomatic cargo-deny
+  mechanism for excluding unpublished crates from the license scan; verified
+  `cargo deny check` now passes (`advisories ok, bans ok, licenses ok,
+  sources ok`).
 - **Corrected two places where the web UI overstated how closely it matches
   a command-line equivalent.** The "Complete (All)" scan preset said it was
   equivalent to `hse scan --full`, but it was missing one behavior

@@ -79,7 +79,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
                 output,
                 format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
             );
-            let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
+            let sid = format!("import-{}", crate::core::entity::unix_now());
             let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
             deduplicate_by_uid(&mut entities);
             print_import_stats(&stats, entities.len(), output);

@@ -971,8 +971,7 @@ impl ScanEngine {
             let correlations_count = self
                 .store
                 .correlations_for_scan(&scan.id)
-                .map(|c| c.len())
-                .unwrap_or(0);
+                .map_or(0, |c| c.len());
             crate::core::webhook::notify_scan_complete(
                 &ctx.http,
                 url,
