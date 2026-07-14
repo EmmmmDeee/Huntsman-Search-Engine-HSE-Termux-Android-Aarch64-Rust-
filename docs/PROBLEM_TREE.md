@@ -734,6 +734,56 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   entire reliable core has fixture coverage). **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, fifth slice), §5 — same
   commit.
+- **`[x]` T2.88 · `extract_surrounding_text`'s fixed ±300-char fallback window
+  could start strictly INSIDE a preceding `<svg>`/`<style>`/`<script>` block,
+  leaking that block's raw markup/path data into a title or snippet as if it
+  were visible text.** Found investigating the real Swisscows golden fixture
+  (the fifth T2.7 slice, this same commit's sibling change): the leaked
+  `facebook.com/swisscows` "result" (since excluded by that fix) had a
+  garbled title — a raw SVG `d="…"` path fragment plus `clip-rule="evenodd"`
+  — not a symptom of the false-positive URL leak itself, but a SEPARATE,
+  genuine title-QUALITY defect in `extract_anchor_text`'s no-visible-text
+  fallback. Root cause, traced to the byte level against the real capture:
+  an icon-only social link (`<a href="…" title="Facebook"><svg>…</svg></a>`,
+  no visible anchor text) falls through to `extract_surrounding_text`'s
+  fixed ±300-char window; this real page packs social icons back-to-back, so
+  the window's LEFT edge landed inside the PRECEDING icon's own
+  `<svg><path d="…">` block — that block's opening `<svg>` sits further back,
+  outside the window, so the local `strip_inline_blocks` scan (which only
+  recognises a *complete* tag pair fully contained in the slice it's given)
+  never sees it as a block to strip, and the raw path/attribute text between
+  the window's start and the next recognised tag reaches the output as
+  plain text. This is a real, previously-undiscovered defect that could
+  affect ANY of the other 16 `search_engines` engines whenever an anchor
+  with no visible text sits near inline SVG icons, not just Swisscows. →
+  **Solution:** new `skip_straddling_inline_block`, a single bounded
+  (4,096-byte lookback) forward scan that walks the region before the
+  naive window start, alternating between "outside a block" (find the next
+  `<svg`/`<style`/`<script`, whichever comes first) and "inside a block"
+  (find that specific tag's own close) — correctly threading through any
+  sequence of complete, back-to-back blocks rather than picking the wrong
+  candidate the way a per-tag-type "last occurrence" scan could. When the
+  naive start lands inside an unclosed block, the window's start snaps
+  forward to just past that block's close tag. **P2/robustness** (a
+  refactor-shaped repair — the fix lives entirely inside the existing
+  windowing primitive, no new call sites, no behaviour change for the
+  overwhelmingly common non-straddling case). 3 new regression tests: a
+  synthetic fragment (a deliberately long, over-300-byte SVG path so the
+  straddle is genuinely reproduced, not just a short block the window would
+  swallow whole) proving both the leak is closed AND genuine nearby text is
+  still kept; and the real Swisscows capture itself, proving the fix against
+  actual bytes, not just a hand-crafted case. Git-stash-proven: reverting
+  `skip_straddling_inline_block`'s call site fails both; restored, both
+  pass. Live-verified: a real `hse scan --kind name --value Kylo4kylo
+  --modules search_engines` run completes cleanly, zero errors (the specific
+  triggering URLs in this canonical seed's captures are the same ones the
+  sibling fifth-slice fix already excludes pre-title-extraction, so this
+  exact live scan can't newly demonstrate a would-have-been-garbled title;
+  the real-capture-backed unit test above is the direct evidence instead,
+  disclosed honestly rather than papered over). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4619 lib tests, +2).
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (extract_surrounding_text
+  straddle fix, new sub-node), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10159,4 +10209,31 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4617 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, fifth slice), §5 — same
+  commit.
+- **2026-07-13** — **T2.88: `extract_surrounding_text`'s title-extraction
+  fallback could leak a preceding `<svg>` block's raw path data as if it
+  were visible text.** Found investigating the real Swisscows fixture: an
+  icon-only social link falls back to a fixed ±300-char window; this real
+  page packs social icons back-to-back, so the window's left edge landed
+  INSIDE the preceding icon's own `<svg><path d="…">` block — its opening
+  tag sits outside the window, so `strip_inline_blocks` (which only
+  recognises complete tag pairs fully contained in its input) never sees it,
+  and the raw path/attribute text leaks straight through. A real,
+  previously-undiscovered defect distinct from the false-positive URL leak
+  the same investigation's sibling fix closes — this one is a title-QUALITY
+  bug that could affect any of the 17 `search_engines` engines wherever an
+  icon-only anchor sits near inline SVG. Fix: new
+  `skip_straddling_inline_block`, a bounded (4,096-byte lookback) forward
+  scan threading through any sequence of complete blocks before the naive
+  window start, snapping the start past an unclosed straddling block instead
+  of beginning inside it. 3 new regression tests (a long-enough synthetic
+  fragment proving both the leak closes and genuine text is kept, plus the
+  real Swisscows capture itself), git-stash-proven. Live-verified: a real
+  `hse scan --kind name --value Kylo4kylo --modules search_engines` run
+  completes cleanly with zero errors — honestly disclosed that this specific
+  seed's own triggering URLs are already excluded pre-title-extraction by
+  the sibling fix, so the real-capture-backed unit test is the direct proof,
+  not a live display. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4619 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (extract_surrounding_text straddle fix), §5 — same
   commit.

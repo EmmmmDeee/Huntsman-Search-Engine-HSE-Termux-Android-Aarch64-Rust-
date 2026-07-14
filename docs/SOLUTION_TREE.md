@@ -972,6 +972,42 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `au_people`/`au_electoral`/`au_property` (still proxy-blocked) and the
   other 14 `search_engines` engines. **Paired:** `PROBLEM_TREE` T2.7
   (golden-fixture corpus, fifth slice), §8 — same commit.
+  *New sub-node (2026-07-13): `extract_surrounding_text`'s straddling-block
+  title leak, T2.88.* Found investigating the same real Swisscows capture:
+  a genuinely separate title-QUALITY defect, not a symptom of the
+  false-positive URL leak the sibling fifth-slice fix closes. An icon-only
+  social link's title falls back to `extract_surrounding_text`'s fixed
+  ±300-char window; this real page packs social icons back-to-back, so the
+  window's left edge landed INSIDE the preceding icon's own
+  `<svg><path d="…">` block — its opening tag sits outside the window, so
+  `strip_inline_blocks` (which only recognises a complete tag pair fully
+  contained in the slice it's given) never sees it, and the block's raw
+  path/attribute data leaks through `strip_tags` as plain text. Could affect
+  any of the 17 `search_engines` engines wherever an icon-only anchor sits
+  near inline SVG, not just Swisscows. Fix: new
+  `skip_straddling_inline_block` — a bounded (4,096-byte lookback) single
+  forward scan alternating between "outside a block" (find the next
+  `<svg`/`<style`/`<script`, whichever comes first) and "inside a block"
+  (find that tag's own close) — correctly threads through any sequence of
+  complete, back-to-back blocks (exactly what the real capture has) rather
+  than a per-tag-type "last occurrence" scan that could mis-pick a closed
+  block over a still-open earlier one. When the naive window start lands
+  inside an unclosed block, it snaps forward past that block's close tag.
+  A refactor-shaped repair: the fix lives entirely inside the existing
+  windowing primitive, no new call sites, no behaviour change for the
+  overwhelmingly common non-straddling case. 3 new regression tests: a
+  synthetic fragment with a deliberately long (400-byte) SVG path so the
+  straddle is genuinely reproduced rather than a short block the window
+  would swallow whole (proving both the leak closes AND genuine nearby text
+  is kept), plus the real Swisscows capture itself. Git-stash-proven:
+  reverting the call site fails both; restored, both pass. Live-verified: a
+  real `hse scan --kind name --value Kylo4kylo --modules search_engines` run
+  completes cleanly, zero errors — honestly disclosed that this seed's own
+  triggering URLs are already excluded pre-title-extraction by the sibling
+  fix, so the real-capture-backed unit test is the direct evidence, not a
+  live display. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4619 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.88,
+  §8 — same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found

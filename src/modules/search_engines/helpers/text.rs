@@ -46,9 +46,76 @@ pub(in crate::modules::search_engines) fn extract_surrounding_text(
         Some(p) => p,
         None => return String::new(),
     };
-    let start = floor_char_boundary(html, pos.saturating_sub(300));
     let end = ceil_char_boundary(html, (pos + anchor.len() + 300).min(html.len()));
+    let start = floor_char_boundary(html, pos.saturating_sub(300));
+    let start = floor_char_boundary(html, skip_straddling_inline_block(html, start).min(end));
     strip_tags(&html[start..end], max_len)
+}
+
+/// Bounded backward lookback (bytes) when checking whether a text-extraction
+/// window's start falls inside an inline `<svg>`/`<style>`/`<script>` block
+/// opened earlier in the page — generous for any realistic single icon/style/
+/// script block, without scanning the whole document backward.
+const STRADDLE_LOOKBACK: usize = 4096;
+
+/// If `pos` sits inside an inline `<svg>`/`<style>`/`<script>` block that opens
+/// within [`STRADDLE_LOOKBACK`] bytes before `pos` and has no matching close tag
+/// before `pos`, returns the byte offset just past that block's close tag (or
+/// `html.len()` if it is never closed) — the safe boundary a text-extraction
+/// window must start at instead. Returns `pos` unchanged when nothing straddles
+/// it.
+///
+/// [`strip_inline_blocks`] only recognises a complete `<tag>…</tag>` pair fully
+/// contained in the slice it is given. A fixed-size ±300-char window (like
+/// [`extract_surrounding_text`]'s) whose start lands strictly inside such a
+/// block — the block's own opening tag sits behind the window's left edge, so
+/// the local scan never sees it — lets the block's raw attribute/path data
+/// (`d="M20.376 0H3.624…"`, `clip-rule="evenodd"`) leak straight through
+/// `strip_tags` as if it were visible text. A real Swisscows SERP capture
+/// (`fetch/testdata/swisscows_kylo4kylo.html`) demonstrated exactly this: an
+/// icon-only social link's title fell back to this window, which began mid-way
+/// through the PRECEDING icon's `<svg><path d="…">` block, and that block's raw
+/// path coordinates leaked into the extracted text as if they were a title.
+///
+/// Walks `[lookback, pos)` once, left to right, alternating between "outside a
+/// block" (looking for the next `<svg`/`<style`/`<script`, whichever comes
+/// first) and "inside a block" (looking for that specific tag's own close) —
+/// a single linear pass threads correctly through any sequence of complete,
+/// back-to-back blocks before `pos` (exactly what the real capture has: one
+/// icon's closed `</svg>` immediately followed by the next icon's `<svg>`),
+/// rather than a per-tag-type scan that could mis-pick a closed block over an
+/// still-open earlier one.
+fn skip_straddling_inline_block(html: &str, pos: usize) -> usize {
+    let lookback = floor_char_boundary(html, pos.saturating_sub(STRADDLE_LOOKBACK));
+    let mut cursor = lookback;
+    loop {
+        let mut next_open: Option<(usize, &'static str)> = None;
+        for (open, close) in [
+            ("<svg", "</svg>"),
+            ("<style", "</style>"),
+            ("<script", "</script>"),
+        ] {
+            if let Some(rel) = find_ascii_ci(&html[cursor..pos], open) {
+                let abs = cursor + rel;
+                if next_open.is_none_or(|(p, _)| abs < p) {
+                    next_open = Some((abs, close));
+                }
+            }
+        }
+        let Some((open_pos, close_tag)) = next_open else {
+            return pos; // no more open tags before `pos` — not inside a block
+        };
+        match find_ascii_ci(&html[open_pos..pos], close_tag) {
+            Some(rel) => cursor = open_pos + rel + close_tag.len(), // closed before pos, keep scanning
+            None => {
+                // Unclosed before `pos` — `pos` is inside THIS block.
+                return match find_ascii_ci(&html[open_pos..], close_tag) {
+                    Some(rel2) => open_pos + rel2 + close_tag.len(),
+                    None => html.len(),
+                };
+            }
+        }
+    }
 }
 
 pub(in crate::modules::search_engines) fn extract_snippet_near(

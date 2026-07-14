@@ -261,6 +261,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A search result's title can no longer come out as raw icon graphics data
+  instead of readable text.** When a result's link had no visible text of
+  its own (just an icon) and the page packed those icons close together, the
+  fallback used to guess a title could accidentally grab a neighboring
+  icon's internal drawing instructions instead of real text. Now it always
+  skips past that icon data first.
 - **Dogpile and Swisscows results no longer include those engines' own
   official social-media pages disguised as genuine hits about your search
   subject.** Dogpile's own mascot's Facebook page, and all four of
