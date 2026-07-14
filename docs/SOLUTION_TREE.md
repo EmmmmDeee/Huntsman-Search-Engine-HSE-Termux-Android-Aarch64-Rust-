@@ -1106,6 +1106,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   branch since the previous entry, not a regression). **Paired:**
   `PROBLEM_TREE` T2.7 (`au_property` honest-failure fix), §8 — same
   commit.
+  *Golden-fixture corpus — seventh slice delivered (2026-07-14): you.com.*
+  Swept live reachability of all 10 remaining un-fixtured `search_engines`
+  engines from this sandbox: 8 confirmed blocked/unreachable at the HTTP
+  layer (matching each engine's own documented live-scan stats), leaving
+  `google` (a genuine JS-challenge interstitial, already correctly
+  handled by the existing block detector) and `you` as the only two
+  returning `200` with real content. A REAL `you.com` capture (`GET
+  /search?q=Kylo4kylo&tbm=youchat`, exactly `EngineSpec::build_url`)
+  checked in as `fetch/testdata/you_kylo4kylo.html` (55 KB) disproved
+  `engines.rs`'s own doc comment — the real page is a Cloudflare-gated
+  Next.js SPA with zero server-rendered `<a>` result anchors, not a
+  "classic HTML view" — and surfaced a real chrome-leak: the capture's
+  `<link rel="dns-prefetch" href="https://cdn.you.com"/>` leaked through
+  `parse_results` as a fake organic hit because `you.com` was never in
+  `ENGINE_DOMAINS`, the same false-positive class already fixed for
+  MetaGer/Dogpile/Swisscows/Startpage. Fixed by adding `you.com` to
+  `ENGINE_DOMAINS`; corrected the stale doc comment to record the
+  confirmed Cloudflare-gated-SPA shape. 2 new regression tests
+  (`is_captcha_page_detects_a_real_youcom_cloudflare_challenge_capture`,
+  `parse_results_excludes_youcoms_own_cdn_chrome`), git-stash-proven
+  (reverting the `ENGINE_DOMAINS` addition alone reproduces the leak).
+  Live-verified: a real `hse scan --kind name --value Kylo4kylo --modules
+  search_engines --depth 0` run reports `engine: you, outcome: blocked,
+  results: 0`, zero `cdn.you.com` chrome anywhere in the scan output.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4623 lib tests, +2). *Remaining corpus slices:*
+  `au_people`/`au_electoral` (still genuinely proxy-blocked);
+  `au_property` (three dead legs, no replacement endpoint found yet); the
+  8 confirmed-unreachable-from-this-sandbox `search_engines` engines
+  (`yahoo`/`aol`/`mojeek`/`yandex`/`ecosia`/`qwant`/`presearch`/`searx`).
+  **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture corpus, seventh slice —
+  you.com), §8 — same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found
@@ -2922,7 +2954,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   three legs) and now fails loudly (`Error::module`) instead of silently —
   see the `au_property` honest-failure fix in the SOL-HEALTH-SIGNAL node.
   Replacement endpoints for its three legs remain the real, still-open
-  residual.
+  residual. **Golden-fixture corpus, seventh slice (2026-07-14):** you.com
+  fixture added, disproving its own stale doc comment and fixing a real
+  `ENGINE_DOMAINS` chrome-leak (`cdn.you.com`) — see the SOL-HEALTH-SIGNAL
+  node's own text. 8 of 17 `search_engines` engines now have a golden
+  fixture; the remaining 9 (`yahoo`/`aol`/`google`/`mojeek`/`yandex`/
+  `ecosia`/`qwant`/`presearch`/`searx`) are confirmed blocked/unreachable
+  from this sandbox this slice — a future cycle running from a
+  residential/Termux IP could still fetch one.
 - ~~**§7 S4**~~ — **delivered** ✅ (SOL-REDACT extended, 2026-07-12). Investigation
   found the archive FILE itself (`raw/*.json`) is deliberately never redacted
   (an explicit operator retention policy in `util::raw_archive`'s own doc
@@ -7395,3 +7434,24 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4599 lib tests, +6; correlator rule count 109→110). Paired: `PROBLEM_TREE`
   C1 — same commit.
+- **2026-07-14** — **SOL-HEALTH-SIGNAL: T2.7's golden-fixture corpus,
+  seventh slice — you.com.** Swept live reachability of all 10 remaining
+  un-fixtured `search_engines` engines from this sandbox: 8 confirmed
+  blocked/unreachable at the HTTP layer, leaving `google` (a genuine
+  JS-challenge interstitial, already correctly handled) and `you` as the
+  only two returning real content. A REAL `you.com` capture disproved
+  `engines.rs`'s own doc comment (claimed a "classic HTML view"; it's
+  actually a Cloudflare-gated Next.js SPA with zero server-rendered `<a>`
+  anchors) and surfaced a real chrome-leak: the capture's own
+  `dns-prefetch` link to `cdn.you.com` leaked through `parse_results` as a
+  fake organic hit because `you.com` was never in `ENGINE_DOMAINS` — the
+  same false-positive class already fixed for MetaGer/Dogpile/Swisscows/
+  Startpage. Fixed by adding `you.com` to `ENGINE_DOMAINS`; corrected the
+  stale doc comment. 2 new regression tests, git-stash-proven (reverting
+  the `ENGINE_DOMAINS` addition alone reproduces the leak). Live-verified:
+  a real `hse scan --kind name --value Kylo4kylo --modules search_engines
+  --depth 0` run reports `engine: you, outcome: blocked, results: 0`, zero
+  `cdn.you.com` chrome anywhere in the scan output. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4623 lib tests, +2).
+  Paired: `PROBLEM_TREE` T2.7 (golden-fixture corpus, seventh slice —
+  you.com), §8 — same commit.

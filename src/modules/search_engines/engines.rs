@@ -266,9 +266,16 @@ pub(super) const ENGINES: &[EngineSpec] = &[
         max_fetch_ms: None,
     },
     // ── Extended engines (2026 batch 2) ─────────────────────────────
-    // you.com is conversational but exposes a classic /search HTML view
-    // with referrer-style result anchors. Useful when other engines are
-    // CAPTCHA-blocked.
+    // you.com's `?tbm=youchat` view is NOT a classic HTML SERP (corrected
+    // 2026-07-14, T2.7 golden-fixture corpus, seventh slice): a real live
+    // capture is a Cloudflare-gated Next.js SPA with zero server-rendered
+    // `<a href>` result anchors anywhere in the body — every result is
+    // hydrated client-side by JS this engine never executes. The Cloudflare
+    // challenge script (`/cdn-cgi/challenge-platform/…`) is present in the
+    // raw HTML, so `is_captcha_page` already classifies every real fetch
+    // as `Blocked` (never a fabricated "empty" success) — kept in `ENGINES`
+    // for the rare instance that skips the challenge, detected/skipped in
+    // <1s otherwise via the interstitial detector in `fetch_and_parse`.
     EngineSpec {
         name: "you",
         build_url: |q| {

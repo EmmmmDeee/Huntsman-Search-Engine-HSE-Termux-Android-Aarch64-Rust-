@@ -571,3 +571,59 @@ use super::*;
             );
         }
     }
+
+    // `testdata/you_kylo4kylo.html` is a REAL you.com response, fetched live
+    // (2026-07-14) for `GET https://you.com/search?q=Kylo4kylo&tbm=youchat` —
+    // exactly `engines::EngineSpec::build_url` for `"you"` — and checked in
+    // verbatim (55 KB, unmodified). The seventh slice of the golden-fixture
+    // corpus. This capture disproves the module's own prior doc comment,
+    // which claimed you.com "exposes a classic /search HTML view with
+    // referrer-style result anchors": the real page is a Cloudflare-gated
+    // Next.js SPA (`__NEXT_DATA__` JSON payload only) with ZERO `<a
+    // href="…">` result anchors anywhere in the body — every genuine result
+    // is hydrated client-side by JS this engine never executes. The
+    // Cloudflare challenge loader (`/cdn-cgi/challenge-platform/…`) is
+    // present verbatim, matching an existing `BLOCK_VENDOR_SIGNATURES`
+    // fingerprint, so `is_captcha_page` correctly classifies this specimen
+    // as `Blocked` rather than a fabricated "empty" success. It ALSO
+    // surfaced a real, separate chrome-leak defect: the generic
+    // href-extraction pass reads ANY `href=` attribute, not just `<a>`
+    // result anchors, and this capture's `<link rel="dns-prefetch"
+    // href="https://cdn.you.com"/>` tag leaked through as a single fake
+    // organic hit because `you.com` was never in `ENGINE_DOMAINS` — the same
+    // false-positive defect class already fixed for MetaGer/Dogpile/
+    // Swisscows/Startpage. Fixed by adding `you.com` to `ENGINE_DOMAINS`.
+    // No PII: a public engine-chrome/challenge page for the project's own
+    // canonical test seed, containing no third-party personal data.
+    const GOLDEN_YOU_KYLO4KYLO: &str = include_str!("testdata/you_kylo4kylo.html");
+
+    /// Pins the block classification against the real capture: if
+    /// `BLOCK_VENDOR_SIGNATURES` ever regresses to no longer recognise this
+    /// exact Cloudflare challenge shape, this fails instead of silently
+    /// letting `fetch_and_parse` treat a real block as an honest "empty"
+    /// result (0 organic hits from `parse_results`, which would otherwise
+    /// look identical to a genuine no-match query).
+    #[test]
+    fn is_captcha_page_detects_a_real_youcom_cloudflare_challenge_capture() {
+        assert!(
+            is_captcha_page(GOLDEN_YOU_KYLO4KYLO),
+            "the real you.com capture's Cloudflare challenge loader must be \
+             detected as a block, not silently parsed as zero genuine results"
+        );
+    }
+
+    /// Pins the `ENGINE_DOMAINS` fix: the capture's own `dns-prefetch` link
+    /// to `cdn.you.com` must never leak through `parse_results` as a fake
+    /// organic hit. Git-stash-proven: reverting the `you.com` addition to
+    /// `ENGINE_DOMAINS` makes this fail (`https://cdn.you.com` reappears as
+    /// the sole "result"); restored, it passes.
+    #[test]
+    fn parse_results_excludes_youcoms_own_cdn_chrome() {
+        let results = parse_results(GOLDEN_YOU_KYLO4KYLO, "you", "Kylo4kylo");
+        assert!(
+            results.is_empty(),
+            "you.com's own cdn.you.com dns-prefetch link must not leak \
+             through as a fake organic result: {:?}",
+            results.iter().map(|r| &r.url).collect::<Vec<_>>()
+        );
+    }

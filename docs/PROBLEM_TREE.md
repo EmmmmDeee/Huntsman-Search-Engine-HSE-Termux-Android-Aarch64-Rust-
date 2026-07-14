@@ -838,6 +838,61 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   other 13 `search_engines` engines. **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (T2.7, `au_property` honest-failure fix), §5 — same
   commit.
+  **Golden-fixture corpus — seventh slice delivered (2026-07-14): you.com,
+  and a real chrome-leak defect on its own CDN domain.** Live-reachability
+  swept all 10 remaining un-fixtured engines from this sandbox first
+  (`yahoo`/`aol`/`google`/`mojeek`/`yandex`/`ecosia`/`qwant`/`you`/
+  `presearch`/`searx`): 8 are confirmed blocked/unreachable outright
+  (403/404/302/500/503 at the HTTP layer, matching each engine's own
+  documented live-scan stats), leaving `google` and `you` as the only two
+  returning `200` with a real body. `google`'s response is a genuine
+  "having trouble accessing Google Search" JS-challenge interstitial
+  (already correctly caught by the existing block detector — nothing new
+  to fix there); `you`'s response is where this slice landed. Fetched a
+  REAL you.com response live for `GET /search?q=Kylo4kylo&tbm=youchat`
+  (exactly `EngineSpec::build_url` for `"you"`) and checked it in verbatim
+  as `fetch/testdata/you_kylo4kylo.html` (55 KB, unmodified). This capture
+  disproves `engines.rs`'s own doc comment, which claimed you.com "exposes
+  a classic /search HTML view with referrer-style result anchors": the real
+  page is a Cloudflare-gated Next.js SPA (`__NEXT_DATA__` JSON payload
+  only) with ZERO `<a href="…">` result anchors anywhere in the body —
+  every genuine result is hydrated client-side by JS this engine never
+  executes — and the Cloudflare challenge loader
+  (`/cdn-cgi/challenge-platform/…`) is present verbatim, so `is_captcha_page`
+  already classifies this specimen `Blocked`, never a fabricated "empty"
+  success. It also surfaced a real, distinct chrome-leak defect: the
+  generic href-extraction pass reads ANY `href=` attribute, not just `<a>`
+  result anchors, and this capture's own `<link rel="dns-prefetch"
+  href="https://cdn.you.com"/>` tag leaked through `parse_results` as a
+  single fake organic hit — because `you.com` itself was never in
+  `ENGINE_DOMAINS` (only sibling engines' domains were) — the same
+  false-positive class already fixed for MetaGer/Dogpile/Swisscows/
+  Startpage. Fixed by adding `you.com` to `ENGINE_DOMAINS`
+  (`helpers/urls.rs`); corrected the stale `engines.rs` doc comment to
+  record the confirmed real shape (Cloudflare-gated SPA, correctly
+  detected as blocked) instead of the disproven "classic HTML view" claim.
+  2 new regression tests: `is_captcha_page_detects_a_real_youcom_
+  cloudflare_challenge_capture` (pins the block classification) and
+  `parse_results_excludes_youcoms_own_cdn_chrome` (pins the domain-leak
+  fix), git-stash-proven by reverting the `ENGINE_DOMAINS` addition alone
+  (the `cdn.you.com` link reappears as the sole fake "result"); restored,
+  both pass. All 304 pre-existing `search_engines`-scoped tests continue to
+  pass unchanged (306 total after this slice). Live-verified: a real `hse
+  scan --kind name --value Kylo4kylo --modules search_engines --depth 0`
+  run reports `engine: you, outcome: blocked, results: 0`, with zero
+  `cdn.you.com` (or any other you.com-chrome) entity anywhere in the scan's
+  entity table. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4623 lib tests, +2). *Remaining, T2.7 still
+  `[~]`:* replacement endpoints for the three dead `au_property` legs;
+  `au_people`/`au_electoral` (still genuinely proxy-blocked, unverified
+  this slice); `google` (confirmed live-blocked this slice, no fixture
+  needed — the existing interstitial detector already handles it
+  correctly); and the remaining 8 confirmed-unreachable-from-this-sandbox
+  `search_engines` engines (`yahoo`/`aol`/`mojeek`/`yandex`/`ecosia`/
+  `qwant`/`presearch`/`searx` — no real capture obtainable from here; a
+  future cycle running from a residential/Termux IP could still fetch
+  one). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
+  corpus, seventh slice — you.com), §5 — same commit.
 - **`[x]` T2.88 · `extract_surrounding_text`'s fixed ±300-char fallback window
   could start strictly INSIDE a preceding `<svg>`/`<style>`/`<script>` block,
   leaking that block's raw markup/path data into a title or snippet as if it
@@ -10969,3 +11024,29 @@ way, so this specific drift class can't recur silently again.
   (4621 lib tests, +3). Full detail under the T2.7 node above. **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7, `au_property` honest-failure
   fix), §5 — same commit.
+- **2026-07-14** — **T2.7: golden-fixture corpus, seventh slice — you.com,
+  and a real chrome-leak defect on its own CDN domain.** Swept live
+  reachability of all 10 remaining un-fixtured `search_engines` engines
+  from this sandbox first: 8 confirmed blocked/unreachable at the HTTP
+  layer (`yahoo` 500, `aol` 404, `mojeek` 403, `yandex`/`qwant` 302,
+  `ecosia`/`presearch` 403, `searx` 503 — all matching each engine's own
+  documented live-scan stats), leaving `google` (a genuine JS-challenge
+  interstitial, already correctly handled) and `you` as the only two
+  returning `200` with real content. A REAL live `you.com` capture
+  (`GET /search?q=Kylo4kylo&tbm=youchat`, matching `EngineSpec::build_url`
+  exactly) disproved the module's own doc comment ("classic /search HTML
+  view with referrer-style result anchors" — it's actually a
+  Cloudflare-gated Next.js SPA with zero server-rendered `<a>` anchors) and
+  surfaced a real chrome-leak: the capture's own `<link rel="dns-prefetch"
+  href="https://cdn.you.com"/>` leaked through `parse_results` as a fake
+  organic hit because `you.com` was never in `ENGINE_DOMAINS`. Fixed by
+  adding `you.com` to `ENGINE_DOMAINS`; corrected the stale doc comment.
+  2 new regression tests, git-stash-proven (reverting the `ENGINE_DOMAINS`
+  addition alone reproduces the leak). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4623 lib tests, +2).
+  Live-verified: a real `hse scan --kind name --value Kylo4kylo --modules
+  search_engines --depth 0` run reports `engine: you, outcome: blocked,
+  results: 0`, zero `cdn.you.com` chrome anywhere in the scan output. Full
+  detail under the T2.7 node above. **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, seventh slice — you.com),
+  §5 — same commit.

@@ -287,6 +287,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **The `search_engines` module's you.com engine leaked its own CDN link as a
+  fake search result, and its doc comment claimed a scraping method the live
+  site no longer supports.** A real live capture showed you.com's `/search`
+  endpoint is now a Cloudflare-gated, JavaScript-only page with no classic
+  HTML result links — contrary to the module's own (now corrected) comment —
+  and that the page's `dns-prefetch` link to its own CDN domain
+  (`cdn.you.com`) was being misread as a genuine search result because that
+  domain was never in the engine-chrome exclusion list. Fixed by adding it;
+  the request is also now correctly recognised as blocked rather than a
+  fabricated empty success.
 - **`au_property` silently returned an empty result on every scan instead of
   reporting that its three government portal sources are down.** Live
   requests confirmed all three legs it queries (NSW ELVIS, VIC MapShare WFS,
