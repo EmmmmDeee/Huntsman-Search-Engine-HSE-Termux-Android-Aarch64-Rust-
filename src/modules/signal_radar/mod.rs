@@ -100,7 +100,6 @@ impl Module for SignalRadar {
             lan::scan_lan(scan_id),
         );
 
-        // Cell info is fetched inside scan_cell alongside signal-strength.
         let cell_out = scan_cell(scan_id).await;
 
         let mut result = ModuleResult::new();
@@ -123,17 +122,16 @@ async fn scan_wifi(scan_id: &str) -> ModuleResult {
     }
 }
 
-/// Fetch `termux-telephony-cellinfo` and `termux-telephony-signalstrength` in
-/// parallel, then parse cell towers.
+/// Fetch and parse `termux-telephony-cellinfo`. Per-cell `dbm`/signal data
+/// already rides in this one response (see `cell::Cell::dbm`), so a second
+/// `termux-telephony-signalstrength` call would only duplicate it — a prior
+/// revision issued that second call and unconditionally discarded its
+/// result, wasting a real ~3s on-device subprocess round-trip every scan for
+/// nothing (`PROBLEM_TREE` T2.109).
 async fn scan_cell(scan_id: &str) -> ModuleResult {
     use crate::util::termux::termux_cmd;
 
-    let (cellinfo, _sigstrength) = tokio::join!(
-        termux_cmd("termux-telephony-cellinfo", &[], 5000),
-        termux_cmd("termux-telephony-signalstrength", &[], 3000),
-    );
-
-    match cellinfo {
+    match termux_cmd("termux-telephony-cellinfo", &[], 5000).await {
         Some(stdout) => cell::parse_cells(&stdout, scan_id),
         None => ModuleResult::new(),
     }

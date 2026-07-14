@@ -428,6 +428,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   verifying a match isn't a name collision, was silently dropped on every
   hit. A sanctions hit's evidence now carries the subject's title/role when
   the source provides one.
+- **`signal_radar` wasted a real ~3s on-device round-trip every scan on a
+  cell-signal reading it then threw away.** `scan_cell` fetched
+  `termux-telephony-signalstrength` a second time alongside
+  `termux-telephony-cellinfo` and never read the second call's result — the
+  per-cell signal strength `cellinfo` already returns covers the same data.
+  The redundant call is now gone, so a cell-tower survey no longer pays for
+  a subprocess round-trip it never used.
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were

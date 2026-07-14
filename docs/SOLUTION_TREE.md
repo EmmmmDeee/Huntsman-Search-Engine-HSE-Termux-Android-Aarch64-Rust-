@@ -2858,11 +2858,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   non-empty — see `PROBLEM_TREE` T2.107 for the finding and fix detail.
 - **`[ ]` SOL-HLR-CNAM-FIELDNAMES · Correct `HlrResp` field names against
   the real vendor JSON shape, add a live-shaped fixture test** →
-  **T2.108**. Queued, not yet started — see `PROBLEM_TREE` T2.108 for the
-  finding.
-- **`[ ]` SOL-SIGNALRADAR-CELL-DISCARD · Use or delete the redundant second
+  **T2.108**. Partially investigated 2026-07-14, deliberately not fixed —
+  the real bug is bigger than a field rename (wrong, non-resolving host;
+  two ambiguous real-vendor candidates, both needing a second credential
+  this module doesn't plumb; neither reachable from this sandbox to
+  confirm) — see `PROBLEM_TREE` T2.108 for the full investigation notes.
+- **`[x]` SOL-SIGNALRADAR-CELL-DISCARD · Use or delete the redundant second
   `termux-telephony-signalstrength` call in `scan_cell`** → **T2.109**.
-  Queued, not yet started — see `PROBLEM_TREE` T2.109 for the finding.
+  Delivered 2026-07-14: confirmed via the Termux:API Android source that
+  `termux-telephony-cellinfo`'s own per-cell `dbm` field is the same
+  `CellSignalStrength.getDbm()` reading the discarded second call would
+  have returned, so deleted the redundant `termux_cmd` call and its shared
+  `tokio::join!` outright rather than fabricating a "fold in" that would
+  just duplicate existing evidence — see `PROBLEM_TREE` T2.109 for the
+  finding and fix detail.
 - **`[ ]` SOL-CHAININTEL-BLOCKSCOUT-FIELDS · Add `is_scam`/`reputation`/
   `public_tags`/`name` to `BlockscoutAddress` and fold into wallet
   evidence** → **T2.110**. Queued, not yet started — see `PROBLEM_TREE`
@@ -3493,9 +3502,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   after `SOL-GRAVATAR-VERIFIED-BOOL`). *Progress: T2.102 (`zoomeye`
   banner/app), T2.103 (`onyphe` threatlist/tag), T2.104 (`geocode`
   addressdetails), T2.105 (`launchpad_user` bio field), T2.106
-  (`steam_profile` summary/persona), and T2.107 (`sanctions_ofac` Title
-  column) delivered 2026-07-14, same day as the merge — 43 of 49 still
-  queued, none of the other 43 investigated or fixed yet.*
+  (`steam_profile` summary/persona), T2.107 (`sanctions_ofac` Title
+  column), and T2.109 (`signal_radar` discarded signalstrength call)
+  delivered 2026-07-14, same day as the merge. T2.108 (`hlr_cnam` field
+  names) was investigated the same day but deliberately left `[ ]` — real
+  investigation found the actual bug is a non-resolving hardcoded host plus
+  two ambiguous real-vendor candidates each needing a second credential
+  this module doesn't have, bigger and less certain than the stub's
+  field-rename framing, and unverifiable from this sandbox; see
+  `PROBLEM_TREE` T2.108 for the full notes so a future cycle doesn't redo
+  the same DNS/vendor-identification work. 42 of 49 still queued.*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -8422,3 +8438,48 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   100 API tests, +1). Marked `[~]` honestly — a real, useful first
   increment, not the operator's full spec. **Paired:** `PROBLEM_TREE` C10
   (new) + §8 — same commit.
+- **2026-07-14 — T2.108 investigated, deliberately left `[ ]`; SOL-SIGNALRADAR
+  -CELL-DISCARD `[ ]`→`[x]` delivered instead (seventh item off the audit
+  queue).** Per step 1, T2.108 was next in priority order and was
+  investigated first: the module's hardcoded URL host `api.hlrlookups.com`
+  does not resolve in DNS at all (three independent lookups from this
+  sandbox, `getent hosts`/Python `socket.gethostbyname`, both NXDOMAIN,
+  against a control set — `steamcommunity.com`, `api.launchpad.net` — that
+  both resolve fine), so the module's live calls fail before any bytes are
+  exchanged — worse than the stub's field-name-mismatch framing. Two
+  different real, DNS-resolving vendor candidates surfaced instead
+  (`hlrlookups.com`, named in `constants.rs`'s own key description, vs.
+  `hlrlookup.com`, named in the module's own doc comment), each documenting
+  an API that needs a second credential (`api_secret`/`password`)
+  `HUNTSMAN_HLR_KEY` doesn't carry, and neither host is reachable from this
+  sandbox to confirm the real response shape (proxy-blocked). Shipping a
+  field-rename guess against an unconfirmed vendor/auth shape would be a
+  fabrication risk, so this was left `[ ]` (annotated with the full
+  investigation in `PROBLEM_TREE` T2.108, so a future cycle doesn't repeat
+  the DNS/vendor work) and the cycle moved to the next open node instead,
+  per "never expand scope mid-cycle." **T2.109 delivered:** `scan_cell`'s
+  own doc comment already named a second `termux-telephony-signalstrength`
+  call bound to `_sigstrength` and never read. Confirmed via the Termux:API
+  Android source (`TelephonyAPI.java`'s `onReceiveTelephonyCellInfo`) that
+  every cell object `termux-telephony-cellinfo` returns already carries its
+  own `dbm` (`CellSignalStrength.getDbm()`) — the same reading a dedicated
+  signal-strength call would return, just per-cell instead of
+  per-radio-generation — so the second call was pure duplication, making
+  "delete" (not "fold in") the correct, non-speculative fix. Deleted the
+  redundant `termux_cmd` call and the `tokio::join!` it shared with
+  `cellinfo`; `scan_cell` now issues exactly one subprocess call, saving a
+  real ~3s round-trip every scan. New `#[cfg(test)]`-gated, `pub(crate)`
+  accessors `util::termux::{is_marked_unavailable_for_test,
+  clear_unavailable_for_test}` expose the module's real process-global
+  unavailable-tool cache so a sibling module's test can pin "was this real
+  tool actually spawned" against genuine `Command` spawn behaviour, not a
+  mock. New regression test
+  `scan_cell_does_not_spawn_the_discarded_signalstrength_tool` calls the
+  real `scan_cell` and asserts `cellinfo` gets spawned (proving the
+  harness exercises the real path) while `signalstrength` never does;
+  confirmed via `git stash` of `mod.rs` alone that it genuinely panics
+  against the pre-fix two-call code and passes against the fix. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4674 lib tests, +1 on top of the same-day Stealer Logs Viewer commit's
+  own +7). **Paired:** `PROBLEM_TREE` T2.108 annotated
+  (still `[ ]`) + T2.109 `[ ]`→`[x]` + §4a — same commit.

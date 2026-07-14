@@ -1669,18 +1669,51 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   even when the vendor actually returns that data. → **Solution:** correct
   the field names/renames against the real vendor response shape and add a
   live-shaped fixture test. **P2**. *Queued from the 2026-07-14
-  comprehensive audit, wave 1 (module categories) — not yet investigated or
-  fixed.* **Paired:** `SOLUTION_TREE` SOL-HLR-CNAM-FIELDNAMES (new stub).
-- **`[ ]` T2.109 · `signal_radar::scan_cell` fetches
+  comprehensive audit, wave 1 (module categories).* *Partially investigated
+  2026-07-14, deliberately not fixed this pass — the finding is real but
+  bigger and more ambiguous than the stub describes:* the hardcoded URL host
+  `api.hlrlookups.com` (`mod.rs:103-104`) does not resolve in DNS at all
+  (`getent hosts`/`python socket.gethostbyname` all NXDOMAIN, confirmed
+  three times against a control set of domains — `steamcommunity.com`,
+  `api.launchpad.net` — that do resolve), so every live call fails before a
+  single byte is exchanged; this is worse than a field-name mismatch. Two
+  *different* real, DNS-resolving candidate vendors surfaced instead:
+  `hlrlookups.com` (no `api.` subdomain — the exact domain named in
+  `util/keys/constants.rs`'s operator-facing key description) and
+  `hlrlookup.com` (no `s` — the domain named in this module's own
+  top-of-file doc comment); neither is `api.hlrlookups.com`. Both real
+  vendors' documented APIs (`hlrlookup.com`'s V1 GET API, `hlr-lookups.com`'s
+  V2 POST/Digest-Auth API — the latter's docs are what search results for
+  the `hlrlookups.com` spelling actually resolve to) require a **second**
+  credential (`password`/`api_secret`) alongside the API key, which
+  `HUNTSMAN_HLR_KEY` alone doesn't carry and `constants.rs` doesn't plumb —
+  so a genuine fix needs a new credential wired end-to-end, not a field
+  rename, and neither candidate host is reachable from this sandbox to
+  confirm the exact response shape live (both proxy-blocked). Shipping a
+  field-name guess against an unconfirmed vendor/auth shape would be a
+  fabrication risk this project's evidentiary-integrity doctrine forbids, so
+  this was left `[ ]` for a cycle with live access or an operator steer on
+  which vendor is authoritative, rather than sprawled into this pass's
+  chosen unit of work (T2.109). **Paired:** `SOLUTION_TREE`
+  SOL-HLR-CNAM-FIELDNAMES (stub annotated with the same investigation notes,
+  still `[ ]`).
+- **`[x]` T2.109 · `signal_radar::scan_cell` fetches
   `termux-telephony-signalstrength` a second time and discards the
   response.**
   This is a second ~3s subprocess call whose result is thrown away,
   contradicting the function's own doc comment about what it collects, and
-  wasting real on-device latency for nothing. → **Solution:** either fold
-  the second call's data into the scan result or delete the redundant call.
-  **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-SIGNALRADAR-CELL-DISCARD (new stub).
+  wasting real on-device latency for nothing. **P2**. *Investigated
+  2026-07-14: `cell::Cell` (parsed from `termux-telephony-cellinfo`, the
+  first call) already carries a `dbm` field per cell — the Android
+  `TelephonyManager`/Termux:API source confirms this is the same
+  `CellSignalStrength.getDbm()` reading a dedicated
+  `termux-telephony-signalstrength` call would return, just organised
+  per-cell instead of per-radio-generation — so the discarded second call
+  was pure duplication, not a distinct signal.* ✅ **Fixed:** deleted the
+  redundant `termux_cmd("termux-telephony-signalstrength", …)` call and the
+  `tokio::join!` it shared with `cellinfo`; `scan_cell` now issues exactly
+  one subprocess call. **Paired:** `SOLUTION_TREE` SOL-SIGNALRADAR-CELL-DISCARD
+  `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.110 · `chain_intel`'s `BlockscoutAddress` struct drops
   `is_scam`/`reputation`/`public_tags`/`name` fields Blockscout returns.**
   Real threat/OSINT signal for wallet enrichment that Blockscout's API
@@ -12476,3 +12509,51 @@ way, so this specific drift class can't recur silently again.
   full suite 0 failures (4666 lib tests, +7; 100 API tests, +1). **Paired:**
   `SOLUTION_TREE` SOL-STEALER-LOGS-VIEWER `[ ]`→`[~]`, §4 note updated —
   same commit.
+- **2026-07-14 — T2.109 (`signal_radar::scan_cell`'s discarded
+  `termux-telephony-signalstrength` call) `[ ]`→`[x]`.** Per step 1's
+  priority order: T2.108 (`hlr_cnam` field names) was investigated first but
+  turned out to be substantially bigger than its stub described — the
+  hardcoded URL host `api.hlrlookups.com` does not resolve in DNS at all
+  (confirmed via three independent lookups from this sandbox, against a
+  control set of domains that do resolve), and the vendor named in
+  `util/keys/constants.rs`'s own operator-facing description
+  (`hlrlookups.com`, no `api.` subdomain) plus the module's own top-of-file
+  doc comment (`hlrlookup.com`, no `s`) point at *different* real,
+  DNS-resolving vendors, each requiring a second credential
+  (`api_secret`/`password`) this module never asks for — a full rewrite,
+  not a field rename, and unverifiable from this sandbox (the proxy blocks
+  both live candidate hosts). Left `[ ]`, undisturbed, for a future cycle
+  with either live access or an operator steer on which vendor is
+  authoritative — logged here rather than shipping a speculative field-name
+  guess against an unconfirmed vendor shape, which this project's
+  evidentiary-integrity doctrine treats as a fabrication risk. Moved to the
+  next open node, T2.109, which had no such ambiguity: `scan_cell`'s own doc
+  comment already named a second `termux-telephony-signalstrength` call
+  whose result was bound to `_sigstrength` and never read. Investigated
+  before fixing (not assumed): the Termux:API Android source
+  (`TelephonyAPI.java`'s `onReceiveTelephonyCellInfo`) confirms every cell
+  object `termux-telephony-cellinfo` already returns carries its own `dbm`
+  (`CellSignalStrength.getDbm()`) — the exact reading a dedicated
+  signal-strength call would also return, just per-cell instead of
+  per-radio-generation — so the second call was pure duplication, not a
+  distinct signal; "delete" (T2.109's own listed alternative to "fold in")
+  is the correct, non-speculative fix. Deleted the redundant
+  `termux_cmd("termux-telephony-signalstrength", …)` call and the
+  `tokio::join!` it shared with `cellinfo` — `scan_cell` now spawns exactly
+  one subprocess, saving a real ~3s round-trip every scan for data that was
+  always thrown away. New test-only accessors
+  `util::termux::{is_marked_unavailable_for_test, clear_unavailable_for_test}`
+  (crate-visible, `#[cfg(test)]`-gated) expose the module's real
+  process-global unavailable-tool cache so a sibling module's test can pin
+  "was this real tool actually spawned" without re-implementing it or
+  mocking `Command`. New regression test
+  `scan_cell_does_not_spawn_the_discarded_signalstrength_tool` calls the
+  real `scan_cell` off-device and asserts `termux-telephony-cellinfo` gets
+  spawned (proving the harness exercises the real code path) while
+  `termux-telephony-signalstrength` never does; confirmed via `git stash`
+  of `mod.rs` alone that this genuinely fails (panics) against the pre-fix
+  two-call code and passes against the fix. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4674 lib tests, +1
+  on top of the same-day Stealer Logs Viewer commit's own +7).
+  **Paired:** `SOLUTION_TREE` SOL-SIGNALRADAR-CELL-DISCARD `[ ]`→`[x]`, §4a
+  progress note updated — same commit.
