@@ -2793,9 +2793,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the fix doesn't regress the old API generation. Gate green: fmt/clippy
   `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib tests, +2).
   **Paired:** `PROBLEM_TREE` T2.101 — same commit.
-- **`[ ]` SOL-ZOOMEYE-BANNER · Read `portinfo.banner`/`portinfo.app` into
-  port evidence** → **T2.102**. Queued, not yet started — see
-  `PROBLEM_TREE` T2.102 for the finding.
+- **`[x]` SOL-ZOOMEYE-BANNER · Read `portinfo.banner`/`portinfo.app` into
+  port evidence** → **T2.102**. Delivered 2026-07-14: new `port_app`/
+  `port_banner`/`port_detail` helpers add a `service_details` evidence
+  attribute (port label paired with its app/banner, full-fidelity, never a
+  bare duplicate when neither is present) alongside the existing `ports`
+  tag/attribute — see `PROBLEM_TREE` T2.102 for the finding and fix detail.
 - **`[ ]` SOL-ONYPHE-THREATLIST · Wire `threatlist`/`tag` fields into
   evidence/tags as the doc already describes** → **T2.103**. Queued, not
   yet started — see `PROBLEM_TREE` T2.103 for the finding.
@@ -3396,8 +3399,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   determinism gap (1), thin test coverage (7), and stale documentation (9),
   plus 2 miscellaneous. Individual stub nodes are in `PROBLEM_TREE` §3.2
   above (T2.102–T2.150) and their `SOLUTION_TREE` pairs in §2 above (right
-  after `SOL-GRAVATAR-VERIFIED-BOOL`). None investigated or fixed yet —
-  this is the queue, not a delivery.
+  after `SOL-GRAVATAR-VERIFIED-BOOL`). *Progress: T2.102 (`zoomeye`
+  banner/app) delivered 2026-07-14, same day as the merge — 48 of 49 still
+  queued, none of the other 48 investigated or fixed yet.*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -8117,3 +8121,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4637 lib
   tests, +2). **Paired:** `PROBLEM_TREE` F.3 `[~]`→`[x]` + §8, §4/§4b/§4d
   refreshed — same commit.
+- **2026-07-14 — SOL-ZOOMEYE-BANNER `[ ]`→`[x]`: first delivery off the
+  49-finding audit queue.** `zoomeye::port_label` read `portinfo.port`/
+  `service` but never `banner`/`app`, both present in the module's own
+  test fixture and doc comment. New `port_app`/`port_banner`/`port_detail`
+  functions add a `service_details` evidence attribute (port label + its
+  app/banner, full-fidelity verbatim, only emitted when at least one of
+  the two is present — never a bare duplicate of the label) alongside the
+  unchanged `ports` tag/attribute. 2 new regression tests
+  (`port_app_and_banner_read_nested_portinfo_fields`,
+  `port_detail_annotates_label_with_app_and_banner_when_present`);
+  `git stash` confirms both fail to compile pre-fix (wholly new functions).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4639 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.102
+  `[ ]`→`[x]` + §8, §4a progress note — same commit.

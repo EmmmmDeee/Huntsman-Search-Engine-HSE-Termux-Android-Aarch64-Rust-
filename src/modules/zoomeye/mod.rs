@@ -7,10 +7,11 @@
 //!
 //! Given an IP it dorks `ip:{ip}`; given a domain, `hostname:{domain}` (the hosts
 //! ZoomEye has indexed serving that name). Each match carries `portinfo` (the open
-//! port / service / banner) and `geoinfo` (country / city / coordinates / operator
-//! org / ISP / ASN). The parser is deliberately schema-tolerant — ZoomEye varies
-//! field shapes across plans, and a passive enrichment must degrade to "fewer
-//! entities" rather than fail on an unexpected shape (the lesson onyphe codifies).
+//! port / service / detected app / banner) and `geoinfo` (country / city /
+//! coordinates / operator org / ISP / ASN). The parser is deliberately
+//! schema-tolerant — ZoomEye varies field shapes across plans, and a passive
+//! enrichment must degrade to "fewer entities" rather than fail on an
+//! unexpected shape (the lesson onyphe codifies).
 //!
 //! From the result set it surfaces: the host's coordinates (suppressed for a
 //! CDN/anycast edge IP, as `ip_geo` does), a city/country `Address`, the AS
@@ -168,6 +169,10 @@ impl Module for ZoomEye {
         // Distinct exposed ports/services, collected across matches to tag the
         // seed IP once with its full service surface.
         let mut ports: Vec<String> = Vec::new();
+        // Per-port app/banner detail (only for ports that have one), reported
+        // as a separate evidence attribute so the raw banner text never
+        // pollutes the short `port:<label>` tag.
+        let mut port_details: Vec<String> = Vec::new();
         let mut ips_emitted = 0usize;
 
         for m in body.matches.iter().take(MAX_MATCHES) {
@@ -218,6 +223,9 @@ impl Module for ZoomEye {
                 && let Some(label) = port_label(m)
                 && seen.insert(format!("@port:{label}"))
             {
+                if let Some(detail) = port_detail(m, &label) {
+                    port_details.push(detail);
+                }
                 ports.push(label);
             }
 
@@ -243,10 +251,15 @@ impl Module for ZoomEye {
             for label in &ports {
                 e.tag(format!("port:{label}"));
             }
-            e.add_evidence(
-                Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
-                    .with_attr("ports", ports.join(", ")),
-            );
+            let mut ev = Evidence::new(SRC, format!("ZoomEye: {} exposed service(s)", ports.len()))
+                .with_attr("ports", ports.join(", "));
+            if !port_details.is_empty() {
+                // Full-fidelity policy (mirrors `webserver_banner`): a
+                // detected app/banner reaches the operator verbatim, paired
+                // with its port label so it stays traceable to one service.
+                ev = ev.with_attr("service_details", port_details.join("; "));
+            }
+            e.add_evidence(ev);
             result.push(e);
         }
 
@@ -324,4 +337,37 @@ fn port_label(m: &Value) -> Option<String> {
         Some(svc) => Some(format!("{port}/{svc}")),
         None => Some(port),
     }
+}
+
+/// `portinfo.app` — the detected application/product name for a service
+/// (e.g. `"nginx"`, `"OpenSSH"`), when ZoomEye's plan includes it.
+fn port_app(m: &Value) -> Option<String> {
+    pstr(m, "/portinfo/app")
+}
+
+/// `portinfo.banner` — the raw service banner ZoomEye captured for this
+/// match, preserved verbatim (full-fidelity policy — mirrors
+/// `webserver_banner`: an authentic captured banner must reach the operator
+/// unclipped, not summarised or truncated).
+fn port_banner(m: &Value) -> Option<String> {
+    pstr(m, "/portinfo/banner")
+}
+
+/// `label` annotated with its detected app/banner, when either is present on
+/// this match — `None` when neither is, so callers can skip a no-op detail
+/// rather than emit a bare duplicate of `label`.
+fn port_detail(m: &Value, label: &str) -> Option<String> {
+    let app = port_app(m);
+    let banner = port_banner(m);
+    if app.is_none() && banner.is_none() {
+        return None;
+    }
+    let mut s = label.to_string();
+    if let Some(a) = &app {
+        s.push_str(&format!(" ({a})"));
+    }
+    if let Some(b) = &banner {
+        s.push_str(&format!(" — banner: {b}"));
+    }
+    Some(s)
 }

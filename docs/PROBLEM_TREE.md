@@ -1544,14 +1544,32 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   API generation). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4632 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-GRAVATAR-VERIFIED-BOOL (new node), §5 — same commit.
-- **`[ ]` T2.102 · `zoomeye`'s entity extraction never reads `portinfo.banner`/`portinfo.app`.**
-  Both fields are present in the live API response and the module's own test
-  fixture, and are promised as extracted evidence in docs, but only `port`
-  and `service` are pulled out of `portinfo`. → **Solution:** read `banner`/
-  `app` into the port evidence attributes alongside `service`. **P2**. *Queued
-  from the 2026-07-14 comprehensive audit, wave 1 (module categories) — not
-  yet investigated or fixed.* **Paired:** `SOLUTION_TREE` SOL-ZOOMEYE-BANNER
-  (new stub).
+- **`[x]` T2.102 · `zoomeye`'s entity extraction never reads `portinfo.banner`/`portinfo.app`.**
+  Confirmed live in the module's own `sample_match()` fixture (`portinfo:
+  {"port": 443, "service": "https", "banner": "...", "app": "nginx"}`) and
+  the module doc comment's own claim ("the open port / service / banner") —
+  `port_label` only ever read `port`/`service`; `banner`/`app` were parsed
+  into the generic `serde_json::Value` match document but never read back
+  out, silently dropping a detected app/product name and the raw captured
+  banner for every exposed service ZoomEye returns them for. → **Fix:** new
+  `port_app`/`port_banner` readers (`portinfo.app`/`portinfo.banner`, same
+  `pstr` nested-pointer pattern as the existing `geo_*` readers) and a
+  `port_detail(m, label)` combinator that annotates a port label with its
+  app/banner **only when at least one is present** (never a bare duplicate
+  of the label). Reported as a *separate* `service_details` evidence
+  attribute, paired 1:1 with its port label, rather than folded into the
+  `port:<label>` tag — keeps the tag surface short and stable while the raw
+  banner text (potentially long, arbitrary bytes) still reaches the
+  operator verbatim, full-fidelity, mirroring `webserver_banner`'s existing
+  "never clip a captured banner" policy. **P2**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — investigated
+  and fixed this cycle.* 2 new regression tests
+  (`port_app_and_banner_read_nested_portinfo_fields`,
+  `port_detail_annotates_label_with_app_and_banner_when_present`); `git
+  stash` confirms both fail to even compile against the pre-fix code (the
+  functions under test didn't exist). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-ZOOMEYE-BANNER `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.103 · `onyphe::extract_entities` never reads the `threatlist`/`tag`
   fields its own doc comment claims it parses.**
   The doc comment on the extraction function specifically claims ONYPHE
@@ -12039,3 +12057,23 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4637 lib tests, +2). **Paired:** `SOLUTION_TREE` SOL-F3 `[~]`→`[x]` +
   §4b refreshed, §5 — same commit.
+- **2026-07-14 — T2.102 (`zoomeye` banner/app) `[ ]`→`[x]`: first item
+  picked off the 49-finding comprehensive-audit queue.** Per step 1's
+  priority order (no in-progress node left standing after F.3 closed this
+  same day; highest-priority open node next), took the smallest of the
+  49 queued T2.102–T2.150 stubs. Confirmed real against the module's own
+  `sample_match()` test fixture and doc comment (both already named
+  `banner`/`app`): `port_label` only ever read `portinfo.port`/`service`,
+  silently dropping the detected app/product name and the raw captured
+  banner ZoomEye returns for every exposed service. Fix: new `port_app`/
+  `port_banner` readers plus a `port_detail` combinator that annotates a
+  port label with its app/banner only when at least one is present,
+  reported as a `service_details` evidence attribute paired 1:1 with its
+  port label — kept separate from the short `port:<label>` tag so the tag
+  surface stays stable while the banner text still reaches the operator
+  verbatim (mirrors `webserver_banner`'s existing full-fidelity policy).
+  2 new regression tests; `git stash` confirms both fail to compile
+  against the pre-fix tree (the functions under test are wholly new).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4639 lib tests, +2). **Paired:** `SOLUTION_TREE`
+  SOL-ZOOMEYE-BANNER `[ ]`→`[x]`, §4a progress note updated — same commit.

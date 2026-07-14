@@ -351,6 +351,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   again. (Confirmed against a real public profile: a scan that previously
   found nothing now surfaces a name, two username pivots, an address, and
   four verified social-account links.)
+- **`zoomeye` detected a service's app/product name and captured its raw
+  banner but never surfaced either.** Both fields are present in the live
+  API response — the module's own doc comment already promised "port /
+  service / banner" — but only the port and service made it into evidence.
+  Exposed-service evidence now carries a `service_details` attribute (port
+  label paired with its app/banner, only when at least one is present) full
+  fidelity and unclipped, alongside the existing port tags.
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were
