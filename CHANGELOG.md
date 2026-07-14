@@ -317,6 +317,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **SeekNow embedded default key rotated** to the operator-supplied
+  `seek-0b493c7c…` key, with the prior default (confirmed dead against
+  `see-know.icu`, `.eu` status never re-verified) demoted into the
+  superseded-key chain so any env file carrying it upgrades in place on
+  next run — no operator action needed. Not live-verified from this build
+  environment; its own outbound network policy rejects both SeekNow
+  domains independent of the key — verify with `hse doctor` on the
+  operator's own device.
 - **Gravatar profile lookups silently missed almost every real hit.** A
   linked social account (Twitter, GitHub, LinkedIn, …) on a Gravatar
   profile carries a "verified" flag that the live API sends as a genuine
