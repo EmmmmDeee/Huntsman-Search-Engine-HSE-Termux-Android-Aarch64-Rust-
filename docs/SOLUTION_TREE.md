@@ -2828,9 +2828,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   multi-word (`profile_kit::person_from_name`) or a Username pivot
   otherwise, skipped when it would merely duplicate a field already
   emitted — see `PROBLEM_TREE` T2.106 for the finding and fix detail.
-- **`[ ]` SOL-OFAC-TITLE · Add a `title` field to `SdnRecord` and include it
-  in emitted evidence** → **T2.107**. Queued, not yet started — see
-  `PROBLEM_TREE` T2.107 for the finding.
+- **`[x]` SOL-OFAC-TITLE · Add a `title` field to `SdnRecord` and include it
+  in emitted evidence** → **T2.107**. Delivered 2026-07-14: `parse_sdn_line`
+  now reads column index 4 (`Title`) into a new `SdnRecord.title` field
+  (blank-normalised via `is_absent`, same as `program`/`remarks`), and
+  `build_entity` folds it into evidence as a `title` attribute when
+  non-empty — see `PROBLEM_TREE` T2.107 for the finding and fix detail.
 - **`[ ]` SOL-HLR-CNAM-FIELDNAMES · Correct `HlrResp` field names against
   the real vendor JSON shape, add a live-shaped fixture test** →
   **T2.108**. Queued, not yet started — see `PROBLEM_TREE` T2.108 for the
@@ -3461,10 +3464,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   above (T2.102–T2.150) and their `SOLUTION_TREE` pairs in §2 above (right
   after `SOL-GRAVATAR-VERIFIED-BOOL`). *Progress: T2.102 (`zoomeye`
   banner/app), T2.103 (`onyphe` threatlist/tag), T2.104 (`geocode`
-  addressdetails), T2.105 (`launchpad_user` bio field), and T2.106
-  (`steam_profile` summary/persona) delivered 2026-07-14, same day as the
-  merge — 44 of 49 still queued, none of the other 44 investigated or fixed
-  yet.*
+  addressdetails), T2.105 (`launchpad_user` bio field), T2.106
+  (`steam_profile` summary/persona), and T2.107 (`sanctions_ofac` Title
+  column) delivered 2026-07-14, same day as the merge — 43 of 49 still
+  queued, none of the other 43 investigated or fixed yet.*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -8331,3 +8334,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4665 lib tests, +5). `docs/MODULES.md` refreshed. **Paired:**
   `PROBLEM_TREE` T2.106 `[ ]`→`[x]` + §4a — same commit.
+- **2026-07-14 — SOL-OFAC-TITLE `[ ]`→`[x]`: sixth delivery off the
+  comprehensive audit queue.** `sanctions_ofac::parse`'s own documented
+  column order names `Title` (role/position) as field index 4, and the
+  live-pulled `ROW_INDIVIDUAL` fixture carries a real value there
+  (`"Director of PALESTINE LIBERATION FRONT - ABU ABBAS FACTION"`), but
+  `parse_sdn_line` never read it — role/position identity data silently
+  dropped on every hit. Added `title: String` to `SdnRecord` (blank-
+  normalised through the existing `is_absent` helper, matching
+  `program`/`remarks`), populated from `fields[4]`, and folded into
+  `build_entity`'s evidence as a `title` attribute (present only when
+  non-empty). 2 existing parse tests extended (populated + blanked cases),
+  the 3 `tests.rs` record fixtures updated for the new field, the
+  individual-hit test extended to assert the `title` attribute, and a new
+  regression test (`hit_with_blank_title_omits_title_attribute`) added; the
+  extended assertions fail to *compile* against the pre-fix tree via `git
+  stash` (no `title` field on `SdnRecord`). Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4666 lib tests, +1).
+  **Paired:** `PROBLEM_TREE` T2.107 `[ ]`→`[x]` + §4a — same commit.

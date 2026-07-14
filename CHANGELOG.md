@@ -409,6 +409,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (when it reads as a real name) or a Username pivot, whichever it
   genuinely is — skipped when it would just duplicate a field already
   reported.
+- **`sanctions_ofac` never surfaced a sanctioned individual's title/role.**
+  The OFAC SDN list carries a `Title` column (e.g. "Director of ...") that
+  the parser's own documented column mapping already named, but no code
+  path read it — role/position identity data, directly relevant to
+  verifying a match isn't a name collision, was silently dropped on every
+  hit. A sanctions hit's evidence now carries the subject's title/role when
+  the source provides one.
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were

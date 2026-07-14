@@ -1654,15 +1654,14 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   sibling modules. **P2**. *Delivered 2026-07-14 — see the §8 log entry for
   the fix, live verification, and test detail.* **Paired:**
   `SOLUTION_TREE` SOL-STEAM-SUMMARY-PERSONA `[ ]`→`[x]`.
-- **`[ ]` T2.107 · `sanctions_ofac` never captures the OFAC SDN `Title` column
+- **`[x]` T2.107 · `sanctions_ofac` never captures the OFAC SDN `Title` column
   (role/position) into `SdnRecord` or evidence.**
   The Title field carries role/position identity data relevant to
   misattribution risk, but `parse.rs` neither stores it on `SdnRecord` nor
   surfaces it as evidence. → **Solution:** add a `title` field to
-  `SdnRecord` and include it in the emitted evidence. **P2**. *Queued from
-  the 2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
-  investigated or fixed.* **Paired:** `SOLUTION_TREE` SOL-OFAC-TITLE (new
-  stub).
+  `SdnRecord` and include it in the emitted evidence. **P2**. *Delivered
+  2026-07-14 — see the §8 log entry for the fix, live verification, and
+  test detail.* **Paired:** `SOLUTION_TREE` SOL-OFAC-TITLE `[ ]`→`[x]`.
 - **`[ ]` T2.108 · `hlr_cnam`'s `HlrResp` field names don't match the real
   vendor JSON keys, so `#[serde(default)]` silently deserializes to `None`.**
   Because every mismatched field falls back to its serde default instead of
@@ -12371,3 +12370,29 @@ way, so this specific drift class can't recur silently again.
   `steam_profile` output (added `email, domain`) per `docs/CONVENTIONS.md`
   §6. **Paired:** `SOLUTION_TREE` SOL-STEAM-SUMMARY-PERSONA `[ ]`→`[x]`, §4a
   progress note updated — same commit.
+- **2026-07-14 — T2.107 (`sanctions_ofac` dropped `Title` column) `[ ]`→`[x]`:
+  sixth item picked off the comprehensive-audit queue.** Per step 1's
+  priority order (no in-progress node standing; highest-priority open node
+  next in the T2.106–T2.150 queue). Confirmed real against `parse.rs`'s own
+  documented column order — `ent_num,SDN_Name,SDN_Type,Program,Title,
+  Call_Sign,Vess_type,Tonnage,GRT,Vess_flag,Vess_owner,Remarks` — and its
+  live-pulled sample rows (2026-07-09): `ROW_INDIVIDUAL`'s field index 4
+  carries `"Director of PALESTINE LIBERATION FRONT - ABU ABBAS FACTION"`,
+  which `parse_sdn_line` read `fields[0..3]` and `fields[11]` around but
+  never touched. Fix: added a `title: String` field to `SdnRecord`
+  (`-0- `-placeholder-normalised via the existing `is_absent` helper, same
+  discipline as `program`/`remarks`), populated from `fields[4]` in
+  `parse_sdn_line`, and folded into `build_entity`'s evidence as a `title`
+  attribute (present only when non-empty, matching the `program`/`remarks`
+  pattern). Test delta: extended `parse_individual_row_maps_correctly` and
+  `parse_organisation_row_with_blank_type_maps_correctly` to assert the new
+  field (populated and `-0- `-blanked cases respectively), updated the three
+  `tests.rs` record-builder fixtures for the new struct field, extended
+  `individual_hit_emits_person_with_reordered_name_and_caution` to assert
+  the `title` evidence attribute, and added a new regression test
+  `hit_with_blank_title_omits_title_attribute` confirming a blank title
+  never emits an empty attribute. Confirmed the new assertions fail against
+  the pre-fix tree (`git stash` leaves `SdnRecord` without a `title` field,
+  a compile error). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4666 lib tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-OFAC-TITLE `[ ]`→`[x]`, §4a progress note updated — same commit.

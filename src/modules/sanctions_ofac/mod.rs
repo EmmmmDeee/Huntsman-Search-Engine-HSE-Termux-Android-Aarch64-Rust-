@@ -180,6 +180,9 @@ fn build_entity(rec: &SdnRecord, scan_id: &str) -> Option<Entity> {
     if !rec.program.is_empty() {
         ev = ev.with_attr("program", &rec.program);
     }
+    if !rec.title.is_empty() {
+        ev = ev.with_attr("title", &rec.title);
+    }
     if !rec.remarks.is_empty() {
         ev = ev.with_attr("remarks", &rec.remarks);
     }
