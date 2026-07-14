@@ -269,7 +269,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   heavy compile dep for zero on-device benefit; `fst` adoption is `[-]` (accepted-
   won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains a future
   capability goal but can be pursued via a lighter mechanism.
-- **`[~]` F.3 · Proof & measurement infrastructure** — was: no property testing,
+- **`[x]` F.3 · Proof & measurement infrastructure** — was: no property testing,
   no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
   every pure function (parsers: no-panic; `Entity::absorb`: commutative +
@@ -333,10 +333,51 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   pins. No production code change beyond the one `#[doc(hidden)]` visibility
   widening; gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (stable toolchain, `fuzz/` untouched by any gate command).
-  *F.3 remains `[~]`:* only "widen criterion to the correlation pass" is
-  left, still blocked on a bench-visible entry point that doesn't exist yet.
-  **Paired:** `SOLUTION_TREE` SOL-F3 (cargo-fuzz leg delivered) + §4b
-  refreshed, §5 — same commit.
+  **`criterion`-on-the-correlation-pass leg delivered (2026-07-14) — F.3 now
+  fully closed.** The one remaining item was blocked on exactly what its own
+  text named: "a bench-visible entry point that doesn't exist yet."
+  `correlate_entities` — the live in-memory correlation pass the engine
+  re-runs after every expansion round, so its cost is multiplied by the
+  round count (the exact class of bug AU-034's O(U×E) regression was) — is
+  deliberately `pub(crate)`, an internal fast path, not published API. But
+  `benches/*.rs` are separate compilation units that link against this
+  crate's PUBLIC API only (confirmed against the existing
+  `benches/scan_throughput.rs`, which already imports
+  `huntsman_search_engine::…` paths, not in-crate ones), so it was genuinely
+  unreachable from a criterion bench — not a missing dependency (criterion
+  already landed 2026-06-17 for `scan_throughput`) but a missing entry
+  point. Fixed with the same narrow, documented widening the cargo-fuzz leg
+  above established for `cert_intel::fuzz_entry_parse_der`: new
+  `#[doc(hidden)] pub fn bench_correlate_entities`/`bench_synthetic_entities`
+  on `core::correlator`, additive and harness-only. `bench_synthetic_entities`
+  is a single generator, not a duplicate — `core::correlator::perf`'s
+  existing zero-dependency `#[ignore]`d guard (`scaling_baseline`/
+  `pass_is_subquadratic`, which stays exactly as-is: it needs no `cargo
+  bench` toolchain step and is the one CI can run without installing
+  criterion) now delegates to it instead of keeping its own copy, so the two
+  harnesses can't silently disagree on what "representative load" means.
+  New `benches/correlation_pass.rs` benches the pass across the same
+  100/500/1000/2000-entity scale `scaling_baseline` eyeballs, via a
+  criterion `BenchmarkId` group; CI only compiles it (`--no-run`), same as
+  `scan_throughput`. 2 new regression tests
+  (`bench_synthetic_entities_yields_exactly_n_deterministic_entities`,
+  `bench_correlate_entities_matches_the_internal_pass_and_is_deterministic`)
+  pin exact-count generation, determinism across repeated calls (both
+  functions are wholly new `pub` surface — git-stash-provable, the pre-fix
+  tree has neither to even compile against), and that
+  `bench_correlate_entities` is byte-identical to calling the internal pass
+  directly (compared via `serde_json` encoding, since neither `Entity` nor
+  `Correlation` derive `PartialEq`). Live-verified for real, not just
+  scaffolded: `cargo bench --bench correlation_pass --no-run` compiles in
+  release profile (2m13s, matching the gate's own check); a real bounded run
+  (`--measurement-time 1 --warm-up-time 1 --sample-size 10`) reported real
+  numbers (100 entities: ~364µs; 500: ~3.35ms; 1000: ~11.4ms; 2000:
+  ~39.1ms); `hse selftest` 9/9 unaffected (correlator still fires 3 rules
+  against the self-test fixture). No behaviour change — additive bench-only
+  surface. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4637 lib tests, +2). **F.3 is now fully closed — every named
+  solution item delivered.** **Paired:** `SOLUTION_TREE` SOL-F3 `[~]`→`[x]`
+  + §4b refreshed, §5 — same commit.
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
@@ -11959,3 +12000,42 @@ way, so this specific drift class can't recur silently again.
   full suite 0 failures (4635 lib tests, +3). *C5 remaining:* tighter AU
   bounding only. **Paired:** `SOLUTION_TREE` SOL-GEOINT (movement-path leg
   delivered) + §4/§5 refreshed — same commit.
+- **2026-07-14** — **F.3: closed the last remaining item ("widen criterion
+  to the correlation pass") — F.3 now fully closed, `[~]`→`[x]`.** Picked up
+  this standing in-progress node per step 1 rather than opening something
+  new: its own text named exactly what was blocking it — "a bench-visible
+  entry point that doesn't exist yet" for `correlate_entities`, which is
+  deliberately `pub(crate)` (an internal fast path) and therefore
+  unreachable from `benches/*.rs`, separate compilation units that link
+  only against the crate's public API (confirmed against the existing
+  `benches/scan_throughput.rs`'s own `huntsman_search_engine::…` imports).
+  Not a missing dependency — criterion already landed 2026-06-17 — only a
+  missing entry point, so `core::correlator::perf`'s own doc comment
+  claiming "no criterion on purpose... it would pull a heavy transitive
+  tree" was itself stale (true when written, before criterion was adopted
+  elsewhere in the project; corrected in this commit). Fix: the same
+  narrow, documented `#[doc(hidden)] pub fn` widening the same-day
+  cargo-fuzz leg established for `cert_intel::fuzz_entry_parse_der` — new
+  `bench_correlate_entities`/`bench_synthetic_entities` on
+  `core::correlator`. `bench_synthetic_entities` is a single generator: the
+  existing `perf` module's zero-dependency `#[ignore]`d guard
+  (`scaling_baseline`/`pass_is_subquadratic`, which needs no `cargo bench`
+  toolchain step and stays exactly as it was) now delegates to it instead
+  of keeping its own duplicate copy. New `benches/correlation_pass.rs`
+  benches the pass at the same 100/500/1000/2000-entity scale
+  `scaling_baseline` eyeballs; CI only compiles it (`--no-run`), matching
+  `scan_throughput`'s existing pattern. 2 new regression tests pin exact
+  entity-count generation + cross-call determinism, and that
+  `bench_correlate_entities` is byte-identical (via `serde_json`, since
+  neither `Entity` nor `Correlation` derive `PartialEq`) to calling the
+  internal pass directly — both functions are wholly new, so `git stash`
+  is the strongest possible regression signal (nothing to compile against
+  pre-fix). Live-verified for real: `cargo bench --bench correlation_pass
+  --no-run` compiles in release profile (2m13s); a real bounded run
+  (`--measurement-time 1 --warm-up-time 1 --sample-size 10`) reported real
+  numbers (100 entities ~364µs, 500 ~3.35ms, 1000 ~11.4ms, 2000 ~39.1ms);
+  `hse selftest` 9/9 unaffected (correlator still fires 3 rules against the
+  self-test fixture). No behaviour change — additive bench-only surface.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4637 lib tests, +2). **Paired:** `SOLUTION_TREE` SOL-F3 `[~]`→`[x]` +
+  §4b refreshed, §5 — same commit.

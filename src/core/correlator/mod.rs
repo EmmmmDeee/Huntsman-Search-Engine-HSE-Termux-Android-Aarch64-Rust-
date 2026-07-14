@@ -21,7 +21,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::core::entity::Entity;
+use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
@@ -488,6 +488,115 @@ fn confirmed_only(entities: &[Entity]) -> Vec<Entity> {
 /// only exists once [`Correlator::run`] derives it at finalise.
 pub(crate) fn correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
     evaluate_rules(entities, scan_id)
+}
+
+// ─── Bench-only entry points (F.3 / SOL-F3: "widen criterion to the
+// correlation pass") ────────────────────────────────────────────────────────
+//
+// `benches/*.rs` are separate compilation units that link against this
+// crate's PUBLIC API only — unlike `#[cfg(test)]` code (see `perf`, below),
+// they never see `pub(crate)` items and don't run under `cargo bench`'s
+// release-profile build, so `correlate_entities` — deliberately `pub(crate)`,
+// an internal fast path, not published API — was unreachable from a
+// criterion bench. This is the same narrow, documented `#[doc(hidden)] pub
+// fn` widening `cert_intel::fuzz_entry_parse_der` established for
+// `cargo-fuzz` (SOL-F3's other leg): additive, harness-only, no new
+// production surface.
+//
+// `bench_synthetic_entities` is also the single generator `perf`'s in-crate
+// `#[ignore]`d guard (`scaling_baseline`/`pass_is_subquadratic`) delegates
+// to, so the two harnesses can never silently diverge on what "representative
+// load" means (`docs/CONVENTIONS.md` §3, single-sourced vocabularies).
+
+/// Build a representative confirmed-entity set of `n` entities that exercises
+/// the heavier correlation rules with *real* work (not early-outs):
+///
+/// * ~¼ `Username` + ~¼ `Email` drawn from a shared, overlapping handle space,
+///   so AU-034 (handle reuse) actually matches across the two sets — the path
+///   that was once quadratic. Username and email of a shared handle carry
+///   *different* evidence sources, so the rule's ≥2-distinct-source gate is
+///   satisfied and the match work is performed rather than skipped.
+/// * the remaining half spread across the other kinds, a fraction tagged
+///   `breach`/`stealer-log` with multi-source evidence, to give the breach /
+///   identity / corroboration rules realistic input.
+///
+/// Pure and deterministic (no RNG) so runs are comparable across `cargo
+/// bench`/`cargo test -- --ignored` invocations.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_synthetic_entities(n: usize) -> Vec<Entity> {
+    let mut out = Vec::with_capacity(n);
+    let quarter = n / 4;
+    // Shared handle space: handles repeat every `handle_space` indices so a
+    // username and an email can land on the same canonical handle.
+    let handle_space = (quarter / 2).max(1);
+
+    for i in 0..n {
+        let bucket = i % 4;
+        let mut e = match bucket {
+            0 => {
+                // Username on a shared handle, observed on a platform.
+                let mut e = Entity::new(
+                    EntityKind::Username,
+                    format!("handle{:04}", i % handle_space),
+                    0.8,
+                    "scan",
+                );
+                e.add_evidence(Evidence::new("username_search", "observed"));
+                e
+            }
+            1 => {
+                // Email whose local-part is the same shared handle, from a
+                // *different* source so AU-034's ≥2-source gate passes.
+                let mut e = Entity::new(
+                    EntityKind::Email,
+                    format!("handle{:04}@example{}.com", i % handle_space, i % 7),
+                    0.8,
+                    "scan",
+                );
+                e.add_evidence(Evidence::new("hunter_io", "observed"));
+                if i % 5 == 0 {
+                    e.tag(crate::core::tags::BREACH);
+                    e.add_evidence(Evidence::new("oathnet_pro", "breach row"));
+                }
+                e
+            }
+            2 => {
+                let kind = match (i / 4) % 4 {
+                    0 => EntityKind::IpAddress,
+                    1 => EntityKind::Domain,
+                    2 => EntityKind::Person,
+                    _ => EntityKind::Address,
+                };
+                let mut e = Entity::new(kind, format!("v{i}"), 0.7, "scan");
+                e.add_evidence(Evidence::new("name_intel", "derived"));
+                if i % 11 == 0 {
+                    e.tag(crate::core::tags::STEALER_LOG);
+                }
+                e
+            }
+            _ => {
+                let kind = match (i / 4) % 3 {
+                    0 => EntityKind::Url,
+                    1 => EntityKind::CryptoAddress,
+                    _ => EntityKind::Organisation,
+                };
+                let mut e = Entity::new(kind, format!("w{i}"), 0.6, "scan");
+                e.add_evidence(Evidence::new("exa_search", "hit"));
+                e
+            }
+        };
+        e.tag("src");
+        out.push(e);
+    }
+    out
+}
+
+/// Bench-visible entry point for the correlation pass itself — see
+/// [`bench_synthetic_entities`] for the generator that feeds it.
+#[doc(hidden)]
+pub fn bench_correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
+    correlate_entities(entities, scan_id)
 }
 
 // ─── Graph-aware rules ───────────────────────────────────────────────────────

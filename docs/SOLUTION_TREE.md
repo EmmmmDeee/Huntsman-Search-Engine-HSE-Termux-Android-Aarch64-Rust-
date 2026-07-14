@@ -117,7 +117,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   sizes and adds a heavy compile dep for no on-device benefit. `fst` adoption `[-]`
   (accepted-won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains
   a future capability goal but can be pursued via a lighter mechanism.
-- **`[~]` SOL-F3 · Proof & measurement infrastructure** ⚑ — `proptest` properties for
+- **`[x]` SOL-F3 · Proof & measurement infrastructure** ⚑ — `proptest` properties for
   every pure fn, `cargo-fuzz` for every untrusted parser, `criterion` for the hot
   paths; CI compiles benches + runs corpora.
   *Closes / powers:* **F.3** (self) and the *entire* "untested/unmeasured" class — it
@@ -132,11 +132,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `#[doc(hidden)] pub fn fuzz_entry_parse_der` harness entry point; a new
   advisory-quality `fuzz.yml` CI lane runs it nightly-toolchain, weekly + on-demand,
   seeded from the existing `cert_intel/testdata/selfsigned.der` fixture; live-verified
-  locally — 11m57s build, then 1,243,784 fuzz executions in 60s with 0 crashes).
-  *Gap:* only "widen `criterion` to the correlation pass" remains, blocked on a
-  bench-visible entry point that doesn't exist yet — no longer §4b's finish-queue
-  item, since the two originally-named legs (`cargo-fuzz`, import proptest) are both
-  now delivered. **(§4b, updated)**
+  locally — 11m57s build, then 1,243,784 fuzz executions in 60s with 0 crashes) +
+  **`criterion` on the correlation pass** (2026-07-14: the same
+  `#[doc(hidden)] pub fn` widening pattern — `bench_correlate_entities`/
+  `bench_synthetic_entities` on `core::correlator` — gives `benches/
+  correlation_pass.rs` a real entry point to the deliberately-`pub(crate)`
+  pass; `core::correlator::perf`'s existing zero-dependency `#[ignore]`d
+  guard now delegates to the same shared generator instead of duplicating
+  it; live-verified real numbers at 100–2000 entity scale, `hse selftest`
+  9/9 unaffected). ✅ **fully delivered — F.3 now closed at the node level,
+  no remaining gap.**
 
 ### S.CORE — Correctness & determinism
 
@@ -3163,7 +3168,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 |---|---|---|
 | SOL-F1 (automata) ⚑ | F.1 · T0.1/T0.2 (root) · T2.7 · T2.8 · C6 | `[~]` |
 | SOL-F2 (`fst`) ⚑ | F.2 · B5.3 drift · typosquat/variants | `[~]` |
-| SOL-F3 (proof) ⚑ | F.3 · guards T0.x/T1.1/T1.3/T2.3/T2.8/T2.9 | `[~]` |
+| SOL-F3 (proof) ⚑ | F.3 · guards T0.x/T1.1/T1.3/T2.3/T2.8/T2.9 | `[x]` |
 | SOL-BOUNDARY | T0.1 · T0.2 | `[x]` |
 | SOL-MERGE | T1.1 · C1 (identity core) | `[x]` |
 | SOL-ORDER | T1.1 · T2.9 | `[x]` |
@@ -3409,13 +3414,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   entries, AU postcode ≈72 entries, phone area codes ≈65 entries — `fst` is overkill
   at these sizes. `fst` adoption `[-]` (accepted-won't-build); Levenshtein fuzzy
   matching deferred to a lighter mechanism when needed.
-- **SOL-F3** — ✅ both originally-named legs delivered: proptest (str/entity/geo/
-  html/cert/dns + import parsers) + criterion, and now `cargo-fuzz` (2026-07-14,
-  `fuzz/` crate + `fuzz.yml` CI lane, `cert_intel` DER scanner target,
-  live-verified 1.24M executions / 0 crashes). *Remains `[~]` at the node level*
-  only for "widen criterion to the correlation pass," itself blocked on a
-  bench-visible entry point that doesn't exist yet — a genuinely deferred future
-  increment, not active unfinished work, so removed from this finish queue.
+- **SOL-F3** — ✅ fully closed (`[x]`, 2026-07-14). All three legs delivered:
+  proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
+  (`benches/scan_throughput.rs`), `cargo-fuzz` (`fuzz/` crate + `fuzz.yml` CI
+  lane, `cert_intel` DER scanner target, live-verified 1.24M executions / 0
+  crashes), and now criterion on the correlation pass too
+  (`benches/correlation_pass.rs` via new `#[doc(hidden)] pub fn
+  bench_correlate_entities`/`bench_synthetic_entities`, the bench-visible
+  entry point the node's own text had named as the last blocker; `perf`'s
+  in-crate guard now delegates to the same generator). Removed from finish
+  queue — no remaining gap at the node level.
 - **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
   network reads + hibp cast + CLI-import file cap). Removed from finish queue.
 - **SOL-BUDGET** — ✅ accepted `[-]` (cycle 18 S→P): `reset_per_scan` already
@@ -3432,11 +3440,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T0 (crashes):** fully solved (SOL-BOUNDARY + SOL-F3 guard). ✔
 - **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4/T1.5 all solved — SOL-BLOCKING
   `[x]` (all write paths); SOL-FINALISE-BLOCKING `[x]` (cycle 14, T1.5 closed). ✔
-- **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-  `memchr` now a direct dep (cycle 12); `cargo-fuzz` delivered (2026-07-14,
-  `cert_intel` DER target + `fuzz.yml` CI lane); remaining: `bstr` (no natural
-  consumer yet) + widening `criterion` to the correlation pass (note: `fst`
-  large-table adoption `[-]` — tables are curated subsets, not registry-scale).
+- **§3.F (foundations):** **SOL-F3 `[x]` fully closed (2026-07-14)** — proptest +
+  criterion (`scan_throughput` and now `correlation_pass`) + `cargo-fuzz`
+  (`cert_intel` DER target + `fuzz.yml` CI lane) all delivered, no remaining
+  gap. SOL-F1/SOL-F2 stay `[~]`: `memchr` now a direct dep (cycle 12), `bstr`
+  remaining (no natural consumer yet — all scraped HTML arrives as `&str`);
+  `fst` large-table adoption `[-]` (tables are curated subsets, not
+  registry-scale) with Levenshtein fuzzy matching deferred to a lighter
+  mechanism.
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
@@ -8064,3 +8075,45 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   **This closes C5's last named solution item except AU-bounding
   precision.** **Paired:** `PROBLEM_TREE` C5 (movement-path leg delivered)
   + §8, §4/§4b refreshed — same commit.
+- **2026-07-14** — **SOL-F3: closed the last remaining item ("widen
+  `criterion` to the correlation pass") — `[~]`→`[x]`, F.3 fully closed.**
+  Picked up this standing in-progress node per step 1: its own §4b entry
+  named exactly what was blocking it — a bench-visible entry point for
+  `correlate_entities`, deliberately `pub(crate)` (an internal fast path,
+  re-run after every expansion round) and therefore unreachable from
+  `benches/*.rs`, separate compilation units that link only against the
+  crate's public API (confirmed against `benches/scan_throughput.rs`'s own
+  `huntsman_search_engine::…` imports). Not a missing dependency —
+  `criterion` already landed 2026-06-17 for `scan_throughput` — only a
+  missing entry point; `core::correlator::perf`'s own doc comment claiming
+  "no criterion on purpose... heavy transitive tree" was itself stale by
+  the time this cycle read it (true when written, before criterion was
+  adopted elsewhere), corrected in this commit. Fix: the same narrow,
+  documented `#[doc(hidden)] pub fn` widening the same-day cargo-fuzz leg
+  established for `cert_intel::fuzz_entry_parse_der` — new
+  `bench_correlate_entities`/`bench_synthetic_entities` on
+  `core::correlator`. `bench_synthetic_entities` is a single generator, not
+  a duplicate: `perf`'s existing zero-dependency `#[ignore]`d guard
+  (`scaling_baseline`/`pass_is_subquadratic`, unchanged in behaviour — it
+  still needs no `cargo bench` toolchain step) now delegates to it. New
+  `benches/correlation_pass.rs` benches the pass at the same
+  100/500/1000/2000-entity scale `scaling_baseline` eyeballs via a
+  criterion `BenchmarkId` group; CI only compiles it (`--no-run`), matching
+  `scan_throughput`. 2 new regression tests
+  (`bench_synthetic_entities_yields_exactly_n_deterministic_entities`,
+  `bench_correlate_entities_matches_the_internal_pass_and_is_deterministic`)
+  pin exact-count generation, cross-call determinism, and byte-identical
+  output to calling the internal pass directly (via `serde_json`, since
+  neither `Entity` nor `Correlation` derive `PartialEq`) — both functions
+  are wholly new `pub` surface, so `git stash` is the strongest possible
+  regression signal (nothing to compile the new tests against pre-fix).
+  Live-verified for real, not just scaffolded: `cargo bench --bench
+  correlation_pass --no-run` compiles in release profile (2m13s, matching
+  the gate's own `--no-run` check); a real bounded run (`--measurement-time
+  1 --warm-up-time 1 --sample-size 10`) reported real numbers (100 entities
+  ~364µs, 500 ~3.35ms, 1000 ~11.4ms, 2000 ~39.1ms); `hse selftest` 9/9
+  unaffected (correlator still fires 3 rules against the self-test
+  fixture). No behaviour change — additive bench-only surface. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4637 lib
+  tests, +2). **Paired:** `PROBLEM_TREE` F.3 `[~]`→`[x]` + §8, §4/§4b/§4d
+  refreshed — same commit.

@@ -8485,3 +8485,69 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
         "an elapsed budget must stop the relation-rule pass immediately"
     );
 }
+
+// ─── Bench-only entry points (F.3 / SOL-F3) ────────────────────────────────
+//
+// `bench_synthetic_entities`/`bench_correlate_entities` are wholly new `pub`
+// surface added solely so `benches/correlation_pass.rs` (a separate
+// compilation unit that only sees this crate's public API) can reach the
+// `pub(crate)` correlation pass. Git-stash-provable: the pre-fix tree has
+// neither function, so these tests fail to compile against it — the
+// strongest possible regression signal for wholly new code, the same
+// precedent the 2026-07-14 cargo-fuzz cycle established for
+// `fuzz_entry_parse_der`.
+
+#[test]
+fn bench_synthetic_entities_yields_exactly_n_deterministic_entities() {
+    for &n in &[0usize, 1, 4, 37, 200] {
+        let a = bench_synthetic_entities(n);
+        let b = bench_synthetic_entities(n);
+        assert_eq!(
+            a.len(),
+            n,
+            "bench_synthetic_entities({n}) must yield exactly n entities"
+        );
+        // Neither `Entity` nor `Correlation` derive `PartialEq` (large,
+        // evolving structs — see e.g. line ~366's precedent), so compare via
+        // their canonical JSON encoding, same as this file already does
+        // elsewhere for structural equality.
+        assert_eq!(
+            serde_json::to_string(&a).unwrap(),
+            serde_json::to_string(&b).unwrap(),
+            "bench_synthetic_entities is documented pure/deterministic (no RNG) — \
+             two calls at the same n must be identical, or bench-to-bench \
+             comparisons and the perf-guard ratio assertion it also feeds \
+             (core::correlator::perf) would be meaningless"
+        );
+    }
+}
+
+#[test]
+fn bench_correlate_entities_matches_the_internal_pass_and_is_deterministic() {
+    let ents = bench_synthetic_entities(200);
+    // Delegates straight to `correlate_entities` — must produce byte-identical
+    // output to calling the internal pass directly, not a divergent copy.
+    let via_bench = serde_json::to_string(&bench_correlate_entities(&ents, "scan")).unwrap();
+    let via_internal = serde_json::to_string(&correlate_entities(&ents, "scan")).unwrap();
+    assert_eq!(
+        via_bench, via_internal,
+        "bench_correlate_entities must be a pure delegation to correlate_entities, \
+         not an independently-drifting copy"
+    );
+    // Determinism-by-construction (docs/CONVENTIONS.md §5): running the pass
+    // twice over the same input must yield identical output — the property
+    // the criterion bench and the perf module's `pass_is_subquadratic` guard
+    // both implicitly rely on when comparing timings/ratios across runs.
+    let again = serde_json::to_string(&bench_correlate_entities(&ents, "scan")).unwrap();
+    assert_eq!(
+        via_bench, again,
+        "the correlation pass must be deterministic across repeated calls on \
+         identical input"
+    );
+    assert!(
+        !bench_correlate_entities(&ents, "scan").is_empty(),
+        "the representative synthetic set (shared handles, breach/stealer tags) \
+         must exercise at least one firing rule, or the bench would be timing an \
+         early-exit no-op rather than real correlation work"
+    );
+}

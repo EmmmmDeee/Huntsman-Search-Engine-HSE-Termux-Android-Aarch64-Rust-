@@ -11,6 +11,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Internal: the correlation pass now has a proper `criterion` benchmark,
+  closing the last open item in the standing proof-and-measurement foundation
+  (PROBLEM_TREE F.3 / SOLUTION_TREE SOL-F3).** `correlate_entities` — the
+  cross-module rule pass the engine re-runs after every expansion round — was
+  only measurable via `core::correlator::perf`'s zero-dependency `#[ignore]`d
+  `cargo test -- --ignored` guard, because criterion benches are separate
+  compilation units that link only against this crate's public API, and the
+  pass itself is deliberately `pub(crate)`. New `#[doc(hidden)] pub fn
+  bench_correlate_entities`/`bench_synthetic_entities` on
+  `core::correlator` (the same narrow, documented widening the `cargo-fuzz`
+  work used for `cert_intel::fuzz_entry_parse_der`) give `benches/
+  correlation_pass.rs` a real entry point, benching the pass across 100–2000
+  entity scales; `core::correlator::perf`'s in-crate guard now delegates to
+  the same shared generator instead of duplicating it. No behaviour change —
+  additive bench-only surface, 2 new regression tests.
 - **The footprint timeline now reconstructs a "movement path" from a
   subject's dated location fixes** (currently geotagged photos'
   `exif_geo`-decoded capture instants), walking them in chronological order

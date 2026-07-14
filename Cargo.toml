@@ -25,6 +25,13 @@ path = "src/lib.rs"
 name = "scan_throughput"
 harness = false
 
+# Scope: the correlation pass ([`core::correlator::correlate_entities`]) across
+# entity-count scale, via the `#[doc(hidden)]` bench-visible entry points F.3 /
+# SOL-F3 named as the last item blocking this (2026-07-14).
+[[bench]]
+name = "correlation_pass"
+harness = false
+
 # Lint policy, codified in the manifest (Cargo `[lints]`, stable since 1.74) so
 # the standard travels with the crate and is enforced uniformly — local builds,
 # rust-analyzer, and CI alike — instead of living only in the CI `clippy
