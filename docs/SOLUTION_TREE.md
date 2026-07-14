@@ -2750,6 +2750,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   equal-count test gained an explicit no-`total_matches` assertion. Gate
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630
   lib tests, +2). **Paired:** `PROBLEM_TREE` T2.99 — same commit.
+- **`[x]` SOL-GRAVATAR-VERIFIED-BOOL · Accept both JSON shapes Gravatar has
+  shipped `accounts[].verified` as, instead of failing the whole profile
+  parse on the live shape** → **T2.101**. `Account::verified` was typed
+  `Option<String>` on the (once-true, now-stale) assumption that Gravatar
+  serialises the flag as the string `"true"`/`"false"`; the live API sends a
+  genuine JSON boolean, confirmed by fetching Gravatar's own documented
+  example profile live. Because `Account` nests inside `Entry` inside
+  `GravatarResp`, that one field's type mismatch failed the ENTIRE top-level
+  parse, and `process()` folds any parse error into the same "no profile"
+  empty result as a real 404 — every real profile with a linked social
+  account (the module's most valuable case) was silently dropped as a false
+  miss. Fix: `deserialize_flexible_bool`, a `#[serde(deserialize_with)]`
+  helper accepting either a bool or the original string and normalising both
+  to `Option<bool>` — additive, not a breaking change to either API
+  generation. Live-verified end-to-end on both sides of the fix against the
+  real binary: `hse scan -k email -v beau@automattic.com -m gravatar` (a
+  public Automattic employee's own self-published Gravatar profile) went
+  from 0 gravatar entities to 13 (name, 2 username pivots, 5 URLs incl. 4
+  verified social accounts, an address), newly firing 8 correlator rules. 2
+  new regression tests: the exact live JSON shape through `extract_entry`
+  end-to-end (confirmed via `git stash` to fail to compile against the
+  pre-fix `Option<String>` typing), and a legacy-string-shape test proving
+  the fix doesn't regress the old API generation. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib tests, +2).
+  **Paired:** `PROBLEM_TREE` T2.101 — same commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3053,6 +3078,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   always dead, not dropped live evidence. Removed the dead field; no
   evidence-disclosure logic added (would have fabricated a finding against
   data that never arrives). Off the open queue.
+- ~~**T2.101**~~ — **delivered** ✅ (`SOL-GRAVATAR-VERIFIED-BOOL`, 2026-07-14).
+  A field-usage sweep across every `#[derive(Deserialize)]` struct (project-
+  wide, not per-file, to avoid the false positives a same-file-only grep
+  produces) surfaced `gravatar::Account::verified` as apparently unread from
+  `types.rs`-style files; live investigation found something worse than a
+  dead field — the field's `Option<String>` typing doesn't match the live
+  API's genuine JSON boolean, so it wasn't unread, it was un-*parseable*,
+  silently failing the whole profile and returning a false "no profile"
+  miss on every real hit with a linked account. Fixed, live-verified
+  end-to-end (0 → 13 entities on a real public profile). Off the open
+  queue.
 - ~~**T2.39**~~ — **delivered** ✅ (`SOL-AU039-SHARED-SOURCE`, 2026-07-11). The
   deferred design decision was resolved by investigating the data model:
   `Entity::corroborating_sources()` carries the provenance at this call site,
@@ -7775,3 +7811,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   failures — the stable-toolchain gate never touches `fuzz/`, which sits
   outside the root package entirely. Paired: `PROBLEM_TREE` F.3 (cargo-fuzz
   leg delivered) + §8, §4b refreshed — same commit.
+- **2026-07-14** — **SOL-GRAVATAR-VERIFIED-BOOL delivered `[ ]`→`[x]`
+  (T2.101).** A project-wide (not per-file) field-usage sweep for the
+  T2.97-100 "parsed but never read" class flagged `gravatar::Account::
+  verified` too. Investigation found a worse bug than dead code: the field's
+  `Option<String>` typing (documented "Gravatar serialises this as the
+  string true/false") no longer matches the live API, which sends a genuine
+  JSON boolean — confirmed by fetching Gravatar's own documented example
+  profile live (`gravatar.com/205e460b479e2e5b48aec07710c08d50.json`). Since
+  `Account` nests inside `Entry` inside `GravatarResp`, that one field's type
+  mismatch fails the WHOLE profile parse, and `process()` folds any parse
+  error into the identical empty result it uses for a genuine 404 — so every
+  real profile with a linked social account (the module's most valuable
+  case) silently became an indistinguishable miss. Fixed with a
+  `deserialize_flexible_bool` `#[serde(deserialize_with)]` helper accepting
+  either shape. Live-verified on both sides of the fix against the real
+  binary: `hse scan -k email -v beau@automattic.com -m gravatar` (a public
+  Automattic employee's own self-published Gravatar profile) returned 0
+  gravatar entities pre-fix, 13 post-fix (name, 2 usernames, 5 URLs incl. 4
+  verified social accounts, an address), newly firing 8 correlator rules
+  (AU-018/067/076/034/060/070/101/063). 2 new regression tests, one
+  confirmed via `git stash` to fail to compile pre-fix. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib
+  tests, +2). **Paired:** `PROBLEM_TREE` T2.101 + §8, §4a refreshed — same
+  commit.

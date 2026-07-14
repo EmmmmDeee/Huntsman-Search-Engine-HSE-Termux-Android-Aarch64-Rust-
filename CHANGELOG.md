@@ -306,6 +306,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Gravatar profile lookups silently missed almost every real hit.** A
+  linked social account (Twitter, GitHub, LinkedIn, …) on a Gravatar
+  profile carries a "verified" flag that the live API sends as a genuine
+  JSON boolean; this module expected that flag as text ("true"/"false"),
+  so any profile with at least one linked account — the common, most
+  useful case — failed to parse and was reported as "no Gravatar profile
+  found," identical to a real miss. Now accepts either shape, so a real
+  profile's name, location, avatar, and verified account links show up
+  again. (Confirmed against a real public profile: a scan that previously
+  found nothing now surfaces a name, two username pivots, an address, and
+  four verified social-account links.)
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were
