@@ -7,9 +7,11 @@ description: Run one cycle of Huntsman's autonomous improvement loop — idempot
 You are running one cycle of the standing autonomous loop that drives Huntsman
 toward `docs/PROBLEM_TREE.md`'s mission: the fastest, most correct, most
 reproducible on-device OSINT/GEOINT engine, surpassing SpiderFoot and Maltego,
-without ever fabricating a finding. `CLAUDE.md` is your standing contract
-(verification gate, layering, ATT&CK mapping) — this command is the loop that
-runs on top of it, cycle after cycle, until there is nothing left to do.
+without ever fabricating a finding. `docs/CONVENTIONS.md` holds the standing
+source-tree rules (layering, module-per-file, single-sourced vocabularies,
+determinism) this loop's step 2 must honour; step 4 below runs the full
+verification gate directly — this command is self-contained, cycle after
+cycle, until there is nothing left to do.
 
 This prompt is meant to be **run again and again, unattended, until the
 project is finished**. Treat idempotency as the primary correctness property:
@@ -96,7 +98,7 @@ Per `docs/SOLUTION_TREE.md` §0's same-commit rule:
 
 ## 4. Gate it
 
-Run the full verification gate from `CLAUDE.md` — all four, not a subset:
+Run the full verification gate — all four, not a subset:
 
 ```
 cargo fmt --all -- --check
@@ -159,8 +161,9 @@ is a correct outcome of this command, not a failure to find more work.
   as real evidence — this is an evidentiary OSINT tool; false positives are
   worse than missing coverage (the doctrine's repeated theme throughout both
   trees).
-- Never touch the identity/PII handling rules in `CLAUDE.md` casually — they
-  already govern how the user is represented in fixtures and code.
+- Never fabricate or invent PII in fixtures/tests — use only the established
+  consented test seed (`Kylo4kylo`) or genuinely synthetic data; never
+  handle a real third party's PII casually.
 - Never expand scope mid-cycle. If step 1's chosen node turns out to be
   bigger than one focused commit, split it into the next node explicitly
   (mark `[~]`, log what's left) rather than sprawling the current commit.
