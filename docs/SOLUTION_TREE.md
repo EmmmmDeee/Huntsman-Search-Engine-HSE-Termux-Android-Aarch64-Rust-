@@ -2805,10 +2805,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `tag`, emitting the scan target tagged `THREAT_INTEL`/`MALICIOUS` with an
   evidence record carrying the list name and joined tags — see
   `PROBLEM_TREE` T2.103 for the finding and fix detail.
-- **`[ ]` SOL-GEOCODE-ADDRESSDETAILS · Add an `address` field to
+- **`[x]` SOL-GEOCODE-ADDRESSDETAILS · Add an `address` field to
   `NominatimResult` and fold components into Address evidence** →
-  **T2.104**. Queued, not yet started — see `PROBLEM_TREE` T2.104 for the
-  finding.
+  **T2.104**. Delivered 2026-07-14: `NominatimResult` now carries
+  `address: Option<NominatimAddr>` (reusing the reverse path's existing
+  type), and a new shared pure `fold_address_attrs` helper folds
+  city/state/country/postcode/street/suburb/county into evidence for
+  **both** the forward and reverse geocode paths — see `PROBLEM_TREE` T2.104
+  for the finding and fix detail.
 - **`[ ]` SOL-LAUNCHPAD-DESCRIPTION · Switch bio extraction to read
   `description` instead of obsolete `homepage_content`** → **T2.105**.
   Queued, not yet started — see `PROBLEM_TREE` T2.105 for the finding.
@@ -8205,3 +8209,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4641 lib
   tests, +2). **Paired:** `PROBLEM_TREE` T2.103 `[ ]`→`[x]` + §8 — same
   commit.
+- **2026-07-14 — SOL-GEOCODE-ADDRESSDETAILS `[ ]`→`[x]`: third delivery off
+  the comprehensive audit queue.** `geocode`'s forward `/search` request
+  hardcodes `&addressdetails=1`, but `NominatimResult` (its response type)
+  had no `address` field to receive the reply, silently discarding the full
+  city/state/postcode/country/road/suburb breakdown for every forward hit —
+  the reverse path already parsed and reported the identical shape via
+  `NominatimAddr`. Added `address: Option<NominatimAddr>` to
+  `NominatimResult` (reusing the existing type, not a duplicate struct) and
+  extracted the reverse path's inline evidence-folding into a new shared
+  pure function `fold_address_attrs(Evidence, &NominatimAddr) -> Evidence`,
+  now called by both forward and reverse so a structured address hit reads
+  identically regardless of direction. 6 new regression tests (a
+  deserialization test + an address-omitted test, both against the real
+  request shape, plus 4 direct unit tests of `fold_address_attrs`); `git
+  stash` of `mod.rs` alone confirms the deserialization test fails to
+  *compile* pre-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4651 lib tests, +6). **Paired:** `PROBLEM_TREE`
+  T2.104 `[ ]`→`[x]` + §8 — same commit.

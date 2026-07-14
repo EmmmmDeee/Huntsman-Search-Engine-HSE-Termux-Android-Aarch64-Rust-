@@ -377,6 +377,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   `virustotal`/`threatfox`/`abuseipdb`/`greynoise` already report
   third-party threat-list hits) with evidence carrying the list name and
   tags.
+- **A forward geocode (street address → coordinates) discarded the full
+  address breakdown Nominatim sends back, even though the request already
+  asked for it.** The reverse direction (coordinates → address) already
+  surfaced city/state/postcode/country/street/suburb/county; the forward
+  direction requested the same `addressdetails=1` data but had no field to
+  receive it, so it was silently dropped on every hit. Forward geocodes now
+  report the same structured address breakdown as evidence, using the same
+  shared parsing logic as the reverse path.
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were

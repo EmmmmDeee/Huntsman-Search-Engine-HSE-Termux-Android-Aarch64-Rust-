@@ -37,6 +37,11 @@ pub(super) struct NominatimResult {
     pub(super) display_name: Option<String>,
     #[serde(default, rename = "type")]
     pub(super) place_type: Option<String>,
+    /// Only populated when the request carries `addressdetails=1` (the forward
+    /// `/search` call always sets it) — same shared shape as the reverse
+    /// `/reverse` response, folded via [`fold_address_attrs`].
+    #[serde(default)]
+    pub(super) address: Option<NominatimAddr>,
 }
 
 // ── Nominatim response types (reverse) ──────────────────────────────
@@ -164,6 +169,9 @@ impl Geocode {
             }
             if let Some(pt) = &first.place_type {
                 ev = ev.with_attr("place_type", pt);
+            }
+            if let Some(addr) = &first.address {
+                ev = fold_address_attrs(ev, addr);
             }
             e.add_evidence(ev);
             result.push(e);
@@ -293,48 +301,61 @@ pub(super) fn build_reverse_entity(
         .with_attr("source", "OpenStreetMap Nominatim");
 
     if let Some(addr) = &data.address {
-        let city = addr
-            .city
-            .as_deref()
-            .or(addr.town.as_deref())
-            .or(addr.village.as_deref())
-            .or(addr.municipality.as_deref());
-
-        if let Some(c) = city {
-            ev = ev.with_attr("city", c);
-        }
-        if let Some(s) = addr.state.as_deref() {
-            ev = ev.with_attr("state", s);
-        }
-        if let Some(c) = addr.country.as_deref() {
-            ev = ev.with_attr("country", c);
-        }
-        if let Some(cc) = addr.country_code.as_deref() {
-            ev = ev.with_attr("country_code", cc.to_uppercase());
-            // The on-region `country:AU` tag is set above; for off-region fixes
-            // record the resolved country so the lead stays explainable.
-            if !cc.eq_ignore_ascii_case("au") {
-                entity.tag(format!("country:{}", cc.to_uppercase()));
-            }
-        }
-        if let Some(p) = addr.postcode.as_deref() {
-            ev = ev.with_attr("postcode", p);
-        }
-        if let Some(r) = addr.road.as_deref() {
-            let street = match addr.house_number.as_deref() {
-                Some(n) => format!("{n} {r}"),
-                None => r.to_string(),
-            };
-            ev = ev.with_attr("street", street);
-        }
-        if let Some(sub) = addr.suburb.as_deref() {
-            ev = ev.with_attr("suburb", sub);
-        }
-        if let Some(county) = addr.county.as_deref() {
-            ev = ev.with_attr("county", county);
+        ev = fold_address_attrs(ev, addr);
+        // The on-region `country:AU` tag is set above; for off-region fixes
+        // record the resolved country so the lead stays explainable.
+        if let Some(cc) = addr.country_code.as_deref()
+            && !cc.eq_ignore_ascii_case("au")
+        {
+            entity.tag(format!("country:{}", cc.to_uppercase()));
         }
     }
 
     entity.add_evidence(ev);
     entity
+}
+
+/// Fold a Nominatim `address` breakdown (city/state/country/postcode/street/
+/// suburb/county) into evidence attributes. Shared by both the forward
+/// (`/search?addressdetails=1`) and reverse (`/reverse?addressdetails=1`)
+/// geocode paths so a structured address hit is reported identically
+/// regardless of which direction produced it — single-sourced, not
+/// hand-duplicated per call site. Pure (no I/O), directly unit-tested.
+pub(super) fn fold_address_attrs(mut ev: Evidence, addr: &NominatimAddr) -> Evidence {
+    let city = addr
+        .city
+        .as_deref()
+        .or(addr.town.as_deref())
+        .or(addr.village.as_deref())
+        .or(addr.municipality.as_deref());
+
+    if let Some(c) = city {
+        ev = ev.with_attr("city", c);
+    }
+    if let Some(s) = addr.state.as_deref() {
+        ev = ev.with_attr("state", s);
+    }
+    if let Some(c) = addr.country.as_deref() {
+        ev = ev.with_attr("country", c);
+    }
+    if let Some(cc) = addr.country_code.as_deref() {
+        ev = ev.with_attr("country_code", cc.to_uppercase());
+    }
+    if let Some(p) = addr.postcode.as_deref() {
+        ev = ev.with_attr("postcode", p);
+    }
+    if let Some(r) = addr.road.as_deref() {
+        let street = match addr.house_number.as_deref() {
+            Some(n) => format!("{n} {r}"),
+            None => r.to_string(),
+        };
+        ev = ev.with_attr("street", street);
+    }
+    if let Some(sub) = addr.suburb.as_deref() {
+        ev = ev.with_attr("suburb", sub);
+    }
+    if let Some(county) = addr.county.as_deref() {
+        ev = ev.with_attr("county", county);
+    }
+    ev
 }

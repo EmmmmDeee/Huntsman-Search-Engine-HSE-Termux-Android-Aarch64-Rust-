@@ -1597,15 +1597,39 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   warnings`/rustdoc clean, full suite 0 failures (4641 lib tests, +2).
   **Paired:** `SOLUTION_TREE` SOL-ONYPHE-THREATLIST `[ ]`→`[x]` — same
   commit.
-- **`[ ]` T2.104 · `geocode` requests `addressdetails=1` from Nominatim but
+- **`[x]` T2.104 · `geocode` requests `addressdetails=1` from Nominatim but
   `NominatimResult` has no `address` field to receive it.**
-  The whole city/state/postcode/country/road/suburb breakdown Nominatim
-  sends back is discarded on deserialization because the struct never
-  declares the field. → **Solution:** add an `address` field to
-  `NominatimResult` and fold its components into Address evidence. **P2**.
-  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-GEOCODE-ADDRESSDETAILS (new stub).
+  Confirmed live in the module source: the forward `/search` URL hardcodes
+  `&addressdetails=1`, but `NominatimResult` (the forward response type)
+  declared only `lat`/`lon`/`display_name`/`type` — the whole
+  city/state/postcode/country/road/suburb breakdown Nominatim sends back for
+  every forward hit was silently discarded on deserialization because the
+  struct never declared the field, even though the sibling reverse-geocode
+  path (`NominatimResp`/`NominatimAddr`) already parses and surfaces the
+  identical shape. → **Fix:** added `address: Option<NominatimAddr>` to
+  `NominatimResult` (reusing the existing `NominatimAddr` type — single
+  source for the Nominatim address shape, not a second hand-rolled struct),
+  and extracted the reverse path's inline city/state/country/country_code/
+  postcode/street/suburb/county evidence-folding into a new shared pure
+  function `fold_address_attrs(Evidence, &NominatimAddr) -> Evidence`, now
+  called from **both** forward and reverse so a structured address hit is
+  reported identically regardless of which direction produced it (reverse's
+  `country:<CC>` off-region entity tag stays reverse-only — it needs
+  `&mut Entity`, not just the evidence). **P2** (silently dropped structured
+  evidentiary field on a real, always-set request parameter — same class as
+  T2.97-102's dropped-field pattern). *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — investigated and fixed
+  this cycle.* 6 new regression tests:
+  `nominatim_result_deserializes_the_requested_address_breakdown` (confirmed
+  via `git stash` of `mod.rs` alone to fail to *compile* pre-fix — the field
+  and the folding function didn't exist),
+  `nominatim_result_without_address_still_parses` (stays optional — some
+  Nominatim hits omit the block), plus 4 direct unit tests of
+  `fold_address_attrs` (full breakdown, the city/town/village/municipality
+  fallback chain, house-number-less street, and the empty-address no-op).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4651 lib tests, +6). **Paired:** `SOLUTION_TREE`
+  SOL-GEOCODE-ADDRESSDETAILS `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.105 · `launchpad_user` parses the obsolete `homepage_content`
   field instead of the populated `description` field for bio text.**
   `homepage_content` is `null` on modern Launchpad accounts; the bio text
@@ -12183,3 +12207,26 @@ way, so this specific drift class can't recur silently again.
   under test didn't exist). Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4641 lib tests, +2). **Paired:**
   `SOLUTION_TREE` SOL-ONYPHE-THREATLIST `[ ]`→`[x]` — same commit.
+- **2026-07-14 — T2.104 (`geocode` forward `addressdetails`) `[ ]`→`[x]`:
+  third item picked off the comprehensive-audit queue.** Per step 1's
+  priority order (no in-progress node standing after T2.103 closed the same
+  day; highest-priority open node next in the T2.104–T2.150 queue). Confirmed
+  real against the module source: the forward `/search` URL hardcodes
+  `&addressdetails=1`, but `NominatimResult` (the type it deserializes into)
+  declared only `lat`/`lon`/`display_name`/`type` — no `address` field — so
+  the full city/state/postcode/country/road/suburb breakdown Nominatim
+  returns for every forward hit was silently discarded, even though the
+  sibling reverse-geocode path already parses and reports the identical
+  shape via `NominatimAddr`. Fix: added `address: Option<NominatimAddr>` to
+  `NominatimResult` (reusing the existing type rather than a second
+  hand-rolled struct — single-sourced vocabulary per `docs/CONVENTIONS.md`
+  §3) and extracted the reverse path's inline evidence-folding logic into a
+  new shared pure function, `fold_address_attrs`, now called from both
+  forward and reverse. 6 new regression tests: a deserialization test
+  confirmed via `git stash` of `mod.rs` alone to fail to *compile* pre-fix
+  (the field and the function didn't exist), an address-omitted-stays-optional
+  test, and 4 direct unit tests of `fold_address_attrs` (full breakdown, the
+  city/town/village/municipality fallback chain, house-number-less street,
+  empty-address no-op). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4651 lib tests, +6). **Paired:** `SOLUTION_TREE`
+  SOL-GEOCODE-ADDRESSDETAILS `[ ]`→`[x]`, §5 — same commit.
