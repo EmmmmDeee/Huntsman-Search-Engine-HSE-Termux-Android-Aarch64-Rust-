@@ -2744,6 +2744,23 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   clippy `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib
   tests, 99 `tests/api.rs` tests — both unchanged, no new Rust surface).
   **Paired:** `PROBLEM_TREE` T2.94 — same commit.
+  *Extended (2026-07-14) — closed the last thread T2.94's own caveat named,
+  T2.95:* tracing precisely where the missing `include_infra` toggle needed
+  to live surfaced that `wants_infra` was fully implemented and tested but
+  wired into exactly one handler, `scan_report_json` — Browse/CSV/GEXF/the
+  debug bundle never filter `platform-infra` entities at all, so T2.94's
+  "Browse tab" framing named the wrong surface; the JSON report download was
+  the sole real gap, matching the CLI's own scope (`--include-infra` only
+  ever reaches `render_report`). Added an `includeInfra` param to
+  `API.reportUrl` and a checkbox in the scan-info header toggling the JSON
+  link's `href` live; corrected T2.94's caveat wording to point at the
+  now-closed gap. No Rust changed — purely SPA wiring onto an already-
+  correct, already-tested server capability. Live-verified via headless
+  Chromium against a real stored scan: checkbox renders, toggling flips the
+  href between `report.json` and `report.json?include_infra=1`, zero
+  console errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4632 lib tests, 99 `tests/api.rs` tests — both
+  unchanged). **Paired:** `PROBLEM_TREE` T2.95 — same commit.
 
 ---
 

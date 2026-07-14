@@ -44,9 +44,14 @@ export async function renderScanInfo(v){
             : ''}
           <button class="btn btn-default btn-sm" data-rerun="${attr(id)}" title="Rescan"><i class="glyphicon glyphicon-repeat"></i>&nbsp;Rescan</button>
           <a class="btn btn-default btn-sm" href="${API.csvUrl(id)}" title="Export entities as CSV"><i class="glyphicon glyphicon-download-alt"></i>&nbsp;CSV</a>
-          <a class="btn btn-default btn-sm" href="${API.reportUrl(id)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
+          <a class="btn btn-default btn-sm" id="si-json-link" href="${API.reportUrl(id, false)}" title="Export full report as JSON"><i class="glyphicon glyphicon-save"></i>&nbsp;JSON</a>
           <a class="btn btn-primary btn-sm" href="${API.debugUrl(id)}" download title="One-click debug bundle: every entity, the full event sequence, correlations, and the scored self-audit with every weakness — one file for complete offline debugging"><i class="glyphicon glyphicon-list-alt"></i>&nbsp;Debug bundle</a>
           <button class="btn btn-danger btn-sm" data-delete="${attr(id)}" title="Delete"><i class="glyphicon glyphicon-trash"></i></button>
+        </div>
+        <div class="text-muted" style="font-size:11px;margin-top:4px">
+          <label style="font-weight:normal;cursor:pointer">
+            <input type="checkbox" id="si-include-infra"> Include infrastructure entities (cloud buckets, CDN IPs, tracking IDs) in the JSON report
+          </label>
         </div>
     </h2>
     <hr style="margin:8px 0 14px 0">
@@ -66,6 +71,13 @@ export async function renderScanInfo(v){
     </ul>
     <div id="scan-body" style="padding-top:14px"></div>
   `;
+  // JSON report only: cloud buckets / CDN IPs / tracking IDs are excluded by
+  // default (matches `hse export --format report`'s own default); CSV, GEXF,
+  // the debug bundle, and Browse never filter them, so only this one link
+  // needs the toggle.
+  $('#si-include-infra').addEventListener('change', e=>{
+    $('#si-json-link').href = API.reportUrl(id, e.target.checked);
+  });
   $$('button[data-rerun]').forEach(b=>b.addEventListener('click',()=>{
     alertify.confirm('Re-run scan','Start a new scan with the same target and options?', async()=>{
       try{ const r = await API.rerun(b.dataset.rerun); toast('Scan queued'); nav(`#/scaninfo?id=${r.scan_id}&tab=log`); }
