@@ -287,6 +287,46 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`install.sh` couldn't actually install a tag or a commit SHA despite
+  documenting `HSE_REF` as accepting "branch / tag / SHA," and re-running the
+  installer to switch an existing clone to any ref other than its original
+  branch died outright.** Root cause: the update path checked out
+  `origin/$HSE_REF` after `git fetch --depth 1 origin "$HSE_REF"`, but that
+  remote-tracking ref only ever exists for the exact branch the clone's
+  fetch refspec was narrowed to at clone time (`git clone --depth 1
+  --branch` implies `--single-branch`) — a fetched tag or SHA lands in
+  `FETCH_HEAD` only, so `git checkout -B "$HSE_REF" "origin/$HSE_REF"` failed
+  with "not a commit and a branch ... cannot be created from it" for any
+  `HSE_REF` other than the branch already checked out. Separately, the fresh-
+  install path used `git clone --branch "$HSE_REF"`, which flatly rejects a
+  bare commit SHA (`--branch` only resolves branches/tags), so `HSE_REF=<sha>`
+  never worked even on a first install. Fixed by unifying both paths onto
+  `git init` + `remote add`/`set-url` + `git fetch --depth 1 origin
+  "$HSE_REF"` + `git checkout -B "$HSE_REF" FETCH_HEAD` — `FETCH_HEAD` is set
+  correctly by `git fetch` for a branch, tag, or SHA alike, and checking it
+  out directly removes the asymmetry instead of patching one branch of it.
+  Reproduced the original failure against a real local clone (an update
+  switching to a tag: `fatal: 'origin/v1.13.0' is not a commit...`) and
+  verified the fix resolves it, plus fresh installs by branch/tag/SHA and an
+  update switching to a raw SHA — all four now check out the correct commit.
+  A full end-to-end run (real `fast`-profile build through `hse doctor`)
+  against an isolated `$HOME`/bin dir completed cleanly.
+- **Two `termux-api` presence checks in `install.sh` disagreed with each
+  other and could both go silent.** An early check (right after the main
+  `pkg install`) only ever printed a warning and never installed anything; a
+  later, more complete check (in the Termux-native setup section) actually
+  attempts the install. Both were gated behind `HSE_NO_PKG`, so setting
+  `HSE_NO_PKG=1` on a system without `termux-api` silently dropped the
+  sensor-modules-will-no-op warning entirely — no message from either copy.
+  Removed the redundant early copy; the remaining, authoritative check now
+  warns unconditionally when `termux-api` is absent, whether or not it also
+  attempts an install.
+- **A failed `apt-get install` on the generic-Linux (non-Termux) path
+  continued silently instead of stopping with a clear diagnosis**, letting
+  the installer reach a much more confusing failure later (a `cargo build`
+  erroring on a missing C compiler/pkg-config) instead of naming the real
+  cause up front. Now `die`s immediately with the actual missing packages
+  named.
 - **Repaired GitHub Actions CI, which had been red on every push since
   2026-07-12.** `cargo clippy --all-targets --locked -- -D warnings` was
   failing on a newer clippy than was in use when the flagged lines were
