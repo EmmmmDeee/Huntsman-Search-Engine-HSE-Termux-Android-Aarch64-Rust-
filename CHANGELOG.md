@@ -287,6 +287,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`au_property` silently returned an empty result on every scan instead of
+  reporting that its three government portal sources are down.** Live
+  requests confirmed all three legs it queries (NSW ELVIS, VIC MapShare WFS,
+  QLD titles search) now return `404` — the endpoints have moved or been
+  retired — but the module swallowed every failure and reported "no
+  property record" indistinguishable from a genuine empty result. It now
+  distinguishes "every source failed" (a real, surfaced error) from "a
+  source responded but had no match for this name" (the honest empty
+  result, unchanged).
 - **`install.sh` couldn't actually install a tag or a commit SHA despite
   documenting `HSE_REF` as accepting "branch / tag / SHA," and re-running the
   installer to switch an existing clone to any ref other than its original

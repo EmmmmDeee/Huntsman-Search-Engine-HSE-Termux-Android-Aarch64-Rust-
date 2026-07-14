@@ -1068,6 +1068,44 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   pass unchanged. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4634 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.95,
   §8 — same commit.
+  *`au_property` live-status correction + honest-failure fix delivered
+  (2026-07-14), refuting the "still proxy-blocked" note above for this
+  module specifically:* the sandbox's proxy reaches all three
+  `au_property` portal root domains fine (`200`s), so unlike
+  `au_people`/`au_electoral` (still genuinely `CONNECT`-`502`-blocked),
+  `au_property`'s "proxy-blocked" label was stale — real requests to all
+  three endpoints now return live `404`s from up servers: NSW's ELVIS
+  path (root now serves an unrelated "SDT Explorer" SPA), VIC's WFS path
+  (IIS "not found", root MapShareVic app itself live), QLD's title-search
+  path (a genuine qld.gov.au 404 page). Same root-cause class as
+  `au_electoral`'s AEC leg and `metager` — a legacy static endpoint
+  retired for a client-rendered replacement — but here all THREE of the
+  module's legs are down at once, so `process()`'s existing
+  "fall through to the next leg" logic silently swallowed every failure
+  into `Ok(ModuleResult::new())`, indistinguishable from a genuine
+  "no property record for this person." Same defect shape as
+  T2.48–T2.51 (`domainsdb`/`huggingface_user`/`sourceforge_user`/
+  `opencorporates` silently dying when their providers moved). Fix: a new
+  pure `all_legs_unreachable(any_leg_http_ok, found_any_entity)` tracks
+  whether ANY leg's HTTP response itself succeeded, separate from whether
+  parsing found a match; `process()` now returns a real `Error::module`
+  (a genuine `ModuleError`, feeding the existing `consecutive_failures`
+  health-signal streak this exact node built) only when every leg failed
+  at the HTTP level AND nothing was found — a leg that succeeds but has no
+  match for this name still returns the ordinary honest empty result,
+  unchanged. Endpoint-replacement research for the three legs is
+  deliberately NOT this slice's scope (a client-rendered SPA plus two
+  separate WFS/CMS migrations each need their own investigation) — named
+  explicitly as the remaining item, matching this node's own established
+  slice-by-slice discipline. 3 new regression tests on the pure decision
+  function (git-stash-proof: the pre-fix code has no such function, so
+  reverting is a compile error, not merely a failing assertion); module
+  doc comment corrected to the confirmed live status. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4621 lib
+  tests, +3 — the net count reflects other concurrent work landed on this
+  branch since the previous entry, not a regression). **Paired:**
+  `PROBLEM_TREE` T2.7 (`au_property` honest-failure fix), §8 — same
+  commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found
@@ -2874,7 +2912,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   drift detection, and the golden-fixture corpus (the other named T2.7 leg —
   rewrite parsers on `bstr`/`aho-corasick`, saved real responses per source).
   **Elevated (cycle 17):** ahpra/acma_rrl/trove_au/`austlii` widen the scraper
-  surface; priority remains raised.
+  surface; priority remains raised. *This §4a summary is stale on the SPA
+  panel/parse-rate-drift items (both delivered 2026-07-12/13 — see the
+  SOL-HEALTH-SIGNAL node's own text for the current, accurate state); kept
+  verbatim rather than rewritten to avoid clobbering concurrent edits, per
+  this pass's discovery.* **`au_property` leg (2026-07-14):** the golden-
+  fixture corpus's `au_property` slice, previously logged as "still
+  proxy-blocked," is confirmed reachable-but-dead (real live `404`s on all
+  three legs) and now fails loudly (`Error::module`) instead of silently —
+  see the `au_property` honest-failure fix in the SOL-HEALTH-SIGNAL node.
+  Replacement endpoints for its three legs remain the real, still-open
+  residual.
 - ~~**§7 S4**~~ — **delivered** ✅ (SOL-REDACT extended, 2026-07-12). Investigation
   found the archive FILE itself (`raw/*.json`) is deliberately never redacted
   (an explicit operator retention policy in `util::raw_archive`'s own doc

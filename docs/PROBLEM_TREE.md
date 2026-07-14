@@ -779,6 +779,65 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `au_property` (still proxy-blocked) and the other 13 `search_engines`
   engines. **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
   corpus, sixth slice), §5 — same commit.
+  **`au_property` live-status correction + honest-failure fix delivered
+  (2026-07-14): the "still proxy-blocked" note above was wrong for this
+  module — all three `au_property` legs are confirmed DEAD, not merely
+  unreachable from a sandbox.** Investigating this remaining T2.7 item found
+  the sandbox's own proxy reaches all three government/portal root domains
+  fine (`200` on `maps.six.nsw.gov.au/`, `200` on
+  `mapshare.vic.gov.au/mapsharevic/`), so the "proxy-blocked" framing that
+  correctly describes `au_people`/`au_electoral` (genuinely unreachable —
+  `curl` `CONNECT` `502`s from this sandbox's proxy) does not hold for
+  `au_property`: its endpoints ARE reachable, and every one of them now
+  returns a real, live `404` from an up server. Live-confirmed with real
+  requests, no fixture, no fabrication: NSW's
+  `maps.six.nsw.gov.au/services/public/Property_Name_Address` → `404` (the
+  root domain now serves an unrelated React "SDT Explorer" SPA at
+  `/explorer/` — the same "legacy static endpoint retired for a
+  client-rendered app" pattern already confirmed for `au_electoral`'s AEC
+  leg and `metager`); VIC's `mapsharevic/ows` WFS endpoint → `404` (IIS
+  "File or directory not found"; the root MapShareVic app itself still
+  `200`s); QLD's `environment/land/title/searching/owners` → `404`
+  (qld.gov.au's own real "Page not found" template, 178 KB — a genuine page,
+  not a connectivity failure). All three portals have migrated away from
+  the legacy URLs this module targets; no live replacement endpoint was
+  identified for any of them this slice — named as the next candidate (a
+  client-rendered SPA and two separate WFS/CMS migrations each need their
+  own investigation). **P2** (evidentiary honesty — same class as
+  T2.48–T2.51: a module that silently returns `Ok(empty)` on every scan
+  reads as "no property record for this person" when the true state is "the
+  source has never worked since the portals migrated," exactly the
+  "silently died" trap the provider-integration overhaul already fixed for
+  `domainsdb`/`huggingface_user`/`sourceforge_user`/`opencorporates`.) Fix
+  (bounded to what's real and verifiable this slice, deferring the
+  endpoint-migration research itself): `process()` now tracks whether ANY
+  leg's HTTP response was itself a success, distinct from whether a leg's
+  *parsed* body yielded a match — a new pure
+  `all_legs_unreachable(any_leg_http_ok, found_any_entity)` decides the
+  return path. When every leg fails at the HTTP-status level AND nothing
+  was found, `process()` now returns a real `Error::module` (surfaced as a
+  `ModuleError` event, feeding the existing T2.7 health-signal's
+  `consecutive_failures` streak) instead of a silent
+  `Ok(ModuleResult::new())`; a leg that responds successfully but simply has
+  no match for a given name still returns the ordinary honest empty
+  success, unchanged. 3 new regression tests
+  (`all_legs_unreachable_true_when_every_leg_failed_and_nothing_found` and
+  its two false-case siblings) pin the exact decision table the fix
+  introduces — pure and unit-tested without a live server, since `process()`
+  hardcodes the three real government URLs and redirecting it to a local
+  mock would need a larger, out-of-scope refactor; the decision function is
+  git-stash-proof (the pre-fix code has no such function — reverting is a
+  compile error, not just a failing assertion). Module doc comment corrected
+  to state the confirmed 2026-07-14 dead-endpoint status in place of the
+  stale "all free, keyless" framing, so a future cycle inherits the real
+  state rather than a three-endpoints-old assumption. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4621 lib
+  tests, +3). *Remaining, T2.7 still `[~]`:* replacement endpoints for all
+  three `au_property` legs (not yet found); `au_people`/`au_electoral`
+  (still genuinely proxy-blocked, unverified either way this slice); the
+  other 13 `search_engines` engines. **Paired:** `SOLUTION_TREE`
+  SOL-HEALTH-SIGNAL (T2.7, `au_property` honest-failure fix), §5 — same
+  commit.
 - **`[x]` T2.88 · `extract_surrounding_text`'s fixed ±300-char fallback window
   could start strictly INSIDE a preceding `<svg>`/`<style>`/`<script>` block,
   leaking that block's raw markup/path data into a title or snippet as if it
@@ -10883,3 +10942,30 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4632 lib tests, 99
   `tests/api.rs` tests — both unchanged). **Paired:** `SOLUTION_TREE`
   SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.
+- **2026-07-14** — **Picked up the open T2.7 item, and found the "still
+  proxy-blocked" note on `au_property` was itself wrong: live-verified all
+  three legs (NSW ELVIS, VIC MapShare WFS, QLD titles search) are
+  reachable but now return real `404`s — the legacy endpoints have
+  migrated/retired, not merely proxy-unreachable.** Confirmed with real
+  requests, no fixture: NSW's root domain now serves an unrelated
+  client-rendered SPA (`/explorer/`), VIC's WFS path 404s against a live
+  IIS server, QLD's search page 404s against qld.gov.au's own real
+  "Page not found" template — the same "legacy static endpoint retired"
+  pattern already confirmed for `au_electoral`'s AEC leg and `metager`.
+  `process()` previously swallowed all three failures into a silent
+  `Ok(ModuleResult::new())`, indistinguishable from "no property record
+  for this person" — the exact "silently died" defect class T2.48–T2.51
+  fixed for `domainsdb`/`huggingface_user`/`sourceforge_user`/
+  `opencorporates`. Fixed by tracking per-leg HTTP-status success
+  separately from parsed-body yield: a new pure
+  `all_legs_unreachable(any_leg_http_ok, found_any_entity)` gates a real
+  `Error::module` return when every leg failed at the HTTP level and
+  nothing was found, leaving the ordinary honest empty success untouched
+  when a leg responds but simply has no match. 3 new regression tests;
+  module doc comment corrected to the confirmed live status. No
+  replacement endpoint identified for any of the three legs this cycle —
+  named explicitly as the remaining T2.7 item, not silently dropped. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4621 lib tests, +3). Full detail under the T2.7 node above. **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7, `au_property` honest-failure
+  fix), §5 — same commit.
