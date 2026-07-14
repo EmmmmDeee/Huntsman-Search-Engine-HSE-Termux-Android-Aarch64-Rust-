@@ -2726,6 +2726,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   TIMELINE section was empty before the fix. Gate green: fmt/clippy
   `-D warnings`/rustdoc clean, full suite 0 failures. **Paired:**
   `PROBLEM_TREE` T2.98 — same commit.
+- **`[x]` SOL-PSBDMP-TOTAL-MATCHES · Surface `psbdmp`'s server-reported match
+  total when it exceeds what was actually shown** → **T2.99**. The API's own
+  `count` field was parsed but discarded — only the locally deduped
+  `data.len()` (`paste_count`) reached evidence, the third dropped-
+  evidentiary-field instance this arc (T2.97, T2.98). Fix: a `total_matches`
+  attribute set to `(resp.count as usize).max(paste_count)` only when it
+  exceeds `paste_count`, folded into the summary text; never replaces or
+  shrinks `paste_count`, never fabricates URLs for undisclosed matches. 2 new
+  regression tests (server-count-exceeds-shown; the inverse guard that a
+  smaller/equal count never shrinks or adds anything); the existing
+  equal-count test gained an explicit no-`total_matches` assertion. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630
+  lib tests, +2). **Paired:** `PROBLEM_TREE` T2.99 — same commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3015,6 +3028,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   timestamp-embedding ID decoders (`uuid_created_date`); the other three
   (`objectid_created_date`/`ulid_created_date`/`ksuid_created_date`) now
   classify too. Off the open queue.
+- ~~**T2.99**~~ — **delivered** ✅ (`SOL-PSBDMP-TOTAL-MATCHES`, 2026-07-14).
+  The third dropped-evidentiary-field instance this arc: `psbdmp`'s own
+  server-reported match total (`SearchResp::count`) was parsed but silently
+  discarded. A `total_matches` attribute now discloses it whenever the
+  server claims more matches than the response actually carried. Off the
+  open queue.
 - ~~**T2.39**~~ — **delivered** ✅ (`SOL-AU039-SHARED-SOURCE`, 2026-07-11). The
   deferred design decision was resolved by investigating the data model:
   `Entity::corroborating_sources()` carries the provenance at this call site,
@@ -7638,3 +7657,26 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   account_created` event via `objectid_created_date` — both empty before the
   fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures. Paired: `PROBLEM_TREE` T2.98, §8 — same commit.
+- **2026-07-14** — **SOL-PSBDMP-TOTAL-MATCHES: `psbdmp::SearchResp::count`,
+  the API's own authoritative paste-match total, was parsed but silently
+  discarded — the third dropped-evidentiary-field instance this arc.**
+  Only the locally deduped `data.len()` (`paste_count`) ever reached
+  evidence; when the server reports more matches than a given response's
+  `data` array actually carried (upstream pagination/truncation), the
+  subject's real paste exposure was silently understated rather than
+  disclosed — the same class as T2.97's `stealer::Cred::pwned_at` and
+  T2.98's `structured_id` timestamp keys. Fixed by adding a `total_matches`
+  evidence attribute — `(resp.count as usize).max(paste_count)` — set only
+  when it exceeds `paste_count`, folded into the summary text (`"...
+  ({total_matches} reported by source)"`); deliberately never replaces or
+  shrinks `paste_count`, never fabricates URLs for the undisclosed matches.
+  2 new regression tests:
+  `extract_surfaces_total_matches_when_server_count_exceeds_shown_pastes`
+  (server `count:5` vs. 2 shown pastes → `total_matches:5` + summary
+  disclosure) and
+  `extract_never_understates_total_matches_below_pastes_actually_shown` (a
+  `count` at/below `paste_count` must never add or shrink anything); the
+  existing equal-count test gained an explicit
+  `assert!(!ev.attributes.contains_key("total_matches"))`. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630 lib
+  tests, +2). Paired: `PROBLEM_TREE` T2.99, §8 — same commit.

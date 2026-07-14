@@ -287,6 +287,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A paste-search result that only showed part of what the source actually
+  found now says so.** `psbdmp`'s own match-count field was parsed but
+  silently discarded — only the pastes that made it into this response were
+  ever reported. When the source reports more matches exist than were shown,
+  that's now disclosed instead of silently understating the subject's real
+  paste exposure.
 - **Three of the four ID formats `structured_id` decodes never showed their
   creation date on the footprint timeline.** A previous fix taught the
   timeline to recognise a decoded UUIDv1's embedded creation time, but missed

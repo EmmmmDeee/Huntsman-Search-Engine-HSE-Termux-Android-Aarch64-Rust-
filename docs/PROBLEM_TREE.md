@@ -1378,6 +1378,30 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `objectid_created_date`. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4628 lib tests, +1). **Paired:** `SOLUTION_TREE`
   §2 new node + §4 gap analysis, §5 — same commit.
+- **`[x]` T2.99 · `psbdmp::SearchResp::count` — the psbdmp.ws API's own
+  authoritative paste-match total — was parsed but silently discarded; only
+  the locally deduped `data.len()` (`paste_count`) ever reached evidence.**
+  Confirmed by grep: `count` is deserialised into `SearchResp` and never read
+  anywhere else in the module — the same "dropped evidentiary field" class as
+  T2.97 (`stealer::Cred::pwned_at`) and T2.98 (`structured_id`'s 3 missing
+  `AccountCreated` keys), the third instance this arc. When the server
+  reports more matches than a given response's `data` array actually
+  carried (upstream pagination/truncation), the subject's real paste
+  exposure was silently understated rather than disclosed. → **Solution:**
+  added a `total_matches` evidence attribute — `(resp.count as usize).max(paste_count)`
+  — set only when it exceeds `paste_count`, and folded into the summary text
+  (`"... ({total_matches} reported by source)"`); never replaces or shrinks
+  `paste_count`, never fabricates URLs for the undisclosed matches. **P3**
+  (same dropped-signal class as T2.97/T2.98). 2 new regression tests:
+  `extract_surfaces_total_matches_when_server_count_exceeds_shown_pastes`
+  (server `count:5` vs. 2 shown pastes → `total_matches:5` + summary
+  disclosure) and `extract_never_understates_total_matches_below_pastes_actually_shown`
+  (a `count` at/below `paste_count` must never add or shrink anything); the
+  existing equal-count test gained an explicit
+  `assert!(!ev.attributes.contains_key("total_matches"))`. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630 lib
+  tests, +2). **Paired:** `SOLUTION_TREE` SOL-PSBDMP-TOTAL-MATCHES (new
+  node), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -11251,3 +11275,21 @@ way, so this specific drift class can't recur silently again.
   before the fix the TIMELINE section was empty for both. Gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures. **Paired:**
   `SOLUTION_TREE` §2 new node + §4 gap analysis, §5 — same commit.
+- **2026-07-14** — **T2.99: `psbdmp::SearchResp::count` — the server's own
+  authoritative paste-match total — was parsed but silently discarded, the
+  third instance this arc of the same dropped-evidentiary-field class
+  (T2.97 `stealer::Cred::pwned_at`, T2.98 `structured_id`'s 3 missing
+  `AccountCreated` keys).** Only the locally deduped `data.len()`
+  (`paste_count`) ever reached evidence; when the server reports more
+  matches than a given response's `data` array actually carried (upstream
+  pagination/truncation), the subject's real paste exposure was silently
+  understated. Fixed by adding a `total_matches` evidence attribute —
+  `(resp.count as usize).max(paste_count)` — set only when it exceeds
+  `paste_count`, folded into the summary text; never replaces or shrinks
+  `paste_count`, never fabricates URLs for the undisclosed matches. 2 new
+  regression tests (server-count-exceeds-shown, and the inverse guard that a
+  smaller/equal `count` never shrinks or adds anything); the existing
+  equal-count test gained an explicit no-`total_matches` assertion. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630
+  lib tests, +2). **Paired:** `SOLUTION_TREE` SOL-PSBDMP-TOTAL-MATCHES (new
+  node), §5 — same commit.
