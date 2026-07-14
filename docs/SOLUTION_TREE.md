@@ -1043,10 +1043,31 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   general defect — any engine whose markup repeats an `href` for an
   icon-then-title pair could hit the same failure — named explicitly here
   as the next candidate rather than folded into this already-complete
-  slice. *Remaining corpus slices, unchanged:* `au_people`/`au_electoral`/
-  `au_property` (still proxy-blocked) and the other 13 `search_engines`
-  engines. **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture corpus, sixth
-  slice), §8 — same commit.
+  slice. *Closed 2026-07-14 — see the `extract_anchor_text` multi-occurrence
+  fix below.* *Remaining corpus slices, unchanged:* `au_people`/
+  `au_electoral`/`au_property` (still proxy-blocked) and the other 13
+  `search_engines` engines. **Paired:** `PROBLEM_TREE` T2.7 (golden-fixture
+  corpus, sixth slice), §8 — same commit.
+  *`extract_anchor_text` multi-occurrence fix delivered (2026-07-14),
+  closing the deferred title-extraction defect above:* the old
+  first-occurrence-only `html.find(&search_dq)` scan hit a result's
+  textless icon-wrapper anchor and stopped; confirmed against the unfixed
+  code (`git stash` on the one file) to produce an empty title for the
+  capture's Instagram result and "Visit in Anonymous View" — the PRECEDING
+  card's own proxy-link label — for the other 3 genuine results. Fixed by
+  walking every occurrence of the href in the document and keeping the LAST
+  one with non-empty extracted text, matching the observed chrome-first,
+  full-title-last document order (icon wrapper → short site-name anchor →
+  display-URL anchor → the real `<h2>`-wrapped title, in that order, in the
+  real capture) — the common single-occurrence case is unaffected. 2 new
+  regression tests (a synthetic 4-occurrence case; a real-capture test
+  pinning all 4 recovered titles exactly and asserting none contain
+  "Anonymous View"), git-stash-proven by reverting the fix alone
+  (reproduces the exact original empty/"Anonymous View" titles); restored,
+  both pass. All 304 pre-existing `search_engines`-scoped tests continue to
+  pass unchanged. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4634 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.95,
+  §8 — same commit.
 
 - **`[x]` SOL-AUDIT-TEMPORAL-SCOPE · `hse audit`'s engine-health signal is
   gated to the audited scan's own era, not "right now"** → **T2.76**. Found

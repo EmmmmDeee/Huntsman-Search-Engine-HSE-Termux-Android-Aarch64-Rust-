@@ -719,6 +719,28 @@ fn extract_anchor_text_missing_href() {
     assert!(title.is_empty());
 }
 
+/// A real Startpage capture repeats a result's own URL across 4 `<a href="…">`
+/// occurrences per card: a textless icon wrapper, a short site-name anchor, a
+/// display-URL anchor, then the actual titled link last. The former
+/// first-occurrence-only scan hit the textless icon wrapper and returned
+/// empty, forcing the caller to fall back to a fixed-width surrounding-text
+/// window that (for this exact markup shape) bled in the PRECEDING result's
+/// own "Visit in Anonymous View" label instead of this result's real title.
+/// Regression: the real title, the last non-empty occurrence, must be
+/// returned directly.
+#[test]
+fn extract_anchor_text_skips_textless_occurrences_to_find_the_real_title() {
+    let html = concat!(
+        r#"<a href="https://example.com/x" class="favicon-link"></a>"#,
+        r#"<a href="https://example.com/x" class="wgl-site-title">Example</a>"#,
+        r#"<a href="https://example.com/x" class="wgl-display-url">https://example.com/x</a>"#,
+        r#"<a class="result-title" href="https://example.com/x">"#,
+        r#"<h2>The Real Result Title</h2></a>"#,
+    );
+    let title = extract_anchor_text(html, "https://example.com/x", 200);
+    assert_eq!(title, "The Real Result Title");
+}
+
 #[test]
 fn captcha_detection_datadome() {
     let body = "<html><body>Please enable JS \

@@ -19,22 +19,59 @@ pub(in crate::modules::search_engines) fn extract_anchor_text(
 ) -> String {
     let search_dq = format!("href=\"{href}\"");
     let search_sq = format!("href='{href}'");
-    let pos = match html.find(&search_dq).or_else(|| html.find(&search_sq)) {
-        Some(p) => p,
-        None => return String::new(),
-    };
-    let after_href = &html[pos..];
-    let gt = match after_href.find('>') {
-        Some(g) => pos + g + 1,
-        None => return String::new(),
-    };
-    let rest = &html[gt..];
-    let end_tag = rest.find("</a>").or_else(|| rest.find("</A>"));
-    let end = match end_tag {
-        Some(e) => gt + e,
-        None => return String::new(),
-    };
-    strip_tags(&html[gt..end], max_len)
+    // A result's own URL commonly appears in MULTIPLE `<a href="…">` occurrences
+    // within the same result card — an icon-only "favicon-link" wrapper first
+    // (no visible text at all), then a short site-name/display-URL anchor, then
+    // the actual titled link last (a real Startpage capture,
+    // `fetch/testdata/startpage_kylo4kylo.html`, has exactly this 4-deep shape
+    // for every result). Stopping at the FIRST occurrence — as this function
+    // used to — hits the textless icon wrapper and returns empty, forcing the
+    // caller to fall back to `extract_surrounding_text`'s fixed-width window,
+    // which grabs whatever visible text happens to sit nearby instead: on the
+    // real capture that was either nothing (an empty title) or, for 3 of the
+    // 4 results, the PRECEDING card's own "Visit in Anonymous View" proxy-link
+    // label — silently corrupting the title with unrelated chrome text either
+    // way. Walking every occurrence and keeping the LAST one with actual
+    // visible text recovers the real title: the observed document order
+    // across engines is chrome-first, full-title-last, so a later non-empty
+    // occurrence is always at least as trustworthy as an earlier one, and the
+    // overwhelmingly common single-occurrence case (href appears exactly
+    // once) is unaffected — the loop still finds and returns that one match.
+    let mut best = String::new();
+    let mut search_from = 0usize;
+    while search_from < html.len() {
+        let pos_dq = html[search_from..]
+            .find(&search_dq)
+            .map(|p| p + search_from);
+        let pos_sq = html[search_from..]
+            .find(&search_sq)
+            .map(|p| p + search_from);
+        let Some(pos) = (match (pos_dq, pos_sq) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }) else {
+            break;
+        };
+        let after_href = &html[pos..];
+        let Some(g) = after_href.find('>') else {
+            break;
+        };
+        let gt = pos + g + 1;
+        let rest = &html[gt..];
+        let Some(e) = rest.find("</a>").or_else(|| rest.find("</A>")) else {
+            break;
+        };
+        let end = gt + e;
+        let text = strip_tags(&html[gt..end], max_len);
+        if !text.trim().is_empty() {
+            best = text;
+        }
+        // `gt > pos` always (`find('>')` returns `g >= 0`), so this guarantees
+        // forward progress and the loop terminates.
+        search_from = gt;
+    }
+    best
 }
 
 pub(in crate::modules::search_engines) fn extract_surrounding_text(

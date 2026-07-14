@@ -774,6 +774,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   This is a real, distinct, likely-general bug (any engine repeating an
   `href` for an icon-then-title pair could hit it) named explicitly here as
   a next candidate, not silently dropped nor rushed into this commit.
+  *Closed 2026-07-14 as T2.95 (below).*
   *Remaining corpus slices, unchanged:* `au_people`/`au_electoral`/
   `au_property` (still proxy-blocked) and the other 13 `search_engines`
   engines. **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture
@@ -1109,6 +1110,50 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   tests unchanged; 99 `tests/api.rs` integration tests unchanged — no new
   Rust surface to test, the fix is entirely in SPA copy/options). **Paired:**
   `SOLUTION_TREE` SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.
+- **`[x]` T2.95 · `extract_anchor_text` stopped at the FIRST `href="…"`
+  occurrence, so a result whose own URL repeats across multiple anchors in
+  its card (a textless icon wrapper, then a short site-name/display-URL
+  anchor, then the actual titled link last) got the wrong title — the named
+  "next candidate" the T2.7 sixth Startpage slice (2026-07-14) deferred
+  rather than rushed in.** Confirmed on the real capture
+  (`fetch/testdata/startpage_kylo4kylo.html`): the Instagram result's title
+  came out empty, and the other 3 genuine (non-excluded) results' titles came
+  out as "Visit in Anonymous View" — Startpage's own adjacent proxy-link
+  label, legitimately visible text belonging to the PRECEDING result card,
+  bled in via `extract_anchor_text`'s empty-text fallback to
+  `extract_surrounding_text`'s fixed ±300-char window, which for this markup
+  shape reached backward into the wrong card instead of forward to this
+  card's own (much further away) real title. Root cause confirmed by direct
+  inspection of the real bytes: every result repeats its own `href` value 4
+  times (`favicon-link` icon wrapper → `wgl-site-title` short name →
+  `wgl-display-url` URL text → the actual `<h2>`-wrapped title, in that
+  document order), and the old `html.find(&search_dq)` matched only the
+  first (textless) occurrence. → **Solution:** `extract_anchor_text` now
+  walks EVERY occurrence of the href in the document, keeping the LAST one
+  whose extracted text is non-empty rather than stopping at the first
+  match — the observed document order across engines is chrome-first,
+  full-title-last, so a later non-empty occurrence is always at least as
+  trustworthy as an earlier one; the overwhelmingly common single-occurrence
+  case is unaffected (the loop still returns that one match). **P2/
+  evidentiary-quality** (a title-correctness defect — the URL and snippet
+  were always right, only the title was corrupted with unrelated chrome
+  text, silently misattributing a comment to the wrong entity in exactly the
+  way this project's evidentiary doctrine treats as a false-positive-
+  adjacent defect). 2 new regression tests: a synthetic
+  `extract_anchor_text_skips_textless_occurrences_to_find_the_real_title`
+  pins the general mechanism (icon → site-name → display-url → real title,
+  4 repeated occurrences); `parse_results_recovers_real_titles_not_the_
+  preceding_cards_anonymous_view_label` proves it against the actual
+  captured bytes, asserting all 4 real titles are recovered exactly and none
+  contain "Anonymous View". Git-stash-proven: reverting
+  `extract_anchor_text`'s multi-occurrence walk alone reproduces the exact
+  original failure (empty title for Instagram, "Visit in Anonymous View" for
+  the other 3); restored, all pass. All 304 pre-existing `search_engines`-
+  scoped tests continue to pass unchanged (+2 net for this fix). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4634 lib
+  tests, +2; 99 `tests/api.rs` integration tests unchanged). **Paired:**
+  `SOLUTION_TREE` SOL-HEALTH-SIGNAL (extract_anchor_text multi-occurrence
+  fix, new sub-node), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10746,3 +10791,30 @@ way, so this specific drift class can't recur silently again.
   full suite 0 failures (4632 lib tests, 99 `tests/api.rs` tests — both
   unchanged, no new Rust surface). **Paired:** `SOLUTION_TREE`
   SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.
+- **2026-07-14** — **T2.95: closed the title-extraction defect the T2.7
+  sixth (Startpage) slice had explicitly named as its next candidate rather
+  than rush into that commit.** `extract_anchor_text` stopped at the FIRST
+  `href="…"` occurrence in the document; the real Startpage capture
+  (`fetch/testdata/startpage_kylo4kylo.html`) repeats each genuine result's
+  own URL 4 times per card (a textless icon wrapper first, a short site-name
+  anchor, a display-URL anchor, then the actual titled `<h2>` link last), so
+  the old scan hit the textless wrapper, returned empty, and the caller's
+  fallback to `extract_surrounding_text`'s fixed ±300-char window grabbed
+  whatever text happened to sit nearby instead — confirmed against the
+  unfixed code (`git stash` on the one file) to be an empty title for the
+  Instagram result and, for the other 3 genuine results, the PRECEDING
+  card's own "Visit in Anonymous View" proxy-link label bleeding in as the
+  title. Fixed by walking every occurrence of the href and keeping the LAST
+  one with non-empty extracted text — matches the observed chrome-first,
+  full-title-last document order across engines, and leaves the
+  overwhelmingly common single-occurrence case unaffected (the loop still
+  returns that one match). 2 new regression tests (a synthetic 4-occurrence
+  case pinning the mechanism, plus a real-capture test asserting all 4
+  genuine Startpage titles are recovered exactly and none contain "Anonymous
+  View"), git-stash-proven by reverting the fix alone (reproduces the exact
+  original empty/"Anonymous View" titles); restored, both pass. All 304
+  pre-existing `search_engines`-scoped tests continue to pass unchanged.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4634 lib tests, +2; 99 `tests/api.rs` integration tests unchanged).
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (extract_anchor_text
+  multi-occurrence fix, new sub-node), §5 — same commit.

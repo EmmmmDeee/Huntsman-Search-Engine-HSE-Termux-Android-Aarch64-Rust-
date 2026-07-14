@@ -325,6 +325,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   fallback used to guess a title could accidentally grab a neighboring
   icon's internal drawing instructions instead of real text. Now it always
   skips past that icon data first.
+- **Some Startpage results could show an unrelated caption ("Visit in
+  Anonymous View") as their title instead of the result's real title.**
+  Startpage's page markup links a result's own URL more than once — first
+  in an icon with no visible text, then later in the real titled link — and
+  title extraction was stopping at that first, empty link instead of
+  continuing on to the real one. Fixed to keep looking until it finds the
+  actual title; results now show their genuine title (e.g. a real Instagram
+  or YouTube page title) instead of borrowed caption text from a
+  neighboring result.
 - **Dogpile and Swisscows results no longer include those engines' own
   official social-media pages disguised as genuine hits about your search
   subject.** Dogpile's own mascot's Facebook page, and all four of

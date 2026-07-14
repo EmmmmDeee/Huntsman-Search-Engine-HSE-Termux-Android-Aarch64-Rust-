@@ -522,3 +522,52 @@ use super::*;
              {urls:?}"
         );
     }
+
+    /// The same real capture repeats each genuine result's own URL across 4
+    /// `<a href="…">` occurrences per card (a textless icon wrapper, a short
+    /// site-name anchor, a display-URL anchor, then the actual titled link
+    /// last). `extract_anchor_text` used to stop at the FIRST occurrence —
+    /// the textless icon wrapper — return empty, and fall back to a
+    /// fixed-width surrounding-text window. Confirmed against the unfixed
+    /// code (`git stash` on `helpers/text.rs` alone): that produced an
+    /// empty title for the Instagram result and, for the other 3, bled in
+    /// the PRECEDING card's own "Visit in Anonymous View" proxy-link label
+    /// instead of the real title — a genuine evidentiary defect, not a
+    /// cosmetic one. Pins the fix: every genuine result's real title (from
+    /// its own `<h2>`) is recovered, and none carry the unrelated
+    /// "Anonymous View" chrome text.
+    #[test]
+    fn parse_results_recovers_real_titles_not_the_preceding_cards_anonymous_view_label() {
+        let results = parse_results(GOLDEN_STARTPAGE_KYLO4KYLO, "startpage", "Kylo4kylo");
+        let by_url = |needle: &str| {
+            results.iter().find(|r| r.url.contains(needle)).unwrap_or_else(|| {
+                let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+                panic!("expected a result containing {needle:?}: {urls:?}")
+            })
+        };
+        assert_eq!(
+            by_url("instagram.com/kylo4k").title,
+            "(@kylo4k) • Instagram photos and videos"
+        );
+        assert_eq!(
+            by_url("youtube.com/watch?v=56pNU92SpcE").title,
+            "The Macau Exclusive - YouTube"
+        );
+        assert_eq!(
+            by_url("nexusmods.com/starwarsbattlefront22017").title,
+            "PM IA Baylan Skoll Kit for Vader at Star Wars - Nexus Mods"
+        );
+        assert_eq!(
+            by_url("utoronto.scholaris.ca").title,
+            "Collaborative Reflection Within An Online Environment"
+        );
+        for r in &results {
+            assert!(
+                !r.title.contains("Anonymous View"),
+                "no result's title should carry Startpage's own proxy-link \
+                 label bled in from a neighbouring card: {:?} -> {:?}",
+                r.url,
+                r.title
+            );
+        }
+    }
