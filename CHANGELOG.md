@@ -367,6 +367,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   Exposed-service evidence now carries a `service_details` attribute (port
   label paired with its app/banner, only when at least one is present) full
   fidelity and unclipped, alongside the existing port tags.
+- **`onyphe` never surfaced a threat-list hit.** The module's own doc
+  comment already promised "threatlist classification is surfaced," and
+  ONYPHE's threat-list name and descriptive tags were already parsed into
+  the module's raw per-result JSON — but no code path ever read either
+  field back out, so every ONYPHE threat-list hit was silently dropped.
+  Now a threat-list category result tags the scan's own IP/domain target
+  `threat-intel`/`malicious` (matching how `ip_reputation`/`urlhaus`/
+  `virustotal`/`threatfox`/`abuseipdb`/`greynoise` already report
+  third-party threat-list hits) with evidence carrying the list name and
+  tags.
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were

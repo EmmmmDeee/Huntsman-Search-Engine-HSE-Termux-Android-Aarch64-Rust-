@@ -2799,9 +2799,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   attribute (port label paired with its app/banner, full-fidelity, never a
   bare duplicate when neither is present) alongside the existing `ports`
   tag/attribute — see `PROBLEM_TREE` T2.102 for the finding and fix detail.
-- **`[ ]` SOL-ONYPHE-THREATLIST · Wire `threatlist`/`tag` fields into
-  evidence/tags as the doc already describes** → **T2.103**. Queued, not
-  yet started — see `PROBLEM_TREE` T2.103 for the finding.
+- **`[x]` SOL-ONYPHE-THREATLIST · Wire `threatlist`/`tag` fields into
+  evidence/tags as the doc already describes** → **T2.103**. Delivered
+  2026-07-14: a new `@category == "threatlist"` block reads `threatlist`/
+  `tag`, emitting the scan target tagged `THREAT_INTEL`/`MALICIOUS` with an
+  evidence record carrying the list name and joined tags — see
+  `PROBLEM_TREE` T2.103 for the finding and fix detail.
 - **`[ ]` SOL-GEOCODE-ADDRESSDETAILS · Add an `address` field to
   `NominatimResult` and fold components into Address evidence** →
   **T2.104**. Queued, not yet started — see `PROBLEM_TREE` T2.104 for the
@@ -3419,8 +3422,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   plus 2 miscellaneous. Individual stub nodes are in `PROBLEM_TREE` §3.2
   above (T2.102–T2.150) and their `SOLUTION_TREE` pairs in §2 above (right
   after `SOL-GRAVATAR-VERIFIED-BOOL`). *Progress: T2.102 (`zoomeye`
-  banner/app) delivered 2026-07-14, same day as the merge — 48 of 49 still
-  queued, none of the other 48 investigated or fixed yet.*
+  banner/app) and T2.103 (`onyphe` threatlist/tag) delivered 2026-07-14,
+  same day as the merge — 47 of 49 still queued, none of the other 47
+  investigated or fixed yet.*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -8183,4 +8187,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `has_more` and an actual cursor (4 cases), and `Surface::max_page_size()`
   is pinned to 1000/100. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures. Paired: `PROBLEM_TREE` T2.151, §8 — same
+  commit.
+- **2026-07-14 — SOL-ONYPHE-THREATLIST `[ ]`→`[x]`: second delivery off the
+  49-finding audit queue.** `onyphe::extract_entities` parsed every result
+  document into a raw `Value` but never read `threatlist`/`tag` back out for
+  the `threatlist` category, despite the module's own doc comment naming
+  both fields as parsed — silently dropping every threat-list hit ONYPHE
+  returns. New `@category == "threatlist"` block reads `threatlist`
+  (`vstr`) and `tag` (`vstrs`) and, when either is present, emits the scan
+  target tagged `THREAT_INTEL`/`MALICIOUS` with an evidence record carrying
+  the list name and joined tags, matching the tag/evidence pattern already
+  used by `ip_reputation`/`urlhaus`/`virustotal`/`threatfox`/`abuseipdb`/
+  `greynoise`. 2 new regression tests
+  (`threatlist_category_wires_name_and_tags_into_evidence`,
+  `threatlist_category_without_name_or_tags_emits_nothing`); `git stash`
+  confirms both fail to compile pre-fix (wholly new block). Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4641 lib
+  tests, +2). **Paired:** `PROBLEM_TREE` T2.103 `[ ]`→`[x]` + §8 — same
   commit.

@@ -1570,15 +1570,33 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   functions under test didn't exist). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-ZOOMEYE-BANNER `[ ]`→`[x]` — same commit.
-- **`[ ]` T2.103 · `onyphe::extract_entities` never reads the `threatlist`/`tag`
+- **`[x]` T2.103 · `onyphe::extract_entities` never reads the `threatlist`/`tag`
   fields its own doc comment claims it parses.**
-  The doc comment on the extraction function specifically claims ONYPHE
-  threat-list classification is surfaced, but no code path reads either
-  field, silently dropping every threat-list hit. → **Solution:** wire
-  `threatlist`/`tag` into evidence/tags as the doc already describes. **P2**.
-  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-ONYPHE-THREATLIST (new stub).
+  Confirmed live: the doc comment on the module specifically claims ONYPHE
+  threat-list classification is surfaced ("`threatlist`/`tag`"), but no code
+  path in `extract_entities` read either field out of the raw per-result
+  `Value` document, silently dropping every threat-list hit ONYPHE returns
+  (a named block/threat list plus descriptive tags, e.g.
+  `blocklist_de` / `["Scanner","SSH"]`). → **Fix:** a new `@category ==
+  "threatlist"` block reads `threatlist` (`vstr`) and `tag` (`vstrs`, the
+  existing string-or-array reader) and, when either is present, emits the
+  scan's own target (`target.to_entity`) tagged `THREAT_INTEL` + `MALICIOUS`
+  with an evidence record carrying the list name and joined tags —
+  mirroring the same tag/evidence pattern already established by
+  `ip_reputation`/`urlhaus`/`virustotal`/`threatfox`/`abuseipdb`/
+  `greynoise` for third-party threat-list hits. Guarded so a `threatlist`
+  document with neither field present emits nothing (never fabricates a
+  hit), and deduplicated (`seen`) so a repeated identical list/tag
+  combination across multiple result documents doesn't multiply the
+  output. **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1
+  (module categories) — investigated and fixed this cycle.* 2 new
+  regression tests (`threatlist_category_wires_name_and_tags_into_evidence`,
+  `threatlist_category_without_name_or_tags_emits_nothing`); `git stash`
+  confirms both fail to even compile against the pre-fix code (the
+  `threatlist` block under test didn't exist). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4641 lib tests, +2).
+  **Paired:** `SOLUTION_TREE` SOL-ONYPHE-THREATLIST `[ ]`→`[x]` — same
+  commit.
 - **`[ ]` T2.104 · `geocode` requests `addressdetails=1` from Nominatim but
   `NominatimResult` has no `address` field to receive it.**
   The whole city/state/postcode/country/road/suburb breakdown Nominatim
@@ -12143,3 +12161,25 @@ way, so this specific drift class can't recur silently again.
   per-surface page-size ceilings). Gate green: fmt/clippy `-D warnings`/
   rustdoc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE`
   SOL-OATHNET-FULL-PAGINATION, §5 — same commit.
+- **2026-07-14 — T2.103 (`onyphe` threatlist/tag) `[ ]`→`[x]`: second item
+  picked off the 49-finding comprehensive-audit queue.** Per step 1's
+  priority order (no in-progress node standing after T2.102 closed the same
+  day; highest-priority open node next), took the next of the queued
+  T2.103–T2.150 stubs. Confirmed real against the module's own top-of-file
+  doc comment, which names `threatlist`/`tag` as parsed fields, and the live
+  code, which parsed every ONYPHE result document into a raw `Value` but had
+  no code path reading either field back out for the `threatlist` category —
+  silently dropping every threat-list hit (named block/threat list + tags)
+  ONYPHE returns. Fix: a new `@category == "threatlist"` block reads
+  `threatlist` (`vstr`) and `tag` (`vstrs`) and, when either is present,
+  emits the target itself tagged `THREAT_INTEL`/`MALICIOUS` with an evidence
+  record carrying the list name and joined tags — the same pattern already
+  used by `ip_reputation`/`urlhaus`/`virustotal`/`threatfox`/`abuseipdb`/
+  `greynoise`; guarded against fabricating a hit when neither field is
+  present, deduplicated across repeated identical hits. 2 new regression
+  tests (`threatlist_category_wires_name_and_tags_into_evidence`,
+  `threatlist_category_without_name_or_tags_emits_nothing`); `git stash`
+  confirms both fail to even compile against the pre-fix tree (the block
+  under test didn't exist). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4641 lib tests, +2). **Paired:**
+  `SOLUTION_TREE` SOL-ONYPHE-THREATLIST `[ ]`→`[x]` — same commit.
