@@ -1503,6 +1503,445 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   API generation). Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4632 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-GRAVATAR-VERIFIED-BOOL (new node), §5 — same commit.
+- **`[ ]` T2.102 · `zoomeye`'s entity extraction never reads `portinfo.banner`/`portinfo.app`.**
+  Both fields are present in the live API response and the module's own test
+  fixture, and are promised as extracted evidence in docs, but only `port`
+  and `service` are pulled out of `portinfo`. → **Solution:** read `banner`/
+  `app` into the port evidence attributes alongside `service`. **P2**. *Queued
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories) — not
+  yet investigated or fixed.* **Paired:** `SOLUTION_TREE` SOL-ZOOMEYE-BANNER
+  (new stub).
+- **`[ ]` T2.103 · `onyphe::extract_entities` never reads the `threatlist`/`tag`
+  fields its own doc comment claims it parses.**
+  The doc comment on the extraction function specifically claims ONYPHE
+  threat-list classification is surfaced, but no code path reads either
+  field, silently dropping every threat-list hit. → **Solution:** wire
+  `threatlist`/`tag` into evidence/tags as the doc already describes. **P2**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-ONYPHE-THREATLIST (new stub).
+- **`[ ]` T2.104 · `geocode` requests `addressdetails=1` from Nominatim but
+  `NominatimResult` has no `address` field to receive it.**
+  The whole city/state/postcode/country/road/suburb breakdown Nominatim
+  sends back is discarded on deserialization because the struct never
+  declares the field. → **Solution:** add an `address` field to
+  `NominatimResult` and fold its components into Address evidence. **P2**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-GEOCODE-ADDRESSDETAILS (new stub).
+- **`[ ]` T2.105 · `launchpad_user` parses the obsolete `homepage_content`
+  field instead of the populated `description` field for bio text.**
+  `homepage_content` is `null` on modern Launchpad accounts; the bio text
+  that's actually populated lives in `description`, which the module never
+  reads. → **Solution:** switch the bio extraction to read `description`.
+  **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-LAUNCHPAD-DESCRIPTION (new stub).
+- **`[ ]` T2.106 · `steam_profile::extract_profile` never reads the `<summary>`
+  (bio) or `<steamID>` (persona name) XML tags.**
+  Every sibling Social module extracts bio emails/URLs and a display name,
+  but `steam_profile` skips both fields entirely, losing bio-embedded
+  pivots and the persona name. → **Solution:** parse `<summary>` for
+  emails/URLs and `<steamID>` into a Person/Username entity, matching
+  sibling modules. **P2**. *Queued from the 2026-07-14 comprehensive audit,
+  wave 1 (module categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-STEAM-SUMMARY-PERSONA (new stub).
+- **`[ ]` T2.107 · `sanctions_ofac` never captures the OFAC SDN `Title` column
+  (role/position) into `SdnRecord` or evidence.**
+  The Title field carries role/position identity data relevant to
+  misattribution risk, but `parse.rs` neither stores it on `SdnRecord` nor
+  surfaces it as evidence. → **Solution:** add a `title` field to
+  `SdnRecord` and include it in the emitted evidence. **P2**. *Queued from
+  the 2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE` SOL-OFAC-TITLE (new
+  stub).
+- **`[ ]` T2.108 · `hlr_cnam`'s `HlrResp` field names don't match the real
+  vendor JSON keys, so `#[serde(default)]` silently deserializes to `None`.**
+  Because every mismatched field falls back to its serde default instead of
+  erroring, `hlr-verified`/`ported`/`roaming` tags never fire on live calls
+  even when the vendor actually returns that data. → **Solution:** correct
+  the field names/renames against the real vendor response shape and add a
+  live-shaped fixture test. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-HLR-CNAM-FIELDNAMES (new stub).
+- **`[ ]` T2.109 · `signal_radar::scan_cell` fetches
+  `termux-telephony-signalstrength` a second time and discards the
+  response.**
+  This is a second ~3s subprocess call whose result is thrown away,
+  contradicting the function's own doc comment about what it collects, and
+  wasting real on-device latency for nothing. → **Solution:** either fold
+  the second call's data into the scan result or delete the redundant call.
+  **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-SIGNALRADAR-CELL-DISCARD (new stub).
+- **`[ ]` T2.110 · `chain_intel`'s `BlockscoutAddress` struct drops
+  `is_scam`/`reputation`/`public_tags`/`name` fields Blockscout returns.**
+  Real threat/OSINT signal for wallet enrichment that Blockscout's API
+  already provides is discarded at deserialization because the struct
+  never declares these fields. → **Solution:** add the fields to
+  `BlockscoutAddress` and fold them into wallet evidence/tags. **P2**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-CHAININTEL-BLOCKSCOUT-FIELDS (new stub).
+- **`[ ]` T2.111 · `ip_reputation`'s `run_otx`/`run_tor_check` discard all
+  transport/parse failures, and `process()` always returns `Ok`.**
+  A total OTX+Tor outage looks identical to a clean "nothing found" result
+  — the operator has no way to distinguish a real negative from a source
+  outage. → **Solution:** propagate transport/parse errors (or a partial-
+  failure marker) instead of swallowing them into an empty `Ok`. **P2**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-IPREP-SWALLOWED (new stub).
+- **`[ ]` T2.112 · `gravatar::process()` collapses every `Err` from
+  `fetch_json_or_404`, not just deserialize failures, into the same empty
+  result as a legitimate 404.**
+  A transport error or a non-404 HTTP failure is indistinguishable from a
+  real "no Gravatar profile" outcome. → **Solution:** narrow the collapse
+  to the genuine 404 case only and propagate other errors. **P2**. *Queued
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
+  not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-GRAVATAR-ERR-COLLAPSE (new stub).
+- **`[ ]` T2.113 · `employer_pivot::process()` returns plain `Ok` when all up
+  to 8 page fetches fail at the transport/HTTP level, including the
+  homepage.**
+  A total fetch outage is indistinguishable from a genuine no-info result,
+  hiding a source that never actually ran. → **Solution:** track whether
+  every fetch failed and surface that as an error/skip rather than a clean
+  empty `Ok`. **P2**. *Queued from the 2026-07-14 comprehensive audit, wave
+  1 (module categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-EMPLOYERPIVOT-ALLFAIL (new stub).
+- **`[ ]` T2.114 · `niamonx` returns `Ok(ModuleResult::new())` when all 3
+  concurrently-fetched endpoints fail (e.g. an invalid API key).**
+  An entirely broken key or outage is indistinguishable from a genuine
+  no-hit result. → **Solution:** detect the all-endpoints-failed case and
+  surface it as an error instead of a silent empty result. **P2**. *Queued
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
+  not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-NIAMONX-ALLFAIL (new stub).
+- **`[ ]` T2.115 · `psbdmp`'s sole data fetch converts every failure mode
+  (network error, non-2xx, malformed JSON) into a clean empty result.**
+  The module's own doc comment records this happening in production (0/152
+  ok) — a real, observed failure pattern, not a hypothetical. → **Solution:**
+  distinguish fetch/parse failure from a genuine zero-match result and
+  surface the former as an error. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-PSBDMP-SWALLOWED-FAILURE (new
+  stub).
+- **`[ ]` T2.116 · `pwned_passwords` treats a non-2xx response (transient
+  5xx/429) identically to a genuine zero-count result.**
+  Sibling Breach modules propagate non-2xx as `Err`; this one silently folds
+  a rate-limit or server error into "password not found in any breach."
+  → **Solution:** propagate non-2xx as an error, matching sibling Breach
+  modules. **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1
+  (module categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-PWNEDPW-NON2XX (new stub).
+- **`[ ]` T2.117 · Nine Social profile modules (`bitbucket_user` + 8 others)
+  share `Ok(None)|Err(_) => Ok(ModuleResult::new())`, converting real
+  fetch failures into a fake 404.**
+  A 429/5xx/timeout is indistinguishable from "this username doesn't exist
+  on this platform" across all nine modules. → **Solution:** split the
+  `Err(_)` arm out from the genuine-404 `Ok(None)` arm and propagate fetch
+  failures across all nine modules. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-NINE-SOCIAL-FAKE-404 (new stub).
+- **`[ ]` T2.118 · `asic_persons`/`asic_banned_orgs`/`asic_business_names`
+  hand-roll their own fetch instead of the shared `util::ckan::Response`.**
+  Hand-rolling drops CKAN's `success` field and swallows every real
+  failure that the shared response type would have surfaced. → **Solution:**
+  migrate all three modules onto `util::ckan::Response`. **P2**. *Queued
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
+  not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-ASIC-CKAN-HANDROLL (new stub).
+- **`[ ]` T2.119 · `au_unclaimed`, the sole remaining QLD CKAN data source,
+  swallows any transport/parse failure into a clean empty result.**
+  The module's own doc self-documents this as intentional, but it means a
+  real outage of the last QLD source reads as "no unclaimed money found."
+  → **Solution:** surface transport/parse failure as an error instead of a
+  silent empty result. **P2**. *Queued from the 2026-07-14 comprehensive
+  audit, wave 1 (module categories) — not yet investigated or fixed.*
+  **Paired:** `SOLUTION_TREE` SOL-AU-UNCLAIMED-SWALLOWED (new stub).
+- **`[ ]` T2.120 · `asic_director::process()` swallows every failure
+  (transport error, non-2xx, oversized body) into a silent
+  `Ok(ModuleResult::new())`.**
+  Same defect class already fixed the same day for sibling `au_property` —
+  `asic_director` was missed. → **Solution:** apply the same honest-failure
+  fix already landed for `au_property`. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-ASIC-DIRECTOR-SWALLOWED (new
+  stub).
+- **`[ ]` T2.121 · `urlhaus`'s 401/403 (rejected Auth-Key) handling degrades
+  to a clean `Ok(ModuleResult::new())` without calling
+  `ctx.report_key_exhausted`.**
+  The key pool never learns the key is dead, so a revoked/invalid urlhaus
+  key keeps being used (and silently producing nothing) instead of being
+  rotated out. → **Solution:** call `ctx.report_key_exhausted` on 401/403
+  before returning the empty result. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-URLHAUS-KEY-EXHAUSTED (new stub).
+- **`[ ]` T2.122 · Each of `chain_intel`'s 5 wired chains has exactly one
+  data source; when that call fails, `process()` returns the same clean
+  result as a deliberate unsupported-chain no-op.**
+  There's no way to tell "this chain isn't supported" apart from "the one
+  source for this chain just failed." → **Solution:** distinguish
+  unsupported-chain from fetch-failure in the returned result/error.
+  **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-CHAININTEL-SINGLE-SOURCE (new stub).
+- **`[ ]` T2.123 · `api_key_probe::probe_endpoint()` returns `None` for any
+  transport failure, treated identically to a normal non-match.**
+  If all 23+ probes fail (e.g. no network), no error is surfaced anywhere —
+  it looks like a clean "no keys found in this text" result. → **Solution:**
+  track transport-failure count separately from non-match count and surface
+  an error when every probe failed to even execute. **P2**. *Queued from
+  the 2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-APIKEYPROBE-TRANSPORT-SWALLOW (new stub).
+- **`[ ]` T2.124 · `contact_enrich` hand-duplicates sibling `gravatar`
+  module's entire profile-enrichment logic (its own MD5 hash + response
+  types) instead of reusing it.**
+  The duplicated copy has drifted incomplete relative to the original it
+  copied. → **Solution:** have `contact_enrich` call into `gravatar`'s
+  shared enrichment logic instead of maintaining a parallel copy. **P2**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-CONTACTENRICH-DEDUP (new stub).
+- **`[ ]` T2.125 · `doh_resolver` hand-rolls its own SOA-RNAME-to-email
+  decoder instead of reusing `dns_intel`'s, and mishandles decimal
+  escapes.**
+  The hand-rolled decoder also skips `util::domains::is_infrastructure_email`
+  before minting an Email entity, unlike the canonical decoder. →
+  **Solution:** replace the hand-rolled decoder with `dns_intel`'s and add
+  the infrastructure-email filter. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-DOHRESOLVER-SOA-DECODER (new
+  stub).
+- **`[ ]` T2.126 · `phone_au::classify_au_phone` hand-rolls AU line-type
+  classification instead of reusing `util::address_au::au_phone_line_type`.**
+  The two implementations have diverged, and the hand-rolled '13' shortcode
+  branch lacks a length check the shared util has. → **Solution:** delete
+  the hand-rolled classifier and call the shared
+  `util::address_au::au_phone_line_type`. **P2**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-PHONEAU-CLASSIFY-DEDUP (new stub).
+- **`[ ]` T2.127 · `app_links::host_of` hand-rolls a URL-host extractor
+  duplicating `crate::util::url_util::host_from_url`.**
+  The hand-rolled version does case-sensitive scheme matching and has no
+  IPv6-bracket handling, unlike the shared util. → **Solution:** replace
+  `host_of` with a call to `util::url_util::host_from_url`. **P2**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-APPLINKS-HOST-DEDUP (new stub).
+- **`[ ]` T2.128 · `local_net` hand-rolls its own ~30-entry MAC-prefix-to-
+  vendor table instead of the existing `util::oui::classify_mac`.**
+  The two tables have diverged and disagree on at least one real prefix.
+  → **Solution:** delete the hand-rolled table and call
+  `util::oui::classify_mac`. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-LOCALNET-MAC-VENDOR-DEDUP (new
+  stub).
+- **`[ ]` T2.129 · `signal_radar`'s and `device_sensors`' live WiFi-AP and
+  Bluetooth scanners never call `util::oui::classify_mac`.**
+  `util::oui::classify_mac`'s own doc comment states it exists specifically
+  for labeling scanned MAC addresses, but none of the live scan paths
+  (`signal_radar/wifi.rs`, `bluetooth.rs`, `device_sensors/wifi.rs`) call
+  it. → **Solution:** wire `classify_mac` into each scanner's entity-
+  building path. **P2**. *Queued from the 2026-07-14 comprehensive audit,
+  wave 1 (module categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-SENSORS-MAC-VENDOR-WIRE (new stub).
+- **`[ ]` T2.130 · `search_engines`' `normalise_address_key` hand-rolls AU
+  state-abbreviation expansion via substring (not token-wise) replace.**
+  A correct `util::address_au::locality_key` already exists; the
+  hand-rolled substring replace corrupts the Address dedup key. →
+  **Solution:** replace `normalise_address_key`'s hand-rolled expansion
+  with `util::address_au::locality_key`. **P2**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-SEARCHENGINES-ADDRESS-KEY-DEDUP (new stub).
+- **`[ ]` T2.131 · `exa_search::mine_snippet`'s phone extraction uses a
+  hand-rolled looser regex instead of the canonical
+  `util::extract::phones`.**
+  The canonical extractor requires an E.164 `+` prefix and full validation;
+  the hand-rolled regex skips both, risking false-positive phone entities.
+  → **Solution:** replace the hand-rolled regex with a call to
+  `util::extract::phones`. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-EXASEARCH-PHONE-REGEX-DEDUP (new
+  stub).
+- **`[ ]` T2.132 · `api_key_probe`'s summary Entity evidence text/
+  `services_matched` attribute is built from a `Vec` joined in `tokio
+  JoinSet` completion order.**
+  Completion order is a network race, so the same input can produce
+  different output text across runs — a determinism violation
+  (docs/CONVENTIONS.md §4-5). → **Solution:** sort the collected matches
+  before joining into the summary text/attribute. **P2**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-APIKEYPROBE-EVIDENCE-ORDER (new stub).
+- **`[ ]` T2.133 · `cell_local`'s tests only check module metadata and
+  `accuracy_to_confidence`; nothing exercises `process()`'s actual entity-
+  building logic.**
+  Tags, evidence, and `DeviceId`/`Coordinates` emission are entirely
+  untested. → **Solution:** add a `process()`-level test driving real
+  input through to entity output. **P3**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-CELLLOCAL-PROCESS-COVERAGE (new
+  stub).
+- **`[ ]` T2.134 · `email_locale`'s entire ccTLD-inference path (the
+  `cctld_country` table and its Address+Coordinates wiring) has zero test
+  coverage.**
+  Existing tests only cover the name-pattern detector, leaving the
+  ccTLD-based inference path — a separate code path producing separate
+  entities — completely unexercised. → **Solution:** add tests driving the
+  ccTLD-inference path end to end. **P3**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories) — not yet investigated or
+  fixed.* **Paired:** `SOLUTION_TREE` SOL-EMAILLOCALE-CCTLD-COVERAGE (new
+  stub).
+- **`[ ]` T2.135 · `dns_axfr` is the only DnsRecon module with core wire-
+  parsing/SSRF logic left inline in network I/O functions rather than
+  factored out.**
+  Because parsing and the SSRF guard are inline in the I/O path rather than
+  pure functions, neither has any test coverage. → **Solution:** factor the
+  wire-parsing and SSRF-guard logic out into pure, independently-testable
+  functions, matching sibling DnsRecon modules. **P3**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-DNSAXFR-PARSE-SSRF-COVERAGE (new stub).
+- **`[ ]` T2.136 · `smtp_vrfy::read_multiline`'s EOF-during-handshake fix
+  (which prevents a documented 100%-CPU infinite spin) has zero regression
+  test.**
+  The sibling `read_line_timeout` fix in the same file does have a
+  regression test; this one doesn't, so the infinite-spin bug could
+  silently return. → **Solution:** add a regression test that reproduces
+  EOF-during-handshake and asserts `read_multiline` terminates. **P3**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-SMTPVRFY-EOF-REGRESSION (new stub).
+- **`[ ]` T2.137 · Neither `hlr_cnam` nor `numverify`'s tests deserialize a
+  realistic JSON payload via serde into the response structs.**
+  All existing tests build the response structs as Rust struct literals
+  instead, which would never catch a field-name mismatch like T2.108's
+  `HlrResp`. → **Solution:** add a serde-deserialization test against a
+  realistic vendor JSON fixture for each module. **P3**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-HLR-NUMVERIFY-SERDE-TEST (new stub).
+- **`[ ]` T2.138 · `url_extract` has no dedicated `tests.rs`; only 5 inline
+  tests cover `extract_host()`, leaving `process()` itself untested.**
+  The `PLATFORM_HOSTS`-skip branch and IPv6 handling inside `process()` have
+  zero coverage. → **Solution:** add a `tests.rs` exercising `process()`
+  directly, including the skip branch and IPv6 inputs. **P3**. *Queued from
+  the 2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-URLEXTRACT-PROCESS-COVERAGE (new stub).
+- **`[ ]` T2.139 · Unlike sibling `search_engines`' pure `build_entities`
+  function, `exa_search` inlines entity construction directly in
+  `process()`.**
+  Because the logic isn't factored into a pure function, it's entirely
+  untested. → **Solution:** factor `exa_search`'s entity construction into
+  a pure function (mirroring `search_engines::build_entities`) and add unit
+  tests. **P3**. *Queued from the 2026-07-14 comprehensive audit, wave 1
+  (module categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-EXASEARCH-ENTITY-COVERAGE (new stub).
+- **`[ ]` T2.140 · `urlscan`'s malicious-verdict feature is dead code:
+  `Verdicts::malicious` parses a top-level `verdicts.malicious` key the
+  live API never returns.**
+  Because the field is never populated by the real API, the malicious tag/
+  evidence/confidence boost never fires in practice. → **Solution:**
+  correct the field path to match the live API response shape (or remove
+  the dead field if truly unreachable). **P3**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-URLSCAN-MALICIOUS-DEAD (new stub).
+- **`[ ]` T2.141 · `photon::build.rs`'s doc claims "every property Photon
+  returns is used," but `build_forward` ignores `street`/`housenumber`/
+  `postcode`/`city`/`state`.**
+  `build_reverse` captures the same fields for the same struct; only the
+  forward-geocoding path drops them. → **Solution:** wire the same fields
+  into `build_forward` that `build_reverse` already captures. **P3**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-PHOTON-BUILD-FORWARD-FIELDS (new stub).
+- **`[ ]` T2.142 · `domainsdb::description()` still claims "(free, no key)"
+  though the module was reclassified `ModuleCost::KeyGated` in the T2.48
+  fix.**
+  The operator-facing module-picker API surfaces this stale description
+  text, misleading operators about whether a key is needed. →
+  **Solution:** update `description()`'s text to match the current
+  `KeyGated` cost. **P3**. *Queued from the 2026-07-14 comprehensive
+  audit, wave 1 (module categories) — not yet investigated or fixed.*
+  **Paired:** `SOLUTION_TREE` SOL-DOMAINSDB-DESC-STALE (new stub).
+- **`[ ]` T2.143 · `niamonx`'s doc comment cites struct names
+  `NxPbsV2Record`/`NxUlpRecord` for a security invariant, but the actual
+  structs are named `PbsV2Record`/`UlpRecord`.**
+  A reader relying on the doc comment to locate the security-relevant
+  structs will search for names that don't exist in the file. →
+  **Solution:** correct the struct names in the doc comment. **P3**.
+  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-NIAMONX-STRUCT-NAME-DOC (new stub).
+- **`[ ]` T2.144 · `smtp_vrfy`'s top-of-file doc describes only the domain-
+  to-RCPT flow, omitting that `process()` also always resolves SPF/DMARC.**
+  Those resolved SPF/DMARC attributes are attached to every Email entity,
+  a significant part of the module's behavior the doc never mentions. →
+  **Solution:** extend the top-of-file doc to describe the SPF/DMARC
+  resolution step. **P3**. *Queued from the 2026-07-14 comprehensive
+  audit, wave 1 (module categories) — not yet investigated or fixed.*
+  **Paired:** `SOLUTION_TREE` SOL-SMTPVRFY-DOC-SPF-DMARC (new stub).
+- **`[ ]` T2.145 · `sanctions_ofac`'s doc claims the `Vess_type` column
+  classifies Vessel/Aircraft `SdnKind`, but classification actually only
+  ever reads `SDN_Type`.**
+  `Vess_type` is never referenced anywhere in `parse.rs`, contradicting the
+  doc comment. → **Solution:** either wire `Vess_type` into the
+  classification it's documented to drive, or correct the doc to match
+  actual behavior. **P3**. *Queued from the 2026-07-14 comprehensive
+  audit, wave 1 (module categories) — not yet investigated or fixed.*
+  **Paired:** `SOLUTION_TREE` SOL-OFAC-VESSTYPE-DOC (new stub).
+- **`[ ]` T2.146 · `web_crawler`'s doc claims concurrent page fetching (4
+  concurrent requests), but the crawl loop actually fetches one page at a
+  time sequentially with a 200ms sleep between each.**
+  The documented concurrency doesn't exist in the actual crawl loop
+  implementation. → **Solution:** either implement the documented
+  concurrency or correct the doc to describe the real sequential
+  behavior. **P3**. *Queued from the 2026-07-14 comprehensive audit, wave
+  1 (module categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-WEBCRAWLER-CONCURRENCY-DOC (new stub).
+- **`[ ]` T2.147 · `docs/MODULES.md`'s Targets column lists the full
+  14-target-kind set for all Sensor modules (`device_sensors`/`cell_intel`/
+  `signal_radar`/`local_net`), but each `accepts()` is hard-gated to
+  `Coordinates|MacAddress` only.**
+  An operator reading the table would believe these modules accept
+  targets they actually reject at dispatch time. → **Solution:** correct
+  the Targets column for the 4 Sensor modules to `Coordinates|MacAddress`.
+  **P3**. *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
+  categories) — not yet investigated or fixed.* **Paired:**
+  `SOLUTION_TREE` SOL-SENSOR-TARGETS-DOC (new stub).
+- **`[ ]` T2.148 · `docs/MODULES.md`'s Produces column is wrong for
+  `virustotal`/`urlhaus`/`threatfox`.**
+  `threatfox` still lists a kind (`url`) it stopped emitting; `virustotal`/
+  `urlhaus` show empty despite non-empty `produces()`. → **Solution:**
+  regenerate/correct the Produces column for all three from the actual
+  `produces()` output. **P3**. *Queued from the 2026-07-14 comprehensive
+  audit, wave 1 (module categories) — not yet investigated or fixed.*
+  **Paired:** `SOLUTION_TREE` SOL-PRODUCES-COLUMN-DOC (new stub).
+- **`[ ]` T2.149 · `email_parse` defines its own local `capitalise()`
+  helper to title-case a Person name component, duplicating the shared
+  `crate::util::str_util::title_case` used by 5 other modules.**
+  A sixth, independent copy of title-casing logic now exists to drift out
+  of sync with the shared one. → **Solution:** delete the local
+  `capitalise()` and call `util::str_util::title_case`. **P2**. *Queued
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
+  not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-EMAILPARSE-TITLECASE-DEDUP (new stub).
+- **`[ ]` T2.150 · `urlhaus` never overrides `cost()`, so it inherits the
+  trait default `ModuleCost::Free` even though the module is fully
+  key-gated in doc and code.**
+  Every operator-facing cost-tier count/module-picker view that relies on
+  `cost()` misreports `urlhaus` as free. → **Solution:** add a `cost()`
+  override returning `ModuleCost::KeyGated`. **P2**. *Queued from the
+  2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
+  investigated or fixed.* **Paired:** `SOLUTION_TREE`
+  SOL-URLHAUS-COST-OVERRIDE (new stub).
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own

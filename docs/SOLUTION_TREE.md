@@ -2788,6 +2788,168 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the fix doesn't regress the old API generation. Gate green: fmt/clippy
   `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib tests, +2).
   **Paired:** `PROBLEM_TREE` T2.101 — same commit.
+- **`[ ]` SOL-ZOOMEYE-BANNER · Read `portinfo.banner`/`portinfo.app` into
+  port evidence** → **T2.102**. Queued, not yet started — see
+  `PROBLEM_TREE` T2.102 for the finding.
+- **`[ ]` SOL-ONYPHE-THREATLIST · Wire `threatlist`/`tag` fields into
+  evidence/tags as the doc already describes** → **T2.103**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.103 for the finding.
+- **`[ ]` SOL-GEOCODE-ADDRESSDETAILS · Add an `address` field to
+  `NominatimResult` and fold components into Address evidence** →
+  **T2.104**. Queued, not yet started — see `PROBLEM_TREE` T2.104 for the
+  finding.
+- **`[ ]` SOL-LAUNCHPAD-DESCRIPTION · Switch bio extraction to read
+  `description` instead of obsolete `homepage_content`** → **T2.105**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.105 for the finding.
+- **`[ ]` SOL-STEAM-SUMMARY-PERSONA · Parse `<summary>` and `<steamID>` into
+  bio pivots and a Person/Username entity** → **T2.106**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.106 for the finding.
+- **`[ ]` SOL-OFAC-TITLE · Add a `title` field to `SdnRecord` and include it
+  in emitted evidence** → **T2.107**. Queued, not yet started — see
+  `PROBLEM_TREE` T2.107 for the finding.
+- **`[ ]` SOL-HLR-CNAM-FIELDNAMES · Correct `HlrResp` field names against
+  the real vendor JSON shape, add a live-shaped fixture test** →
+  **T2.108**. Queued, not yet started — see `PROBLEM_TREE` T2.108 for the
+  finding.
+- **`[ ]` SOL-SIGNALRADAR-CELL-DISCARD · Use or delete the redundant second
+  `termux-telephony-signalstrength` call in `scan_cell`** → **T2.109**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.109 for the finding.
+- **`[ ]` SOL-CHAININTEL-BLOCKSCOUT-FIELDS · Add `is_scam`/`reputation`/
+  `public_tags`/`name` to `BlockscoutAddress` and fold into wallet
+  evidence** → **T2.110**. Queued, not yet started — see `PROBLEM_TREE`
+  T2.110 for the finding.
+- **`[ ]` SOL-IPREP-SWALLOWED · Propagate `run_otx`/`run_tor_check`
+  transport/parse failures instead of swallowing them** → **T2.111**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.111 for the finding.
+- **`[ ]` SOL-GRAVATAR-ERR-COLLAPSE · Narrow the empty-result collapse to
+  the genuine-404 case only, propagate other `Err`s** → **T2.112**. Queued,
+  not yet started — see `PROBLEM_TREE` T2.112 for the finding.
+- **`[ ]` SOL-EMPLOYERPIVOT-ALLFAIL · Surface an error/skip when every page
+  fetch fails instead of a clean empty `Ok`** → **T2.113**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.113 for the finding.
+- **`[ ]` SOL-NIAMONX-ALLFAIL · Surface an error when all 3 concurrent
+  endpoint fetches fail instead of a silent empty result** → **T2.114**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.114 for the finding.
+- **`[ ]` SOL-PSBDMP-SWALLOWED-FAILURE · Distinguish fetch/parse failure
+  from a genuine zero-match result and surface the former as an error** →
+  **T2.115**. Queued, not yet started — see `PROBLEM_TREE` T2.115 for the
+  finding.
+- **`[ ]` SOL-PWNEDPW-NON2XX · Propagate non-2xx responses as an error,
+  matching sibling Breach modules** → **T2.116**. Queued, not yet started
+  — see `PROBLEM_TREE` T2.116 for the finding.
+- **`[ ]` SOL-NINE-SOCIAL-FAKE-404 · Split the `Err(_)` arm from the
+  genuine-404 `Ok(None)` arm across all nine Social modules** →
+  **T2.117**. Queued, not yet started — see `PROBLEM_TREE` T2.117 for the
+  finding.
+- **`[ ]` SOL-ASIC-CKAN-HANDROLL · Migrate `asic_persons`/
+  `asic_banned_orgs`/`asic_business_names` onto shared `util::ckan::Response`**
+  → **T2.118**. Queued, not yet started — see `PROBLEM_TREE` T2.118 for the
+  finding.
+- **`[ ]` SOL-AU-UNCLAIMED-SWALLOWED · Surface transport/parse failure as
+  an error instead of a silent empty result** → **T2.119**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.119 for the finding.
+- **`[ ]` SOL-ASIC-DIRECTOR-SWALLOWED · Apply the same honest-failure fix
+  already landed for sibling `au_property`** → **T2.120**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.120 for the finding.
+- **`[ ]` SOL-URLHAUS-KEY-EXHAUSTED · Call `ctx.report_key_exhausted` on
+  401/403 before returning the empty result** → **T2.121**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.121 for the finding.
+- **`[ ]` SOL-CHAININTEL-SINGLE-SOURCE · Distinguish unsupported-chain from
+  fetch-failure in the returned result/error** → **T2.122**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.122 for the finding.
+- **`[ ]` SOL-APIKEYPROBE-TRANSPORT-SWALLOW · Track transport-failure count
+  separately from non-match count, surface an error when all probes fail**
+  → **T2.123**. Queued, not yet started — see `PROBLEM_TREE` T2.123 for the
+  finding.
+- **`[ ]` SOL-CONTACTENRICH-DEDUP · Call into `gravatar`'s shared
+  enrichment logic instead of maintaining a parallel copy** → **T2.124**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.124 for the finding.
+- **`[ ]` SOL-DOHRESOLVER-SOA-DECODER · Replace the hand-rolled SOA-RNAME
+  decoder with `dns_intel`'s, add the infrastructure-email filter** →
+  **T2.125**. Queued, not yet started — see `PROBLEM_TREE` T2.125 for the
+  finding.
+- **`[ ]` SOL-PHONEAU-CLASSIFY-DEDUP · Delete the hand-rolled classifier,
+  call shared `util::address_au::au_phone_line_type`** → **T2.126**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.126 for the finding.
+- **`[ ]` SOL-APPLINKS-HOST-DEDUP · Replace `host_of` with a call to
+  `util::url_util::host_from_url`** → **T2.127**. Queued, not yet started
+  — see `PROBLEM_TREE` T2.127 for the finding.
+- **`[ ]` SOL-LOCALNET-MAC-VENDOR-DEDUP · Delete the hand-rolled MAC-
+  vendor table, call `util::oui::classify_mac`** → **T2.128**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.128 for the finding.
+- **`[ ]` SOL-SENSORS-MAC-VENDOR-WIRE · Wire `util::oui::classify_mac` into
+  the WiFi/Bluetooth live-scan entity-building paths** → **T2.129**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.129 for the finding.
+- **`[ ]` SOL-SEARCHENGINES-ADDRESS-KEY-DEDUP · Replace the hand-rolled
+  state-abbreviation expansion with `util::address_au::locality_key`** →
+  **T2.130**. Queued, not yet started — see `PROBLEM_TREE` T2.130 for the
+  finding.
+- **`[ ]` SOL-EXASEARCH-PHONE-REGEX-DEDUP · Replace the hand-rolled phone
+  regex with `util::extract::phones`** → **T2.131**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.131 for the finding.
+- **`[ ]` SOL-APIKEYPROBE-EVIDENCE-ORDER · Sort collected matches before
+  joining into the summary evidence text/attribute** → **T2.132**. Queued,
+  not yet started — see `PROBLEM_TREE` T2.132 for the finding.
+- **`[ ]` SOL-CELLLOCAL-PROCESS-COVERAGE · Add a `process()`-level test
+  driving real input through to entity output** → **T2.133**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.133 for the finding.
+- **`[ ]` SOL-EMAILLOCALE-CCTLD-COVERAGE · Add tests driving the ccTLD-
+  inference path end to end** → **T2.134**. Queued, not yet started — see
+  `PROBLEM_TREE` T2.134 for the finding.
+- **`[ ]` SOL-DNSAXFR-PARSE-SSRF-COVERAGE · Factor wire-parsing/SSRF-guard
+  logic out into pure, testable functions** → **T2.135**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.135 for the finding.
+- **`[ ]` SOL-SMTPVRFY-EOF-REGRESSION · Add a regression test reproducing
+  EOF-during-handshake, asserting `read_multiline` terminates** →
+  **T2.136**. Queued, not yet started — see `PROBLEM_TREE` T2.136 for the
+  finding.
+- **`[ ]` SOL-HLR-NUMVERIFY-SERDE-TEST · Add serde-deserialization tests
+  against realistic vendor JSON fixtures for both modules** → **T2.137**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.137 for the finding.
+- **`[ ]` SOL-URLEXTRACT-PROCESS-COVERAGE · Add a `tests.rs` exercising
+  `process()` directly, including the skip branch and IPv6 inputs** →
+  **T2.138**. Queued, not yet started — see `PROBLEM_TREE` T2.138 for the
+  finding.
+- **`[ ]` SOL-EXASEARCH-ENTITY-COVERAGE · Factor entity construction into a
+  pure function (mirroring `search_engines::build_entities`) and test it**
+  → **T2.139**. Queued, not yet started — see `PROBLEM_TREE` T2.139 for the
+  finding.
+- **`[ ]` SOL-URLSCAN-MALICIOUS-DEAD · Correct the malicious-verdict field
+  path to match the live API (or remove if unreachable)** → **T2.140**.
+  Queued, not yet started — see `PROBLEM_TREE` T2.140 for the finding.
+- **`[ ]` SOL-PHOTON-BUILD-FORWARD-FIELDS · Wire `street`/`housenumber`/
+  `postcode`/`city`/`state` into `build_forward`** → **T2.141**. Queued,
+  not yet started — see `PROBLEM_TREE` T2.141 for the finding.
+- **`[ ]` SOL-DOMAINSDB-DESC-STALE · Update `description()`'s text to
+  match the current `KeyGated` cost** → **T2.142**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.142 for the finding.
+- **`[ ]` SOL-NIAMONX-STRUCT-NAME-DOC · Correct the doc comment's struct
+  names to `PbsV2Record`/`UlpRecord`** → **T2.143**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.143 for the finding.
+- **`[ ]` SOL-SMTPVRFY-DOC-SPF-DMARC · Extend the top-of-file doc to
+  describe the SPF/DMARC resolution step** → **T2.144**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.144 for the finding.
+- **`[ ]` SOL-OFAC-VESSTYPE-DOC · Wire `Vess_type` into classification or
+  correct the doc to match actual behavior** → **T2.145**. Queued, not yet
+  started — see `PROBLEM_TREE` T2.145 for the finding.
+- **`[ ]` SOL-WEBCRAWLER-CONCURRENCY-DOC · Implement the documented
+  concurrency or correct the doc to describe the real sequential loop** →
+  **T2.146**. Queued, not yet started — see `PROBLEM_TREE` T2.146 for the
+  finding.
+- **`[ ]` SOL-SENSOR-TARGETS-DOC · Correct `docs/MODULES.md`'s Targets
+  column for the 4 Sensor modules to `Coordinates|MacAddress`** →
+  **T2.147**. Queued, not yet started — see `PROBLEM_TREE` T2.147 for the
+  finding.
+- **`[ ]` SOL-PRODUCES-COLUMN-DOC · Regenerate/correct the Produces column
+  for `virustotal`/`urlhaus`/`threatfox` from real `produces()` output** →
+  **T2.148**. Queued, not yet started — see `PROBLEM_TREE` T2.148 for the
+  finding.
+- **`[ ]` SOL-EMAILPARSE-TITLECASE-DEDUP · Delete the local `capitalise()`
+  helper, call `util::str_util::title_case`** → **T2.149**. Queued, not
+  yet started — see `PROBLEM_TREE` T2.149 for the finding.
+- **`[ ]` SOL-URLHAUS-COST-OVERRIDE · Add a `cost()` override returning
+  `ModuleCost::KeyGated`** → **T2.150**. Queued, not yet started — see
+  `PROBLEM_TREE` T2.150 for the finding.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3219,6 +3381,18 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the actual `git` subprocess calls. Closed by **SOL-UPDATE-GIT-FIXTURE**
   (new node **T2.21**): a local origin+clone `tempfile` fixture pair proves
   both functions against real `git fetch`/`rev-list`/`log` output.
+- **2026-07-14 comprehensive audit, wave 1 (module categories) — 49 new
+  queued findings, T2.102–T2.150.** A 14-lane parallel read-only audit (one
+  lane per `ModuleCategory`) followed by independent adversarial
+  re-verification of every candidate found 53 raw findings, 49 confirmed
+  real after re-verification (4 rejected — already tracked or not
+  independently reproducible). Spans 6 classes: dropped evidentiary fields
+  (9), silently swallowed failures (13), reuse-not-duplicate (8), a
+  determinism gap (1), thin test coverage (7), and stale documentation (9),
+  plus 2 miscellaneous. Individual stub nodes are in `PROBLEM_TREE` §3.2
+  above (T2.102–T2.150) and their `SOLUTION_TREE` pairs in §2 above (right
+  after `SOL-GRAVATAR-VERIFIED-BOOL`). None investigated or fixed yet —
+  this is the queue, not a delivery.
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
