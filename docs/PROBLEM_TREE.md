@@ -1645,15 +1645,15 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   email extraction + its `source_field` evidence attribute now read it.*
   **Paired:** `SOLUTION_TREE` SOL-LAUNCHPAD-DESCRIPTION `[ ]`→`[x]` — same
   commit.
-- **`[ ]` T2.106 · `steam_profile::extract_profile` never reads the `<summary>`
+- **`[x]` T2.106 · `steam_profile::extract_profile` never reads the `<summary>`
   (bio) or `<steamID>` (persona name) XML tags.**
   Every sibling Social module extracts bio emails/URLs and a display name,
   but `steam_profile` skips both fields entirely, losing bio-embedded
   pivots and the persona name. → **Solution:** parse `<summary>` for
   emails/URLs and `<steamID>` into a Person/Username entity, matching
-  sibling modules. **P2**. *Queued from the 2026-07-14 comprehensive audit,
-  wave 1 (module categories) — not yet investigated or fixed.* **Paired:**
-  `SOLUTION_TREE` SOL-STEAM-SUMMARY-PERSONA (new stub).
+  sibling modules. **P2**. *Delivered 2026-07-14 — see the §8 log entry for
+  the fix, live verification, and test detail.* **Paired:**
+  `SOLUTION_TREE` SOL-STEAM-SUMMARY-PERSONA `[ ]`→`[x]`.
 - **`[ ]` T2.107 · `sanctions_ofac` never captures the OFAC SDN `Title` column
   (role/position) into `SdnRecord` or evidence.**
   The Title field carries role/position identity data relevant to
@@ -12337,3 +12337,37 @@ way, so this specific drift class can't recur silently again.
   (4660 lib tests, +1 — the intervening T2.152 rate-limit fix landed +10 in
   the same window, hence the jump from 4651). **Paired:** `SOLUTION_TREE`
   SOL-LAUNCHPAD-DESCRIPTION `[ ]`→`[x]` — same commit.
+- **2026-07-14 — T2.106 (`steam_profile` summary/persona) `[ ]`→`[x]`: fifth
+  item picked off the comprehensive-audit queue.** Per step 1's priority
+  order (no in-progress node standing; highest-priority open node next in
+  the T2.106–T2.150 queue). Confirmed real against the module source and a
+  fresh live fetch (`steamcommunity.com` reachable from this sandbox, unlike
+  OathNet): `extract_profile` parsed `steamID64`/`realname`/`location`/
+  `customURL` but never `<summary>` (the free-text bio) or `<steamID>` (the
+  account's own persona/display name, distinct from both `realname` and the
+  vanity `customURL`) — confirmed against a real public profile
+  (`steamcommunity.com/id/tomscott?xml=1`) whose persona `headinspace`
+  differs from both its `realname` "Tom" and its `customURL` "tomscott",
+  and was silently dropped entirely pre-fix. Fix: `<summary>` is now mined
+  for emails/URLs (+ derived Domain, host `steamcommunity.com` excluded)
+  via `util::extract::emails`/`urls`, exactly mirroring `reddit_user`'s bio
+  policy; `<steamID>` promotes to a Person when it has ≥2 words
+  (`profile_kit::person_from_name`, mirroring `realname`'s own gate at a
+  lower confidence since a self-chosen persona isn't guaranteed genuine) or
+  otherwise emits a Username pivot, skipped when it would merely duplicate
+  a field already emitted (equal to `realname`, or case-insensitively equal
+  to `customURL`). `produces()` gained `Email`/`Domain`; `attack_techniques()`
+  now explicitly overrides the Social default to add T1589.002 (Email
+  Addresses) for the new bio-mined emails. 5 new regression tests, 3
+  confirmed via `git stash` to fail against the pre-fix tree (persona→Person
+  promotion, persona→Username-when-distinct-from-vanity, bio email/URL
+  mining) plus a no-duplication guard and a bio-with-no-pivots empty-result
+  guard. Live-verified against the real compiled binary, both sides of the
+  fix: `hse scan -k username -v tomscott -m steam_profile` found 4 entities
+  pre-fix, 5 post-fix (the new `headinspace` Username), confirmed via
+  `git stash` of the module alone. Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4665 lib tests, +5). `docs/MODULES.md`
+  Produces column refreshed to match `hse modules --json`'s new
+  `steam_profile` output (added `email, domain`) per `docs/CONVENTIONS.md`
+  §6. **Paired:** `SOLUTION_TREE` SOL-STEAM-SUMMARY-PERSONA `[ ]`→`[x]`, §4a
+  progress note updated — same commit.

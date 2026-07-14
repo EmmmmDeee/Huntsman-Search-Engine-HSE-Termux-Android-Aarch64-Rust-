@@ -25,7 +25,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `gaming_profile` | username | free | no | 106 | username, url |
 | `social_probe` | username, full_name | free | no | 108 | url, username, person, domain |
 | `streaming_probe` | username | free | no | 108 | url, username |
-| `steam_profile` | username | free | no | 105 | person, username, url, address, coordinates |
+| `steam_profile` | username | free | no | 105 | person, username, url, address, coordinates, email, domain |
 | `structured_id` | username | free | **yes** | 103 | username, mac_address |
 | `fediverse` | email | free | no | 104 | username, url, email |
 | `nostr` | username, email | free | no | 105 | url, username, email |
