@@ -230,6 +230,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   total is now 161.
 
 ### Changed
+- **Internal: `netlas`'s response parser no longer declares a `count` field
+  that could never hold real data.** A sweep for the same "parsed but never
+  read" pattern behind three recent evidentiary-disclosure fixes (paste
+  totals, timeline dates) flagged this field too, but investigation of
+  Netlas's own API docs showed the endpoint this module calls never returns
+  a match-total in the first place (it's only on a separate, uncalled
+  endpoint) — so, unlike those three, there was no real data being dropped.
+  Removed the always-`None` field. No visible behavior change.
 - **Internal: the username/social/streaming enumeration modules now share one
   confidence-scoring rule instead of each hardcoding its own copy.** All three
   independently defined the same "body-verified detections outrank

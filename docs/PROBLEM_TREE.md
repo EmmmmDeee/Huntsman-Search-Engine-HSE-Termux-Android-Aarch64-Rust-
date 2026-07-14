@@ -1402,6 +1402,32 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630 lib
   tests, +2). **Paired:** `SOLUTION_TREE` SOL-PSBDMP-TOTAL-MATCHES (new
   node), §5 — same commit.
+- **`[x]` T2.100 · `netlas::NetlasResp::count` looked like a fourth instance of
+  the T2.97-99 "dropped evidentiary field" class but investigation showed it
+  is not — it is dead code, not dropped evidence.** The same grep sweep that
+  found T2.97-99 (a `#[derive(Deserialize)]` field parsed but never read)
+  flagged `count: Option<u64>` on `NetlasResp` too. Unlike the three real
+  instances, direct investigation of Netlas's own API documentation
+  (`docs.netlas.io`, confirmed via two independent fetches) shows `GET
+  /api/responses/` — the exact endpoint this module calls
+  (`netlas/mod.rs`'s own doc header) — **never returns a match-total field
+  at all**; the total lives only on the separate `GET /api/responses_count/`
+  endpoint, which this module does not call. So `count` was always `None`
+  against the real API (`#[serde(default)]` silently no-ops on the
+  ever-absent key) — not a live field silently discarded, a field that never
+  had live data to discard. Building T2.99-style disclosure logic around it
+  would have fabricated a finding against data that doesn't exist. →
+  **Solution:** removed the dead field (1 line) with a doc comment recording
+  the investigation, so a future sweep doesn't re-flag and re-investigate the
+  same false lead. Deliberately did **not** add a second `responses_count/`
+  call to manufacture a real total — that doubles the operator's per-scan
+  Netlas quota spend, a real cost/behaviour change out of scope for a
+  mechanical cleanup, not a follow-on to this fix. **P3** (dead-code
+  cleanup; no behaviour change, no new evidence, no regression risk — every
+  existing `netlas` test already exercised bodies without a `count` key).
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite unchanged
+  (no test relied on the removed field). **Paired:** `SOLUTION_TREE` §4a
+  gap-analysis note (T2.100 verified-not-a-bug), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -11293,3 +11319,25 @@ way, so this specific drift class can't recur silently again.
   green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630
   lib tests, +2). **Paired:** `SOLUTION_TREE` SOL-PSBDMP-TOTAL-MATCHES (new
   node), §5 — same commit.
+- **2026-07-14** — **T2.100: `netlas::NetlasResp::count` looked like a fourth
+  T2.97-99 "dropped evidentiary field" but wasn't one — investigated and
+  found dead, not dropped.** The same grep sweep that found T2.97-99
+  flagged this field too (parsed, never read). Unlike the three real
+  instances, checking Netlas's own API docs (two independent fetches of
+  `docs.netlas.io`) shows `GET /api/responses/` — the exact endpoint this
+  module calls — never returns a match-total field; the total lives only on
+  a separate `GET /api/responses_count/` endpoint this module doesn't call.
+  So `count` was always `None` against the real API, not a live field being
+  silently discarded. Building T2.99-style disclosure logic around it would
+  have fabricated a finding against data that doesn't exist — the hard
+  constraint against fabricating findings applies to the investigation
+  process itself, not just to entity/evidence output. Removed the dead
+  field (1 line) with a doc comment recording the investigation so a future
+  sweep doesn't re-flag and re-litigate the same false lead — the same
+  "verified sound, do not re-investigate" discipline as §6, applied inline
+  at the code site. Deliberately did not add a second `responses_count/`
+  call to manufacture a real total: that's a real per-scan quota-cost
+  increase on the operator's key, out of scope for a mechanical cleanup.
+  No behaviour change, no test relied on the removed field, gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite unchanged. **Paired:**
+  `SOLUTION_TREE` §4a gap-analysis note, §5 — same commit.

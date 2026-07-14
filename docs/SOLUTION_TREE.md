@@ -3034,6 +3034,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   discarded. A `total_matches` attribute now discloses it whenever the
   server claims more matches than the response actually carried. Off the
   open queue.
+- ~~**T2.100**~~ — **investigated, verified not a bug** ✅ (2026-07-14). Looked
+  like a fourth T2.97-99 dropped-field instance (`netlas::NetlasResp::count`
+  parsed, never read); Netlas's own API docs confirm the exact endpoint this
+  module calls never returns a match-total field (it lives on a separate
+  `responses_count/` endpoint this module doesn't call), so `count` was
+  always dead, not dropped live evidence. Removed the dead field; no
+  evidence-disclosure logic added (would have fabricated a finding against
+  data that never arrives). Off the open queue.
 - ~~**T2.39**~~ — **delivered** ✅ (`SOL-AU039-SHARED-SOURCE`, 2026-07-11). The
   deferred design decision was resolved by investigating the data model:
   `Entity::corroborating_sources()` carries the provenance at this call site,
@@ -7680,3 +7688,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `assert!(!ev.attributes.contains_key("total_matches"))`. Gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4630 lib
   tests, +2). Paired: `PROBLEM_TREE` T2.99, §8 — same commit.
+- **2026-07-14** — **T2.100: `netlas::NetlasResp::count` investigated as a
+  possible fourth T2.97-99 instance, found to be dead code instead.** The
+  same grep sweep that found the three real dropped-field bugs flagged
+  `count: Option<u64>` on `NetlasResp` (parsed, never read anywhere in
+  `netlas/mod.rs` or its tests). Direct investigation of Netlas's own API
+  documentation (two independent fetches of `docs.netlas.io`) confirms `GET
+  /api/responses/` — the exact endpoint `netlas/mod.rs`'s own doc header
+  says this module calls — never returns a match-total field at all; the
+  total lives only on the separate `GET /api/responses_count/` endpoint,
+  which this module doesn't call. So `count` was always `None` against the
+  real API (`#[serde(default)]` silently no-ops on the ever-absent key) —
+  dead code, not a live field being silently discarded. Building
+  T2.99-style `total_matches` disclosure logic around it, as the surface
+  similarity to T2.97-99 invited, would have fabricated a finding against
+  data that doesn't exist — this cycle's discipline check caught it before
+  writing that code, not after. Fixed by removing the dead field (1 line),
+  with a doc comment recording the investigation so a future sweep doesn't
+  re-flag and re-litigate the same false lead. Deliberately did not add a
+  second `responses_count/` call to manufacture a real total: that's a real
+  per-scan quota-cost increase on the operator's own key, a scope decision
+  out of bounds for a mechanical cleanup. No behaviour change; no test
+  referenced the removed field; gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite unchanged. Paired: `PROBLEM_TREE`
+  T2.100, §8 — same commit.
