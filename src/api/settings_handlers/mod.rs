@@ -124,7 +124,23 @@ pub async fn keys_status(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl Int
     Json(json!({ "count": services.len(), "services": services })).into_response()
 }
 
-pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+/// `GET /api/v1/settings/keys` — which key services are configured (name +
+/// `set` boolean per service) plus the on-disk env file path. The same class
+/// of "which services hold keys" infrastructure metadata `keys_status` /
+/// `keys_pool_get` / `keys_harvest` already treat as sensitive enough to
+/// gate loopback-only — this is that gate's missing sibling: the PUT on this
+/// SAME route already refuses a non-loopback peer, but the GET did not.
+pub async fn settings_keys_get(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key configuration is loopback-only" })),
+        )
+            .into_response();
+    }
     use std::path::PathBuf;
     let path = keys::env_path();
     let loaded = keys::load_from_file_only(&PathBuf::from(&path));

@@ -261,6 +261,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Closed a gap where one settings page could be read without the
+  loopback-only protection every similar page already has.** Which API-key
+  services you've configured (and where your keys file lives on disk) could
+  be read by anyone who could reach the server, if you'd chosen to expose it
+  beyond your own device — every other page showing this kind of
+  information already required a same-device connection; this one now does
+  too. No effect on the normal, default setup (loopback-only), which is
+  already unaffected.
+- **Removed a Bluetooth-scan fallback that could never actually work.** The
+  signal-radar module tried an extra classic-Bluetooth scan tool as a
+  backup when the primary one came up empty — but that backup tool isn't
+  available on Termux and couldn't work without root even if it were, so it
+  never did anything on a real device. Removed it; the working scan path is
+  unchanged.
 - **SeekNow lookups no longer default to a domain that fails to resolve on
   some real-world networks.** The built-in default endpoint pointed at
   `see-know.icu`; a real operator's own device couldn't resolve that

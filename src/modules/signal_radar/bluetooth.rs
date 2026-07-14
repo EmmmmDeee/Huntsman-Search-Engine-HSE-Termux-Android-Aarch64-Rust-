@@ -1,5 +1,12 @@
 //! Bluetooth scanner for signal_radar — parses `termux-bluetooth-scaninfo`
-//! output with `hcitool scan` as a fallback.
+//! output.
+//!
+//! No `hcitool scan` fallback: this project's exclusive target is a no-root
+//! Termux/Android install, where classic-BT `hcitool` is neither packaged
+//! (no `bluez` in Termux's repo) nor usable even if sideloaded (an HCI
+//! inquiry needs a raw Bluetooth socket/ioctl stock Android gates behind
+//! privileges Termux cannot grant without root) — the fallback could never
+//! actually fire on the real target device, only ever silently no-op.
 
 use serde::Deserialize;
 
@@ -58,63 +65,11 @@ pub(super) fn parse_bt_json(stdout: &[u8], scan_id: &str) -> ModuleResult {
     result
 }
 
-/// Parse plain-text `hcitool scan` output (fallback).
-///
-/// Each data line is: `\t<MAC>\t<name>`
-pub(super) fn parse_hcitool(stdout: &[u8], scan_id: &str) -> ModuleResult {
-    let text = match std::str::from_utf8(stdout) {
-        Ok(s) => s,
-        Err(_) => return ModuleResult::new(),
-    };
-
-    let mut result = ModuleResult::new();
-
-    for line in text.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with("Scanning") {
-            continue;
-        }
-        let mut parts = trimmed.splitn(2, '\t');
-        let Some(addr) = parts.next() else { continue };
-        let name = parts.next().unwrap_or("<unknown>").trim();
-        let addr = addr.trim();
-
-        if addr.is_empty() || addr == "00:00:00:00:00:00" {
-            continue;
-        }
-
-        let mut e = Entity::new(EntityKind::MacAddress, addr, 0.80, scan_id);
-        e.tag("bluetooth");
-        e.tag("bt-classic");
-        e.tag("bond:none");
-
-        e.add_evidence(
-            Evidence::new(SRC, format!("Bluetooth device (hcitool): {name}"))
-                .with_attr("name", name)
-                .with_attr("address", addr)
-                .with_attr("source", "hcitool"),
-        );
-
-        result.push(e);
-    }
-
-    result
-}
-
-/// Run bluetooth scan: try termux-bluetooth-scaninfo first; fall back to
-/// `hcitool scan` if no results.
+/// Run bluetooth scan via `termux-bluetooth-scaninfo` (the Termux:API BLE/BT
+/// scan shim — no root, no raw socket).
 pub(super) async fn scan_bluetooth(scan_id: &str) -> ModuleResult {
-    if let Some(stdout) = termux_cmd("termux-bluetooth-scaninfo", &[], 10_000).await {
-        let result = parse_bt_json(&stdout, scan_id);
-        if !result.is_empty() {
-            return result;
-        }
+    match termux_cmd("termux-bluetooth-scaninfo", &[], 10_000).await {
+        Some(stdout) => parse_bt_json(&stdout, scan_id),
+        None => ModuleResult::new(),
     }
-
-    // Fallback: hcitool scan (classic BT only, requires hcitools installed)
-    if let Some(stdout) = termux_cmd("hcitool", &["scan", "--flush"], 10_000).await {
-        return parse_hcitool(&stdout, scan_id);
-    }
-
-    ModuleResult::new()
 }

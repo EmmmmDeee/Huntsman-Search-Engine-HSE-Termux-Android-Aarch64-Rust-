@@ -111,19 +111,6 @@ fn bluetooth_skip_placeholder_address() {
     assert_eq!(result.len(), 1);
 }
 
-#[test]
-fn bluetooth_hcitool_parse() {
-    let text = b"Scanning ...\n\t11:22:33:44:55:66\tMouse\n\t77:88:99:AA:BB:CC\tKeyboard\n";
-    let result = bluetooth::parse_hcitool(text, "test-scan");
-    assert_eq!(result.len(), 2);
-    // hcitool addresses are passed through as-is; normalisation may lower-case
-    assert_eq!(
-        result.entities[0].value.to_ascii_lowercase(),
-        "11:22:33:44:55:66"
-    );
-    assert!(result.entities[0].has_tag("bt-classic"));
-}
-
 // ── cell parser ────────────────────────────────────────────────────────────
 
 #[test]

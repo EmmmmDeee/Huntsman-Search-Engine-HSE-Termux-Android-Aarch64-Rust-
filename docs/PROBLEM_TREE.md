@@ -881,6 +881,80 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4620 lib
   tests — one existing test strengthened, no new test function). **Paired:**
   `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE (extended again) — same commit.
+- **`[x]` T2.90 · `GET /api/v1/settings/keys` had no loopback-peer guard —
+  inconsistent with its own PUT sibling on the identical route and every
+  other key-related read endpoint.** Operator instruction: "make it
+  exclusively for Termux android aarch64 no root using the web UI" —
+  triggered a 5-agent audit for root-requirement leaks, non-Termux platform
+  drift, and security consistency across the surface a browser-only
+  operator depends on. `keys_status`, `keys_pool_get`, and `keys_harvest`
+  all take `ConnectInfo<SocketAddr>` and refuse a non-loopback peer with
+  403, each explicitly documented as gating "the same class of sensitive
+  infrastructure metadata" (which key services are configured). `settings_
+  keys_get` (`src/api/settings_handlers/mod.rs`) returns exactly that class
+  of data — every known key name, whether it's set, `write_enabled`, and the
+  on-disk env file path — yet took no `ConnectInfo` parameter at all and
+  applied no peer check, despite sharing its own route (`GET`/`PUT` on
+  `/settings/keys`) with `settings_keys_put`, which IS gated. Confirmed via
+  the existing test `settings_keys_get_lists_keys`, which called the route
+  with no `ConnectInfo` injected and got 200. Under an operator-widened
+  `--bind` (a supported, warned-about opt-in — see `warn_if_exposed`), any
+  LAN peer could enumerate exactly which API-key services are configured on
+  the device and the local filesystem path to the secrets file, with zero
+  mitigating check. → **Solution:** added the identical `ConnectInfo<
+  SocketAddr>` + `peer.ip().is_loopback()` guard `keys_status` already uses,
+  returning the same `403 {"error": "..."}` shape. New regression test
+  `settings_keys_get_refuses_non_loopback_peer` (mirroring `keys_status_
+  endpoint_refuses_non_loopback_peer`'s exact pattern) asserts 403 for a LAN
+  peer; the existing `settings_keys_get_lists_keys` updated to inject a
+  loopback `ConnectInfo` so the success path is still exercised. **P2/
+  security-consistency** (a narrow but real gap in an otherwise well-applied
+  guard pattern — not reachable under the loopback-only default, only under
+  an operator's own explicit `--bind` widening). Git-stash-proven: reverting
+  just `src/api/settings_handlers/mod.rs`'s guard makes the new test fail
+  (200 instead of 403); restored, both tests pass. The web SPA's own
+  `opts.js` calls this same route from the browser at `127.0.0.1`, so normal
+  Settings-page key management is unaffected — verified by re-running the
+  full `tests/api.rs` suite green. Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4619 lib tests — net -1 from T2.91's
+  dead-code removal in this same commit, this fix's own test lives in the
+  separate `tests/api.rs` integration binary, 97→98). **Paired:**
+  `SOLUTION_TREE` SOL-TERMUX-EXCLUSIVITY (new node), §5 — same commit.
+- **`[x]` T2.91 · `signal_radar`'s Bluetooth scanner carried a `hcitool scan`
+  fallback that can never fire on the actual no-root Termux target — dead
+  weight pretending to be a real capability.** Found by the same audit as
+  T2.90 (same commit): `scan_bluetooth` tried `termux-bluetooth-scaninfo`
+  (the real, working Termux:API shim) first, then fell back to shelling out
+  to `hcitool scan --flush` if that returned nothing. Verified this fallback
+  is provably inert on the real target device, not merely untested: (1)
+  Termux's package repository ships no `bluez`/`hcitool` package at all — a
+  fresh `pkg install` has nothing to install; (2) even if the binary were
+  manually sideloaded, `hcitool scan` performs a classic-BT HCI inquiry via
+  a raw Bluetooth socket/ioctl, a privilege stock Android gates behind
+  capabilities Termux cannot grant without root — the exact "no root, ever"
+  invariant this project's own mission statement declares; (3) `termux_cmd`
+  (`util::termux`) already degrades a missing binary to a clean `None` with
+  no error, so the fallback has only ever silently no-op'd for every real
+  operator, never actually returned Bluetooth data. This is the single
+  process-dependency finding out of 16 call sites the audit's process-
+  dependency sweep flagged as genuinely root/package-unavailable (every
+  other shell-out — `curl`, `git`, `bash`, the 7 `termux-*` API shims — was
+  confirmed Termux-installable with no elevated capability). → **Solution:**
+  deleted `parse_hcitool` and the fallback branch entirely; `scan_bluetooth`
+  now calls only the one path that ever produces real data on the actual
+  target device. Removed the now-orphaned `bluetooth_hcitool_parse` unit
+  test (there is no reachable code left for it to exercise) and corrected
+  the module's doc comment, which previously advertised the dead fallback
+  as a real capability. **P3/dead-code hygiene, Termux-exclusivity** — not a
+  behaviour change for any real install (the fallback never fired), but
+  removes code, a test, and documentation that all overstated what this
+  module can actually do on its one supported platform. No regression test
+  needed (nothing to prove wrong — the removed path was unreachable in
+  practice); safety is the full gate passing with the dead branch gone and
+  `scan_bluetooth`'s remaining, real path unchanged. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4619 lib tests, net -1
+  — the orphaned test removed). **Paired:** `SOLUTION_TREE`
+  SOL-TERMUX-EXCLUSIVITY (same new node), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10395,3 +10469,33 @@ way, so this specific drift class can't recur silently again.
   existing test strengthened, no new test function). **Paired:**
   `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE (extended again), §5 — same
   commit.
+- **2026-07-14** — **T2.90/T2.91: a 5-agent Termux-exclusivity/web-UI audit
+  found one real security-consistency gap and one dead capability.**
+  Operator instruction: "make it exclusively for Termux android aarch64 no
+  root using the web UI." Fanned out 5 parallel read-only investigators
+  (root-requirement leaks, non-Termux platform assumptions, external-process
+  dependencies, CLI/web-SPA feature parity, loopback-bind consistency)
+  before touching any code — three came back clean (this codebase already
+  assumes Termux/aarch64/no-root consistently throughout: `is_termux()`,
+  `$HOME`-relative paths, `#![forbid(unsafe_code)]` ruling out raw sockets,
+  a loopback-only `DEFAULT_BIND` pinned by an architecture test). Two
+  surfaced real, evidence-grounded findings, fixed in this commit: **T2.90**
+  — `GET /api/v1/settings/keys` had no loopback-peer guard, unlike its own
+  PUT sibling on the identical route and every other key-related read
+  endpoint (`keys_status`/`keys_pool_get`/`keys_harvest`); fixed with the
+  identical `ConnectInfo`/`is_loopback()` guard those routes already use,
+  new regression test git-stash-proven. **T2.91** — `signal_radar`'s
+  Bluetooth scanner carried an `hcitool scan` fallback that can never fire
+  on the real no-root Termux target (no `bluez` package exists in Termux's
+  repo, and even sideloaded it needs a raw HCI socket gated behind root on
+  stock Android) — deleted the dead branch, its parse function, and its
+  orphaned test, leaving `scan_bluetooth` calling only the one path
+  (`termux-bluetooth-scaninfo`) that ever produces real data. A third
+  category of finding (CLI/web-SPA parity gaps — most notably `hse cells`
+  cell-tower DB management being 100% CLI-only despite backing web-reachable
+  Radar/`cell_intel` features) is real and substantial but deliberately NOT
+  folded into this commit — named as the next node (T2.92) rather than
+  rushed in, per this project's own scope discipline. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4619 lib tests, net -1;
+  98 `tests/api.rs` integration tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-TERMUX-EXCLUSIVITY (new node), §5 — same commit.

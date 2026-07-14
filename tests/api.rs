@@ -1274,8 +1274,13 @@ async fn scraper_health_reports_an_honest_empty_state_for_a_fresh_database() {
 
 #[tokio::test]
 async fn settings_keys_get_lists_keys() {
+    use std::net::SocketAddr;
     let app = test_app("keys_get");
-    let resp = app.oneshot(get("/api/v1/settings/keys")).await.unwrap();
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/settings/keys");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert!(
@@ -1283,6 +1288,26 @@ async fn settings_keys_get_lists_keys() {
         "response must contain keys array"
     );
     assert!(json["keys"].as_array().is_some());
+}
+
+#[tokio::test]
+async fn settings_keys_get_refuses_non_loopback_peer() {
+    // Which key services are configured (+ the on-disk env path) is the same
+    // class of sensitive infra metadata `keys_status`/`keys_pool_get` already
+    // gate loopback-only, and this route's own PUT sibling already refuses a
+    // non-loopback peer — this GET must match, not leak silently under an
+    // operator-chosen LAN bind.
+    use std::net::SocketAddr;
+    let app = test_app("keys_get_lan");
+    let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/settings/keys");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "settings/keys GET must be loopback-only"
+    );
 }
 
 // ── 17. Settings keys PUT (forbidden) ─────────────────────────────────────

@@ -2605,6 +2605,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   against the real data (`real_scan_us_breach_address_reproduction`,
   `per_record_address_tags_are_correct_before_any_merge`). No code changed —
   a clean-verdict investigation is a correct outcome, not a failed one.
+- **`[x]` SOL-TERMUX-EXCLUSIVITY · A 5-agent parallel audit applying the
+  SOL-AUDIT-CADENCE methodology to a single, project-defining question: does
+  Huntsman actually stay inside its own "Termux, aarch64, no root" mission
+  everywhere, and can it genuinely be operated exclusively through the web
+  UI?** Operator instruction: "make it exclusively for Termux android
+  aarch64 no root using the web UI." Fanned out 5 independent, read-only
+  investigators before any code changed: root-requirement leaks (raw
+  sockets, privileged ports, `sudo`/`su`, `/proc/sys` writes), non-Termux
+  platform assumptions (hardcoded desktop paths, systemd/launchd, bind
+  defaults, native-TLS deps), external-process dependencies (every
+  `Command::new` call site's Termux-availability), CLI-vs-web-SPA feature
+  parity, and loopback-bind/guard consistency across every sensitive route.
+  Three came back genuinely clean — strong, converging evidence this
+  codebase already internalises the constraint throughout (`is_termux()`,
+  `$HOME`-relative paths everywhere, `#![forbid(unsafe_code)]` structurally
+  ruling out raw sockets, a `DEFAULT_BIND` of `127.0.0.1:8080` pinned by an
+  architecture test, every `TcpListener::bind` in the tree traced to exactly
+  one production call site). Two produced real, fixed findings (T2.90:
+  `settings_keys_get`'s missing loopback guard; T2.91: the dead `hcitool`
+  Bluetooth fallback) — see `PROBLEM_TREE` T2.90/T2.91 for detail, same
+  commit. The parity audit's own findings (most notably `hse cells` being
+  100% CLI-only despite backing web-reachable Radar/`cell_intel` features)
+  are real and substantial but deliberately deferred to a dedicated next
+  node (T2.92) rather than rushed into this commit — the same "one unit of
+  work per cycle" discipline every prior audit-derived fix in this tree has
+  followed. Demonstrates the audit-fan-out pattern generalises beyond
+  parser/storage/engine/correlator/SPA/security/internals (SOL-AUDIT-
+  CADENCE's original scope) to a project's own mission-statement invariants
+  — a reusable technique for any future "does the code still match what we
+  claim it is" question. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4619 lib tests, net -1; 98 `tests/api.rs`
+  integration tests, +1). **Paired:** `PROBLEM_TREE` T2.90/T2.91 — same
+  commit.
 
 ---
 
