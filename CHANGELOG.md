@@ -280,6 +280,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Corrected two places where the web UI overstated how closely it matches
+  a command-line equivalent.** The "Complete (All)" scan preset said it was
+  equivalent to `hse scan --full`, but it was missing one behavior
+  (expanding every discovered alias, not just corroborated ones) — now
+  fixed to match. The Audit tab said it was the same as running
+  `hse audit --scan-id <id>` from the terminal, but the web version always
+  includes extra signals (this scan's own event history and live engine
+  status) that the bare command-line version doesn't unless you also pass
+  `--log`; the wording now says so, so re-running the CLI to double-check a
+  score won't surprise you with a different result.
 - **Closed a gap where one settings page could be read without the
   loopback-only protection every similar page already has.** Which API-key
   services you've configured (and where your keys file lives on disk) could

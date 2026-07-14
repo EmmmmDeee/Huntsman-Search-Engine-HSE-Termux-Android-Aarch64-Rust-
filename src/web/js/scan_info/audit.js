@@ -58,6 +58,6 @@ export async function renderAudit(host, id){
     ${exBits.length?`<div class="alert alert-info" style="padding:8px 12px"><b>Expansion ledger:</b> ${exBits.join(' · ')}</div>`:''}
     <h4 style="margin-top:6px">Findings ${r.findings.length?`<span class="badge">${r.findings.length}</span>`:''}</h4>
     ${findings || '<div class="alert alert-success">✓ No weaknesses detected — results are individualised and verifiable.</div>'}
-    <p class="text-muted" style="font-size:12px;margin-top:10px">${sh.log_lines_parsed?`Audited ${sh.log_lines_parsed} scan-log line(s). `:''}Same audit as <code>hse audit --scan-id ${esc(id)}</code>. Re-run after fixes to confirm the score improves.</p>`;
+    <p class="text-muted" style="font-size:12px;margin-top:10px">${sh.log_lines_parsed?`Audited ${sh.log_lines_parsed} scan-log line(s). `:''}Source-health signals here come from this scan's own stored events and live engine status automatically — a bare <code>hse audit --scan-id ${esc(id)}</code> needs <code>--log &lt;debug-log-file&gt;</code> for the same signals, so a CLI re-run without it will show a cleaner (less complete) report. Re-run after fixes to confirm the score improves.</p>`;
 }
 

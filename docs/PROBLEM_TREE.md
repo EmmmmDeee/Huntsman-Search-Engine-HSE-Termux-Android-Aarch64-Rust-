@@ -1056,6 +1056,59 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   full suite 0 failures (4632 lib tests unchanged net; 99 `tests/api.rs`
   integration tests, +1). **Paired:** `SOLUTION_TREE` SOL-TERMUX-EXCLUSIVITY
   (extended again), §5 — same commit.
+- **`[x]` T2.94 · Two SPA text claims of "same as/equivalent to a named CLI
+  command" were literally false — the web path in both cases does MORE than
+  the bare CLI command it names, not less, but the copy read as an
+  unqualified equivalence.** Immediately after shipping T2.93, ran a
+  dedicated sweep for this exact defect class across every `*.js` file
+  under `src/web/js/` (button labels, help text, doc comments claiming
+  "equivalent to"/"same as"/"mirrors" a CLI command/flag), verifying each
+  against the real CLI code it names rather than trusting the SPA's own
+  claim. Found two: **(1)** `state.js`'s `USE_CASES.all` ("Complete (All)")
+  wizard preset said "Equivalent to the CLI `hse scan --full`" but its
+  `options()` omitted `expand_all_identities:true` — confirmed against
+  `src/cli/mod.rs`'s `Command::Scan` match arm, which shows `--full` forces
+  `expand_all_identities: expand_all_identities || full` on alongside
+  `modules:None`/`free_only:false`/`passive_only:false`/`max_roi:false`.
+  (`include_infra`, the CLI flag's OTHER thing `--full` implies, was
+  separately confirmed to be a post-scan REPORT/display filter —
+  `cli::scan::filter_infra_entities`, applied after the scan already ran —
+  never a `ScanOptions` field at all, so there is nothing to add to a
+  scan-CREATION preset for it; the web Browse tab simply has no equivalent
+  toggle yet, honestly disclosed rather than silently omitted.) **(2)**
+  `scan_info/audit.js`'s Audit tab footer said "Same audit as `hse audit
+  --scan-id <id>`," but `scan_audit` (`src/api/scan_handlers/diagnostics.rs`)
+  UNCONDITIONALLY folds in `fold_events`-derived stored-event signals
+  (module_errors/expansion_stops/excluded_reasons, read straight from the
+  scan's own DB events — no `--log` file needed) AND the live cached
+  engine-health sweep, whereas `cmd_audit` (`src/cli/audit/mod.rs`) with
+  only `--scan-id` leaves `signals` at `LogSignals::default()` — ZERO
+  source-health signals, unless the operator ALSO passes `--log
+  <debug-file>` (not mentioned anywhere in the footer text). An operator
+  told by the UI to "reproduce" a web audit's score by running the exact
+  named CLI command would get a different, typically cleaner/better-looking
+  report — a real, if narrow, honesty gap in evidentiary self-reporting.
+  → **Solution:** (1) added `expand_all_identities:true` to `USE_CASES.all
+  .options()`, and reworded the wizard's description to state precisely
+  what matches `--full` (module/depth/floor/identity-gate/ROI behaviour)
+  and to honestly name the one thing that doesn't (no web toggle yet for
+  displaying infrastructure entities); (2) reworded the Audit tab's footer
+  to state the true relationship — the web audit's signals come from
+  stored events + live engine status automatically, and a bare CLI
+  invocation needs `--log` for the same completeness — instead of an
+  unqualified "same as" claim. **P3/evidentiary-honesty** (a documentation-
+  accuracy defect, not a scan-correctness one — the underlying scan/audit
+  computations were always correct; only the UI's claim about a DIFFERENT
+  interface was wrong). No Rust code changed; both fixes are JS-only.
+  Live-verified end-to-end via headless Chromium against the real compiled
+  binary: submitting "Complete (All)" now includes `expand_all_identities:
+  true` in the actual `POST /scans` body (confirmed via request
+  interception), and the Audit tab's rendered footer text now shows the
+  corrected disclosure verbatim, zero console errors. Gate green: fmt/
+  clippy `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib
+  tests unchanged; 99 `tests/api.rs` integration tests unchanged — no new
+  Rust surface to test, the fix is entirely in SPA copy/options). **Paired:**
+  `SOLUTION_TREE` SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10659,4 +10712,37 @@ way, so this specific drift class can't recur silently again.
   `GET /scans/{id}`, zero uncaught JS errors. Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4632 lib tests unchanged
   net; 99 `tests/api.rs` integration tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.
+- **2026-07-14** — **T2.94: two SPA "equivalent to a named CLI command"
+  claims were literally false — the web path does MORE in both cases, not
+  less, but read as an unqualified equivalence.** A dedicated sweep for
+  this exact defect class, run immediately after T2.93 as a broader-net
+  follow-up, checked every "equivalent to"/"same as"/"mirrors [a CLI
+  command]" claim across `src/web/js/` against the real CLI code each one
+  names. Six matched genuinely (Scan Profile picker, wizard defaults, the
+  Cells panel's honestly-self-caveated claim, Key Harvest's account-probe
+  claim, the Benchmark tab, the scraper-health panel). Two didn't: (1)
+  `state.js`'s "Complete (All)" preset claimed equivalence to `hse scan
+  --full` but omitted `expand_all_identities:true` (confirmed against
+  `src/cli/mod.rs`'s `Command::Scan` arm); `--full`'s OTHER implied flag,
+  `include_infra`, was separately confirmed to be a post-scan report/
+  display filter (`cli::scan::filter_infra_entities`), never a
+  `ScanOptions` field, so nothing to add there — the web Browse tab simply
+  has no display toggle for it yet, now honestly disclosed rather than
+  silently omitted. (2) The Audit tab's footer claimed "Same audit as `hse
+  audit --scan-id <id>`," but the web handler unconditionally folds in
+  stored-event signals (`fold_events`, reading the scan's own DB events —
+  no `--log` needed) and the live engine-health cache, while the literally-
+  named bare CLI invocation (no `--log`) computes ZERO source-health
+  signals — an operator told to "reproduce" a web audit's score at the CLI
+  would get a different, typically cleaner report. Fixed both by
+  correcting the copy to state the true relationship (what matches, what
+  doesn't and why) rather than changing any computation — the web path's
+  extra completeness in both cases is a virtue, not a bug. No Rust changed;
+  JS-only. Live-verified end-to-end via headless Chromium: submitting
+  "Complete (All)" now includes `expand_all_identities:true` in the actual
+  `POST /scans` body; the Audit tab's rendered footer shows the corrected
+  disclosure verbatim. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4632 lib tests, 99 `tests/api.rs` tests — both
+  unchanged, no new Rust surface). **Paired:** `SOLUTION_TREE`
   SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.

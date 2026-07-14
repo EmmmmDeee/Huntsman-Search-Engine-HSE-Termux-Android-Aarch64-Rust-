@@ -2711,6 +2711,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   uncaught JS errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4632 lib tests unchanged net; 99 `tests/api.rs`
   integration tests, +1). **Paired:** `PROBLEM_TREE` T2.93 — same commit.
+  *Extended (2026-07-14) — two false "equivalent to a CLI command" claims in
+  the SPA corrected, T2.94:* a dedicated sweep for this exact defect class,
+  run as a broader-net follow-up immediately after T2.93, checked every
+  "equivalent to"/"same as"/"mirrors [a CLI command]" claim in
+  `src/web/js/` against the real CLI code each one names — six matched
+  genuinely (Scan Profile picker, wizard defaults, the Cells panel's
+  already-self-caveated claim, Key Harvest's account-probe claim, the
+  Benchmark tab, the scraper-health panel); two didn't, both because the
+  web path does MORE than the bare CLI command it names, not less. (1)
+  `state.js`'s "Complete (All)" preset claimed equivalence to `hse scan
+  --full` but omitted `expand_all_identities:true` (confirmed against
+  `src/cli/mod.rs`'s `Command::Scan` match arm); `--full`'s other implied
+  flag, `include_infra`, was separately confirmed to be a post-scan
+  report/display filter (`cli::scan::filter_infra_entities`), never a
+  `ScanOptions` field at all, so there's nothing to add to a scan-creation
+  preset for it — the web Browse tab simply has no display toggle yet, now
+  honestly named as a gap rather than silently glossed over. (2) The Audit
+  tab's footer claimed "Same audit as `hse audit --scan-id <id>`," but
+  `scan_audit` unconditionally folds in stored-event signals (`fold_events`
+  — no `--log` file needed, it reads the scan's own DB events) and the live
+  engine-health cache, while the literally-named bare CLI invocation
+  computes zero source-health signals without also passing `--log`. Fixed
+  both by correcting the copy to state the true relationship, not by
+  changing any computation — the web path's extra completeness in both
+  cases is a virtue, not a defect to remove. No Rust changed; JS-only.
+  Live-verified end-to-end via headless Chromium against the real compiled
+  binary: submitting "Complete (All)" now includes
+  `expand_all_identities:true` in the actual `POST /scans` body (confirmed
+  via request interception); the Audit tab's rendered footer shows the
+  corrected disclosure verbatim; zero console errors. Gate green: fmt/
+  clippy `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib
+  tests, 99 `tests/api.rs` tests — both unchanged, no new Rust surface).
+  **Paired:** `PROBLEM_TREE` T2.94 — same commit.
 
 ---
 
