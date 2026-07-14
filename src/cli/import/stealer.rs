@@ -280,12 +280,12 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
             );
         }
 
-        let mut push = |mut e: Entity, tag: &str| {
+        let mut push = |mut e: Entity, tag: &str, evidence: Evidence| {
             e.tag("import");
             e.tag("stealer");
             e.tag("stealer-victim");
             e.tag(tag);
-            e.add_evidence(ev.clone());
+            e.add_evidence(evidence);
             entities.push(e);
         };
 
@@ -295,11 +295,31 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
             && id.len() >= 8
             && seen.insert(format!("lid:{id}"))
         {
-            push(Entity::new(EntityKind::DeviceId, id, 0.55, sid), "log-id");
+            push(
+                Entity::new(EntityKind::DeviceId, id, 0.55, sid),
+                "log-id",
+                ev.clone(),
+            );
             stats.machines += 1;
         }
 
         for cred in &victim.creds {
+            // `Pwned At:` is this credential's OWN capture date — distinct per
+            // credential within a victim (unlike the victim-level `newest`/
+            // `oldest` range above), so it rides only on the entities THIS
+            // credential yields, not the whole victim's cluster. Previously
+            // parsed into `Cred::pwned_at` and then silently dropped (never
+            // read again anywhere) despite being a real field the module's own
+            // format documents — a full-fidelity-policy gap (`Evidence`'s own
+            // doc: "the FULL source record, preserved verbatim... nothing
+            // redacted or omitted"), not a timeline classification (that stays
+            // scoped to first-party scan MODULES, per the C1(c) precedent —
+            // `cli/import` bulk-dump evidence deliberately does not feed
+            // `core::timeline::classify`).
+            let cred_ev = match &cred.pwned_at {
+                Some(p) => ev.clone().with_attr("pwned_at", p),
+                None => ev.clone(),
+            };
             if let Some(u) = &cred.user
                 && u.len() >= 2
             {
@@ -308,11 +328,19 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
                     if !crate::core::validation::is_fragment_value(&EntityKind::Email, &em)
                         && seen.insert(format!("em:{em}"))
                     {
-                        push(Entity::new(EntityKind::Email, &em, 0.55, sid), "breach");
+                        push(
+                            Entity::new(EntityKind::Email, &em, 0.55, sid),
+                            "breach",
+                            cred_ev.clone(),
+                        );
                         stats.emails += 1;
                     }
                 } else if seen.insert(format!("un:{}", u.to_lowercase())) {
-                    push(Entity::new(EntityKind::Username, u, 0.50, sid), "breach");
+                    push(
+                        Entity::new(EntityKind::Username, u, 0.50, sid),
+                        "breach",
+                        cred_ev.clone(),
+                    );
                     stats.usernames += 1;
                 }
             }
@@ -330,6 +358,7 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
                 push(
                     Entity::new(EntityKind::Credential, p, 0.55, sid),
                     "plaintext-credential",
+                    cred_ev.clone(),
                 );
             }
         }
@@ -343,7 +372,11 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
             if let Ok(ip) = dom.parse::<std::net::IpAddr>() {
                 let ip = ip.to_string();
                 if !crate::core::validation::is_bogus_ip(&ip) && seen.insert(format!("ip:{ip}")) {
-                    push(Entity::new(EntityKind::IpAddress, &ip, 0.55, sid), "breach");
+                    push(
+                        Entity::new(EntityKind::IpAddress, &ip, 0.55, sid),
+                        "breach",
+                        ev.clone(),
+                    );
                     stats.ips += 1;
                 }
             } else {
@@ -355,7 +388,11 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
                     && !crate::core::validation::is_fragment_value(&EntityKind::Domain, &d)
                     && seen.insert(format!("dom:{d}"))
                 {
-                    push(Entity::new(EntityKind::Domain, &d, 0.50, sid), "breach");
+                    push(
+                        Entity::new(EntityKind::Domain, &d, 0.50, sid),
+                        "breach",
+                        ev.clone(),
+                    );
                     stats.domains += 1;
                 }
             }

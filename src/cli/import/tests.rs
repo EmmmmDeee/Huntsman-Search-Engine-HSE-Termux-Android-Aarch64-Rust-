@@ -1227,6 +1227,32 @@ fn stealerlogs_parses_victims_creds_and_domains() {
     );
 }
 
+#[test]
+fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
+    // Regression: `Cred::pwned_at` was parsed from the real `Pwned At:` field
+    // (documented in `stealer.rs`'s own module header as part of the format)
+    // but then silently dropped — never read again anywhere in the codebase,
+    // never surfaced as evidence, violating the full-fidelity evidentiary
+    // policy (`Evidence`'s own doc: "the FULL source record, preserved
+    // verbatim... nothing redacted or omitted"). This pins that the second
+    // victim's single, unambiguous credential ("bob") carries its own
+    // `pwned_at` evidence attribute with the exact real capture instant.
+    let (ents, _stats) = parse_stealerlogs(STEALER, "s");
+    let bob = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "bob")
+        .expect("the bob credential must become a Username entity");
+    let pwned_at = bob
+        .evidence
+        .iter()
+        .find_map(|ev| ev.attributes.get("pwned_at"));
+    assert_eq!(
+        pwned_at.map(String::as_str),
+        Some("2026-05-20T21:00:00Z"),
+        "the credential's own Pwned At date must ride on its entity's evidence, not be dropped"
+    );
+}
+
 #[tokio::test]
 async fn upload_dispatcher_routes_stealerlogs() {
     let (ents, label) = entities_from_upload(STEALER, "s").await.unwrap();

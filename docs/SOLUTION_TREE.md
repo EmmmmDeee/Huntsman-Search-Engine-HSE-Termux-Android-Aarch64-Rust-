@@ -2674,6 +2674,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (AU-032/AU-106) could additionally DOWN-WEIGHT or skip `device:randomized`
   entities so an ephemeral address never forms an identity cluster — a scoped
   next step. **Paired:** `PROBLEM_TREE` T2.64 — same commit.
+- **`[x]` SOL-STEALER-PWNED-AT · Stop dropping a stealer credential's own
+  `Pwned At:` date** → **T2.97**. `cli/import/stealer.rs::Cred::pwned_at` was
+  parsed from the real, module-documented `Pwned At:` field and then never
+  read again anywhere (confirmed: exactly one `.pwned_at` hit in `src/`, the
+  assignment itself) — a full-fidelity-policy gap, since `Evidence`'s own doc
+  states the operator policy is "the FULL source record... nothing redacted
+  or omitted." Investigated and deliberately declined to also wire it (or
+  the already-live victim-level `newest`/`oldest`) into
+  `core::timeline::classify`: the C1(c) 2026-07-05 entry scoped `classify()`
+  to first-party scan-MODULE evidence only, specifically so the timeline
+  never reconstructs events from `cli/import` bulk-dump data, and no
+  `cli/import/*.rs` parser emits any currently-recognised timeline key today
+  — widening it here would be an unjustified first crossing of that
+  boundary, not a mechanical follow-on. Fix: each credential's `pwned_at`
+  now attaches as evidence on only the entities THAT credential yields (its
+  `Email`/`Username`, and its `Credential` when a plaintext password is
+  present) — not the shared victim-level evidence cloned onto the
+  machine/domain entities, since the date is per-credential, not
+  per-victim. `stealer.rs`'s `push` closure took an explicit `Evidence`
+  parameter (was an implicit `ev.clone()`) so the two call-site families can
+  diverge correctly. New regression test
+  `stealerlogs_credential_pwned_at_survives_onto_its_own_entities`,
+  git-stash-proven (fails `None` pre-fix, passes with the real capture date
+  post-fix). Live-verified: a real `hse import <file>` run against a genuine
+  Stealerlogs-shaped body shows `"pwned_at": "2026-05-20T21:00:00Z"` on both
+  entities the sample credential yields. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4627 lib tests, +1).
+  **Paired:** `PROBLEM_TREE` T2.97 — same commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -7517,3 +7545,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `-D warnings`/rustdoc clean, full suite 0 failures (4626 lib tests, +3).
   Paired: `PROBLEM_TREE` C5 (movement/timeline geo, first increment) + C1(c)
   (timeline-widening precedent), §8 — same commit.
+- **2026-07-14** — **SOL-STEALER-PWNED-AT: a stealer credential's own
+  `Pwned At:` capture date was parsed and then silently dropped.**
+  `cli/import/stealer.rs::Cred::pwned_at` is populated from the real,
+  module-documented `Pwned At:` field but was never read again anywhere in
+  the codebase — confirmed by grepping every `.pwned_at` access in `src/`
+  (one hit, the assignment itself). A full-fidelity-policy gap, not a
+  timeline one: `Evidence`'s own doc states the operator policy directly
+  ("the FULL source record... nothing redacted or omitted"). Investigated
+  whether the fix should also widen `core::timeline::classify` to recognise
+  `pwned_at` (and the already-emitted `newest`/`oldest` victim-level dates)
+  and deliberately did not — the C1(c) 2026-07-05 entry scoped `classify()`
+  to first-party scan-MODULE evidence only, precisely so the footprint
+  timeline never fires reconstructed events from `cli/import` bulk-dump
+  data, and no `cli/import/*.rs` parser emits any currently-recognised
+  timeline key today, so widening it here would be the first, unjustified
+  crossing of that boundary rather than a mechanical addition. Fixed at the
+  right layer: each credential's `pwned_at` now attaches as evidence on
+  only the entities THAT credential yields (`Email`/`Username`, and
+  `Credential` when a plaintext password is present) — not the shared
+  victim-level evidence cloned onto the machine/domain entities, since the
+  date is per-credential, not per-victim. `stealer.rs`'s `push` closure
+  took an explicit `Evidence` parameter (previously an implicit
+  `ev.clone()`) so the credential call sites can carry their own evidence
+  while the machine/domain call sites keep the base victim evidence. New
+  regression test `stealerlogs_credential_pwned_at_survives_onto_its_own_
+  entities`, confirmed via `git stash` to fail (`None`, where the exact
+  real capture date was expected) against the pre-fix code and pass against
+  the fix. Live-verified: a real `hse import <file>` run against a genuine
+  Stealerlogs-shaped body shows `"pwned_at": "2026-05-20T21:00:00Z"` on both
+  the `Username` and `Credential` entities the sample credential yields.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4627 lib tests, +1). Paired: `PROBLEM_TREE` T2.97, §8 — same commit.

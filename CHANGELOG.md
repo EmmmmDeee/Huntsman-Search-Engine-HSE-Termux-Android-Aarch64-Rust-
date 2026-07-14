@@ -287,6 +287,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Importing a stealer log discarded each credential's own compromise date.**
+  The Stealerlogs import format documents a `Pwned At:` line per credential,
+  and the parser read it — but then never used it anywhere, so the specific
+  date a given email/username/password was compromised was silently lost on
+  every import, even though the log's overall date range (`Newest`/`Oldest`)
+  was already kept. That per-credential date now rides on the exact entities
+  it belongs to (the email/username and, when present, the plaintext
+  password), so it's visible in the entity evidence again.
 - **A geotagged photo's capture date never showed up on the scan's footprint
   timeline, even though the location itself did.** `exif_geo` has always read
   a photo's EXIF capture timestamp alongside its GPS coordinates, but the
