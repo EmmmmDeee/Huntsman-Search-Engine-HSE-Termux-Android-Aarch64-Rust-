@@ -20,6 +20,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   no web path at all before now. Pick one from the new "Scan Profile"
   dropdown above the advanced options; your module selection, tags, and
   notes still apply on top of it.
+- **You can now include infrastructure entities (cloud buckets, CDN IPs,
+  tracking IDs) in a downloaded JSON report.** These are hidden by default
+  to keep the report focused on the subject, matching the CLI's own
+  `--include-infra` flag — but the web JSON download had no way to opt back
+  in before now. A new checkbox on the scan page toggles it. Browse, CSV,
+  GEXF, and the debug bundle already showed these entities regardless — only
+  the JSON report ever hid them.
 - **The cell-tower database (used for cell-based geolocation) can now be
   managed entirely from the Settings page — no more dropping to a shell.**
   Previously, populating, refreshing, or clearing this database was only

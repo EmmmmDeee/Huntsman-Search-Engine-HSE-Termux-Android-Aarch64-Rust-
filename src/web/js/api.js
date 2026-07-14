@@ -78,7 +78,12 @@ export const API = {
   cancel:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/cancel',{method:'POST'}),
   remove:    id=>API._req('/api/v1/scans/'+encodeURIComponent(id),{method:'DELETE'}),
   csvUrl:    id=>'/api/v1/scans/'+encodeURIComponent(id)+'/entities.csv',
-  reportUrl: id=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json',
+  // `includeInfra` mirrors `hse export --format report --include-infra`: the
+  // JSON report is the one curated/subject-focused export format that hides
+  // platform-infra entities (cloud buckets, CDN IPs, tracking IDs) by
+  // default — CSV/GEXF/debug-bundle/Browse never filter them, so only this
+  // one download needs the toggle.
+  reportUrl: (id, includeInfra)=>'/api/v1/scans/'+encodeURIComponent(id)+'/report.json'+(includeInfra?'?include_infra=1':''),
   gexfUrl:   id=>'/api/v1/scans/'+encodeURIComponent(id)+'/graph.gexf',
   debugUrl:  id=>'/api/v1/scans/'+encodeURIComponent(id)+'/debug.txt',
   keysGet:   ()=>API._req('/api/v1/settings/keys'),

@@ -25,7 +25,7 @@ export const TARGET_KINDS = [
 export const USE_CASES = {
   all: {
     label:'Complete (All)',
-    desc:'<b>Get anything and everything about the target — the no-compromise scan.</b><br><br>Every Huntsman module is enabled (slow), expansion runs to maximum depth (3) at the comprehensive 0.20 floor (so even the seed\'s own derived identifiers expand), the wrong-identity gate is lifted so every discovered alias is chased (not just corroborated ones), and ROI pruning is disabled so nothing is skipped. The seed kind is auto-detected. Matches the CLI <code>hse scan --full</code>\'s scan behaviour; unlike the CLI, the web Browse tab has no toggle yet to also display infrastructure entities (cloud buckets, CDN IPs, tracking IDs) that <code>--full</code> restores to its report.',
+    desc:'<b>Get anything and everything about the target — the no-compromise scan.</b><br><br>Every Huntsman module is enabled (slow), expansion runs to maximum depth (3) at the comprehensive 0.20 floor (so even the seed\'s own derived identifiers expand), the wrong-identity gate is lifted so every discovered alias is chased (not just corroborated ones), and ROI pruning is disabled so nothing is skipped. The seed kind is auto-detected. Matches the CLI <code>hse scan --full</code>\'s scan behaviour; check "Include infrastructure entities" on the JSON report download (Scan page) for full parity with <code>--full</code>\'s report output too — Browse, CSV, GEXF and the debug bundle already show infrastructure entities unconditionally.',
     pick:_m=>true,
     options:()=>({depth:3, min_expand_confidence:0.20, max_roi:false, expand_all_identities:true})
   },

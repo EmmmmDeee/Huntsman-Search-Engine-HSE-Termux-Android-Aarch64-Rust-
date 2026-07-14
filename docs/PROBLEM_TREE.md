@@ -1154,6 +1154,45 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   tests, +2; 99 `tests/api.rs` integration tests unchanged). **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL (extract_anchor_text multi-occurrence
   fix, new sub-node), §5 — same commit.
+- **`[x]` T2.96 · The web UI had zero way to include infrastructure entities
+  in a downloaded report — closing the one honestly-disclosed gap T2.94's
+  own "Complete (All)" caveat named, and correcting that caveat's imprecise
+  framing in the process.** T2.94's fix said "the web Browse tab simply has
+  no equivalent toggle yet" for `include_infra`; investigating precisely
+  WHERE that toggle needed to live turned up a real prior finding: `wants_
+  infra` (`src/api/scan_handlers/mod.rs`, `?include_infra=1|true|yes|on`)
+  is fully implemented with its own doc comment but was **only ever wired
+  into `scan_report_json`** (`src/api/scan_export/mod.rs:154`) — Browse's
+  own `scan_entities`, CSV (`scan_entities_csv`), GEXF
+  (`scan_export_gexf`), and the debug bundle never filter `platform-infra`-
+  tagged entities at all (confirmed by reading each handler directly: only
+  the CANDIDATE-quarantine filter, `wants_candidates`, appears in those
+  four). So Browse already shows infrastructure entities unconditionally —
+  T2.94's caveat named the wrong web surface; the ACTUAL, sole gap was the
+  **JSON report download link**, which never passed `?include_infra=1`
+  despite the server-side support (and its own regression test,
+  `report_hides_platform_infra_by_default_and_includes_on_request`) having
+  existed all along. This matches `hse export --format report
+  --include-infra`'s CLI scope exactly (`src/cli/export/mod.rs`: `include_
+  infra` is passed only to `render_report`). → **Solution:** `API.reportUrl`
+  (`api.js`) now takes an `includeInfra` flag, appending `?include_infra=1`
+  when set; a new "Include infrastructure entities…" checkbox in the
+  scan-info page header (`scan_info/index.js`) toggles the JSON download
+  link's `href` live, with no page re-render needed. Corrected the
+  "Complete (All)" wizard description (`state.js`, from T2.94) to point at
+  the real, now-closed gap instead of the imprecise "Browse tab" framing.
+  **P3/web-UI-parity** (closes the last named loose thread from the
+  T2.94/T2.96 investigation pair). No Rust code changed — `wants_infra`/
+  `scan_report_json` were already correct and already tested; this is
+  purely wiring the existing, tested server capability into the SPA. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4632 lib tests unchanged; 99 `tests/api.rs` integration tests
+  unchanged — no new Rust surface). Live-verified via headless Chromium
+  against the real compiled binary and a real stored scan: the checkbox
+  renders, toggling it flips the JSON link's `href` between
+  `.../report.json` and `.../report.json?include_infra=1` exactly as
+  designed, zero console errors. **Paired:** `SOLUTION_TREE`
+  SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10818,3 +10857,29 @@ way, so this specific drift class can't recur silently again.
   (4634 lib tests, +2; 99 `tests/api.rs` integration tests unchanged).
   **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (extract_anchor_text
   multi-occurrence fix, new sub-node), §5 — same commit.
+- **2026-07-14** — **T2.96: closed the last loose thread T2.94's own caveat
+  named — an "include infrastructure entities" toggle for the JSON report
+  download.** Tracing precisely where that toggle needed to live surfaced a
+  prior finding along the way: `wants_infra` (`?include_infra=1`,
+  `scan_handlers/mod.rs`) was fully implemented, documented, and unit-
+  tested, but wired into exactly ONE handler — `scan_report_json`
+  (`scan_export/mod.rs:154`). Browse (`scan_entities`), CSV
+  (`scan_entities_csv`), GEXF (`scan_export_gexf`), and the debug bundle
+  never filter `platform-infra`-tagged entities at all — only the
+  candidate quarantine (`wants_candidates`) applies there — so T2.94's
+  caveat naming "the web Browse tab" as the missing surface was imprecise:
+  Browse already shows infra entities unconditionally; the JSON report
+  download was the sole, real gap, matching the CLI's own scope
+  (`hse export --format report --include-infra` only ever passes the flag
+  to `render_report`). Added an `includeInfra` param to `API.reportUrl`
+  and a checkbox in the scan-info header that toggles the JSON download
+  link's `href` live; corrected T2.94's "Complete (All)" caveat wording to
+  point at the now-closed gap instead of the imprecise Browse-tab framing.
+  No Rust changed — `wants_infra`/`scan_report_json` were already correct
+  and tested; purely SPA wiring. Live-verified via headless Chromium
+  against a real stored scan: checkbox renders, toggling flips the link's
+  `href` between `report.json` and `report.json?include_infra=1` exactly
+  as designed, zero console errors. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4632 lib tests, 99
+  `tests/api.rs` tests — both unchanged). **Paired:** `SOLUTION_TREE`
+  SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.
