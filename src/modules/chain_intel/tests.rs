@@ -8,6 +8,10 @@ fn enr() -> Enrichment {
         received: Some(200_000_000),
         tx_count: Some(7),
         ens: None,
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
     }
 }
 
@@ -41,6 +45,10 @@ fn evidence_omits_unknown_fields_and_never_fabricates() {
         received: None,
         tx_count: Some(78_246),
         ens: Some("vitalik.eth".into()),
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
     };
     let ev = build_evidence("eth", &e);
     assert!(
@@ -65,6 +73,10 @@ fn activity_falls_back_to_funded_empty_without_tx_count() {
         received: None,
         tx_count: None,
         ens: None,
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
     };
     assert_eq!(
         build_evidence("eth", &funded)
@@ -121,6 +133,10 @@ fn doge_enrichment_reports_full_fields_like_esplora() {
         received: Some(200_000_000),
         tx_count: Some(3),
         ens: None,
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
     };
     let ev = build_evidence("doge", &e);
     assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 DOGE");
@@ -174,6 +190,10 @@ fn sol_style_enrichment_never_fabricates_tx_count_or_received() {
         received: None,
         tx_count: None,
         ens: None,
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
     };
     let ev = build_evidence("sol", &e);
     assert!(!ev.attributes.contains_key("total_received"));
@@ -181,6 +201,126 @@ fn sol_style_enrichment_never_fabricates_tx_count_or_received() {
     assert_eq!(ev.attributes.get("balance").unwrap(), "1.5 SOL");
     // No tx_count and a positive balance -> "funded", not "active"/"dormant".
     assert_eq!(ev.attributes.get("activity").unwrap(), "funded");
+}
+
+#[test]
+fn blockscout_address_deserialises_scam_reputation_name_and_tags() {
+    // Real-shaped Blockscout v2 response (field names/nesting confirmed
+    // live against https://eth.blockscout.com/api/v2/addresses/<addr>):
+    // `is_scam`/`reputation`/`name` are top-level scalars and `public_tags`
+    // is an array of `{label, display_name}` objects.
+    let raw = r#"{"coin_balance":"1000","ens_domain_name":null,"is_scam":true,
+        "reputation":"scam","name":"Fake Uniswap","public_tags":[
+        {"label":"phishing","display_name":"Phishing"},
+        {"label":"scam-address","display_name":null}
+    ]}"#;
+    let a: BlockscoutAddress = serde_json::from_str(raw).unwrap();
+    assert_eq!(a.is_scam, Some(true));
+    assert_eq!(a.reputation.as_deref(), Some("scam"));
+    assert_eq!(a.name.as_deref(), Some("Fake Uniswap"));
+    assert_eq!(a.public_tags.len(), 2);
+}
+
+#[test]
+fn blockscout_address_defaults_scam_fields_when_absent() {
+    // A clean address (the common case) doesn't even set these keys — must
+    // degrade to `None`/empty, never a fabricated default.
+    let raw = r#"{"coin_balance":"1000","ens_domain_name":null}"#;
+    let a: BlockscoutAddress = serde_json::from_str(raw).unwrap();
+    assert_eq!(a.is_scam, None);
+    assert_eq!(a.reputation, None);
+    assert_eq!(a.name, None);
+    assert!(a.public_tags.is_empty());
+}
+
+#[test]
+fn blockscout_tag_labels_prefers_display_name_falls_back_to_label_skips_blank() {
+    let tags = vec![
+        BlockscoutTag {
+            label: Some("phishing".into()),
+            display_name: Some("Phishing".into()),
+        },
+        BlockscoutTag {
+            label: Some("scam-address".into()),
+            display_name: None,
+        },
+        BlockscoutTag {
+            label: None,
+            display_name: None,
+        },
+        BlockscoutTag {
+            label: Some("  ".into()),
+            display_name: None,
+        },
+    ];
+    let labels = blockscout_tag_labels(&tags);
+    assert_eq!(labels, vec!["Phishing".to_string(), "scam-address".to_string()]);
+}
+
+#[test]
+fn evidence_reports_blockscout_reputation_signals_when_present() {
+    let e = Enrichment {
+        unit: "ETH",
+        decimals: 18,
+        balance: 1,
+        received: None,
+        tx_count: None,
+        ens: None,
+        is_scam: Some(true),
+        reputation: Some("scam".into()),
+        known_name: Some("Fake Uniswap".into()),
+        public_tags: vec!["Phishing".into(), "scam-address".into()],
+    };
+    let ev = build_evidence("eth", &e);
+    assert_eq!(ev.attributes.get("is_scam").unwrap(), "true");
+    assert_eq!(ev.attributes.get("reputation").unwrap(), "scam");
+    assert_eq!(ev.attributes.get("known_name").unwrap(), "Fake Uniswap");
+    assert_eq!(
+        ev.attributes.get("public_tags").unwrap(),
+        "Phishing, scam-address"
+    );
+}
+
+#[test]
+fn evidence_omits_blockscout_reputation_signals_when_absent() {
+    // `enr()`'s BTC fixture never sets these — a source with no scam signal
+    // must not have the attribute at all, not an empty/false placeholder.
+    let ev = build_evidence("btc", &enr());
+    assert!(!ev.attributes.contains_key("is_scam"));
+    assert!(!ev.attributes.contains_key("reputation"));
+    assert!(!ev.attributes.contains_key("known_name"));
+    assert!(!ev.attributes.contains_key("public_tags"));
+}
+
+#[test]
+fn apply_scam_tags_tags_malicious_and_threat_intel_only_when_flagged() {
+    let mut scam_entity = Entity::new(EntityKind::CryptoAddress, "0xdead", 0.80, "scan-1");
+    let scam = Enrichment {
+        is_scam: Some(true),
+        ..enr()
+    };
+    apply_scam_tags(&mut scam_entity, &scam);
+    assert!(scam_entity.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
+    assert!(
+        scam_entity
+            .tags
+            .contains(&crate::core::tags::THREAT_INTEL.to_string())
+    );
+
+    // False and absent must both be silent — a source explicitly saying
+    // "not a scam" is not itself evidence worth a MALICIOUS tag, and an
+    // absent verdict must never be treated as a positive one.
+    let mut clean_entity = Entity::new(EntityKind::CryptoAddress, "0xclean", 0.80, "scan-1");
+    let clean = Enrichment {
+        is_scam: Some(false),
+        ..enr()
+    };
+    apply_scam_tags(&mut clean_entity, &clean);
+    assert!(!clean_entity.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
+
+    let mut unknown_entity = Entity::new(EntityKind::CryptoAddress, "0xunknown", 0.80, "scan-1");
+    apply_scam_tags(&mut unknown_entity, &enr());
+    assert!(!unknown_entity.tags.contains(&crate::core::tags::MALICIOUS.to_string()));
 }
 
 #[test]

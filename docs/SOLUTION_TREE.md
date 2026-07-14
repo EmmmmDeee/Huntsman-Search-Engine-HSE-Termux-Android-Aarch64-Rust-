@@ -2872,10 +2872,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `tokio::join!` outright rather than fabricating a "fold in" that would
   just duplicate existing evidence — see `PROBLEM_TREE` T2.109 for the
   finding and fix detail.
-- **`[ ]` SOL-CHAININTEL-BLOCKSCOUT-FIELDS · Add `is_scam`/`reputation`/
+- **`[x]` SOL-CHAININTEL-BLOCKSCOUT-FIELDS · Add `is_scam`/`reputation`/
   `public_tags`/`name` to `BlockscoutAddress` and fold into wallet
-  evidence** → **T2.110**. Queued, not yet started — see `PROBLEM_TREE`
-  T2.110 for the finding.
+  evidence** → **T2.110**. Delivered 2026-07-14: added the four fields to
+  `BlockscoutAddress` (`public_tags: Vec<BlockscoutTag>`), matching
+  `Enrichment` fields (empty/`None` on non-Blockscout chains), new pure
+  `blockscout_tag_labels()`/`apply_scam_tags()` helpers, and new
+  `is_scam`/`reputation`/`known_name`/`public_tags` evidence attributes —
+  see `PROBLEM_TREE` T2.110 for the full investigation and fix detail.
 - **`[ ]` SOL-IPREP-SWALLOWED · Propagate `run_otx`/`run_tor_check`
   transport/parse failures instead of swallowing them** → **T2.111**.
   Queued, not yet started — see `PROBLEM_TREE` T2.111 for the finding.
@@ -3503,15 +3507,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   banner/app), T2.103 (`onyphe` threatlist/tag), T2.104 (`geocode`
   addressdetails), T2.105 (`launchpad_user` bio field), T2.106
   (`steam_profile` summary/persona), T2.107 (`sanctions_ofac` Title
-  column), and T2.109 (`signal_radar` discarded signalstrength call)
-  delivered 2026-07-14, same day as the merge. T2.108 (`hlr_cnam` field
-  names) was investigated the same day but deliberately left `[ ]` — real
-  investigation found the actual bug is a non-resolving hardcoded host plus
-  two ambiguous real-vendor candidates each needing a second credential
-  this module doesn't have, bigger and less certain than the stub's
-  field-rename framing, and unverifiable from this sandbox; see
-  `PROBLEM_TREE` T2.108 for the full notes so a future cycle doesn't redo
-  the same DNS/vendor-identification work. 42 of 49 still queued.*
+  column), T2.109 (`signal_radar` discarded signalstrength call), and
+  T2.110 (`chain_intel`'s `BlockscoutAddress` dropped `is_scam`/
+  `reputation`/`name`/`public_tags`) delivered 2026-07-14, same day as the
+  merge. T2.108 (`hlr_cnam` field names) was investigated the same day but
+  deliberately left `[ ]` — real investigation found the actual bug is a
+  non-resolving hardcoded host plus two ambiguous real-vendor candidates
+  each needing a second credential this module doesn't have, bigger and
+  less certain than the stub's field-rename framing, and unverifiable from
+  this sandbox; see `PROBLEM_TREE` T2.108 for the full notes so a future
+  cycle doesn't redo the same DNS/vendor-identification work. 41 of 49
+  still queued.*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -8483,3 +8489,32 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (4674 lib tests, +1 on top of the same-day Stealer Logs Viewer commit's
   own +7). **Paired:** `PROBLEM_TREE` T2.108 annotated
   (still `[ ]`) + T2.109 `[ ]`→`[x]` + §4a — same commit.
+- **2026-07-14 (cycle 13):** Delivered **SOL-CHAININTEL-BLOCKSCOUT-FIELDS**
+  (`[ ]`→`[x]`), closing T2.110 — the next open node off the 2026-07-14
+  comprehensive-audit queue. `chain_intel`'s `BlockscoutAddress` struct
+  declared only `coin_balance`/`ens_domain_name`, silently discarding the
+  live Blockscout v2 response's `is_scam`/`reputation`/`name`/
+  `public_tags` fields at deserialization. Confirmed live against 3 real
+  EVM addresses (`eth.blockscout.com`) that `is_scam`/`reputation`/`name`
+  are genuine top-level scalars already being received and thrown away;
+  `public_tags`'s exact shape (`[{label, display_name}, …]`) was confirmed
+  by reading Blockscout's own open-source `address_view.ex`/`helper.ex`/
+  `get_address_tags.ex` since no live address in this sandbox had a
+  populated tag list to observe directly. Added the four fields plus a new
+  `BlockscoutTag` struct; new pure `blockscout_tag_labels()`
+  (display_name-preferred, label-fallback, blank-skipped) and
+  `apply_scam_tags()` (tags `MALICIOUS`+`THREAT_INTEL` only on
+  `is_scam == Some(true)`, silent on `Some(false)`/`None`) helpers;
+  `Enrichment` and `build_evidence` extended to carry/report the new
+  fields, empty/absent on every non-Blockscout chain (BTC/LTC/SOL/DOGE) —
+  never fabricated. 6 new regression tests (2 deserialization, 1 tag-label
+  reduction, 2 evidence presence/omission, 1 tri-state tagging); `git
+  stash` of `mod.rs` alone confirms all 6 fail to even compile against the
+  pre-fix tree. Live-verified against the real compiled binary: a real
+  `hse scan -k crypto_address -v
+  0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D -m chain_intel` dossier now
+  carries `is_scam = false`, `known_name = UniswapV2Router02`,
+  `reputation = ok` — all three silently absent pre-fix. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4680 lib
+  tests, +6). **Paired:** `PROBLEM_TREE` T2.110 `[ ]`→`[x]` + §4b progress
+  note updated — same commit.

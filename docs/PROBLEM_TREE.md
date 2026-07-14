@@ -1714,15 +1714,39 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `tokio::join!` it shared with `cellinfo`; `scan_cell` now issues exactly
   one subprocess call. **Paired:** `SOLUTION_TREE` SOL-SIGNALRADAR-CELL-DISCARD
   `[ ]`→`[x]` — same commit.
-- **`[ ]` T2.110 · `chain_intel`'s `BlockscoutAddress` struct drops
+- **`[x]` T2.110 · `chain_intel`'s `BlockscoutAddress` struct drops
   `is_scam`/`reputation`/`public_tags`/`name` fields Blockscout returns.**
   Real threat/OSINT signal for wallet enrichment that Blockscout's API
   already provides is discarded at deserialization because the struct
   never declares these fields. → **Solution:** add the fields to
   `BlockscoutAddress` and fold them into wallet evidence/tags. **P2**.
   *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-CHAININTEL-BLOCKSCOUT-FIELDS (new stub).
+  categories).* *Investigated and fixed 2026-07-14:* confirmed live
+  against `eth.blockscout.com/api/v2/addresses/<addr>` for three real
+  addresses (a plain EOA, Uniswap's `UniswapV2Router02` router, the
+  Tornado Cash proxy) that the response genuinely carries top-level
+  `is_scam` (bool), `reputation` (string, e.g. `"ok"`), `name`
+  (`Option<String>`, e.g. `"UniswapV2Router02"`), and a `public_tags`
+  array of `{label, display_name}` objects — traced against Blockscout's
+  own open-source `address_view.ex`/`helper.ex`/`get_address_tags.ex` to
+  confirm the exact shape (`common_tags` populated from a joined
+  `AddressTag`/`AddressToTag` query, each entry carrying `label` +
+  `display_name`) since no live address in this sandbox actually had a
+  populated `public_tags`/scam flag to observe directly. ✅ **Fixed:**
+  added `is_scam`/`reputation`/`name`/`public_tags: Vec<BlockscoutTag>`
+  to `BlockscoutAddress`; new pure `blockscout_tag_labels()` reduces tags
+  to display strings (preferring `display_name`, falling back to `label`,
+  never emitting a blank entry); `Enrichment` gained matching
+  `is_scam`/`reputation`/`known_name`/`public_tags` fields (all
+  `None`/empty on the non-Blockscout chains — never fabricated);
+  `build_evidence` folds them into new `is_scam`/`reputation`/
+  `known_name`/`public_tags` evidence attributes, present only when the
+  source actually returned them; new pure `apply_scam_tags()` tags the
+  entity `MALICIOUS`+`THREAT_INTEL` only when `is_scam == Some(true)` —
+  `Some(false)` and `None` are both silent, so an explicit "not a scam"
+  or a source that doesn't report a verdict can never be mistaken for a
+  positive threat signal. **Paired:** `SOLUTION_TREE`
+  SOL-CHAININTEL-BLOCKSCOUT-FIELDS `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.111 · `ip_reputation`'s `run_otx`/`run_tor_check` discard all
   transport/parse failures, and `process()` always returns `Ok`.**
   A total OTX+Tor outage looks identical to a clean "nothing found" result
@@ -12557,3 +12581,43 @@ way, so this specific drift class can't recur silently again.
   on top of the same-day Stealer Logs Viewer commit's own +7).
   **Paired:** `SOLUTION_TREE` SOL-SIGNALRADAR-CELL-DISCARD `[ ]`→`[x]`, §4a
   progress note updated — same commit.
+- **2026-07-14 (cycle 13):** Closed T2.110, the next open node off the
+  2026-07-14 comprehensive-audit queue: `chain_intel`'s Blockscout v2
+  response struct (`BlockscoutAddress`) declared only `coin_balance`/
+  `ens_domain_name`, silently discarding `is_scam`/`reputation`/`name`/
+  `public_tags` at deserialization even though the live API returns all
+  four. Investigated before fixing: fetched 3 real EVM addresses live from
+  `eth.blockscout.com` (a plain EOA, the Uniswap `UniswapV2Router02`
+  router, the Tornado Cash proxy) confirming `is_scam`/`reputation`/`name`
+  are real top-level scalars the module was already receiving and
+  throwing away — none of the 3 live addresses happened to carry a
+  populated `public_tags`/scam flag, so that exact shape (an array of
+  `{label, display_name}` objects) was confirmed by reading Blockscout's
+  own open-source `address_view.ex`/`helper.ex`/`get_address_tags.ex`
+  rather than guessed. Added the four fields to `BlockscoutAddress`
+  (`public_tags: Vec<BlockscoutTag>`, a new small struct); new pure
+  `blockscout_tag_labels()` reduces tags to display strings; `Enrichment`
+  gained matching fields (`None`/empty on every non-Blockscout chain —
+  never fabricated); `build_evidence` folds them into new `is_scam`/
+  `reputation`/`known_name`/`public_tags` evidence attributes, present
+  only when the source actually returned them; new pure
+  `apply_scam_tags()` (extracted out of `process()` for direct unit
+  testing, mirroring the `fold_address_attrs` extraction precedent) tags
+  the entity `MALICIOUS`+`THREAT_INTEL` only when `is_scam == Some(true)`
+  — `Some(false)`/`None` stay silent so neither an explicit clean verdict
+  nor a source that reports no verdict at all can be mistaken for a
+  positive threat signal. 6 new regression tests: 2 pin
+  `BlockscoutAddress` deserialization (populated vs. wholly-absent), 1
+  pins `blockscout_tag_labels`'s display_name-preferred/label-fallback/
+  blank-skip behaviour, 2 pin `build_evidence`'s presence/omission of the
+  new attributes, 1 pins `apply_scam_tags`'s true/false/absent tri-state;
+  `git stash` of `mod.rs` alone confirms all 6 fail to even compile
+  against the pre-fix tree (`is_scam`/`apply_scam_tags` are wholly new
+  surface). Live-verified against the real compiled binary: a real
+  `hse scan -k crypto_address -v 0x7a250d5630B4cF539739dF2C5dAcb4c659F2488D
+  -m chain_intel` dossier now carries `is_scam = false`, `known_name =
+  UniswapV2Router02`, `reputation = ok` in its `chain_intel` evidence
+  block — all three silently absent before this fix. Full gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4680 lib
+  tests, +6). **Paired:** `SOLUTION_TREE` SOL-CHAININTEL-BLOCKSCOUT-FIELDS
+  `[ ]`→`[x]` — same commit.

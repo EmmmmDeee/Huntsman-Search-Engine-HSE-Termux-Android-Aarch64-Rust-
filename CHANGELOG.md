@@ -435,6 +435,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   per-cell signal strength `cellinfo` already returns covers the same data.
   The redundant call is now gone, so a cell-tower survey no longer pays for
   a subprocess round-trip it never used.
+- **`chain_intel` never surfaced a wallet's scam flag, reputation, known
+  name, or public tags.** Blockscout's own address API returns a curated
+  `is_scam`/`reputation`/`name`/`public_tags` verdict for EVM addresses —
+  confirmed live against real addresses (a plain wallet, Uniswap's router,
+  the Tornado Cash proxy) — but the response struct never declared these
+  fields, so they were silently dropped at deserialization on every ETH
+  lookup. Wallet evidence now carries a scam flag, reputation verdict,
+  known contract/entity name, and any public tags when the source reports
+  them; a confirmed-scam address is now also tagged `malicious`/
+  `threat-intel`, matching how every other threat-intel source in this
+  project reports a corroborated hit.
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were
