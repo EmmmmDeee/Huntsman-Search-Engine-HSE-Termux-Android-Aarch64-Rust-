@@ -4701,6 +4701,62 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   tests, +1). Auto-scheduled re-sync itself remains unbuilt and is correctly
   still open. **Paired:** `SOLUTION_TREE` §4a cell_local auto-sync gap, §5 —
   same commit.
+  **Movement/timeline geo — first increment delivered (2026-07-14):** the
+  "movement/timeline geo" item this node's own text has named as remaining
+  since 2026-07-01 turned out to already have a live, real data source with
+  nothing consuming it. `exif_geo` (the pure-Rust EXIF-GPS module) has always
+  stamped a `shot_time` evidence attribute — the photo's `DateTimeOriginal`/
+  `DateTime` EXIF tag — onto every entity a geotagged photo yields, including
+  its extracted `Coordinates` entity: a genuine "the subject/their device was
+  physically at this place at this time" fact. But `core::timeline::classify`
+  had no arm for `shot_time` at all, so it was silently invisible to the
+  footprint timeline — the exact "defined but never wired" dead-signal defect
+  class C1(c)'s 2026-07-05 fix closed for `AccountCreated`, now found on a
+  geo-typed key instead of an identity one. Confirmed live in the source (not
+  assumed): `exif_geo::process` (`src/modules/exif_geo/mod.rs`) reads
+  `Tag::DateTimeOriginal`/`Tag::DateTime` via `read_str` and folds it onto the
+  shared per-entity evidence as `"shot_time"` unconditionally whenever either
+  tag is present — this is live, unconditional, already-shipped code, not a
+  hypothetical. Fixed by adding a new `TimelineEventKind::LocationVisited`
+  variant (distinct from the existing `Generic` bucket — a dated location is
+  a materially different, higher-value fact than an unclassified date) and
+  mapping `"shot_time"` to it in `classify()`. A second, independent defect
+  surfaced investigating the fix: `exif_geo`'s `shot_time` is stamped
+  **verbatim** from the file in EXIF's own format (`"YYYY:MM:DD HH:MM:SS"`,
+  colon-separated date — confirmed against `exif_geo::parse::read_str`, which
+  performs no reformatting), but `timeline::parse_date` only recognised `-`
+  and `/` as date separators, so even a correctly-classified `shot_time` would
+  have silently failed to parse and been dropped a second time. Fixed by
+  accepting `:` as a third date separator — safe because `parse_date` already
+  isolates the date portion from any `HH:MM:SS` time component via its
+  leading `split_once(['T', ' '])` before separator detection ever runs, so
+  there is no ambiguity with the time's own colons. 3 new regression tests:
+  `classify_recognises_exif_shot_time_as_location_visited` pins the
+  classification; `parse_date_accepts_the_real_exif_datetime_format` pins the
+  EXIF-format parse against the exact real tag shape; and
+  `reconstruct_surfaces_a_location_visited_event_from_a_real_exif_shot_time`
+  proves the full pipeline end-to-end against a `Coordinates` entity carrying
+  `exif_geo`'s real evidence shape — git-stash-provable (the pre-fix
+  `classify` has no `shot_time` arm at all, so this test fails to compile-time
+  certainty of zero events, not a subtle assertion mismatch). SPA parity: the
+  Engines-page-adjacent scan timeline's `TL_KIND` map
+  (`src/web/js/scan_info/timeline.js`) gained a `location_visited` entry
+  (map-marker icon, distinct colour) so the new kind renders with its own
+  label instead of silently falling through to the generic "Event" badge.
+  *Deliberately scoped to `exif_geo` only, not a broader mechanism:* audited
+  every other module producing `Coordinates` (WiGLE, `cell_intel`,
+  `opencellid`, `ip_geo`/`ipinfo`/`ip2location`, `address_au`) for a similar
+  per-observation timestamp evidence attribute — none carry one today
+  (confirmed by grep, not assumed), so `shot_time` is genuinely the only live
+  dated-geo signal in the codebase right now; a broader "movement" mechanism
+  (e.g. correlating multiple `LocationVisited` events into an actual
+  chronological movement path) stays a real, separate future increment, not
+  invented ahead of the data that would justify it. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4626 lib tests, +3).
+  *Remaining:* tighter AU bounding; a true movement/path reconstruction layer
+  over multiple `LocationVisited` events (now buildable, since the underlying
+  events exist for the first time). **Paired:** `SOLUTION_TREE` SOL-GEOINT +
+  SOL-CORR (C1(c) timeline widening precedent), §5 — same commit.
 - **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -11050,3 +11106,27 @@ way, so this specific drift class can't recur silently again.
   detail under the T2.7 node above. **Paired:** `SOLUTION_TREE`
   SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, seventh slice — you.com),
   §5 — same commit.
+- **2026-07-14** — **C5: movement/timeline geo's first increment —
+  `exif_geo`'s real `shot_time` evidence was silently invisible to the
+  footprint timeline.** `exif_geo` already stamps a `shot_time` attribute
+  (the photo's EXIF `DateTimeOriginal`/`DateTime` tag) on every entity it
+  emits, including the extracted `Coordinates` entity — a genuine dated-
+  location fact — but `core::timeline::classify` had no arm for it, the
+  same "defined-but-never-wired" dead-signal class the 2026-07-05
+  `AccountCreated` fix (C1(c)) closed for an identity key, now found on a
+  geo key. Fixed by adding `TimelineEventKind::LocationVisited` and mapping
+  `"shot_time"` to it. A second, independently-found defect: `exif_geo`
+  stamps the tag verbatim in EXIF's own `"YYYY:MM:DD HH:MM:SS"` format
+  (colon-separated date, not ISO), but `timeline::parse_date` only accepted
+  `-`/`/` as date separators, so even a correctly-classified `shot_time`
+  would still have failed to parse; fixed by accepting `:` as a third
+  separator (safe — the date portion is already isolated from any time
+  component before separator detection runs). Audited every other
+  `Coordinates`-producing module for a similar timestamp attribute — none
+  carry one today, so this is genuinely the one live dated-geo signal
+  available, not an invented mechanism. SPA `TL_KIND` map gained a
+  `location_visited` entry. 3 new regression tests, git-stash-provable
+  (pre-fix `classify` has no `shot_time` arm at all). Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4626 lib tests, +3).
+  Full detail under the C5 node above. **Paired:** `SOLUTION_TREE`
+  SOL-GEOINT (movement/timeline geo, first increment), §5 — same commit.

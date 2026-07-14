@@ -44,6 +44,14 @@ pub enum TimelineEventKind {
     LastSeen,
     /// Person date of birth.
     DateOfBirth,
+    /// A geolocated observation instant — currently `exif_geo`'s `shot_time`
+    /// (the EXIF `DateTimeOriginal`/`DateTime` tag) tied to the photo's
+    /// extracted `Coordinates` entity: proof the subject (or their device)
+    /// was physically at that place at that time. The movement/timeline geo
+    /// signal `PROBLEM_TREE` C5/C1(c) name as remaining — two or more of
+    /// these across a scan chart where the subject has actually been, not
+    /// just where they claim to live.
+    LocationVisited,
     /// Anything date-like we recognised but can't classify more precisely.
     Generic,
 }
@@ -66,6 +74,7 @@ impl TimelineEventKind {
             Self::FirstSeen => "first_seen",
             Self::LastSeen => "last_seen",
             Self::DateOfBirth => "date_of_birth",
+            Self::LocationVisited => "location_visited",
             Self::Generic => "event",
         }
     }
@@ -105,7 +114,14 @@ pub struct TimelineEvent {
 /// unreachable dead code and every one of these dates was silently absent
 /// from the timeline. `birth_date`/`death_date` (`wikidata`'s Wikidata-claim
 /// dates) and `verified_at` (`mastodon_user`'s profile-field verification
-/// timestamp) were equally live and equally unmatched.
+/// timestamp) were equally live and equally unmatched. `shot_time`
+/// (`exif_geo`'s `DateTimeOriginal`/`DateTime` EXIF tag, stamped on every
+/// entity a photo yields — including its extracted `Coordinates`) was the
+/// same story: defined nowhere in this match, so a photo's capture instant
+/// was silently dropped from the timeline even when its GPS location made it
+/// there. Recognising it closes the C5/C1(c) "movement/timeline geo" gap:
+/// dated `Coordinates` events are exactly what tells the footprint timeline
+/// *where* the subject was, not just *when* something about them happened.
 fn classify(attr_key: &str) -> Option<TimelineEventKind> {
     use TimelineEventKind::*;
     let kind = match attr_key.to_ascii_lowercase().as_str() {
@@ -122,6 +138,7 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
         "first_seen" | "first_seen_iso" | "first_pulse_created" => FirstSeen,
         "last_seen" | "last_seen_iso" | "last_updated" | "last_update" | "updated" => LastSeen,
         "date_of_birth" | "birth_date" => DateOfBirth,
+        "shot_time" => LocationVisited,
         "start_date" | "review_date" | "end_date" | "date" | "timestamp" | "death_date"
         | "verified_at" => Generic,
         _ => return None,
@@ -323,8 +340,13 @@ fn is_leap(y: i64) -> bool {
 /// Parse a date-ish string into `(unix_seconds, normalised_iso)`.
 ///
 /// Accepts: Unix seconds (10 digits), Unix milliseconds (13 digits), bare year
-/// (`1998`), `YYYY-MM-DD`, `YYYY/MM/DD`, and `YYYY-MM-DDTHH:MM:SS[Z]`. Anything
-/// else (or an out-of-range field) returns `None` so callers skip it cleanly.
+/// (`1998`), `YYYY-MM-DD`, `YYYY/MM/DD`, `YYYY:MM:DD` (the EXIF
+/// `DateTimeOriginal`/`DateTime` tag's own separator — `exif_geo`'s `shot_time`
+/// evidence attribute is stamped verbatim from the file, so the timeline parser
+/// must speak the format the source actually uses, not a normalised one), and
+/// `YYYY-MM-DDTHH:MM:SS[Z]` (or the EXIF form's `YYYY:MM:DD HH:MM:SS`).
+/// Anything else (or an out-of-range field) returns `None` so callers skip it
+/// cleanly.
 pub fn parse_date(raw: &str) -> Option<(i64, String)> {
     let s = raw.trim();
     if s.is_empty() {
@@ -352,10 +374,16 @@ pub fn parse_date(raw: &str) -> Option<(i64, String)> {
         Some((d, t)) => (d, Some(t)),
         None => (s, None),
     };
+    // `:` is EXIF's own date separator (`DateTimeOriginal`/`DateTime`:
+    // `"2019:03:15 08:30:00"`) — safe to accept here because `date_part` is
+    // already isolated from any `HH:MM:SS` time component by the `split_once`
+    // above, so there is no ambiguity with the time's own colons.
     let sep = if date_part.contains('-') {
         '-'
     } else if date_part.contains('/') {
         '/'
+    } else if date_part.contains(':') {
+        ':'
     } else {
         return None;
     };

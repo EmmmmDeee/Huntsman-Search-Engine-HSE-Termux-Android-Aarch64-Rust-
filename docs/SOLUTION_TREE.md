@@ -602,9 +602,35 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `scan_export`) is unchanged because they use tolerant range assertions
   against tightly-clustered fixtures where the two estimators barely diverge —
   this closes a real precision gap, not a behaviour regression risk.
-  *Remaining:* AU bounding precision; movement/timeline layer; auto-scheduled
-  re-sync of the local cell DB (currently requires manual `hse cells import`
-  trigger).
+  *Delivered (2026-07-14) — first movement/timeline layer increment:*
+  `exif_geo` has always stamped a `shot_time` evidence attribute (the photo's
+  EXIF `DateTimeOriginal`/`DateTime` tag) onto every entity it emits,
+  including the extracted `Coordinates` entity, but `core::timeline::classify`
+  had no arm for it — the "movement/timeline layer" this node has named as
+  remaining since cycle 19 turned out to already have a real, live, dated-geo
+  signal with nothing consuming it. New `TimelineEventKind::LocationVisited`
+  (distinct from `Generic`) + a `classify()` arm for `"shot_time"`, plus a
+  second, independently-found defect: `timeline::parse_date` didn't accept
+  EXIF's own `:`-separated date form (`"YYYY:MM:DD HH:MM:SS"`), so even a
+  correctly-classified `shot_time` would have failed to parse — fixed by
+  accepting `:` as a third date separator (safe: `parse_date` already isolates
+  the date portion from the time component before separator detection runs).
+  SPA `TL_KIND` map gained a `location_visited` entry so the new kind renders
+  with its own icon/label rather than the generic "Event" fallback. Audited
+  every other `Coordinates`-producing module (WiGLE, `cell_intel`,
+  `opencellid`, the IP-geo family, `address_au`) for a similar per-observation
+  timestamp attribute — none carry one today, so this is genuinely the one
+  live signal available, not an invented mechanism. 3 new regression tests,
+  git-stash-provable. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
+  suite 0 failures (4626 lib tests, +3). **Paired:** `PROBLEM_TREE` C5
+  (movement/timeline geo, first increment) + C1(c) (timeline-widening
+  precedent this fix follows), §8 — same commit.
+  *Remaining:* AU bounding precision; a true movement/PATH reconstruction
+  layer that correlates multiple `LocationVisited` events into an actual
+  chronology of places visited (the individual dated-location events now
+  exist for the first time — connecting them into a path is the next
+  increment); auto-scheduled re-sync of the local cell DB (currently requires
+  manual `hse cells import` trigger).
 - **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
   *Audit correction (2026-07-12) — status was stale, `[ ]`→`[~]`:* the
@@ -3113,7 +3139,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; AU bounding precision, movement/timeline layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; movement/timeline layer's first increment (`shot_time`→`LocationVisited`) delivered 2026-07-14; AU bounding precision, a multi-event movement/path layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -7455,3 +7481,39 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `-D warnings`/rustdoc clean, full suite 0 failures (4623 lib tests, +2).
   Paired: `PROBLEM_TREE` T2.7 (golden-fixture corpus, seventh slice —
   you.com), §8 — same commit.
+- **2026-07-14** — **SOL-GEOINT: movement/timeline geo's first increment —
+  `exif_geo`'s `shot_time` was live evidence with nothing consuming it.**
+  C5's own text has named "movement/timeline layer" as remaining since cycle
+  19; investigating it found `exif_geo` already stamps a `shot_time`
+  attribute (the photo's EXIF `DateTimeOriginal`/`DateTime` tag) onto every
+  entity it emits, including the extracted `Coordinates` entity — a real
+  dated-location fact — but `core::timeline::classify` had no arm for it, so
+  it was silently invisible to the footprint timeline: the same
+  "defined-but-never-wired" defect class the 2026-07-05 `AccountCreated`
+  fix closed for an identity key, now found on a geo key. Fixed by adding
+  `TimelineEventKind::LocationVisited` (kept distinct from `Generic` — a
+  dated place is a materially more useful fact than an unclassified date)
+  and mapping `"shot_time"` to it. A second, independently-found defect:
+  `exif_geo::parse::read_str` returns the EXIF tag's ASCII value verbatim
+  (`"YYYY:MM:DD HH:MM:SS"`, colon-separated date — EXIF's own format, not
+  ISO), but `timeline::parse_date` only recognised `-`/`/` as date
+  separators, so even a correctly-classified `shot_time` would still have
+  silently failed to parse. Fixed by accepting `:` as a third separator —
+  safe because `parse_date` already isolates the date portion from any
+  `HH:MM:SS` time component before separator detection runs. Audited every
+  other `Coordinates`-producing module (WiGLE, `cell_intel`, `opencellid`,
+  the IP-geo family, `address_au`) for a similar per-observation timestamp
+  attribute — none carry one today, so this is genuinely the one live
+  dated-geo signal in the codebase, not an invented mechanism; a true
+  multi-event movement/path layer stays open, now buildable for the first
+  time since the underlying dated events exist. SPA `TL_KIND` map
+  (`timeline.js`) gained a `location_visited` entry so the new kind renders
+  with its own icon/label instead of the generic "Event" fallback. 3 new
+  regression tests: `classify_recognises_exif_shot_time_as_location_visited`,
+  `parse_date_accepts_the_real_exif_datetime_format`, and
+  `reconstruct_surfaces_a_location_visited_event_from_a_real_exif_shot_time`
+  (full pipeline, real evidence shape) — git-stash-provable, since the
+  pre-fix `classify` has no `shot_time` arm at all. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4626 lib tests, +3).
+  Paired: `PROBLEM_TREE` C5 (movement/timeline geo, first increment) + C1(c)
+  (timeline-widening precedent), §8 — same commit.

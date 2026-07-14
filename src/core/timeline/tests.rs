@@ -238,6 +238,53 @@ use super::*;
     }
 
     #[test]
+    fn classify_recognises_exif_shot_time_as_location_visited() {
+        // `exif_geo` stamps `shot_time` (the EXIF `DateTimeOriginal`/`DateTime`
+        // tag) on every entity a photo yields, including its extracted
+        // `Coordinates` — the movement/timeline geo signal C5/C1(c) name as
+        // remaining. Before this fix, `classify` had no arm for it at all, so
+        // the key silently never reached `parse_date`.
+        assert!(matches!(
+            classify("shot_time"),
+            Some(TimelineEventKind::LocationVisited)
+        ));
+    }
+
+    #[test]
+    fn parse_date_accepts_the_real_exif_datetime_format() {
+        // The EXIF standard's own separator is `:`, not `-` — `exif_geo::parse::
+        // read_str` returns the tag's ASCII value verbatim (e.g.
+        // `"2019:03:15 08:30:00"`), so the timeline parser must speak that
+        // format directly rather than requiring a pre-normalised one.
+        let (ts, iso) = parse_date("2019:03:15 08:30:00").expect("EXIF datetime must parse");
+        assert_eq!(iso, "2019-03-15T08:30:00Z");
+        assert!(ts > 0);
+        // The date-only EXIF form (no time component) is also valid.
+        assert_eq!(parse_date("2019:03:15").unwrap().1, "2019-03-15");
+    }
+
+    #[test]
+    fn reconstruct_surfaces_a_location_visited_event_from_a_real_exif_shot_time() {
+        // End-to-end: a `Coordinates` entity carrying `exif_geo`'s real
+        // `shot_time` evidence attribute must produce a genuine
+        // `LocationVisited` timeline event, not silently vanish. Regression for
+        // the dead-key defect: pre-fix, `classify("shot_time")` returned `None`
+        // so this reconstruct call yielded zero events.
+        let e = entity_with_attrs(
+            EntityKind::Coordinates,
+            "40.712776,-74.005974",
+            "exif_geo",
+            &[("shot_time", "2021:06:15 14:22:05"), ("camera_make", "Apple")],
+        );
+        let tl = reconstruct(&[e]);
+        assert_eq!(tl.len(), 1, "camera_make is not a recognised date key");
+        assert_eq!(tl[0].kind, TimelineEventKind::LocationVisited);
+        assert_eq!(tl[0].iso, "2021-06-15T14:22:05Z");
+        assert_eq!(tl[0].entity_value, "40.712776,-74.005974");
+        assert_eq!(tl[0].entity_kind, "coordinates");
+    }
+
+    #[test]
     fn classify_is_case_insensitive_and_none_for_unknown() {
         assert!(matches!(
             classify("BREACH_DATE"),

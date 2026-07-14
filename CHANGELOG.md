@@ -287,6 +287,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A geotagged photo's capture date never showed up on the scan's footprint
+  timeline, even though the location itself did.** `exif_geo` has always read
+  a photo's EXIF capture timestamp alongside its GPS coordinates, but the
+  timeline engine had no rule for recognising that particular date field, so
+  it was silently dropped — the coordinates appeared in the entity list and
+  on the map, just never dated on the timeline. A second bug compounded it:
+  EXIF stores its timestamp in its own format (`2019:03:15 08:30:00`, colons
+  instead of dashes), which the timeline's date parser didn't recognise
+  either, so even fixing the first issue alone wouldn't have surfaced
+  anything. Both are fixed — a geotagged photo's capture date now appears on
+  the timeline as its own "Location" event, distinct from an unclassified
+  date.
 - **The `search_engines` module's you.com engine leaked its own CDN link as a
   fake search result, and its doc comment claimed a scraping method the live
   site no longer supports.** A real live capture showed you.com's `/search`

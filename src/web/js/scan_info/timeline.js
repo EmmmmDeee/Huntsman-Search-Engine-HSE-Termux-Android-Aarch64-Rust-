@@ -14,6 +14,7 @@ export const TL_KIND = {
   first_seen:{ic:'glyphicon-eye-open',cl:'#5bc0de',lbl:'First seen'},
   last_seen:{ic:'glyphicon-eye-close',cl:'#777',lbl:'Last seen'},
   date_of_birth:{ic:'glyphicon-gift',cl:'#777',lbl:'Born'},
+  location_visited:{ic:'glyphicon-map-marker',cl:'#8e44ad',lbl:'Location'},
   event:{ic:'glyphicon-calendar',cl:'#777',lbl:'Event'},
 };
 export async function renderTimeline(host, id){
