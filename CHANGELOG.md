@@ -341,6 +341,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
   result set automatically, bounded only by your own scan/session quota
   (never a new invented limit), so a query with a large result set no
   longer silently returns a small, arbitrary slice of it.
+- **Four modules (`abn_lookup`, `qld_cadastre`, `overpass`,
+  `opencorporates`) silently swallowed rate-limit responses instead of
+  retrying or backing off.** A `429 Too Many Requests` from any of these
+  four used to produce the same result as a genuine "nothing found" —
+  no retry, no wait, no signal anywhere that the source throttled the
+  request. All four now honour a real `Retry-After` from the source with
+  a short, bounded sleep-and-retry-once before giving up, and a
+  configured key that's actually just rate-limited (rather than bad or
+  expired) is now recognised as such so it recovers on its own instead of
+  quietly degrading indefinitely.
 - **SeekNow embedded default key rotated** to the operator-supplied
   `seek-0b493c7c…` key, with the prior default (confirmed dead against
   `see-know.icu`, `.eu` status never re-verified) demoted into the

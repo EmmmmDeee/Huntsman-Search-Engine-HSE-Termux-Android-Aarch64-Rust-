@@ -12,7 +12,25 @@ fn accepts_coordinates_only() {
     fn module_metadata() {
         assert_eq!(Overpass.name(), "overpass");
         assert_eq!(Overpass.priority(), 15);
-        assert_eq!(Overpass.max_timeout_ms(), 30_000);
+        assert_eq!(Overpass.max_timeout_ms(), 58_000);
+    }
+
+    #[test]
+    fn max_timeout_covers_two_worst_case_query_executions() {
+        // Regression guard: a 429 used to degrade straight to a silent
+        // Ok(empty) with no retry at all. `process` now sleeps a real
+        // Retry-After (clamped to 4s max) and retries the full [timeout:25]
+        // query once — the budget must cover two worst-case executions plus
+        // that sleep, not just the original single query.
+        let server_side_query_timeout_secs = 25;
+        let max_retry_after_sleep_secs = 4;
+        let worst_case_ms =
+            (server_side_query_timeout_secs * 2 + max_retry_after_sleep_secs) * 1000;
+        assert!(
+            Overpass.max_timeout_ms() >= worst_case_ms,
+            "budget {} < worst-case retry path {worst_case_ms}ms",
+            Overpass.max_timeout_ms()
+        );
     }
 
     #[test]

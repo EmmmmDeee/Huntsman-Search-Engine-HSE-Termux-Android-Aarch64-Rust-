@@ -1,7 +1,7 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
     JSON_BODY_CAP, fetch_json_or_404, fetch_json_or_absent, is_keyed_error_status, key_tail,
-    keyed_ok_or_404, retry_after_secs,
+    keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -386,6 +386,24 @@ fn retry_after_clamps_oversized_default_to_max() {
 #[test]
 fn retry_after_ignores_unparseable_header() {
     assert_eq!(retry_after_secs(&hdrs(Some("soon")), 7, 30), 7);
+}
+
+#[test]
+fn parse_retry_after_secs_matches_the_header_map_variant_it_was_extracted_from() {
+    // parse_retry_after_secs exists so a non-reqwest HTTP client (a raw curl
+    // subprocess) can honour a real Retry-After too — pin that it behaves
+    // identically to retry_after_secs given the equivalent extracted value,
+    // so the two never silently drift apart.
+    assert_eq!(parse_retry_after_secs(None, 5, 10), 5);
+    assert_eq!(parse_retry_after_secs(Some("3"), 5, 10), 3);
+    assert_eq!(parse_retry_after_secs(Some("600"), 5, 10), 10);
+    assert_eq!(parse_retry_after_secs(None, 99, 6), 6);
+    assert_eq!(parse_retry_after_secs(Some("soon"), 7, 30), 7);
+    assert_eq!(
+        parse_retry_after_secs(Some(" 12 "), 5, 30),
+        12,
+        "trims whitespace"
+    );
 }
 
 #[test]

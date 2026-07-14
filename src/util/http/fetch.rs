@@ -369,10 +369,24 @@ pub fn retry_after_secs(
     default_secs: u64,
     max_secs: u64,
 ) -> u64 {
-    headers
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
+    parse_retry_after_secs(
+        headers.get("retry-after").and_then(|v| v.to_str().ok()),
+        default_secs,
+        max_secs,
+    )
+}
+
+/// The delay-seconds parsing/clamping [`retry_after_secs`] does, extracted as
+/// a pure function over an already-extracted header VALUE string rather than
+/// a `reqwest::header::HeaderMap` — so a module whose HTTP client isn't
+/// reqwest (e.g. a raw `curl` subprocess with its own header-capture) can
+/// honour a real `Retry-After` too, instead of hand-rolling its own parse or
+/// ignoring the header entirely. See [`retry_after_secs`]'s own doc comment
+/// for why `max_secs` is mandatory (a module's own timeout budget, not a
+/// blanket ceiling).
+pub fn parse_retry_after_secs(value: Option<&str>, default_secs: u64, max_secs: u64) -> u64 {
+    value
+        .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(default_secs)
         .min(max_secs)
 }

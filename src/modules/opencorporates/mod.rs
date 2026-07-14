@@ -188,6 +188,16 @@ pub(super) fn build_search_url(target_kind: TargetKind, query: &str) -> String {
     )
 }
 
+/// Whether this HTTP status means the configured key itself should be
+/// reported to the pool: 401/403 (bad/expired key → `Invalid`) or 429
+/// (rate-limited → `RateLimited`, its own recoverable cooldown window) —
+/// `report_key_exhausted` tells the two apart from the status value itself.
+/// 404 is a genuine no-match and reports nothing. Pure so this three-way
+/// routing is unit-testable without a live HTTP call.
+pub(super) fn should_report_key_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429)
+}
+
 /// Officer search response: `/v0.4/officers/search`.
 #[derive(Deserialize)]
 pub(super) struct OcOfficerResp {
@@ -445,15 +455,22 @@ impl Module for OpenCorporates {
             .await?;
 
         let status = resp.status();
-        // A configured key that gets 401/403 is bad/expired — report it to the
-        // key pool for rotation (was silently swallowed) rather than surfacing
-        // a scan error. 404 = no match, 429 = rate limited — both degrade to an
-        // empty best-effort result.
-        if matches!(status.as_u16(), 401 | 403) {
+        // A configured key that gets 401/403 is bad/expired, and a 429 means
+        // it's rate-limited — report all three to the key pool for rotation
+        // (401/403 were already reported; 429 was previously NOT, the one
+        // inconsistency in this three-way handling despite
+        // `is_keyed_error_status` grouping all three together — see
+        // `should_report_key_status`). `report_key_exhausted` itself tells a
+        // 429 (`RateLimited`, its own per-service cooldown window) apart from
+        // a genuine 401/403 (`Invalid`), so the key recovers automatically
+        // instead of this module silently degrading with no signal anywhere
+        // that the key is currently rate-limited. 404 = a genuine no-match,
+        // the only case that stays a plain empty result with no report.
+        if should_report_key_status(status.as_u16()) {
             ctx.report_key_exhausted(SRC, key, status.as_u16());
             return Ok(ModuleResult::new());
         }
-        if matches!(status.as_u16(), 404 | 429) {
+        if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {

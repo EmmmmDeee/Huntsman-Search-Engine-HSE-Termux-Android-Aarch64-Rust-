@@ -34,6 +34,15 @@ fn full_name_search_uses_officer_endpoint_and_is_global() {
 }
 
 #[test]
+fn should_report_key_status_covers_401_403_429_but_not_404_or_success() {
+    assert!(should_report_key_status(401));
+    assert!(should_report_key_status(403));
+    assert!(should_report_key_status(429));
+    assert!(!should_report_key_status(404));
+    assert!(!should_report_key_status(200));
+}
+
+#[test]
 fn module_metadata() {
     assert_eq!(OpenCorporates.name(), "opencorporates");
     // Government / public-records band (see priority() doc).

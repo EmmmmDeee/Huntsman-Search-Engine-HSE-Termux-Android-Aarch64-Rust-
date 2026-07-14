@@ -107,12 +107,14 @@ impl Module for AbnLookup {
 
     fn max_timeout_ms(&self) -> u64 {
         // fetch_jsonp does a curl with a 10s --max-time (wrapped in a 12s
-        // tokio timeout) and, on a 429, sleeps 5s before a second identical
-        // curl — a ~29s worst case. The default 3s MODULE_TIMEOUT_MS killed
-        // process() before even the first fetch could complete, so this
-        // module returned nothing on any real-latency network. Budget for
-        // the full retry path with headroom.
-        30_000
+        // tokio timeout) and, on a 429, honours a real server `Retry-After`
+        // (clamped to 8s max, 5s default when absent) before a second
+        // identical curl — a ~32s worst case. The default 3s
+        // MODULE_TIMEOUT_MS killed process() before even the first fetch
+        // could complete, so this module returned nothing on any
+        // real-latency network. Budget for the full retry path with
+        // headroom.
+        35_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {

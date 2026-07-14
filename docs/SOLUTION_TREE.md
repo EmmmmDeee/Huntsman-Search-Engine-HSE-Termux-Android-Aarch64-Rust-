@@ -2976,6 +2976,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   so `hse oathnet-batch --execute`'s shared page-size flag clamps
   correctly per surface — see `PROBLEM_TREE` T2.151 for the finding and
   fix detail.
+- **`[x]` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES · Route `abn_lookup`,
+  `qld_cadastre`, `overpass`, and `opencorporates` through a real 429
+  retry + key-pool report instead of a silent empty success** →
+  **T2.152**. Delivered 2026-07-14: bounded sleep-a-real-`Retry-After`-
+  then-retry-once added to all three modules that call the network
+  directly (`abn_lookup` via a new `split_curl_headers` pulling
+  `Retry-After` out of curl's captured header block; `qld_cadastre`/
+  `overpass` via the existing `retry_after_secs` against their `reqwest`
+  `HeaderMap`), a shared header-string-only `parse_retry_after_secs`
+  extracted so both call shapes reuse one clamping implementation,
+  `max_timeout_ms()` raised on all three to cover the worst-case
+  two-request retry path, and `opencorporates` given a pure
+  `should_report_key_status()` so a 429 now reports to the key pool
+  exactly like 401/403 — see `PROBLEM_TREE` T2.152 for the finding and
+  fix detail.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3267,6 +3282,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `page_size` to the documented maximum and implemented real cursor-based
   pagination, budget-bounded rather than a new invented cap. Off the open
   queue.
+- ~~**T2.152**~~ — **delivered** ✅ (`SOL-RATELIMIT-UNIVERSAL-PRIMITIVES`,
+  2026-07-14). Four modules bypassed the shared rate-limit primitives — a
+  429 degraded straight to a silent `Ok(empty)` in three of them
+  (`abn_lookup`, `qld_cadastre`, `overpass`, none of which route through
+  the shared keyed-fetch helpers), and the fourth (`opencorporates`)
+  reported 401/403 to the key pool but not 429. Added a bounded
+  retry-after-real-`Retry-After` retry-once path to all three
+  network-calling modules and a pure `should_report_key_status()` to
+  `opencorporates` so 429 reports to the key pool exactly like 401/403.
+  Off the open queue.
 - ~~**T2.98**~~ — **delivered** ✅ (`SOL-STRUCTURED-ID-TIMELINE`, 2026-07-14). A
   systematic sweep for the same dead-signal class as the 2026-07-05 C1(c)
   `AccountCreated` fix found it had only wired 1 of `structured_id`'s 4
@@ -8191,6 +8216,41 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `has_more` and an actual cursor (4 cases), and `Surface::max_page_size()`
   is pinned to 1000/100. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures. Paired: `PROBLEM_TREE` T2.151, §8 — same
+  commit.
+- **2026-07-14 — SOL-RATELIMIT-UNIVERSAL-PRIMITIVES: four modules bypassed
+  the shared rate-limit primitives, so a 429 silently degraded to
+  `Ok(empty)` instead of retrying or reporting to the key pool.**
+  User-requested diagnosis of how HSE's rate-limiting works found
+  `abn_lookup` (curl-shelled JSONP fetch with no header capture at all),
+  `qld_cadastre`, and `overpass` (both call `send_tagged` directly rather
+  than the shared `fetch_json_inner`/`fetch_keyed_json` helpers every other
+  rate-limit-aware module routes through) all treating a 429 as an
+  ordinary empty success, and `opencorporates` reporting 401/403 to
+  `report_key_exhausted` but not 429 despite `is_keyed_error_status`
+  grouping all three together. Fix: `abn_lookup::fetch::curl_with_status`
+  now captures response headers via curl's `-D -`, and a new pure
+  `split_curl_headers` splits the header block from the body and extracts
+  `Retry-After`; `qld_cadastre` and `overpass` gained a
+  sleep-a-real-`Retry-After`-then-retry-once path on 429 via the existing
+  `retry_after_secs` against their `reqwest` `HeaderMap`s. Extracted a
+  header-string-only `parse_retry_after_secs` out of `retry_after_secs` so
+  both the curl (string) and reqwest (`HeaderMap`) call shapes share one
+  clamping implementation. Raised `max_timeout_ms()` on all three
+  (`abn_lookup` 30s→35s, `qld_cadastre` 15s→25s, `overpass` 30s→58s — its
+  query is itself server-documented `[timeout:25]`, so two worst-case
+  executions plus the retry sleep genuinely need 58s) to cover the
+  worst-case two-request retry path. `opencorporates` gained a pure
+  `should_report_key_status(status) -> bool` so a 429 now reports to
+  `report_key_exhausted` exactly like 401/403 — which already classifies a
+  429 as `KeyStatus::RateLimited` (its own recoverable cooldown window)
+  distinct from `Invalid`, so the key now recovers automatically instead
+  of the module silently degrading with no signal anywhere it was
+  rate-limited. 10 new regression tests pin every new pure function
+  directly: `split_curl_headers` (4 cases), `parse_retry_after_secs`, the
+  two `max_timeout` budget-math guards, and
+  `should_report_key_status_covers_401_403_429_but_not_404_or_success`.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4659 lib tests). Paired: `PROBLEM_TREE` T2.152, §8 — same
   commit.
 - **2026-07-14 — SOL-ONYPHE-THREATLIST `[ ]`→`[x]`: second delivery off the
   49-finding audit queue.** `onyphe::extract_entities` parsed every result
