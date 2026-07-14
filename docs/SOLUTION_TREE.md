@@ -1337,6 +1337,36 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   unit test instead. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4615 lib tests, +1). **Paired:** `PROBLEM_TREE`
   T2.87 — same commit.
+  *Extended (2026-07-14) — `base_url()`'s default corrected from `.icu`
+  back to `.eu`, T2.89:* the operator supplied real HSE debug logs from
+  their own device (no PII from them used, only diagnostic signal — curl
+  exit codes, module names, timestamps) showing `see_know` failing three
+  times with `"curl exited 6"` (DNS resolution failure) against the `.icu`
+  default T2.83 had promoted on a sandbox-only reachability probe, in the
+  same real scan where `oathnet_pro`'s identical `CurlClient` machinery
+  succeeded repeatedly — ruling out a device-wide DNS problem. The operator
+  separately supplied real, freshly-generated SeekNow website exports whose
+  own footer states the platform's domain as `see-know.eu`, matching every
+  other reference to SeekNow already in this codebase except `base_url()`'s
+  own hardcoded default. T2.83's sandbox probe is now understood to be
+  contaminated by this environment's own outbound-proxy policy — reconfirmed
+  this same cycle to fluctuate (both domains currently proxy-blocked here,
+  where yesterday only `.eu` was) — so a real device's DNS failure is the
+  stronger, ground-truth signal; `.icu` is also a TLD commonly caught by
+  carrier/ISP abuse-reputation DNS filtering, which manifests exactly as the
+  observed failure. Flipped the default; corrected the `SEEKNOW_DEFAULT_KEY`
+  doc comment and every operator-facing `.icu` reference in
+  `docs/SEEKNOW_SETUP.md` (including a FAQ entry that told operators to
+  actively prefer `.icu`), `docs/PERFORMANCE_MONITORING.md`,
+  `docs/SEEKNOW_INTEGRATION_SUMMARY.md`, and `.env.example`; left T2.83's own
+  dated log entries in both trees and `gap_register.md` untouched — they
+  were true when written. Strengthened
+  `client_base_url_uses_endpoint_override_or_default` to pin the exact
+  default host whenever no operator override is set — git-stash-proven by
+  reverting `base_url()` alone, which fails (`.icu` returned); restored,
+  passes. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4620 lib tests — one existing test strengthened, no new test
+  function). **Paired:** `PROBLEM_TREE` T2.89 — same commit.
 
 - **`[x]` SOL-KEYHARVEST-UI · The T2.78–T2.85 harvest pipeline's own
   intelligence products — the permanent `key_vault` bank and `key_roi`

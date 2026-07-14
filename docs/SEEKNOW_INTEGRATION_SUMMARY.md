@@ -6,7 +6,7 @@
 
 ## Executive Summary
 
-Huntsman Search Engine (HSE) now integrates **SeekNow (see-know.icu)** — a 212M+ record breach/stealer/OSINT intelligence platform — with full automation, 9 production-ready OSINT workflows, real-time monitoring, and enterprise-grade orchestration.
+Huntsman Search Engine (HSE) now integrates **SeekNow (see-know.eu)** — a 212M+ record breach/stealer/OSINT intelligence platform — with full automation, 9 production-ready OSINT workflows, real-time monitoring, and enterprise-grade orchestration.
 
 **Your Setup:**
 - ✅ **API Key:** Active (Enterprise plan, 15,000 credits/day)
@@ -149,7 +149,7 @@ Total: ~750 credits, 100+ unique entities
 # Shows: credits remaining, daily limit, scans remaining estimate
 
 # Endpoint status
-curl -H "X-API-Key: ..." https://see-know.icu/api/v1/status | jq '.sources'
+curl -H "X-API-Key: ..." https://see-know.eu/api/v1/status | jq '.sources'
 # Shows: snusbase, leakcheck, intelx, breachhub status
 ```
 
@@ -190,7 +190,7 @@ HSE Core Engine
 
 ### SeekNow API
 
-- **Base URL:** `https://see-know.icu/api/v1`
+- **Base URL:** `https://see-know.eu/api/v1`
 - **Authentication:** X-API-Key header (preferred) or Bearer token
 - **Rate Limiting:** Headers on every response
 - **Uptime:** 99.97% SLA
@@ -214,7 +214,7 @@ HSE Core Engine
 
 - ✅ **Local storage:** Keys in `~/.huntsman.env` only (mode 0600)
 - ✅ **No logging:** Keys never logged to console or results
-- ✅ **HTTPS only:** All requests to see-know.icu over TLS
+- ✅ **HTTPS only:** All requests to see-know.eu over TLS
 - ✅ **Key fingerprinting:** Results show `provider:head…tail` (full secret hidden)
 - ✅ **Per-module isolation:** Each module gets only its own key
 - ✅ **Audit trail:** All responses archived for compliance
@@ -258,7 +258,7 @@ hse scan --kind domain --value acme.com --depth 3 --full
 
 # Monitor
 ./hse-daily-check.sh
-curl -H "X-API-Key: ..." https://see-know.icu/api/v1/credits | jq '.'
+curl -H "X-API-Key: ..." https://see-know.eu/api/v1/credits | jq '.'
 ```
 
 ---
@@ -294,7 +294,7 @@ curl -H "X-API-Key: ..." https://see-know.icu/api/v1/credits | jq '.'
 ## Support & References
 
 **Official Resources:**
-- SeekNow API Docs: https://see-know.icu/docs/api
+- SeekNow API Docs: https://see-know.eu/docs/api
 - HSE Repository: https://github.com/EmmmmDeee/Huntsman-Search-Engine-HSE-Termux-Android-Aarch64-Rust-
 - Terminus Docs: [MODULES.md](./MODULES.md), [API_KEY_HUNTING_GUIDE.md](./API_KEY_HUNTING_GUIDE.md)
 

@@ -261,6 +261,14 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **SeekNow lookups no longer default to a domain that fails to resolve on
+  some real-world networks.** The built-in default endpoint pointed at
+  `see-know.icu`; a real operator's own device couldn't resolve that
+  hostname at all (a DNS failure), while every other paid lookup on the
+  same scan worked fine — the SeekNow default now correctly points at
+  `see-know.eu`, the vendor's own stated domain, matching every other
+  mention of SeekNow already in this project's docs and code. If you had
+  set `HUNTSMAN_SEEKNOW_BASE` yourself, this doesn't affect you.
 - **Startpage results no longer include Startpage's own official social-media
   pages disguised as genuine hits about your search subject.** Startpage's
   own X/Twitter, Instagram, Facebook, and Reddit accounts were showing up as

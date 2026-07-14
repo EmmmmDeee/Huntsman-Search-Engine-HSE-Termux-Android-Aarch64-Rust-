@@ -10,7 +10,7 @@ Check your real-time performance:
 
 ```bash
 # Get current credits + usage metrics
-curl -s -H "X-API-Key: $HUNTSMAN_SEEKNOW_KEY" https://see-know.icu/api/v1/credits | jq '.'
+curl -s -H "X-API-Key: $HUNTSMAN_SEEKNOW_KEY" https://see-know.eu/api/v1/credits | jq '.'
 
 # Expected output:
 {
@@ -109,12 +109,12 @@ for email in $(cat targets.txt | head -10); do
   echo "Scanning: $email"
   hse scan --kind email --value "$email" --depth 1 --seeknow-scan-cap 20
   # After each scan, review progress
-  curl -s -H "X-API-Key: $HUNTSMAN_SEEKNOW_KEY" https://see-know.icu/api/v1/credits | \
+  curl -s -H "X-API-Key: $HUNTSMAN_SEEKNOW_KEY" https://see-know.eu/api/v1/credits | \
     jq '.credits_remaining'
 done
 
 # Daily limit management
-echo "Credits remaining today: $(curl -s -H "X-API-Key: ..." https://see-know.icu/api/v1/credits | jq '.credits_remaining')"
+echo "Credits remaining today: $(curl -s -H "X-API-Key: ..." https://see-know.eu/api/v1/credits | jq '.credits_remaining')"
 ```
 
 ---
@@ -194,7 +194,7 @@ Cost per unique entity: 0.6 credits (high because of deduplication)
 # save as ~/hse-daily-check.sh
 
 API_KEY="${HUNTSMAN_SEEKNOW_KEY}"
-CREDITS=$(curl -s -H "X-API-Key: $API_KEY" https://see-know.icu/api/v1/credits)
+CREDITS=$(curl -s -H "X-API-Key: $API_KEY" https://see-know.eu/api/v1/credits)
 
 REMAINING=$(echo $CREDITS | jq '.credits_remaining')
 DAILY_LIMIT=$(echo $CREDITS | jq '.credits_daily_limit')
@@ -320,7 +320,7 @@ SeekNow guarantees **99.97% uptime**. In case of service degradation:
 ```bash
 # Check status anytime
 curl -s -H "X-API-Key: $HUNTSMAN_SEEKNOW_KEY" \
-  https://see-know.icu/api/v1/status | jq '.sources'
+  https://see-know.eu/api/v1/status | jq '.sources'
 
 # Shows: snusbase, leakcheck, intelx, breachhub status
 # "ok" = operational

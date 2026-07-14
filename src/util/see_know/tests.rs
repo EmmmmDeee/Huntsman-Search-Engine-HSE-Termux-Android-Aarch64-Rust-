@@ -521,6 +521,20 @@ fn client_base_url_uses_endpoint_override_or_default() {
         url.contains("see-know."),
         "SeekNow base URL must reference the canonical domain — got {url}"
     );
+    // Regression guard for T2.89: the default host is `.eu` (the vendor's own
+    // stated domain — see `SEEKNOW_DEFAULT_KEY`'s doc comment for the evidence
+    // that demoted `.icu`), unless the operator's own shell has
+    // HUNTSMAN_SEEKNOW_BASE set, in which case that override legitimately wins.
+    if std::env::var("HUNTSMAN_SEEKNOW_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_none()
+    {
+        assert_eq!(
+            url, "https://see-know.eu/api/v1",
+            "SeekNow default base URL must be the vendor's own `.eu` domain, not `.icu` — got {url}"
+        );
+    }
 }
 
 #[test]

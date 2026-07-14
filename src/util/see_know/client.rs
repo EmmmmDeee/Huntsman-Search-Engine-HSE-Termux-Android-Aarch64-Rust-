@@ -61,11 +61,21 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
 }
 
 pub(super) fn base_url() -> String {
-    // Hardcoded to official .icu endpoint (official domain as of 2026).
-    // Vet the operator's override: refuse non-https / private-host redirects and
-    // WARN on a divergent host, so a key-bearing request can't be silently
-    // redirected to a look-alike or an internal address.
-    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.icu/api/v1")
+    // Default corrected (2026-07-14) from `.icu` back to the vendor's own stated
+    // domain, `.eu` — every other reference to SeekNow in this codebase (module
+    // docs, error strings, `key_harvest::service_domains`, `service_defs`, the
+    // operator-facing setup guide) already names `.eu`, and a real operator's
+    // freshly-generated SeekNow export footer states the platform's own domain as
+    // `https://see-know.eu`. `.icu` had been sandbox-confirmed reachable
+    // (T2.83, 2026-07-13) and was promoted to default on that basis, but a real
+    // device's own DNS resolver failed to resolve `.icu` at all (`curl exited 6`)
+    // in the same scan where a different provider's host on the same client
+    // machinery succeeded — `.icu`-TLD domains are commonly caught by carrier/ISP
+    // DNS-level abuse filtering, a real-world failure mode a sandboxed reachability
+    // probe cannot see. Vet the operator's override: refuse non-https /
+    // private-host redirects and WARN on a divergent host, so a key-bearing
+    // request can't be silently redirected to a look-alike or an internal address.
+    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.eu/api/v1")
 }
 
 /// The SeekNow API key to use for a request: the per-scan context key `ctx_key`

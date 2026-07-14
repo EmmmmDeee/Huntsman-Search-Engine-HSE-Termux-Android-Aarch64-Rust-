@@ -828,6 +828,59 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   warnings`/rustdoc clean, full suite 0 failures (4619 lib tests, +2).
   **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL (extract_surrounding_text
   straddle fix, new sub-node), §5 — same commit.
+- **`[x]` T2.89 · `see_know::client::base_url()`'s hardcoded default pointed
+  at `see-know.icu`, a domain the operator's own real device could not even
+  resolve via DNS — T2.83's sandbox-only reachability finding had promoted
+  the wrong host.** New evidence, not a re-litigation of T2.83's actual
+  finding (the embedded key being dead — that stands, independent of
+  domain): the operator supplied real HSE debug logs from their own device
+  showing `see_know` failing three times with `"curl exited 6"` (DNS
+  resolution failure) against the `.icu` default, in the SAME scan where
+  `oathnet_pro` — using the identical `CurlClient` subprocess machinery —
+  succeeded repeatedly, ruling out a general device/DNS problem. The
+  operator separately supplied real, freshly-generated exports from
+  SeekNow's own live website, whose own footer states the platform's domain
+  as `https://see-know.eu` — matching every OTHER reference to SeekNow
+  already in this codebase (`endpoints.rs`, `budget.rs`,
+  `key_harvest::service_domains`, `service_defs`, `curl_client::AuthScheme`'s
+  own doc comment, the setup guide) except the one place that mattered:
+  `base_url()`'s actual hardcoded default, which T2.83 (2026-07-13) had set
+  to `.icu` on the strength of a sandbox-only probe (reachable here, and
+  returning a real SeekNow-shaped `invalid_api_key` JSON body). That
+  sandbox-reachability signal is contaminated by this environment's own
+  outbound proxy policy, independently observed THIS cycle to fluctuate
+  (both `.icu` and `.eu` are currently proxy-blocked from this sandbox,
+  where yesterday only `.eu` was) — a real device's OS-level DNS failure is
+  ground truth a policy-gated egress proxy cannot supply. `.icu`-TLD domains
+  are also a well-known target of carrier/ISP abuse-reputation DNS
+  filtering, which manifests exactly as "could not resolve host," the
+  operator's own observed failure. → **Solution:** flipped `base_url()`'s
+  hardcoded default back to `https://see-know.eu/api/v1`; corrected the
+  `SEEKNOW_DEFAULT_KEY` doc comment (`util::keys::constants`) to record the
+  domain correction and mark the key's live status against `.eu` as
+  not-yet-re-verified rather than repeating the now-superseded `.icu`
+  finding as current; corrected every other operator-facing reference to the
+  wrong default across `docs/SEEKNOW_SETUP.md` (including a FAQ entry that
+  had told operators to actively PREFER `.icu`), `docs/PERFORMANCE_
+  MONITORING.md`, `docs/SEEKNOW_INTEGRATION_SUMMARY.md`, and `.env.example`.
+  Left every dated historical log entry (this node, `SOLUTION_TREE`,
+  `gap_register.md`) that recorded the `.icu` sandbox finding untouched —
+  it was true when written; only the live default and forward-looking docs
+  changed. **P2/silent-breakage** (the same class as T2.83: a default that
+  silently fails a real operator with no diagnostic pointing at the cause).
+  Strengthened the existing `client_base_url_uses_endpoint_override_or_default`
+  regression test to assert the exact default host (not just "contains
+  `see-know.`") whenever `HUNTSMAN_SEEKNOW_BASE` is unset — git-stash-proven
+  by reverting `base_url()` alone, which fails the assertion (`.icu`
+  returned instead of `.eu`); restored, passes. No PII from the operator's
+  uploaded breach-search exports or debug logs (real emails, password
+  hashes, an address, a DOB, an IP address, for a named private individual)
+  was used, retained, or referenced anywhere in this fix — only the vendor's
+  own platform-branding footer text and non-identifying diagnostic signal
+  (curl exit codes, module names, timestamps) informed it. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4620 lib
+  tests — one existing test strengthened, no new test function). **Paired:**
+  `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE (extended again) — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10306,3 +10359,39 @@ way, so this specific drift class can't recur silently again.
   candidate rather than rushed into this commit. **Paired:**
   `SOLUTION_TREE` SOL-HEALTH-SIGNAL (T2.7 golden-fixture corpus, sixth
   slice), §5 — same commit.
+- **2026-07-14** — **T2.89: `see_know::client::base_url()`'s default
+  corrected from `see-know.icu` back to `see-know.eu` — new real-world
+  evidence overturned T2.83's sandbox-only domain finding.** The operator
+  supplied real HSE debug logs from their own device (scan_id logged, no
+  PII from them used) showing `see_know` failing three times with
+  `"curl exited 6"` (DNS resolution failure) against the `.icu` default,
+  in the same scan where `oathnet_pro` — the identical `CurlClient`
+  subprocess path — succeeded repeatedly, ruling out a device-wide DNS
+  problem. The operator separately supplied real, freshly-generated exports
+  from SeekNow's own live website, whose footer states the platform's own
+  domain as `see-know.eu` — matching every other reference to SeekNow
+  already in this codebase except `base_url()`'s own hardcoded default,
+  which T2.83 (2026-07-13) had set to `.icu` on a sandbox-only reachability
+  probe now understood to be contaminated by this environment's own
+  outbound-proxy policy (independently reconfirmed to fluctuate this same
+  cycle — both domains are currently proxy-blocked here, where yesterday
+  only `.eu` was). A real device's DNS failure is ground truth a
+  policy-gated sandbox proxy cannot supply; `.icu` is also a TLD commonly
+  caught by carrier/ISP abuse-reputation DNS filtering, which manifests
+  exactly as the observed failure. Flipped the default, corrected the
+  `SEEKNOW_DEFAULT_KEY` doc comment and every operator-facing reference in
+  `docs/SEEKNOW_SETUP.md` (a FAQ entry had told operators to actively prefer
+  `.icu`), `docs/PERFORMANCE_MONITORING.md`, `docs/
+  SEEKNOW_INTEGRATION_SUMMARY.md`, and `.env.example`; left this tree's own
+  dated T2.83 entry, `SOLUTION_TREE`'s, and `gap_register.md`'s untouched —
+  they were true when written. Strengthened
+  `client_base_url_uses_endpoint_override_or_default` to pin the exact
+  default host, git-stash-proven by reverting `base_url()` alone (fails,
+  returns `.icu`); restored, passes. No PII from the operator's uploaded
+  breach-search exports or debug logs was used, retained, or referenced —
+  only the vendor's own platform-branding text and non-identifying
+  diagnostic signal informed this fix. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4620 lib tests — one
+  existing test strengthened, no new test function). **Paired:**
+  `SOLUTION_TREE` SOL-KEYHARVEST-RELOCATE (extended again), §5 — same
+  commit.

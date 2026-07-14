@@ -156,18 +156,22 @@ pub const WIGLE_DEFAULT_USER: &str = "AID4493a33e2df9d07ab9666a27c8aead17";
 /// WiGLE API token (HTTP Basic password).
 pub const WIGLE_DEFAULT_TOKEN: &str = "1aedb7ad0171ff3d6be5a844cca5d977";
 /// SeekNow key — the current embedded default, supplied directly by the
-/// operator. **Confirmed DEAD (2026-07-13, this build environment):** the
-/// actual `base_url()` the client calls is `see-know.icu` (not `.eu` — the
-/// `.eu` domain this comment previously blamed for blocking live
-/// verification is itself proxy-blocked from this sandbox, but unrelated to
-/// this key's real status), which IS reachable here; a real `POST /search`
-/// and `GET /credits` against it both return `{"error":"invalid_api_key"}`
-/// via the actual production `see_know` client code path (not just a raw
-/// probe) — confirmed by a live `hse scan --modules see_know` run logging
-/// "SeekNow (see-know.eu) lookups disabled: the API key was rejected". Until
-/// the operator rotates in a working key (`hse doctor`'s new "SeekNow
-/// account" section now reports this status explicitly), every zero-config
-/// install's highest-priority paid source silently returns nothing.
+/// operator. **Confirmed DEAD against `see-know.icu` (2026-07-13, this build
+/// environment):** a real `POST /search` and `GET /credits` against `.icu`
+/// both returned `{"error":"invalid_api_key"}` via the actual production
+/// `see_know` client code path (not just a raw probe). **`base_url()`'s
+/// default has since been corrected (2026-07-14, T2.89) from `.icu` back to
+/// `.eu`** — the vendor's own stated domain everywhere else in this
+/// codebase, corroborated by a real operator's freshly-generated SeekNow
+/// export whose footer names the platform's own domain as `see-know.eu`,
+/// and by that same operator's real device failing to resolve `.icu` via
+/// DNS entirely (`curl exited 6`) while a different provider succeeded in
+/// the same scan. This key's live status against `.eu` is **not yet
+/// re-verified** (this sandbox's outbound proxy currently blocks both
+/// domains) — until the operator rotates in a key confirmed live against
+/// `.eu` (`hse doctor`'s "SeekNow account" section reports this status),
+/// every zero-config install's highest-priority paid source may return
+/// nothing.
 pub const SEEKNOW_DEFAULT_KEY: &str = "seek-fd18f1db9afdce325c90b8d0d27e8ebc02af489c95d0a9eb";
 /// SeekNow key that has been ROTATED OUT — kept only so a stale env file written
 /// by a previous build upgrades to [`SEEKNOW_DEFAULT_KEY`]. Never used as a live
