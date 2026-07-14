@@ -123,9 +123,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *Closes / powers:* **F.3** (self) and the *entire* "untested/unmeasured" class — it
   is the guard that keeps **T0.x/T1.1/T1.3/T2.3/T2.8/T2.9** from regressing.
   *Delivered:* `proptest` (boundary-safety, `normalise` idempotency, `Entity::merge`
-  GREATEST-laws, geo round-trips, no-panic crash-resistance for every network parser)
-  + `criterion` (`benches/scan_throughput.rs`). *Gap:* `cargo-fuzz` (nightly CI lane)
-  and the dossier/txt/html **import** proptest are outstanding. **(§4b)**
+  GREATEST-laws, geo round-trips, no-panic crash-resistance for every network parser,
+  **and** the dossier/txt/html **import** parsers, 2026-06-17) + `criterion`
+  (`benches/scan_throughput.rs`) + **`cargo-fuzz`** (2026-07-14: a new `fuzz/` crate,
+  intentionally outside the root `Cargo.toml`'s package so the stable-toolchain gate
+  never builds it, targets `cert_intel`'s hand-rolled DER scanner — the untrusted-byte
+  parser T2.3's *fixture* testing alone already found two real bugs in — via a new
+  `#[doc(hidden)] pub fn fuzz_entry_parse_der` harness entry point; a new
+  advisory-quality `fuzz.yml` CI lane runs it nightly-toolchain, weekly + on-demand,
+  seeded from the existing `cert_intel/testdata/selfsigned.der` fixture; live-verified
+  locally — 11m57s build, then 1,243,784 fuzz executions in 60s with 0 crashes).
+  *Gap:* only "widen `criterion` to the correlation pass" remains, blocked on a
+  bench-visible entry point that doesn't exist yet — no longer §4b's finish-queue
+  item, since the two originally-named legs (`cargo-fuzz`, import proptest) are both
+  now delivered. **(§4b, updated)**
 
 ### S.CORE — Correctness & determinism
 
@@ -3173,8 +3184,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   entries, AU postcode ≈72 entries, phone area codes ≈65 entries — `fst` is overkill
   at these sizes. `fst` adoption `[-]` (accepted-won't-build); Levenshtein fuzzy
   matching deferred to a lighter mechanism when needed.
-- **SOL-F3** — proptest (str/entity/geo/html/cert/dns + import parsers) + criterion
-  landed; only `cargo-fuzz` (nightly CI lane) left.
+- **SOL-F3** — ✅ both originally-named legs delivered: proptest (str/entity/geo/
+  html/cert/dns + import parsers) + criterion, and now `cargo-fuzz` (2026-07-14,
+  `fuzz/` crate + `fuzz.yml` CI lane, `cert_intel` DER scanner target,
+  live-verified 1.24M executions / 0 crashes). *Remains `[~]` at the node level*
+  only for "widen criterion to the correlation pass," itself blocked on a
+  bench-visible entry point that doesn't exist yet — a genuinely deferred future
+  increment, not active unfinished work, so removed from this finish queue.
 - **SOL-CAP** — ✅ fully closed (`[x]`). All T2.8 sub-items done (2 HIGH + MED
   network reads + hibp cast + CLI-import file cap). Removed from finish queue.
 - **SOL-BUDGET** — ✅ accepted `[-]` (cycle 18 S→P): `reset_per_scan` already
@@ -3192,8 +3208,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **T1 (core guarantees):** T1.1/T1.2/T1.3/T1.4/T1.5 all solved — SOL-BLOCKING
   `[x]` (all write paths); SOL-FINALISE-BLOCKING `[x]` (cycle 14, T1.5 closed). ✔
 - **§3.F (foundations):** all three `[~]` — the largest unrealised leverage block.
-  `memchr` now a direct dep (cycle 12); remaining: `bstr` + `cargo-fuzz` (note:
-  `fst` large-table adoption `[-]` — tables are curated subsets, not registry-scale).
+  `memchr` now a direct dep (cycle 12); `cargo-fuzz` delivered (2026-07-14,
+  `cert_intel` DER target + `fuzz.yml` CI lane); remaining: `bstr` (no natural
+  consumer yet) + widening `criterion` to the correlation pass (note: `fst`
+  large-table adoption `[-]` — tables are curated subsets, not registry-scale).
 - **T2 (robustness):** T2.1–T2.6 + T2.9 solved; **T2.8 fully closed** ✅;
   **T2.10 `[x]`** ✅ (SOL-SCHEMA-VERSION, cycle 16); **T2.12 fully closed** ✅;
   **T2.15 `[x]`** ✅ (SOL-STORAGE-DIAG, 2026-07-05); **T2.16 `[x]`** ✅
@@ -7712,3 +7730,48 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   referenced the removed field; gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite unchanged. Paired: `PROBLEM_TREE`
   T2.100, §8 — same commit.
+- **2026-07-14** — **SOL-F3: closed the `cargo-fuzz` leg, the last fully-
+  unstarted item in the §3.F foundations tier.** Picked up this in-progress
+  node (step 1's priority order — no open node needed inventing). New
+  `fuzz/` crate (`cargo fuzz init` layout, deliberately outside the root
+  `Cargo.toml`'s package/workspace — it has no `[workspace]` table at all —
+  since `libfuzzer-sys` needs nightly-only sanitizer instrumentation that
+  would fail on the stable toolchain the four-command gate runs on) targets
+  `cert_intel`'s hand-rolled DER scanner: the highest-value untrusted-byte
+  parser this node's own text names, and the same code T2.3's *fixture*
+  testing alone already found two real bugs in (a SAN `OCTET STRING →
+  SEQUENCE` unwrap miss, a serial/version INTEGER mix-up). New
+  `#[doc(hidden)] pub fn fuzz_entry_parse_der` on `cert_intel` calls the
+  three previously-private DER extractors (`extract_sans_from_der`,
+  `extract_field_from_der`, `extract_serial_hex`) so one target covers the
+  whole scanner — safe to widen visibility for since the crate is
+  `publish = false` and never consumed as a published API. New
+  `.github/workflows/fuzz.yml`: its own advisory-quality CI lane (mirrors
+  `audit.yml` — weekly + on-demand + on a relevant path change, NOT a
+  required check, since the from-scratch ASAN-instrumented rebuild of the
+  whole ~172k-LOC crate is too slow for every push) seeds a scratch
+  `fuzz/corpus/cert_der/` from the project's existing
+  `cert_intel/testdata/selfsigned.der` fixture and runs a bounded 120s
+  fuzz-and-replay pass. **Found a real bug in the FIRST DRAFT of this
+  cycle's own CI/local invocation, not in the target code:** libFuzzer
+  treats every directory on its command line as read *and write* — pointing
+  it directly at `src/modules/cert_intel/testdata/` (the natural-looking
+  seed-source path) silently wrote 574 newly-discovered corpus files
+  straight into the real fixture directory on the first local run. Caught
+  by `git status` before committing (all 574 showed as untracked, confirmed
+  via `git clean -ndx` dry-run against the one tracked, unmodified
+  `selfsigned.der`), removed with `git clean -fdx` scoped to that directory,
+  and both the local invocation and `fuzz.yml` fixed to copy the seed into
+  a dedicated, gitignored `fuzz/corpus/cert_der/` first — a real caution
+  learned about this specific tool's semantics, not a bug in Huntsman
+  itself. Live-verified for real after the fix, not just scaffolded: a
+  session-installed nightly toolchain + `cargo-fuzz` built the harness
+  (11m57s, whole-crate ASAN rebuild) and ran it for real — 1,243,784
+  executions against the real seed in 60 seconds, 0 crashes, matching (with
+  far deeper mutation coverage) the no-panic property the existing
+  `der_scanners_never_panic` proptest already pins with random generation.
+  No production code change beyond the one `#[doc(hidden)]` visibility
+  widening; gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures — the stable-toolchain gate never touches `fuzz/`, which sits
+  outside the root package entirely. Paired: `PROBLEM_TREE` F.3 (cargo-fuzz
+  leg delivered) + §8, §4b refreshed — same commit.

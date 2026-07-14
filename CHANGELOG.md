@@ -11,6 +11,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Internal: the certificate-intelligence DER scanner is now coverage-guided
+  fuzz-tested, closing the last unstarted item in the standing proof-and-
+  measurement foundation (PROBLEM_TREE F.3).** `cert_intel`'s hand-rolled DER
+  parser — already the source of two real bugs found by fixture testing alone
+  (a SAN wrapper-unwrap miss, a serial/version mix-up) — takes a live TLS
+  peer's fully attacker-controlled bytes directly, making it the project's
+  highest-value target for `cargo-fuzz`. A new `fuzz/` crate (kept outside
+  the main package so it never touches the stable-toolchain gate) and a new
+  weekly/on-demand `fuzz.yml` CI lane exercise it, seeded from the existing
+  real-certificate test fixture. No user-visible behaviour change; verified
+  locally with a real 60-second run — 1.24 million executions, zero crashes.
 - **The New Scan wizard can now pick a named scan profile** — the same
   presets the CLI's `--profile` flag offers (`recommended`, `passive`,
   `footprint`, `investigate`, `fast`, and `skiptrace`), previously only

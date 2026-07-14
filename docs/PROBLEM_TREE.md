@@ -299,6 +299,44 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   *Remaining:* `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device
   aarch64); widen criterion to the correlation pass once a bench-visible entry
   point exists.
+  **`cargo-fuzz` leg delivered (2026-07-14):** the last F.3 item that was
+  still fully unstarted. New `fuzz/` crate (`cargo fuzz init` layout) targets
+  `cert_intel`'s hand-rolled DER scanner — the single highest-value untrusted-
+  byte parser named in this node's own solution text: it's the same code
+  T2.3's *fixture* testing alone already found two real bugs in (a SAN
+  `OCTET STRING → SEQUENCE` unwrap miss, a serial/version INTEGER mix-up),
+  and it takes a live TLS peer's fully attacker-controlled bytes directly.
+  Deliberately NOT a member of the root `Cargo.toml` (which has no
+  `[workspace]` table at all) — `libfuzzer-sys` needs nightly-only sanitizer
+  instrumentation that would fail to build on the stable toolchain the
+  four-command gate runs on, so keeping `fuzz/` a wholly separate crate means
+  `cargo fmt`/`clippy`/`doc`/`test` never see it and the gate stays green on
+  stable, unaffected. New `#[doc(hidden)] pub fn fuzz_entry_parse_der` on
+  `cert_intel` (previously-private `extract_sans_from_der`/
+  `extract_field_from_der`/`extract_serial_hex` stay private; this is a
+  single, documented, harness-only entry point — safe to widen since the
+  crate is `publish = false` and never consumed as a published API) calls
+  all three DER extractors so one fuzz target covers the whole scanner. New
+  `.github/workflows/fuzz.yml` — its own advisory-quality CI lane (mirrors
+  `audit.yml`: weekly + on-demand + on a `fuzz/`/`cert_intel` change, NOT a
+  required check, since the from-scratch ASAN-instrumented rebuild of the
+  whole ~172k-LOC crate is too slow — ~12 min locally — for every push) runs
+  `cargo fuzz run cert_der` for a bounded 120s, seeded from the project's own
+  existing `cert_intel/testdata/selfsigned.der` fixture rather than a
+  duplicated corpus (single-sourced test data, `docs/CONVENTIONS.md` §3).
+  Live-verified, not just scaffolded: ran the harness locally for real
+  (nightly toolchain + `cargo-fuzz` installed for this session) — the build
+  completed in 11m57s and a 60-second coverage-guided run executed
+  **1,243,784** cases against the real seed with **zero crashes**, matching
+  (with far deeper mutation coverage than random generation reaches) the
+  no-panic property the existing `der_scanners_never_panic` proptest already
+  pins. No production code change beyond the one `#[doc(hidden)]` visibility
+  widening; gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (stable toolchain, `fuzz/` untouched by any gate command).
+  *F.3 remains `[~]`:* only "widen criterion to the correlation pass" is
+  left, still blocked on a bench-visible entry point that doesn't exist yet.
+  **Paired:** `SOLUTION_TREE` SOL-F3 (cargo-fuzz leg delivered) + §4b
+  refreshed, §5 — same commit.
 
 ### 3.2 — Tier 2 · P2 robustness & quality
 
@@ -11341,3 +11379,19 @@ way, so this specific drift class can't recur silently again.
   No behaviour change, no test relied on the removed field, gate green:
   fmt/clippy `-D warnings`/rustdoc clean, full suite unchanged. **Paired:**
   `SOLUTION_TREE` §4a gap-analysis note, §5 — same commit.
+- **2026-07-14** — **Closed F.3's `cargo-fuzz` leg — the last fully-unstarted
+  item in the §3.F foundations tier.** Picked up this in-progress node (per
+  step 1's priority order) rather than open something new: F.3's own text
+  had named `cargo-fuzz` as the sole remaining item since the 2026-06-17
+  import-parser proptest cycle. New `fuzz/` crate targets `cert_intel`'s
+  hand-rolled DER scanner via a new `#[doc(hidden)] pub fn
+  fuzz_entry_parse_der` entry point; new advisory-quality `fuzz.yml` CI lane
+  (nightly, weekly + on-demand, mirrors `audit.yml`'s not-a-required-check
+  rationale). Live-verified for real, not just scaffolded: built locally
+  with a session-installed nightly toolchain + `cargo-fuzz` (11m57s build),
+  then ran 60s of real coverage-guided fuzzing — 1,243,784 executions, 0
+  crashes. Full detail under the F.3 node above. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (the stable-toolchain
+  gate never touches `fuzz/` — it's deliberately outside the root
+  `Cargo.toml`'s package). **Paired:** `SOLUTION_TREE` SOL-F3 (cargo-fuzz
+  leg delivered) + §4b refreshed, §5 — same commit.

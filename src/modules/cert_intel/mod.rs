@@ -425,6 +425,33 @@ fn extract_serial_hex(der: &[u8]) -> String {
         .join(":")
 }
 
+/// `cargo-fuzz` harness entry point (F.3, the standing "proof & measurement
+/// infrastructure" foundation — `docs/PROBLEM_TREE.md` §3.F). `der` is a
+/// leaf certificate's raw DER bytes read straight off a live TLS socket
+/// (`process()`'s live-probe path) — fully attacker-controlled, arbitrary
+/// bytes that need not even be valid X.509. This hand-rolled scanner already
+/// had two real no-fixture bugs (T2.3: a SAN `OCTET STRING → SEQUENCE`
+/// unwrap miss, and a serial/version INTEGER mix-up) found by *fixture*
+/// testing alone; coverage-guided fuzzing exercises the same untrusted-byte
+/// surface far more exhaustively than any hand-written or property-test
+/// corpus can. Exists solely so `fuzz/fuzz_targets/cert_der.rs` (a separate,
+/// intentionally-not-a-workspace-member crate — see `fuzz/README.md`) can
+/// reach these otherwise-private extractors: this crate is `publish = false`
+/// and its lib is never consumed as a published API (see the crate-root doc
+/// comment), so widening visibility here costs nothing. `#[doc(hidden)]`
+/// keeps it out of `cargo doc`'s rendered output; the three calls discard
+/// their results deliberately — the only property under test is "never
+/// panics, never hangs, never reads out of bounds" on arbitrary input, not
+/// any particular decoded value.
+#[doc(hidden)]
+pub fn fuzz_entry_parse_der(der: &[u8]) {
+    let _ = extract_sans_from_der(der);
+    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x03], true);
+    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x03], false);
+    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x0A], true);
+    let _ = extract_serial_hex(der);
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");
