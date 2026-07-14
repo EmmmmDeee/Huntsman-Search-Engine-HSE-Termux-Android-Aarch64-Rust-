@@ -15,6 +15,10 @@ export async function renderOpts(v){
   let kstatus = null, kpatterns = null;
   try { kstatus = await API.keysStatus(); } catch { kstatus = null; }
   try { kpatterns = await API.keysPatterns(); } catch { kpatterns = null; }
+  // Cell-tower DB status is ungated but still best-effort — a corrupt/locked
+  // DB file must never block the rest of Settings from rendering.
+  let cells = null;
+  try { cells = await API.cellsStatus(); } catch { cells = null; }
 
   v.innerHTML = `
     <h2>Settings</h2>
@@ -110,6 +114,8 @@ export async function renderOpts(v){
       </div>
     </div>
 
+    ${cellsPanel(cells)}
+
     <div class="panel panel-default">
       <div class="panel-heading"><b>Server</b></div>
       <table class="table table-striped table-condensed" style="margin-bottom:0">
@@ -147,6 +153,7 @@ export async function renderOpts(v){
   updateGroupCounts();
   wireDiagnostics();
   wireUpdate();
+  wireCells();
 }
 
 /* ─── Capability toggles (universal toggleability) ─── */
@@ -350,6 +357,112 @@ export function showRestartOverlay(){
   const poll = setInterval(async()=>{
     try { await API.health(); clearInterval(poll); location.reload(); } catch {}
   }, 2500);
+}
+
+/* ─── Cell-tower DB panel (backs Live Signal Radar / cell_intel geolocation) ───
+   Web-UI equivalent of `hse cells status|import|clear` — previously CLI-only
+   despite backing web-reachable features, so a browser-only operator had no
+   way to populate, refresh, or inspect it. `import` covers the download-by-
+   country-code path (the CLI's --country flag, its first documented use
+   case); raw local-file import remains a CLI-only power path. */
+export function cellsPanel(status){
+  if (!status){
+    return `<div class="panel panel-default">
+      <div class="panel-heading"><b>Cell Tower Database</b></div>
+      <div class="panel-body"><p class="text-muted" style="font-size:12px">Could not load cell-tower database status.</p></div>
+    </div>`;
+  }
+  const li = status.last_import;
+  const byMcc = (status.by_mcc||[]).slice(0,10)
+    .map(m=>`<span class="label label-default" style="margin-right:4px">MCC ${m.mcc}: ${m.count}</span>`).join(' ');
+  return `<div class="panel panel-default">
+    <div class="panel-heading">
+      <b>Cell Tower Database</b>
+      <span id="cells-phase-label" style="float:right;font-size:12px"></span>
+    </div>
+    <div class="panel-body">
+      <p class="text-muted" style="font-size:12px">
+        Local OpenCelliD cache used for cell-tower geolocation (Live Signal
+        Radar, <code>cell_intel</code>). Download-by-country requires an
+        OpenCelliD key set above.
+      </p>
+      <div id="cells-info" style="margin-bottom:10px;font-size:13px">
+        ${status.present
+          ? `<b>${status.total}</b> towers${byMcc?` &nbsp; ${byMcc}`:''}<br>
+             ${li
+               ? `<span class="text-muted" style="font-size:11px">Last import: <code>${esc(li.source_file)}</code> — ${li.row_count} rows, ${esc(fmtDate(li.imported_at))}</span>`
+               : '<span class="text-muted" style="font-size:11px">No import history.</span>'}`
+          : '<span class="text-muted">Not populated — import below to get started.</span>'}
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="cells-country" type="text" class="form-control input-sm" style="max-width:160px"
+               placeholder="AU, NZ, world, or MCC" autocomplete="off">
+        <button id="cells-import-btn" class="btn btn-primary btn-sm">Import</button>
+        <button id="cells-clear-btn" class="btn btn-default btn-sm"${status.present?'':' disabled'}>Clear</button>
+        <span id="cells-msg" class="text-muted" style="font-size:12px"></span>
+      </div>
+    </div>
+  </div>`;
+}
+
+export function wireCells(){
+  const importBtn = $('#cells-import-btn');
+  if (!importBtn) return;   // status fetch failed — nothing to wire
+  const clearBtn  = $('#cells-clear-btn');
+  const countryEl = $('#cells-country');
+  const msgEl     = $('#cells-msg');
+  const phaseEl   = $('#cells-phase-label');
+
+  const PHASE_LABEL = {running:'importing…', error:'last import failed'};
+  const PHASE_CLS   = {running:'label-warning', error:'label-danger'};
+
+  let poller = null;
+  function startPoll(){
+    if (poller) return;
+    poller = setInterval(async()=>{
+      try {
+        const s = await API.cellsStatus();
+        const p = s.import_phase || 'idle';
+        phaseEl.innerHTML = p !== 'idle'
+          ? `<span class="label ${PHASE_CLS[p]||'label-default'}">${esc(PHASE_LABEL[p]||p)}</span>` : '';
+        if (p !== 'running'){
+          clearInterval(poller); poller = null;
+          if (p === 'error'){
+            alertify.error('Cell DB import failed: '+(s.import_error||'unknown error'));
+          } else {
+            toast('Cell DB import complete');
+          }
+          renderOpts($('#view'));
+        }
+      } catch { clearInterval(poller); poller = null; }
+    }, 2500);
+  }
+
+  importBtn.addEventListener('click', async()=>{
+    const country = (countryEl.value||'').trim();
+    if (!country){ alertify.error('Enter a country code, MCC, or "world"'); return; }
+    importBtn.disabled = true;
+    msgEl.textContent = 'Starting import…';
+    try {
+      await API.cellsImport(country);
+      msgEl.textContent = 'Import in progress — tracking status…';
+      startPoll();
+    } catch(e){
+      alertify.error('Import failed: '+e.message);
+      msgEl.textContent = '';
+    } finally {
+      importBtn.disabled = false;
+    }
+  });
+
+  if (clearBtn) clearBtn.addEventListener('click', ()=>{
+    alertify.confirm('Clear cell tower database',
+      'This permanently deletes all imported cell-tower data. Continue?',
+      async()=>{
+        try { await API.cellsClear(); toast('Cell tower database cleared'); renderOpts($('#view')); }
+        catch(e){ alertify.error(e.message); }
+      }, ()=>{});
+  });
 }
 
 /* Lightweight navbar badge update — called at boot and not on every render.

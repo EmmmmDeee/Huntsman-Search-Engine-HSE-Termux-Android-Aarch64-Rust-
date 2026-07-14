@@ -955,6 +955,62 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   `-D warnings`/rustdoc clean, full suite 0 failures (4619 lib tests, net -1
   — the orphaned test removed). **Paired:** `SOLUTION_TREE`
   SOL-TERMUX-EXCLUSIVITY (same new node), §5 — same commit.
+- **`[x]` T2.92 · `hse cells` (the local OpenCelliD cell-tower DB that backs
+  Live Signal Radar/`cell_intel` geolocation) was 100% CLI-only — a
+  browser-only operator had no way to populate, refresh, or inspect it.**
+  The T2.90/T2.91 audit's CLI-vs-web-SPA parity sweep found this the most
+  severe web-UI-exclusivity gap of the ones it surfaced: unlike the other
+  CLI-only commands (`doctor`, `provision`, `oathnet-batch` — genuinely
+  low-value or deliberately pre-binary/CLI-scoped), the cell DB backs
+  FEATURES the web UI already exposes (the Live Signal Radar button,
+  `cell_intel`'s per-scan geolocation) — an operator using HSE exclusively
+  through the browser, per the operator's own framing, could trigger those
+  features but never fix an empty or stale cell DB behind them. →
+  **Solution:** `GET /api/v1/cells/status` (ungated — aggregate tower
+  counts and a local cache path carry none of the "which paid services are
+  configured" sensitivity `settings_keys_get`/`keys_status` gate, the same
+  call already made for `settings_toggles_get`); `POST /api/v1/cells/import`
+  (loopback-only, mirroring `update/trigger`'s policy for a mutating,
+  non-secret action) — the server-side download-by-country-code path (`hse
+  cells import --country`'s first documented use case), returning 202 and
+  driving the download+import in a detached task the same way
+  `update/trigger` drives a binary self-replace, with the SPA polling
+  status exactly like it already polls update progress; `POST /api/v1/
+  cells/clear` (loopback-only, requires an explicit `{"confirm": true}`
+  body — the HTTP equivalent of the CLI's interactive "type 'yes'" prompt,
+  since there's no stdin to prompt over). Raw local-file import
+  (`--file PATH`) deliberately stays CLI-only — a browser file-upload path
+  large enough for a real OpenCelliD extract would need its own bounded-
+  streaming design distinct from the existing 16 MB text-body upload path,
+  named honestly as a follow-on rather than rushed in. Refactored the
+  underlying `hse cells` CLI module to expose 3 pure, shared functions
+  (`opencellid_filename`, `opencellid_download_url`, `clear_cells_db`) so
+  the API calls the exact same country→filename→URL logic and DB-clear
+  logic the CLI already uses, not a duplicate. **P2/web-UI-exclusivity** (a
+  real functional gap for the operator's stated "web UI exclusively" goal,
+  not a convenience one — the difference between "run a feature" and "run
+  a feature you can actually keep working"). 19 new tests: 4 pin the new
+  pure `opencellid_filename`/`opencellid_download_url` helpers; the rest
+  cover the 3 new handlers — loopback-gating for both `import` and `clear`
+  (git-stash-provable the same way T2.90's guard was: each handler's
+  `reject_non_loopback` call is the single point of failure), the atomic
+  check-and-claim (`try_start_import`) refusing a concurrent second import
+  while one is `Running` but allowing a fresh one after a prior `Error`,
+  empty-country rejection, missing-confirm rejection on clear, and the
+  status endpoint's shape on an empty DB. Also extended `tests/api.rs`'s
+  closed-world `spa_references_only_registered_api_endpoints` guard with a
+  `cells` probe. Live-verified end-to-end against the real compiled binary
+  via headless Chromium: the Settings page's new "Cell Tower Database"
+  panel renders the empty-DB state correctly, the Import button's
+  no-OpenCelliD-key path fails gracefully with a cleared status message
+  (not a stuck "Starting import…", a real bug this same verification pass
+  caught and fixed), and the Clear button's confirm-dialog → real DELETE →
+  success-toast round-trip completes with zero uncaught JS errors (the only
+  console entry is the browser's own benign "400 Bad Request" resource-load
+  log, not an exception). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4632 lib tests, +13; 98 `tests/api.rs`
+  integration tests unchanged net, +1 probe only). **Paired:**
+  `SOLUTION_TREE` SOL-TERMUX-EXCLUSIVITY (extended), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10499,3 +10555,34 @@ way, so this specific drift class can't recur silently again.
   `-D warnings`/rustdoc clean, full suite 0 failures (4619 lib tests, net -1;
   98 `tests/api.rs` integration tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-TERMUX-EXCLUSIVITY (new node), §5 — same commit.
+- **2026-07-14** — **T2.92: `hse cells` cell-tower DB management is now
+  reachable from the web UI — the most severe gap the T2.90/91 audit's
+  parity sweep found.** `hse cells status|import|clear` was 100% CLI-only
+  despite backing web-reachable features (Live Signal Radar,
+  `cell_intel`'s geolocation) — a browser-only operator could trigger those
+  features but never populate, refresh, or inspect the DB behind them. New
+  `GET /api/v1/cells/status` (ungated, matching `settings_toggles_get`'s
+  precedent for non-secret aggregate data), `POST /api/v1/cells/import`
+  (loopback-only, mirrors `update/trigger`'s async-trigger-plus-poll
+  pattern — the server-side download-by-country path, the CLI's first
+  documented use case), `POST /api/v1/cells/clear` (loopback-only, requires
+  explicit `{"confirm":true}`, the HTTP equivalent of the CLI's interactive
+  prompt). Refactored `cli::cells` to expose 3 pure shared functions
+  (`opencellid_filename`, `opencellid_download_url`, `clear_cells_db`) so
+  the API reuses the CLI's exact logic rather than duplicating it. Raw
+  local-file import stays CLI-only — honestly named as a follow-on, not
+  folded in (a real browser upload path for a multi-hundred-MB extract
+  needs its own bounded-streaming design, distinct from the existing 16 MB
+  text-body path). New "Cell Tower Database" panel in the Settings page
+  (status display, country-code import with progress polling, confirm-
+  gated clear). 19 new tests covering the pure helpers, both handlers'
+  loopback gating, the atomic import check-and-claim, and the status
+  shape; extended `tests/api.rs`'s closed-world SPA-endpoint guard with a
+  `cells` probe. Live-verified end-to-end via headless Chromium against the
+  real compiled binary: the panel renders, the no-key import path fails
+  gracefully (catching and fixing a real bug this same pass found — the
+  status message stayed stuck at "Starting import…" instead of clearing on
+  error), and the clear-confirm-dialog round-trip completes with zero
+  uncaught JS errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4632 lib tests, +13). **Paired:** `SOLUTION_TREE`
+  SOL-TERMUX-EXCLUSIVITY (extended), §5 — same commit.

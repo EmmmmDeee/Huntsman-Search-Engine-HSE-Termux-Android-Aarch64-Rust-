@@ -9,7 +9,7 @@
 
 mod audit;
 mod benchmark;
-mod cells;
+pub(crate) mod cells;
 mod config;
 mod diagnostics;
 mod diff;

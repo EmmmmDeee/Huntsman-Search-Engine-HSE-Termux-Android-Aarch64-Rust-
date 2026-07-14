@@ -34,6 +34,9 @@
 //! | PUT    | `/api/v1/settings/toggles`        | `settings_toggles_put`   |
 //! | GET    | `/api/v1/update/status`           | `get_status` (v1.5+)     |
 //! | POST   | `/api/v1/update/trigger`          | `post_trigger` (v1.5+)   |
+//! | GET    | `/api/v1/cells/status`            | `cells_status` (v1.13+)  |
+//! | POST   | `/api/v1/cells/import`            | `cells_import` (v1.13+)  |
+//! | POST   | `/api/v1/cells/clear`             | `cells_clear` (v1.13+)   |
 //! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
 //! | GET    | `/static/{*file}`                 | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
@@ -52,8 +55,8 @@ use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
 use super::{
-    AppState, handlers, key_harvest_handlers, scan_export, scan_handlers, settings_handlers,
-    update_handlers,
+    AppState, cells_handlers, handlers, key_harvest_handlers, scan_export, scan_handlers,
+    settings_handlers, update_handlers,
 };
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
@@ -473,6 +476,10 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── update (v1.5+) ──
         .route("/update/status", get(update_handlers::get_status))
         .route("/update/trigger", post(update_handlers::post_trigger))
+        // ── cells (v1.14+): web-UI equivalent of `hse cells status|import|clear` ──
+        .route("/cells/status", get(cells_handlers::cells_status))
+        .route("/cells/import", post(cells_handlers::cells_import))
+        .route("/cells/clear", post(cells_handlers::cells_clear))
         .fallback(api_not_found);
 
     // /api — outer layer catches `/api/v2/...` / `/api/typo` /

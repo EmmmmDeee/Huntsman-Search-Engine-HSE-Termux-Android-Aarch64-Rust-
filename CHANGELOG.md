@@ -11,6 +11,16 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The cell-tower database (used for cell-based geolocation) can now be
+  managed entirely from the Settings page — no more dropping to a shell.**
+  Previously, populating, refreshing, or clearing this database was only
+  possible via the command line, even though the web console already lets
+  you trigger the features that depend on it (Live Signal Radar, location
+  lookups during a scan). The new "Cell Tower Database" panel shows how
+  many towers you have and when they were last updated, lets you download
+  and import a country's towers by entering its code (e.g. "AU"), and lets
+  you clear the database with a confirmation prompt. Importing a raw file
+  you already have on-device is still a command-line-only option for now.
 - **SeekNow's Discord/Steam/Roblox account-linking lookups now also recover
   leaked API keys, not just linked-account identities.** This was the one
   remaining SeekNow data source that skipped the key-recovery pass every

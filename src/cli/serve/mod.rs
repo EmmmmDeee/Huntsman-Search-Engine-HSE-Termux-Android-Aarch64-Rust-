@@ -57,6 +57,9 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
             crate::api::MAX_CONCURRENT_SCANS,
         )),
         update_info: Arc::clone(&update_info),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            crate::api::CellsImportPhase::default(),
+        )),
     });
 
     // A separate clone for the shutdown path — `router` consumes `state` by

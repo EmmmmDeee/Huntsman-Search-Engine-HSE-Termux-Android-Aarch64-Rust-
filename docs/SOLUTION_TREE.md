@@ -2638,6 +2638,47 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   full suite 0 failures (4619 lib tests, net -1; 98 `tests/api.rs`
   integration tests, +1). **Paired:** `PROBLEM_TREE` T2.90/T2.91 — same
   commit.
+  *Extended (2026-07-14) — `hse cells` cell-tower DB management is now
+  reachable from the web UI, T2.92:* the deferred parity finding closed.
+  `status|import|clear` was 100% CLI-only despite backing web-reachable
+  features (Live Signal Radar, `cell_intel`) — the most severe gap the
+  parity audit found, a functional limitation not a convenience one. New
+  `GET /api/v1/cells/status` (ungated, matching `settings_toggles_get`'s
+  precedent for non-secret aggregate data — a tower count and a local cache
+  path carry none of the "which paid services are configured" sensitivity
+  the keys-family routes gate), `POST /api/v1/cells/import` (loopback-only,
+  the server-side download-by-country path — the CLI's first documented
+  use case — reusing `update/trigger`'s exact async-trigger-plus-poll
+  shape: 202 immediately, a detached task drives the download+import, the
+  SPA polls status), `POST /api/v1/cells/clear` (loopback-only, requires
+  explicit `{"confirm":true}` — the HTTP equivalent of the CLI's
+  interactive "type 'yes'" prompt). Extracted 3 pure functions from
+  `cli::cells` (`opencellid_filename`, `opencellid_download_url`,
+  `clear_cells_db`) so the API calls the identical country→filename→URL
+  and DB-clear logic the CLI already uses, not a duplicate — the same
+  reuse-not-duplicate discipline this tree applies everywhere a CLI
+  command gets a web equivalent. Raw local-file import deliberately stays
+  CLI-only, named honestly as a follow-on: a browser upload path sized for
+  a real multi-hundred-MB OpenCelliD extract needs its own bounded-
+  streaming design, distinct from the existing 16 MB text-body upload
+  route, and inventing one under this cycle's scope would risk exactly the
+  kind of rushed, under-reviewed change this tree's discipline exists to
+  avoid. New "Cell Tower Database" panel in Settings (status, country-code
+  import with progress polling, confirm-gated clear). 19 new tests: 4 pin
+  the pure helpers; the rest cover both handlers' loopback gating, the
+  atomic import check-and-claim (refuses a concurrent second call while
+  `Running`, allows a fresh one after a prior `Error`), empty-country and
+  missing-confirm rejection, and the status shape on an empty DB; extended
+  `tests/api.rs`'s closed-world SPA-endpoint guard with a `cells` probe.
+  Live-verified end-to-end via headless Chromium against the real compiled
+  binary: the panel renders the empty-DB state, the no-OpenCelliD-key
+  import path fails gracefully — this same verification pass caught and
+  fixed a real bug where the status message stayed stuck at "Starting
+  import…" instead of clearing on error — and the clear-confirm-dialog →
+  real DELETE → success-toast round-trip completes with zero uncaught JS
+  errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4632 lib tests, +13). **Paired:** `PROBLEM_TREE` T2.92 — same
+  commit.
 
 ---
 

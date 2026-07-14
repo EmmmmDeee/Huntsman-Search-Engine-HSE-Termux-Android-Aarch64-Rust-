@@ -93,6 +93,9 @@ fn test_app(suffix: &str) -> axum::Router {
         update_info: Arc::new(std::sync::Mutex::new(
             huntsman_search_engine::api::UpdateInfo::default(),
         )),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::CellsImportPhase::default(),
+        )),
     });
     router(state, "127.0.0.1:8080")
 }
@@ -129,6 +132,9 @@ fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
         )),
         update_info: Arc::new(std::sync::Mutex::new(
             huntsman_search_engine::api::UpdateInfo::default(),
+        )),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::CellsImportPhase::default(),
         )),
     });
     (router(state, "127.0.0.1:8080"), store)
@@ -2069,6 +2075,8 @@ async fn spa_references_only_registered_api_endpoints() {
             // Forward-only scan-plan preview — parameter-driven; a bare value
             // exercises the registered route (returns 200, never the fallback 404).
             "plan" => "/api/v1/plan?value=example.com".to_string(),
+            // Cell-tower DB status — ungated GET, safe to probe with no side effects.
+            "cells" => "/api/v1/cells/status".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"

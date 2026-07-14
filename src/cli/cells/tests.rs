@@ -1,6 +1,8 @@
 //! Unit tests for `hse cells` CSV parsing and country-code helpers.
 
-use super::{mcc_for_country, mcc_header_line, parse_csv_line};
+use super::{
+    mcc_for_country, mcc_header_line, opencellid_download_url, opencellid_filename, parse_csv_line,
+};
 
 // ── parse_csv_line ──────────────────────────────────────────────────────────
 
@@ -103,4 +105,40 @@ fn mcc_header_line_states_the_true_total_when_truncated() {
 fn mcc_header_line_is_plain_when_the_full_list_already_fits() {
     assert_eq!(mcc_header_line(10), "By MCC:");
     assert_eq!(mcc_header_line(1), "By MCC:");
+}
+
+// ── opencellid_filename / opencellid_download_url ──────────────────────────
+// Shared by the CLI's `--country` import and `POST /api/v1/cells/import` —
+// pinning these as pure functions is what lets the API build the identical
+// request the CLI already does, without duplicating the string logic.
+
+#[test]
+fn opencellid_filename_maps_world_to_the_full_dataset_name() {
+    assert_eq!(opencellid_filename("world", None), "cell_towers.csv.gz");
+    assert_eq!(opencellid_filename("WORLD", None), "cell_towers.csv.gz");
+}
+
+#[test]
+fn opencellid_filename_uses_the_resolved_mcc_for_a_country_code() {
+    assert_eq!(
+        opencellid_filename("AU", Some(505)),
+        "OCID_cells_mcc505.csv.gz"
+    );
+}
+
+#[test]
+fn opencellid_filename_falls_back_to_the_raw_input_when_mcc_is_unresolved() {
+    // An unrecognised country string with no MCC mapping still produces a
+    // deterministic filename rather than panicking or silently dropping it.
+    assert_eq!(opencellid_filename("ZZ", None), "OCID_cells_mccZZ.csv.gz");
+}
+
+#[test]
+fn opencellid_download_url_embeds_the_token_and_filename() {
+    let url = opencellid_download_url("OCID_cells_mcc505.csv.gz", "MYTOKEN");
+    assert!(url.starts_with("https://opencellid.org/downloads/?"));
+    assert!(url.contains("token=MYTOKEN"));
+    assert!(url.contains("file=OCID_cells_mcc505.csv.gz"));
+    assert!(url.contains("sourceFilter=ocid"));
+    assert!(url.contains("type=full"));
 }

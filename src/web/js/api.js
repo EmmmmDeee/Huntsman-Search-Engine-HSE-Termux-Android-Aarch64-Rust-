@@ -112,6 +112,11 @@ export const API = {
   logsUrl:      ()=>'/api/v1/logs',
   updateStatus: ()=>API._req('/api/v1/update/status'),
   updateTrigger:()=>API._req('/api/v1/update/trigger',{method:'POST'}),
+  // Cell-tower DB (backs Live Signal Radar / cell_intel geolocation).
+  // status is ungated; import/clear are loopback-only, mirroring update/trigger.
+  cellsStatus: ()=>API._req('/api/v1/cells/status'),
+  cellsImport: country=>API._req('/api/v1/cells/import',{method:'POST',body:{country}}),
+  cellsClear:  ()=>API._req('/api/v1/cells/clear',{method:'POST',body:{confirm:true}}),
   // Batch: queue many scans in one request (array of ScanRequest). Returns
   // {scans:[{scan_id,status}|{error}], count}.
   batch:      reqs=>API._req('/api/v1/scans/batch',{method:'POST',body:reqs}),
