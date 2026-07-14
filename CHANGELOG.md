@@ -332,6 +332,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **OathNet batch/search queries now fetch the entire result set, not just
+  the first page.** The per-request page size was hardcoded well below
+  what the API itself allows for free (its own docs say the max is 1000;
+  the code used 100, or 50 for infrastructure targets), and there was no
+  pagination at all — a query with more matches than one page held was
+  silently capped there. Search now pages through to the end of the
+  result set automatically, bounded only by your own scan/session quota
+  (never a new invented limit), so a query with a large result set no
+  longer silently returns a small, arbitrary slice of it.
 - **SeekNow embedded default key rotated** to the operator-supplied
   `seek-0b493c7c…` key, with the prior default (confirmed dead against
   `see-know.icu`, `.eu` status never re-verified) demoted into the

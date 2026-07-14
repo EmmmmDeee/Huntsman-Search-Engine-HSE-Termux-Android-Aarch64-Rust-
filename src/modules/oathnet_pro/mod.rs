@@ -163,15 +163,21 @@ impl Module for OathnetPro {
         // Highest value endpoint: single query returns emails, usernames,
         // phones, names, IPs, addresses, passwords, geo, DOB, social
         // handles. The API charges per QUERY not per record — larger
-        // page_size is free ROI. Docs default is 100, max is 1000.
-        // Use 100 for identity targets, 50 for noisy infra targets
-        // (non-matching rows still produce candidate entities).
-        let page_size: u32 = match target.kind {
-            TargetKind::Email | TargetKind::Username => 100,
-            TargetKind::Phone | TargetKind::FullName => 100,
-            TargetKind::IpAddress | TargetKind::Domain => 50,
-            _ => 50,
-        };
+        // page_size is free ROI, and `oathnet::search` now pages through
+        // `has_more`/`next_cursor` on top of this anyway, so the actual
+        // ceiling is the documented per-request maximum, not a smaller
+        // hand-picked value (`docs/OATHNET_API_GUIDE.txt` §11: Breach
+        // Search max 1000). The prior 100/50 split under-fetched by 10-20x
+        // for a cost the API's own docs describe as free. `extract_breach_page`'s
+        // existing candidate-flood cap already bounds how much of a larger
+        // page becomes low-value `candidate` noise for non-matching rows,
+        // so raising this doesn't reintroduce the flood problem the 50
+        // value was chosen to avoid — it only means more of the real
+        // result set (especially matching rows, kept in full) is seen at
+        // all. Uniform across target kinds now that the ceiling is the
+        // API's own documented maximum rather than a per-kind guess.
+        const BREACH_PAGE_SIZE: u32 = 1000;
+        let page_size: u32 = BREACH_PAGE_SIZE;
         let items = oathnet::search(key, paths::BREACH, field, &target.value, page_size).await?;
         if items.is_empty() {
             return Ok(result);
@@ -221,6 +227,11 @@ impl Module for OathnetPro {
         // password + URL). Only Email and Username targets have a direct
         // index match. Phone/FullName use free-text "q" which is noisy and
         // rarely productive. IP/Domain are already breach-only above.
+        // 100 is already the documented per-request ceiling for this
+        // endpoint (`docs/OATHNET_API_GUIDE.txt` §11: V2 Stealer max 100,
+        // unlike Breach Search's 1000) — `oathnet::search`'s own cursor
+        // pagination now carries past that ceiling if the server reports
+        // more results than one page holds.
         if oathnet::stealer_indexable(field)
             && !ctx.cancel.is_cancelled()
             && let Ok(stealer_items) =

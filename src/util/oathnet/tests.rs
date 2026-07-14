@@ -207,6 +207,70 @@ use super::*;
     }
 
     #[test]
+    fn surface_max_page_size_matches_the_documented_per_endpoint_ceiling() {
+        // docs/OATHNET_API_GUIDE.txt §11: Breach Search max 1000, V2 Stealer
+        // max 100 — they differ, so a shared batch page_size must be clamped
+        // per surface, not passed through uncapped.
+        assert_eq!(Surface::Breach.max_page_size(), 1000);
+        assert_eq!(Surface::Stealer.max_page_size(), 100);
+    }
+
+    #[test]
+    fn continuation_cursor_requires_both_has_more_and_a_real_cursor() {
+        assert_eq!(
+            continuation_cursor(true, Some("abc123".to_string())),
+            Some("abc123".to_string()),
+            "has_more + a cursor: continue"
+        );
+        assert_eq!(
+            continuation_cursor(true, None),
+            None,
+            "has_more but no cursor supplied: nothing to continue with"
+        );
+        assert_eq!(
+            continuation_cursor(false, Some("abc123".to_string())),
+            None,
+            "no more pages: a stray cursor must not force another fetch"
+        );
+        assert_eq!(continuation_cursor(false, None), None);
+    }
+
+    #[test]
+    fn search_data_deserialises_the_real_documented_envelope_shape() {
+        // Mirrors docs/OATHNET_API_GUIDE.txt §3.1's exact example response
+        // shape (data.items + data._meta.{count,total,has_more,total_pages}),
+        // plus next_cursor per §11 — pins the wire contract search()'s
+        // pagination depends on, independent of a live HTTP round-trip.
+        let raw = json!({
+            "items": [{"email": "a@example.com"}, {"email": "b@example.com"}],
+            "_meta": {
+                "count": 2,
+                "total": 1234,
+                "took_ms": 42,
+                "has_more": true,
+                "total_pages": 83,
+                "next_cursor": "sess_cursor_abc",
+                "lookups": {"left_today": 487}
+            }
+        });
+        let sd: SearchData = serde_json::from_value(raw).expect("must deserialise");
+        assert_eq!(sd.items.len(), 2);
+        let meta = sd.meta.expect("_meta must parse");
+        assert!(meta.has_more);
+        assert_eq!(meta.next_cursor.as_deref(), Some("sess_cursor_abc"));
+    }
+
+    #[test]
+    fn search_data_defaults_meta_when_absent() {
+        // A final page (has_more: false) may omit _meta's continuation
+        // fields entirely, or the whole block — must not fail to parse.
+        let raw = json!({"items": []});
+        let sd: SearchData = serde_json::from_value(raw).expect("must deserialise");
+        assert!(sd.items.is_empty());
+        assert!(sd.meta.is_none());
+    }
+
+    #[test]
     fn selector_field_covers_every_indexed_kind_and_only_those() {
         use crate::core::scan::TargetKind;
         assert_eq!(selector_field(TargetKind::Email), Some("email"));

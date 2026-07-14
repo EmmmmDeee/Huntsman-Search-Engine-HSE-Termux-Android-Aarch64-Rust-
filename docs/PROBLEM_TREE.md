@@ -2001,6 +2001,47 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   2026-07-14 comprehensive audit, wave 1 (module categories) — not yet
   investigated or fixed.* **Paired:** `SOLUTION_TREE`
   SOL-URLHAUS-COST-OVERRIDE (new stub).
+- **`[x]` T2.151 · OathNet batch queries silently under-fetched — `page_size`
+  was hardcoded well below the documented per-endpoint maximum, and
+  `oathnet::search` had no pagination at all, so a query with more matches
+  than one page held was silently truncated to page 1.**
+  Confirmed against `docs/OATHNET_API_GUIDE.txt`: Breach Search's own code
+  comment already said "Docs default is 100, max is 1000" yet used 100 (or
+  50 for infra targets) anyway; the response envelope's `data._meta` block
+  (`count`/`total`/`has_more`/`next_cursor`) was never parsed at all, so
+  even at max page size a large result set (the guide's own example shows
+  `total_pages: 83`) had no way to be detected or continued past page 1. →
+  **Solution:** raised Breach Search `page_size` to the documented max
+  (1000, uniform across target kinds — the existing candidate-flood cap in
+  `extract_breach_page` already bounds non-matching-row noise, so this adds
+  signal without reintroducing it); Stealer search was already at its own
+  lower documented max (100) and is unchanged. Implemented real
+  cursor-based pagination in `oathnet::search` (`docs/OATHNET_API_GUIDE.txt`
+  §11: cursor-based, not offset-based) — parses `_meta.has_more`/
+  `next_cursor`, and while both are present, fetches subsequent pages
+  (never changing filters between pages, per the API's own rule) and
+  accumulates every item. Each subsequent page is gated behind the same
+  `budget_try_increment()` reserve as the first — pagination stops (not
+  errors) the moment the operator's scan/session budget is exhausted,
+  reusing the existing budget mechanism rather than inventing a separate
+  page-count cap, and logs when this happens so a partial result is never
+  silently presented as complete. Added `Surface::max_page_size()` so the
+  CLI's `hse oathnet-batch --execute` (which can span both surfaces in one
+  plan) clamps its shared `--page-size` flag per-query rather than risking
+  an over-limit request to whichever surface has the smaller ceiling;
+  raised its own default from 100 to 1000 accordingly. **P2** (silent
+  evidentiary under-collection — the same class as T2.99's dropped
+  `psbdmp::SearchResp::count`, but for OathNet's own primary paid source).
+  Not live-verified from this build environment (outbound network to
+  `oathnet.org` is proxy-blocked from this sandbox, consistent with every
+  other OathNet fix this session) — 5 new regression tests pin the wire
+  contract instead: `SearchData`/`_meta` deserialisation against the API
+  guide's own documented example shape, the pure pagination-continuation
+  decision (`continuation_cursor`, requiring both `has_more` AND a real
+  cursor), and `Surface::max_page_size()`'s per-endpoint values. Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures.
+  **Paired:** `SOLUTION_TREE` SOL-OATHNET-FULL-PAGINATION (new node), §5 —
+  same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -12077,3 +12118,28 @@ way, so this specific drift class can't recur silently again.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4639 lib tests, +2). **Paired:** `SOLUTION_TREE`
   SOL-ZOOMEYE-BANNER `[ ]`→`[x]`, §4a progress note updated — same commit.
+- **2026-07-14** — **T2.151: OathNet batch queries silently under-fetched —
+  raised `page_size` to the documented per-endpoint maximum and implemented
+  real cursor-based pagination.** Breach Search's own code comment already
+  admitted "Docs default is 100, max is 1000" but used 100 (50 for infra
+  targets) anyway; the response envelope's `_meta` block (`has_more`/
+  `next_cursor`) was never parsed, so even at max page size a large result
+  set had no way to be continued past page 1 — confirmed against
+  `docs/OATHNET_API_GUIDE.txt`'s own documented response shape and
+  cursor-pagination rules. Fixed: raised Breach `page_size` to 1000
+  uniformly (Stealer was already at its own lower max of 100, unchanged);
+  `oathnet::search` now loops fetching subsequent pages via `next_cursor`
+  while `has_more` is true, accumulating every item, never changing
+  filters between pages; each page reserves against the existing
+  `budget_try_increment()` gate so pagination is bounded by the operator's
+  own scan/session budget rather than a separately invented cap, and stops
+  (logging why) rather than erroring when that budget runs out mid-page.
+  Added `Surface::max_page_size()` so `hse oathnet-batch --execute`'s
+  shared `--page-size` flag clamps correctly per surface. Not live-
+  verifiable from this sandbox (OathNet is proxy-blocked here, as with
+  every other OathNet fix this session); 5 new regression tests instead
+  pin the wire contract (`_meta` deserialisation against the API guide's
+  documented example, the pure pagination-continuation decision, and the
+  per-surface page-size ceilings). Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures. **Paired:** `SOLUTION_TREE`
+  SOL-OATHNET-FULL-PAGINATION, §5 — same commit.

@@ -152,7 +152,21 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
             stopped_on_budget = true;
             break;
         }
-        match oathnet::search(key, q.surface.path(), q.field, &q.value, page_size).await {
+        // Clamp to this specific surface's own documented ceiling — Breach
+        // and Stealer have different maximums (1000 vs 100), so a single
+        // flat `--page-size` can't be passed through uncapped to a plan
+        // that spans both without risking an over-limit request to
+        // whichever surface has the smaller one.
+        let effective_page_size = page_size.min(q.surface.max_page_size());
+        match oathnet::search(
+            key,
+            q.surface.path(),
+            q.field,
+            &q.value,
+            effective_page_size,
+        )
+        .await
+        {
             Ok(items) => {
                 dispatched += 1;
                 total_hits += items.len();

@@ -546,8 +546,10 @@ pub enum Command {
         /// Cap the number of queries (after de-duplication). 0 = no cap.
         #[arg(long, default_value_t = 0)]
         max: usize,
-        /// Per-query record page size when executing. Default 100.
-        #[arg(long, default_value_t = 100)]
+        /// Per-query record page size when executing. Default 1000 — the
+        /// documented ceiling for Breach Search, clamped down automatically
+        /// per query to Stealer's own lower 100 maximum.
+        #[arg(long, default_value_t = 1000)]
         page_size: u32,
         /// Actually dispatch the plan against OathNet (spends credits). Without
         /// this the command only prints the plan.

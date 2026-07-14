@@ -2958,6 +2958,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[ ]` SOL-URLHAUS-COST-OVERRIDE · Add a `cost()` override returning
   `ModuleCost::KeyGated`** → **T2.150**. Queued, not yet started — see
   `PROBLEM_TREE` T2.150 for the finding.
+- **`[x]` SOL-OATHNET-FULL-PAGINATION · Raise OathNet `page_size` to the
+  documented per-endpoint maximum and implement real cursor-based
+  pagination** → **T2.151**. Delivered 2026-07-14: Breach Search page_size
+  raised 100/50→1000 uniformly (Stealer already at its own lower max of
+  100); `oathnet::search` now loops fetching subsequent pages via
+  `_meta.next_cursor` while `_meta.has_more` is true, accumulating every
+  item, each page gated behind the existing per-scan/session budget
+  reserve rather than a new invented cap; `Surface::max_page_size()` added
+  so `hse oathnet-batch --execute`'s shared page-size flag clamps
+  correctly per surface — see `PROBLEM_TREE` T2.151 for the finding and
+  fix detail.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3241,6 +3252,14 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- ~~**T2.151**~~ — **delivered** ✅ (`SOL-OATHNET-FULL-PAGINATION`,
+  2026-07-14). OathNet Breach Search's own code comment admitted "max is
+  1000" but used 100 (50 for infra targets) anyway, and `oathnet::search`
+  never parsed the response's `_meta.has_more`/`next_cursor` fields at
+  all, so a result set larger than one page was silently truncated. Raised
+  `page_size` to the documented maximum and implemented real cursor-based
+  pagination, budget-bounded rather than a new invented cap. Off the open
+  queue.
 - ~~**T2.98**~~ — **delivered** ✅ (`SOL-STRUCTURED-ID-TIMELINE`, 2026-07-14). A
   systematic sweep for the same dead-signal class as the 2026-07-05 C1(c)
   `AccountCreated` fix found it had only wired 1 of `structured_id`'s 4
@@ -8135,3 +8154,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4639 lib tests, +2). **Paired:** `PROBLEM_TREE` T2.102
   `[ ]`→`[x]` + §8, §4a progress note — same commit.
+- **2026-07-14 — SOL-OATHNET-FULL-PAGINATION: OathNet batch queries were
+  silently under-fetching, both in page size and in never paginating past
+  the first page.** Breach Search's own code comment already admitted the
+  documented max was 1000 but used 100 (50 for infra targets); the
+  response envelope's `_meta` block was parsed nowhere, so `has_more`/
+  `next_cursor` were invisible to the client even at max page size.
+  `docs/OATHNET_API_GUIDE.txt` confirms cursor-based pagination
+  (`next_cursor`, not offset) with per-endpoint ceilings that genuinely
+  differ (Breach 1000, Stealer 100). Fix: raised Breach `page_size` to
+  1000 uniformly (the existing `extract_breach_page` candidate-flood cap
+  already bounds non-matching-row noise, so this adds signal without
+  reintroducing it); `oathnet::search` now loops on `next_cursor` while
+  `has_more` is true, accumulating every item across pages, never
+  changing filters between requests; each page reserves against the
+  existing per-scan/session `budget_try_increment()` gate rather than a
+  separately invented page-count cap, stopping (and logging why) the
+  moment budget runs out rather than erroring or silently truncating.
+  Added `Surface::max_page_size()` so `hse oathnet-batch --execute`'s
+  shared `--page-size` flag clamps correctly per surface when a plan spans
+  both. Extracted the continuation decision into a pure
+  `continuation_cursor` helper for testability. Not live-verifiable from
+  this sandbox (OathNet proxy-blocked here, as with every other OathNet
+  fix this session); 5 new regression tests instead pin the wire contract:
+  `SearchData`/`PageMeta` deserialise the API guide's own documented
+  example response shape correctly (including when `_meta` is entirely
+  absent, the final-page case), `continuation_cursor` requires both
+  `has_more` and an actual cursor (4 cases), and `Surface::max_page_size()`
+  is pinned to 1000/100. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures. Paired: `PROBLEM_TREE` T2.151, §8 — same
+  commit.

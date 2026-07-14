@@ -130,7 +130,9 @@ explodes.
 
 ### `src/modules/oathnet_pro/mod.rs`
 - 1 OathNet lookup per scan (session-bundled breach + stealer)
-- page_size 100 for identity targets, 50 for IP/Domain
+- page_size 1000 (breach) / 100 (stealer) — the documented per-surface
+  maximum, uniform across target kinds; cursor-paginated past that if
+  the server reports more results than one page holds
 - Extracts 12 entity types: Email, Username, Phone, Person,
   IpAddress, Address, Discord, Instagram, LinkedIn, email_domain,
   password_hash, ApiKey
@@ -390,9 +392,9 @@ Categories:
 
 | Resource | Default cap | Where set |
 |----------|-------------|-----------|
-| OathNet queries per scan | 4 | `src/util/oathnet/mod.rs` (per-scan `BUDGET` cap) |
+| OathNet queries per scan | 4 (each page of a paginated result also counts against this) | `src/util/oathnet/mod.rs` (per-scan `BUDGET` cap) |
 | OathNet queries per process session | 30 | `HUNTSMAN_OATHNET_SESSION_CAP` env var |
-| OathNet record page size | 100 (50 for infra) | `src/modules/oathnet_pro/mod.rs::page_size` |
+| OathNet record page size | 1000 (breach) / 100 (stealer) — cursor-paginated past the first page, budget-bounded | `src/modules/oathnet_pro/mod.rs::page_size`, `src/util/oathnet/mod.rs::search` |
 | Wigle queries per scan | 3 geo · 5 BSSID · 2 cell · 2 bluetooth | `src/modules/wigle/mod.rs` |
 | Web crawler pages per scan | 60 | `src/modules/web_crawler/mod.rs::MAX_PAGES` |
 | Web crawler max depth | 3 | `src/modules/web_crawler/mod.rs::MAX_DEPTH` |
