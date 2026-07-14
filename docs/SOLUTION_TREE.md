@@ -2813,9 +2813,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   city/state/country/postcode/street/suburb/county into evidence for
   **both** the forward and reverse geocode paths — see `PROBLEM_TREE` T2.104
   for the finding and fix detail.
-- **`[ ]` SOL-LAUNCHPAD-DESCRIPTION · Switch bio extraction to read
+- **`[x]` SOL-LAUNCHPAD-DESCRIPTION · Switch bio extraction to read
   `description` instead of obsolete `homepage_content`** → **T2.105**.
-  Queued, not yet started — see `PROBLEM_TREE` T2.105 for the finding.
+  Delivered 2026-07-14: `LpPerson`'s `homepage_content` field renamed to
+  `description`; bio-email extraction and its evidence `source_field`
+  attribute now read `description`, the field Launchpad's live API
+  actually populates — see `PROBLEM_TREE` T2.105 for the finding and fix
+  detail.
 - **`[ ]` SOL-STEAM-SUMMARY-PERSONA · Parse `<summary>` and `<steamID>` into
   bio pivots and a Person/Username entity** → **T2.106**. Queued, not yet
   started — see `PROBLEM_TREE` T2.106 for the finding.
@@ -3451,9 +3455,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   plus 2 miscellaneous. Individual stub nodes are in `PROBLEM_TREE` §3.2
   above (T2.102–T2.150) and their `SOLUTION_TREE` pairs in §2 above (right
   after `SOL-GRAVATAR-VERIFIED-BOOL`). *Progress: T2.102 (`zoomeye`
-  banner/app) and T2.103 (`onyphe` threatlist/tag) delivered 2026-07-14,
-  same day as the merge — 47 of 49 still queued, none of the other 47
-  investigated or fixed yet.*
+  banner/app), T2.103 (`onyphe` threatlist/tag), T2.104 (`geocode`
+  addressdetails), and T2.105 (`launchpad_user` bio field) delivered
+  2026-07-14, same day as the merge — 45 of 49 still queued, none of the
+  other 45 investigated or fixed yet.*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -8287,3 +8292,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   *compile* pre-fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4651 lib tests, +6). **Paired:** `PROBLEM_TREE`
   T2.104 `[ ]`→`[x]` + §8 — same commit.
+- **2026-07-14 — SOL-LAUNCHPAD-DESCRIPTION `[ ]`→`[x]`: fourth delivery off
+  the comprehensive audit queue.** Confirmed live against 8 real Launchpad
+  accounts (`~mdke`, `~cjwatson`, `~jugmac00`, `~sil2100`, `~xnox`, `~mdz`,
+  `~kirkland`, `~stgraber`): `homepage_content` was `null` on 7 of 8 (the
+  eighth merely duplicated `description`), while `description` held the
+  real, current bio text everywhere a bio existed — `launchpad_user`'s
+  `LpPerson` was reading the retired field. Renamed `LpPerson`'s
+  `homepage_content` field to `description` and switched bio-email
+  extraction plus its evidence `source_field` attribute to read it — no
+  second field kept alongside (an unread `homepage_content` would just be
+  dead struct surface, and the shared-vocabulary rule already forbids
+  parallel near-duplicate fields per `docs/CONVENTIONS.md` §3). 1 new
+  regression test (`no_bio_email_when_description_absent`) plus a
+  `source_field` assertion on the existing bio-email test; `git stash`
+  confirms the test file fails to *compile* pre-fix (the `description`
+  field name is wholly new). Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4660 lib tests, +1 — the intervening
+  T2.152 rate-limit fix landed +10 in the same window, hence the jump from
+  4651). **Paired:** `PROBLEM_TREE` T2.105 `[ ]`→`[x]` + §8 — same commit.

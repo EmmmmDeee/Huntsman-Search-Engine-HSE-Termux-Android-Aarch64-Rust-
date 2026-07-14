@@ -395,6 +395,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   receive it, so it was silently dropped on every hit. Forward geocodes now
   report the same structured address breakdown as evidence, using the same
   shared parsing logic as the reverse path.
+- **`launchpad_user` read a bio field the live Launchpad API has effectively
+  retired, so real profile bios went silently unparsed.** Confirmed live
+  against 8 real accounts: `homepage_content` — the field this module
+  read — was `null` on all but one, while `description` carried the
+  account's real, current bio text everywhere a bio existed. Bio-email
+  extraction now reads `description`.
 - **A paste-search result that only showed part of what the source actually
   found now says so.** `psbdmp`'s own match-count field was parsed but
   silently discarded — only the pastes that made it into this response were

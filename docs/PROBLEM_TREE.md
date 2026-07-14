@@ -1630,14 +1630,21 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4651 lib tests, +6). **Paired:** `SOLUTION_TREE`
   SOL-GEOCODE-ADDRESSDETAILS `[ ]`→`[x]` — same commit.
-- **`[ ]` T2.105 · `launchpad_user` parses the obsolete `homepage_content`
+- **`[x]` T2.105 · `launchpad_user` parses the obsolete `homepage_content`
   field instead of the populated `description` field for bio text.**
   `homepage_content` is `null` on modern Launchpad accounts; the bio text
   that's actually populated lives in `description`, which the module never
   reads. → **Solution:** switch the bio extraction to read `description`.
-  **P2**. *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-LAUNCHPAD-DESCRIPTION (new stub).
+  **P2**. *Fixed 2026-07-14: confirmed live against 8 real accounts
+  (`~mdke`, `~cjwatson`, `~jugmac00`, `~sil2100`, `~xnox`, `~mdz`,
+  `~kirkland`, `~stgraber`) — `homepage_content` was `null` on every one
+  except `~mdke`, where it merely duplicated `description`; `description`
+  was the only field carrying live bio text on the others. `LpPerson`'s
+  `homepage_content` field was renamed to `description` (not kept
+  alongside — the dead field would just be unread struct surface) and bio
+  email extraction + its `source_field` evidence attribute now read it.*
+  **Paired:** `SOLUTION_TREE` SOL-LAUNCHPAD-DESCRIPTION `[ ]`→`[x]` — same
+  commit.
 - **`[ ]` T2.106 · `steam_profile::extract_profile` never reads the `<summary>`
   (bio) or `<steamID>` (persona name) XML tags.**
   Every sibling Social module extracts bio emails/URLs and a display name,
@@ -12306,3 +12313,27 @@ way, so this specific drift class can't recur silently again.
   empty-address no-op). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4651 lib tests, +6). **Paired:** `SOLUTION_TREE`
   SOL-GEOCODE-ADDRESSDETAILS `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-14 — T2.105 (`launchpad_user` bio field) `[ ]`→`[x]`: fourth
+  item picked off the comprehensive-audit queue.** Per step 1's priority
+  order (no in-progress node standing; highest-priority open node next in
+  the T2.105–T2.150 queue). Confirmed live against the real Launchpad API
+  (network reachable from this sandbox, unlike OathNet): fetched `~mdke`,
+  `~cjwatson`, `~jugmac00`, `~sil2100`, `~xnox`, `~mdz`, `~kirkland`, and
+  `~stgraber` — `homepage_content` was `null` on 7 of 8 (`~mdke` the sole
+  exception, where it merely duplicated `description`), while `description`
+  carried the real, current bio text on every account that had one
+  (`~jugmac00`/`~mdz` have neither field populated — genuinely bio-less
+  accounts, not a parsing gap). `LpPerson.homepage_content` was reading a
+  field the live API has effectively retired. Fix: renamed the struct field
+  to `description` and switched bio-email extraction (plus its evidence
+  `source_field` attribute) to read it — no second field kept alongside,
+  since an unread `homepage_content` would just be dead struct surface.
+  1 new regression test (`no_bio_email_when_description_absent`, pinning
+  that no email is fabricated when the bio field is empty) plus a
+  `source_field` assertion added to the existing `extracts_email_from_bio`
+  test; `git stash` confirms the test file fails to even compile against
+  the pre-fix tree (the `description` field name doesn't exist there). Gate
+  green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
+  (4660 lib tests, +1 — the intervening T2.152 rate-limit fix landed +10 in
+  the same window, hence the jump from 4651). **Paired:** `SOLUTION_TREE`
+  SOL-LAUNCHPAD-DESCRIPTION `[ ]`→`[x]` — same commit.

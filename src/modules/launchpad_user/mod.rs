@@ -40,9 +40,13 @@ pub(super) struct LpPerson {
     /// Canonical web profile URL (e.g. `"https://launchpad.net/~alice"`).
     #[serde(default)]
     pub(super) web_link: Option<String>,
-    /// Free-text biography — may contain email addresses.
+    /// Free-text biography — may contain email addresses. `homepage_content`
+    /// (the field this used to read) is obsolete and `null` on essentially
+    /// every modern account; `description` is the field Launchpad's own web
+    /// UI ("Personal standing" / profile page) actually populates and keeps
+    /// in sync.
     #[serde(default)]
-    pub(super) homepage_content: Option<String>,
+    pub(super) description: Option<String>,
     /// `false` when the account is deactivated or suspended.
     #[serde(default = "default_true")]
     pub(super) is_valid: bool,
@@ -90,13 +94,13 @@ pub(super) fn build_entities(person: LpPerson, scan_id: &str) -> Vec<Entity> {
     }
 
     // Bio — extract email addresses mentioned in the free-text field.
-    if let Some(bio) = person.homepage_content.as_deref() {
+    if let Some(bio) = person.description.as_deref() {
         for mut em in profile_kit::bio_emails(bio, 0.68, scan_id) {
             em.tag("launchpad");
             em.tag("public-profile");
             em.add_evidence(
                 Evidence::new(SRC, format!("Email in Launchpad bio of '{handle}'"))
-                    .with_attr("source_field", "homepage_content"),
+                    .with_attr("source_field", "description"),
             );
             out.push(em);
         }

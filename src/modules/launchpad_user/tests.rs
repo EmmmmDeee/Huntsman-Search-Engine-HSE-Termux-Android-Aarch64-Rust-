@@ -4,14 +4,14 @@ fn make_person(
     name: &str,
     display_name: Option<&str>,
     web_link: Option<&str>,
-    homepage_content: Option<&str>,
+    description: Option<&str>,
     is_valid: bool,
 ) -> LpPerson {
     LpPerson {
         name: name.to_string(),
         display_name: display_name.map(str::to_string),
         web_link: web_link.map(str::to_string),
-        homepage_content: homepage_content.map(str::to_string),
+        description: description.map(str::to_string),
         is_valid,
     }
 }
@@ -86,6 +86,35 @@ fn extracts_email_from_bio() {
     assert!(em.is_some(), "must extract email from bio");
     assert_eq!(em.unwrap().value, "alice@ubuntu.com");
     assert!(em.unwrap().has_tag("launchpad"));
+    let attr = em
+        .unwrap()
+        .evidence
+        .iter()
+        .find_map(|ev| ev.attributes.get("source_field"))
+        .expect("evidence must record which field the bio came from");
+    assert_eq!(
+        attr, "description",
+        "must attribute the bio to `description`, the field Launchpad's API actually populates"
+    );
+}
+
+/// Regression for T2.105: the real Launchpad API returns `homepage_content:
+/// null` on essentially every modern account (confirmed live against
+/// `~cjwatson`, `~sil2100`, `~xnox`, `~kirkland`, `~stgraber` — all `None`)
+/// while `description` carries the actual bio text. `LpPerson` no longer has
+/// a `homepage_content` field at all — this test pins that the sole bio
+/// field left (`description`) is what drives extraction, i.e. a person with
+/// no `description` yields no bio-derived email even though a legacy
+/// deployment might still have populated the now-dead `homepage_content`
+/// field server-side.
+#[test]
+fn no_bio_email_when_description_absent() {
+    let p = make_person("alice", None, None, None, true);
+    let ents = build_entities(p, "scan-lp-008");
+    assert!(
+        ents.iter().all(|e| e.kind != EntityKind::Email),
+        "must not fabricate a bio email when `description` is absent"
+    );
 }
 
 #[test]
