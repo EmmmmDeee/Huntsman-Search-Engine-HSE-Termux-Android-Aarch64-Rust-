@@ -5,6 +5,7 @@ import { renderBrowse } from '/static/js/scan_info/browse.js';
 import { renderGraph } from '/static/js/scan_info/graph.js';
 import { renderLog } from '/static/js/scan_info/log.js';
 import { renderReport } from '/static/js/scan_info/report.js';
+import { renderStealer } from '/static/js/scan_info/stealer.js';
 import { S } from '/static/js/state.js';
 import { clearScanTimer } from '/static/js/timers.js';
 import { render } from '/static/js/main.js';
@@ -64,10 +65,11 @@ export async function renderScanInfo(v){
     </div>
 
     <ul class="nav nav-tabs">
-      ${subTab('report', 'Report',   null,              tab)}
-      ${subTab('browse', 'Browse',   S.entities.length, tab)}
-      ${subTab('graph',  'Graph',    null,              tab)}
-      ${subTab('log',    'Scan Log', null,              tab)}
+      ${subTab('report',  'Report',       null,              tab)}
+      ${subTab('browse',  'Browse',       S.entities.length, tab)}
+      ${subTab('stealer', 'Stealer Logs', null,              tab)}
+      ${subTab('graph',   'Graph',        null,              tab)}
+      ${subTab('log',     'Scan Log',     null,              tab)}
     </ul>
     <div id="scan-body" style="padding-top:14px"></div>
   `;
@@ -110,9 +112,10 @@ export async function renderScanInfo(v){
   }));
 
   const body = $('#scan-body');
-  if (tab==='browse')      renderBrowse(body);
-  else if (tab==='graph')  renderGraph(body);
-  else if (tab==='log')    renderLog(body, scan);
+  if (tab==='browse')        renderBrowse(body);
+  else if (tab==='stealer')  renderStealer(body, id);
+  else if (tab==='graph')    renderGraph(body);
+  else if (tab==='log')      renderLog(body, scan);
   else {
     // 'corr'/'network' (and any other unrecognised tab) fall through to the
     // consolidated Report view, which already contains both sections — just

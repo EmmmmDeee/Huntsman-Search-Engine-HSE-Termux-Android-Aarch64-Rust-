@@ -21,6 +21,7 @@
 //! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
+//! | GET    | `/api/v1/scans/{id}/stealer-rows` | `scan_stealer_rows` (v1.13+) |
 //! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
 //! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
@@ -229,6 +230,11 @@ const APP_FILES: &[(&str, &str, &[u8])] = &[
         include_bytes!("../../web/js/scan_info/status.js"),
     ),
     (
+        "js/scan_info/stealer.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/stealer.js"),
+    ),
+    (
         "js/scan_info/timeline.js",
         "application/javascript",
         include_bytes!("../../web/js/scan_info/timeline.js"),
@@ -411,6 +417,12 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_correlations),
         )
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
+        // Paired stealer-log credential rows (login+password+domain+machine,
+        // kept together) — powers the web UI Stealer Logs Viewer.
+        .route(
+            "/scans/{id}/stealer-rows",
+            get(scan_handlers::scan_stealer_rows),
+        )
         // Subject-centric relationship synthesis — powers the web UI Network view.
         .route("/scans/{id}/network", get(scan_handlers::scan_network))
         // People-centric co-reference resolution — scores which selectors name the

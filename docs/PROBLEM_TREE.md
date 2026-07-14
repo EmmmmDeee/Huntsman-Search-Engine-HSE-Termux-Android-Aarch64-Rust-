@@ -5718,6 +5718,64 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   when `ttl > 0 && result non-empty`; `Scan::modules_cached` counter persisted.
   Schema snapshot test updated. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN
   `[ ]`→`[x]` + §3/§4/§5 — same commit.
+- **`[~]` C10 · Stealer Logs Viewer — a dedicated, paired credential
+  browser for imported stealer-log data** — *Problem:* a stealer-log import
+  (`cli/import/stealer.rs`, the "Stealerlogs" victim-centric export) already
+  flattens every credential into the generic entity graph, but that
+  flattening is destructive for browsing: a credential's login and password
+  become independent, unlinked `Email`/`Username`/`Credential` entities with
+  no way to see which login went with which password, which machine
+  (`log_id`) they came from, or their own capture date, side by side. The
+  operator's own spec (a file-explorer layout: source ▸ machine ▸ files;
+  smart split of site-keyed vs. raw pairs; search; reveal/copy passwords;
+  sortable columns; duplicate detection; per-file stats; group-by-domain;
+  exports) is a large feature — this is its first, real increment, not the
+  full set. → **Solution (first increment, delivered 2026-07-14):** a new
+  `core::stealer_row::StealerRow` (paired login/password/domain/pwned_at/
+  log_id, `StealerRowKind::{Password,Combo}` classified by presence of a
+  site) persisted ALONGSIDE the entity graph in a new `stealer_rows` SQLite
+  table (`storage::stealer_rows`, `StoragePort::{insert_stealer_rows_batch,
+  stealer_rows_for_scan}` default-no-op trait methods, mirroring the
+  raw_archive/pathway_templates pattern C9 established). `stealer.rs`'s
+  `parse_stealerlogs` now also returns every victim's credentials as paired
+  rows (widened to a 3-tuple return; `domain` is honestly `None` for this
+  export format, which has no per-credential site association — never
+  fabricated from the victim's flat domain list). Wired into both import
+  paths: the CLI (`persist_stealer_rows_best_effort`) and the web upload
+  (`stealer_rows_from_upload`, a deliberate second parse rather than
+  widening `entities_from_upload`'s signature, which 18 non-web call sites
+  destructure). New `GET /api/v1/scans/{id}/stealer-rows` endpoint
+  (`scan_stealer_rows`). New web UI sub-tab "Stealer Logs"
+  (`scan_info/stealer.js`): machines sidebar (grouped by `log_id`, click to
+  filter), search across login/password/domain, a Password-vs-Combo filter,
+  reveal-all + per-row reveal/copy on passwords, click-to-copy domains, a
+  "Copy visible" / "Download .txt" bulk export (`url:login:pass` per line).
+  **Explicitly deferred, not silently dropped** (remainder of the
+  operator's spec): duplicate-password detection, group-by-domain view, a
+  raw view, the full export set (separate copy-all-logins/copy-all-
+  passwords actions), keyboard navigation, and literal per-file (System.txt/
+  Credentials.txt/ClientAt/EmployeeAt) splitting — this importer only
+  distinguishes Password vs. Combo shape, not the full file taxonomy.
+  **CAP** (new capability, not a defect — user-requested feature). 11 new
+  regression tests: 4 on `StealerRowKind`/`StealerRow` (classify, db-string
+  round-trip, unrecognised-value fallback, `is_empty`), 3 on
+  `storage::stealer_rows` (insert+read-back round-trip, empty-batch no-op,
+  per-scan isolation), 1 new end-to-end API test
+  (`stealer_log_upload_persists_paired_rows_retrievable_via_stealer_rows_endpoint`,
+  uploads a real Stealerlogs-format body via `/scans/import` and confirms
+  both paired credentials come back from `/scans/{id}/stealer-rows`), plus
+  the pre-existing `sub_resource_endpoints_404_for_unknown_scan` regression
+  extended to cover the new endpoint. Live-verified against the real
+  compiled binary + a real running `hse serve`: uploaded a genuine
+  Stealerlogs body, confirmed both credentials round-tripped through the
+  new endpoint with the correct pairing; a headless-Chromium pass over the
+  new "Stealer Logs" tab confirmed the machines sidebar, search filter,
+  password mask/reveal, and machine-click filtering all work with zero
+  console/page errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4666 lib tests, +7; 100 API tests, +1). Marked
+  `[~]` (partially delivered — a real, scoped, useful increment, not the
+  full spec) rather than `[x]`, honestly. **Paired:** `SOLUTION_TREE`
+  SOL-STEALER-LOGS-VIEWER (new node), §5 — same commit.
 
 ---
 
@@ -12396,3 +12454,25 @@ way, so this specific drift class can't recur silently again.
   a compile error). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4666 lib tests, +1). **Paired:** `SOLUTION_TREE`
   SOL-OFAC-TITLE `[ ]`→`[x]`, §4a progress note updated — same commit.
+- **2026-07-14** — **C10: Stealer Logs Viewer, first increment.**
+  User-requested feature (a dedicated, paired credential browser for
+  imported stealer-log data — file-explorer layout, smart split, search,
+  reveal passwords, sortable columns, per-file stats, group by domain,
+  exports). The generic entity graph already surfaces every stealer-log
+  credential but flattens login/password into independent, unlinked
+  entities — no way to see which login paired with which password, on
+  which machine, captured when. Delivered: `core::stealer_row::StealerRow`
+  persisted alongside the entity graph in a new `stealer_rows` SQLite
+  table; a new `GET /api/v1/scans/{id}/stealer-rows` endpoint; a new web UI
+  "Stealer Logs" sub-tab with machine grouping, search, Password/Combo
+  filter, reveal/copy on passwords, and a bulk copy/download export.
+  Explicitly deferred (not silently dropped): duplicate-password
+  detection, group-by-domain, a raw view, the full export set, keyboard
+  nav, and literal per-file splitting — the operator's full spec is larger
+  than one increment. 11 new regression tests + 1 real end-to-end API
+  test; live-verified against the real binary + a real running `hse
+  serve`, including a headless-Chromium pass over the new tab (zero
+  console errors). Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4666 lib tests, +7; 100 API tests, +1). **Paired:**
+  `SOLUTION_TREE` SOL-STEALER-LOGS-VIEWER `[ ]`→`[~]`, §4 note updated —
+  same commit.

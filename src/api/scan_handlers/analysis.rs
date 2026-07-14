@@ -129,6 +129,29 @@ pub async fn scan_entities_facets(
     }
 }
 
+/// `GET /api/v1/scans/{id}/stealer-rows` — paired stealer-log credential
+/// rows (login + password + domain + capture date + source machine, kept
+/// together) for the Stealer Logs Viewer. The generic `entities` endpoint
+/// above already carries the same credentials, but flattened into
+/// independent Email/Username/Credential entities that lose this pairing —
+/// this is the dedicated read for getting it back. Empty for a scan with no
+/// stealer-log import (never an error).
+pub async fn scan_stealer_rows(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.stealer_rows_for_scan(&id2)).await {
+        Ok(Ok(rows)) => ok_list("rows", rows),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
+    }
+}
+
 pub async fn scan_correlations(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,

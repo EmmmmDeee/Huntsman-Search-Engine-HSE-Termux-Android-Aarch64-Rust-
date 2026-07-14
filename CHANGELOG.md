@@ -11,6 +11,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New "Stealer Logs" tab: a dedicated, paired credential browser for
+  imported stealer-log data (first increment).** Previously an imported
+  stealer log's credentials only showed up in the generic Browse tab, with
+  a login and its password appearing as two separate, unlinked entities —
+  no way to see which one went with the other, which machine they came
+  from, or when they were captured. The new tab groups credentials by
+  source machine, keeps login+password+domain+capture-date together per
+  row, and adds search, a Password/Combo (site vs. raw-pair) filter,
+  reveal-all plus per-row reveal/copy on passwords, click-to-copy domains,
+  and a bulk copy/download export. Duplicate-password detection,
+  group-by-domain, a raw view, the full export set, and keyboard
+  navigation are a planned follow-up, not included in this increment.
 - **Internal: the correlation pass now has a proper `criterion` benchmark,
   closing the last open item in the standing proof-and-measurement foundation
   (PROBLEM_TREE F.3 / SOLUTION_TREE SOL-F3).** `correlate_entities` — the

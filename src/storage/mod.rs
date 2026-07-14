@@ -11,6 +11,7 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
 
 pub use entities::EvidenceAnomaly;
@@ -100,6 +101,25 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
             CREATE INDEX IF NOT EXISTS idx_events_type   ON events(event_type, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+
+            -- Paired stealer-log credential rows (Stealer Logs Viewer,
+            -- `core::stealer_row::StealerRow`). Persisted ALONGSIDE the
+            -- generic entity graph, not instead of it: `entities` flattens a
+            -- credential into independent Email/Username/Credential rows for
+            -- correlation, which loses the login/password/domain pairing an
+            -- operator browsing a stolen-credential dump actually wants back.
+            CREATE TABLE IF NOT EXISTS stealer_rows (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id  TEXT NOT NULL,
+                log_id   TEXT,
+                domain   TEXT,
+                login    TEXT,
+                password TEXT,
+                pwned_at TEXT,
+                row_kind TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_scan ON stealer_rows(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_log  ON stealer_rows(scan_id, log_id);
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -870,6 +890,21 @@ impl crate::core::port::StoragePort for Store {
 
     fn pathway_template_count(&self, template: &str) -> Result<u32> {
         Store::pathway_template_count(self, template)
+    }
+
+    fn insert_stealer_rows_batch(
+        &self,
+        scan_id: &str,
+        rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Store::insert_stealer_rows_batch(self, scan_id, rows)
+    }
+
+    fn stealer_rows_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Store::stealer_rows_for_scan(self, scan_id)
     }
 }
 

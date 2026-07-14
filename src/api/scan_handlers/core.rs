@@ -534,6 +534,11 @@ pub async fn scan_import(
     if entities.is_empty() {
         return bad_request("no verifiable entities were parsed from the upload");
     }
+    // Paired stealer-log credential rows (login+password+machine, kept
+    // together) for the Stealer Logs Viewer — empty for every non-stealer
+    // upload format. See `stealer_rows_from_upload`'s own doc for why this
+    // is a second, separate parse rather than a widened `entities_from_upload`.
+    let stealer_rows = crate::cli::import::stealer_rows_from_upload(&body);
 
     // A readable scan label: the strongest identity in the file, else a generic.
     let label = entities
@@ -570,6 +575,10 @@ pub async fn scan_import(
         match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
+            // Best-effort: a stealer-row persistence hiccup must not fail an
+            // otherwise-successful import — the entity graph above already
+            // carries the same credentials, just unpaired.
+            let _ = store.insert_stealer_rows_batch(&sid2, &stealer_rows);
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {

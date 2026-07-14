@@ -30,6 +30,7 @@
 use super::*;
 
 use crate::core::entity::{Entity, EntityKind, Evidence};
+use crate::core::stealer_row::{StealerRow, StealerRowKind};
 
 /// Detect the Stealerlogs export — by its module banner or by its structural
 /// fingerprint (a `Victims:` section of `[N]` blocks each carrying a `Log Id:`
@@ -229,10 +230,21 @@ fn split_victims(body: &str) -> Vec<Victim> {
 /// `Domain` / `IpAddress` pivots — every one tagged with this victim's log so
 /// the cluster stays correlated. Plaintext passwords are emitted per victim and
 /// NOT value-deduped, preserving the cross-victim reuse signal (AU-047) through
-/// the uid-merge. Pure (no I/O) so it is unit-testable.
-pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportStats) {
+/// the uid-merge. Also returns every victim's credentials as paired
+/// [`StealerRow`]s — the login/password/machine pairing the entity graph
+/// above deliberately loses (each becomes an independent Email/Username/
+/// Credential entity) but the Stealer Logs Viewer needs back. This export
+/// format has no per-credential site association (`Domains:` is a flat,
+/// victim-level list, not paired to any one credential), so every row's
+/// `domain` is honestly `None` here — never fabricated from the victim's
+/// domain list. Pure (no I/O) so it is unit-testable.
+pub(super) fn parse_stealerlogs(
+    body: &str,
+    sid: &str,
+) -> (Vec<Entity>, ImportStats, Vec<StealerRow>) {
     let mut entities = Vec::new();
     let mut stats = ImportStats::default();
+    let mut stealer_rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
 
     for victim in split_victims(body) {
@@ -361,6 +373,25 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
                     cred_ev.clone(),
                 );
             }
+
+            // The paired row the entity graph above can't represent: login +
+            // password + capture date, exactly as this one credential record
+            // held them, for the dedicated Stealer Logs Viewer. Deliberately
+            // NOT gated by the same admission thresholds as the entities
+            // above (`u.len() >= 2`, `p.chars().count() >= 4`) — this is a
+            // full-fidelity record store, so a short/weak value that doesn't
+            // earn its own graph pivot is still preserved here verbatim.
+            let row = StealerRow {
+                log_id: victim.log_id.clone(),
+                domain: None,
+                login: cred.user.clone(),
+                password: cred.pass.clone(),
+                pwned_at: cred.pwned_at.clone(),
+                kind: StealerRowKind::Combo,
+            };
+            if !row.is_empty() {
+                stealer_rows.push(row);
+            }
         }
 
         for dom in &victim.domains {
@@ -407,20 +438,21 @@ pub(super) fn parse_stealerlogs(body: &str, sid: &str) -> (Vec<Entity>, ImportSt
     push_api_keys(body, sid, "stealer", &mut entities);
     push_ibans(body, sid, "stealer", &mut entities);
     push_ssids(body, sid, "stealer", &mut entities);
-    (entities, stats)
+    (entities, stats, stealer_rows)
 }
 
 /// CLI entry: parse a Stealerlogs export and persist it as a completed scan.
 pub(super) async fn cmd_import_stealerlogs(body: &str, output: &str) -> Result<()> {
     note(output, "Importing Stealerlogs export...");
     let sid = format!("import-stealer-{}", crate::core::entity::unix_now());
-    let (mut entities, stats) = parse_stealerlogs(body, &sid);
+    let (mut entities, stats, stealer_rows) = parse_stealerlogs(body, &sid);
     deduplicate_by_uid(&mut entities);
     print_import_stats(&stats, entities.len(), output);
     if stats.api_keys > 0 {
         crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
     }
     persist_and_report(&sid, &entities, output).await;
+    persist_stealer_rows_best_effort(&sid, &stealer_rows, output).await;
     render_import_entities(&entities, output);
     Ok(())
 }

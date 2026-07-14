@@ -985,6 +985,48 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
 }
 
 #[tokio::test]
+async fn stealer_log_upload_persists_paired_rows_retrievable_via_stealer_rows_endpoint() {
+    // Wiring: a Stealerlogs-format upload must persist paired credential
+    // rows (login+password+machine, kept together) retrievable via the
+    // dedicated Stealer Logs Viewer endpoint — not just the flattened,
+    // unpaired Email/Username/Credential entities the generic entities
+    // endpoint already returns.
+    let app = test_app("stealer-rows");
+    let stealer = "Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831\n    Credentials:\n      [1]\n        Username:\n          jordanavery@gmail.com\n        Password:\n          Hunter2pass\n        Pwned At:\n          2026-05-20T21:00:00Z\n      [2]\n        Username:\n          javery\n        Password:\n          Hunter2pass\n        Pwned At:\n          2026-05-20T21:00:00Z\n    Domains:\n      [1]\n        acme-corp.com\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(stealer))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let sid = json["scan_id"].as_str().expect("scan_id").to_string();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/stealer-rows")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let out = body_json(resp).await;
+    let rows = out["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2, "both credentials in the one victim block");
+    assert!(
+        rows.iter().any(|r| r["login"] == "jordanavery@gmail.com"
+            && r["password"] == "Hunter2pass"
+            && r["pwned_at"] == "2026-05-20T21:00:00Z"
+            && r["log_id"] == "ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831"),
+        "login+password+pwned_at+log_id must survive paired in one row: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r["login"] == "javery"),
+        "the second credential in the same victim block must also be a row: {rows:?}"
+    );
+}
+
+#[tokio::test]
 async fn dossier_upload_derives_and_persists_entity_relations() {
     // An imported scan must carry the same deterministic relation graph a live
     // scan would (structural/geo/DNS/WHOIS/name-lineage). This dossier yields a
@@ -1813,6 +1855,7 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities/filter?kind=email",
         "correlations",
         "relations",
+        "stealer-rows",
         "entities.csv",
         "events.history",
         "graph.gexf",
@@ -1831,6 +1874,7 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities/facets",
         "correlations",
         "relations",
+        "stealer-rows",
         "entities.csv",
         "events.history",
         "graph.gexf",

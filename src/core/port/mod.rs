@@ -132,6 +132,28 @@ pub trait StoragePort: Send + Sync {
         Ok(0)
     }
 
+    // ── Stealer-log credential rows (Stealer Logs Viewer) ───────────────────
+    /// Persist paired stealer-log credential rows for one scan/import.
+    /// Best-effort, called only from the stealer-log importer. Default no-op
+    /// for test doubles; the SQLite `Store` persists to `stealer_rows`.
+    fn insert_stealer_rows_batch(
+        &self,
+        _scan_id: &str,
+        _rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Every persisted stealer-log credential row for a scan, insertion
+    /// order. Default empty for test doubles; the SQLite `Store` reads
+    /// `stealer_rows`.
+    fn stealer_rows_for_scan(
+        &self,
+        _scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Ok(Vec::new())
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a

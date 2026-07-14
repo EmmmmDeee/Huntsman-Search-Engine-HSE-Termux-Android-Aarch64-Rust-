@@ -23,6 +23,9 @@ export const API = {
   entities:  id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/entities'),
   correlations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/correlations'),
   relations: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/relations'),
+  // Paired stealer-log credential rows (login+password+domain+machine, kept
+  // together) — powers the Stealer Logs Viewer sub-tab.
+  stealerRows: id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/stealer-rows'),
   // Subject network: the seed hub + its connections grouped/ranked server-side
   // (people, identifiers, aliases, locations, infrastructure) — the analyst view.
   network:   id=>API._req('/api/v1/scans/'+encodeURIComponent(id)+'/network'),

@@ -569,6 +569,28 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   isolation preserved (cache is a read-only pre-dispatch gate, not a write-path
   bypass). Schema snapshot test updated. ✅ delivered cycle 18.
   *Closes:* **C9** (`[ ]`→`[x]`). Enables operator cost control + revenue model.
+- **`[~]` SOL-STEALER-LOGS-VIEWER · Paired stealer-log credential browser** →
+  **C10**: `core::stealer_row::StealerRow` (login/password/domain/pwned_at/
+  log_id, `StealerRowKind::{Password,Combo}`) persisted alongside the entity
+  graph in a new `stealer_rows` SQLite table; `StoragePort::{
+  insert_stealer_rows_batch, stealer_rows_for_scan}` default-no-op trait
+  methods, mirroring SOL-CACHE-INTERSCAN's `raw_archive` pattern above.
+  `stealer.rs::parse_stealerlogs` widened to also emit paired rows per
+  credential (domain honestly `None` — this export format has no
+  per-credential site pairing); wired into both the CLI and web-upload
+  import paths. New `GET /api/v1/scans/{id}/stealer-rows` endpoint. New web
+  UI sub-tab "Stealer Logs" (`scan_info/stealer.js`): machine sidebar
+  (grouped by `log_id`), search, Password/Combo filter, reveal-all +
+  per-row reveal/copy on passwords, click-to-copy domains, copy-visible /
+  download-.txt bulk export. 11 new regression tests + 1 real end-to-end
+  API test (upload → persist → retrieve). Live-verified against the real
+  binary + a real running `hse serve`, including a headless-Chromium pass
+  over the new tab (zero console errors). *First increment only* — see
+  `PROBLEM_TREE` C10 for the explicit remainder (duplicate-password
+  detection, group-by-domain, raw view, the full export set, keyboard nav,
+  literal per-file splitting).
+  *Closes:* **C10** (`[ ]`→`[~]`, partial — a real, scoped increment, not the
+  full spec).
 - **`[~]` SOL-GEOINT · Confidence-weighted geo convergence** → **C5**: the Weiszfeld/
   Welzl fusion stack (verified correct, §6) widened with more sources + provenance +
   a confidence radius.
@@ -3253,6 +3275,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[~]` |
 | SOL-FORENSIC | C7 | `[ ]` |
+| SOL-STEALER-LOGS-VIEWER | C10 | `[~]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[~]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 | SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
@@ -3378,6 +3401,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
+- **C10** — `[~]` (SOL-STEALER-LOGS-VIEWER, 2026-07-14). First increment
+  delivered (paired credential rows + dedicated viewer sub-tab); the
+  operator's full spec (dedup detection, group-by-domain, raw view, the
+  full export set, keyboard nav, literal per-file splitting) remains —
+  a new, explicit, non-silent open item, not off the queue.
 - **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
   *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
   cadastre/property.
@@ -3548,7 +3576,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; movement/timeline layer's first increment (`shot_time`→`LocationVisited`) and the multi-event movement/path reconstruction layer both delivered 2026-07-14; only AU bounding precision and the by-design-open cell-DB auto-sync remain); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C10):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C10 `[~]`** (SOL-STEALER-LOGS-VIEWER, 2026-07-14: paired credential rows + dedicated viewer sub-tab delivered; dedup detection, group-by-domain, raw view, full export set, keyboard nav, per-file splitting remain); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; movement/timeline layer's first increment (`shot_time`→`LocationVisited`) and the multi-event movement/path reconstruction layer both delivered 2026-07-14; only AU bounding precision and the by-design-open cell-DB auto-sync remain); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -8352,3 +8380,45 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   stash` (no `title` field on `SdnRecord`). Gate green: fmt/clippy
   `-D warnings`/rustdoc clean, full suite 0 failures (4666 lib tests, +1).
   **Paired:** `PROBLEM_TREE` T2.107 `[ ]`→`[x]` + §4a — same commit.
+- **2026-07-14 — SOL-STEALER-LOGS-VIEWER `[ ]`→`[~]`: first increment of the
+  user-requested Stealer Logs Viewer — C10 (new capability).** The generic
+  entity graph already surfaces every stealer-log credential, but flattened
+  into independent Email/Username/Credential entities with no way to see
+  which login paired with which password, on which machine, captured when.
+  Delivered: `core::stealer_row::StealerRow` (paired login/password/domain/
+  pwned_at/log_id, `StealerRowKind::{Password,Combo}` classified by
+  presence of a site) persisted alongside the entity graph in a new
+  `stealer_rows` SQLite table; `StoragePort::{insert_stealer_rows_batch,
+  stealer_rows_for_scan}` default-no-op trait methods (mirrors
+  SOL-CACHE-INTERSCAN's `raw_archive` pattern). `stealer.rs::
+  parse_stealerlogs` widened to a 3-tuple, also emitting paired rows per
+  credential — `domain` honestly `None` for this export format (`Domains:`
+  is victim-level, not paired to any one credential; never fabricated).
+  Wired into both import paths: CLI (`persist_stealer_rows_best_effort`)
+  and web upload (`stealer_rows_from_upload`, a deliberate second parse
+  rather than widening `entities_from_upload`'s signature, which 18
+  non-web call sites already destructure as a 2-tuple). New `GET
+  /api/v1/scans/{id}/stealer-rows` endpoint (`scan_stealer_rows`). New web
+  UI sub-tab "Stealer Logs" (`scan_info/stealer.js`): machine sidebar
+  (grouped by `log_id`, click to filter), search across login/password/
+  domain, Password-vs-Combo filter, reveal-all + per-row reveal/copy on
+  passwords, click-to-copy domains, "Copy visible" / "Download .txt" bulk
+  export (`url:login:pass` per line). **Explicitly deferred, not silently
+  dropped:** duplicate-password detection, group-by-domain view, a raw
+  view, the full export set (separate copy-all-logins/passwords actions),
+  keyboard navigation, and literal per-file (System.txt/Credentials.txt/
+  ClientAt/EmployeeAt) splitting. 11 new regression tests (4 on
+  `StealerRowKind`/`StealerRow`, 3 on `storage::stealer_rows`, 1 real
+  end-to-end API test uploading a genuine Stealerlogs body via
+  `/scans/import` and confirming both paired credentials round-trip
+  through the new endpoint), plus the existing
+  `sub_resource_endpoints_404_for_unknown_scan` regression extended to
+  cover the new endpoint. Live-verified against the real compiled binary +
+  a real running `hse serve` (real upload → real persisted rows → real API
+  response), and a headless-Chromium pass over the new tab confirmed the
+  machine sidebar, search, password mask/reveal, and machine-click
+  filtering all work with zero console/page errors. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4666 lib tests, +7;
+  100 API tests, +1). Marked `[~]` honestly — a real, useful first
+  increment, not the operator's full spec. **Paired:** `PROBLEM_TREE` C10
+  (new) + §8 — same commit.

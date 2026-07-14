@@ -1487,6 +1487,8 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_obs_scan",
         "index|idx_relations_scan",
         "index|idx_scans_started",
+        "index|idx_stealer_rows_log",
+        "index|idx_stealer_rows_scan",
         "index|sqlite_autoindex_correlations_1",
         "index|sqlite_autoindex_entities_1",
         "index|sqlite_autoindex_entity_observations_1",
@@ -1515,6 +1517,7 @@ fn open_produces_exact_schema_and_pragmas() {
         // planner, no app data, and improve query plans on Termux.
         "table|sqlite_stat1",
         "table|sqlite_stat4",
+        "table|stealer_rows",
     ];
     assert_eq!(got, expected, "schema (tables + indexes) must be identical");
 

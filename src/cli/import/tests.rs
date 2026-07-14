@@ -1177,7 +1177,7 @@ fn stealerlogs_is_detected_and_others_are_not() {
 
 #[test]
 fn stealerlogs_parses_victims_creds_and_domains() {
-    let (mut ents, stats) = parse_stealerlogs(STEALER, "s");
+    let (mut ents, stats, _rows) = parse_stealerlogs(STEALER, "s");
     deduplicate_by_uid(&mut ents);
     let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
 
@@ -1237,7 +1237,7 @@ fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
     // verbatim... nothing redacted or omitted"). This pins that the second
     // victim's single, unambiguous credential ("bob") carries its own
     // `pwned_at` evidence attribute with the exact real capture instant.
-    let (ents, _stats) = parse_stealerlogs(STEALER, "s");
+    let (ents, _stats, _rows) = parse_stealerlogs(STEALER, "s");
     let bob = ents
         .iter()
         .find(|e| e.kind == EntityKind::Username && e.value == "bob")
@@ -1441,7 +1441,7 @@ mod prop {
         /// emit non-empty entity values.
         #[test]
         fn parse_stealerlogs_never_panics(s in ".{0,512}") {
-            let (ents, _) = parse_stealerlogs(&s, "s");
+            let (ents, _, _) = parse_stealerlogs(&s, "s");
             for e in &ents {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }
