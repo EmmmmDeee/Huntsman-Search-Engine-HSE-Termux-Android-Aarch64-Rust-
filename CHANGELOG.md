@@ -287,6 +287,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Three of the four ID formats `structured_id` decodes never showed their
+  creation date on the footprint timeline.** A previous fix taught the
+  timeline to recognise a decoded UUIDv1's embedded creation time, but missed
+  the module's three sibling decoders (MongoDB ObjectID, ULID, KSUID), which
+  stamp the exact same kind of date under a different attribute name. All
+  four now surface an "account created" timeline event when a leaked ID of
+  any of these shapes is scanned.
 - **Importing a stealer log discarded each credential's own compromise date.**
   The Stealerlogs import format documents a `Pwned At:` line per credential,
   and the parser read it — but then never used it anywhere, so the specific

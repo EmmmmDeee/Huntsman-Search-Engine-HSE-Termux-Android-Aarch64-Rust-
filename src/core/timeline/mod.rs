@@ -112,7 +112,13 @@ pub struct TimelineEvent {
 /// `structured_id`'s decoded UUIDv1 timestamp) — before this match gained
 /// them, none mapped to anything, so `TimelineEventKind::AccountCreated` was
 /// unreachable dead code and every one of these dates was silently absent
-/// from the timeline. `birth_date`/`death_date` (`wikidata`'s Wikidata-claim
+/// from the timeline. The same fix originally landed only 1 of `structured_id`'s
+/// 4 timestamp-embedding ID decoders: `objectid_created_date`/`ulid_created_date`/
+/// `ksuid_created_date` (MongoDB ObjectID, ULID, KSUID — `structured_id::emit_creation`,
+/// the sibling code path to the UUIDv1 case right beside it in the same module)
+/// were left out of this match, so 3 of the module's 4 decoded creation dates
+/// stayed silently dropped from the timeline even after `uuid_created_date` was
+/// fixed. `birth_date`/`death_date` (`wikidata`'s Wikidata-claim
 /// dates) and `verified_at` (`mastodon_user`'s profile-field verification
 /// timestamp) were equally live and equally unmatched. `shot_time`
 /// (`exif_geo`'s `DateTimeOriginal`/`DateTime` EXIF tag, stamped on every
@@ -133,7 +139,10 @@ fn classify(attr_key: &str) -> Option<TimelineEventKind> {
         | "joined_at"
         | "discord_created_date"
         | "discord_created_unix_ms"
-        | "uuid_created_date" => AccountCreated,
+        | "uuid_created_date"
+        | "objectid_created_date"
+        | "ulid_created_date"
+        | "ksuid_created_date" => AccountCreated,
         "expires" | "expire_secs" => Expiry,
         "first_seen" | "first_seen_iso" | "first_pulse_created" => FirstSeen,
         "last_seen" | "last_seen_iso" | "last_updated" | "last_update" | "updated" => LastSeen,

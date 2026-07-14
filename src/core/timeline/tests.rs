@@ -192,6 +192,10 @@ use super::*;
         // `devto` (`joined_at`), `discord_snowflake`'s decoded snowflake
         // timestamp (`discord_created_date`/`discord_created_unix_ms`), and
         // `structured_id`'s decoded UUIDv1 timestamp (`uuid_created_date`).
+        // `structured_id`'s three other timestamp-embedding ID decoders
+        // (MongoDB ObjectID, ULID, KSUID) stamp the exact same evidence-
+        // attribute shape via the same `emit_creation` helper as the UUIDv1
+        // case right beside it, but were left out of the original fix.
         use TimelineEventKind::AccountCreated;
         for key in [
             "account_created",
@@ -199,6 +203,9 @@ use super::*;
             "discord_created_date",
             "discord_created_unix_ms",
             "uuid_created_date",
+            "objectid_created_date",
+            "ulid_created_date",
+            "ksuid_created_date",
         ] {
             assert!(
                 matches!(classify(key), Some(AccountCreated)),
@@ -235,6 +242,24 @@ use super::*;
         assert_eq!(tl.len(), 1);
         assert!(matches!(tl[0].kind, TimelineEventKind::AccountCreated));
         assert_eq!(tl[0].iso, "2015-06-12");
+    }
+
+    #[test]
+    fn reconstruct_surfaces_a_structured_id_ulid_created_event_end_to_end() {
+        // `structured_id::emit_creation` stamps `ulid_created_date` (and its
+        // ObjectID/KSUID siblings) in exactly this `YYYY-MM-DD` shape — proves
+        // the full pipeline, not just `classify` in isolation, for the three
+        // decoders that were missed alongside `uuid_created_date`.
+        let e = entity_with_attrs(
+            EntityKind::Other("derived-id".into()),
+            "01ARZ3NDEKTSV4RRFFQ69G5FAV",
+            "structured_id",
+            &[("ulid_created_date", "2016-07-30")],
+        );
+        let tl = reconstruct(&[e]);
+        assert_eq!(tl.len(), 1);
+        assert!(matches!(tl[0].kind, TimelineEventKind::AccountCreated));
+        assert_eq!(tl[0].iso, "2016-07-30");
     }
 
     #[test]

@@ -2702,6 +2702,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   entities the sample credential yields. Gate green: fmt/clippy
   `-D warnings`/rustdoc clean, full suite 0 failures (4627 lib tests, +1).
   **Paired:** `PROBLEM_TREE` T2.97 — same commit.
+- **`[x]` SOL-STRUCTURED-ID-TIMELINE · Wire `structured_id`'s remaining 3
+  timestamp decoders into the timeline** → **T2.98**. The 2026-07-05 C1(c)
+  fix recognised `uuid_created_date` in `core::timeline::classify`'s
+  `AccountCreated` arm but missed its three siblings —
+  `objectid_created_date`/`ulid_created_date`/`ksuid_created_date` — stamped
+  by the exact same `structured_id::emit_creation` helper in the same
+  `YYYY-MM-DD` shape, one loop iteration away in the same source file. A
+  systematic grep sweep of every date-shaped evidence-attribute key across
+  `src/modules` against `classify`'s recognised set found this as the one
+  purely-mechanical gap (no new event kind, no format handling — the value
+  shape `parse_date` already accepts is identical to `uuid_created_date`'s).
+  Fix: added the three keys to the existing `AccountCreated` match arm.
+  Regression: extended the existing dead-code-guard test to all 8
+  `AccountCreated` keys, plus a new
+  `reconstruct_surfaces_a_structured_id_ulid_created_event_end_to_end`
+  end-to-end test, `git stash`-confirmed to fail (0 events) pre-fix and pass
+  (1 event) post-fix. Live-verified twice against the real binary: a real
+  ULID (`01ARZ3NDEKTSV4RRFFQ69G5FAV`) and a real MongoDB ObjectID
+  (`507f1f77bcf86cd799439011`), each scanned with `--modules structured_id
+  --depth 0 -o dossier`, now surface a real `account_created` timeline event
+  at the ID's own correctly-decoded date (2016-07-30 / 2012-10-17) where the
+  TIMELINE section was empty before the fix. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures. **Paired:**
+  `PROBLEM_TREE` T2.98 — same commit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -2985,6 +3009,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 > When 4a + 4b are empty, the two trees agree.
 
 ### 4a · Problems with NO solution yet started (P→S coverage gaps)
+- ~~**T2.98**~~ — **delivered** ✅ (`SOL-STRUCTURED-ID-TIMELINE`, 2026-07-14). A
+  systematic sweep for the same dead-signal class as the 2026-07-05 C1(c)
+  `AccountCreated` fix found it had only wired 1 of `structured_id`'s 4
+  timestamp-embedding ID decoders (`uuid_created_date`); the other three
+  (`objectid_created_date`/`ulid_created_date`/`ksuid_created_date`) now
+  classify too. Off the open queue.
 - ~~**T2.39**~~ — **delivered** ✅ (`SOL-AU039-SHARED-SOURCE`, 2026-07-11). The
   deferred design decision was resolved by investigating the data model:
   `Entity::corroborating_sources()` carries the provenance at this call site,
@@ -7577,3 +7607,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the `Username` and `Credential` entities the sample credential yields.
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures
   (4627 lib tests, +1). Paired: `PROBLEM_TREE` T2.97, §8 — same commit.
+- **2026-07-14** — **SOL-STRUCTURED-ID-TIMELINE: the 2026-07-05 `AccountCreated`
+  fix only wired 1 of `structured_id`'s 4 timestamp-embedding ID decoders.**
+  Ran a systematic sweep for the same dead-signal class the `shot_time`/
+  `pwned_at` fixes closed this cycle series: grepped every date-shaped
+  evidence-attribute key literal across `src/modules` against
+  `core::timeline::classify`'s recognised set. Most misses were either
+  already-`Generic`-covered or genuinely new shapes needing a design call
+  (deferred, not invented here), but `structured_id::emit_creation` — the
+  shared helper the MongoDB ObjectID / ULID / KSUID decoders all call, sitting
+  one loop iteration away from the already-fixed UUIDv1 case in the same
+  file — stamps `objectid_created_date`/`ulid_created_date`/
+  `ksuid_created_date` in the identical `YYYY-MM-DD` shape as
+  `uuid_created_date`, which the 2026-07-05 fix recognised but these three
+  siblings never were: a purely mechanical gap, not a design decision. Fixed
+  by adding the three keys to the existing `AccountCreated` match arm (3
+  lines; no new `TimelineEventKind`, no parser change — the value shape
+  `parse_date` already accepts is identical). Regression: extended
+  `classify_maps_every_live_account_created_key_not_leaving_it_dead_code` to
+  cover all 8 `AccountCreated` keys, plus a new
+  `reconstruct_surfaces_a_structured_id_ulid_created_event_end_to_end`
+  full-pipeline test — `git stash`-confirmed to fail (0 events) against the
+  pre-fix `classify` and pass (1 `AccountCreated` event) against the fix.
+  Live-verified twice against the real compiled binary: `hse scan --kind
+  username --value 01ARZ3NDEKTSV4RRFFQ69G5FAV --modules structured_id
+  --depth 0 -o dossier` now shows a `2016-07-30 account_created` timeline
+  event (the ULID's own correctly-decoded date, matching the ULID spec's
+  well-known test vector); a second real run seeded with a MongoDB ObjectID
+  (`507f1f77bcf86cd799439011`) shows the equivalent `2012-10-17
+  account_created` event via `objectid_created_date` — both empty before the
+  fix. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures. Paired: `PROBLEM_TREE` T2.98, §8 — same commit.
