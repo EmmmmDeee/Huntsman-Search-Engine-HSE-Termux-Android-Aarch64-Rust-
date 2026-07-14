@@ -2679,6 +2679,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4632 lib tests, +13). **Paired:** `PROBLEM_TREE` T2.92 — same
   commit.
+  *Extended (2026-07-14) — the New Scan wizard can now select a named scan
+  profile, including `skiptrace`, T2.93:* the parity audit's other named
+  finding closed. All 6 `core::profiles` presets were already accepted by
+  `scan_create` (`resolve_profile`/`apply_profile_overlay` already wired
+  in — `list_profiles()`'s own doc comment even said it was "available to
+  the API/SPA profile picker"), but no route ever exposed the catalogue and
+  the wizard's existing "By Use Case" radios are a genuinely different,
+  SpiderFoot-style concept (module selection, not tuning presets) confirmed
+  by inspection to be orthogonal, not a duplicate to retire — so `skiptrace`
+  (the debtor-location profile) had zero web UI path, not even an
+  imitation. New `GET /api/v1/scan/profiles` returns `list_profiles()` as
+  JSON — the wizard's only source for the name/description list, so it
+  can't drift from `resolve_profile`'s accepted set — and a new "Scan
+  Profile" `<select>`, always visible above Advanced options, sends
+  `profile:<name>` in the scan-create request when set; the SERVER'S
+  existing overlay does all the tuning-field merging, so the wizard
+  duplicates none of a profile's actual values client-side (a future
+  profile tuning change can't silently drift out of sync with the SPA).
+  New regression test pins the wire shape (all 6 names, non-empty
+  descriptions), git-stash-proven by reverting the route registration
+  (404s the probe); restored, passes. Live-verified end-to-end via headless
+  Chromium against the real compiled binary: the `<select>` lists all 6
+  real profiles, choosing `skiptrace` updates the inline description, and
+  submitting a real scan (target `Kylo4kylo`, the project's own canonical
+  consented test seed) produced a queued scan whose STORED options exactly
+  matched `skiptrace()`'s tuning (`depth:3`, `min_expand_confidence:0.45`,
+  `max_concurrent:4`, `max_entities:800`, `max_wall_time_secs:420`,
+  `expansion_strategy:"geo_converge"`, `regional_search:true`, the full
+  8-category `category_focus`) — confirmed via `GET /scans/{id}`, zero
+  uncaught JS errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4632 lib tests unchanged net; 99 `tests/api.rs`
+  integration tests, +1). **Paired:** `PROBLEM_TREE` T2.93 — same commit.
 
 ---
 

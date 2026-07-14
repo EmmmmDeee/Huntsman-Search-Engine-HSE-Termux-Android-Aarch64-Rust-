@@ -29,7 +29,7 @@ pub use analysis::{
 pub use core::{
     plan_preview, radar_live, radar_sweep, scan_auto, scan_auto_plan, scan_auto_sweep, scan_batch,
     scan_cancel, scan_create, scan_delete, scan_events_history, scan_get, scan_import, scan_list,
-    scan_rerun,
+    scan_profiles, scan_rerun,
 };
 pub use diagnostics::{
     scan_audit, scan_benchmark, scan_duplicates, scan_gaps, scan_metrics, scan_pivots,

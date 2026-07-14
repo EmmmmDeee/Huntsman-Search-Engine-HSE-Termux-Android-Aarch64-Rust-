@@ -27,6 +27,10 @@ export async function previewPlan(){
 
 export async function renderNewScan(v){
   if (!S.modules){ const m = await API.modules(); S.modules = m.modules || []; }
+  if (!S.scanProfiles){
+    try { S.scanProfiles = (await API.scanProfiles()).profiles || []; }
+    catch { S.scanProfiles = []; }
+  }
   const W = S.wizard;
 
   v.innerHTML = `
@@ -181,6 +185,17 @@ export async function renderNewScan(v){
         <div id="moduletable-host" style="display:${W.activeTab==='module'?'block':'none'}"></div>
       </div>
 
+      <div class="control-group" style="margin-top:14px">
+        <label for="w-profile">Scan Profile <span class="text-muted" style="font-weight:normal">(optional preset — same as <code>hse scan --profile</code>)</span></label>
+        <select id="w-profile" class="form-control">
+          <option value=""${W.profile?'':' selected'}>None — use the tuning fields below as typed</option>
+          ${(S.scanProfiles||[]).map(p=>`<option value="${attr(p.name)}"${W.profile===p.name?' selected':''}>${esc(p.name)}</option>`).join('')}
+        </select>
+        <span class="help-block" id="w-profile-desc" style="font-size:12px">
+          ${W.profile ? esc((S.scanProfiles.find(p=>p.name===W.profile)||{}).description||'') : 'Picking a profile overrides the depth / confidence / concurrency / entity-cap / wall-time fields below with its own tuned values. Module selection above, tags, and notes still apply.'}
+        </span>
+      </div>
+
       <p style="margin-top:14px;margin-bottom:6px">
         <a href="#" id="adv-toggle" style="font-size:12px;color:var(--accent)">${W.showAdv?'▾':'▸'} Advanced options</a>
       </p>
@@ -251,6 +266,13 @@ export async function renderNewScan(v){
   $('#scanname').addEventListener('input', e=>{ W.name = e.target.value; });
   $('#scantarget').addEventListener('input', e=>{ W.value = e.target.value; });
   $('#scankind').addEventListener('change', e=>{ W.kind = e.target.value; renderWizardModuleTable(); });
+  $('#w-profile').addEventListener('change', e=>{
+    W.profile = e.target.value || null;
+    const desc = (S.scanProfiles||[]).find(p=>p.name===W.profile);
+    $('#w-profile-desc').textContent = desc
+      ? desc.description
+      : 'Picking a profile overrides the depth / confidence / concurrency / entity-cap / wall-time fields below with its own tuned values. Module selection above, tags, and notes still apply.';
+  });
   $$('input[name=usecase]').forEach(r=>r.addEventListener('change', e=>{
     W.usecase = e.target.value; W.modules = null; renderWizardModuleTable();
   }));
@@ -439,6 +461,7 @@ export function buildWizardOptions(){
   if (W.options.max_wall_time_secs!=null && W.options.max_wall_time_secs!=='') opts.max_wall_time_secs = Number(W.options.max_wall_time_secs);
   if (W.options.min_confidence!=null && W.options.min_confidence!=='') opts.min_confidence = Number(W.options.min_confidence);
   if (W.modules!==null) opts.modules = W.modules.length?W.modules:null;
+  if (W.profile) opts.profile = W.profile;
   const tagsStr = ($('#w-tags')||{}).value||'';
   if (tagsStr.trim()) opts.scan_tags = tagsStr.split(',').map(t=>t.trim()).filter(Boolean);
   const notesStr = ($('#w-notes')||{}).value||'';

@@ -1011,6 +1011,51 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   clean, full suite 0 failures (4632 lib tests, +13; 98 `tests/api.rs`
   integration tests unchanged net, +1 probe only). **Paired:**
   `SOLUTION_TREE` SOL-TERMUX-EXCLUSIVITY (extended), §5 — same commit.
+- **`[x]` T2.93 · All 6 named scan profiles (`recommended`/`passive`/
+  `footprint`/`investigate`/`fast`/`skiptrace`) were already accepted by
+  `POST /api/v1/scans` but had ZERO web UI path — `skiptrace` (the
+  debtor-location profile) not even as an imitation.** The T2.90/91 audit's
+  CLI-vs-web-SPA parity sweep found this: `core::profiles::resolve_profile`/
+  `apply_profile_overlay` were already wired into `scan_create` (a raw
+  `{"profile":"skiptrace"}` in the POST body already worked), and
+  `list_profiles()`'s own doc comment says it's "available to the API/SPA
+  profile picker" — but no route ever exposed the catalogue, and the New
+  Scan wizard's existing "By Use Case" radios (`all`/`footprint`/
+  `investigate`/`passive`) are a DIFFERENT, SpiderFoot-style concept (which
+  MODULES run) that never sent a `profile` field — confirmed by inspection
+  they're genuinely orthogonal to the server's tuning-preset profiles, not a
+  duplicate to retire. A browser-only operator could therefore never reach
+  `skiptrace`'s geo-converging expansion/category-focus tuning, or any named
+  profile's tuning shortcut, at all. → **Solution:** new `GET /api/v1/
+  scan/profiles` (`scan_handlers::core::scan_profiles`) returning
+  `list_profiles()` as JSON — the wizard's only source for the name/
+  description list, so it can't drift from `resolve_profile`'s accepted set.
+  New Scan wizard gets a "Scan Profile" `<select>` (recommended/passive/
+  footprint/investigate/fast/skiptrace/none), always visible above Advanced
+  options with its description shown inline; when set, `profile: <name>`
+  rides in the scan-create request and the SERVER'S existing overlay does
+  all the tuning-field merging — the wizard duplicates none of a profile's
+  actual values client-side, so a future profile change can't silently
+  drift out of sync with the SPA. **P2/capability-gap** (a fully-built,
+  already-server-side-tested capability with no UI door — the "web-UI-
+  exclusive operation" gap this project's own operator instruction targets
+  most directly). New regression test `scan_profiles_lists_the_full_named_
+  catalogue_including_skiptrace` pins the wire shape and that all 6 names
+  (plus non-empty descriptions) are present — git-stash-proven by reverting
+  the route registration, which 404s the test; restored, passes. Live-
+  verified end-to-end via headless Chromium against the real compiled
+  binary: the wizard's profile `<select>` lists all 6 real server profiles,
+  choosing `skiptrace` updates the inline description, and submitting a real
+  scan (target `Kylo4kylo`, the project's own canonical consented test seed)
+  produces a `202`-queued scan whose STORED options exactly match
+  `skiptrace()`'s tuning — `depth:3`, `min_expand_confidence:0.45`,
+  `max_concurrent:4`, `max_entities:800`, `max_wall_time_secs:420`,
+  `expansion_strategy:"geo_converge"`, `regional_search:true`, and the full
+  8-category `category_focus` — confirmed via `GET /scans/{id}`, zero
+  uncaught JS errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4632 lib tests unchanged net; 99 `tests/api.rs`
+  integration tests, +1). **Paired:** `SOLUTION_TREE` SOL-TERMUX-EXCLUSIVITY
+  (extended again), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -10586,3 +10631,32 @@ way, so this specific drift class can't recur silently again.
   uncaught JS errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4632 lib tests, +13). **Paired:** `SOLUTION_TREE`
   SOL-TERMUX-EXCLUSIVITY (extended), §5 — same commit.
+- **2026-07-14** — **T2.93: the New Scan wizard can now select a named scan
+  profile, including `skiptrace` (debtor-location), which had zero web UI
+  path before this.** All 6 `core::profiles` presets were already accepted
+  by `POST /api/v1/scans` (`resolve_profile`/`apply_profile_overlay` already
+  wired into `scan_create`), but no route ever exposed the catalogue and the
+  wizard's existing "By Use Case" radios are a genuinely different,
+  SpiderFoot-style concept (module selection, not tuning presets) that never
+  sent a `profile` field — confirmed by inspection they're orthogonal, not a
+  duplicate to retire. New `GET /api/v1/scan/profiles` returns `list_
+  profiles()` as JSON — the wizard's only source for the name/description
+  list, so it can't drift from `resolve_profile`'s accepted set — and a new
+  "Scan Profile" `<select>` in the wizard sends `profile:<name>` in the
+  scan-create request when set, letting the SERVER'S existing overlay do
+  all the tuning-field merging (the wizard duplicates none of a profile's
+  actual values client-side). New regression test pins the wire shape (all
+  6 names + non-empty descriptions), git-stash-proven by reverting the route
+  registration (404s); restored, passes. Live-verified end-to-end via
+  headless Chromium against the real compiled binary: the `<select>` lists
+  all 6 real profiles, choosing `skiptrace` updates the inline description,
+  and submitting a real scan (target `Kylo4kylo`, the project's own
+  canonical consented test seed) produced a queued scan whose STORED
+  options exactly matched `skiptrace()`'s tuning (`depth:3`,
+  `min_expand_confidence:0.45`, `max_concurrent:4`, `max_entities:800`,
+  `max_wall_time_secs:420`, `expansion_strategy:"geo_converge"`,
+  `regional_search:true`, full 8-category `category_focus`), confirmed via
+  `GET /scans/{id}`, zero uncaught JS errors. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4632 lib tests unchanged
+  net; 99 `tests/api.rs` integration tests, +1). **Paired:** `SOLUTION_TREE`
+  SOL-TERMUX-EXCLUSIVITY (extended again), §5 — same commit.

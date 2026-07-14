@@ -2573,6 +2573,47 @@ async fn plan_preview_lists_engaged_modules_for_a_seed() {
 }
 
 #[tokio::test]
+async fn scan_profiles_lists_the_full_named_catalogue_including_skiptrace() {
+    // The New Scan wizard's profile picker has no other source of truth for
+    // the name/description list — this pins the wire shape it depends on,
+    // and that `skiptrace` (the debtor-location profile, previously
+    // unreachable from the browser at all) is actually present.
+    let app = test_app("scan-profiles");
+    let resp = app.oneshot(get("/api/v1/scan/profiles")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let profiles = json["profiles"].as_array().expect("profiles array");
+    assert_eq!(
+        profiles.len(),
+        6,
+        "every core::profiles::list_profiles() entry must be present"
+    );
+    let names: Vec<&str> = profiles
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "recommended",
+        "passive",
+        "footprint",
+        "investigate",
+        "fast",
+        "skiptrace",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "missing profile {expected} — got {names:?}"
+        );
+    }
+    for p in profiles {
+        assert!(
+            p["description"].as_str().is_some_and(|d| !d.is_empty()),
+            "every profile must carry a non-empty description for the picker's tooltip/help text"
+        );
+    }
+}
+
+#[tokio::test]
 async fn scan_benchmark_returns_a_scorecard() {
     let (app, store) = test_app_with_store("benchmark");
     let scan = Scan::new(

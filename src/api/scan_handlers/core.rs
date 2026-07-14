@@ -36,6 +36,24 @@ pub async fn scan_create(
         .into_response()
 }
 
+/// `GET /api/v1/scan/profiles` — the named scan-profile catalogue
+/// ([`crate::core::profiles::list_profiles`]) as JSON, so the web SPA's New
+/// Scan wizard can render a profile picker without hardcoding the name/
+/// description list — the single source `resolve_profile`/`--profile`'s own
+/// unknown-name error already use, now also reachable from the browser.
+/// Previously `profile` was already accepted in `ScanRequest.options` (the
+/// CLI's `--profile` and a raw `"profile":"…"` POST both worked), but there
+/// was no way for a browser-only operator to discover which names exist —
+/// this closes that gap, including for `skiptrace` (the debtor-location
+/// profile), which had no web UI path at all before this.
+pub async fn scan_profiles() -> impl IntoResponse {
+    let profiles: Vec<_> = crate::core::profiles::list_profiles()
+        .into_iter()
+        .map(|(name, description)| json!({ "name": name, "description": description }))
+        .collect();
+    Json(json!({ "profiles": profiles }))
+}
+
 /// The scan-history bound for [`scan_auto`]/[`scan_auto_plan`]/[`scan_auto_sweep`]'s
 /// candidate pool. Each handler's own doc promises it ranks "everything the
 /// platform has discovered" — a hardcoded `list_scans(50)` silently broke that

@@ -37,6 +37,7 @@
 //! | GET    | `/api/v1/cells/status`            | `cells_status` (v1.13+)  |
 //! | POST   | `/api/v1/cells/import`            | `cells_import` (v1.13+)  |
 //! | POST   | `/api/v1/cells/clear`             | `cells_clear` (v1.13+)   |
+//! | GET    | `/api/v1/scan/profiles`           | `scan_profiles` (v1.13+) |
 //! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
 //! | GET    | `/static/{*file}`                 | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
@@ -362,6 +363,9 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scan/auto/sweep", post(scan_handlers::scan_auto_sweep))
         // Forward-only scan-plan preview: which modules a seed engages, no scan run.
         .route("/plan", get(scan_handlers::plan_preview))
+        // Named scan-profile catalogue (recommended/passive/footprint/investigate/
+        // fast/skiptrace) — feeds the New Scan wizard's profile picker.
+        .route("/scan/profiles", get(scan_handlers::scan_profiles))
         // Live-radar button: ONE autonomous device-sensor sweep, no target seed.
         .route("/radar", post(scan_handlers::radar_sweep))
         // Continuous autonomous radar: a zero-input live session that re-runs only

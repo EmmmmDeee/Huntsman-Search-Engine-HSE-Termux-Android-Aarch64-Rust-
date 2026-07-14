@@ -65,6 +65,9 @@ export const API = {
   autoSweep: (breadth,diversity)=>API._req('/api/v1/scan/auto/sweep?breadth='+(breadth||5)+'&diversity='+(diversity==null?0.5:diversity),{method:'POST'}),
   // Forward-only scan-plan preview: which modules a seed engages, before scanning.
   plan:      value=>API._req('/api/v1/plan?value='+encodeURIComponent(value)),
+  // Named scan-profile catalogue (recommended/passive/footprint/investigate/
+  // fast/skiptrace) for the New Scan wizard's profile picker.
+  scanProfiles: ()=>API._req('/api/v1/scan/profiles'),
   // Raw-text upload (not JSON): POST a dossier file's contents to be parsed and
   // ingested as a scan. Bypasses _req's JSON envelope.
   // The X-HSE-CSRF header makes this a non-simple request: same-origin (here) it

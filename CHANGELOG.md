@@ -11,6 +11,15 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The New Scan wizard can now pick a named scan profile** — the same
+  presets the CLI's `--profile` flag offers (`recommended`, `passive`,
+  `footprint`, `investigate`, `fast`, and `skiptrace`), previously only
+  reachable from the command line. `skiptrace` is worth calling out
+  specifically: it's the debtor/person-location profile, tuned to converge
+  on someone's current address, phone, employer and associates — and it had
+  no web path at all before now. Pick one from the new "Scan Profile"
+  dropdown above the advanced options; your module selection, tags, and
+  notes still apply on top of it.
 - **The cell-tower database (used for cell-based geolocation) can now be
   managed entirely from the Settings page — no more dropping to a shell.**
   Previously, populating, refreshing, or clearing this database was only

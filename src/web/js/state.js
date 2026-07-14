@@ -69,6 +69,7 @@ export const S = {
   version:  '',
   health:   null,
   modules:  null,
+  scanProfiles: null,
   scans:    null,
   scan:     null,
   entities: null,
@@ -89,7 +90,15 @@ export const S = {
     // them, so a web scan is as thorough as the CLI out of the box.
     options:{ exclude_modules:[], throttle_ms:250, module_timeout_ms:null, depth:3,
               min_expand_confidence:0.20, max_entities:2500, max_wall_time_secs:null,
-              max_concurrent:2, min_confidence:null, free_only:false }
+              max_concurrent:2, min_confidence:null, free_only:false },
+    // Named server-side scan profile (recommended/passive/footprint/investigate/
+    // fast/skiptrace), e.g. `--profile skiptrace` on the CLI. `null` = none
+    // selected — every Advanced-options field above applies as typed. When
+    // set, the server's apply_profile_overlay overrides depth/min_expand_
+    // confidence/max_concurrent/max_entities/max_wall_time_secs/free_only/
+    // passive_only/category_focus/expansion_strategy/regional_search with the
+    // profile's own values — module selection, tags, and notes still apply.
+    profile: null
   }
 };
 
