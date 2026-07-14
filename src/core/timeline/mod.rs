@@ -325,6 +325,93 @@ pub fn footprint_recency(latest_ts: i64, now_unix: i64) -> FootprintRecency {
     }
 }
 
+/// One leg of a reconstructed movement path — the straight-line hop between
+/// two consecutive [`TimelineEventKind::LocationVisited`] fixes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct MovementLeg {
+    pub from_iso: String,
+    pub from_coords: String,
+    pub to_iso: String,
+    pub to_coords: String,
+    /// Great-circle distance between the two fixes ([`crate::util::geo::haversine_km`]).
+    pub distance_km: f64,
+}
+
+/// A reconstructed movement path: the subject's (or their device's) dated
+/// location fixes, walked in chronological order.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Movement {
+    pub legs: Vec<MovementLeg>,
+    /// Sum of every leg's `distance_km` — the total great-circle distance
+    /// covered across all fixes. **Not** a real travel distance (no road/route
+    /// modelling, just point-to-point straight lines), so callers should label
+    /// it accordingly.
+    pub total_km: f64,
+    /// Count of location fixes the path was built from (`legs.len() + 1`).
+    pub locations_visited: usize,
+}
+
+/// Reconstruct a chronological movement path from a [`reconstruct`]ed
+/// timeline's [`TimelineEventKind::LocationVisited`] events — "the subject's
+/// device was physically at A on date 1, then B on date 2, C km apart".
+///
+/// The C5/C1(c) "movement/timeline geo" capability's path-reconstruction
+/// increment: `LocationVisited` events already exist (currently sourced from
+/// `exif_geo`'s `shot_time`, tied to the photo's extracted `Coordinates`
+/// entity), and multiple photos taken at different times/places are exactly
+/// the evidence a movement path is built from. This is a thin, pure fold over
+/// already-reconstructed events — no new data source, no new module.
+///
+/// `events` is expected pre-sorted oldest-first (as [`reconstruct`] returns
+/// it); this function does not re-sort, so a caller passing already-sorted
+/// events gets a deterministic, chronological path. Events whose
+/// `entity_value` does not parse as a coordinate (defensive — every current
+/// `LocationVisited` producer emits a `Coordinates` entity, but the mapping is
+/// keyed on evidence-attribute name, not entity kind, so this stays honest
+/// rather than assuming) are skipped rather than breaking the chain.
+///
+/// Returns `None` when fewer than two parseable fixes exist — a single
+/// location is a point, not a path, and fabricating a one-node "movement"
+/// would misstate what was actually observed.
+#[must_use]
+pub fn movement_path(events: &[TimelineEvent]) -> Option<Movement> {
+    let fixes: Vec<&TimelineEvent> = events
+        .iter()
+        .filter(|e| e.kind == TimelineEventKind::LocationVisited)
+        .collect();
+    let mut legs = Vec::new();
+    let mut total_km = 0.0;
+    let mut located = 0usize;
+    let mut prev: Option<(&TimelineEvent, f64, f64)> = None;
+    for fix in fixes {
+        let Some(here) = crate::util::geo::coords::parse(&fix.entity_value) else {
+            continue;
+        };
+        let (lat, lon) = (here.lat, here.lon);
+        located += 1;
+        if let Some((prev_ev, prev_lat, prev_lon)) = prev {
+            let km = crate::util::geo::haversine_km(prev_lat, prev_lon, lat, lon);
+            total_km += km;
+            legs.push(MovementLeg {
+                from_iso: prev_ev.iso.clone(),
+                from_coords: prev_ev.entity_value.clone(),
+                to_iso: fix.iso.clone(),
+                to_coords: fix.entity_value.clone(),
+                distance_km: km,
+            });
+        }
+        prev = Some((fix, lat, lon));
+    }
+    if located < 2 {
+        return None;
+    }
+    Some(Movement {
+        legs,
+        total_km,
+        locations_visited: located,
+    })
+}
+
 // ─── Dependency-free date parsing ────────────────────────────────────────────
 
 /// Days from the civil date 1970-01-01 to `y-m-d` (Howard Hinnant's algorithm).

@@ -4953,6 +4953,45 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   over multiple `LocationVisited` events (now buildable, since the underlying
   events exist for the first time). **Paired:** `SOLUTION_TREE` SOL-GEOINT +
   SOL-CORR (C1(c) timeline widening precedent), §5 — same commit.
+  **Movement/path reconstruction — delivered (2026-07-14):** the "now
+  buildable" increment named immediately above. New pure
+  `core::timeline::movement_path(&[TimelineEvent]) -> Option<Movement>` walks
+  a reconstructed timeline's `LocationVisited` fixes in chronological order
+  (the order `reconstruct` already guarantees), parses each fix's
+  `entity_value` via the existing universal coordinate parser
+  (`crate::util::geo::coords::parse`, already `core`-allow-listed — no new
+  layering exception needed), and sums the canonical `crate::util::
+  geo::haversine_km` great-circle distance between each consecutive pair —
+  "was at A on this date, then B a week later, C km away". Returns `None`
+  below 2 parseable fixes (a single photo is a point, not a path — fabricating
+  a one-node "movement" would misstate the evidence), and skips any
+  classified-but-unparseable fix defensively rather than breaking the chain
+  into disjoint halves. Wired to both output surfaces: the CLI dossier gets a
+  new `MOVEMENT` section (only printed when a path exists) directly below
+  `TIMELINE`; `GET /api/v1/scans/{id}/timeline` gains an additive `movement`
+  field (`null` when absent — proven live: a real `github.com` scan's
+  timeline response carries `"movement": null` alongside the pre-existing
+  fields, unchanged). SPA parity: `scan_info/timeline.js` renders a
+  "Movement path" panel beneath the existing timeline list when `movement`
+  is present, reusing the `location_visited` colour C5's earlier increment
+  already introduced. 4 new tests: `None` on 0/1 fixes; a real NYC↔Sydney
+  pair (~15,990 km real great-circle distance, asserted to ±200 km) proving
+  the distance math is real, not a stub, and that chronological order does
+  not depend on caller-supplied event order; a 3-fix case (Brisbane↔Sydney,
+  ~730 km) proving an unparseable fix is skipped without breaking the
+  2-leg-vs-1-leg chain. Since `movement_path` is wholly new code, `git
+  stash` proves the strongest possible regression signal — the pre-fix tree
+  has zero matching tests to even run (the function doesn't exist to compile
+  against). Live-verified against the real compiled binary: `hse selftest`
+  9/9; a real `hse scan -k domain -v github.com -m dns_intel` dossier prints
+  `TIMELINE (0 events)` and correctly omits the `MOVEMENT` section entirely
+  (no crash, no spurious empty section) since a DNS-only scan has no dated
+  location fixes; the same scan's `/api/v1/scans/{id}/timeline` response
+  confirmed live via `hse serve` returns `"movement": null`. Gate green:
+  fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4635 lib
+  tests, +3). *C5 remaining:* tighter AU bounding only — every other named
+  solution item is now delivered. **Paired:** `SOLUTION_TREE` SOL-GEOINT
+  (movement-path leg delivered), §4/§5 — same commit.
 - **`[~]` C6 · Offensive edge** — *Current:* SERP exposure dorks, `portscan`,
   `subdomain_takeover`, `key_harvest`, breach/stealer presence + AU-047 reuse
   link. → **Solution:** broaden exposure-dork coverage; mature the
@@ -11455,3 +11494,29 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4632 lib tests, +2).
   **Paired:** `SOLUTION_TREE` SOL-GRAVATAR-VERIFIED-BOOL (new node), §5 —
   same commit.
+- **2026-07-14** — **C5: built the movement/path reconstruction layer over
+  `LocationVisited` events that the same day's earlier `exif_geo`/`shot_time`
+  increment had named as "now buildable, since the underlying events exist
+  for the first time."** Picked up this standing in-progress node's own
+  freshly-named next step rather than opening something new. New pure
+  `core::timeline::movement_path` walks a reconstructed timeline's dated
+  location fixes in chronological order and sums the real great-circle
+  distance (`util::geo::haversine_km`, already `core`-allow-listed) between
+  each consecutive pair — no new external dependency, no new module, a thin
+  fold over data that already existed. `None` below 2 parseable fixes (a
+  single photo is a point, not a path). New `MOVEMENT` dossier section
+  (CLI) and an additive `movement` field on `GET /api/v1/scans/{id}/
+  timeline` (API + SPA panel), both correctly absent/`null` when there's
+  nothing to reconstruct. 4 new tests incl. a real NYC↔Sydney pair pinning
+  the real-world ~15,990 km distance (not a stub) and a 3-fix case proving
+  an unparseable fix is skipped without breaking the chain; since the
+  function is wholly new, `git stash` proves the strongest possible
+  regression signal (nothing to even compile against pre-fix). Live-
+  verified against the real compiled binary: `hse selftest` 9/9; a real
+  `hse scan -k domain -v github.com` dossier correctly omits `MOVEMENT`
+  (no dated location fixes on a DNS-only scan); the same scan's live
+  `/api/v1/scans/{id}/timeline` response (via `hse serve`) confirmed
+  `"movement": null`. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4635 lib tests, +3). *C5 remaining:* tighter AU
+  bounding only. **Paired:** `SOLUTION_TREE` SOL-GEOINT (movement-path leg
+  delivered) + §4/§5 refreshed — same commit.

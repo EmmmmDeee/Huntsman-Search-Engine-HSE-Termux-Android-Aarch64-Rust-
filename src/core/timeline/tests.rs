@@ -474,3 +474,96 @@ use super::*;
         assert_eq!(r.years_since_latest, 0);
         assert_eq!(r.status, FootprintStatus::Active);
     }
+
+    #[test]
+    fn movement_path_none_with_fewer_than_two_fixes() {
+        // Zero fixes.
+        assert!(movement_path(&[]).is_none());
+        // A single dated location isn't a path — it's a point. Fabricating a
+        // "movement" out of one photo would misstate what was observed.
+        let e = entity_with_attrs(
+            EntityKind::Coordinates,
+            "40.712776,-74.005974",
+            "exif_geo",
+            &[("shot_time", "2021-06-15")],
+        );
+        let events = reconstruct(&[e]);
+        assert_eq!(events.len(), 1);
+        assert!(movement_path(&events).is_none());
+    }
+
+    #[test]
+    fn movement_path_walks_real_fixes_chronologically_with_real_distance() {
+        // Two real, geotagged photos of the same subject/device: New York on
+        // 2021-06-15, then Sydney (CBD, -33.8688,151.2093) a week later. The
+        // real-world great-circle distance NYC↔Sydney is ~15,990 km.
+        let sydney = entity_with_attrs(
+            EntityKind::Coordinates,
+            "-33.868800,151.209300",
+            "exif_geo",
+            &[("shot_time", "2021-06-22")],
+        );
+        let nyc = entity_with_attrs(
+            EntityKind::Coordinates,
+            "40.712776,-74.005974",
+            "exif_geo",
+            &[("shot_time", "2021-06-15")],
+        );
+        // Deliberately passed out of chronological order — `reconstruct`
+        // itself is what guarantees oldest-first, `movement_path` must not
+        // silently depend on caller-supplied ordering being lucky.
+        let events = reconstruct(&[sydney, nyc]);
+        assert_eq!(events[0].entity_value, "40.712776,-74.005974"); // oldest first
+        let mv = movement_path(&events).expect("2 real fixes must yield a path");
+        assert_eq!(mv.locations_visited, 2);
+        assert_eq!(mv.legs.len(), 1);
+        let leg = &mv.legs[0];
+        assert_eq!(leg.from_coords, "40.712776,-74.005974");
+        assert_eq!(leg.to_coords, "-33.868800,151.209300");
+        // Real NYC↔Sydney great-circle distance is ~15,990 km — a wide
+        // tolerance guards against float-precision nitpicks while still
+        // pinning "this is really computing a distance", not a stub.
+        assert!(
+            (mv.total_km - 15_990.0).abs() < 200.0,
+            "expected ~15,990 km, got {}",
+            mv.total_km
+        );
+        assert!((leg.distance_km - mv.total_km).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn movement_path_sums_multiple_legs_and_skips_unparseable_fixes() {
+        // Three real fixes plus one `LocationVisited`-classified value that
+        // doesn't actually parse as a coordinate — defensive against a future
+        // producer stamping `shot_time` onto a non-`Coordinates`-shaped value.
+        // It must be skipped, not break the chain into two shorter paths.
+        let a = entity_with_attrs(
+            EntityKind::Coordinates,
+            "-27.470125,153.021072", // Brisbane
+            "exif_geo",
+            &[("shot_time", "2020-01-01")],
+        );
+        let junk = entity_with_attrs(
+            EntityKind::Coordinates,
+            "not-a-coordinate",
+            "exif_geo",
+            &[("shot_time", "2020-06-01")],
+        );
+        let b = entity_with_attrs(
+            EntityKind::Coordinates,
+            "-33.868800,151.209300", // Sydney
+            "exif_geo",
+            &[("shot_time", "2021-01-01")],
+        );
+        let events = reconstruct(&[a, junk, b]);
+        assert_eq!(events.len(), 3, "the unparseable fix still classifies");
+        let mv = movement_path(&events).expect("2 parseable fixes must yield a path");
+        assert_eq!(mv.locations_visited, 2, "the junk fix must not count");
+        assert_eq!(mv.legs.len(), 1);
+        // Real Brisbane↔Sydney great-circle distance is ~730 km.
+        assert!(
+            (mv.total_km - 730.0).abs() < 50.0,
+            "expected ~730 km, got {}",
+            mv.total_km
+        );
+    }

@@ -636,12 +636,25 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   suite 0 failures (4626 lib tests, +3). **Paired:** `PROBLEM_TREE` C5
   (movement/timeline geo, first increment) + C1(c) (timeline-widening
   precedent this fix follows), §8 — same commit.
-  *Remaining:* AU bounding precision; a true movement/PATH reconstruction
-  layer that correlates multiple `LocationVisited` events into an actual
-  chronology of places visited (the individual dated-location events now
-  exist for the first time — connecting them into a path is the next
-  increment); auto-scheduled re-sync of the local cell DB (currently requires
-  manual `hse cells import` trigger).
+  *Delivered (2026-07-14) — the movement/path reconstruction layer named as
+  the next increment immediately above.* New pure `core::timeline::
+  movement_path` walks a reconstructed timeline's `LocationVisited` fixes in
+  chronological order and sums the real great-circle distance
+  (`util::geo::haversine_km`) between each consecutive pair; `None` below 2
+  parseable fixes. New CLI `MOVEMENT` dossier section + an additive
+  `movement` field on `GET /api/v1/scans/{id}/timeline` + SPA panel, all
+  correctly absent/`null` when there's nothing to reconstruct. 4 new tests
+  incl. a real NYC↔Sydney pair pinning the real ~15,990 km distance and a
+  3-fix case proving an unparseable fix is skipped without breaking the
+  chain; `git stash`-provable (wholly new function). Live-verified: `hse
+  selftest` 9/9; a real `hse scan -k domain -v github.com` dossier correctly
+  omits `MOVEMENT`; the same scan's live `/timeline` API response confirmed
+  `"movement": null`. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
+  full suite 0 failures (4635 lib tests, +3). *Remaining:* AU bounding
+  precision only; auto-scheduled re-sync of the local cell DB (currently
+  requires manual `hse cells import` trigger) stays open by design — no
+  cron/daemon infrastructure exists anywhere in this codebase for it to hang
+  off (see the `cell_local` auto-sync gap note, §4a).
 - **`[~]` SOL-OFFENSIVE · Exposure & reuse graph** → **C6**: broaden SERP dorks,
   credential-reuse graph, `aho-corasick` (SOL-F1) key-harvest + entropy gate.
   *Audit correction (2026-07-12) — status was stale, `[ ]`→`[~]`:* the
@@ -3139,8 +3152,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `ripestat` were stale "remaining" notes — all three modules already registered.
   *Remaining:* passive-DNS history; CDN cert-hash origin pivot.
 - **C5** — `[~]` (`opencellid` cycle 19 + `cell_local` + `hse cells import` cycle 21
-  delivered; free offline DB leg now available; Weiszfeld/Welzl centroid + provenance
-  radius + auto-sync still open).
+  delivered; free offline DB leg now available; Weiszfeld/Welzl centroid +
+  provenance radius delivered; movement/path reconstruction over
+  `LocationVisited` events delivered 2026-07-14; only AU bounding precision
+  and the by-design-open cell-DB auto-sync remain).
 - **C1** — `[~]` (SOL-CORR), corrected stale note (found cycle 27, 2026-07-05):
   this bullet previously read "none started," but C1/SOL-CORR has been
   in-progress since cycle 26 (`identity_paths` + CONNECTIONS) and advanced
@@ -3278,7 +3293,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; movement/timeline layer's first increment (`shot_time`→`LocationVisited`) delivered 2026-07-14; AU bounding precision, a multi-event movement/path layer, and cell-DB auto-sync remaining); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C9):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; movement/timeline layer's first increment (`shot_time`→`LocationVisited`) and the multi-event movement/path reconstruction layer both delivered 2026-07-14; only AU bounding precision and the by-design-open cell-DB auto-sync remain); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -7835,3 +7850,43 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `-D warnings`/rustdoc clean, full suite 0 failures (4632 lib
   tests, +2). **Paired:** `PROBLEM_TREE` T2.101 + §8, §4a refreshed — same
   commit.
+- **2026-07-14** — **SOL-GEOINT: the movement/path reconstruction layer over
+  multiple `LocationVisited` events — the increment the same day's earlier
+  `shot_time`/`LocationVisited` entry named as "now buildable."** Picked up
+  this in-progress node's own freshly-named next step per step 1's priority
+  order. New pure `core::timeline::movement_path(&[TimelineEvent]) ->
+  Option<Movement>` walks a reconstructed timeline's dated location fixes in
+  chronological order (the order `reconstruct` already guarantees), parses
+  each fix's `entity_value` via the existing universal coordinate parser
+  (`util::geo::coords::parse`, already `core`-allow-listed — no new layering
+  exception needed) and sums the canonical `util::geo::haversine_km`
+  great-circle distance between each consecutive pair. `None` below 2
+  parseable fixes (a single photo is a point, not a path — fabricating a
+  one-node "movement" would misstate the evidence); a classified-but-
+  unparseable fix is skipped defensively rather than breaking the chain
+  into disjoint halves. Wired to both output surfaces: a new `MOVEMENT`
+  dossier section (CLI, only printed when a path exists, directly below
+  `TIMELINE`); an additive `movement` field on `GET /api/v1/scans/{id}/
+  timeline` (`null` when absent, proven live against a real scan — nothing
+  else in the response shape changed). SPA parity: `scan_info/timeline.js`
+  renders a "Movement path" panel beneath the timeline list when `movement`
+  is present, reusing the `location_visited` colour the prior increment
+  introduced. 4 new tests: `None` on 0/1 fixes; a real NYC↔Sydney pair
+  pinning the real-world ~15,990 km great-circle distance to ±200 km
+  (proves the maths is real, not a stub) while also proving chronological
+  order doesn't depend on caller-supplied event order (fixtures passed
+  newest-first, `reconstruct` re-sorts); a 3-fix Brisbane↔Sydney case
+  (~730 km) proving an unparseable fix is skipped without breaking the
+  1-leg/2-leg accounting. Since `movement_path` is wholly new code, `git
+  stash` gives the strongest possible regression signal — the pre-fix tree
+  has nothing for the new tests to even compile against. Live-verified
+  against the real compiled binary: `hse selftest` 9/9; a real `hse scan -k
+  domain -v github.com -m dns_intel` dossier correctly omits `MOVEMENT`
+  entirely (no dated location fixes on a DNS-only scan, no crash, no
+  spurious empty section); the same scan's live `/api/v1/scans/{id}/
+  timeline` response (via `hse serve`) confirmed `"movement": null`
+  alongside the unchanged pre-existing fields. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4635 lib tests, +3).
+  **This closes C5's last named solution item except AU-bounding
+  precision.** **Paired:** `PROBLEM_TREE` C5 (movement-path leg delivered)
+  + §8, §4/§4b refreshed — same commit.

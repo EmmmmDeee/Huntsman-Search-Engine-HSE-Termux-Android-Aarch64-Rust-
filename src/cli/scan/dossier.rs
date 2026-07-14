@@ -730,6 +730,21 @@ fn print_diagnostics(
     }
     println!();
 
+    if let Some(movement) = crate::core::timeline::movement_path(&timeline) {
+        println!(
+            "━━━ MOVEMENT ({} fixes, {:.1} km) ━━━",
+            movement.locations_visited, movement.total_km
+        );
+        println!();
+        for leg in &movement.legs {
+            println!(
+                "  {}  {}  →  {}  {}   ({:.1} km)",
+                leg.from_iso, leg.from_coords, leg.to_iso, leg.to_coords, leg.distance_km
+            );
+        }
+        println!();
+    }
+
     const LINEAGE_SHOWN: usize = 20;
     let mut lineage_sorted = diag.enrichment_lineage.clone();
     println!("━━━ ENRICHMENT LINEAGE ({}) ━━━", lineage_sorted.len());

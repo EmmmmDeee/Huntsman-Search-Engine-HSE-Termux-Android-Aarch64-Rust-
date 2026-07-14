@@ -47,6 +47,28 @@ export async function renderTimeline(host, id){
       </div>
     </div>`;
   }
-  host.innerHTML = html + '</div>';
+  html += '</div>';
+  // Movement path — the timeline's own `location_visited` fixes walked in
+  // chronological order (server-computed, `core::timeline::movement_path`).
+  // Only present with ≥2 dated location fixes (e.g. ≥2 geotagged photos with
+  // different capture times), so most scans simply won't show this panel.
+  const mv = data && data.movement;
+  if (mv && mv.legs && mv.legs.length){
+    html += `<h4><i class="glyphicon glyphicon-road"></i>&nbsp;Movement path</h4>
+      <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${mv.locations_visited}</b> dated location fixes, <b>${mv.total_km.toFixed(1)} km</b> total straight-line distance.</p>
+      <div class="tl">`;
+    for (const leg of mv.legs){
+      html += `<div class="tl-item">
+        <div class="tl-dot" style="background:${TL_KIND.location_visited.cl}"></div>
+        <div class="tl-date">${day(leg.from_iso)} → ${day(leg.to_iso)}</div>
+        <div class="tl-body">
+          <span class="tl-badge" style="background:${TL_KIND.location_visited.cl}"><i class="glyphicon glyphicon-road"></i>&nbsp;${leg.distance_km.toFixed(1)} km</span>
+          ${esc(leg.from_coords)} → ${esc(leg.to_coords)}
+        </div>
+      </div>`;
+    }
+    html += '</div>';
+  }
+  host.innerHTML = html;
 }
 

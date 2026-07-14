@@ -11,6 +11,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **The footprint timeline now reconstructs a "movement path" from a
+  subject's dated location fixes** (currently geotagged photos'
+  `exif_geo`-decoded capture instants), walking them in chronological order
+  and reporting the straight-line distance between each consecutive pair —
+  "was at A on this date, then B a week later, C km away". Appears in the
+  CLI dossier as a new `MOVEMENT` section, and as a `movement` field on the
+  `GET /api/v1/scans/{id}/timeline` response and its SPA panel, whenever a
+  scan has 2 or more dated location fixes; silently absent otherwise (no
+  fabricated single-point "path"). Closes the movement/timeline-geo
+  path-reconstruction increment PROBLEM_TREE C5 has named as remaining since
+  the `LocationVisited` event kind first shipped.
 - **Internal: the certificate-intelligence DER scanner is now coverage-guided
   fuzz-tested, closing the last unstarted item in the standing proof-and-
   measurement foundation (PROBLEM_TREE F.3).** `cert_intel`'s hand-rolled DER
