@@ -3648,9 +3648,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   its own sentinel filter. **Validated end-to-end against the real
   data.gov.au ASIC datastore** (3/3 live `#[ignore]` tests pass through the
   migrated path). See `PROBLEM_TREE` T2.118 for the full finding.
-- **`[ ]` SOL-AU-UNCLAIMED-SWALLOWED · Surface transport/parse failure as
-  an error instead of a silent empty result** → **T2.119**. Queued, not
-  yet started — see `PROBLEM_TREE` T2.119 for the finding.
+- **`[x]` SOL-AU-UNCLAIMED-SWALLOWED · Surface transport/parse failure as
+  an error instead of a silent empty result** → **T2.119**. Delivered
+  2026-07-15: `process_qld` now returns `Result<()>` — the **primary** QLD
+  CKAN query propagates transport/status/parse failures via `?` and turns a
+  `success:false` envelope into an `Error::module`, which `process()`
+  surfaces; QLD being the sole source, its failure is a total failure, so the
+  stale "swallow to let other states run" rationale no longer applies. The
+  secondary exact-name fetch + locality lookups stay best-effort. Validated
+  end-to-end against the real data.qld.gov.au register (new live `#[ignore]`
+  test surfaced 528 real entities for `John Smith`). See `PROBLEM_TREE`
+  T2.119 for the full finding.
 - **`[x]` SOL-ASIC-DIRECTOR-SWALLOWED · Apply the same honest-failure fix
   already landed for sibling `au_property`** → **T2.120**. Delivered
   2026-07-15 — see `PROBLEM_TREE` T2.120 and §5 below for the fix.
@@ -4636,7 +4644,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   profile modules' shared fake-404 collapse) delivered 2026-07-15.
   **T2.118** (three ASIC modules migrated onto the shared `util::ckan::
   Response`, surfacing CKAN `success:false` + fetch failures instead of
-  swallowing them) delivered 2026-07-15. 31 of 49 still queued (18 of
+  swallowing them) delivered 2026-07-15. **T2.119** (`au_unclaimed`'s sole
+  QLD source now surfaces a primary-fetch failure / `success:false` instead
+  of swallowing it) delivered 2026-07-15. 30 of 49 still queued (19 of
   T2.102–T2.150 now `[x]`, machine-counted against the tree).*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
@@ -11955,4 +11965,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   precedent that introduced this idiom has none either). Gate green:
   fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
   test` — 4864 total pass (net 0). **Paired:** `PROBLEM_TREE` T2.118
+  `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-AU-UNCLAIMED-SWALLOWED closed**
+  (`au_unclaimed`, the sole remaining QLD CKAN source, swallowing its primary
+  fetch failure into a silent empty result). Already on the shared
+  `util::ckan::Response`, but `process_qld` still discarded the primary
+  query's `Err` and returned early on `success:false`, with a stale doc
+  comment rationalising it as "let the other states run" — QLD is the only
+  pass. Made `process_qld` return `Result<()>`: the primary fetch propagates
+  via `?`, `success:false` becomes an `Error::module`, `process()` surfaces
+  it; the secondary exact-name fetch + locality lookups stay best-effort.
+  Validated end-to-end against the real data.qld.gov.au register (new live
+  `#[ignore]` test — 528 real entities for `John Smith`); the propagation
+  rests on `fetch_json`'s already-tested contract. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4864
+  total pass (+1 `#[ignore]` live test). **Paired:** `PROBLEM_TREE` T2.119
   `[ ]`→`[x]` — same commit.
