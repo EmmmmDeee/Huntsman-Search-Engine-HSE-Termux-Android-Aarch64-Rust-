@@ -999,7 +999,7 @@ direct.**
   Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
   doc`/`cargo test` — 4606 total pass (+1).
 
-- **`[~]` T2.16 · `seon`'s response-deserialisation types modelled a schema
+- **`[x]` T2.16 · `seon`'s response-deserialisation types modelled a schema
   SEON stopped returning — the module's core extraction was structurally
   dead code against the real API on BOTH the email and phone paths, while
   still spending the operator's paid/keyed quota on every call.** Found
@@ -1077,11 +1077,56 @@ direct.**
   codebase's established `Jordan Avery` placeholder). **P2** (severe
   operator-value impact — silent paid-quota spend for near-zero yield —
   but not a crash/corruption/architecture-guard violation, so P2 rather
-  than P0/P1). *Remaining:* the **phone** path (`build_phone_entities`,
-  `PhoneAccountDetails`/`AccountPresence`) has the confirmed-identical
-  defect against `phone-api/v2`'s real schema and is deliberately not
-  rewritten this cycle — tracked as the next unit for a future cycle, not
-  silently dropped. **Paired:** `SOLUTION_TREE` §5 — same commit.
+  than P0/P1).
+
+  **Phone-path leg closed 2026-07-15** (same finding, second cycle, one API
+  surface per cycle as planned): rewrote `SeonPhoneData` against
+  `phone-api/v2`'s verified current schema (independently re-fetched from
+  SEON's own docs) — `score`/`valid`/`carrier`/`country`/`country_code`/
+  `type`/`account_details` (the obsolete per-platform `whatsapp`/`viber`/
+  `telegram` presence map) are gone, replaced by `risk_scores` (the SAME
+  shape the email path already models — SEON reuses it across both
+  endpoints) and `provider_carrier_details`. Two genuinely new sections
+  this module never modelled on either path before: `hlr_details` (live
+  HLR network status — ported/roaming carrier, serving MSC, IMSI) and
+  `cnam_details` (PSTN Caller-ID-Name lookup), both mirroring the dedicated
+  `hlr_cnam` module's own established entity patterns (carrier →
+  `Organisation` pivot at 0.62 confidence, CNAM name → `Person` pivot at
+  0.55 confidence) rather than inventing new ones — direct precedent reuse,
+  not a new design. `account_aggregates`/`seon_fraud_history`/risk-score
+  handling factored into three shared helpers (`apply_risk_score`,
+  `apply_fraud_history`, `apply_account_aggregates`) used by both the email
+  and phone paths, since SEON's own schema confirms these three sections
+  are identical shapes on both endpoints — reduces duplication and keeps
+  the two paths from silently drifting apart on identical fields.
+  `profile_url_entity`/`registered_accounts` (the dead per-platform-Url
+  helpers) deleted outright now that no code path constructs
+  `EntityKind::Url` any more — `produces()` correspondingly drops `Url` for
+  real (the prior cycle had to keep it declared only because the guard
+  requires a literal-construction match). `attack_techniques()` gains bare
+  `T1589` (the ATT&CK parent — no phone-specific sub-technique exists in
+  the real catalogue) for the carrier/HLR/CNAM identity signal, mirroring
+  `hlr_cnam`'s own declared coverage for identical work; `ipqs` already
+  establishes the parent+child pairing as an accepted pattern in this
+  codebase. 12 new/rewritten phone tests including a fixture built from
+  SEON's own verified `phone-api/v2` field names (`REAL_PHONE_RESPONSE`),
+  a red/green anchor test, carrier-Organisation and CNAM-Person pivot
+  tests, and a too-short-value guard test. Red/green proof: zero
+  field-name overlap between the pre-fix top-level fields (`score`/
+  `valid`/`carrier`/`country`/`country_code`/`type`/`account_details`) and
+  the real schema's top-level fields, so every new assertion would have
+  seen only `None`/empty values against the pre-fix struct. Self-review
+  caught a false-positive triggered by the fix's OWN doc comment: writing
+  out the literal string `` `Entity::new(EntityKind::Url, …)` `` inside a
+  prose explanation of why that construction no longer exists tripped
+  `tests/architecture.rs`'s naive text-scanning guard (it does not parse
+  Rust, so it cannot distinguish a comment from code) — reworded rather
+  than treating it as a guard bug. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4388 total pass
+  (+5 net over the email-path cycle's count, after 12 added and some
+  consolidated into shared helpers). No identity/PII impact (all fixture
+  values synthetic). T2.16 is now fully closed on both API surfaces.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
 
 ---
 

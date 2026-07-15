@@ -995,7 +995,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   ambient global git config (this sandbox has `commit.gpgsign=true` + a
   signing key set globally — a config a CI runner won't share).
   **(cycle 22)**
-- **`[~]` SOL-SEON-SCHEMA · Rewrite response types against the real, verified
+- **`[x]` SOL-SEON-SCHEMA · Rewrite response types against the real, verified
   live schema** — `seon`'s `SeonEmailData` modelled a schema
   (`score`/`deliverable`/`domain_details`/`account_details`) with ZERO field-
   name overlap with SEON's actual current `email-api/v3` response (confirmed
@@ -1020,16 +1020,30 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   never-actually-earned claims — T1593.001 confirmed gone from the live API,
   T1591.004 never justified by any real/no-longer-real field — added
   T1589.002/T1591.001/T1591.002 for the new breach/registrant signal).
-  *Closes:* **T2.16** (email path only). ✅ 17 tests (13 new + 4 rewritten),
-  full 30/30 architecture-guard parity (including correctly satisfying, not
-  weakening, `every_literal_constructed_entity_kind_is_declared_in_produces`
-  — `produces()` keeps `Url` since the deferred phone path's
-  `profile_url_entity` call is still a real literal construction in source,
-  a structural claim distinct from the live-API-reachability claim
-  `attack_techniques()` makes). *Remaining:* the **phone** path
-  (`phone-api/v2`) has the confirmed-identical defect and is deliberately
-  not rewritten this cycle — one API surface per cycle — tracked as the
-  next unit.
+  Phone-path leg (`phone-api/v2`, closed 2026-07-15, same cycle discipline —
+  one API surface per cycle): rewrote `SeonPhoneData` against the verified
+  current schema (`risk_scores`/`provider_carrier_details`/`hlr_details`/
+  `cnam_details`/`account_aggregates`/`seon_fraud_history` — the last three
+  are the SAME shapes the email path already models, since SEON reuses them
+  across both endpoints, so `apply_risk_score`/`apply_fraud_history`/
+  `apply_account_aggregates` were factored into shared helpers used by both
+  paths rather than duplicated). Two new sections neither path modelled
+  before: `hlr_details` (live HLR network status) and `cnam_details` (PSTN
+  Caller-ID-Name lookup), both mirroring the dedicated `hlr_cnam` module's
+  established carrier→`Organisation`/CNAM-name→`Person` pivot patterns
+  (same confidences) rather than inventing new ones. The dead
+  `profile_url_entity`/`registered_accounts`/`PhoneAccountDetails`/
+  `AccountPresence` code deleted outright; `produces()` drops `Url` for
+  real now that no code path constructs it.
+  *Closes:* **T2.16** (both paths). ✅ 21 email-path + 12 phone-path tests
+  (some prior-cycle counts consolidated into the new shared helpers), full
+  30/30 architecture-guard parity — including a self-review catch: the
+  fix's own doc-comment prose spelling out the literal string
+  `` `Entity::new(EntityKind::Url, …)` `` (to explain why that construction
+  no longer exists) tripped the text-scanning
+  `every_literal_constructed_entity_kind_is_declared_in_produces` guard,
+  which cannot distinguish a comment from code — reworded rather than
+  treating it as a guard defect.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1074,7 +1088,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-RECALL-ORDER | T2.15 | `[x]` |
-| SOL-SEON-SCHEMA | T2.16 (email path) | `[~]` |
+| SOL-SEON-SCHEMA | T2.16 (email + phone paths) | `[x]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -4656,3 +4670,46 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   defect, deliberately not rewritten this cycle (one API surface per
   cycle) — tracked as T2.16's remaining leg. Paired: `PROBLEM_TREE` T2.16
   — same commit.
+
+- **2026-07-15 (cont'd 6)** — **T2.16 / SOL-SEON-SCHEMA closed (phone-path
+  leg)**: rewrote `SeonPhoneData` against `phone-api/v2`'s verified current
+  schema (independently re-fetched from SEON's own docs, same discipline as
+  the email-path cycle) — the obsolete `score`/`valid`/`carrier`/`country`/
+  `country_code`/`type`/`account_details` (per-platform `whatsapp`/`viber`/
+  `telegram` presence) are gone, replaced by `risk_scores`/
+  `provider_carrier_details`/`account_aggregates`/`seon_fraud_history` — the
+  latter three are the SAME shapes the email path already models (SEON
+  reuses them across both endpoints), so this cycle factored
+  `apply_risk_score`/`apply_fraud_history`/`apply_account_aggregates` into
+  shared helpers used by both paths rather than duplicating the logic a
+  second time. Two genuinely new sections neither path modelled before:
+  `hlr_details` (live HLR network status — ported/roaming carrier, serving
+  MSC, IMSI) and `cnam_details` (PSTN Caller-ID-Name lookup) — both mirror
+  the dedicated `hlr_cnam` module's own established entity patterns
+  (carrier → `Organisation` pivot at 0.62, CNAM name → `Person` pivot at
+  0.55) rather than inventing new ones, direct precedent reuse discovered
+  by checking for prior art before designing. The dead
+  `profile_url_entity`/`registered_accounts`/`PhoneAccountDetails`/
+  `AccountPresence` code deleted outright now that no code path constructs
+  `EntityKind::Url`; `produces()` drops `Url` for real (the email-path
+  cycle could only keep it declared because the architecture guard matches
+  literal construction, and the deferred phone path still had one).
+  `attack_techniques()` gains bare `T1589` (the ATT&CK parent — no
+  phone-specific sub-technique exists in the real catalogue) for the
+  carrier/HLR/CNAM identity signal, mirroring `hlr_cnam`'s own declared
+  coverage; `ipqs` already establishes parent+child pairing as an accepted
+  pattern here. 12 new/rewritten phone tests including a fixture built from
+  SEON's own verified schema fields, a red/green anchor, carrier-Organisation
+  and CNAM-Person pivot tests, and a too-short-value guard test. Red/green
+  proof: zero field-name overlap between the pre-fix top-level fields and
+  the real schema's, so every new assertion would have seen only
+  `None`/empty values pre-fix. Self-review caught a false positive triggered
+  by the fix's own prose: writing the literal string
+  `` `Entity::new(EntityKind::Url, …)` `` inside a doc comment explaining why
+  that construction no longer exists tripped the text-scanning
+  `every_literal_constructed_entity_kind_is_declared_in_produces` guard
+  (it scans raw source text, not parsed Rust, so it cannot tell a comment
+  from code) — reworded rather than treating it as a guard defect. Full
+  gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4388 total pass. T2.16 is now fully closed on both
+  API surfaces. Paired: `PROBLEM_TREE` T2.16 — same commit.

@@ -11,7 +11,10 @@ use crate::util::str_util::nonempty;
 
 use super::{
     HIGH_RISK_SCORE, SRC,
-    types::{AccountPresence, Breach, DomainRegistration, SeonEmailData, SeonPhoneData},
+    types::{
+        AccountAggregates, Breach, CnamDetails, DomainRegistration, RiskScores, SeonEmailData,
+        SeonFraudHistory, SeonPhoneData,
+    },
 };
 
 /// A registrant-PII string that's a redaction/privacy-service placeholder
@@ -23,32 +26,122 @@ fn is_redacted(s: &str) -> bool {
     l.contains("privacy") || l.contains("redacted") || l.contains("data protected")
 }
 
-/// The platforms a presence map reports as `registered: true`, in declared order.
-pub(super) fn registered_accounts<'a>(
-    pairs: &[(&'static str, &'a Option<AccountPresence>)],
-) -> Vec<(&'static str, &'a AccountPresence)> {
-    pairs
-        .iter()
-        .filter_map(|(name, opt)| {
-            opt.as_ref()
-                .filter(|p| p.registered == Some(true))
-                .map(|p| (*name, p))
-        })
-        .collect()
+/// Fraud score evidence + high-risk tagging — identical on both SEON paths
+/// (`risk_scores.global_network_score` is the same field shared by
+/// `email-api/v3` and `phone-api/v2`).
+fn apply_risk_score(entity: &mut Entity, mut ev: Evidence, risk: &RiskScores) -> Evidence {
+    if let Some(score) = risk.global_network_score {
+        ev = ev.with_attr("fraud_score", format!("{score:.1}"));
+        if score >= HIGH_RISK_SCORE {
+            entity.tag("high-risk");
+        }
+    }
+    ev
 }
 
-/// A `Url` entity for a social/messaging profile discovered via SEON — the lead
-/// the old code dropped on the floor.
-pub(super) fn profile_url_entity(platform: &str, url: &str, who: &str, scan_id: &str) -> Entity {
-    let mut e = Entity::new(EntityKind::Url, url, 0.70, scan_id);
-    e.tag("seon");
-    e.tag("social-profile");
-    e.tag(format!("platform:{platform}"));
-    e.add_evidence(Evidence::new(
-        SRC,
-        format!("{platform} profile via SEON for {who}"),
-    ));
-    e
+/// Consortium fraud-history evidence + tagging — identical on both SEON
+/// paths (`seon_fraud_history` is the same field shared by both endpoints).
+fn apply_fraud_history(entity: &mut Entity, mut ev: Evidence, fh: &SeonFraudHistory) -> Evidence {
+    if fh.hits.unwrap_or(0) > 0 {
+        entity.tag("fraud-history");
+        ev = ev.with_attr("fraud_hits", fh.hits.unwrap_or(0).to_string());
+        if let Some(ch) = fh.customer_hits {
+            ev = ev.with_attr("fraud_customer_hits", ch.to_string());
+        }
+        if let Some(dh) = fh.fraudulent_decline_hits
+            && dh > 0
+        {
+            entity.tag("fraudulent-decline-history");
+            ev = ev.with_attr("fraud_decline_hits", dh.to_string());
+        }
+        if let Some(d) = fh.first_seen.and_then(crate::util::timefmt::ymd_utc) {
+            ev = ev.with_attr("fraud_first_seen", d);
+        }
+        if let Some(d) = fh.last_seen.and_then(crate::util::timefmt::ymd_utc) {
+            ev = ev.with_attr("fraud_last_seen", d);
+        }
+    }
+    ev
+}
+
+/// Platform-registration category summary evidence — identical on both SEON
+/// paths (`account_aggregates` is the same field shared by both endpoints).
+/// Sorted into one list (not business-categories-then-personal-categories)
+/// so an operator scanning for a specific category doesn't need to know
+/// which group it falls under. The same category name can legitimately
+/// appear in BOTH `business` and `personal` with different counts (SEON's
+/// own example response shows `technology` under both) — collapsing them
+/// into one map keyed on name alone would silently drop one group's count,
+/// so the group is folded into the label itself (`technology[business]`/
+/// `technology[personal]`) rather than deduped away.
+fn apply_account_aggregates(mut ev: Evidence, agg: &AccountAggregates) -> Evidence {
+    if let Some(total) = agg.total_registration {
+        ev = ev.with_attr("platform_registrations", total.to_string());
+    }
+    if let Some(b) = agg.business.as_ref().and_then(|g| g.total_registration) {
+        ev = ev.with_attr("business_platform_registrations", b.to_string());
+    }
+    if let Some(p) = agg.personal.as_ref().and_then(|g| g.total_registration) {
+        ev = ev.with_attr("personal_platform_registrations", p.to_string());
+    }
+    let mut registered_categories: Vec<(String, u32, u32)> =
+        [("business", &agg.business), ("personal", &agg.personal)]
+            .into_iter()
+            .filter_map(|(group, g)| g.as_ref().map(|g| (group, g)))
+            .flat_map(|(group, g)| g.categories.iter().map(move |(name, c)| (group, name, c)))
+            .filter(|(_, _, c)| c.registered.unwrap_or(0) > 0)
+            .map(|(group, name, c)| {
+                (
+                    format!("{name}[{group}]"),
+                    c.registered.unwrap_or(0),
+                    c.checked.unwrap_or(0),
+                )
+            })
+            .collect();
+    registered_categories.sort();
+    let registered_categories: Vec<String> = registered_categories
+        .into_iter()
+        .map(|(label, registered, checked)| format!("{label}:{registered}/{checked}"))
+        .collect();
+    if !registered_categories.is_empty() {
+        ev = ev.with_attr("platform_categories", registered_categories.join(", "));
+    }
+    ev
+}
+
+/// A PSTN-subscriber `Person` from SEON's CNAM lookup — mirrors
+/// `hlr_cnam::build_cnam_person`'s identical pattern (same confidence, same
+/// minimal-length filter): this is the same Caller-ID-Name signal via a
+/// different provider, so it earns the same treatment rather than a new one.
+fn cnam_person_entity(cnam: &CnamDetails, phone: &str, scan_id: &str) -> Option<Entity> {
+    let name = nonempty(&cnam.name).filter(|n| n.len() >= 2)?;
+    let mut person = Entity::new(EntityKind::Person, name, 0.55, scan_id);
+    person.tag("seon");
+    person.tag("cnam");
+    person.tag("pstn-subscriber");
+    person.add_evidence(
+        Evidence::new(SRC, format!("CNAM subscriber name for {phone}"))
+            .with_attr("cnam_name", name),
+    );
+    Some(person)
+}
+
+/// A carrier/network `Organisation` pivot from SEON's provider lookup —
+/// mirrors `hlr_cnam::build_hlr_entities`'s identical carrier-Organisation
+/// pattern (same confidence, same minimal-length filter).
+fn carrier_entity(carrier: &str, phone: &str, scan_id: &str) -> Option<Entity> {
+    let carrier = carrier.trim();
+    if carrier.len() < 2 {
+        return None;
+    }
+    let mut oe = Entity::new(EntityKind::Organisation, carrier, 0.62, scan_id);
+    oe.tag("seon");
+    oe.tag("carrier");
+    oe.add_evidence(
+        Evidence::new(SRC, format!("Carrier/network for {phone} per SEON"))
+            .with_attr("phone", phone),
+    );
+    Some(oe)
 }
 
 /// Build entities from a SEON **email** enrichment: the enriched email itself
@@ -71,15 +164,8 @@ pub(super) fn build_email_entities(
     entity.tag("seon");
 
     let mut ev = Evidence::new(SRC, format!("SEON email enrichment for {email}"));
-    if let Some(score) = data
-        .risk_scores
-        .as_ref()
-        .and_then(|r| r.global_network_score)
-    {
-        ev = ev.with_attr("fraud_score", format!("{score:.1}"));
-        if score >= HIGH_RISK_SCORE {
-            entity.tag("high-risk");
-        }
+    if let Some(risk) = &data.risk_scores {
+        ev = apply_risk_score(&mut entity, ev, risk);
     }
     if let Some(ed) = &data.email_details {
         if let Some(d) = ed.deliverable {
@@ -136,26 +222,8 @@ pub(super) fn build_email_entities(
             ev = ev.with_attr("domain_created", c);
         }
     }
-    if let Some(fh) = &data.seon_fraud_history
-        && fh.hits.unwrap_or(0) > 0
-    {
-        entity.tag("fraud-history");
-        ev = ev.with_attr("fraud_hits", fh.hits.unwrap_or(0).to_string());
-        if let Some(ch) = fh.customer_hits {
-            ev = ev.with_attr("fraud_customer_hits", ch.to_string());
-        }
-        if let Some(dh) = fh.fraudulent_decline_hits
-            && dh > 0
-        {
-            entity.tag("fraudulent-decline-history");
-            ev = ev.with_attr("fraud_decline_hits", dh.to_string());
-        }
-        if let Some(d) = fh.first_seen.and_then(crate::util::timefmt::ymd_utc) {
-            ev = ev.with_attr("fraud_first_seen", d);
-        }
-        if let Some(d) = fh.last_seen.and_then(crate::util::timefmt::ymd_utc) {
-            ev = ev.with_attr("fraud_last_seen", d);
-        }
+    if let Some(fh) = &data.seon_fraud_history {
+        ev = apply_fraud_history(&mut entity, ev, fh);
     }
 
     // Platform-registration summary — SEON's v3 schema only returns
@@ -164,51 +232,7 @@ pub(super) fn build_email_entities(
     // `Url`/`Person` leads per platform (that data no longer exists in the
     // API at all — see `types.rs`'s `SeonEmailData` doc comment).
     if let Some(agg) = &data.account_aggregates {
-        if let Some(total) = agg.total_registration {
-            ev = ev.with_attr("platform_registrations", total.to_string());
-        }
-        if let Some(b) = agg.business.as_ref().and_then(|g| g.total_registration) {
-            ev = ev.with_attr("business_platform_registrations", b.to_string());
-        }
-        if let Some(p) = agg.personal.as_ref().and_then(|g| g.total_registration) {
-            ev = ev.with_attr("personal_platform_registrations", p.to_string());
-        }
-        // Sorted into ONE list (not business-categories-then-personal-
-        // categories) so an operator scanning for a specific category
-        // doesn't need to know which group it falls under. The SAME
-        // category name can legitimately appear in BOTH `business` and
-        // `personal` with DIFFERENT counts (SEON's own example response
-        // shows `technology` under both, e.g. business 11/34 vs personal
-        // 2/7) — collapsing them into one map keyed on name alone would
-        // silently drop one group's count, so the group is folded into the
-        // label itself (`technology[business]`/`technology[personal]`)
-        // rather than deduped away. Sorting the formatted `(String, u32,
-        // u32)` tuples (not a `BTreeMap`, which would need the group in the
-        // key anyway) keeps this deterministic without re-deriving a
-        // comparator; same-name categories from different groups sort
-        // adjacently since they share the label prefix.
-        let mut registered_categories: Vec<(String, u32, u32)> =
-            [("business", &agg.business), ("personal", &agg.personal)]
-                .into_iter()
-                .filter_map(|(group, g)| g.as_ref().map(|g| (group, g)))
-                .flat_map(|(group, g)| g.categories.iter().map(move |(name, c)| (group, name, c)))
-                .filter(|(_, _, c)| c.registered.unwrap_or(0) > 0)
-                .map(|(group, name, c)| {
-                    (
-                        format!("{name}[{group}]"),
-                        c.registered.unwrap_or(0),
-                        c.checked.unwrap_or(0),
-                    )
-                })
-                .collect();
-        registered_categories.sort();
-        let registered_categories: Vec<String> = registered_categories
-            .into_iter()
-            .map(|(label, registered, checked)| format!("{label}:{registered}/{checked}"))
-            .collect();
-        if !registered_categories.is_empty() {
-            ev = ev.with_attr("platform_categories", registered_categories.join(", "));
-        }
+        ev = apply_account_aggregates(ev, agg);
     }
     if let Some(bd) = &data.breach_details {
         if let Some(n) = bd.number_of_breaches {
@@ -355,51 +379,74 @@ pub(super) fn build_phone_entities(
     entity.tag("seon");
 
     let mut ev = Evidence::new(SRC, format!("SEON phone enrichment for {phone}"));
-    if let Some(score) = data.score {
-        ev = ev.with_attr("fraud_score", format!("{score:.1}"));
-        if score >= HIGH_RISK_SCORE {
-            entity.tag("high-risk");
+    if let Some(risk) = &data.risk_scores {
+        ev = apply_risk_score(&mut entity, ev, risk);
+    }
+    if let Some(pcd) = &data.provider_carrier_details {
+        if let Some(v) = pcd.phone_is_valid {
+            ev = ev.with_attr("valid", v.to_string());
+        }
+        if let Some(c) = nonempty(&pcd.carrier) {
+            ev = ev.with_attr("carrier", c);
+        }
+        if let Some(c) = nonempty(&pcd.country) {
+            ev = ev.with_attr("country", c);
+            entity.tag(format!("country:{c}"));
+        }
+        if pcd.disposable == Some(true) {
+            entity.tag("disposable");
+            ev = ev.with_attr("disposable", "true");
+        }
+        if let Some(lt) = nonempty(&pcd.line_type) {
+            ev = ev.with_attr("line_type", lt);
+            entity.tag(format!("line:{lt}"));
         }
     }
-    if let Some(v) = data.valid {
-        ev = ev.with_attr("valid", v.to_string());
+    if let Some(hlr) = &data.hlr_details {
+        if let Some(s) = nonempty(&hlr.status) {
+            ev = ev.with_attr("hlr_status", s);
+        }
+        if let Some(imsi) = nonempty(&hlr.imsi) {
+            ev = ev.with_attr("imsi", imsi);
+        }
+        if let Some(msc) = nonempty(&hlr.serving_msc) {
+            ev = ev.with_attr("serving_msc", msc);
+        }
+        if let Some(c) = nonempty(&hlr.original_carrier) {
+            ev = ev.with_attr("ported_from_carrier", c);
+        }
+        if let Some(c) = nonempty(&hlr.ported_carrier) {
+            ev = ev.with_attr("ported_carrier", c);
+            entity.tag("ported");
+        }
+        if let Some(c) = nonempty(&hlr.roaming_carrier) {
+            ev = ev.with_attr("roaming_carrier", c);
+            entity.tag("roaming");
+        }
     }
-    if let Some(c) = nonempty(&data.carrier) {
-        ev = ev.with_attr("carrier", c);
+    if let Some(fh) = &data.seon_fraud_history {
+        ev = apply_fraud_history(&mut entity, ev, fh);
     }
-    if let Some(c) = nonempty(&data.country) {
-        ev = ev.with_attr("country", c);
-    }
-    if let Some(cc) = nonempty(&data.country_code) {
-        ev = ev.with_attr("country_code", cc);
-        entity.tag(format!("country:{}", cc.to_uppercase()));
-    }
-    if let Some(lt) = nonempty(&data.line_type) {
-        ev = ev.with_attr("line_type", lt);
-        entity.tag(format!("line:{lt}"));
-    }
-
-    let registered = data
-        .account_details
-        .as_ref()
-        .map(|a| {
-            registered_accounts(&[
-                ("whatsapp", &a.whatsapp),
-                ("viber", &a.viber),
-                ("telegram", &a.telegram),
-            ])
-        })
-        .unwrap_or_default();
-    if !registered.is_empty() {
-        let names: Vec<&str> = registered.iter().map(|(n, _)| *n).collect();
-        ev = ev.with_attr("messaging_platforms", names.join(","));
+    if let Some(agg) = &data.account_aggregates {
+        ev = apply_account_aggregates(ev, agg);
     }
     entity.add_evidence(ev);
     out.push(entity);
 
-    out.extend(registered.iter().filter_map(|(platform, p)| {
-        nonempty(&p.url).map(|url| profile_url_entity(platform, url, phone, scan_id))
-    }));
+    // Carrier/network → Organisation pivot (consistent with hlr_cnam/ip2location/ipquery).
+    out.extend(
+        data.provider_carrier_details
+            .as_ref()
+            .and_then(|pcd| nonempty(&pcd.carrier))
+            .and_then(|c| carrier_entity(c, phone, scan_id)),
+    );
+
+    // CNAM Caller-ID-Name → Person pivot (consistent with hlr_cnam).
+    out.extend(
+        data.cnam_details
+            .as_ref()
+            .and_then(|cnam| cnam_person_entity(cnam, phone, scan_id)),
+    );
 
     out
 }

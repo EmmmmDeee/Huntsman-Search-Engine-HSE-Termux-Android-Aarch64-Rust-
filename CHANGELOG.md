@@ -446,6 +446,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   applying the same canonical-ordering step this codebase already uses
   elsewhere after every storage-level merge, so the same underlying
   evidence now always exports identically regardless of arrival order.
+- **`seon`'s phone enrichment was silently returning almost nothing on
+  every real call, despite successfully spending the operator's paid/keyed
+  quota each time — the same underlying problem already fixed for the
+  email path, now closed on the phone side too.** SEON's phone API moved
+  score/carrier/validity fields under a new structure and replaced
+  per-platform WhatsApp/Viber/Telegram presence with the same
+  category-count summary the email path uses; this module's parsing
+  wasn't updated to match, so every field it tried to read came back
+  empty on every real call. Rewrote the parsing to match SEON's current,
+  real phone response format, and added two kinds of signal this module
+  never captured before: live network status (has the number been ported
+  or is it roaming, on which carrier) and the Caller-ID-Name registered
+  against the number — both using the same entity patterns Huntsman's
+  dedicated HLR/CNAM lookup module already established, for consistency.
 - **`seon`'s email enrichment was silently returning almost nothing on every
   real call, despite successfully spending the operator's paid/keyed quota
   each time.** SEON changed their email API's response format at some point
@@ -458,8 +472,7 @@ versions can include breaking changes; patch versions are bug-fix-only.
   before the format changed: which known data breaches the email appears
   in (with dates, so it lines up with other breach findings from other
   sources), and registrant details (name, company, address, phone) for any
-  domains associated with the email. The equivalent phone-enrichment path
-  has the same underlying problem and is being addressed in a follow-up.
+  domains associated with the email.
 - **`niamonx`'s MITRE ATT&CK coverage report was missing "Employee Names"
   (T1589.003), despite the module already extracting corroborating names
   into Person entities.** Like the `dehashed` fix above, this brings its

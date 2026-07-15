@@ -84,7 +84,8 @@ pub(super) struct EmailDomainDetails {
 }
 
 /// Category-level registration counts (e.g. `social_media: {registered: 8,
-/// checked: 21}`) — SEON's v3 replacement for the old per-platform booleans.
+/// checked: 21}`) — SEON's replacement for the old per-platform booleans,
+/// shared identically by `email-api/v3` and `phone-api/v2`.
 /// `#[serde(flatten)]` captures every category key (`technology`,
 /// `social_media`, `dating`, …) into a `BTreeMap` rather than enumerating a
 /// category list SEON can add to at any time, and keeps iteration
@@ -194,48 +195,68 @@ pub(super) struct SeonPhoneResp {
     pub(super) data: Option<SeonPhoneData>,
 }
 
+/// Matches SEON's `phone-api/v2` response shape exactly (verified against
+/// SEON's own current API reference, 2026-07, alongside the email-path fix).
+/// The old top-level `score`/`valid`/`carrier`/`country`/`type` and the
+/// per-platform `account_details` (`whatsapp`/`viber`/`telegram` presence)
+/// this module previously modelled are gone from `v2` the same way the
+/// pre-v3 email shape was: `score` moved under `risk_scores`, `valid`/
+/// `carrier`/`country`/`type` moved under `provider_carrier_details`, and
+/// per-platform messaging presence was replaced by the same category-level
+/// `account_aggregates` the email path uses (SEON reuses this shape across
+/// both endpoints — modelled once in this file, shared by both paths). Two
+/// genuinely new sections this module never had before: `hlr_details` (live
+/// HLR network status — ported/roaming carrier, serving MSC, IMSI) and
+/// `cnam_details` (PSTN Caller-ID-Name subscriber lookup), mirroring the
+/// dedicated `hlr_cnam` module's own HLR/CNAM fields.
 #[derive(Deserialize)]
 pub(super) struct SeonPhoneData {
     #[serde(default)]
-    pub(super) score: Option<f64>,
+    pub(super) risk_scores: Option<RiskScores>,
     #[serde(default)]
-    pub(super) valid: Option<bool>,
+    pub(super) account_aggregates: Option<AccountAggregates>,
+    #[serde(default)]
+    pub(super) seon_fraud_history: Option<SeonFraudHistory>,
+    #[serde(default)]
+    pub(super) provider_carrier_details: Option<ProviderCarrierDetails>,
+    #[serde(default)]
+    pub(super) hlr_details: Option<HlrDetails>,
+    #[serde(default)]
+    pub(super) cnam_details: Option<CnamDetails>,
+}
+
+#[derive(Deserialize)]
+pub(super) struct ProviderCarrierDetails {
     #[serde(default)]
     pub(super) carrier: Option<String>,
     #[serde(default)]
     pub(super) country: Option<String>,
     #[serde(default)]
-    pub(super) country_code: Option<String>,
+    pub(super) disposable: Option<bool>,
+    #[serde(default)]
+    pub(super) phone_is_valid: Option<bool>,
     #[serde(default, rename = "type")]
     pub(super) line_type: Option<String>,
-    #[serde(default)]
-    pub(super) account_details: Option<PhoneAccountDetails>,
 }
 
 #[derive(Deserialize)]
-pub(super) struct PhoneAccountDetails {
+pub(super) struct HlrDetails {
     #[serde(default)]
-    pub(super) whatsapp: Option<AccountPresence>,
+    pub(super) imsi: Option<String>,
     #[serde(default)]
-    pub(super) viber: Option<AccountPresence>,
+    pub(super) original_carrier: Option<String>,
     #[serde(default)]
-    pub(super) telegram: Option<AccountPresence>,
+    pub(super) ported_carrier: Option<String>,
+    #[serde(default)]
+    pub(super) roaming_carrier: Option<String>,
+    #[serde(default)]
+    pub(super) serving_msc: Option<String>,
+    #[serde(default)]
+    pub(super) status: Option<String>,
 }
 
-// NOTE: `PhoneAccountDetails`/`AccountPresence` model the SAME obsolete
-// `account_details` shape the email side used before this fix — SEON's
-// `phone-api/v2` response no longer carries per-platform presence either
-// (verified against SEON's current API reference alongside the email fix,
-// 2026-07). The phone-side rewrite is deliberately NOT part of this change
-// (kept to one API surface per cycle); `PhoneAccountDetails`/`AccountPresence`
-// stay defined, unused by real traffic, until that follow-up lands — see
-// `PROBLEM_TREE`/`gap_register` for the tracked remaining work. `name` is not
-// modelled here (only `build_phone_entities` reads this struct, and it only
-// ever used `registered`/`url`, never the platform's self-reported name).
 #[derive(Deserialize)]
-pub(super) struct AccountPresence {
+pub(super) struct CnamDetails {
     #[serde(default)]
-    pub(super) registered: Option<bool>,
-    #[serde(default)]
-    pub(super) url: Option<String>,
+    pub(super) name: Option<String>,
 }
