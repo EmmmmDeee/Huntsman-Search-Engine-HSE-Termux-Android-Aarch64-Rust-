@@ -79,6 +79,14 @@ struct HunterEmail {
     department: Option<String>,
     #[serde(default)]
     sources: Vec<HunterSource>,
+    /// LinkedIn/Twitter profile fields. Hunter's documented shape for these
+    /// has varied across API examples (a full profile URL for one, a bare
+    /// handle for the other), so `build_entities` inspects the actual value
+    /// rather than assuming a fixed shape per field.
+    #[serde(default)]
+    linkedin: Option<String>,
+    #[serde(default)]
+    twitter: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -134,8 +142,11 @@ impl Module for HunterIo {
             EntityKind::Organisation,
             // Hunter's canonical org domain + every email's source domain.
             EntityKind::Domain,
-            // The public source pages where Hunter saw each address.
+            // The public source pages where Hunter saw each address, plus a
+            // LinkedIn/Twitter field when Hunter returns a full profile URL.
             EntityKind::Url,
+            // A LinkedIn/Twitter field when Hunter returns a bare handle.
+            EntityKind::Username,
         ]
     }
 
@@ -374,6 +385,42 @@ fn build_entities(data: &HunterData, target_domain: &str, scan_id: &str) -> Vec<
                         .with_attr("email", &addr),
                 );
                 out.push(e);
+            }
+        }
+
+        // ── Social-profile pivots: LinkedIn/Twitter, previously deserialized
+        // straight past into nothing. A full URL becomes a Url pivot; a bare
+        // handle becomes a platform-prefixed Username pivot, mirroring
+        // fullcontact's established convention for the same distinction.
+        for (network, value) in [("linkedin", &entry.linkedin), ("twitter", &entry.twitter)] {
+            let Some(v) = nonempty(value) else {
+                continue;
+            };
+            if v.starts_with("http") {
+                if seen.insert(format!("url:{}", v.to_lowercase())) {
+                    let mut e = Entity::new(EntityKind::Url, &v, 0.55, scan_id);
+                    e.tag("hunter-io");
+                    e.tag("social-profile");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Hunter.io {network} profile for {addr}"))
+                            .with_attr("email", &addr)
+                            .with_attr("network", network),
+                    );
+                    out.push(e);
+                }
+            } else {
+                let handle = format!("{network}:{v}");
+                if seen.insert(format!("user:{}", handle.to_lowercase())) {
+                    let mut e = Entity::new(EntityKind::Username, &handle, 0.55, scan_id);
+                    e.tag("hunter-io");
+                    e.tag("social-profile");
+                    e.add_evidence(
+                        Evidence::new(SRC, format!("Hunter.io {network} handle for {addr}"))
+                            .with_attr("email", &addr)
+                            .with_attr("network", network),
+                    );
+                    out.push(e);
+                }
             }
         }
     }

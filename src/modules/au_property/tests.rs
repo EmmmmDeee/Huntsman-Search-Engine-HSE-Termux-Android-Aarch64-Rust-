@@ -229,6 +229,35 @@ fn module_metadata_is_valid() {
     assert!(m.max_timeout_ms() > crate::MODULE_TIMEOUT_MS);
 }
 
+/// Adversarial-input coverage (PROBLEM_TREE T2.7): `au_property` was one of
+/// the two modules (alongside `au_electoral`) still missing the never-panics
+/// proptest already applied to `au_people`'s HTML parsers. `text` is the
+/// untrusted, scraped portal response; `full_name` is held to the project's
+/// synthetic placeholder since it originates from the operator's own typed
+/// scan target, not third-party bytes.
+mod prop {
+    use proptest::prelude::*;
+
+    use super::{parse_nsw_response, parse_qld_response, parse_vic_response};
+
+    proptest! {
+        #[test]
+        fn parse_nsw_response_never_panics(s in ".{0,256}") {
+            let _ = parse_nsw_response(&s, "Jordan Avery");
+        }
+
+        #[test]
+        fn parse_vic_response_never_panics(s in ".{0,256}") {
+            let _ = parse_vic_response(&s, "Jordan Avery");
+        }
+
+        #[test]
+        fn parse_qld_response_never_panics(s in ".{0,256}") {
+            let _ = parse_qld_response(&s, "Jordan Avery");
+        }
+    }
+}
+
 // ── `all_legs_unreachable` — the "every portal is down" vs "genuinely no
 // records" distinction (2026-07-14 live finding: NSW/VIC/QLD all now 404). ──
 

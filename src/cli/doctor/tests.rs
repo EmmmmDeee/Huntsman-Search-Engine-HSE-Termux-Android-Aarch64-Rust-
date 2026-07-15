@@ -2,6 +2,32 @@ use super::*;
     use crate::util::key_roi::KeyRoi;
 
     #[test]
+    fn loaded_huntsman_keys_are_sorted_regardless_of_insertion_order() {
+        // `loaded` is a HashMap, so an unsorted read would print the keys in a
+        // different order on every `hse doctor` invocation against the
+        // identical environment — the same determinism bug class
+        // `rank_unset_keys` already guards against for the unset-keys listing.
+        // Build the map via two different insertion orders and assert both
+        // produce the identical sorted output.
+        let mut a = std::collections::HashMap::new();
+        a.insert("HUNTSMAN_WIGLE_TOKEN".to_string(), "x".to_string());
+        a.insert("HUNTSMAN_HIBP_KEY".to_string(), "x".to_string());
+        a.insert("HUNTSMAN_ONYPHE_KEY".to_string(), "x".to_string());
+        // A non-HUNTSMAN_ key must be filtered out regardless of ordering.
+        a.insert("HOME".to_string(), "/root".to_string());
+
+        let mut b = std::collections::HashMap::new();
+        b.insert("HUNTSMAN_ONYPHE_KEY".to_string(), "x".to_string());
+        b.insert("HOME".to_string(), "/root".to_string());
+        b.insert("HUNTSMAN_HIBP_KEY".to_string(), "x".to_string());
+        b.insert("HUNTSMAN_WIGLE_TOKEN".to_string(), "x".to_string());
+
+        let expected = vec!["HUNTSMAN_HIBP_KEY", "HUNTSMAN_ONYPHE_KEY", "HUNTSMAN_WIGLE_TOKEN"];
+        assert_eq!(sorted_huntsman_keys(&a), expected);
+        assert_eq!(sorted_huntsman_keys(&b), expected);
+    }
+
+    #[test]
     fn curl_missing_message_names_every_curl_only_no_fallback_surface() {
         let msg = curl_missing_message();
         // The six curl-only (no reqwest path) modules.
@@ -77,6 +103,47 @@ use super::*;
             "a configured key must not appear in the unset ranking"
         );
         assert_eq!(ranked.len(), keys::KNOWN_KEYS.len() - 1);
+    }
+
+    use crate::core::engine::ModuleHealth;
+
+    #[test]
+    fn module_health_line_names_the_module_and_streak() {
+        let h = ModuleHealth {
+            name: "hackertarget",
+            consecutive_failures: 3,
+            last_success_at: None,
+        };
+        let line = format_module_health(&h);
+        assert!(line.contains("hackertarget"));
+        assert!(line.contains('3'));
+        assert!(line.contains("never succeeded this process"));
+    }
+
+    #[test]
+    fn module_health_line_singular_for_one_failure() {
+        let h = ModuleHealth {
+            name: "crtsh",
+            consecutive_failures: 1,
+            last_success_at: None,
+        };
+        assert!(
+            format_module_health(&h).contains("1 consecutive failure "),
+            "must not pluralize a single failure"
+        );
+    }
+
+    #[test]
+    fn module_health_line_reports_last_success_time_when_present() {
+        let h = ModuleHealth {
+            name: "urlscan",
+            consecutive_failures: 2,
+            last_success_at: Some(1_700_000_000),
+        };
+        let line = format_module_health(&h);
+        assert!(line.contains("last succeeded"));
+        assert!(!line.contains("never succeeded"));
+        assert!(line.contains("20231114T221320Z"));
     }
 
     #[test]

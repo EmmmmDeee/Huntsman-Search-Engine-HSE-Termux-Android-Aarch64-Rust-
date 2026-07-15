@@ -46,6 +46,10 @@ pub trait StoragePort: Send + Sync {
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
     fn get_scan(&self, id: &str) -> Result<Option<Scan>>;
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>>;
+    /// Chronological (newest-first) list of past radar sweeps — scans whose
+    /// target is one of the radar endpoints' sentinel anchors. See
+    /// `crate::storage::Store::radar_history` for the full rationale.
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>>;
     fn delete_scan(&self, scan_id: &str) -> Result<bool>;
 
     // ── Entities ───────────────────────────────────────────────────────────

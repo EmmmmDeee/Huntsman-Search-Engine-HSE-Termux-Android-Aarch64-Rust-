@@ -248,6 +248,46 @@ pub async fn fetch_json_or_absent<T: DeserializeOwned>(
     fetch_json_inner(client, module, url, &[400, 404]).await
 }
 
+/// A *speculative well-known probe*: like [`fetch_json_or_404`], but ALSO treats
+/// an unreachable host (DNS failure, connection refused, TLS error, timeout,
+/// curl-fallback failure) as a clean miss (`None`) rather than an error.
+///
+/// This is for modules that probe an **arbitrary, caller-supplied domain** for a
+/// federation/discovery endpoint it almost certainly does not run — WebFinger
+/// (`fediverse`), NIP-05 (`nostr`), and the like. For such a probe, "the domain
+/// serves no such document" and "the domain is unreachable" are the *same*
+/// negative answer ("no account here"): the module found nothing, which is the
+/// expected outcome for the overwhelming majority of mail domains. Surfacing that
+/// as a `module_error` would inflate the scan's error count and trip the debug
+/// bundle's "errors silently shrink coverage" audit warning for a non-event —
+/// exactly the false alarm a real `full_name` scan produced when its discovered
+/// emails' domains (e.g. `onet.eu`) refused the probe connection.
+///
+/// It returns `Option<T>` (not `Result`) precisely because there is no error a
+/// caller could act on — a failed probe is a miss, full stop. The failure is
+/// logged at `debug` so it is still traceable in the verbose log ring without
+/// polluting the event stream. Do NOT use this for a module's OWN known API,
+/// where a transport error IS actionable (a real outage/rate-limit worth
+/// surfacing) — use [`fetch_json_or_404`] or [`fetch_json`] there.
+pub async fn fetch_json_probe<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Option<T> {
+    match fetch_json_inner(client, module, url, &[404]).await {
+        Ok(opt) => opt,
+        Err(e) => {
+            tracing::debug!(
+                module,
+                url = %redact_credentials(url),
+                error = %e,
+                "well-known probe failed to reach the domain — treating as a clean miss"
+            );
+            None
+        }
+    }
+}
+
 /// Per-host circuit-breaker pre-check shared by the JSON fetch helpers: returns the
 /// parsed host (so the caller can later record the round-trip outcome) when the request
 /// may proceed, or a short-circuit `Err` when the host is in its failure cooldown. A

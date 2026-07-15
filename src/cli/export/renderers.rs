@@ -166,6 +166,20 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
     let _ = writeln!(s, "\n── ENTITIES (every field, fully unredacted) ──");
     for (i, e) in entities.iter().enumerate() {
         let _ = writeln!(s, "\n[{}] {} = {}", i + 1, e.kind, e.value);
+        // "Nothing omitted" (see the module doc): the entity's own top-level
+        // fields — the SHA-256 uid, the pre-normalisation raw_value, and the
+        // decay timestamp — that `render_json`/CSV already carry but a human
+        // reading the full dossier previously never saw. `raw_value` genuinely
+        // diverges from `value` for Email/Username/Domain (case-folding, sigil
+        // stripping, …), so it is real provenance, not noise.
+        let _ = writeln!(
+            s,
+            "    uid={}  raw_value={}  observed_at={} ({})",
+            e.uid,
+            e.raw_value,
+            e.observed_at,
+            crate::util::timefmt::compact_utc(e.observed_at)
+        );
         let _ = writeln!(
             s,
             "    confidence={:.2}  c_eff={:.2}  corroboration={}  source_count={}  class={}",
@@ -405,7 +419,14 @@ pub(crate) fn render_debug_bundle(
         );
     }
 
-    // Best AU geolocation fix (AU-059 cross-seed synergy), if one fired.
+    // Best AU geolocation fix, if one fired. `extract_au_location_fix` returns
+    // one of two shapes: a true AU-059 cross-seed synergy fix (has
+    // `synergy_confidence`) or a coarser single-signal fallback (has `confidence`
+    // / `basis` instead) — see `dossier.rs`'s matching dual-branch render for the
+    // reference pattern this mirrors. Branching on which shape actually fired
+    // (rather than unconditionally labelling every fix "(AU-059)") matters
+    // because the fallback can be a single hardcoded landline-area-code anchor,
+    // not a corroborated synergy — mislabelling it AU-059 overstates its rigour.
     // Recomputed structurally from the scan's confirmed entities (the set the
     // rule ran on — candidates quarantined), not parsed from the finding prose.
     let mut fix_entities = store.entities_for_scan(sid)?;
@@ -414,14 +435,23 @@ pub(crate) fn render_debug_bundle(
     if fix != serde_json::Value::Null {
         let lat = fix["lat"].as_f64().unwrap_or(0.0);
         let lon = fix["lon"].as_f64().unwrap_or(0.0);
+        let radius = fix["radius_km"].as_f64().unwrap_or(0.0);
         let gh = fix["geohash"].as_str().unwrap_or("");
         let state = fix["state"].as_str().unwrap_or("");
-        let sc = fix["synergy_confidence"].as_f64().unwrap_or(0.0);
-        let sev = fix["severity"].as_str().unwrap_or("");
-        let _ = writeln!(
-            s,
-            "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
-        );
+        if let Some(sc) = fix["synergy_confidence"].as_f64() {
+            let sev = fix["severity"].as_str().unwrap_or("");
+            let _ = writeln!(
+                s,
+                "\n── BEST AU LOCATION FIX (AU-059) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · synergy_conf={sc:.2} · severity={sev}"
+            );
+        } else {
+            let confidence = fix["confidence"].as_f64().unwrap_or(0.0);
+            let basis = fix["basis"].as_str().unwrap_or("");
+            let _ = writeln!(
+                s,
+                "\n── BEST AU LOCATION FIX (single-signal) ──\n  {lat:.4},{lon:.4} ± {radius:.1} km · geohash={gh} · state={state} · basis={basis} · confidence={confidence:.2}"
+            );
+        }
     }
 
     // ── 3. Complete scan sequence (every event) ──

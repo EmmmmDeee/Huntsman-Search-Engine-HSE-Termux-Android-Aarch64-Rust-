@@ -27,7 +27,13 @@ fn render_full_dumps_every_field_and_provenance() {
             .with_attr("source", "Snusbase")
             .with_attr("username", "3toadsloth"),
     );
-    store.upsert_entities_batch(&[e]).unwrap();
+    // An Email whose raw source spelling (mixed-case) DIVERGES from the
+    // normalised `value` — exercises the "nothing omitted" promise for the
+    // entity's own top-level `raw_value`/`observed_at`/`uid` fields, which the
+    // Password fixture above (a passthrough-normalise kind) can't.
+    let mut mixed = Entity::new(EntityKind::Email, "TestUser@Example.COM", 0.6, "scan-full");
+    mixed.observed_at = 1_700_000_000;
+    store.upsert_entities_batch(&[e, mixed]).unwrap();
 
     let out = render_full(&store, "scan-full").unwrap();
     // Header + provenance roll-up.
@@ -40,6 +46,26 @@ fn render_full_dumps_every_field_and_provenance() {
     assert!(out.contains("api_key_origin = see-know.eu:seek-62650f9a…0fd0a4"));
     assert!(out.contains("via_endpoint = search"));
     assert!(out.contains("username = 3toadsloth"));
+    // "Nothing omitted": the entity's own top-level fields must all appear —
+    // the normalised value, its DIVERGENT raw spelling, and the observed_at
+    // timestamp (raw + compact-UTC), none of which render_full carried before.
+    assert!(
+        out.contains("email = testuser@example.com"),
+        "normalised value"
+    );
+    assert!(
+        out.contains("raw_value=TestUser@Example.COM"),
+        "divergent raw_value must be surfaced verbatim: {out}"
+    );
+    assert!(
+        out.contains("observed_at=1700000000"),
+        "raw observed_at timestamp must appear"
+    );
+    assert!(
+        out.contains("20231114T221320Z"),
+        "observed_at must also render as a compact-UTC string"
+    );
+    assert!(out.contains("uid="), "the SHA-256 uid must appear");
     // Exposure Index headline + breakdown mirror the live dossier — the on-disk
     // full dossier opens with the same operator-facing verdict.
     assert!(out.contains("── EXPOSURE INDEX ──"));
@@ -262,6 +288,133 @@ fn debug_bundle_correlation_histogram_surfaces_a_dominant_rule() {
 }
 
 #[test]
+fn debug_bundle_labels_a_true_au059_synergy_fix_distinctly_from_single_signal() {
+    // H2 (debug-bundle review, 2026-07-06): `render_debug_bundle` used to label
+    // EVERY non-null `extract_au_location_fix` result "(AU-059)" and read
+    // `synergy_confidence`/`severity` via `.unwrap_or` defaults, even when the
+    // JSON was actually the coarser single-signal fallback shape (which has no
+    // `synergy_confidence`/`severity` fields at all — those default to 0.0/"").
+    // This test drives the TRUE synergy shape: ≥2 AU person-anchored
+    // coordinates across ≥2 orthogonal source classes, so `au059_synergy_fix`
+    // fires for real and the rendered line must say "(AU-059)", include the
+    // `radius_km` the old code silently dropped, and carry a non-zero
+    // synergy_confidence/severity.
+    use crate::core::correlator::{Correlation, Severity};
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("au059.db").to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-au059",
+        Target::new(TargetKind::Email, "au059@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+
+    let sighting = |source: &str, lat: f64, lon: f64, conf: f64| {
+        let mut e = Entity::new(
+            EntityKind::Coordinates,
+            format!("{lat:.4},{lon:.4}"),
+            conf,
+            "scan-au059",
+        );
+        e.tag("au-state:NSW");
+        e.tag("country:AU");
+        e.add_evidence(Evidence::new(source, "fixture"));
+        e
+    };
+    // Two orthogonal source classes (PhotoGps + WifiSensor) agreeing near Sydney.
+    let entities = vec![
+        sighting("exif_geo", -33.8688, 151.2093, 0.85),
+        sighting("wigle", -33.8700, 151.2100, 0.78),
+    ];
+    let uids: Vec<String> = entities.iter().map(|e| e.uid.clone()).collect();
+    store.upsert_entities_batch(&entities).unwrap();
+    store
+        .upsert_correlation(&Correlation::new(
+            "AU-059",
+            "AU cross-seed geo-synergy",
+            Severity::Medium,
+            "synergy fixture".to_string(),
+            uids,
+            "scan-au059",
+            0,
+        ))
+        .unwrap();
+
+    let out = render_debug_bundle(&store, "scan-au059").unwrap();
+    assert!(
+        out.contains("BEST AU LOCATION FIX (AU-059)"),
+        "a true multi-class synergy fix must be labelled AU-059: {out}"
+    );
+    assert!(
+        !out.contains("BEST AU LOCATION FIX (single-signal)"),
+        "must not ALSO render the single-signal label: {out}"
+    );
+    // Scope the radius check to the fix line itself — the unrelated exposure-index
+    // "geo : N fix(es) / M source(s) · spread NN km · ..." line also contains "km",
+    // so a bare `out.contains("km")` would pass even if the fix line omitted it.
+    let idx = out
+        .find("BEST AU LOCATION FIX (AU-059)")
+        .expect("AU-059 fix line must be present");
+    let fix_line = &out[idx..(idx + 300).min(out.len())];
+    assert!(
+        fix_line.contains(" km ·"),
+        "the fix line must include the radius_km field: {fix_line}"
+    );
+    assert!(
+        fix_line.contains("synergy_conf=") && !fix_line.contains("synergy_conf=0.00"),
+        "a real synergy fix must carry a non-zero synergy confidence: {fix_line}"
+    );
+}
+
+#[test]
+fn debug_bundle_single_signal_fallback_fix_is_not_mislabelled_au059() {
+    // The mirror case: a lone AU coordinate is below AU-059's ≥2-signal gate,
+    // so `extract_au_location_fix` returns the coarser single-signal fallback
+    // shape (`confidence`/`basis`, no `synergy_confidence`/`severity`). The
+    // pre-fix code still printed "(AU-059)" for this shape and read its
+    // (absent) `synergy_confidence` as a silently-defaulted 0.00 — overstating
+    // a single hardcoded/low-rigour signal as a corroborated cross-seed fix.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().unwrap();
+    let store = Store::open(dir.path().join("single_signal.db").to_str().unwrap()).unwrap();
+    let scan = Scan::new(
+        "scan-single",
+        Target::new(TargetKind::Email, "single@example-real.com"),
+    );
+    store.upsert_scan(&scan).unwrap();
+
+    let mut coord = Entity::new(
+        EntityKind::Coordinates,
+        "-33.8688,151.2093",
+        0.85,
+        "scan-single",
+    );
+    coord.tag("au-state:NSW");
+    coord.tag("country:AU");
+    coord.add_evidence(Evidence::new("exif_geo", "fixture"));
+    store.upsert_entities_batch(&[coord]).unwrap();
+    // No AU-059 correlation stored — a lone coordinate never fires the rule.
+
+    let out = render_debug_bundle(&store, "scan-single").unwrap();
+    assert!(
+        out.contains("BEST AU LOCATION FIX (single-signal)"),
+        "a lone coordinate must fall back to the single-signal label: {out}"
+    );
+    assert!(
+        !out.contains("BEST AU LOCATION FIX (AU-059)"),
+        "a single-signal fix must NOT be mislabelled AU-059: {out}"
+    );
+    assert!(
+        out.contains("basis=confirmed coordinate"),
+        "the single-signal line must surface its basis: {out}"
+    );
+    assert!(
+        !out.contains("synergy_conf="),
+        "the single-signal shape has no synergy_confidence field to render: {out}"
+    );
+}
+
+#[test]
 fn debug_bundle_is_deterministic() {
     // DETERMINISM REQUIREMENT (evidence, not assertion): re-exporting the
     // same immutable stored scan must be byte-identical, so the artifact is
@@ -413,4 +566,137 @@ fn join_or_dash_single_value_has_no_separator() {
 fn join_or_dash_empty_iterator_is_explicit_none() {
     let v: Vec<String> = Vec::new();
     assert_eq!(join_or_dash(v.iter()), "(none)");
+}
+
+// ── Property test: export determinism as a GENERAL property ─────────────────
+//
+// `export_formats_determinism_audit` above proves byte-reproducibility for one
+// hand-built fixture (double-rendering the same store). This generalises that
+// to the stronger, doctrine-defining property (`docs/CONVENTIONS.md` §5:
+// output is "independent of `HashMap` iteration or task-completion order"):
+// the SAME entities inserted in TWO different orders must export byte-
+// identically. That exercises both order-sensitive legs at once — the store's
+// merge-on-conflict fold and every renderer's own attribute/tag/evidence
+// serialisation — over arbitrary well-formed input rather than a single
+// scenario, closing `SOLUTION_TREE` §4a's C7 "general property, not
+// case-by-case" gap.
+mod prop {
+    use super::{
+        Scan, Store, Target, TargetKind, render_csv, render_debug_bundle, render_full, render_gexf,
+        render_json,
+    };
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use proptest::prelude::*;
+
+    /// A representative spread of kinds so generated entities hit varied
+    /// renderer branches — identity (Email/Username/Person), infrastructure
+    /// (IpAddress/Domain), a secret (Password), and geo (Coordinates).
+    fn any_kind() -> impl Strategy<Value = EntityKind> {
+        prop_oneof![
+            Just(EntityKind::Email),
+            Just(EntityKind::Username),
+            Just(EntityKind::Person),
+            Just(EntityKind::IpAddress),
+            Just(EntityKind::Domain),
+            Just(EntityKind::Password),
+            Just(EntityKind::Coordinates),
+        ]
+    }
+
+    /// One arbitrary entity carrying the fields whose ordering, if leaked from
+    /// a `HashMap` or left order-sensitive, would break byte-determinism: a
+    /// value, confidence, corroboration, a tag set, and evidence records each
+    /// with their own attribute map.
+    fn any_entity() -> impl Strategy<Value = Entity> {
+        (
+            any_kind(),
+            "[a-z0-9._-]{1,16}",
+            0.0f64..=1.0,
+            1u32..8,
+            prop::collection::vec("[a-z]{1,8}", 0..4),
+            prop::collection::vec(
+                (
+                    "[a-z_]{1,10}",
+                    prop::collection::vec(("[a-z_]{1,8}", "[a-zA-Z0-9 ._-]{0,12}"), 0..4),
+                ),
+                0..3,
+            ),
+        )
+            .prop_map(|(kind, val, conf, corr, tags, evs)| {
+                let mut e = Entity::new(kind, &val, conf, "scan-prop");
+                e.corroboration = corr;
+                for t in tags {
+                    e.tag(t);
+                }
+                for (src, attrs) in evs {
+                    let mut ev = Evidence::new(src, "prop-generated evidence");
+                    for (k, v) in attrs {
+                        ev = ev.with_attr(k, v);
+                    }
+                    e.add_evidence(ev);
+                }
+                e
+            })
+    }
+
+    /// Build a fresh store under `dir` holding `order`-sequenced entities.
+    fn store_with(dir: &std::path::Path, name: &str, order: &[Entity]) -> Store {
+        let store = Store::open(dir.join(name).to_str().unwrap()).unwrap();
+        let scan = Scan::new(
+            "scan-prop",
+            Target::new(TargetKind::Email, "seed@example-real.com"),
+        );
+        store.upsert_scan(&scan).unwrap();
+        store.upsert_entities_batch(order).unwrap();
+        store
+    }
+
+    proptest! {
+        // DB-per-case (open + insert + 10 renders), so bound the case count to
+        // keep the suite fast on-device while still fuzzing a real spread.
+        #![proptest_config(ProptestConfig::with_cases(48))]
+
+        /// Every byte-deterministic export renderer is insertion-order-
+        /// independent: the same entities inserted forwards vs. reversed must
+        /// serialise identically. (`report.json`'s documented `exported_at`
+        /// wall-clock field keeps it out of this set, exactly as the
+        /// single-fixture audit above excludes it.)
+        #[test]
+        fn exports_are_insertion_order_independent(
+            mut ents in prop::collection::vec(any_entity(), 1..6),
+        ) {
+            let dir = tempfile::tempdir().unwrap();
+            let forward = store_with(dir.path(), "fwd.db", &ents);
+            ents.reverse();
+            let reversed = store_with(dir.path(), "rev.db", &ents);
+
+            // Store-typed formats.
+            prop_assert_eq!(
+                render_json(&forward, "scan-prop").unwrap(),
+                render_json(&reversed, "scan-prop").unwrap(),
+                "json leaked insertion order"
+            );
+            prop_assert_eq!(
+                render_csv(&forward, "scan-prop").unwrap(),
+                render_csv(&reversed, "scan-prop").unwrap(),
+                "csv leaked insertion order"
+            );
+            prop_assert_eq!(
+                render_gexf(&forward, "scan-prop").unwrap(),
+                render_gexf(&reversed, "scan-prop").unwrap(),
+                "gexf leaked insertion order"
+            );
+            // Port-typed formats (`&dyn StoragePort`).
+            prop_assert_eq!(
+                render_full(&forward, "scan-prop").unwrap(),
+                render_full(&reversed, "scan-prop").unwrap(),
+                "full dossier leaked insertion order"
+            );
+            prop_assert_eq!(
+                render_debug_bundle(&forward, "scan-prop").unwrap(),
+                render_debug_bundle(&reversed, "scan-prop").unwrap(),
+                "debug bundle leaked insertion order"
+            );
+        }
+    }
 }

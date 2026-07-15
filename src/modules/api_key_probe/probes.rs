@@ -33,6 +33,16 @@ pub(super) fn request_for(def: &ServiceDef, key: &str) -> (String, Vec<(&'static
             def.test_url.to_string(),
             vec![("Authorization", "bearer".to_string())],
         ),
+        // `def.key_header`'s prefix already embeds its own trailing space
+        // (e.g. `"ApiKey "`, see `KeyPlacement::HeaderPrefixed`'s doc comment),
+        // but `probe_endpoint`'s generic formatter inserts one more between
+        // this prefix and the key (the same mechanism `BearerAuth`'s bare
+        // `"bearer"` sentinel relies on) — trim it here so the header value
+        // isn't double-spaced ("ApiKey  <key>").
+        KeyPlacement::HeaderPrefixed(name, prefix) => (
+            def.test_url.to_string(),
+            vec![(name, prefix.trim_end().to_string())],
+        ),
     }
 }
 

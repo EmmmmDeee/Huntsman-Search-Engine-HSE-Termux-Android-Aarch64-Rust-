@@ -99,11 +99,25 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         println!("  {cost:<10} {count}");
     }
 
+    // ── Module health (T2.7 / SOL-HEALTH-SIGNAL) ───────────────────────
+    // Per-process failure streaks driven by real dispatch outcomes — quiet
+    // by default (a freshly-started or fully healthy process reports
+    // nothing extra), surfacing only sources actually worth investigating.
+    let unhealthy = crate::core::engine::module_health_report();
+    if unhealthy.is_empty() {
+        println!("\nModule health: no modules currently show a failure streak");
+    } else {
+        println!(
+            "\nModule health ({} with a failure streak this process):",
+            unhealthy.len()
+        );
+        for h in &unhealthy {
+            println!("  {}", format_module_health(h));
+        }
+    }
+
     let loaded = keys::load();
-    let huntsman_keys: Vec<_> = loaded
-        .keys()
-        .filter(|k| k.starts_with("HUNTSMAN_"))
-        .collect();
+    let huntsman_keys = sorted_huntsman_keys(&loaded);
     println!("\nHUNTSMAN_* keys loaded: {}", huntsman_keys.len());
     for k in &huntsman_keys {
         println!("  - {k}");
@@ -318,6 +332,47 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// The loaded `HUNTSMAN_*` key names, sorted for stable, run-to-run-identical
+/// output — `loaded` is a `HashMap`, so an unsorted iteration would print a
+/// different order on every invocation against the identical environment
+/// (`docs/CONVENTIONS.md` §5: "no HashMap-iteration-order leaks into output"),
+/// exactly the class of bug `rank_unset_keys` just below already guards
+/// against for the unset-keys listing.
+///
+/// Pure over the loaded map so it is unit-testable without touching the real
+/// environment.
+fn sorted_huntsman_keys(loaded: &std::collections::HashMap<String, String>) -> Vec<&str> {
+    let mut keys: Vec<&str> = loaded
+        .keys()
+        .filter(|k| k.starts_with("HUNTSMAN_"))
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    keys
+}
+
+/// Render one module's health line for the `hse doctor` report.
+///
+/// Pure over a [`crate::core::engine::ModuleHealth`] snapshot so it is
+/// unit-testable without touching real dispatch state.
+fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
+    match h.last_success_at {
+        Some(t) => format!(
+            "{:<20} {} consecutive failure{} (last succeeded {})",
+            h.name,
+            h.consecutive_failures,
+            if h.consecutive_failures == 1 { "" } else { "s" },
+            crate::util::timefmt::compact_utc(t),
+        ),
+        None => format!(
+            "{:<20} {} consecutive failure{} (never succeeded this process)",
+            h.name,
+            h.consecutive_failures,
+            if h.consecutive_failures == 1 { "" } else { "s" },
+        ),
+    }
 }
 
 /// The `curl:      MISSING` diagnostic body — every module/command that shells

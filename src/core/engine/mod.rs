@@ -32,6 +32,7 @@ mod circuit;
 mod dispatch;
 mod enrich;
 mod expansion;
+mod health;
 mod history;
 mod ledger;
 mod passes;
@@ -290,9 +291,22 @@ impl ScanEngine {
         dispatched: &mut DispatchLog,
     ) -> Result<Scan> {
         let sid = scan.id.clone();
+        // Regional augmentation is on when EITHER the per-scan flag
+        // (`--regional`) is set OR the persistent default `feature.regional`
+        // is on (universal toggleability; default off ⇒ geolocation-neutral
+        // queries). Computed here, before `scan` moves into the inner call, so
+        // it can be captured into the `with_regional` ambient below — a per-
+        // scan task-local (PROBLEM_TREE T2.11), not the process-global
+        // `search_engines` used to read, which `hse serve`'s concurrent scans
+        // could silently flip for each other.
+        let regional_on = scan.options.regional_search
+            || crate::util::settings::get_bool("feature.regional", false);
         crate::util::found_keys::with_scan(
             sid,
-            self.run_with_ledger_inner(scan, target, ctx, dispatched),
+            crate::util::regional::with_regional(
+                regional_on,
+                self.run_with_ledger_inner(scan, target, ctx, dispatched),
+            ),
         )
         .await
     }
@@ -313,16 +327,9 @@ impl ScanEngine {
         // Driven through the module-hook registry so core stays module-agnostic
         // (see `core::hooks`).
         crate::core::hooks::reset_per_scan(&scan.id);
-        // Apply the regional-search toggle for this scan. Regional augmentation
-        // is on when EITHER the per-scan flag (`--regional`) is set OR the
-        // persistent default `feature.regional` is on (universal toggleability;
-        // default off ⇒ geolocation-neutral queries). The per-scan flag only
-        // adds regional — set the standing baseline via `hse config
-        // feature.regional <on|off>`. Mirrors the see_know per-scan global.
-        crate::core::hooks::set_regional(
-            scan.options.regional_search
-                || crate::util::settings::get_bool("feature.regional", false),
-        );
+        // The regional-search ambient is already established by
+        // `run_with_ledger` (the caller), which wraps this whole function's
+        // future in `util::regional::with_regional` — nothing to do here.
 
         // Apply per-scan SeekNow budget override if the operator asked
         // for one. Capped at 500 so a single scan cannot blow the
@@ -444,10 +451,14 @@ impl ScanEngine {
                 is_expansion: false,
                 seed_kind: target.kind,
             };
+            // Seed dispatch has no parent to attribute lineage to, so the
+            // new-uid buffer is write-only here and discarded.
+            let mut seed_newly_inserted: Vec<String> = Vec::new();
             let mut dstate = DispatchState {
                 entity_map: &mut entity_map,
                 stats: &mut stats,
                 dispatched: &mut *dispatched,
+                newly_inserted: &mut seed_newly_inserted,
             };
             if let Err(e) = self.dispatch_target(&cx, &mut ctx, &mut dstate).await {
                 warn!(scan_id = %scan.id, error = %e, "seed dispatch failed (continuing to finalise)");
@@ -470,8 +481,8 @@ impl ScanEngine {
         // entities are made durable before expansion begins (crash-safety) and
         // single-round (depth=0) scans stream correlations live rather than
         // waiting for finalise.
-        let seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-        self.checkpoint_entities(&scan.id, &seed_snapshot);
+        let mut seed_snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+        self.checkpoint_entities(&scan.id, &mut seed_snapshot);
         self.correlate_incremental(&scan.id, &seed_snapshot, &mut emitted_corr);
 
         if opts.depth > 0 {
@@ -1071,9 +1082,20 @@ impl ScanEngine {
     /// idempotent GREATEST-merge — replaying the same entities only ever raises
     /// confidence/corroboration, so a resumed or re-run scan never regresses.
     /// Best-effort: a checkpoint failure is logged and retried at finalise.
-    fn checkpoint_entities(&self, scan_id: &str, entities: &[Entity]) {
+    ///
+    /// Determinism: normalises each entity's evidence/tags ordering before
+    /// persist, same as the finalise path (see `Entity::canonicalize_order`).
+    /// Without this, a scan interrupted after reaching a checkpoint — routine
+    /// on Termux/Android — reads back through `entities_for_scan`'s normal
+    /// table path, which (unlike the empty-table event-log recovery path)
+    /// never canonicalises, so concurrent dispatch's completion-order merging
+    /// would otherwise leak into the checkpointed/exported result.
+    fn checkpoint_entities(&self, scan_id: &str, entities: &mut [Entity]) {
         if entities.is_empty() {
             return;
+        }
+        for e in entities.iter_mut() {
+            e.canonicalize_order();
         }
         if let Err(e) = self.store.upsert_entities_batch(entities) {
             warn!(scan_id, error = %e, "entity checkpoint failed (will retry at finalise)");
@@ -1253,14 +1275,7 @@ impl ScanEngine {
         // survive the `truncate(MAX_ENTITIES)` boundary cut — in HashMap-iteration
         // order, leaking non-determinism into the persisted working set. This is the
         // same tie-break cmp_expansion_candidates / rank_enrichment_leverage use.
-        out.sort_by(|a, b| {
-            b.confidence
-                .partial_cmp(&a.confidence)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                .then_with(|| a.uid.cmp(&b.uid))
-        });
-        out.truncate(MAX_ENTITIES);
-        out
+        rank_recalled_and_cap(out, MAX_ENTITIES)
     }
 
     /// Active gap-fill — pursue the corroborating pathway AU-063 only names.
@@ -1318,7 +1333,7 @@ impl ScanEngine {
         }
 
         let by_uid: HashMap<&str, &Entity> = ents.iter().map(|e| (e.uid.as_str(), e)).collect();
-        let mut before: HashSet<String> = HashSet::new();
+        let mut newly_inserted: Vec<String> = Vec::new();
         let mut probed = 0usize;
 
         for probe in probes {
@@ -1364,8 +1379,7 @@ impl ScanEngine {
                 ..opts.clone()
             };
 
-            before.clear();
-            before.extend(entity_map.keys().cloned());
+            newly_inserted.clear();
             {
                 let cx = DispatchCx {
                     scan_id,
@@ -1378,14 +1392,15 @@ impl ScanEngine {
                     entity_map: &mut *entity_map,
                     stats: &mut *stats,
                     dispatched: &mut *dispatched,
+                    newly_inserted: &mut newly_inserted,
                 };
                 if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
                     warn!(scan_id, error = %e, "gap-fill dispatch failed (continuing)");
                 }
             }
             // New entities this probe surfaced are derived from the gap endpoint.
-            for (uid, child) in entity_map.iter() {
-                if !before.contains(uid) {
+            for uid in newly_inserted.drain(..) {
+                if let Some(child) = entity_map.get(&uid) {
                     relations.push(Relation::new(
                         uid.as_str(),
                         probe.endpoint_uid.as_str(),
@@ -1433,11 +1448,12 @@ impl ScanEngine {
             relations,
             emitted_corr,
         } = state;
-        // Reused across candidates to capture lineage: the set of entity UIDs
-        // present *before* a candidate's dispatch, so new UIDs afterward are
-        // children that candidate surfaced. Reusing the buffer avoids a
-        // per-candidate allocation; the key clones are bounded by max_entities.
-        let mut before: HashSet<String> = HashSet::new();
+        // Reused across candidates to capture lineage: the UIDs a candidate's
+        // dispatch genuinely inserted (never merged into an existing entity),
+        // populated directly by `DispatchState::newly_inserted` — no snapshot
+        // of the whole (up to `max_entities`-sized) entity_map needed per
+        // candidate. Reusing the buffer avoids a per-candidate allocation.
+        let mut newly_inserted: Vec<String> = Vec::new();
         for depth in 1..=opts.depth {
             // Refresh keys from the pool at the start of each round. Keys
             // discovered during the previous round (oathnet_pro breach data,
@@ -1789,12 +1805,9 @@ impl ScanEngine {
                     );
                     return stop;
                 }
-                // Snapshot UIDs before dispatch so we can attribute the
-                // entities this candidate surfaces back to its parent.
-                before.clear();
-                before.extend(entity_map.keys().cloned());
+                newly_inserted.clear();
                 {
-                    // Re-borrow the mutable accumulator trio into a
+                    // Re-borrow the mutable accumulator quartet into a
                     // `DispatchState` for this candidate; the block scopes the
                     // borrows so the lineage attribution below is free to read
                     // `entity_map` again.
@@ -1809,6 +1822,7 @@ impl ScanEngine {
                         entity_map: &mut *entity_map,
                         stats: &mut *stats,
                         dispatched: &mut *dispatched,
+                        newly_inserted: &mut newly_inserted,
                     };
                     if let Err(e) = self.dispatch_target(&cx, ctx, &mut dstate).await {
                         // Per-target dispatch errors are already surfaced as
@@ -1822,8 +1836,8 @@ impl ScanEngine {
                 // Direction is child -> parent: the new entity (`uid`) was
                 // *derived from* the parent it was expanded out of (`parent_uid`),
                 // matching the `DerivedFrom` edge name.
-                for (uid, child) in entity_map.iter() {
-                    if !before.contains(uid) {
+                for uid in newly_inserted.drain(..) {
+                    if let Some(child) = entity_map.get(&uid) {
                         relations.push(Relation::new(
                             uid.as_str(),
                             parent_uid.as_str(),
@@ -1859,8 +1873,8 @@ impl ScanEngine {
                         entity_map.insert(d.uid.clone(), d);
                     }
                 }
-                let snapshot: Vec<Entity> = entity_map.values().cloned().collect();
-                self.checkpoint_entities(scan_id, &snapshot);
+                let mut snapshot: Vec<Entity> = entity_map.values().cloned().collect();
+                self.checkpoint_entities(scan_id, &mut snapshot);
                 self.correlate_incremental(scan_id, &snapshot, emitted_corr);
             }
 
@@ -1956,5 +1970,34 @@ fn guarded_finalise_correlation(
     }
 }
 
+pub(crate) use health::ModuleHealth;
+
+/// Every module currently showing a failure streak this process, worst-first
+/// (PROBLEM_TREE T2.7 / SOLUTION_TREE SOL-HEALTH-SIGNAL). Empty on a
+/// freshly-started or fully healthy process — the common case.
+#[must_use]
+pub(crate) fn module_health_report() -> Vec<ModuleHealth> {
+    health::unhealthy_modules()
+}
+
+/// Rank recalled entities strongest-first and cap to `max` (`recall_prior_entities`'s
+/// sort+truncate step, split out so it's directly testable). Deterministic uid
+/// tie-break (CONVENTIONS.md §5): the incoming `Vec`'s order inherits a `HashMap`'s
+/// randomised-per-process iteration order, and modules routinely stamp flat
+/// literal confidences (0.6, 0.7, 0.8, …), so exact ties at the cutoff are
+/// realistic, not contrived — without a tiebreak, two otherwise-identical
+/// recalls of the same target could truncate to a DIFFERENT set of surviving
+/// entities, not just a different display order. Mirrors the uid tiebreak
+/// `ranking::rank_enrichment_leverage`/`rank_autonomous_targets` also use.
+fn rank_recalled_and_cap(mut out: Vec<Entity>, max: usize) -> Vec<Entity> {
+    out.sort_by(|a, b| {
+        b.confidence
+            .partial_cmp(&a.confidence)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.uid.cmp(&b.uid))
+    });
+    out.truncate(max);
+    out
+}
 #[cfg(test)]
 mod tests;

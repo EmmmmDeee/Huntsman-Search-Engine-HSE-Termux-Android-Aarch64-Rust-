@@ -792,6 +792,33 @@ pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         .into_response()
 }
 
+/// `GET /api/v1/radar/history?limit=<n>` — chronological (newest-first) list
+/// of past radar sweeps for historical review.
+///
+/// Unlike `GET /api/v1/live` (which only shows sessions still held in the
+/// server's in-memory `LiveSession` map — cleared on every restart), this
+/// reads directly from the persisted `scans` table: every sweep a `radar`/
+/// `radar/live` call ever queued survives a restart here, so an operator
+/// reconstructing "what was around me" after the fact doesn't need to
+/// remember a session id — only that a radar sweep ran at some point. This
+/// is the sole purpose-built historical-review surface for the live radar
+/// feature (`docs/PROBLEM_TREE.md`/`docs/SOLUTION_TREE.md`: personal-safety
+/// / situational-awareness review under limited information).
+pub async fn radar_history(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    match s.store.radar_history(limit) {
+        Ok(scans) => ok_list("sweeps", scans),
+        Err(e) => internal_error(&e),
+    }
+}
+
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
 pub async fn plan_preview(
     Query(params): Query<std::collections::HashMap<String, String>>,

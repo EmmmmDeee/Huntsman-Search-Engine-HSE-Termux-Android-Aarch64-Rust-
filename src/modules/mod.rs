@@ -117,6 +117,7 @@ pub mod oathnet_pro;
 pub mod onyphe;
 pub mod opencellid;
 pub mod opencorporates;
+pub mod opensanctions;
 pub mod osintcat;
 pub mod overpass;
 pub mod payid;
@@ -261,10 +262,12 @@ pub fn drain_found_key_entities(scan_id: &str) -> Vec<Entity> {
 
 /// Built-in module set. The engine sorts by priority — order here is irrelevant.
 /// Install the cross-cutting module hooks into `core` (per-scan budget resets,
-/// the regional-search flag, the found-key sink, and the vendor-key matcher).
-/// Idempotent; called from [`registry`] so the engine — always built from
-/// `registry()` — has the hooks before it runs. This is the single place the
-/// `modules → core` hook edge is wired; `core` never imports `modules`.
+/// the found-key sink, and the vendor-key matcher). Idempotent; called from
+/// [`registry`] so the engine — always built from `registry()` — has the
+/// hooks before it runs. This is the single place the `modules → core` hook
+/// edge is wired; `core` never imports `modules`. The regional-search flag is
+/// NOT a hook — it's a pure per-scan ambient the engine sets directly via
+/// `util::regional::with_regional` (see `core::hooks`'s module doc).
 fn install_core_hooks() {
     crate::core::hooks::install(crate::core::hooks::ModuleHooks {
         reset_per_scan: |scan_id| {
@@ -275,7 +278,6 @@ fn install_core_hooks() {
             search_engines::reset_session_liveness();
             reset_found_keys(scan_id);
         },
-        set_regional: search_engines::set_regional,
         refresh_round_budget: see_know::refresh_round_budget,
         identify_api_key: crate::util::key_harvest::identify_api_key,
         drain_found_keys: drain_found_key_entities,
@@ -408,6 +410,7 @@ static MODULE_REGISTRY: std::sync::LazyLock<Vec<Arc<dyn Module>>> =
             Arc::new(chain_intel::ChainIntel),
             // OSINT orchestration API modules
             Arc::new(seon::Seon),
+            Arc::new(opensanctions::OpenSanctions),
             Arc::new(keybase::Keybase),
             Arc::new(emailrep::EmailRep),
             Arc::new(epieos::Epieos),

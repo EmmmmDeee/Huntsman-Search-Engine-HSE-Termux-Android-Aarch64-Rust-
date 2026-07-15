@@ -619,6 +619,7 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_071_robust_identity_cluster,
     rule_au_109_shared_registrant,
     rule_au_110_shared_hosting_ip,
+    rule_au_113_direct_connect_origin_candidate,
 ];
 
 /// `(entity-only rule count, graph-aware relation rule count)` — the live,

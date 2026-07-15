@@ -152,6 +152,16 @@ impl super::Store {
             let mut merged = serde_json::from_str::<Entity>(&existing_json)?;
             let old_value = merged.value.clone();
             merged.merge(entity.clone());
+            // `merge`'s evidence/tag Vecs are appended in whatever order the two
+            // sides happened to be in (see `Entity::absorb`) — that order depends
+            // on which of the two same-uid entities reached storage first, so
+            // without this the PERSISTED row leaks insertion order exactly as
+            // `Entity::canonicalize_order`'s own doc comment warns against.
+            // `entities_from_events` already re-canonicalises after its own
+            // in-memory merge fold; this direct storage-merge path needs the same
+            // call so a batch upsert containing two same-uid entities (forward
+            // vs. reversed) persists byte-identically either way.
+            merged.canonicalize_order();
             let merged_json = serde_json::to_string(&merged)?;
             tx.prepare_cached(
                 "UPDATE entities SET scan_id = ?1, confidence = ?2, corroboration = ?3,
@@ -281,7 +291,10 @@ impl super::Store {
     /// exactly once, so corroboration sums correctly and is never double-counted.
     /// The result is a faithful (if not yet finalise-enriched: no address-locality
     /// consolidation, geo-family promotion, or cross-scan history) view of what
-    /// the scan found, ranked identically to a finalised read.
+    /// the scan found, ranked identically to a finalised read — including each
+    /// entity's internal evidence/tag order, which is canonicalised exactly as
+    /// the finalisation path does (see `Entity::canonicalize_order`), so a
+    /// recovered in-flight scan's export is as deterministic as a finalised one.
     pub fn entities_from_events(&self, scan_id: &str) -> Result<Vec<Entity>> {
         let mut map: HashMap<String, Entity> = HashMap::new();
         for ev in self.events_for_scan(scan_id)? {
@@ -295,6 +308,9 @@ impl super::Store {
             }
         }
         let mut entities: Vec<Entity> = map.into_values().collect();
+        for e in &mut entities {
+            e.canonicalize_order();
+        }
         Self::sort_entities_for_display(&mut entities);
         Ok(entities)
     }

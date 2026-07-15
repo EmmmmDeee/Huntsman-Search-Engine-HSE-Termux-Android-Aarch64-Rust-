@@ -7,7 +7,7 @@
 //! no quota spent); `--execute` dispatches it, bounded by the shared OathNet
 //! per-session budget so a batch can't silently blow the daily allowance.
 
-use std::collections::HashSet;
+use std::collections::HashMap;
 
 use crate::core::error::{Error, Result};
 use crate::core::scan::detect_kind;
@@ -148,19 +148,21 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
     let mut total_hits = 0usize;
     let mut stopped_on_budget = false;
     let mut rows: Vec<(usize, &BatchQuery, usize)> = Vec::new();
-    // Values that already have a search session initialised this run — the
-    // generator (`oathnet_batch::query_gen::add`) deliberately emits a
-    // breach+stealer PAIR on the identical field+value for every
+    // Session IDs initialised so far this run, keyed by lowercased target
+    // value — the generator (`oathnet_batch::query_gen::add`) deliberately
+    // emits a breach+stealer PAIR on the identical field+value for every
     // stealer-indexable selector specifically so a session covers both
-    // (the vendor's own "#1 optimisation": N calls on one query = 1
-    // lookup instead of N). Previously `execute_plan` never called
-    // `init_session` at all, so every single dispatched query paid its
-    // own full lookup regardless — this pairing existed in the generated
-    // plan but its quota saving was never actually realised. Tracked so
-    // the SECOND query for the same value doesn't redundantly re-init
-    // (session_id_for's own cache would just overwrite with an
-    // equivalent session anyway, but skipping the round-trip is free).
-    let mut sessioned: HashSet<String> = HashSet::new();
+    // (the vendor's own "#1 optimisation": N calls on one query = 1 lookup
+    // instead of N). Previously `execute_plan` never called `init_session`
+    // at all, so every single dispatched query paid its own full lookup
+    // regardless — this pairing existed in the generated plan but its
+    // quota saving was never actually realised. Tracked locally (never via
+    // shared process state — a concurrent `hse serve` scan could otherwise
+    // clobber which session a query for the same value uses) and threaded
+    // into [`oathnet::search`] explicitly, so the SECOND query for the same
+    // value reuses the session this run already paid to initialise instead
+    // of redundantly re-initing or silently picking up a foreign session.
+    let mut sessioned: HashMap<String, Option<String>> = HashMap::new();
 
     for q in plan {
         if !oathnet::has_budget() {
@@ -168,9 +170,13 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
             break;
         }
         let lower_value = q.value.to_lowercase();
-        if sessioned.insert(lower_value) {
-            let _ = oathnet::init_session(key, &q.value).await;
-        }
+        let session_id = if let Some(sid) = sessioned.get(&lower_value) {
+            sid.clone()
+        } else {
+            let sid = oathnet::init_session(key, &q.value).await;
+            sessioned.insert(lower_value, sid.clone());
+            sid
+        };
         // Clamp to this specific surface's own documented ceiling — Breach
         // and Stealer have different maximums (1000 vs 100), so a single
         // flat `--page-size` can't be passed through uncapped to a plan
@@ -183,6 +189,7 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
             q.field,
             &q.value,
             effective_page_size,
+            session_id.as_deref(),
         )
         .await
         {

@@ -86,6 +86,55 @@ fn wifi_ap_entities_emit_each_aps_own_observed_position() {
 }
 
 #[test]
+fn named_ssid_evidence_headline_reports_the_true_count_not_the_10_item_sample() {
+    // 14 distinct named/business-shaped SSIDs — more than the 10-item cap on
+    // the `named_ssids` attribute string. The evidence headline must state
+    // the TRUE count (14), not the truncated sample size (10).
+    let net = |ssid: &str| Network {
+        ssid: Some(ssid.to_string()),
+        netid: None,
+        encryption: None,
+        lastupdt: None,
+        trilat: None,
+        trilong: None,
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    };
+    let results: Vec<Network> = (0..14).map(|i| net(&format!("Family-Router{i}"))).collect();
+
+    let ev = named_ssid_evidence(&results, "-27.0,153.0", None)
+        .expect("14 named SSIDs must produce evidence");
+
+    assert!(
+        ev.summary.contains("14 named WiFi network(s)"),
+        "headline must report the true count of 14, not the 10-item cap: {}",
+        ev.summary
+    );
+    // The attribute string itself stays bounded to 10 entries.
+    let listed = ev.attributes.get("named_ssids").expect("named_ssids attr");
+    assert_eq!(listed.split(", ").count(), 10);
+}
+
+#[test]
+fn named_ssid_evidence_returns_none_when_nothing_matches() {
+    let net = Network {
+        ssid: Some("linksys".to_string()),
+        netid: None,
+        encryption: None,
+        lastupdt: None,
+        trilat: None,
+        trilong: None,
+        city: None,
+        region: None,
+        country: None,
+        postalcode: None,
+    };
+    assert!(named_ssid_evidence(&[net], "-27.0,153.0", None).is_none());
+}
+
+#[test]
 fn accepts_coordinates_and_mac_address() {
     let m = Wigle;
     assert!(m.accepts(&Target::new(TargetKind::Coordinates, "0,0")));

@@ -43,6 +43,7 @@ pub struct Netlas;
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct NetlasResp {
+    count: Option<u64>,
     items: Vec<NetlasItem>,
 }
 
@@ -222,8 +223,9 @@ impl Module for Netlas {
 /// network shell owns auth/transport, this owns the response→entity mapping
 /// (unit-testable without a key). Accumulates host facts across `body.items`,
 /// then emits the IP entity — carrying the port/JARM/SSL/CVE/tech/ISP evidence
-/// plus the previously-dropped `ssl_issuer` (issuing CA), `http_title` and
-/// `http_status` — the ISP and cert-subject Organisations, the geo
+/// plus the previously-dropped `ssl_issuer` (issuing CA), `http_title`,
+/// `http_status`, and `result_count` (the query's total Netlas match count) —
+/// the ISP and cert-subject Organisations, the geo
 /// Coordinates/Address, the SAN Domains, and the SSL/HTTP-extracted Emails.
 /// `target_value` is the queried value used as the IP fallback; an empty item
 /// set yields an empty result.
@@ -420,6 +422,14 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     }
     if let Some(isp) = &isp_val {
         ev = ev.with_attr("isp", isp);
+    }
+    // Total number of indexed responses Netlas matched for this query — the
+    // top-level `count`, distinct from the returned `items` page (which the
+    // `fields=*` request caps). Surfacing it tells an investigator how much of
+    // the host's Netlas footprint the returned page represents, i.e. whether the
+    // results were truncated. Decoded but previously dropped.
+    if let Some(total) = body.count {
+        ev = ev.with_attr("result_count", total.to_string());
     }
     ip_entity.add_evidence(ev);
     result.push(ip_entity);

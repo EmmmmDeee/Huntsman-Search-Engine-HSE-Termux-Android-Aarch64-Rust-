@@ -121,11 +121,30 @@ fn build_queries_fullname_handles_multibyte_initial() {
 
 #[test]
 fn build_queries_fullname_pure_fn_matches_dispatch() {
-    // The extracted pure helper must produce exactly what the FullName
-    // dispatch arm produces (verbatim extraction, no behaviour change).
+    // The extracted pure helper must produce exactly what the FullName arm of
+    // `build_queries_base` produces (verbatim extraction, no behaviour
+    // change). `build_queries` itself is a **superset**: it additionally
+    // appends the exposure-dork pass (`queries::exposure`), which now covers
+    // FullName too — asserted separately below, not folded into this
+    // verbatim-extraction check.
     let direct = build_queries_fullname("Jordan Lee Meyer");
+    let base =
+        super::queries::build_queries_base(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
+    assert_eq!(direct, base);
+
+    // `build_queries` = base + the exposure dorks (FullName is now covered by
+    // `fullname_exposure`, no longer silently empty).
     let viadispatch = build_queries(&Target::new(TargetKind::FullName, "Jordan Lee Meyer"));
-    assert_eq!(direct, viadispatch);
+    assert!(
+        viadispatch.len() > base.len(),
+        "the full dispatch must add the FullName exposure dorks on top of the base set"
+    );
+    assert!(
+        viadispatch
+            .iter()
+            .any(|s| s.contains("truepeoplesearch.com")),
+        "exposure dorks must be present in the full dispatch: {viadispatch:?}"
+    );
 
     // Single-token name → only the two base dorks, no first/last expansion.
     let single = build_queries_fullname("Jordan");
@@ -215,6 +234,44 @@ fn regional_dorks_are_minimal_and_region_scoped() {
     assert!(dd.len() <= 2, "AU-default augmentation must stay minimal");
     // An empty value never produces dorks.
     assert!(regional_dorks(&Target::new(TargetKind::Username, "")).is_empty());
+}
+
+#[tokio::test]
+async fn build_queries_reads_the_per_scan_regional_ambient() {
+    // PROBLEM_TREE T2.11: `regional_enabled()` used to read a process-global
+    // `AtomicBool` shared unkeyed across `hse serve`'s concurrent scans — a
+    // concurrently-started scan could silently flip another in-flight scan's
+    // query building. It now reads `util::regional`'s per-scan task-local
+    // ambient, so this proves the WIRING end-to-end: `build_queries` (the
+    // actual toggle consumer, via `search_engines::regional_enabled()`)
+    // produces MORE queries when scoped `true` than when scoped `false` (or
+    // unscoped, which degrades to `false`), for the same AU-region-signalled
+    // target — and, critically, that two overlapping scopes never leak into
+    // each other, mirroring `found_keys`'s own concurrent-isolation proof.
+    let t = Target::new(TargetKind::Phone, "+61 2 9374 4000");
+
+    let neutral = build_queries(&t);
+    let regional = crate::util::regional::with_regional(true, async { build_queries(&t) }).await;
+    assert!(
+        regional.len() > neutral.len(),
+        "regional=true must add AU dorks on top of the geo-neutral base: \
+         neutral={neutral:?} regional={regional:?}"
+    );
+
+    // Nested/overlapping scopes (standing in for two concurrent `hse serve`
+    // scans) never contaminate each other.
+    crate::util::regional::with_regional(true, async {
+        assert_eq!(build_queries(&t).len(), regional.len(), "outer scope=true");
+        let inner_off =
+            crate::util::regional::with_regional(false, async { build_queries(&t) }).await;
+        assert_eq!(inner_off.len(), neutral.len(), "inner scope=false");
+        assert_eq!(
+            build_queries(&t).len(),
+            regional.len(),
+            "outer scope=true must be unaffected after the inner scope exited"
+        );
+    })
+    .await;
 }
 
 #[test]

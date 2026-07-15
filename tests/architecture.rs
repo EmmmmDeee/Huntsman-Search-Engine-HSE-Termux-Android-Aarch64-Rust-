@@ -93,13 +93,16 @@ fn core_does_not_import_util_directly() {
                 // median, …) — the geo correlation rules' location estimators.
                 // Same justification as `util::geohash`: no I/O, no deps.
                 && !line.contains("util::geometry")
-                // Pure, dependency-free, overflow-safe CIDR-containment maths
-                // (`Ipv4Cidr`/`Ipv6Cidr::parse`/`.contains`/`.prefix_len`), same
-                // leaf category as `util::geohash`/`util::geometry`: no state, no
-                // I/O. Built for SPF `ip4:`/`ip6:` mechanism parsing but reused
-                // as-is by AU-112 (shared CIDR infrastructure) rather than
-                // duplicating the containment logic in `core`.
-                && !line.contains("util::spf::")
+                // Pure, offline CIDR containment (overflow-safe bitmask maths on
+                // std `Ipv4Addr`/`Ipv6Addr`; no I/O, no deps) — same leaf
+                // category as `util::geometry`. AU-112 uses it to test whether a
+                // discovered IP falls inside a discovered announced network block.
+                // Scoped to the two CIDR types actually used (confirmed: `core`
+                // imports nothing else from `util::spf` on either branch) rather
+                // than the whole module, so the guard stays precise if
+                // `util::spf` ever grows a non-pure item.
+                && !line.contains("util::spf::Ipv4Cidr")
+                && !line.contains("util::spf::Ipv6Cidr")
                 && !line.contains("util::preflight")
                 && !line.contains("util::keys::signup_hint")
                 && !line.contains("util::oathnet::reset_budget")
@@ -111,6 +114,18 @@ fn core_does_not_import_util_directly() {
                 // scans (PROBLEM_TREE T2.11). reset/drain still go through the module
                 // hook (they bridge to `core::entity`); only the pure scope is here.
                 && !line.contains("util::found_keys::with_scan")
+                // Pure task-local ambient (no I/O): the regional-search
+                // scan-scope, the same shape/justification as
+                // `found_keys::with_scan` immediately above. The engine wraps
+                // each scan + each spawned dispatch task in `with_regional` so
+                // `search_engines::regional_enabled()` reads the setting of
+                // the scan actually executing on the calling task, never a
+                // concurrently-running sibling's (PROBLEM_TREE T2.11).
+                // `regional_enabled` itself is read directly at the dispatch
+                // spawn site to capture the value before re-scoping it inside
+                // the spawned task.
+                && !line.contains("util::regional::with_regional")
+                && !line.contains("util::regional::regional_enabled")
                 // Persistent capability toggles (universal toggleability): the
                 // engine's module gate reads `module.<name>` on/off.
                 && !line.contains("util::settings::get_bool")
@@ -647,20 +662,45 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "urlscan → IP Addresses + Physical Locations + Scan Databases"
     );
 
-    // DeHashed + IntelX: Breach category covers Credentials (T1589.001) and
-    // Email Addresses (T1589.002) but both modules also emit real-name Person
+    // IntelX: Breach category covers Credentials (T1589.001) and Email
+    // Addresses (T1589.002), but the module also emits real-name Person
     // entities → T1589.003 Employee Names must be declared explicitly.
-    for name in ["dehashed", "intelx"] {
-        assert_eq!(
-            techniques(name),
-            vec!["T1589.001", "T1589.002", "T1589.003"],
-            "{name} → Credentials + Email Addresses + Employee Names"
-        );
-        assert!(
-            techniques(name).contains(&"T1589.003"),
-            "{name} emits Person entities; must claim Employee Names (T1589.003)"
-        );
-    }
+    // Unlike DeHashed below, IntelX re-emits the scanned target as its own
+    // entity rather than extracting child entities from record content (its
+    // own doc comment: "does not extract child entities — see the
+    // no-document-bodies invariant"), so it does not run the shared
+    // `breach_rich` pass and does not need that pass's broader technique set.
+    assert_eq!(
+        techniques("intelx"),
+        vec!["T1589.001", "T1589.002", "T1589.003"],
+        "intelx → Credentials + Email Addresses + Employee Names"
+    );
+    assert!(
+        techniques("intelx").contains(&"T1589.003"),
+        "intelx emits Person entities; must claim Employee Names (T1589.003)"
+    );
+
+    // DeHashed: Breach category covers Credentials + Email Addresses, but the
+    // module's own per-record extractor plus the shared `breach_rich`
+    // "maximum raw data" pass it runs (see `dehashed/build.rs`'s call site)
+    // together mint Person, IP, Address/Coordinates, Organisation, host
+    // fingerprints (MAC/device id), and social-media handles — the full
+    // breach-pool surface `see_know`/`oathnet_pro` declare for running the
+    // identical shared extractor, not just credentials/email/name.
+    assert_eq!(
+        techniques("dehashed"),
+        vec![
+            "T1589.001",
+            "T1589.002",
+            "T1589.003",
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1592",
+            "T1593.001",
+        ],
+        "dehashed → the full shared breach_rich extraction surface"
+    );
 
     // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces
     // the cellular carrier / WiFi network operator as an Organisation →

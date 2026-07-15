@@ -52,6 +52,13 @@ pub(super) struct HostResp {
     pub(super) country_code: Option<String>,
     #[serde(default)]
     pub(super) os: Option<String>,
+    /// Shodan's host classification tags (`compromised`, `malware`,
+    /// `honeypot`, `self-signed`, `vpn`, `cloud`, `cdn`, …). The free
+    /// InternetDB path already surfaces these; the paid host record carries
+    /// them too, so drop-parity would silently lose a keyed operator's
+    /// highest-value threat signal.
+    #[serde(default)]
+    pub(super) tags: Vec<String>,
 }
 
 // ── Free InternetDB response ─────────────────────────────────────────
@@ -346,6 +353,15 @@ impl Shodan {
                         .collect::<Vec<_>>()
                         .join(","),
                 );
+        }
+        // Host classification tags — parity with the free InternetDB path
+        // (evidence attr + per-tag `shodan:<tag>` entity tag so graph rules can
+        // pivot on `compromised`/`malware`/`honeypot`/… without parsing the CSV).
+        if !body.tags.is_empty() {
+            ev = ev.with_attr("tags", body.tags.join(","));
+            body.tags
+                .iter()
+                .for_each(|t| entity.tag(format!("shodan:{t}")));
         }
         entity.add_evidence(ev);
         result.push(entity);

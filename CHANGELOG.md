@@ -11,6 +11,130 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Live radar now has a historical-review surface: `GET /api/v1/radar/history`
+  plus a "Radar history" panel on the Live page.** Previously every radar
+  sweep (`hse radar` / the web "Activate Live Radar" button / continuous
+  `POST /api/v1/radar/live` sessions) was a real, persisted scan, but there
+  was no way to browse past sweeps afterwards — the in-memory `LiveSession`
+  bookkeeping the "Active sessions" table reads is cleared on every `hse
+  serve` restart, and every radar sweep shares an identical sentinel target
+  value, so the generic Scans list couldn't distinguish one sweep from
+  another either. The new endpoint queries the persisted `scans` table
+  directly (a `json_extract`-filtered SQL query, `Store::radar_history`) for
+  the two sentinel target shapes `radar_scan_spec` produces, ordered
+  newest-first — so an operator reviewing what was around them earlier can
+  do so even after a restart, with only "a radar sweep ran at some point" to
+  go on. Also restored a real gap surfaced during this cycle: the Dashboard's
+  "Module Health" panel (`moduleHealthPanel`) and the Footprint Timeline's
+  online-tenure/recency headline were both still live, tested backend
+  features that the SPA's monolithic-script → ES-module refactor had
+  silently stopped rendering; both are wired back into their new module
+  homes (`views/dash.js`, `scan_info/timeline.js`).
+- **New module: `opensanctions` — sanctions, politically-exposed-person
+  (PEP), and watchlist screening for a full name.** Screens against OFAC's
+  SDN list, the UN Security Council list, the EU consolidated list, UK
+  OFSI, and — notably — Australia's own DFAT Consolidated List, which has
+  no public real-time API of its own; querying OpenSanctions' aggregated
+  index brings Australian sanctions coverage in automatically alongside
+  400+ other global sources, instead of needing a bespoke scraper for the
+  periodic XLSX DFAT publishes. Only a definitive match is turned into a
+  finding — a weak, fuzzy name-only near-miss is never reported as a
+  sanctions/PEP hit, since a false accusation here is a serious mistake.
+  A match carries which list(s) it came from, the person's listed
+  political/official role where known, and is tagged distinctly when the
+  hit is on Australia's own list. Key-gated (free trial/nonprofit signup
+  available); company/organisation sanctions screening is planned as a
+  follow-up.
+- **`hse doctor` now reports per-module health: which sources are actively
+  failing this process, and when each last succeeded.** Previously there
+  was no way to see a scraper's health short of watching logs — a source
+  quietly failing every dispatch for hours looked the same as one that
+  just hadn't been dispatched yet. A new "Module health" section lists
+  any module currently showing a failure streak (worst first), each with
+  its consecutive-failure count and last-success time; it's silent by
+  default on a healthy process, so it only ever adds signal, never noise.
+- **Per-module health is now also visible from the web UI, not just `hse
+  doctor`.** A new `GET /api/v1/modules/health` endpoint and a Dashboard
+  "Module Health" panel surface the same failure-streak data the CLI
+  already reports, so an operator using the web interface has the same
+  visibility into a silently-failing source. Quiet by default, same as the
+  CLI: one reassuring line on a healthy process, a full table otherwise.
+- **`shodan` paid host lookup now surfaces the host classification tags.**
+  Shodan's keyed `/shodan/host/{ip}` response returns the same top-level
+  `tags` array (`compromised`, `malware`, `honeypot`, `self-signed`,
+  `vpn`, `cloud`, `cdn`, …) that the free InternetDB path already emits,
+  but the paid `HostResp` struct omitted the field and silently dropped
+  it — losing a keyed operator's highest-value threat signal despite the
+  module documenting the paid path as a strict superset of the free one.
+  The paid path now records a `tags` evidence attribute and applies a
+  per-tag `shodan:<tag>` entity tag, exactly mirroring the free path so
+  correlation rules can pivot on `compromised`/`malware`/… uniformly
+  regardless of which Shodan tier produced the entity.
+- **New correlation rule AU-112 — IP within a discovered network block.**
+  When a scan discovers both an IP address and an announced BGP prefix /
+  netblock (from `bgpview`, `ripestat`, `netblock`, or `intelx`) that
+  provably contains it, the scan now surfaces a correlation attributing
+  the address to that block's owner (ASN/organisation). These two entity
+  kinds were both collected but never connected before.
+- **`proxycurl` now surfaces LinkedIn professional certifications.** The
+  module's description already promised to extract "employment,
+  education, and certifications", but the certifications array Proxycurl
+  returns was never parsed and silently dropped. Each discovered
+  profile's certifications (name + issuing authority) now appear as a
+  `certifications` attribute on the `Person` entity, alongside the
+  employment and education it already surfaced.
+- **`hunter_io` now surfaces each discovered email's LinkedIn/Twitter
+  profile fields.** Hunter's domain-search response already returns these
+  per-email but the module discarded them on deserialize. A LinkedIn URL
+  becomes a `Url` pivot; a Twitter handle becomes a platform-prefixed
+  `Username` pivot — both a real identity-correlation lead the module was
+  already paying for and simply not surfacing.
+- **Search-engine dorking now covers breach/leak exposure for physical
+  addresses, not just email/username/domain/phone/full name.**
+  `build_queries_exposure` silently returned no exposure dorks at all for
+  `Address` targets, despite address data being a common secondary field
+  in breach records. New `address_exposure` dorks check pastebin/
+  dehashed/leakcheck/snusbase, exposed code-repo/cloud-storage configs,
+  and people-search aggregators for the address.
+- **The dossier now warns when a scan ran modules but found nothing at
+  all.** `hse scan --output dossier` previously printed the same
+  reassuring "pipeline is well-tuned for this seed" message whether a
+  scan succeeded quietly or came back completely empty. It now leads the
+  OPTIMIZATION HINTS section with "N module(s) ran and found nothing
+  scan-wide — check the target is reachable/valid, or this seed kind may
+  be unsupported" whenever that's actually what happened — the strongest
+  "something's wrong" signal a scan can give.
+- **`virustotal` now surfaces its passive-DNS history as pivot entities.**
+  VirusTotal's already-called domain/IP report endpoint returns
+  `last_dns_records` — a snapshot of historical A/AAAA/MX/NS/CNAME records —
+  that the module fetched but silently discarded. Historical `A`/`AAAA`
+  values now become `IpAddress` pivots and `MX`/`NS`/`CNAME` hostnames
+  become `Domain` pivots (capped at 30 records per scan), surfacing
+  infrastructure the subject no longer actively advertises but that can
+  still correlate against other findings.
+- **New correlation rule AU-111 — CDN origin-candidate unmasking.** When a
+  domain is fronted entirely by a CDN/anycast edge (Cloudflare, etc.) but an
+  MX record or a direct-connect service subdomain (`cpanel.`/`ftp.`/`mail.`/
+  `webmail.`/`dev.`) under the same registered domain resolves directly to a
+  real, routable IP, the scan now surfaces that IP as an origin-candidate
+  correlation — a lead toward the site's actual hosting infrastructure
+  behind the CDN.
+- **Search-engine dorking now covers breach/leak exposure for phone numbers and
+  full names, not just email/username/domain.** `build_queries_exposure`
+  dispatched supplementary exposure dorks (pastebin/dehashed/leakcheck/snusbase,
+  exposed `.env`/config files on GitHub, S3 buckets, people-search sites) for
+  four of six `TargetKind` variants but silently fell through to `Vec::new()`
+  for `Phone` and `FullName` — scans on those target types got only the base
+  dork set, with no breach-exposure coverage at all. New `phone_exposure` and
+  `fullname_exposure` query builders close the gap.
+- **The CLI dossier and web SPA now show the footprint's tenure/recency
+  headline, not just the raw event list.** `GET /scans/{id}/timeline` has
+  always computed and returned an "online since 2008, 17-year span, 9
+  breaches" summary (`tenure`/`recency`), but neither `hse scan --output
+  dossier` nor the SPA's timeline panel ever read those fields — only the
+  bare per-event list. Both now open with the headline: "Online since
+  `<date>` — `<N>`y span, `<M>` breach exposure(s), footprint
+  active/recent/aging/dormant."
 - **New "Stealer Logs" tab: a file-explorer-style, paired credential
   browser for imported stealer-log data.** Previously an imported stealer
   log's credentials only showed up in the generic Browse tab, with a
@@ -1417,6 +1541,342 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **Exporting the same scan results in a different byte order (JSON/CSV/
+  GEXF/full dossier/debug bundle) than a previous export, purely depending
+  on the arrival order of two findings that describe the same entity.**
+  Found by the test suite's own randomised export-determinism check, which
+  stumbled onto a genuine, previously-undiscovered edge case: when two
+  findings for the same entity (e.g. the same email surfaced by two
+  modules) are persisted, the merge step folded their evidence/tags
+  together but didn't re-sort the result into a canonical order the way
+  every other merge path in this codebase already does — so which finding
+  reached storage first silently leaked into the exported order. Fixed by
+  applying the same canonical-ordering step this codebase already uses
+  elsewhere after every storage-level merge, so the same underlying
+  evidence now always exports identically regardless of arrival order.
+- **`seon`'s phone enrichment was silently returning almost nothing on
+  every real call, despite successfully spending the operator's paid/keyed
+  quota each time — the same underlying problem already fixed for the
+  email path, now closed on the phone side too.** SEON's phone API moved
+  score/carrier/validity fields under a new structure and replaced
+  per-platform WhatsApp/Viber/Telegram presence with the same
+  category-count summary the email path uses; this module's parsing
+  wasn't updated to match, so every field it tried to read came back
+  empty on every real call. Rewrote the parsing to match SEON's current,
+  real phone response format, and added two kinds of signal this module
+  never captured before: live network status (has the number been ported
+  or is it roaming, on which carrier) and the Caller-ID-Name registered
+  against the number — both using the same entity patterns Huntsman's
+  dedicated HLR/CNAM lookup module already established, for consistency.
+- **`seon`'s email enrichment was silently returning almost nothing on every
+  real call, despite successfully spending the operator's paid/keyed quota
+  each time.** SEON changed their email API's response format at some point
+  in the past — the per-platform social-account fields this module expected
+  were removed and replaced with a different structure — and this module's
+  parsing was never updated to match. The request still succeeded and
+  looked normal, but every field it tried to read came back empty. Rewrote
+  the parsing to match SEON's current, real response format, and while
+  doing so added extraction for data the module had never captured even
+  before the format changed: which known data breaches the email appears
+  in (with dates, so it lines up with other breach findings from other
+  sources), and registrant details (name, company, address, phone) for any
+  domains associated with the email.
+- **`niamonx`'s MITRE ATT&CK coverage report was missing "Employee Names"
+  (T1589.003), despite the module already extracting corroborating names
+  into Person entities.** Like the `dehashed` fix above, this brings its
+  declared coverage in line with what it actually collects.
+- **`dehashed`'s MITRE ATT&CK coverage report was missing 5 techniques —
+  IP addresses, physical locations, business relationships, device
+  fingerprints, and social media handles — despite the module already
+  extracting all of that from breach records.** It runs the same
+  extraction logic as `see_know`/`oathnet_pro`, which already declared
+  the full set correctly; `dehashed` now does too.
+- **`see_know` no longer permanently drops Discord/Steam identity pivots it
+  discovered but couldn't immediately query due to the scan's shared quota
+  running low.** Cross-platform ID resolution (chasing a Discord snowflake
+  or SteamID64 to its linked accounts) is one of SeekNow's flagship
+  capabilities. Previously, if a subject's breach data surfaced more pivot
+  IDs in one pass than the remaining budget could fit, the leftover IDs
+  were marked as already handled — even though they were never actually
+  queried — so they were silently skipped for the rest of that lookup.
+  They're now correctly retried as budget allows instead of being
+  permanently written off.
+- **`oathnet_pro`'s MITRE ATT&CK coverage report was missing "Business
+  Relationships" (T1591.002), despite the module already extracting
+  employer/company/organisation fields from breach records into their own
+  entities.** `see_know`, which shares the same extraction logic, already
+  declared this correctly. `oathnet_pro` now does too, so per-scan
+  coverage reporting reflects what it actually collects.
+- **OathNet breach records could name a different "top" set of breach
+  databases across identical re-runs of the identical scan.** When several
+  breach databases tied for a spot in the top-5 ranking, which one made
+  the cut (and the order they were listed in) depended on in-memory
+  iteration order rather than anything meaningful. This affected both the
+  operator-facing "OathNet: N matching breach record(s) …" summary and the
+  reused-secret correlation finding's list of corroborating sources. Ties
+  now resolve alphabetically, so the same scan always reports the same
+  result.
+- **Importing a real "Combined Search" aggregator export no longer doubles
+  the reported breach-record count.** That export format repeats every
+  module's results twice — once nested under a `Modules:` section, again
+  verbatim under a top-level `Results:` section — and the importer counted
+  each repeated record separately even though it correctly avoided creating
+  duplicate entities. The reported "N breach" total now reflects the true
+  number of distinct records, not double it.
+- **`wigle` no longer understates the number of named WiFi networks found
+  near a target.** The evidence headline reported the 10-item cap used for
+  the attribute string's sample list as if it were the true count — a
+  dense-WiFi location with, say, 40 named networks nearby was always shown
+  as having exactly 10, regardless of the real number. The headline now
+  states the true count; only the listed sample stays capped at 10.
+- **The debug bundle's "BEST AU LOCATION FIX" line no longer mislabels a
+  coarse single-signal location estimate as an "AU-059" cross-seed
+  synergy result.** The underlying computation returns one of two shapes —
+  a true multi-source synergy fix (≥2 AU person-anchored coordinates
+  across ≥2 orthogonal source classes) or a coarser single-signal fallback
+  (down to a hardcoded landline-area-code anchor) — but the line always
+  printed "(AU-059)" and a `synergy_confidence` value even for the
+  fallback shape, which doesn't carry that field at all (it silently
+  defaulted to `0.00`). The line now labels each shape correctly and also
+  renders the `radius_km` field, which was previously omitted entirely.
+- **The dossier's "raw source records" section no longer reports empty for
+  scans of a name, when purchased provider data actually exists.** Archived
+  responses are looked up by matching the scan's target value against each
+  file's saved query, but the lookup compared them with different case
+  handling — so a target with any uppercase letter (virtually every scan
+  seeded by a person's name) could never match its own archived files, and
+  the dossier showed "0 responses" even though the paid data was safely on
+  disk the whole time.
+- **`urlscan` no longer understates a heavily-scanned target's real footprint
+  as just the first page of results.** The module reported "N recent
+  scan(s)" using only the capped page URLScan.io returned (5-10 results),
+  not its true total match count, which the response carries in the same
+  payload. A domain with thousands of historical scans was silently shown
+  as having only a handful. The evidence now reports the true total
+  separately from how many are actually shown.
+- **A scan recall could retain a different set of prior findings across
+  identical runs, not just reorder them.** When more than 300 prior-scan
+  entities are recalled, the results are ranked and capped; the ranking
+  compared confidence only, with no tie-break for equal values. Since
+  many sources stamp the same literal confidence, exact ties at the cutoff
+  are common — and without a tie-break, which entities survived the cap
+  depended on in-memory iteration order that varies from run to run. Two
+  identical scans of the same target against the same data could now
+  legitimately keep the same 300 findings every time.
+- **Export byte-determinism is now guaranteed as a general property, not
+  just for one test fixture.** Every export format (JSON, CSV, GEXF, full
+  dossier, debug bundle) was already required to be byte-reproducible so
+  artifacts are diffable across runs, but that was only checked against a
+  single hand-built scenario. A new property test now generates arbitrary
+  scans and confirms that the same findings, inserted in any order, always
+  export byte-identically — so a re-export of the same evidence is stable
+  regardless of the order modules happened to complete in. (`report.json`'s
+  documented generation-timestamp field remains the one intentional
+  exception.)
+- **The scan dossier now flags a wasted keyed/paid module call as a proper
+  optimization hint, not just a separate CLI line.** A `KeyGated`/`Paid`
+  module that ran and returned zero entities is real, actionable signal (a
+  wasted paid/key-gated API call) — unlike the dozens of `Free` modules
+  that legitimately find nothing for a given target kind, which is normal
+  and would flood the hints list if surfaced per-module (the noise question
+  this had been left open on). The already cost-gated, already-computed
+  wasted-module set now also appears as an `optimization_hints` entry,
+  alongside the dossier's existing `--exclude`-suggesting ROI line.
+- **`hse doctor`'s loaded-keys listing now prints in a stable order.** The
+  "HUNTSMAN_* keys loaded" list was read straight off an internal hash map with
+  no sort, so it could print in a different order on separate runs against the
+  identical environment. It now always prints alphabetically.
+- **`pypi_user`/`rubygems_user` no longer understate a prolific maintainer's
+  package/gem count.** Both modules cap their sample of packages/gems at 30 for
+  the entity list, but were also using that capped sample's length for the
+  headline coverage count in the evidence text — so an owner with 40 packages
+  or 35 gems was reported as having exactly 30, a specific wrong number rather
+  than an honest "some were truncated" signal. The coverage count now reflects
+  the true total regardless of how many are sampled into entities.
+- **OathNet breach hits now participate in temporal breach clustering
+  (AU-019).** The breach-search response includes per-breach metadata
+  (including the breach's actual occurrence date) alongside the matched
+  records, but it was silently discarded during parsing, so no OathNet-sourced
+  hit ever carried a date usable for clustering — despite OathNet being the
+  richest breach source the engine queries. Each hit's breach date is now
+  recovered from that metadata and attached to its evidence, so a subject's
+  OathNet exposure can now date-cluster with every other breach source.
+- **Curl failures in the paid-API client (`see_know`, `oathnet`) now report why
+  they failed, not just an exit code.** The shared curl subprocess was invoked
+  with `-s` (silent) but not `-S` (show-error), so curl's own error text was
+  suppressed along with its progress meter — every failure surfaced as a bare
+  "curl exited N" with no further detail, even though the code already had
+  logic to append curl's diagnostic message when present. That message can now
+  actually appear, so a DNS failure, TLS error, or connection refusal is
+  distinguishable in the logs instead of an opaque exit code.
+- **An unreachable domain no longer counts as a module error for `fediverse`
+  and `nostr` probes.** Both modules probe a discovered email's domain for a
+  federation endpoint (WebFinger / NIP-05) that most mail domains don't run. A
+  domain returning `404` was already treated as a clean "no account here" miss,
+  but a domain that was simply unreachable (no server, DNS/connection failure)
+  was reported as a module error — inflating a scan's error count and the debug
+  bundle's coverage-loss warning for an entirely expected outcome. Such a probe
+  failure is now treated as the same clean miss as a `404`.
+- **`psbdmp` now surfaces the provider's total paste-hit count when it exceeds
+  the distinct pastes returned.** The paste-dump search reports its own total
+  tally alongside the paste list; the module surfaced only the deduplicated
+  distinct-paste count. When the provider's total is higher — duplicate ids or a
+  capped page — the exposure was under-reported. That total now appears as a
+  `provider_result_count` evidence attribute, but only when it exceeds the
+  distinct count, so the common (equal) case adds no redundant noise.
+- **`ripestat` netblocks can now be attributed to their announcing network
+  (AU-112).** RIPEstat's covering-prefix `Cidr` entity was emitted without the
+  announcing ASN, so the "IP within a discovered network block" correlation
+  couldn't name the block's owner for a ripestat-sourced prefix. The covering
+  prefix now carries the origin ASN when it is unambiguous (a single announcing
+  AS), so an IP inside it is attributed to that network; a multi-origin prefix
+  is left unattributed rather than asserting one arbitrary owner.
+- **`netlas` now surfaces the query's total match count.** The Netlas search
+  response's top-level `count` — how many indexed responses exist for the host,
+  i.e. whether the returned page was truncated — was parsed but never surfaced.
+  It now appears as a `result_count` evidence attribute on the IP entity,
+  alongside the port/cert/HTTP intelligence the module already emits.
+- **SeekNow breach records now contribute their postcode to Australian
+  residential-locality correlation (AU-091/AU-093).** SeekNow labels a
+  subject's self-reported postcode `postal`, a field name the locality rules
+  never read, so a confirmed person's postcode was silently dropped from the
+  geo correlation. The module now also stamps the postcode under the canonical
+  key the rules read, recovering the locality signal. The rules' key list was
+  deliberately left unchanged so network-geolocation postcodes (which other
+  modules stamp under the same `postal` name) can't masquerade as a subject's
+  self-reported address.
+- **A scan's OathNet search session can no longer be clobbered by another scan
+  running concurrently under `hse serve`.** OathNet lets a target's breach and
+  stealer queries share a single paid lookup via a search session, but the
+  session id was held in a single process-global slot keyed only by the target
+  value. If a second scan initialised its own session in between, the first
+  scan's follow-up query silently lost its session and paid for two lookups
+  instead of one. The session id is now threaded through each query explicitly
+  rather than via shared state, so a scan's OathNet quota spend depends only on
+  its own queries, never on concurrent-scan timing.
+- **`hudsonrock` stealer-log hits now participate in temporal breach
+  clustering (AU-019).** Completing the same fix applied to `psbdmp`/`niamonx`
+  below: HudsonRock tags the subject as a breach source but recorded the
+  compromise date only under `date_compromised`, which the AU-019 rule does
+  not read, so a subject's stealer-log exposure could never date-cluster with
+  their database-breach exposures. The compromise date is now also stamped
+  under the canonical `breach_date` key, so an active infostealer compromise
+  joins the subject's full breach timeline.
+- **`psbdmp` and `niamonx` breach hits now participate in temporal breach
+  clustering (AU-019).** Both modules tag their entity as a breach source but
+  recorded the exposure date under a module-specific attribute
+  (`psbdmp`'s `earliest_paste`, `niamonx`'s PBS-v1 `first_seen`) that the
+  AU-019 temporal-breach-cluster rule — which keys off `breach_date` — never
+  read, so their dated hits could never join a 30-day coordinated-compromise
+  cluster with HIBP/IntelX/`xposed_or_not`. Each now also stamps the canonical
+  `breach_date` attribute (keeping its existing key), so a subject's full
+  breach timeline clusters regardless of which source dated it. (`niamonx`'s
+  PBS-v2 path already did this correctly; this aligns its v1 path.)
+- **A scan's regional-search setting can no longer be silently overridden by
+  another scan running concurrently under `hse serve`.** The toggle that
+  decides whether search queries get geolocation-biased augmentation lived
+  in a single process-global flag shared, unkeyed, across every concurrent
+  scan — if a second scan started while the first's search-engine module
+  was still running, the first scan's queries could silently start using
+  the second scan's setting instead of its own. The setting is now scoped
+  per-scan, so each scan's search behaviour depends only on its own
+  configuration, never on unrelated concurrent scan timing.
+- **`ipinfo`/`ipquery` geolocation fixes now contribute to the person-location
+  corroboration signal**, closing the same gap fixed for `ip_whois_geo`
+  above: both recorded a resolved IP's coordinates without the field the
+  shared login-IP recognition logic reads, so their fixes never counted
+  toward the independent-source corroboration count even when they agreed
+  with `ip_geo` on the same subject IP. All four free, always-dispatched
+  geo sources (`ip_geo`, `ip_whois_geo`, `ipinfo`, `ipquery`) are now
+  correctly recognized as independent corroborating classes.
+- **`ip_whois_geo` geolocation fixes now contribute to the person-location
+  corroboration signal.** The headline "Best location estimate" and its
+  independent-source count recognize an IP geolocation as tied to a subject's
+  login IP by matching an evidence field, but `ip_whois_geo` recorded the IP
+  under a different field than the shared recognition logic reads — unlike
+  its sibling `ip_geo`, whose fixes were always recognized. So a location fix
+  from `ip_whois_geo` on the same IP `ip_geo` also resolved silently never
+  counted as a second, independent confirmation. `ip_whois_geo` now records
+  the IP where it's expected, so both sources' agreement is counted.
+- **The cross-platform username footprint finding now fires for
+  `social_probe` results.** The finding (a handle confirmed on three or more
+  platforms) reads a per-module platform count from the evidence, but
+  `social_probe` recorded that count under a different field name than its
+  two sibling probe modules use, so a handle it confirmed across the social
+  platforms never contributed to the footprint finding. `social_probe` now
+  records the count under the expected field, so its multi-platform
+  confirmations count.
+- **Credential-reuse detection now works for DeHashed and SeekNow results.**
+  The credential-reuse finding (the same secret appearing in two or more
+  distinct breaches — the account-takeover signal) groups records by the
+  breach database name. DeHashed and SeekNow recorded that name under a
+  different evidence field than the correlator reads, so every record from
+  one provider looked like a single breach and reuse across breaches those
+  providers aggregate never surfaced. Both now record the breach name where
+  the correlator expects it, so cross-breach reuse fires correctly.
+- **`au_people` no longer loses cross-source corroboration when the same
+  address or phone appears in both AU directories it searches.** The module
+  scrapes White Pages AU and True People Search AU and de-duplicated its
+  combined results by keeping the first copy of each entity and dropping the
+  rest — so a fact both directories confirmed kept only one source's
+  evidence and confidence, discarding the second, independent confirmation.
+  Duplicates are now merged (highest confidence, combined corroboration
+  count, union of evidence), so a hit two directories agree on now reads as
+  corroborated.
+- **`hse diagnostics` now reports every failing section instead of dying at
+  the self-test.** The aggregate command runs three checks in sequence
+  (doctor → selftest → engines) and is documented to run all of them in one
+  pass and summarise which failed. But the self-test section signalled
+  failure by calling `std::process::exit(1)` directly, so a failing
+  self-test terminated the whole process mid-pass — the engine-liveness
+  section never ran and the aggregate "N section(s) failed" summary never
+  printed. The self-test now returns an error instead (the process still
+  exits non-zero, so the standalone `hse selftest` gate is unchanged),
+  letting `hse diagnostics` catch it and complete the full sweep.
+- **The full dossier / debug bundle now shows every entity's `uid`, raw
+  (pre-normalisation) value, and observed-at timestamp.** The full-dossier
+  renderer promised "nothing omitted" but silently dropped these three
+  per-entity fields that the JSON and CSV exports already carried — so the
+  raw source spelling a finding was captured under (e.g. the original
+  mixed-case email before normalisation) was invisible in the artifact
+  whose whole purpose is total transparency. All three now appear.
+- **`censys` and `trove_au` never used the inter-scan cache, despite being
+  the two named examples in the feature's own design.** The inter-scan
+  cache lets a paid/key-gated module serve a recent result instead of
+  re-querying the provider, but is opt-in per module. `censys` and
+  `trove_au` had never actually opted in and silently queried live on
+  every scan — exactly the repeated-query cost the cache exists to
+  avoid. Both now cache for 24 hours, matching the other opted-in
+  modules.
+- **`au_geo`'s exact AU state resolution was discarded in favour of a
+  coarser bounding-box guess for jurisdiction correlation.** `au_geo`
+  resolves a coordinate's state via an authoritative point-in-polygon
+  lookup against the ABS's own administrative boundaries, but never
+  tagged the coordinate entity with the result — so the AU-056/AU-085
+  jurisdiction cross-checks silently fell back to a rectangular
+  bounding-box approximation instead, which can misattribute points near
+  a state border. The coordinate is now tagged with the exact resolved
+  state, so those correlations use the precise answer whenever `au_geo`
+  has already resolved the point.
+- **A recovered (never-finalised) scan's export was not byte-stable across
+  runs.** A scan that didn't finalise — routine on Termux/Android, where the
+  OS reclaims backgrounded processes — is rebuilt from the durable event log
+  instead of the `entities` table. That recovery path folded each entity's
+  evidence in raw event-arrival order and skipped the same
+  order-canonicalisation step the normal finalised-scan path already applies,
+  so a JSON/CSV/full-dossier/debug-bundle export of an interrupted scan could
+  list the same evidence in a different order from one run to the next,
+  purely because modules happened to complete in a different order — not a
+  real difference in what was found. Recovery now canonicalises evidence
+  order identically to a finalised scan.
+- **The same evidence-order non-determinism above also affected a scan
+  that reached at least one mid-scan checkpoint before being
+  interrupted — the more common case, since a checkpoint happens at
+  every productive round, not just when a scan never wrote one at all.**
+  The checkpoint write path skipped the same order-canonicalisation step
+  the previous fix applied to the empty-table recovery path; a scan
+  interrupted after checkpointing now produces the same byte-stable
+  evidence order as a finalised scan too.
 - **`search_engines` no longer attributes a completely unrelated third
   party's email or phone number to the scan subject.** Its email/phone
   snippet extraction had no subject-relevance check at all — any match found
@@ -2102,7 +2562,9 @@ versions can include breaking changes; patch versions are bug-fix-only.
   default. Sharpens the per-finding ATT&CK labelling that is the engine's only
   MITRE surface; the `attack_overrides_attribute_collection_modules_precisely`
   architecture guard now pins the corrected mapping, and a catalogue test pins
-  the new technique. No scan/engine behaviour changed. `hse scan --output dossier` is supposed to warn
+  the new technique. No scan/engine behaviour changed.
+- **The dossier's "ROI" wasted-spend hint could never fire, on any scan
+  (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
   "N keyed/paid module(s) yielded nothing — consider --exclude …" when a
   budgeted API call returned nothing, but the check filtered a diagnostics
   list that only ever contains modules which emitted at least one entity — a
@@ -2288,6 +2750,13 @@ versions can include breaking changes; patch versions are bug-fix-only.
   tool (human or Claude). Deterministic; the byte-reproducibility guarantee holds.
 
 ### Changed
+- **README's correlator-rule and test counts corrected to match the code.** The
+  Architecture summary claimed "74 correlator rules (AU-001 through AU-086)" and
+  "3,100+ tests"; the live dispatch tables hold 110 rules (through AU-112) and
+  the suite is well past 4,300. Both figures are now current, and a new CI guard
+  (`readme_correlator_rule_count_matches_the_registry`) pins the README's rule
+  count to `RULES.len() + RELATION_RULES.len()` so adding a rule without updating
+  the README fails the build — the same drift protection the module count has.
 - **AU government-register result caps raised so no genuine API result is
   omitted.** Several AU open-data modules silently dropped real records beyond a
   small rank: QLD unclaimed-money (`MAX_RECORDS` 20), ASIC persons/banned (`5`),

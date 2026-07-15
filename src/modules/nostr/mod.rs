@@ -37,7 +37,7 @@ use crate::core::{
     scan::{Target, TargetKind},
 };
 use crate::util::extract::looks_like_email;
-use crate::util::http::{fetch_json_or_404, urlencode};
+use crate::util::http::{fetch_json_probe, urlencode};
 
 const SRC: &str = "nostr";
 /// bech32 data charset (BIP-173).
@@ -127,8 +127,11 @@ impl Module for Nostr {
                     );
                     // 404 (every ordinary mail domain) → not a Nostr identity, a
                     // clean miss. Freemail domains are skipped entirely above (a
-                    // certain 404 — they serve no NIP-05 document).
-                    if let Some(doc) = fetch_json_or_404::<Nip05>(&ctx.http, SRC, &url).await?
+                    // certain 404 — they serve no NIP-05 document). A domain that
+                    // is simply unreachable (no server, DNS/TLS/connection failure)
+                    // is the SAME "not a Nostr identity" miss, not a module error —
+                    // `fetch_json_probe` folds both into `None`.
+                    if let Some(doc) = fetch_json_probe::<Nip05>(&ctx.http, SRC, &url).await
                         && let Some(hex) = lookup_pubkey(&doc, name).filter(|h| is_hex64(h))
                     {
                         let hex = hex.to_ascii_lowercase();

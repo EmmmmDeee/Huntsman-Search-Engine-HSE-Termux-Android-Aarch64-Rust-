@@ -46,6 +46,43 @@ use crate::api::scan_export::csv_escape;
     }
 
     #[test]
+    fn module_health_json_shapes_name_streak_and_last_success() {
+        use super::module_health_json;
+        use crate::core::engine::ModuleHealth;
+        let unhealthy = vec![
+            ModuleHealth {
+                name: "hackertarget",
+                consecutive_failures: 3,
+                last_success_at: None,
+            },
+            ModuleHealth {
+                name: "crtsh",
+                consecutive_failures: 1,
+                last_success_at: Some(1_700_000_000),
+            },
+        ];
+        let v = module_health_json(&unhealthy);
+        assert_eq!(v["count"], 2);
+        let modules = v["modules"].as_array().unwrap();
+        assert_eq!(modules[0]["name"], "hackertarget");
+        assert_eq!(modules[0]["consecutive_failures"], 3);
+        assert!(
+            modules[0]["last_success_at"].is_null(),
+            "never-succeeded module must serialise last_success_at as null"
+        );
+        assert_eq!(modules[1]["name"], "crtsh");
+        assert_eq!(modules[1]["last_success_at"], 1_700_000_000);
+    }
+
+    #[test]
+    fn module_health_json_is_empty_on_a_healthy_process() {
+        use super::module_health_json;
+        let v = module_health_json(&[]);
+        assert_eq!(v["count"], 0);
+        assert!(v["modules"].as_array().unwrap().is_empty());
+    }
+
+    #[test]
     fn csv_escape_plain() {
         assert_eq!(csv_escape("hello"), "hello");
     }

@@ -1,7 +1,7 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, fetch_json_or_404, fetch_json_or_absent, is_keyed_error_status, key_tail,
-    keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
+    JSON_BODY_CAP, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
+    is_keyed_error_status, key_tail, keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -66,6 +66,27 @@ async fn send_tagged_maps_transport_errors_to_the_module() {
     assert!(
         err.to_string().contains("test_mod"),
         "transport error must name the module: {err}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_json_probe_treats_an_unreachable_domain_as_a_clean_miss() {
+    // A speculative well-known probe (fediverse/nostr) against an unreachable or
+    // nonexistent domain is a MISS, not a module error: `fetch_json_probe` folds
+    // the transport failure into `None`. The plain `fetch_json_or_404` would
+    // instead surface an `Err`, which the engine records as a `module_error` —
+    // exactly the false alarm a real scan produced when a discovered email's
+    // domain refused the probe connection. `.invalid` is RFC 6761-reserved, so
+    // resolution is a guaranteed failure regardless of network.
+    let out: Option<serde_json::Value> = fetch_json_probe(
+        &reqwest::Client::new(),
+        "test_mod",
+        "https://nonexistent.invalid/.well-known/webfinger?resource=acct:x@nonexistent.invalid",
+    )
+    .await;
+    assert!(
+        out.is_none(),
+        "an unreachable probe domain must be a clean miss (None), not an error"
     );
 }
 

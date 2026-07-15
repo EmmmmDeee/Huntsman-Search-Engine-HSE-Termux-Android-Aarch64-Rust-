@@ -1,12 +1,17 @@
 //! Module-layer hooks installed into `core` at startup.
 //!
 //! `core` is module-agnostic: the engine drives a handful of cross-cutting,
-//! per-scan module effects — rate-budget resets, the regional-search flag, the
-//! foreign-API-key sink, and the vendor-key pattern matcher — through these
-//! function-pointer hooks, which the `modules` layer installs from
-//! [`crate::modules::registry`]. This keeps the dependency edge
-//! `modules → core`, never `core → modules` (enforced by
-//! `tests/architecture.rs::core_does_not_import_modules`).
+//! per-scan module effects — rate-budget resets, the foreign-API-key sink, and
+//! the vendor-key pattern matcher — through these function-pointer hooks,
+//! which the `modules` layer installs from [`crate::modules::registry`]. This
+//! keeps the dependency edge `modules → core`, never `core → modules`
+//! (enforced by `tests/architecture.rs::core_does_not_import_modules`).
+//!
+//! The regional-search flag is a **different** case: it is a pure, no-I/O
+//! per-scan ambient (like the found-key scan-scope), so the engine sets it
+//! directly via the allow-listed [`crate::util::regional::with_regional`] leaf
+//! rather than through a hook — a `fn(bool)`-shaped hook cannot wrap a future,
+//! which per-scan task-local scoping needs (PROBLEM_TREE T2.11).
 //!
 //! When the hooks are not installed (e.g. a unit test that constructs an engine
 //! without going through the module registry) every wrapper degrades to a
@@ -22,8 +27,6 @@ pub struct ModuleHooks {
     /// Reset every module's per-scan state — rate budgets + `scan_id`'s found-key
     /// bucket.
     pub reset_per_scan: fn(scan_id: &str),
-    /// Apply the regional-search augmentation flag for the current scan.
-    pub set_regional: fn(bool),
     /// Refresh the per-round SeekNow budget between expansion rounds.
     pub refresh_round_budget: fn(),
     /// Identify a vendor API key embedded in a string → `(service, key)`.
@@ -45,12 +48,6 @@ pub fn install(hooks: ModuleHooks) {
 pub(crate) fn reset_per_scan(scan_id: &str) {
     if let Some(h) = HOOKS.get() {
         (h.reset_per_scan)(scan_id);
-    }
-}
-
-pub(crate) fn set_regional(on: bool) {
-    if let Some(h) = HOOKS.get() {
-        (h.set_regional)(on);
     }
 }
 

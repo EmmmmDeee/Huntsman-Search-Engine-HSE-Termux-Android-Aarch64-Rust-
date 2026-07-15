@@ -34,6 +34,11 @@ pub(super) struct LinkedInProfile {
     pub(super) experiences: Vec<Experience>,
     #[serde(default)]
     pub(super) education: Vec<Education>,
+    /// Professional certifications/licences the profile lists (e.g. "AWS
+    /// Certified Solutions Architect"). The module's own description promised
+    /// these but the field was never parsed — serde silently dropped the array.
+    #[serde(default)]
+    pub(super) certifications: Vec<Certification>,
     #[serde(default)]
     pub(super) personal_emails: Vec<String>,
     #[serde(default)]
@@ -98,6 +103,26 @@ impl Education {
             school.to_string()
         } else {
             format!("{school} — {}", detail.join(", "))
+        })
+    }
+}
+
+#[derive(Deserialize)]
+pub(super) struct Certification {
+    #[serde(default)]
+    pub(super) name: Option<String>,
+    #[serde(default)]
+    pub(super) authority: Option<String>,
+}
+
+impl Certification {
+    /// `"Name (Authority)"` (or just `"Name"` when the authority is absent), or
+    /// `None` when there is no certification name to anchor the entry.
+    pub(super) fn describe(&self) -> Option<String> {
+        let name = nonempty(&self.name)?;
+        Some(match nonempty(&self.authority) {
+            Some(authority) => format!("{name} ({authority})"),
+            None => name.to_string(),
         })
     }
 }

@@ -2,6 +2,7 @@
 //! the `oathnet-batch` CLI tool. Lives in util/ so any module can call it
 //! without violating the "no inter-module imports" invariant.
 
+use std::collections::HashMap;
 use std::sync::Mutex;
 
 use serde::Deserialize;
@@ -168,12 +169,6 @@ pub fn real_quota() -> Option<RealQuota> {
 pub fn reset_budget() {
     BUDGET.reset_scan();
     RESPONSE_CACHE.clear();
-    // Sessions are valid 60 minutes server-side; without a scan-boundary
-    // reset a long-lived `hse serve`/`hse live` process could try to reuse
-    // an expired session ID from an earlier scan (soft-fails back to
-    // full-cost queries, not a hard error, but silently loses the
-    // optimisation for no operator-visible reason).
-    SEARCH_SESSION.clear();
 }
 
 /// True while the shared OathNet budget can absorb at least one more billable
@@ -281,6 +276,16 @@ struct ErrorDetail {
 struct SearchData {
     #[serde(default)]
     items: Vec<Value>,
+    // A breach-search response's `data` object carries this sibling of `items`:
+    // per-`dbname` metadata (HIBP-style — `BreachDate`/`Description`/`PwnCount`/
+    // `Title`) for every distinct breach database the hits belong to. Previously
+    // entirely unparsed (not a field on this struct, so serde silently dropped
+    // it), so every oathnet-sourced breach hit's actual breach date was
+    // discarded even though the response carried it. Only `BreachDate` is
+    // captured for now — see the enrichment note in `search()`; `Description`/
+    // `PwnCount`/`Title` are left for a future cycle to avoid scope creep.
+    #[serde(default)]
+    dbname_info: HashMap<String, DbMeta>,
     /// Live-confirmed (2026-07-15) against the real
     /// `GET /service/v2/breach/search`: this block is keyed `"meta"`, NOT
     /// `"_meta"` as `docs/OATHNET_API_GUIDE.txt` §3.1's illustrative example
@@ -309,6 +314,12 @@ struct SearchData {
     next_cursor: Option<String>,
 }
 
+#[derive(Deserialize, Default)]
+struct DbMeta {
+    #[serde(rename = "BreachDate", default)]
+    breach_date: Option<String>,
+}
+
 /// Pagination signal from the response envelope's `data` block
 /// (`docs/OATHNET_API_GUIDE.txt` §3.1/§11 — see [`SearchData`]'s doc
 /// comment for the live-confirmed real key names, which differ from this
@@ -329,12 +340,39 @@ struct PageMeta {
 /// Search a specific OathNet surface (breach, stealer, etc.) by field.
 /// Returns the raw item array on success, empty vec on 404/clean miss.
 /// Returns empty vec immediately if daily quota is exhausted.
+/// Build the OathNet search URL. Pure (no I/O, no shared state) so the
+/// session-id threading — the id is appended as `&search_id=` iff the caller
+/// supplies one — is unit-testable without a live endpoint. Extracted from
+/// [`search`] when the per-value session lookup moved off a process-global slot
+/// (which a concurrently-running scan under `hse serve` could clobber) to an
+/// explicit parameter.
+fn build_search_url(
+    base: &str,
+    path: &str,
+    field: &str,
+    value: &str,
+    page_size: u32,
+    session_id: Option<&str>,
+) -> String {
+    let encoded = crate::util::http::urlencode(value);
+    // sort=indexed_at:desc gives the freshest records first within
+    // the page_size cap, maximising data freshness per query.
+    let mut url =
+        format!("{base}{path}?{field}%5B%5D={encoded}&page_size={page_size}&sort=indexed_at:desc");
+    if let Some(sid) = session_id {
+        url.push_str("&search_id=");
+        url.push_str(&crate::util::http::urlencode(sid));
+    }
+    url
+}
+
 pub async fn search(
     key: &str,
     path: &str,
     field: &str,
     value: &str,
     page_size: u32,
+    session_id: Option<&str>,
 ) -> Result<Vec<Value>> {
     let ck = cache_key(path, field, value);
     if let Some(cached) = cache_get(&ck) {
@@ -343,10 +381,11 @@ pub async fn search(
     if is_quota_exhausted() || !budget_try_increment() {
         return Ok(Vec::new());
     }
-    let encoded = crate::util::http::urlencode(value);
-    let session_param = session_id_for(value)
-        .map(|sid| format!("&search_id={}", crate::util::http::urlencode(&sid)));
-
+    // A search session (when the caller initialised one for this value) lets the
+    // breach + stealer queries share ONE lookup. The id is threaded in
+    // explicitly — never read from shared process state — so a concurrent scan
+    // under `hse serve` can't clobber which session THIS query uses.
+    //
     // OathNet uses cursor-based pagination (`docs/OATHNET_API_GUIDE.txt` §11:
     // "No offset/page-number support... Read next_cursor... Repeat until
     // cursor is null"), not offset/page-number — the operator directive is to
@@ -365,17 +404,7 @@ pub async fn search(
         // original query per the API's own rules) — field/value/page_size/
         // sort/search_id stay identical across every page; only `cursor`
         // (absent on the first request) changes.
-        let mut url = format!(
-            "{}{}?{}%5B%5D={}&page_size={}&sort=indexed_at:desc",
-            base_url(),
-            path,
-            field,
-            encoded,
-            page_size
-        );
-        if let Some(sp) = &session_param {
-            url.push_str(sp);
-        }
+        let mut url = build_search_url(&base_url(), path, field, value, page_size, session_id);
         if let Some(c) = &cursor {
             url.push_str("&cursor=");
             url.push_str(&crate::util::http::urlencode(c));
@@ -516,7 +545,10 @@ pub async fn search(
                 .map_err(|e| Error::module("oathnet", e.to_string()))?;
         };
 
-        all_items.extend(sd.items);
+        // Enrich each page against its OWN `dbname_info` block before
+        // accumulating — different pages of the same paginated query can
+        // legitimately carry different sets of breach databases.
+        all_items.extend(enrich_with_breach_dates(sd.items, &sd.dbname_info));
 
         let has_more = sd.meta.as_ref().is_some_and(|m| m.has_more);
         // Prefer the live-confirmed real location (`data.next_cursor`,
@@ -560,6 +592,48 @@ pub async fn search(
     Ok(all_items)
 }
 
+/// Additively stamp each row with the canonical `breach_date` its OWN `dbname`
+/// entry in `dbname_info` carries, never overriding a `breach_date` a row
+/// already has. Pure (no I/O), so the enrichment is unit-testable without a
+/// live endpoint — extracted from [`search`].
+///
+/// This is the ONLY thing that lets AU-019's temporal breach-cluster rule
+/// (which reads `breach_date` off breach-tagged entity evidence) see
+/// oathnet-sourced hits at all: `oathnet_pro::breach::breach_evidence` forwards
+/// this key straight through to the entity's evidence once present, exactly
+/// like every other mapped field.
+fn enrich_with_breach_dates(
+    mut items: Vec<Value>,
+    dbname_info: &HashMap<String, DbMeta>,
+) -> Vec<Value> {
+    if dbname_info.is_empty() {
+        return items;
+    }
+    for item in &mut items {
+        let Some(obj) = item.as_object() else {
+            continue;
+        };
+        if obj.contains_key("breach_date") {
+            continue;
+        }
+        let Some(date) = obj
+            .get("dbname")
+            .and_then(Value::as_str)
+            .and_then(|dbname| dbname_info.get(dbname))
+            .and_then(|m| m.breach_date.clone())
+        else {
+            continue;
+        };
+        // Re-borrow mutably: the lookup above held `obj` (and, via `dbname`,
+        // `dbname_info`) immutably, so the owned `date` above must be resolved
+        // first — an object mutation can't overlap that borrow.
+        item.as_object_mut()
+            .expect("already confirmed to be an object above")
+            .insert("breach_date".to_string(), Value::String(date));
+    }
+    items
+}
+
 /// Whether OathNet's cursor-based pagination should continue, and with
 /// which cursor: only when the page's own `_meta` says more results exist
 /// AND it actually supplied a cursor to fetch them with. Pure — extracted
@@ -583,11 +657,16 @@ pub fn top_dbnames(items: &[Value], n: usize) -> Vec<String> {
         }
     }
     let mut sorted: Vec<(String, usize)> = counts.into_iter().collect();
-    // Count descending, then db-name ascending as a total, deterministic
-    // tie-break: `counts` is a HashMap (randomised iteration order), so without
-    // the name key equal-count names — and which of them survive `take(n)` on a
-    // boundary tie — would vary run to run and leak that non-determinism into the
-    // persisted `top_dbnames` entity attribute.
+    // Count descending, then dbname ascending as a deterministic tie-break.
+    // `counts` came from a `HashMap`, so its pre-sort order (and therefore
+    // which of several equal-count names lands inside the top-`n` cutoff) is
+    // process-random without the second key — the same reproducibility class
+    // already closed elsewhere in this codebase (`recall_prior_entities`,
+    // `wigle::mode`). This feeds both the operator-facing "OathNet: N
+    // matching breach record(s) … — {top_dbs}" headline and the AU-047
+    // reused-secret correlator's `distinct_sources` reader, so a tied 5th/6th
+    // dbname flipping in or out of the result between identical re-runs of
+    // the identical scan is a real, not cosmetic, non-determinism.
     sorted.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
     sorted.into_iter().take(n).map(|(k, _)| k).collect()
 }
@@ -723,22 +802,6 @@ pub fn stealer_indexable(field: &str) -> bool {
     matches!(field, "email" | "username")
 }
 
-/// Per-target search session IDs. When set for a value, breach and stealer
-/// queries for that SAME target value consume only ONE OathNet lookup
-/// instead of two. Sessions are valid for 60 minutes on the OathNet side.
-///
-/// Keyed by (lowercased) query value rather than a single global slot —
-/// a single `Mutex<Option<(String, String)>>` (the prior shape) meant
-/// `hse serve`'s concurrent scan dispatch (`core::engine::dispatch`
-/// spawns targets onto a `JoinSet`) could have target B's `init_session`
-/// silently clobber target A's in-flight session between A's breach call
-/// and A's stealer call — A's stealer query would then silently pay full
-/// cost with no error or log line, defeating the vendor's own "#1
-/// optimisation" for exactly the concurrent-dispatch case this project's
-/// own architecture supports. A bounded cache (same primitive and cap as
-/// [`RESPONSE_CACHE`]) gives every distinct target its own slot instead.
-static SEARCH_SESSION: ResponseCache<String> = ResponseCache::new(1024);
-
 /// Build the JSON body for the session-init POST. Serialised via `serde_json`
 /// so `value` is escaped correctly — a hand-rolled `replace('"', ...)` escaped
 /// only double-quotes, so a value containing a backslash produced invalid JSON
@@ -752,6 +815,12 @@ fn session_init_body(value: &str) -> String {
 /// Initialise a search session for `value`. Returns the session ID on
 /// success, or None if the init call fails (non-fatal — queries still
 /// work without a session, they just cost more quota).
+///
+/// The caller owns the returned id and threads it into [`search`] explicitly.
+/// It is deliberately NOT stashed in shared process state: a single-slot global
+/// (keyed only by value) was clobbered by any concurrently-running scan under
+/// `hse serve`, so a scan's own query silently lost its session — costing double
+/// quota — whenever another scan initialised a session in between.
 pub async fn init_session(key: &str, value: &str) -> Option<String> {
     if is_quota_exhausted() {
         return None;
@@ -767,16 +836,8 @@ pub async fn init_session(key: &str, value: &str) -> Option<String> {
         .or_else(|| parsed.pointer("/data/session/id"))
         .and_then(|v| v.as_str())
         .map(str::to_string)?;
-    let lower = value.to_lowercase();
-    SEARCH_SESSION.put(lower, sid.clone());
     tracing::info!(session_id = %sid, query = %value, "OathNet search session initialised");
     Some(sid)
-}
-
-/// Return the cached session ID for this target value, if one was
-/// initialised for it (by this exact value, case-insensitively).
-pub fn session_id_for(value: &str) -> Option<String> {
-    SEARCH_SESSION.get(&value.to_lowercase())
 }
 
 // The curl-subprocess transport now lives in `util::curl_client` —

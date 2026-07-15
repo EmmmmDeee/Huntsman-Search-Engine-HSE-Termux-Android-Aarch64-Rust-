@@ -5,7 +5,7 @@
 [![Rust 1.88+](https://img.shields.io/badge/rust-1.88%2B-orange.svg)](https://www.rust-lang.org)
 [![Termux aarch64](https://img.shields.io/badge/Termux-aarch64-darkgreen.svg)](https://termux.dev/)
 
-Pure-Rust OSINT / GEOINT platform with **161 modules** that runs entirely
+Pure-Rust OSINT / GEOINT platform with **162 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
 dark-console Web UI, zero native dependencies.
 
@@ -111,7 +111,7 @@ cd ~/hse && git pull origin main && cargo build --release --locked && cp target/
 
 ```bash
 hse doctor                                                  # verify environment
-hse modules                                                 # list all 161 modules
+hse modules                                                 # list all 162 modules
 hse engines                                                 # search-engine liveness panel
 hse config                                                  # capability toggles (features/engines/modules)
 hse scan --kind name --value "Jordan Leigh Meyers" --depth 2 # person scan with expansion
@@ -159,7 +159,7 @@ scripts/standard-test.sh "<seed>"    # any handle/username
 
 ---
 
-## Module Overview (161 modules — 126 free, 35 key-gated/paid)
+## Module Overview (162 modules — 128 free, 34 key-gated/paid)
 
 > Grouped highlights below (all 159). The **complete** catalogue with target
 > kinds and output entities — kept exhaustive by the
@@ -341,7 +341,9 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - **Runtime AI-independence** — zero AI/ML/LLM/inference/vector/embedding deps; every result is deterministic Rust, identical on Termux aarch64 (no root), Linux and CI with no AI available (CI-enforced; charter: [`docs/RUNTIME_INDEPENDENCE.md`](docs/RUNTIME_INDEPENDENCE.md))
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
-- Deterministic correlator: 110 rules (98 entity + 12 graph-aware relation), no LLM/fuzzy matching
+- 4,300+ tests (unit + API integration + architecture boundary enforcement)
+- Deterministic correlator: 111 rules (98 entity + 13 graph-aware relation), no LLM/fuzzy matching
+- 111 correlator rules (AU-001 through AU-113, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules — deterministic, no LLM/fuzzy matching
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
 

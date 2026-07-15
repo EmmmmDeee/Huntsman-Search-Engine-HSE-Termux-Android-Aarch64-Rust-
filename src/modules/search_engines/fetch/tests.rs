@@ -157,6 +157,46 @@ use super::*;
         assert!(GoogleUrlIter::new("plain html").next().is_none());
     }
 
+    /// Adversarial-input coverage (PROBLEM_TREE T2.7): `result_parsers_never_
+    /// panic_on_adversarial_html` above covers a fixed, hand-picked battery of
+    /// hostile bytes; this adds the same randomized `proptest` never-panics
+    /// guarantee already applied to `au_people`/`au_electoral`/`au_property`'s
+    /// HTML parsers, exercising the full `.{0,256}` arbitrary-input space
+    /// rather than a fixed case list. `html` is the untrusted, scraped SERP
+    /// response.
+    mod prop {
+        use proptest::prelude::*;
+
+        use super::{CiteIter, GoogleUrlIter, HrefIter, external_link_count, parse_results};
+
+        proptest! {
+            #[test]
+            fn parse_results_never_panics(s in ".{0,256}") {
+                let _ = parse_results(&s, "fuzz", "q");
+            }
+
+            #[test]
+            fn href_iter_never_panics(s in ".{0,256}") {
+                let _ = HrefIter::new(&s).count();
+            }
+
+            #[test]
+            fn cite_iter_never_panics(s in ".{0,256}") {
+                let _ = CiteIter::new(&s).count();
+            }
+
+            #[test]
+            fn google_url_iter_never_panics(s in ".{0,256}") {
+                let _ = GoogleUrlIter::new(&s).count();
+            }
+
+            #[test]
+            fn external_link_count_never_panics(s in ".{0,256}") {
+                let _ = external_link_count(&s, "fuzz");
+            }
+        }
+    }
+
     /// Regression (real-execution derived): the EXACT 332-byte body Mojeek
     /// returned with HTTP 403 in a live 8/8-run sweep. It is < 500 bytes, so the
     /// old ordering returned `Unreachable` ("down") before `is_captcha_page` ran

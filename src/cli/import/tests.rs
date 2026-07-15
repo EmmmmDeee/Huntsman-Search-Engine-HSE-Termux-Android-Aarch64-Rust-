@@ -553,6 +553,118 @@ fn combined_search_parses_records_and_skips_metadata() {
     }));
 }
 
+// A real-world Combined Search aggregator export echoes each module's results
+// TWICE: once nested under a "Modules:" section, and again verbatim under a
+// separate top-level "Results:" section (both keyed off the same underlying
+// per-module data) — unlike COMBINED above, which only has the single nested
+// occurrence. Synthetic placeholders only (no real PII).
+const COMBINED_DUPLICATE_TOP_LEVEL_RESULTS: &str = "Module: Combined Search
+Query: javery
+Search Type: Username
+Results: 2
+
+Modules:
+  [1]
+    Key:
+      snusbase
+    Source Type:
+      snusbase
+    Status:
+      results
+    Count:
+      2
+    Results:
+      [1]
+        Username:
+          javery
+        Email:
+          jordanavery@gmail.com
+        Name:
+          Jordan Avery
+        Password:
+          Hunter2pass
+        Source:
+          2089_EXAMPLE_BREACH_122025
+      [2]
+        Email:
+          jordan2@example.com
+        Hash:
+          e1436d06a8b5f6decbf31371d9da13fc
+        Lastip:
+          24.32.96.70
+        Source:
+          2042_EXAMPLE_TECH_012024
+    Meta:
+      Combined Runner:
+        Attempt:
+          1
+Results:
+  [1]
+    Key:
+      snusbase
+    Source Type:
+      snusbase
+    Status:
+      results
+    Count:
+      2
+    Results:
+      [1]
+        Username:
+          javery
+        Email:
+          jordanavery@gmail.com
+        Name:
+          Jordan Avery
+        Password:
+          Hunter2pass
+        Source:
+          2089_EXAMPLE_BREACH_122025
+      [2]
+        Email:
+          jordan2@example.com
+        Hash:
+          e1436d06a8b5f6decbf31371d9da13fc
+        Lastip:
+          24.32.96.70
+        Source:
+          2042_EXAMPLE_TECH_012024
+    Meta:
+      Combined Runner:
+        Attempt:
+          1
+Meta:
+  Combined:
+    true
+  Completed Count:
+    1
+";
+
+#[test]
+fn combined_search_does_not_double_count_when_results_echo_the_modules_section() {
+    // H (2026-07-06, real-world export review): a paid Combined Search
+    // aggregator's actual export repeats every module's results twice — once
+    // under "Modules:", again verbatim under a top-level "Results:" — the
+    // shape COMBINED_DUPLICATE_TOP_LEVEL_RESULTS reproduces. Entities are
+    // already de-duplicated by the per-field `seen` set, but `breach_records`
+    // was incremented once per RECORD regardless of whether it was a repeat,
+    // so the operator-facing "N breach" count silently doubled for this real
+    // export shape — the same fabricated-count bug class already fixed for
+    // netlas/psbdmp/pypi_user/rubygems_user/urlscan this cycle.
+    let (ents, stats) = parse_combined_search(COMBINED_DUPLICATE_TOP_LEVEL_RESULTS, "s");
+    let count =
+        |k: EntityKind, v: &str| ents.iter().filter(|e| e.kind == k && e.value == v).count();
+    // Exactly one of each entity, not two, despite the record appearing twice.
+    assert_eq!(count(EntityKind::Email, "jordanavery@gmail.com"), 1);
+    assert_eq!(count(EntityKind::Username, "javery"), 1);
+    assert_eq!(count(EntityKind::Person, "Jordan Avery"), 1);
+    // The true record count is 2 (one snusbase module, two results), not 4.
+    assert_eq!(
+        stats.breach_records, 2,
+        "the duplicated top-level Results: section must not double the reported breach count"
+    );
+}
+
 #[test]
 fn dehashed_csv_is_detected_strictly() {
     assert!(looks_like_dehashed_csv(

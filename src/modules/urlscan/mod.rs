@@ -33,6 +33,16 @@ pub struct UrlScan;
 struct SearchResp {
     #[serde(default)]
     results: Vec<ScanResult>,
+    /// URLScan.io's true match count. The query caps `results` to one page
+    /// (`size=5`/`10`), so a heavily-scanned target's real footprint exceeds
+    /// what's returned — this is the field that lets the module report the
+    /// true total instead of fabricating one from the truncated page (the
+    /// same bug class already fixed in `netlas`/`psbdmp`/`pypi_user`/
+    /// `rubygems_user`). Absent on some older API responses, so it's
+    /// optional and falls back to the page length — mirrors `dehashed`'s
+    /// identical `total`-with-fallback pattern.
+    #[serde(default)]
+    total: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -138,45 +148,63 @@ impl Module for UrlScan {
             return Ok(ModuleResult::new());
         }
 
+        // True total, not the page-capped count: `data.total` (when present)
+        // reflects URLScan.io's whole match count, so it doesn't understate
+        // a heavily-scanned target's real footprint the way `results.len()`
+        // (the current page) would.
+        let total_matches = data.total.unwrap_or(data.results.len() as u64);
         let intel = summarize(&data.results);
 
-        // ── Build target entity + aggregate evidence ────────────────────────
-        let confidence = if intel.any_malicious { 0.88 } else { 0.70 };
-        let mut entity = target.to_entity(confidence, &ctx.scan_id);
-        entity.tag("urlscan");
-        if intel.any_malicious {
-            entity.tag("urlscan-malicious");
-        }
-
-        let mut ev = Evidence::new(
-            SRC,
-            format!(
-                "URLScan.io: {} recent scan(s), {} unique IP(s)",
-                intel.scan_count,
-                intel.unique_ips.len()
-            ),
-        )
-        .with_attr("scan_count", intel.scan_count.to_string())
-        .with_attr("unique_ips", intel.unique_ips.len().to_string());
-        if !intel.countries.is_empty() {
-            let list: Vec<&str> = intel.countries.iter().map(String::as_str).collect();
-            ev = ev.with_attr("countries", list.join(", "));
-        }
-        if !intel.servers.is_empty() {
-            // Full-fidelity policy: every distinct server string observed.
-            let list: Vec<&str> = intel.servers.iter().map(String::as_str).collect();
-            ev = ev.with_attr("servers", list.join(", "));
-        }
-        if intel.any_malicious {
-            ev = ev.with_attr("malicious_verdict", "true");
-        }
-        entity.add_evidence(ev);
-
+        let entity = build_target_entity(target, &intel, total_matches, &ctx.scan_id);
         let mut result = ModuleResult::new();
         result.push(entity);
         result.extend(child_entities(&intel, &target.value, &ctx.scan_id));
         Ok(result)
     }
+}
+
+/// Build the target entity + aggregate evidence. **Pure** (no IO), so the
+/// true-total-vs-shown distinction is unit-tested directly without a live
+/// URLScan.io response.
+fn build_target_entity(
+    target: &Target,
+    intel: &UrlScanIntel,
+    total_matches: u64,
+    scan_id: &str,
+) -> Entity {
+    let confidence = if intel.any_malicious { 0.88 } else { 0.70 };
+    let mut entity = target.to_entity(confidence, scan_id);
+    entity.tag("urlscan");
+    if intel.any_malicious {
+        entity.tag("urlscan-malicious");
+    }
+
+    let mut ev = Evidence::new(
+        SRC,
+        format!(
+            "URLScan.io: {} scan(s) total ({} shown), {} unique IP(s)",
+            total_matches,
+            intel.scan_count,
+            intel.unique_ips.len()
+        ),
+    )
+    .with_attr("scan_count", total_matches.to_string())
+    .with_attr("scans_shown", intel.scan_count.to_string())
+    .with_attr("unique_ips", intel.unique_ips.len().to_string());
+    if !intel.countries.is_empty() {
+        let list: Vec<&str> = intel.countries.iter().map(String::as_str).collect();
+        ev = ev.with_attr("countries", list.join(", "));
+    }
+    if !intel.servers.is_empty() {
+        // Full-fidelity policy: every distinct server string observed.
+        let list: Vec<&str> = intel.servers.iter().map(String::as_str).collect();
+        ev = ev.with_attr("servers", list.join(", "));
+    }
+    if intel.any_malicious {
+        ev = ev.with_attr("malicious_verdict", "true");
+    }
+    entity.add_evidence(ev);
+    entity
 }
 
 /// Aggregated, deduplicated intel across a URLScan.io search response. **Pure.**

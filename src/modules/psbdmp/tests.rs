@@ -100,6 +100,14 @@ use super::*;
                 ev.attributes.get("earliest_paste").map(String::as_str),
                 Some("2020-01-02 00:00:00")
             );
+            // Same earliest date is ALSO stamped under the canonical `breach_date`
+            // key AU-019's temporal breach-cluster rule reads, so paste exposure
+            // can date-cluster with other breach sources. `.get(..10)` inside
+            // AU-019 slices this to the ISO day (`2020-01-02`).
+            assert_eq!(
+                ev.attributes.get("breach_date").map(String::as_str),
+                Some("2020-01-02 00:00:00")
+            );
         }
     }
 

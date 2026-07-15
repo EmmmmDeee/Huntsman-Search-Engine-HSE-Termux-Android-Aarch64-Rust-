@@ -407,6 +407,99 @@ async fn key_chaining_concurrent_dispatch() {
     );
 }
 
+/// Tags an entity with the per-scan regional-search ambient it observes —
+/// used to prove `util::regional`'s isolation end-to-end through the real
+/// engine, mirroring `key_chaining_*`'s "prove the wiring, not just the
+/// primitive" style.
+struct RegionalProbeModule;
+
+#[async_trait]
+impl Module for RegionalProbeModule {
+    fn name(&self) -> &'static str {
+        "regional_probe"
+    }
+    fn priority(&self) -> u8 {
+        100
+    }
+    fn accepts(&self, t: &Target) -> bool {
+        matches!(t.kind, TargetKind::Email)
+    }
+    async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
+        let mut r = ModuleResult::new();
+        let mut e = Entity::new(EntityKind::Email, &target.value, 0.95, &ctx.scan_id);
+        e.tag(
+            if huntsman_search_engine::util::regional::regional_enabled() {
+                "regional-was-true"
+            } else {
+                "regional-was-false"
+            },
+        );
+        r.push(e);
+        Ok(r)
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_scans_do_not_contaminate_each_others_regional_setting() {
+    // PROBLEM_TREE T2.11: `search_engines::regional_enabled()` used to read a
+    // single process-global `AtomicBool`, shared unkeyed across `hse serve`'s
+    // concurrent scans — "last writer wins for the overlap window". Two real
+    // scans, run genuinely CONCURRENTLY via `tokio::join!` with OPPOSITE
+    // `regional_search` settings, each dispatching through the concurrent
+    // (`max_concurrent > 0`) path — the one that needs the `dispatch.rs`
+    // spawn-point re-scope, not just `run_with_ledger`'s outer wrap — must
+    // each observe only its OWN setting, never the other's.
+    use huntsman_search_engine::core::engine::DispatchLog;
+
+    let (engine_a, store_a, sid_a, target_a, ctx_a) = setup(
+        vec![Arc::new(RegionalProbeModule)],
+        "regional-a",
+        TargetKind::Email,
+        "regional-a@contoso.com",
+    );
+    let (engine_b, store_b, sid_b, target_b, ctx_b) = setup(
+        vec![Arc::new(RegionalProbeModule)],
+        "regional-b",
+        TargetKind::Email,
+        "regional-b@contoso.com",
+    );
+
+    let opts_a = ScanOptions {
+        regional_search: true,
+        max_concurrent: 4,
+        ..Default::default()
+    };
+    let opts_b = ScanOptions {
+        regional_search: false,
+        max_concurrent: 4,
+        ..Default::default()
+    };
+    let scan_a = Scan::new(sid_a.clone(), target_a.clone()).with_options(opts_a);
+    let scan_b = Scan::new(sid_b.clone(), target_b.clone()).with_options(opts_b);
+
+    let mut ledger_a = DispatchLog::new();
+    let mut ledger_b = DispatchLog::new();
+    let (res_a, res_b) = tokio::join!(
+        engine_a.run_with_ledger(scan_a, target_a, ctx_a, &mut ledger_a),
+        engine_b.run_with_ledger(scan_b, target_b, ctx_b, &mut ledger_b),
+    );
+    res_a.unwrap();
+    res_b.unwrap();
+
+    let entities_a = store_a.entities_for_scan(&sid_a).unwrap();
+    let entities_b = store_b.entities_for_scan(&sid_b).unwrap();
+    assert!(
+        entities_a.iter().any(|e| e.has_tag("regional-was-true")),
+        "scan A (regional_search=true) must observe true even while B runs \
+         concurrently with false: {entities_a:?}"
+    );
+    assert!(
+        entities_b.iter().any(|e| e.has_tag("regional-was-false")),
+        "scan B (regional_search=false) must observe false even while A runs \
+         concurrently with true: {entities_b:?}"
+    );
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn key_chaining_classifies_multiplier_tier() {
     // Verify the ROI classification is wired up for the services that
@@ -2479,6 +2572,9 @@ impl StoragePort for CountingStore {
     }
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         self.inner.list_scans(limit)
+    }
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        self.inner.radar_history(limit)
     }
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
         self.inner.delete_scan(scan_id)

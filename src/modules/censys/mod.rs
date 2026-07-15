@@ -73,6 +73,13 @@ impl Module for Censys {
     fn max_timeout_ms(&self) -> u64 {
         10_000
     }
+    fn cache_ttl_secs(&self) -> u64 {
+        // Host scan/exposure data (open ports, services, geo) is the "IP
+        // intel: 24h" bracket C9's design sketch names — stable within a day,
+        // and censys is one of C9's own named motivating examples for the
+        // inter-scan cache (finite paid query allowance).
+        86_400
+    }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let api_id = match ctx.key_opt(ID_ENV) {

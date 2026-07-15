@@ -7763,6 +7763,101 @@ fn au110_no_fire_on_shared_hosting_fanout() {
     );
 }
 
+// ── AU-113 — direct-connect origin-candidate unmasking (relation rule) ─────
+
+#[test]
+fn au113_fires_when_cdn_apex_has_a_direct_connect_sibling() {
+    // apex.com resolves ONLY to a Cloudflare edge; mail.apex.com (an MX
+    // sibling) resolves directly to a real, routable IP — a genuine
+    // origin-candidate lead.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.5.5", 0.8, "s");
+    let mut mx = Entity::new(EntityKind::Domain, "mail.apex.com", 0.8, "s");
+    mx.tag("mx");
+    let origin_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+
+    let ents = vec![apex.clone(), cdn_ip.clone(), mx.clone(), origin_ip.clone()];
+    let rels = vec![resolves(&apex, &cdn_ip), resolves(&mx, &origin_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a CDN apex with a direct-connect sibling must fire: {r:?}"
+    );
+    assert_eq!(r[0].rule_id, "AU-113");
+    assert_eq!(r[0].severity, Severity::Medium);
+    assert!(r[0].entity_uids.contains(&apex.uid));
+    assert!(r[0].entity_uids.contains(&mx.uid));
+    assert!(r[0].entity_uids.contains(&origin_ip.uid));
+    assert!(r[0].description.contains("apex.com"));
+    assert!(r[0].description.contains("mail.apex.com"));
+    assert!(r[0].description.contains("45.33.32.156"));
+}
+
+#[test]
+fn au113_fires_for_a_direct_connect_subdomain_brute_hit() {
+    // cpanel.apex.org (subdomain + dns-brute, a direct-connect label) is the
+    // sibling here, instead of an MX record.
+    let apex = Entity::new(EntityKind::Domain, "apex.org", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "172.64.1.1", 0.8, "s");
+    let mut cpanel = Entity::new(EntityKind::Domain, "cpanel.apex.org", 0.8, "s");
+    cpanel.tag("subdomain");
+    cpanel.tag("dns-brute");
+    let origin_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+
+    let ents = vec![
+        apex.clone(),
+        cdn_ip.clone(),
+        cpanel.clone(),
+        origin_ip.clone(),
+    ];
+    let rels = vec![resolves(&apex, &cdn_ip), resolves(&cpanel, &origin_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert_eq!(
+        r.len(),
+        1,
+        "a direct-connect dns-brute sibling must fire: {r:?}"
+    );
+    assert!(r[0].description.contains("cpanel.apex.org"));
+}
+
+#[test]
+fn au113_no_fire_when_apex_is_not_cdn_fronted() {
+    // apex.com resolves to an ordinary, non-CDN IP — nothing to unmask.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let apex_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let mut mx = Entity::new(EntityKind::Domain, "mail.apex.com", 0.8, "s");
+    mx.tag("mx");
+    let mx_ip = Entity::new(EntityKind::IpAddress, "45.33.32.200", 0.8, "s");
+
+    let ents = vec![apex.clone(), apex_ip.clone(), mx.clone(), mx_ip.clone()];
+    let rels = vec![resolves(&apex, &apex_ip), resolves(&mx, &mx_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert!(r.is_empty(), "a non-CDN apex has nothing to unmask: {r:?}");
+}
+
+#[test]
+fn au113_no_fire_when_sibling_also_resolves_to_a_cdn_edge() {
+    // Both apex and its MX sibling sit behind the CDN — no leak.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.5.5", 0.8, "s");
+    let mut mx = Entity::new(EntityKind::Domain, "mail.apex.com", 0.8, "s");
+    mx.tag("mx");
+    let mx_cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.9.9", 0.8, "s");
+
+    let ents = vec![apex.clone(), cdn_ip.clone(), mx.clone(), mx_cdn_ip.clone()];
+    let rels = vec![resolves(&apex, &cdn_ip), resolves(&mx, &mx_cdn_ip)];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "an equally CDN-fronted sibling leaks nothing: {r:?}"
+    );
+}
+
 // ─── AU-111 tests (CDN origin candidate) ──────────────────────────────────────
 
 fn cdn_fronted_domain(value: &str, provider: &str) -> Entity {
@@ -7828,6 +7923,41 @@ fn au111_does_not_fire_for_onprem_waf_appliances() {
     assert!(
         rule_au_111_cdn_origin_candidate(&[dom, ip], "s", 0).is_empty(),
         "an on-premise WAF appliance must not be treated as a DNS-fronting CDN"
+    );
+}
+
+#[test]
+fn au113_no_fire_for_a_generic_subdomain_or_unrelated_domain() {
+    // A generic subdomain (no mx tag, no direct-connect label) resolving
+    // off-CDN is not evidence of anything — deliberately narrow scope. A
+    // domain under a DIFFERENT registrable domain must not cross-match either.
+    let apex = Entity::new(EntityKind::Domain, "apex.com", 0.8, "s");
+    let cdn_ip = Entity::new(EntityKind::IpAddress, "104.16.5.5", 0.8, "s");
+    let mut generic = Entity::new(EntityKind::Domain, "assets.apex.com", 0.8, "s");
+    generic.tag("subdomain");
+    generic.tag("dns-brute");
+    let generic_ip = Entity::new(EntityKind::IpAddress, "45.33.32.156", 0.8, "s");
+    let other = Entity::new(EntityKind::Domain, "unrelated.net", 0.8, "s");
+    let other_ip = Entity::new(EntityKind::IpAddress, "45.33.32.200", 0.8, "s");
+
+    let ents = vec![
+        apex.clone(),
+        cdn_ip.clone(),
+        generic.clone(),
+        generic_ip.clone(),
+        other.clone(),
+        other_ip.clone(),
+    ];
+    let rels = vec![
+        resolves(&apex, &cdn_ip),
+        resolves(&generic, &generic_ip),
+        resolves(&other, &other_ip),
+    ];
+
+    let r = rule_au_113_direct_connect_origin_candidate(&ents, &rels, "s", 0);
+    assert!(
+        r.is_empty(),
+        "a generic subdomain label / unrelated domain must not fire: {r:?}"
     );
 }
 
@@ -8483,6 +8613,40 @@ fn correlator_budget_stops_starting_new_rules_past_the_deadline() {
     assert!(
         evaluate_relation_rules_on(&ents, &[], "s", 0, past).is_empty(),
         "an elapsed budget must stop the relation-rule pass immediately"
+    );
+}
+
+#[test]
+fn readme_correlator_rule_count_matches_the_registry() {
+    // The README's headline "N correlator rules" is hand-maintained and had
+    // drifted badly (it read 74 / "AU-001 through AU-086" against a real total of
+    // 110 / AU-112). Pin it to the live dispatch tables — `RULES` (entity rules)
+    // plus `RELATION_RULES` (graph-aware rules) — so adding a rule without
+    // updating the README fails CI, the same guard the module count already has.
+    // Lives here (a `core::correlator` unit test) because both tables are private
+    // to this module; the integration `tests/architecture.rs` can't see them.
+    let readme = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist at the crate root");
+    let n = RULES.len() + RELATION_RULES.len();
+    let idx = readme
+        .find("correlator rules")
+        .expect("README must state the correlator rule count as 'N correlator rules'");
+    // The integer immediately preceding "correlator rules" (commas stripped).
+    let stated: usize = readme[..idx]
+        .trim_end()
+        .rsplit(|c: char| !c.is_ascii_digit() && c != ',')
+        .next()
+        .unwrap_or_default()
+        .replace(',', "")
+        .parse()
+        .expect("a numeric rule count must immediately precede 'correlator rules' in README");
+    assert_eq!(
+        stated,
+        n,
+        "README says {stated} correlator rules but the registry dispatches {n} \
+         (RULES {} + RELATION_RULES {}); update the count in README.md",
+        RULES.len(),
+        RELATION_RULES.len()
     );
 }
 

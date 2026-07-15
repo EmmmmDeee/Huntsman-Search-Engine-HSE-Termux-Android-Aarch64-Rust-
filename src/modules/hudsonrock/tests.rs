@@ -94,6 +94,52 @@ use super::*;
     }
 
     #[test]
+    fn build_result_stamps_canonical_breach_date_for_au019() {
+        // A stealer-log hit tags the subject `breach`; AU-019's temporal
+        // breach-cluster rule reads a breach-tagged entity's exposure date under
+        // `breach_date`. The compromise date must therefore be stamped under that
+        // canonical key (not only the human-facing `date_compromised`), or the
+        // hit can never date-cluster with other breach sources.
+        let data = CavalierResp {
+            stealers: vec![Stealer {
+                computer_name: Some("DESKTOP-1".into()),
+                operating_system: Some("Windows 10".into()),
+                date_compromised: Some("2024-03-08T00:00:00Z".into()),
+                date_uploaded: Some("2024-04-01T00:00:00Z".into()),
+                stealer_family: Some("Redline".into()),
+                ip: None,
+                malware_path: None,
+                credentials: vec![serde_json::Value::Null],
+            }],
+        };
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let result = build_result(&target, &data, "scan");
+        let subject = result
+            .entities
+            .iter()
+            .find(|e| e.value == "subject@example.com")
+            .expect("the breach-tagged subject entity must be present");
+        assert!(subject.has_tag("breach"), "subject must be breach-tagged");
+        let ev = subject
+            .evidence
+            .iter()
+            .find(|e| e.attributes.contains_key("date_compromised"))
+            .expect("stealer-log evidence must be present");
+        // The canonical key AU-019 reads, taken from the compromise date (its
+        // `.get(..10)` slices this to the ISO day, 2024-03-08).
+        assert_eq!(
+            ev.attributes.get("breach_date").map(String::as_str),
+            Some("2024-03-08T00:00:00Z")
+        );
+        // The human-facing `date_compromised` attribute is retained unchanged for
+        // existing consumers.
+        assert_eq!(
+            ev.attributes.get("date_compromised").map(String::as_str),
+            Some("2024-03-08T00:00:00Z")
+        );
+    }
+
+    #[test]
     fn parse_iso_epoch_works() {
         assert!(parse_iso_epoch("2025-06-15T12:00:00Z").is_some());
         assert!(parse_iso_epoch("2025-06-15").is_some());

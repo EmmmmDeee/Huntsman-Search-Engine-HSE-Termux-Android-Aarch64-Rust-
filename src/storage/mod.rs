@@ -447,6 +447,43 @@ impl Store {
         Ok(deserialize_rows(raw, "list_scans"))
     }
 
+    /// Chronological (newest-first) list of past **radar sweeps** — scans
+    /// whose target is one of `radar_scan_spec`'s two sentinel anchors
+    /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
+    /// ignore the value, so it is never a real target). Filters at the SQL
+    /// layer with the same `json_extract` technique as
+    /// [`Store::latest_completed_scan`], so a deployment with thousands of
+    /// ordinary scans doesn't pay to deserialise every one just to find the
+    /// radar-tagged handful.
+    ///
+    /// Sourced entirely from the persisted `scans` table — unlike the
+    /// in-memory `LiveSession` bookkeeping (cleared on every restart), this
+    /// survives a `hse serve` restart, so an operator reviewing what was
+    /// around them earlier can do so without remembering a session id. This
+    /// is the query behind `GET /api/v1/radar/history`.
+    pub fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                // The literal "0,0"/"00:00:00:00:00:00" `radar_scan_spec` passes
+                // to `Target::new` is NOT what ends up persisted: coordinate
+                // normalisation (`core::entity::normalise`) rounds to 6 decimal
+                // places, so the stored value is "0.000000,0.000000" — the MAC
+                // sentinel is already normalised-form (lowercase, colon-sep,
+                // all-zero) and passes through unchanged.
+                "SELECT data_json FROM scans
+                 WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
+                        AND json_extract(data_json, '$.target.value') = '0.000000,0.000000')
+                    OR (json_extract(data_json, '$.target.kind') = 'mac_address'
+                        AND json_extract(data_json, '$.target.value') = '00:00:00:00:00:00')
+                 ORDER BY started_at DESC, id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            collect_rows(rows, "radar_history")
+        };
+        Ok(deserialize_rows(raw, "radar_history"))
+    }
+
     /// Return the most recent scan whose serialised status matches
     /// `complete` (the lower-case canonical form used by ScanStatus::
     /// as_str). Filters at the SQL layer using a JSON-extract probe
@@ -800,6 +837,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         Store::list_scans(self, limit)
+    }
+
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        Store::radar_history(self, limit)
     }
 
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {

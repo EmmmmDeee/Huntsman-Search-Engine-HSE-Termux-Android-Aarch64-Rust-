@@ -708,18 +708,17 @@ impl Module for SearchEngines {
 // OSINT pattern where an email → username → address chain only becomes
 // visible when you search for the intermediate entity.
 
-/// Regional searching toggle, set by the engine at scan start from
-/// `ScanOptions::regional_search`. Off ⇒ geolocation-neutral queries only. A
-/// process-global, like the see_know per-scan budget — concurrent scans in
-/// `serve` share it (last writer wins for the overlap window).
-static REGIONAL_SEARCH: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Enable/disable regional searching for subsequent scans.
-pub(crate) fn set_regional(on: bool) {
-    REGIONAL_SEARCH.store(on, std::sync::atomic::Ordering::Relaxed);
-}
+/// Regional searching toggle for the scan currently executing on this task —
+/// set by the engine at scan start from `ScanOptions::regional_search`. Off ⇒
+/// geolocation-neutral queries only. Reads the per-scan task-local ambient
+/// (`crate::util::regional`), not a process-global: the old `AtomicBool` was
+/// shared unkeyed across `hse serve`'s concurrent scans (PROBLEM_TREE T2.11 —
+/// "last writer wins for the overlap window"), so a concurrently-started scan
+/// could silently flip another in-flight scan's query building. The
+/// task-local ambient is inherently per-task, so this reads back only the
+/// setting the ENGINE established for the scan actually executing here.
 fn regional_enabled() -> bool {
-    REGIONAL_SEARCH.load(std::sync::atomic::Ordering::Relaxed)
+    crate::util::regional::regional_enabled()
 }
 
 /// True when `name` has been silenced by the session-dead tracker.

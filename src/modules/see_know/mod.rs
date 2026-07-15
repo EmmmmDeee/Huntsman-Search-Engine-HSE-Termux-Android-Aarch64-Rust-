@@ -401,9 +401,14 @@ async fn resolve_identity_pivots(
     seen: &mut HashSet<String>,
     result: &mut ModuleResult,
 ) {
-    // Distinct IDs already dispatched, so a chain that loops back never
-    // re-resolves the same account. Namespaced by kind ("d:"/"s:") so a numeric
-    // collision across platforms can't suppress a real pivot.
+    // Distinct IDs actually DISPATCHED (not merely discovered), so a chain
+    // that loops back never re-resolves the same account. Namespaced by kind
+    // ("d:"/"s:") so a numeric collision across platforms can't suppress a
+    // real pivot. Only ids `dispatch_{discord,steam}_pivots` report as
+    // attempted are inserted (see their doc comments) — a discovered id the
+    // per-scan budget couldn't fit stays eligible for a later hop instead of
+    // being silently blacklisted for the rest of this seed's resolution
+    // despite never once being queried.
     let mut resolved: HashSet<String> = HashSet::new();
     for _hop in 0..MAX_PIVOT_HOPS {
         if !see_know::budget_remaining() {
@@ -411,11 +416,11 @@ async fn resolve_identity_pivots(
         }
         let discord: Vec<String> = discover_discord_pivots(result)
             .into_iter()
-            .filter(|id| resolved.insert(format!("d:{id}")))
+            .filter(|id| !resolved.contains(&format!("d:{id}")))
             .collect();
         let steam: Vec<String> = discover_steam_pivots(result)
             .into_iter()
-            .filter(|id| resolved.insert(format!("s:{id}")))
+            .filter(|id| !resolved.contains(&format!("s:{id}")))
             .collect();
         if discord.is_empty() && steam.is_empty() {
             break; // converged — no unresolved IDs left
@@ -423,10 +428,18 @@ async fn resolve_identity_pivots(
 
         let mut pivot_results: Vec<(&'static str, Vec<Value>)> = Vec::new();
         if !discord.is_empty() {
-            pivot_results.extend(dispatch_discord_pivots(key, discord).await);
+            let (items, attempted) = dispatch_discord_pivots(key, discord).await;
+            for id in attempted {
+                resolved.insert(format!("d:{id}"));
+            }
+            pivot_results.extend(items);
         }
         if !steam.is_empty() && see_know::budget_remaining() {
-            pivot_results.extend(dispatch_steam_pivots(key, steam).await);
+            let (items, attempted) = dispatch_steam_pivots(key, steam).await;
+            for id in attempted {
+                resolved.insert(format!("s:{id}"));
+            }
+            pivot_results.extend(items);
         }
 
         let before = result.entities.len();

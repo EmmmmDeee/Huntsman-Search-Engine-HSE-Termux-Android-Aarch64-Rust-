@@ -1,10 +1,38 @@
 import { API } from '/static/js/api.js';
-import { esc, statusPill } from '/static/js/helpers.js';
+import { esc, fmtDate, statusPill } from '/static/js/helpers.js';
 import { apiBudgetsPanel, renderScansTable, wireScansTable } from '/static/js/views/scans.js';
+
+/* Per-module failure-streak panel (PROBLEM_TREE T2.7 / SOLUTION_TREE
+   SOL-HEALTH-SIGNAL) from GET /api/v1/modules/health — the web/API twin of
+   `hse doctor`'s "Module health" section, driven by the same live
+   dispatch-outcome data THIS process has accrued. Complements (not
+   superseded by) the Engines page's cross-scan, persisted "Scraper health"
+   panel — this one is in-process-only, so it stays quiet whenever the
+   process is fresh or fully healthy rather than showing an empty table. */
+function moduleHealthPanel(health){
+  const mods = (health && health.modules) || [];
+  const body = mods.length
+    ? `<table class="table table-condensed" style="margin-bottom:0">
+        <thead><tr><th>Module</th><th class="text-right">Consecutive failures</th><th class="text-right">Last succeeded</th></tr></thead>
+        <tbody>
+          ${mods.map(m=>`<tr>
+            <td>${esc(m.name)}</td>
+            <td class="text-right"><span class="label label-warning">${m.consecutive_failures}</span></td>
+            <td class="text-right">${m.last_success_at ? fmtDate(m.last_success_at) : '<span class="text-muted">never this process</span>'}</td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`
+    : '<p class="text-muted" style="margin:0">No modules currently show a failure streak.</p>';
+  return `<div class="panel panel-default" style="margin-top:12px">
+    <div class="panel-heading"><b>Module Health</b>
+      <span class="pull-right" style="font-size:12px">${mods.length} with a failure streak this process</span></div>
+    <div class="panel-body">${body}</div>
+  </div>`;
+}
 
 /* ═══════════ Page: DASHBOARD (#/dash) ═══════════ */
 export async function renderDash(v){
-  const [stats, mods, scansData] = await Promise.all([API.stats(), API.modules(), API.scans()]);
+  const [stats, mods, scansData, health] = await Promise.all([API.stats(), API.modules(), API.scans(), API.moduleHealth()]);
   const s = stats;
   const recent = (scansData.scans || []).slice(0, 8);
   const byStatus = s.scans_by_status || {};
@@ -77,6 +105,7 @@ export async function renderDash(v){
     </div>
 
     ${apiBudgetsPanel(s)}
+    ${moduleHealthPanel(health)}
 
     <div class="panel panel-default" style="margin-top:12px">
       <div class="panel-heading"><b>Recent Scans</b>

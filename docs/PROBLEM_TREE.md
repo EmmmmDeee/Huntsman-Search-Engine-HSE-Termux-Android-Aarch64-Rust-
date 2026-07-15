@@ -73,14 +73,22 @@ Priority: **P0** crash/corruption · **P1** breaks a core guarantee · **P2**
 quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
-Current baseline (grounded in the codebase, 2026-06-18): **126 modules** (93 free
-· 28 key-gated · 5 paid) across 14 categories (Infrastructure 21, Geo 20, People
-16, DnsRecon 13, Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5,
-Sensor 4, Threat 3, Search/Other 2 each); 64 native correlation rules
-(AU-001…AU-064); 0 `unsafe`; deterministic entity merge; SQLite store; SSE live;
-axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct (dev-only,
-zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
-`util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT direct.**
+Current baseline (grounded in the codebase; aggregate counts re-verified
+2026-07-15, per-category split as of 2026-06-18 except People, bumped for the
+`opensanctions` addition): **162 modules** (live registry size, guarded by
+`readme_module_overview_count_matches_registry`); the per-category split
+below is otherwise the 2026-06-18 snapshot and has NOT been re-derived — 14
+categories (Infrastructure 21, Geo 20, People 17, DnsRecon 13, Breach 11,
+Social 11, Email 6, Corporate 9, Phone 3, Web 5, Sensor 4, Threat 3,
+Search/Other 2 each) — treat the sub-counts as approximate until re-tallied;
+**110 native correlation rules** (dispatched `rule_au_*` functions: 97 entity
+rules + 13 relation-graph rules; ID ceiling AU-112; a few IDs like AU-065/066
+are engine-emitted rather than dispatched, so they occupy numbers outside the
+dispatch tables); 0 `unsafe`; deterministic entity merge; SQLite store; SSE
+live; axum SPA. Deps: `regex` in; **`proptest` 1.11 + `criterion` 0.8 direct
+(dev-only, zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps
+(F.1, `util::scan` + `util::html`); `bstr`, `fst`, `arbitrary` still NOT
+direct.**
 
 ---
 
@@ -265,10 +273,17 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   needed for these (≈30–250 entries; memory-mapping buys nothing at that size).
   *Remaining (premise corrected, cycle 18):* the "large table" assumption was wrong —
   Huntsman uses curated subsets: OUI ≈111 entries (not the full IEEE registry ≈30k),
-  AU postcode ≈72 entries, phone area codes ≈65 entries. At these sizes `fst` adds a
+  AU postcode ≈100 entries, phone area codes ≈65 entries. At these sizes `fst` adds a
   heavy compile dep for zero on-device benefit; `fst` adoption is `[-]` (accepted-
   won't-build). Levenshtein fuzzy matching (suburb/username-variant) remains a future
   capability goal but can be pursued via a lighter mechanism.
+  *Count correction (2026-07-01):* the AU postcode gazetteer (`src/util/
+  postcode_au/mod.rs`) grew to 96 entries when commit `a6f09f83` added 24
+  regional-city postcodes — the "≈72" figure recorded here predates that
+  addition and was never updated across 20 subsequent doc-touching
+  commits. Corrected to "≈100" to match the gazetteer function's own doc
+  comment ("the same ~100 postcodes"), so future additions within that
+  range don't re-stale this line.
 - **`[x]` F.3 · Proof & measurement infrastructure** — was: no property testing,
   no fuzzing, only `#[ignore]` perf baselines.
   → **Solution:** add (dev-only, zero runtime cost): **`proptest`** suites for
@@ -296,6 +311,23 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   property (`mod prop` in `cli/import/tests.rs`) over arbitrary Unicode strings
   (≤512 chars); also asserts every emitted entity value is non-empty. 3 new
   properties, 3,032 lib tests, gate green.
+  **+extract-parser proptest (2026-07-02, SOL-F3):** `util::extract` — the
+  shared free-text identifier miner every scraper/breach/stealer-log module runs
+  over fully attacker-shaped input — had comprehensive example-based tests but
+  ZERO property coverage, despite housing exactly the byte-walking (`page_emails`
+  manually walks `text.as_bytes()` and re-slices at computed offsets) and
+  char-slicing (`ibans`/`macs` normalisers) code F.3 flags as the panic surface.
+  Added a `mod prop` (7 properties over arbitrary `.{0,256}` strings) asserting
+  totality-plus-well-formedness for `emails`/`page_emails`/`ibans`/`macs`/
+  `phones`/`labeled_ssids` and totality-plus-internal-consistency for
+  `classify_credential_field`. The properties encode a real behavioural asymmetry
+  rather than a blanket no-panic: `page_emails` (strict byte-walker: non-empty
+  local, alphanumeric-leading dotted host, trailing dots stripped) is asserted to
+  always satisfy `looks_like_email`, while the looser regex-based `emails` is
+  NOT — it can legitimately match a dot-leading host (`a@.example.com`) the
+  structural gate rejects, so over-asserting there would be a false invariant.
+  No production code changed (the extractors proved already-total); 7 new
+  properties, 4,316 lib tests, gate green.
   *Remaining:* `cargo-fuzz` (nightly/libfuzzer — gate on a CI lane, not on-device
   aarch64); widen criterion to the correlation pass once a bench-visible entry
   point exists.
@@ -444,6 +476,114 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   add a per-source **health signal** (last-success, parse-rate) surfaced in
   `hse doctor` + the SPA; auto-flag a source "drifted" when parse-rate drops.
   **P2** *(robustness only; source legality is parked in §7.)*
+  *Partial (2026-07-01):* a literal golden fixture (a saved real response) for
+  any of these five modules is still genuinely infeasible without either a
+  live fetch against a real site or a fabricated-looking snippet — confirmed
+  again this cycle, not just assumed. But `au_people`'s three HTML parsers
+  (`parse_whitepages_html`, `parse_tps_html`, `parse_relatives`) had zero
+  adversarial-input coverage at the module level, unlike the shared
+  primitives they delegate to (`util::html::strip_html`,
+  `util::str_util::find_ascii_ci`), which already carry a proptest `mod prop`
+  never-panics guarantee. Added the same pattern to `au_people/tests.rs`: 3
+  new `proptest!` cases proving each parser never panics on arbitrary
+  `.{0,256}` input. This closes the panic-safety gap for one of the five
+  modules, not the "layout drift fails a test" goal T2.7's solution actually
+  asks for (proptest catches crashes on adversarial bytes, not silent
+  semantic drift from a real site's markup changing shape).
+  *Partial (2026-07-01, cont'd):* the identical gap is now closed for
+  `au_electoral` (`extract_division`) and `au_property`
+  (`parse_nsw_response`/`parse_vic_response`/`parse_qld_response`) —
+  3 of the 5 named modules now carry never-panics proptest coverage.
+  *Partial (2026-07-01, cont'd 2):* `search_engines` closed too — 4 of 5.
+  Unlike the other four modules, `search_engines` has no per-source
+  bespoke parser; one generic `parse_results` (plus its constituent pure
+  iterators `HrefIter`/`CiteIter`/`GoogleUrlIter` and
+  `external_link_count`) handles all 17 SERPs, and it already carried a
+  hand-written adversarial-input regression test
+  (`result_parsers_never_panic_on_adversarial_html`, ~20 hand-picked
+  hostile-byte cases) — but not the randomized `proptest` never-panics
+  guarantee the other four modules now have, which exercises the full
+  `.{0,256}` arbitrary-input space rather than a fixed case list. Added a
+  `mod prop` block mirroring the established pattern exactly (5 new
+  cases).
+  *Partial (2026-07-02, cont'd 3 — `username_search` scoped, leg now 5/5):*
+  confirmed against the code what the prior note left unconfirmed.
+  `username_search` genuinely has no bespoke parser: its `Detect` enum is
+  exactly three total variants (`StatusEq`, `StatusAndBody`,
+  `StatusAndNotBody`) resolved by an HTTP-status compare plus
+  `str::contains` (both total), so there is nothing parser-shaped to
+  proptest at the module level. Its ONE untrusted-input processor is
+  `scan_text_for_keys(&body)`, which runs over the fully attacker-controlled
+  probe-page body and delegates to `oathnet_pro::key_harvest::identify_api_key`.
+  That delegate turned out to be the real, uncovered panic surface: the
+  existing `mod prop` never-panics property covered only
+  `identify_vendor_api_key`, while the PUBLIC `identify_api_key` is a
+  superset (generic-hex gate, URL-embedded-key extraction that byte-slices
+  at a computed offset under a length cap, a `user:password` split, and a
+  recursive self-call) — none of which the vendor-only property exercises.
+  Added a `.{0,512}` never-panics proptest for `identify_api_key` plus a
+  deterministic regression test driving a `?key=` value far past the
+  extraction cap built from 3-byte characters (so the byte cap lands
+  mid-codepoint — a raw slice would panic; the extractor's `truncate_safe`
+  boundary-snap keeps it total). So the adversarial-input leg is now 5/5:
+  four modules carry bespoke-parser never-panics proptests, and
+  `username_search`'s untrusted-input path is covered where it actually
+  lives (`identify_api_key`, which also serves `oathnet_pro` stealer
+  harvesting). The golden-fixture/health-signal legs (T2.14's sibling,
+  SOL-HEALTH-SIGNAL) remain fully open.
+  *Partial (2026-07-05):* the health-signal leg's achievable half now
+  delivered. SOL-HEALTH-SIGNAL's own text bundles two signals with
+  genuinely different prerequisites — `parse_rate` needs the golden-fixture
+  corpus (still infeasible, per the notes above), but `last_success_at` +
+  `consecutive_failures` need only the dispatch outcomes the engine already
+  classifies (`dispatch::finalise_module_result`'s existing
+  timeout/error/success branches), with no golden-fixture dependency at
+  all — a real, evidence-based refinement of the earlier blanket "deferred
+  until golden-fixture corpus" note, not a re-litigation of it. New
+  `core::engine::health` module (mirroring `core::engine::circuit`'s
+  process-global shape, but deliberately distinct: `circuit` is a
+  retry-avoidance breaker that clears history on success and uses monotonic
+  `Instant`; `health` retains history across successes using wall-clock
+  epoch seconds, since the two answer different questions — "is it safe to
+  retry right now" vs. "when did this source last actually work"). Wired
+  into `finalise_module_result`'s three real branches (timeout, hard error,
+  success — `MissingKey` is correctly excluded: an unconfigured provider
+  opting out is not a source failure). Surfaced in `hse doctor` as a new
+  "Module health" section, quiet by default (nothing printed beyond one
+  summary line on a healthy/fresh process — confirmed with a real run: `hse
+  doctor` on this session's process correctly printed "no modules currently
+  show a failure streak"). `parse_rate`/"drifted" auto-flagging and the SPA
+  panel remain open — T2.7 stays `[~]`, not `[x]`.
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL `[ ]`→`[~]` + §4a + §5 —
+  same commit.
+  *Partial (2026-07-06): the SPA-panel leg closed.* `module_health_report()`
+  was reachable only from `hse doctor` — an operator running the web UI
+  (the SPA, not the CLI) had zero visibility into a module's failure streak
+  even though the engine tracked it live for every scan. Added `GET
+  /api/v1/modules/health` (mirroring `engines_health`'s existing shape: a
+  thin handler over an extracted pure `module_health_json` mapping function,
+  split out the same way `cli::doctor::format_module_health` already is, so
+  the JSON shaping is unit-testable without depending on the live
+  process-global health state — that state is shared across the whole test
+  binary and would make direct assertions flaky). Wired a new "Module
+  Health" Dashboard panel in `spa.html`, quiet by default (one reassuring
+  line on a healthy process, a table of name/streak/last-success otherwise
+  — mirroring `hse doctor`'s own "quiet unless something's actually wrong"
+  behaviour). 2 new unit tests (`module_health_json`'s shape + empty case),
+  1 new API integration test (route wiring — red/green-verified by
+  temporarily removing the route registration, which correctly 404s), and 1
+  new SPA-wiring guard (`embedded_spa_wires_the_module_health_endpoint`,
+  matching the established "dead-from-the-UI" guard pattern already used
+  for `/keys/status`, `/benchmark`, `/scan/auto/plan`, …). Confirmed against
+  a real running `hse serve` process: `GET /api/v1/modules/health` returns
+  `{"count":0,"modules":[]}` on a healthy process. Only `parse_rate`/
+  "drifted" auto-flagging remains open (still blocked on the golden-fixture
+  corpus, repeatedly confirmed infeasible without a live fetch or a
+  fabricated-looking snippet — see the 2026-07-01 notes above); T2.7 stays
+  `[~]`, not `[x]`, for that one remaining leg. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4617 total pass (+4). **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL §4a +
+  §5 — same commit.
   **Health-signal leg delivered (2026-07-11, SOL-HEALTH-SIGNAL):** the sketch's
   premise — that this needed a new tracking column/table and had to wait for
   SOL-F1's parser rewrites to land first — didn't hold up: the engine already
@@ -2847,6 +2987,97 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   never linked back to until now (found 2026-07-05: `SOLUTION_TREE`'s SOL-ISOLATE
   entry, dated the day *before* SOL-BUDGET's re-assessment, still described the
   same residual as pending; corrected there too, same commit).
+  - **MED — regional-search toggle contamination (found 2026-07-02, NOT the
+    budget-static residual above — a distinct, previously-untracked instance of
+    the same root cause).** `modules::search_engines::REGIONAL_SEARCH` is a
+    single process-global `AtomicBool`, set by `core::hooks::set_regional`
+    partway through `run_with_ledger_inner` from
+    `scan.options.regional_search || settings::get_bool("feature.regional", …)`,
+    and read by `search_engines::regional_enabled()` deep inside every query-
+    builder call for the whole scan. The field's OWN doc comment already
+    self-documents the exact race: *"A process-global, like the see_know
+    per-scan budget — concurrent scans in `serve` share it (last writer wins
+    for the overlap window)."* Under `hse serve`'s 8-concurrent-scan model, if
+    scan B starts (and calls `set_regional`) while scan A's search-engine
+    modules are still mid-flight, A's in-progress query builders silently start
+    reading B's regional setting instead of A's own — a scan's actual search
+    queries (and therefore its results) can silently deviate from what the
+    operator configured for THAT scan, purely as a function of unrelated
+    concurrent-scan timing. This is a determinism/data-quality corruption, not
+    a resource-cost one (unlike the LOW over-dispatch item above), so it sits
+    with the MED-severity siblings. This exact defect was self-documented in
+    the code but never captured in either tree despite T2.11 existing
+    specifically to track "process-global state not isolated across the 8
+    concurrent `serve` scans" — confirmed via a direct code read, not
+    speculation. **P2** ✅ **Fixed (2026-07-02, cont'd):** the sketched
+    SOL-ISOLATE replication was implemented in full. New `util::regional`
+    module: a `tokio::task_local!` ambient (`REGIONAL: bool`) with
+    `with_regional`/`regional_enabled`, mirroring `util::found_keys::SCAN`/
+    `with_scan`/`current_scan()` exactly. `run_with_ledger` now computes
+    `regional_on` from `scan.options.regional_search || settings::get_bool(…)`
+    BEFORE moving `scan` into `run_with_ledger_inner`, and wraps the inner
+    future in `with_regional(regional_on, …)`, nested inside the existing
+    `found_keys::with_scan`; the concurrent dispatch path's per-module
+    `set.spawn(...)` at `dispatch.rs:993` reads the ambient value with
+    `regional_enabled()` (valid — dispatch runs on the same task the ambient
+    was set on, right up to the spawn) and re-establishes it inside the
+    spawned task, since task-locals don't cross `spawn`. Retired
+    `core::hooks::ModuleHooks::set_regional` (the `fn(bool)` hook couldn't
+    wrap a future) and its `modules::mod.rs` installation entirely — the
+    engine now sets the ambient directly via the allow-listed pure
+    `core → util` leaf, exactly like `found_keys::with_scan`. `search_engines`'s
+    `REGIONAL_SEARCH: AtomicBool` + `set_regional` are gone;
+    `regional_enabled()` is now a thin wrapper over `util::regional::regional_enabled()`.
+    3 new test layers: 4 `util::regional` unit tests (unscoped-default,
+    scoped-read-back, nested-scope non-leakage, async `with_regional`); a
+    `search_engines` wiring test
+    (`build_queries_reads_the_per_scan_regional_ambient`) proving `build_queries`
+    picks up the ambient and that nested/overlapping scopes don't contaminate
+    each other; and — the strongest proof — a genuine dual-concurrent-scan
+    integration test
+    (`concurrent_scans_do_not_contaminate_each_others_regional_setting` in
+    `tests/smoke.rs`) that runs TWO real scans through the actual engine via
+    `tokio::join!` with opposite `regional_search` settings on the concurrent
+    dispatch path, asserting each scan's `search_engines`-observed setting is
+    its own. Verified as a genuine regression test by reverting only the
+    `dispatch.rs` re-scope and re-running: the integration test failed (it
+    did not return within a 30 s bound and was killed by the test harness's
+    timeout, rather than completing with a wrong-value assertion failure —
+    the exact underlying mechanism was not further root-caused, since the
+    observed FAILED result was sufficient proof the re-scope is load-bearing);
+    restored the fix and re-confirmed the test passes cleanly (well under a
+    second) with it in place. Full gate green (fmt/clippy/doc/test);
+    `hse selftest` (161 modules, dispatch graph intact) and `hse doctor` both
+    exercised the real CLI surface post-change with no regression.
+  - **MED — OathNet search-session contamination (found 2026-07-02, another
+    previously-untracked instance of the same root cause).**
+    `util/oathnet/mod.rs`'s `SEARCH_SESSION` was a **single-slot** process-
+    global `Mutex<Option<(value, session_id)>>`: `init_session(value)` stored the
+    one pair, and `search(value)` read it back via `session_id_for(value)` to add
+    `&search_id=` (so a target's breach + stealer queries share ONE paid lookup
+    instead of two). Keyed only by value, with room for exactly one entry, it was
+    clobbered by any concurrently-running scan: under `hse serve`, scan B's
+    `init_session` for its own target overwrote the slot while scan A was between
+    its `init_session` and its `search`, so A's `session_id_for` missed and A
+    silently paid **double quota** — the session optimisation defeated purely by
+    concurrent-scan timing. The `hse oathnet` batch path (which never inits a
+    session) could also read a session id a concurrent `serve` scan left in the
+    slot for the same value. **P2** ✅ **Fixed (2026-07-02):** the process-global
+    is **removed entirely** — a cleaner shape than the SOL-ISOLATE task-local,
+    applicable here because the session id is available right at the call site
+    (unlike `found_keys`, which needed the ambient because `scan_body` is reached
+    deep in the shared HTTP chokepoint with no `scan_id`). `init_session` now just
+    returns the id; the caller (`oathnet_pro::process`) holds it in a local and
+    threads it explicitly into each `search` call via a new
+    `session_id: Option<&str>` parameter; the batch path passes `None`.
+    `SEARCH_SESSION`/`session_id_for` and the now-unused `Mutex` import are gone.
+    The URL construction was extracted into a pure `build_search_url(base, path,
+    field, value, page_size, session_id)` seam so the threading is unit-testable
+    without a live endpoint; regression test
+    `build_search_url_appends_search_id_only_when_a_session_is_supplied` asserts
+    the id is appended (url-encoded) iff a session is supplied — red against the
+    old code, which read the id from the shared slot rather than the parameter.
+    Gate green (fmt/clippy/doc/test, 4332 lib tests +1); `hse selftest` 9/9.
 - **`[x]` T2.12 · Periphery correctness bugs (CLI / diff / cache / pool)** — the
   2026-06-17 internals audit of the least-covered subsystems found a cluster of
   real but contained defects (the cores — key_pool rotation, crypto, proxy SSRF,
@@ -2908,6 +3139,28 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
     (export/diff/audit on a non-complete scan was silent, misleading, or empty).
     Test `resolve_scan_id_rejects_incomplete_scans` guards it. T2.12 fully closed ✅.
     **P3.** *(All contained; none crash or corrupt persisted scan data.)*
+  - **Follow-up (2026-07-02): the same exit-code-contract defect class, in a
+    command added after this sweep.** A fifth discovery pass's CLI-contract
+    sweep found the aggregate `hse diagnostics` command (`cli/diagnostics.rs`,
+    added 2026-06-30 — 13 days *after* the 2026-06-17 T2.12 sweep, so genuinely
+    out of its reach) defeated by exactly the class of bug T2.12 fixed
+    elsewhere. `cmd_diagnostics` runs doctor → selftest → engines and both its
+    doc comment and its code promise to run all three "in a single pass" and,
+    on any failure, print an aggregate "N section(s) failed" summary (it
+    collects failures into a `Vec<&str>` and returns one `Err` at the end).
+    But section 2/3, `selftest::cmd_selftest`, signalled failure by calling
+    `std::process::exit(1)` **directly** — so a failing self-test killed the
+    whole process mid-pass: the `engines` section (3/3) never ran, the `if let
+    Err(e)` arm that was supposed to catch it was unreachable, and the aggregate
+    summary never printed. `cmd_selftest` is the only one of the three sections
+    that hard-exited (`doctor`/`engines` correctly return `Result`). Fixed by
+    having `cmd_selftest` *return* an `Err` on failure instead — the binary's
+    `main` already maps any returned error to `exit(1)`, so the standalone `hse
+    selftest` non-zero-exit contract is unchanged, while `cmd_diagnostics` can
+    now catch the failure and finish its pass. Extracted a pure
+    `report_to_result(&Report)` helper (the `process::exit` path was inherently
+    untestable) so the pass→`Ok`/fail→`Err` contract is unit-tested (2 tests).
+    ✅ **Fixed (2026-07-02).**
 - **`[x]` T2.13 · Dead "ROI" hint — dossier's "keyed/paid module(s) yielded
   nothing" line could never fire** *(found + fixed 2026-07-01)* —
   `cli/scan/dossier.rs::print_diagnostics` computed its wasted-spend hint by
@@ -2983,7 +3236,55 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   (`KeyGated`/`Paid` only), or replace the per-module enumeration with a
   bounded count ("N of M dispatched modules found nothing for this target
   kind"). **P3** *(advisory-only; nothing correctness-critical depends on
-  either hint).* **Implemented (2026-07-11):** option (b) — new
+  either hint).*
+  *Partial (2026-07-01):* two prior investigations this session confirmed
+  the literal scan-level "60s + zero-yield module" reinstatement is NOT
+  actually simple — the old condition has the same noise problem T2.14
+  reserves for the per-module hint. A third, differently-designed hint
+  closes real value instead, without reinstating either dead one: a
+  scan-wide "every dispatched module ran and the scan still found nothing"
+  signal (`entities.is_empty() && scan.modules_run > 0`) — categorically
+  distinct from the per-module noise case, since it fires at most once per
+  scan and only on a near-certain misconfiguration/dead-target scenario,
+  never when a scan legitimately dispatched nothing (`modules_run == 0`,
+  e.g. an unsupported target kind gate-skipped every candidate module
+  first — a different, already-explained situation). New pure
+  `total_dead_scan_hint` helper in `cli/scan/dossier.rs`, mirroring
+  T2.13's `zero_yield_keyed_or_paid_modules` pattern exactly; heads the
+  OPTIMIZATION HINTS list (`insert(0, …)`) rather than getting buried. 3
+  unit tests. Known wart, noted honestly rather than glossed over: this
+  doesn't remove the pre-existing "no optimization signals detected —
+  pipeline is well-tuned for this seed" fallback line, which can still
+  print alongside the new hint when entities are empty (that fallback
+  fires whenever the geo/module-yield hints found nothing to say, which is
+  always true on an empty scan) — a cosmetic redundancy, not a
+  correctness issue, left for a future polish pass. The two ORIGINAL dead
+  hints (scan-level 60s-and-zero-yield, per-module zero-entities) remain
+  unrestored; this closes T2.14's underlying value gap with a safer
+  design, not the literal restoration the node's title describes.
+  *Delivered (2026-07-05):* the per-module noise decision, closed — the
+  remaining open question from the partial fix above. Adopted the
+  cost-gate candidate (`KeyGated`/`Paid`-only): a wasted paid/key-gated
+  module call is real, actionable signal, unlike the dozens of `Free`
+  modules that legitimately find nothing for a given target kind, which
+  would flood the list if surfaced per-module. New
+  `keyed_or_paid_zero_yield_hint` in `cli/scan/dossier.rs` formats the
+  already-computed, already cost-gated `zero_yield_keyed_or_paid_modules`
+  set (T2.13's own ROI-hint set — no new gating logic) as a single
+  `optimization_hints` entry, alongside the dossier's separate
+  `--exclude`-suggesting ROI println. 2 unit tests (4345 lib tests, +2).
+  Known residual, noted honestly: this reaches the CLI dossier surface
+  only, same as `total_dead_scan_hint` above — `api::handlers`'s own
+  `analyse()` call only updates the adaptive-routing ledger and the plain
+  `hse scan` diagnostics path doesn't render `optimization_hints` either,
+  so neither hint reaches those surfaces yet; a pre-existing cross-surface
+  gap, not introduced here, and out of this node's stated scope. T2.14
+  closed `[~]`→`[x]`.
+  *Merge note: origin/main's independent closure of the same node, kept as
+  a further, later, non-duplicate delivery (verified against `src/` — both
+  `total_dead_scan_hint` above and the module below are real and coexist in
+  the merged tree):*
+  **Implemented (2026-07-11):** option (b) — new
   `util::diagnostics::event_hints::append_event_sourced_hints`, built from
   `Event`/`ModuleCost` (ground truth a pure entity-only `analyse()` can't see:
   a dispatched module that found nothing never appears in `modules_by_yield`
@@ -3000,7 +3301,203 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   zero-yield modules produces one line, not thirty. Live-verified on a real
   `hse scan --kind coords --output json` run: `optimization_hints` correctly
   reads `"4 of 12 dispatched modules found nothing for this target kind"`.
-- **`[x]` T2.15 · Silent multi-row deserialize/read failures (storage layer)**
+- **`[x]` T2.15 · `recall_prior_entities`'s confidence-only sort had no uid
+  tie-break — which entities survive the cap, not just their order, could
+  differ across identical runs** — `core::engine::mod.rs`'s
+  `recall_prior_entities` merges a target's prior-scan entity graph into a
+  `HashMap<String, Entity>` keyed by uid, collects it via `.into_values()`
+  (inheriting the map's randomised-per-process iteration order), sorts
+  strongest-confidence-first, then truncates to `MAX_ENTITIES` (300). The
+  comparator ordered by `confidence` alone, with no further tie-break —
+  unlike its three siblings in the same file (`rank_enrichment_leverage`,
+  `rank_autonomous_targets`, the autonomous-cluster ranking), which all
+  already carry a `.then_with(uid.cmp)` tie-break. Modules routinely stamp
+  flat literal confidences (0.6, 0.7, 0.8, …), so exact ties at the
+  300-entity cutoff are realistic for any heavily-scanned recall target —
+  a direct `CONVENTIONS.md` §5 violation, and more consequential than a
+  cosmetic reordering: two identical `hse scan` invocations of the same
+  target against the same DB state could retain a *different set* of
+  recalled entities. **P1** (a core reproducibility guarantee, not
+  cosmetic — the same class T1.1/T2.9 already closed elsewhere, found
+  fresh in a function neither of those passes touched).
+  *Fixed (2026-07-05):* added the same `.then_with(|| a.uid.cmp(&b.uid))`
+  tie-break used by the three sibling functions. Extracted the sort+
+  truncate step into its own `rank_recalled_and_cap(out, max)` — mirroring
+  how the three siblings are already standalone, directly-testable
+  functions rather than bundled inline — so the fix is independently
+  unit-testable without a full recall pipeline. New regression test
+  constructs 305 identically-confident entities, feeds them through
+  forward and reversed, and asserts the surviving 300-entity set is
+  byte-identical; red/green-verified by temporarily removing the tiebreak
+  (failed — different orders produced disjoint-ish 300-entity survivor
+  sets) and restoring (passed). The two pre-existing `recall_prior_entities`
+  behavioural tests pass unchanged — the extraction is behaviour-preserving.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4606 total pass (+1).
+
+- **`[x]` T2.16 · `seon`'s response-deserialisation types modelled a schema
+  SEON stopped returning — the module's core extraction was structurally
+  dead code against the real API on BOTH the email and phone paths, while
+  still spending the operator's paid/keyed quota on every call.** Found
+  2026-07-15 during a "seek/oathnet and other breach and analogous sources"
+  investigation, after independently verifying (fetching SEON's own current
+  API reference directly, not inferring) that `email-api/v3`'s migration
+  guide states verbatim: *"`account_details` — removed and replaced by
+  `account_aggregates`... Individual account registration details are no
+  longer returned by default."* `src/modules/seon/types.rs`'s
+  `SeonEmailData` (pre-fix) declared exactly `score`, `deliverable`,
+  `domain_details`, `account_details` — ZERO of these field names appear
+  anywhere in the real `email-api/v3` response (confirmed via a complete,
+  verbatim example response fetched from SEON's docs); every field
+  deserialized to `None` via `#[serde(default)]`, so `body.success`/`body.data`
+  still parsed successfully (no error path triggered) while
+  `build_email_entities` silently emitted only the bare re-enriched seed —
+  the module's own doc comment ("Every registered platform that reports a
+  profile URL becomes a `Url` entity") and its `attack_techniques()`
+  justification (T1593.001, "SEON detects presence across 250+ platforms")
+  were both false for every real call, a paid/keyed quota spend for
+  structurally-guaranteed near-zero yield. `phone-api/v2` independently
+  confirmed to have the identical defect (top-level `valid`/`carrier`/
+  `country`/`type`/`account_details` all moved under `provider_carrier_
+  details` or removed). Fixed for the **email** path only this cycle (one
+  API surface per cycle, per the standing "never expand scope mid-cycle"
+  discipline) against SEON's verified current schema: rewrote
+  `SeonEmailData` to match exactly (`risk_scores`, `email_details`,
+  `email_domain_details`, `account_aggregates`, `seon_fraud_history`,
+  `breach_details`, `associated_domain_registrations`), and — following
+  this codebase's "full-fidelity, maximum raw data" convention rather than
+  a bare survival patch — extracted genuinely new signal the old code never
+  modelled at all: a `Domain` entity per breach (mirroring `hibp`'s
+  breach→Domain pattern, `breach_date`-stamped for AU-019 clustering) and
+  WHOIS-style registrant PII (`Domain`/`Person`/`Organisation`/`Address`/
+  `Phone`, mirroring `whois`'s registrant-extraction confidence/redaction-
+  guard conventions) from `associated_domain_registrations` — a richer
+  signal than the module ever produced even before SEON's schema changed,
+  since per-platform Url/Person leads are structurally gone from the API
+  and cannot be recovered. Caught and fixed a genuine self-introduced bug
+  during self-review, not merely during testing: a category name
+  (`technology`) can legitimately appear in BOTH `business` and `personal`
+  aggregate groups with DIFFERENT counts (confirmed in SEON's own example
+  response), and an initial `BTreeMap`-keyed-on-name-alone merge would have
+  silently dropped one group's count — fixed by folding the group into the
+  label itself before sorting, verified against a fixture exercising the
+  exact collision. `attack_techniques()`/`produces()`/module doc comments
+  re-derived from the new real extraction (dropped T1593.001 "Social
+  Media" — confirmed gone from the live API on both paths — and T1591.004
+  "Identify Roles" — never earned, no role field exists anywhere in the
+  real schema, the same over-claim class already corrected for
+  `oathnet_pro`/`dehashed`; added T1589.002/T1591.001/T1591.002 for the new
+  breach/registrant extraction). Running the full architecture-guard suite
+  surfaced that `Url` must stay in `produces()` despite being confirmed
+  practically dead: `tests/architecture.rs`'s `every_literal_constructed_
+  entity_kind_is_declared_in_produces` guard checks literal source
+  construction, not live-API reachability, and the deliberately-untouched
+  phone path's `profile_url_entity` call is still a real `Entity::new(
+  EntityKind::Url, …)` construction in this module's source — corrected
+  rather than the guard being weakened. 17 tests (13 new + 4 rewritten to
+  the real schema; the phone-path tests are unchanged, since that code
+  wasn't touched), including a fixture built entirely from SEON's own
+  verbatim documented example response, a redaction/privacy-placeholder
+  guard test, and the business/personal category-collision test. Red/green
+  proof: confirmed zero field-name overlap between the pre-fix struct
+  (`score`/`deliverable`/`domain_details`/`account_details`) and the real
+  schema's field names, so every new test would have deserialized to
+  entirely empty/`None` values against the pre-fix code — a literal
+  single-line revert isn't a meaningful proof at this scale, so the
+  verification is the independently-fetched schema evidence plus the
+  demonstrated zero-overlap. Full parity: all 30 architecture guards pass
+  (including the two this fix's own self-review caught and correctly
+  satisfied, not weakened). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4383 total pass
+  (+13). No identity/PII impact (all fixture values synthetic, using this
+  codebase's established `Jordan Avery` placeholder). **P2** (severe
+  operator-value impact — silent paid-quota spend for near-zero yield —
+  but not a crash/corruption/architecture-guard violation, so P2 rather
+  than P0/P1).
+
+  **Phone-path leg closed 2026-07-15** (same finding, second cycle, one API
+  surface per cycle as planned): rewrote `SeonPhoneData` against
+  `phone-api/v2`'s verified current schema (independently re-fetched from
+  SEON's own docs) — `score`/`valid`/`carrier`/`country`/`country_code`/
+  `type`/`account_details` (the obsolete per-platform `whatsapp`/`viber`/
+  `telegram` presence map) are gone, replaced by `risk_scores` (the SAME
+  shape the email path already models — SEON reuses it across both
+  endpoints) and `provider_carrier_details`. Two genuinely new sections
+  this module never modelled on either path before: `hlr_details` (live
+  HLR network status — ported/roaming carrier, serving MSC, IMSI) and
+  `cnam_details` (PSTN Caller-ID-Name lookup), both mirroring the dedicated
+  `hlr_cnam` module's own established entity patterns (carrier →
+  `Organisation` pivot at 0.62 confidence, CNAM name → `Person` pivot at
+  0.55 confidence) rather than inventing new ones — direct precedent reuse,
+  not a new design. `account_aggregates`/`seon_fraud_history`/risk-score
+  handling factored into three shared helpers (`apply_risk_score`,
+  `apply_fraud_history`, `apply_account_aggregates`) used by both the email
+  and phone paths, since SEON's own schema confirms these three sections
+  are identical shapes on both endpoints — reduces duplication and keeps
+  the two paths from silently drifting apart on identical fields.
+  `profile_url_entity`/`registered_accounts` (the dead per-platform-Url
+  helpers) deleted outright now that no code path constructs
+  `EntityKind::Url` any more — `produces()` correspondingly drops `Url` for
+  real (the prior cycle had to keep it declared only because the guard
+  requires a literal-construction match). `attack_techniques()` gains bare
+  `T1589` (the ATT&CK parent — no phone-specific sub-technique exists in
+  the real catalogue) for the carrier/HLR/CNAM identity signal, mirroring
+  `hlr_cnam`'s own declared coverage for identical work; `ipqs` already
+  establishes the parent+child pairing as an accepted pattern in this
+  codebase. 12 new/rewritten phone tests including a fixture built from
+  SEON's own verified `phone-api/v2` field names (`REAL_PHONE_RESPONSE`),
+  a red/green anchor test, carrier-Organisation and CNAM-Person pivot
+  tests, and a too-short-value guard test. Red/green proof: zero
+  field-name overlap between the pre-fix top-level fields (`score`/
+  `valid`/`carrier`/`country`/`country_code`/`type`/`account_details`) and
+  the real schema's top-level fields, so every new assertion would have
+  seen only `None`/empty values against the pre-fix struct. Self-review
+  caught a false-positive triggered by the fix's OWN doc comment: writing
+  out the literal string `` `Entity::new(EntityKind::Url, …)` `` inside a
+  prose explanation of why that construction no longer exists tripped
+  `tests/architecture.rs`'s naive text-scanning guard (it does not parse
+  Rust, so it cannot distinguish a comment from code) — reworded rather
+  than treating it as a guard bug. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4388 total pass
+  (+5 net over the email-path cycle's count, after 12 added and some
+  consolidated into shared helpers). No identity/PII impact (all fixture
+  values synthetic). T2.16 is now fully closed on both API surfaces.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **`[ ]` T2.17 · `opensanctions`'s `/match` endpoint also supports a
+  `Company`/`Organization` schema query for corporate sanctions/debarment
+  screening (an `Organisation` target — company name → sanctioned/debarred
+  entity match), deliberately not built this cycle (2026-07-15) — scoped to
+  `Person`/`FullName` screening only, one target-kind surface per cycle, per
+  the same discipline `seon`'s email→phone split followed (T2.16). Real,
+  concrete, and low-risk to add later: the response schema, `match: true`
+  gate, and tag/evidence conventions this cycle established for `Person`
+  carry over directly. **P2** (a genuine coverage gap, not a defect — no
+  urgency, tracked so it isn't silently dropped). See `docs/PROBLEM_TREE.md`
+  §4 C3 (2026-07-15 delivery) for the full context. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+
+  > **Merge note (ID collision, resolved by renumbering):** the three
+  > `T2.15`/`T2.16`/`T2.17` nodes above (uid-tie-break sort fix, `seon`
+  > schema rewrite, `opensanctions` Organisation-schema gap) and the three
+  > `T2.15`/`T2.16`/`T2.17` nodes that used to sit immediately below
+  > (storage-layer silent deserialize failures, silent chmod failure,
+  > `latest_completed_scan` corrupt-row misreport) were SIX genuinely
+  > different problems that both branches independently minted under the
+  > SAME three IDs after diverging. Nothing was dropped: the storage-layer
+  > trio is renumbered to **`T2.158`/`T2.159`/`T2.160`** (continuing after
+  > the pre-existing `T2.157` ceiling) immediately below, and its own
+  > cross-references (including the paired `2026-07-05` §8 log entries)
+  > were updated to match within this file. The trio above (uid-tie-break/
+  > `seon`/`opensanctions`) keeps its original numbers — it is the more
+  > established, actively-referenced set (woven into §4 C3's 2026-07-15
+  > `opensanctions` delivery). **Residual follow-up (out of this doc's
+  > scope):** `SOLUTION_TREE.md`, `CHANGELOG.md`, and any source comments
+  > that cite the storage-layer fixes by their old `T2.15`/`T2.16`/`T2.17`
+  > numbers still need updating to `T2.158`/`T2.159`/`T2.160` — not done
+  > here since this pass is scoped to `docs/PROBLEM_TREE.md` only.
+
+- **`[x]` T2.158 · Silent multi-row deserialize/read failures (storage layer)**
   — every multi-row reader in `storage/` (`list_scans`, `correlations_for_scan`,
   `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
   `entities_filtered`, `search_entities`'s FTS and LIKE paths — 8 sites total)
@@ -3017,7 +3514,7 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   the row; wired into all 8 call sites across `storage/mod.rs` and
   `storage/entities.rs`. The "one bad row must not fail the whole page"
   behaviour is unchanged — only the missing diagnostic is added. **P2**
-- **`[x]` T2.16 · Silent chmod failure on the store's PII-bearing files** —
+- **`[x]` T2.159 · Silent chmod failure on the store's PII-bearing files** —
   `Store::open`'s owner-only (0600) restriction loop over the db file plus its
   `-wal`/`-shm` siblings did `let _ = std::fs::set_permissions(&p,
   owner_only.clone());`, discarding the `Result` with no `tracing::warn!` —
@@ -3026,13 +3523,13 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   store "holds PII + harvested third-party keys" per the code's own comment,
   a failed chmod silently left the file at the process umask (often 0644,
   world-readable) with zero operator signal. Found by the same storage-layer
-  discovery pass as T2.15. → **Solution:** extracted the loop into a private
+  discovery pass as T2.158. → **Solution:** extracted the loop into a private
   `restrict_to_owner_only(paths)` helper that logs a `tracing::warn!` keyed
   by the failing path before continuing — startup is still never blocked by a
   chmod failure, only made loud. **P2**
-- **`[x]` T2.17 · `latest_completed_scan` misreports a corrupt row as "no
+- **`[x]` T2.160 · `latest_completed_scan` misreports a corrupt row as "no
   completed scans"** — *(supersedes the "closes the storage-layer discovery-
-  pass arc" claim in T2.16's log entry — one more genuine finding surfaced by
+  pass arc" claim in T2.159's log entry — one more genuine finding surfaced by
   a direct follow-up grep sweep of the same file.)* `Store::get_scan`
   propagates a corrupted `data_json` as `Err` via `?` (confirmed by direct
   comparison), but the sibling single-row getter `latest_completed_scan` did
@@ -5773,6 +6270,29 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   each chain's weakest-edge confidence. *Remaining:* (c) first-class timeline
   output (footprint timeline shipped; widen), (d) further AU-0xx rule-gap fill,
   and the "controller behind reused secrets" link facet.
+  *Audit + delivered (2026-07-01):* **(d) is fully stale.** Checked every
+  AU-0xx number named anywhere in the docs against the live dispatch table in
+  `core::correlator::mod.rs`: all are dispatched except AU-065/066, which are
+  deliberately engine-emitted rather than correlator rules (not a gap). AU-047
+  ("controller behind reused secrets") already exists as a Correlation rule —
+  but produces zero `Relation`-graph edges, so it's structurally invisible to
+  the CONNECTIONS/RESOLVED IDENTITIES views (b) built; closing that needs a
+  new `RelationKind` variant (a pinned, serde-tracked vocabulary per
+  `docs/CONVENTIONS.md` §3) plus a new `derive_*` pass — real, but a notch
+  past "smallest unit," left open. **(c) partially delivered:**
+  `core::timeline::online_tenure`/`footprint_recency` were computed and
+  returned by the JSON timeline API (`GET /scans/{id}/timeline`) but never
+  rendered by either the CLI dossier's TIMELINE section or the SPA's
+  `renderTimeline()` — a "online since 2008, 17y span, 9 breaches, footprint
+  active" headline that only existed in unread JSON fields. Both now render
+  it (one shared computation, three surfaces: API, CLI, SPA). New pure
+  `cli::scan::dossier::tenure_headline` is unit-tested for the exact wording
+  (incl. breach-count pluralisation); JS syntax verified (`node --check`);
+  live CLI run confirmed the empty-timeline path still renders correctly
+  (no headline, unchanged "No dated events" message) — the underlying
+  `online_tenure`/`footprint_recency` functions were already independently
+  tested in `core::timeline::tests`. *Remaining:* the AU-047 Relation-graph
+  wiring only.
   *Delivered (cycle 27, 2026-07-05) — partial progress on (c):* `core::timeline`'s
   `classify()` was silently missing several live evidence-attribute keys that
   first-party modules already stamp, and `TimelineEventKind::AccountCreated` —
@@ -5912,13 +6432,34 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   (`Ssid` remains the one legitimate deferred gap, needing the import-extractor
   change named above first).* **Paired:** `SOLUTION_TREE` SOL-CORR extended,
   §5 — same commit.
-- **`[ ]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
+- **`[~]` C2 · Performance & scale — *the SpiderFoot play***. *Current:* parallel
   Rust dispatch, no published numbers. *Target:* demonstrably faster than a
   Python engine, on a phone. → **Solution:** with F.3 benches + T1.2 throughput +
   F.2 flat-RAM datasets, publish a reproducible "N selectors, on-device, in T
   seconds, M MB RAM" benchmark; enforce streaming/bounded memory everywhere
   (cap+chunk, never slurp). SpiderFoot (CPython) structurally cannot match
   on-device aarch64 throughput. **CAP-high**
+  *Partial (2026-07-01):* closed one concrete "cap+chunk, never slurp"
+  violation. `run_expansion`'s (and the bounded `run_gap_fill`'s)
+  `DerivedFrom`-lineage attribution cloned the ENTIRE `entity_map` key set
+  into a fresh `HashSet` before every single expansion candidate's dispatch
+  — not once per round, once per *candidate* — purely to diff "what's new"
+  afterward, then re-scanned the whole map again to find it. Unbounded by
+  default: `ScanOptions::max_roi` defaults `false`, so the only mechanism
+  that would cap candidates-per-round (`apply_roi_cutoff`) is skipped, and
+  `entity_map` itself grows toward the 2500-entity default cap — so this
+  was O(candidates × entity_map_size) string-clone-and-scan cost per round,
+  scaling worst exactly when a scan is largest. `DispatchState` gained a
+  `newly_inserted: &mut Vec<String>` field, populated only at the single
+  true-insert chokepoint (`finalise_module_result`'s merge-vs-insert
+  branch) — O(1) per genuinely new entity — replacing both the per-candidate
+  snapshot-clone and the after-the-fact full-map rescan with an O(new
+  entities this candidate) drain. Verified against the existing end-to-end
+  `expansion_records_derived_from_lineage` integration test (exercises this
+  exact code path, not just a hand-built fixture) plus the full test suite.
+  *Remaining:* no published throughput/RAM benchmark yet — this closes one
+  hot-loop inefficiency the target state explicitly calls out, not the
+  benchmark deliverable itself.
 - **`[~]` C3 · Australian moat (BUILD, AU-biased)** — *Current:* `asic_director`,
   `abn_lookup`, `acnc`, `au_electoral`, `au_property`, `qld_unclaimed`,
   `au_people`, `gleif_lei`, AU phone/carrier/postcode geo. → **Solution
@@ -5942,8 +6483,64 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   *Delivered (cycle 20, 2026-06-18): `austlii` — free AustLII court/legislation
   scraper; `FullName`/`Organisation` → `Url` + `Organisation`; Corporate-9; 125→126
   modules, 92→93 free.*
-  *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
-  cadastre/property.
+  *Audit correction (2026-07-01):* the "fuller ASIC/ABR graph" and "state
+  cadastre/property" remaining-items are stale — both already shipped and
+  simply never folded back into this node. `asic_persons` (banned/
+  disqualified persons, financial advisers, credit/finance-broker
+  representatives — three registers in one module, keyless, priority 112,
+  Corporate), `asic_business_names` (business/trading name → ABN, keyless,
+  priority 111, Corporate), and `asic_banned_orgs` (banned/disqualified
+  organisations → ACN, keyless, priority 112, Corporate) are all live,
+  registered in the dispatch table (`src/modules/mod.rs`) alongside the
+  older `asic_director`, giving a genuinely "fuller" ASIC/ABR graph.
+  `qld_cadastre` (QLD Government DCDB cadastre — lot/plan/locality/tenure
+  by coordinate, free, priority 18, Geo) is a live coordinate-keyed
+  complement to `au_property`. This session's shallow clone can't
+  attribute a reliable delivery date for these four (git blame/log
+  resolves to the single root import commit, not a real history), so no
+  date is claimed here — only that they exist and are dispatched today.
+  State cadastre remains QLD-only (other states' cadastre/titles
+  registries are still a real, open gap).
+  *Remaining:* GNAF/AusPost address validation; state cadastre/property
+  for states beyond QLD.
+  *Delivered (2026-07-15): sanctions/PEP/watchlist screening — a genuine
+  coverage gap SpiderFoot also lacks (no `sfp_ofac`/`sfp_sanctions`/
+  `sfp_pep`-class module in its 200+ catalogue, confirmed against its live
+  module listing).* Sourced from surveying a public AML-investigator toolbox
+  (`start.me/p/rxeRqr/aml-toolbox`) for anything genuinely person-centric and
+  automatable — most of it (arms-trade registries, press/NGO reference
+  links, country-risk maps) is human-browsed reference material with no real
+  API, out of scope for an automated engine; the one clean, high-value,
+  API-backed gap was sanctions/PEP screening, confirmed absent via direct
+  source grep (zero `ofac`/`sanctions`/`pep` hits anywhere in `src/`) before
+  building anything. Australia has no public real-time API for its own DFAT
+  Consolidated List (only a periodic XLSX download) — `opensanctions`
+  (`src/modules/opensanctions`) closes this by querying OpenSanctions'
+  aggregated `/match` API (`default` dataset scope), which folds DFAT
+  together with OFAC SDN, UN Security Council, EU consolidated, UK OFSI and
+  400+ other sources behind one fuzzy name-matching call, so Australian
+  sanctions coverage arrives for free alongside global coverage rather than
+  needing its own bespoke scraper. `FullName` → `Person`, key-gated
+  (`HUNTSMAN_OPENSANCTIONS_KEY`, free trial/nonprofit signup), priority 115,
+  People category. Only `match: true` (the API's own definitive-match
+  verdict) is escalated into an entity — a fuzzy near-miss is never turned
+  into a sanctions/PEP claim about a real person, consistent with this
+  project's "a false positive is worse than missing coverage" doctrine.
+  Escalated matches carry `sanctioned`/`pep`/`debarred` tags (from the
+  API's `topics`), an `au-sanctions` tag when DFAT is among the source
+  `datasets`, and the PEP's official `position` where listed (genuinely
+  earning `T1591.004` Identify Roles, not a category-default over-claim).
+  Scoped to `Person`/`FullName` screening only this cycle — the same
+  `/match` endpoint also supports `Company`/`Organization` schema queries
+  for corporate sanctions/debarment screening, deliberately deferred to a
+  follow-up (T2.17). 12 new tests including a fixture built from
+  OpenSanctions' own published example response; full 30/30
+  architecture-guard parity. Module count 161→162 (128 free · 29 key-gated ·
+  5 paid); People category 16→17. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4400 total pass (+12).
+  `hse selftest` 9/9 (162 modules, dispatch graph intact) confirms real
+  registration/dispatch wiring without a live key. *Remaining:* the
+  `Company`/`Organization` schema leg (T2.17).
 - **`[~]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
   `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
   `waf_detect`, `portscan`, `bgpview`, `ripestat`. CDN/Cloudflare noise is already
@@ -5964,8 +6561,124 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   *Delivered (confirmed cycle 20 S→P audit):* `securitytrails`
   (`HUNTSMAN_SECTRAILS_KEY`, Domain+IpAddress→Domain, subdomain enum + reverse-IP
   hostnames); ASN/BGP org/prefix pivots (`bgpview` + `ripestat` both present).
-  *Remaining:* passive-DNS leg of subdomain union (brute ∪ CT already ship);
-  Cloudflare/CDN cert-hash origin-unmasking.
+  *Delivered (2026-07-01):* the MX/direct-connect-subdomain leg of Cloudflare
+  origin-unmasking. New relation-aware correlator rule **AU-113** *(renumbered
+  during the origin/main merge — originally logged as AU-111; see the merge
+  note below)* groups `ResolvesTo` edges by registrable domain; when the apex
+  is fronted
+  entirely by a CDN/anycast edge (`is_cdn_edge_ip`) and a sibling under the
+  same registered domain — an MX host, or a `cpanel.`/`ftp.`/`mail.`/
+  `webmail.`/`dev.` subdomain-brute hit — resolves directly to a real,
+  routable IP, fires a Medium correlation naming that IP as an
+  origin-candidate. All the raw plumbing (MX-tagged Domain entities,
+  brute-dictionary direct-connect labels, auto-derived `ResolvesTo` edges)
+  already existed; this is the one correlation rule that was missing.
+  *Delivered (2026-07-01, cont'd):* the passive-DNS-history leg — smaller
+  than previously assumed. It was not a new-data-source integration:
+  `virustotal`'s already-registered, already-called domain/IP report
+  endpoint returns a `last_dns_records` field (historical A/AAAA/MX/NS/
+  CNAME snapshot) that the module fetched but silently dropped, decoding
+  straight into a narrow struct with no `last_dns_records` field. A prior
+  agent session (commit `c809c1ad`) had implemented almost exactly this
+  once before, on an abandoned branch that never merged — confirmed via
+  `git merge-base --is-ancestor` that it isn't an ancestor of this
+  branch, so this is a real, unaddressed gap here, not stale-doc noise.
+  `build_entity` → `build_entities` (pure, `Vec<Entity>`): A/AAAA records
+  become `IpAddress` pivots, MX/NS/CNAME hostnames become `Domain`
+  pivots, capped at `MAX_DNS_RECORDS = 30` to bound graph expansion. This
+  cycle deliberately scoped narrower than the abandoned commit, which
+  also surfaced `as_owner`/`asn`/`network`/`country`/`categories`/`tags`
+  — those are a separate C4 asset-depth concern, not this leg, and were
+  left out to avoid scope creep beyond the one verified gap.
+  *Remaining:* SSL-cert-hash pivoting on Censys/Shodan (the one leg that
+  genuinely needs new data-source work, not just surfacing an
+  already-fetched field); the doc's "emit a tagged `origin-candidate`
+  IP" phrasing itself was imprecise — a correlator rule reads an
+  immutable entity slice and cannot mutate/tag entities, so AU-113's
+  origin-candidate signal lives in the `Correlation` record's
+  `entity_uids`/description, the same way AU-110 already names its
+  co-hosted IPs, not as an entity tag.
+  *Delivered (2026-07-01, cont'd):* new correlator rule **AU-112** — the
+  ASN/BGP → org/prefix correlation leg. `EntityKind::Cidr` (announced BGP
+  prefixes / whois netblocks from `bgpview`/`ripestat`/`netblock`/
+  `intelx`) was a first-class entity FOUR modules produced but ZERO
+  correlator rules or relation builders ever read — so a subject's IP and
+  the very network block that provably contains it stayed unconnected on
+  every infra-heavy scan. AU-112 (entity-only rule) tests each discovered
+  IP for containment in each discovered block and, on a hit, emits a
+  Medium correlation attributing the address to the block's owner (ASN/
+  org, read from the evidence the source already stamped). Reuses the
+  pure, offline `util::spf::{Ipv4Cidr,Ipv6Cidr}` containment primitives
+  (overflow-safe bitmask maths, no I/O, no deps) rather than hand-rolling
+  new masking code — the discovery pass's own plan proposed duplicating
+  `netblock`'s expansion logic, but adversarial verification caught that
+  a tested containment primitive already existed. Added a narrow entry to
+  the `core_does_not_import_util_directly` architecture-guard allowlist
+  for those two pure structs, exactly mirroring the existing
+  `util::geometry` carve-out for the geo rules' estimators (same
+  no-I/O/no-deps justification — extends the guard's designed mechanism,
+  doesn't weaken it). 5 unit tests (in-block v4 fire with owner text, ASN
+  fallback, out-of-block no-fire, IPv6 containment, malformed/
+  cross-family no-panic-no-false-fire).
+  *Superseded (verified during the origin/main merge):* this early AU-112
+  did NOT ship under that ID. Only one `rule_au_112_shared_cidr_infrastructure`
+  exists in `src/core/correlator/rules/infra.rs`, and its actual behaviour
+  matches the narrower, later `C1` delivery below (2026-07-13: a `/22` IPv4 /
+  `/48` IPv6 narrow-block floor, and a skip when `netblock` already made the
+  containment explicit) — this session's ASN/org-attribution framing and its
+  5 unit tests did not survive into the merged tree under the AU-112 ID.
+  Kept here for the historical record of the investigation (the
+  `util::spf::{Ipv4Cidr,Ipv6Cidr}` containment-primitive discovery below was
+  genuinely reused by the delivery that did ship), not as a description of
+  current behaviour — see `C1`'s 2026-07-13 entry for what AU-112 actually
+  does today.
+  *Delivered (2026-07-02, cont'd):* the `shodan` paid-path asset-depth leg —
+  the seventh "dropped-field depth gap" this session (after `austlii`,
+  `wigle`, `virustotal`, `hunter_io`, `proxycurl`). The merged `shodan`
+  module's free InternetDB path already deserialized and emitted the
+  top-level host classification `tags` array (`compromised`/`malware`/
+  `honeypot`/`self-signed`/`vpn`/`cloud`/`cdn`…) as a `tags` evidence attr
+  plus per-tag `shodan:<tag>` entity tags, but the paid `HostResp` struct
+  had no `tags` field at all — so serde silently dropped it and a keyed
+  operator got *less* threat classification than a free user, inverting the
+  module's own "paid path is a superset" contract. Added `#[serde(default)]
+  tags: Vec<String>` to `HostResp` and an emission block in `query_paid`
+  that mirrors the free path to the letter, so the tag vocabulary is now
+  identical across both tiers and existing correlator rules pivot on it
+  uniformly. Note this is the exact `tags` field the earlier `virustotal`
+  leg (above) explicitly deferred as "a separate C4 asset-depth concern";
+  this closes the Shodan slice of it. No new `EntityKind`, no `produces()`
+  change, no guard impact; 1 serde round-trip test.
+  *Remaining:* SSL-cert-hash pivoting on Censys/Shodan (the one leg that
+  genuinely needs new data-source work).
+
+  > **Merge note (ID collision, resolved against the actual merged
+  > `src/`):** both branches independently picked up the same two "next
+  > free" rule IDs — `AU-111` for two different Cloudflare-origin-unmasking
+  > designs (this node's 2026-07-01 MX/direct-connect-subdomain rule vs. the
+  > 2026-07-12 waf_detect+SPF rule below) and `AU-112` for two different
+  > CIDR-correlation designs (this node's 2026-07-01/02 ASN/org-attribution
+  > rule vs. `C1`'s 2026-07-13 narrower shared-hosting rule). Checked
+  > `src/core/correlator/rules/` directly rather than guessing: only ONE
+  > `rule_au_111_*` and ONE `rule_au_112_*` exist in the merged tree.
+  > `rule_au_111_cdn_origin_candidate` matches the waf_detect+SPF design (the
+  > 2026-07-12 entry below) — so that is the real AU-111. The
+  > 2026-07-01 MX/direct-connect-subdomain rule survived too, but under
+  > **AU-113** (`rule_au_113_direct_connect_origin_candidate`,
+  > `src/core/correlator/rules/org.rs`) — its own doc comment even names
+  > AU-111 as a "sibling signal," confirming the two are deliberately
+  > distinct, complementary rules, not a collision at the source level.
+  > `rule_au_112_shared_cidr_infrastructure` matches `C1`'s narrower
+  > 2026-07-13 design; this node's earlier ASN/org-attribution AU-112 did not
+  > ship under that ID (marked *Superseded* in place above). Renumbered
+  > within this file (AU-111→AU-113 in the prose above); **residual
+  > follow-up (out of this doc's scope):** `SOLUTION_TREE.md`/
+  > `CHANGELOG.md` cross-references to the old "AU-111" MX/direct-connect
+  > framing should be checked against this same AU-113 correction.
+
+  *Remaining (as of 2026-07-05, before the collision above was discovered):*
+  passive-DNS leg of subdomain union (brute ∪ CT already ship); Cloudflare/CDN
+  cert-hash origin-unmasking.
   *Delivered (2026-07-12) — the MX/SPF leg of Cloudflare/CDN origin-unmasking:*
   new correlator rule **AU-111** combines two signals both already collected
   with zero new external dependency: `waf_detect`'s CDN fingerprint (a
@@ -6027,6 +6740,22 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   location estimate: `LAT,LON ± X km`" with its basis + confidence, in both the
   CLI dossier and the JSON export. Neither delivery was folded back into this
   line when it shipped — this bullet was simply never re-read against the code.
+  *Delivered (2026-07-01):* tightened the "AU bounding-box/state precision"
+  leg. `au_geo`'s ABS point-in-polygon resolution already computed the
+  EXACT state (`state_name_2021`, e.g. "New South Wales") for every
+  coordinate it resolved, but stored it only in evidence text, never on the
+  Coordinates entity as an `au-state:XX` tag — so
+  `core::correlator::rules::geo::coord_state()` (which AU-056/AU-085
+  jurisdiction cross-checks depend on) silently fell back to
+  `au_state_for_coords`, a coarse rectangular-bbox approximation whose own
+  doc comment admits "points near a shared border can be misattributed."
+  `assemble()` now resolves the full state name to its abbreviation via
+  `util::address_au::state_code` (already used identically by `au_people`)
+  and tags the coordinate `au-state:XX` + `country:AU`, letting the
+  correlator's exact-tag-preferred path fire instead of the fallback
+  whenever `au_geo` has already resolved the point. 2 new unit tests
+  (positive tag assertion on the existing fixture; a no-state-in-response
+  case proving no bogus tag is invented).
   *Delivered (2026-07-01):* **AU-059's dossier-headline fix now uses the
   confidence-weighted geometric median (Weiszfeld), not the plain
   `weighted_centroid`** — bringing it to parity with AU-057 and
@@ -6045,6 +6774,58 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   tests are unaffected (they all use tolerant range assertions on real,
   closely-clustered fixtures where the two estimators don't meaningfully
   diverge).
+  *Delivered (2026-07-02):* fixed a person-location corroboration gap in
+  `ip_whois_geo` — the same evidence-attribute-consistency class as the AU-105/
+  AU-011 fixes. `core::correlator::rules::location::person_login_ip_coords`
+  (the shared definition `best_au_location_estimate` and
+  `au_location_corroboration` both call) recognises a `Coordinates` fix as tied
+  to a subject's breach/stealer login IP only when its evidence carries an `ip`
+  attribute matching that IP. `ip_geo` stamps it (with an explicit comment
+  explaining why); `ip_whois_geo` — whose own doc comment frames it as `ip_geo`'s
+  "second-source geo module... corroborating the location," and whose
+  `build_entities` explicitly skips CDN/anycast edge IPs because "its geo is the
+  datacenter's, not the subject's" (i.e. its fix is meant to represent the
+  subject) — never stamped it. So an ipwho.is fix on the exact same login IP
+  `ip_geo` also geolocated silently never counted toward the person-location
+  signal, despite being eligible (not tagged hosting/proxy/platform-infra).
+  Swept every module that accepts an IP and produces `Coordinates` (9
+  candidates: `ip2location`/`ip_whois_geo`/`ipinfo`/`ipquery`/`censys`/
+  `shodan`/`netlas`/`onyphe`/`whois`); confirmed `ip2location`/`shodan`/
+  `netlas`/`whois` already stamp `ip` correctly, leaving `ip_whois_geo` as the
+  one real gap. Deliberately did NOT extend the fix to `ipinfo`/`ipquery`
+  (same class, plausible, but unconfirmed against a real response this
+  session — left for a future cycle to verify rather than guess) or to
+  `censys`/`onyphe` (explicit infrastructure/host-scan tools whose geo fix more
+  often reflects hosting, not the subject's connection — extending
+  person-location recognition to them risks introducing false corroboration,
+  which the doctrine ranks worse than missing coverage). Fixed by adding
+  `.with_attr("ip", ip)` to `ip_whois_geo`'s evidence fold, mirroring `ip_geo`'s
+  exact pattern and comment. 1 regression test, red/green-verified. No new
+  `EntityKind`, no architecture-guard impact.
+  *Delivered (2026-07-02, cont'd):* verified and fixed the deferred
+  `ipinfo`/`ipquery` follow-up. Both are confirmed genuine instances of the
+  identical gap, not merely plausible: both use the shared
+  `crate::core::validation::untrusted_ip_geo_reason`/`untrusted_geo_reason`
+  trust gate that drops CDN/anycast/VPN/Tor/proxy/datacenter IPs specifically
+  because "the coordinates are infrastructure, so admitting them as a person's
+  location poisons identity-location correlation" (`ipquery`'s own doc
+  comment) — proving their Coordinates fixes ARE meant to represent the
+  subject, exactly like `ip_geo`/`ip_whois_geo` — and both call the same
+  `util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)` helper with the
+  identical "Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs" comment,
+  confirming they are siblings in the same provider family, not a different
+  class of module. Neither stamped `ip`. Fixed both additively: `ipinfo`'s
+  evidence fold and `ipquery`'s shared `geo_ev()` closure (used for both its
+  Coordinates and Address evidence — harmless, since `ip` has exactly one
+  correlator consumer and it filters `EntityKind::Coordinates` only) now
+  carry `.with_attr("ip", ip)`. 2 regression tests
+  (`coordinates_carry_the_originating_ip_for_login_ip_recognition` in each
+  module), red/green-verified by reverting both fixes together. This closes
+  the C5 person-location evidence-attribute-consistency sweep: 6 of 9
+  IP→Coordinates modules confirmed correct (`ip2location`/`ip_geo`/`shodan`/
+  `netlas`/`whois` already right, `ip_whois_geo` fixed 2026-07-02), 2 fixed
+  this cycle (`ipinfo`/`ipquery`), and `censys`/`onyphe` deliberately excluded
+  as infra/host-scan tools (extending risks fabricating corroboration).
   *Remaining:* tighter AU bounding; movement/timeline geo.
   *Delivered (2026-07-12) — a lighter-weight step on the cell-DB auto-sync gap
   (cycle 21, 2026-06-18):* building a true scheduler was judged out of scope
@@ -6166,6 +6947,58 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   scanner + entropy gate; richer stealer-log cross-referencing
   (`oathnet_pro`/`see_know` presence → pivot). Active, authorised collection.
   **CAP-med**
+  *Audit + delivered (2026-07-01):* most of this node's named sub-pieces were
+  already mature, just never checked off — `key_harvest`'s entropy gate
+  (`shannon_entropy` threshold + `is_likely_real_key`) and `aho-corasick`
+  scanner (`util::scan::PrefixMatcher`/`MatchSet`) are fully wired; the
+  credential-reuse graph is real (AU-047 reused-secret identity, AU-105
+  cross-breach credential reuse, AU-048 shared public key); `oathnet_pro`/
+  `see_know` already share one key-extraction pipeline feeding it. The one
+  genuine, grounded gap: `search_engines::queries::exposure::
+  build_queries_exposure` silently returned an empty `Vec` for `Phone` and
+  `FullName` targets (and 10 other kinds), while its own doc comment falsely
+  claimed only `Coordinates`/`ASN`/`ABN-ACN` were excluded. Added
+  `phone_exposure`/`fullname_exposure` (breach-dump, code-repo, and
+  people-search dorks, mirroring the five existing per-kind helpers exactly)
+  and corrected the doc comment to name the true remaining exclusion list.
+  Broke and fixed one test that had baked in the old "FullName dispatch ==
+  FullName base dorks, exposure is always empty" assumption
+  (`build_queries_fullname_pure_fn_matches_dispatch` now compares against
+  `build_queries_base` for the verbatim-extraction check, and separately
+  asserts the exposure dorks ARE present in the full `build_queries`
+  pipeline).
+  *Audit + delivered (2026-07-01, cont'd):* a second, real slice of the
+  same gap. `build_queries_exposure`'s doc comment blanket-excluded
+  `Address` alongside genuinely-inapplicable kinds (`CryptoAddress`'s own
+  base arm already bakes in scam/fraud/attribution dorks, so it's
+  correctly excluded) — but `Address`'s actual base arm (real-estate/
+  land-registry/strata/ABN dorks only) has zero breach/pastebin/
+  credential-dump/people-search coverage, exactly the Phone/FullName gap
+  already fixed. Added `address_exposure` (5 dorks, same shape as the
+  existing per-kind helpers) and corrected the doc comment. `AbnAcn`
+  deliberately left excluded — its breach-relevance is weaker than an
+  address's (a registry number rarely appears in a credential dump the
+  way a street address or phone number does), so it wasn't force-fit
+  into this fix. 2 new tests (dispatch-level, shape-level), mirroring the
+  Phone/FullName test pattern exactly. *Remaining:* this is again a
+  narrow slice (one more function's target-kind coverage) — C6 as a
+  whole node is not closed.
+  *Delivered (2026-07-02):* fixed a correctness bug in the credential-reuse
+  graph's AU-105 leg. AU-105 measures the same secret's reuse across DISTINCT
+  breaches, grouping records by the `dbname` evidence attribute (falling back
+  to `breach`, then the Evidence `source` FIELD = the module name). But two of
+  the breach modules that feed it — `dehashed` and `see_know` — stamped the
+  per-record breach database name under a `source` **attribute**, not `dbname`
+  (`oathnet_pro`, by contrast, correctly uses `dbname`). Since `breach_of`
+  never consults the `source` attribute, every DeHashed record collapsed to one
+  pseudo-breach ("dehashed") and every SeekNow record to one ("see_know"), so
+  credential reuse across two different breaches both surfaced by the same
+  provider — the common case for these aggregators — could never reach AU-105's
+  ≥2-distinct-breaches threshold and silently never fired. Fixed additively:
+  both modules now also stamp the canonical `dbname` attribute (retaining
+  `source` for existing consumers), so AU-105 sees the true per-breach
+  granularity. 2 regression tests (one per module), each red/green-verified.
+  *Remaining:* C6 as a whole node is not closed.
   *Audit correction (2026-07-12) — status was stale, `[ ]`→`[~]`:* investigated
   while looking for the node's genuinely remaining work and found 2 of the 4
   named solution items already fully delivered, just never credited back to
@@ -6188,12 +7021,88 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   beyond the engine's universal entity-expansion loop). No code change — a
   pure status-accuracy correction. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE
   `[ ]`→`[~]`, same commit.
-- **`[ ]` C7 · Output & forensics superiority** — *Current:* deterministic
+- **`[x]` C7 · Output & forensics superiority** — *Current:* deterministic
   exports, evidence chains, auto-dossier, GEXF. → **Solution:** lock byte-stable
   determinism (T1.1 + proptest), make per-entity evidence chains and the dossier
   the auditable intelligence product, keep GEXF as the optional graph. This is a
   capability **neither** SpiderFoot nor Maltego offers (reproducible,
   machine-diffable intelligence). **CAP-med**
+  *Partial (2026-07-01):* closed a genuine determinism gap in the "byte-stable"
+  half of the target. `Store::entities_from_events` — the event-log recovery
+  path used whenever a scan never finalised (explicitly "routine on
+  Termux/Android, where the OS reclaims backgrounded processes," per its own
+  doc comment) — folded entities via `Entity::merge` in event-arrival order but
+  never called `Entity::canonicalize_order()` afterward, unlike the finalised
+  path (`core::engine::run` does, specifically to stop concurrent dispatch's
+  completion-order merging leaking into the stored/exported result). So a
+  JSON/CSV/full-dossier/debug-bundle export of an *interrupted* scan had
+  evidence ordered by non-deterministic arrival order — reproduced empirically
+  (two arrival orders of the same evidence, `EQUAL=false`) before the fix, and
+  confirmed `EQUAL=true` after. One-line fix (canonicalize after the fold,
+  mirroring the finalised path exactly) plus a new regression test proving
+  arrival-order independence for the recovered path.
+  *Partial (2026-07-01, cont'd):* closed the SECOND, higher-impact half of
+  the same determinism class. `Engine::checkpoint_entities` — the mid-scan
+  durability write hit at every productive round boundary, far more often
+  than the "zero checkpoints ever landed" case the first fix covered —
+  persisted its entity snapshot straight to the `entities` table without
+  canonicalizing. Critically, `entities_for_scan` only falls back to the
+  canonicalizing event-log recovery path when the `entities` table is
+  *empty*; any scan that reached even one checkpoint before being
+  interrupted (the common case) read back through the ordinary table path,
+  which never canonicalises evidence/tag order — so its export was still
+  non-deterministic across runs whose modules merely completed in a
+  different order. Reproduced empirically (two arrival orders of the same
+  evidence, `EQUAL=false`) before the fix. `checkpoint_entities` now takes
+  `entities: &mut [Entity]` and canonicalises before persist, mirroring
+  the finalise path; both call sites (seed round, expansion rounds)
+  updated. New regression test proving arrival-order independence for the
+  checkpoint path specifically — confirmed to fail against the pre-fix
+  code (temporarily reverted the fix, re-ran, watched it fail with
+  `EQUAL=false`, restored). The rest of C7's target (proptest coverage
+  across every export path, a machine-diffable-audit guarantee stated as
+  policy) remains open — this closes the two concrete determinism bugs
+  this session found in the recovery/checkpoint paths, not the whole
+  node.
+  *Partial (2026-07-01, cont'd 2):* closed a completeness gap in the
+  full-dossier renderer's own contract. `render_full`'s doc promises
+  "every attribute verbatim … nothing hashed, masked, truncated, or
+  omitted", yet its per-entity block dropped three top-level fields that
+  `render_json` and the CSV export both carry: the SHA-256 `uid`, the
+  pre-normalisation `raw_value`, and `observed_at`. `raw_value` genuinely
+  diverges from the normalised `value` for Email/Username/Domain (case-
+  folding, sigil/quote stripping), so a human reading the "full,
+  unredacted" dossier never saw the actual source spelling a finding came
+  from. The pre-existing `render_full_dumps_every_field_and_provenance`
+  test missed it because its fixture used a `Password` entity — a
+  passthrough-normalise kind where `raw_value == value` — so the "every
+  field" claim was never exercised for a divergent case. Fix: `render_full`
+  now emits `uid`/`raw_value`/`observed_at` (raw + compact-UTC via
+  `util::timefmt::compact_utc`) per entity; test strengthened with a
+  mixed-case Email fixture whose `raw_value` provably diverges, and
+  confirmed to fail against the pre-fix renderer (red/green verified).
+  *Delivered (2026-07-05) — node closed `[~]`→`[x]`:* the last remaining
+  leg above ("proptest coverage across every export path … stated as
+  policy"). New `exports_are_insertion_order_independent` proptest
+  (`src/cli/export/tests.rs`, `mod prop`) generalises the single-fixture
+  `export_formats_determinism_audit` into the property `CONVENTIONS.md` §5
+  actually mandates: output "independent of … task-completion order". Over
+  an arbitrary generated entity/tag/evidence set (48 cases), it inserts the
+  same entities into two stores in opposite orders and asserts all five
+  byte-deterministic renderers (json/csv/gexf/full/debug) serialise
+  identically — exercising both order-sensitive legs at once (the store's
+  merge-on-conflict fold and each renderer's own attribute/tag/evidence
+  serialisation). `report.json`'s documented `exported_at` wall-clock field
+  stays excluded exactly as the fixture audit excludes it. Verified
+  non-vacuous: with the store's deterministic read order
+  (`sort_entities_for_display` + `ORDER BY … uid`) temporarily removed the
+  proptest fails on a two-entity minimal case ("json leaked insertion
+  order"); restored, it passes. With every concrete determinism bug already
+  fixed (recovery + checkpoint paths, above) and the guarantee now proven
+  as a general property across all export paths, nothing concrete remains
+  open for C7. Gate green (fmt/clippy `-D warnings`/strict-rustdoc/`cargo
+  test` — 4596 total pass, +1). **Paired:** `SOLUTION_TREE` SOL-FORENSIC
+  `[~]`→`[x]` + §5 — same commit.
 - **`[x]` C8 · Webcam, fan-subscription & adult-video platform identity (DELIVERED)**
   — *Problem:* `username_search` covers mainstream social/dev/gaming/music platforms
   only; webcam performers, fan-content creators, and adult-video contributors are an
@@ -6247,6 +7156,19 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   when `ttl > 0 && result non-empty`; `Scan::modules_cached` counter persisted.
   Schema snapshot test updated. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN
   `[ ]`→`[x]` + §3/§4/§5 — same commit.
+  *Rollout correction (2026-07-01):* the mechanism is genuinely complete
+  and correctly wired (verified against all three dispatch paths — no
+  bug found), but `[x]` overstated per-module rollout completeness. Two
+  of this node's own named motivating examples, `censys` and `trove_au`,
+  had never actually opted in — still silently defaulting to
+  `cache_ttl_secs() = 0` (always live), the exact waste this node exists
+  to stop. Both now override to 86400s (24h), matching the bracket
+  `hlr_cnam`/`netlas`/`opencellid` already use. ~28 other Paid/KeyGated
+  modules remain uncached — a genuine, larger rollout gap this `[x]`
+  should not be read as closing; each needs an individual data-volatility
+  judgement (some genuinely must stay live, e.g. real-time CNAM), so it's
+  a deliberate per-module audit, not a blanket flip, and stays a
+  separately-tracked open item rather than reopening this node.
 - **`[x]` C10 · Stealer Logs Viewer — a dedicated, paired credential
   browser for imported stealer-log data** — *Problem:* a stealer-log import
   (`cli/import/stealer.rs`, the "Stealerlogs" victim-centric export) already
@@ -6553,31 +7475,74 @@ security stays a deliberately separate track, and S1 needs *operator* action):
   `hse export -o <path>` is left to the user's umask — they chose the destination
   (often to share), so forcing 0600 there would surprise; the internal auto-written
   files are the ones locked down.
-- **S4 · `[x]` P3 (LOW) — key-in-URL (mostly mitigated, one residual, now closed).**
-  ~7 modules put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/
-  `numverify`/`opencellid`/`opencorporates`/`mls`). Well-contained: no module logs
-  the keyed URL, `redact_credentials` masks `key=`/`token=` + literal
-  `HUNTSMAN_*` on error paths, `raw_archive` stores only `provider/endpoint/query`
-  (not the URL). *Residual (closed 2026-07-12):* the archived success **body**
-  is verbatim, so a key echoed by an upstream persists in `raw/*.json` (0600).
-  Investigated before fixing: `util::raw_archive`'s own doc comment states an
-  explicit, deliberate operator policy — *"never encrypted, hashed, or
-  redacted"* — for that on-disk file, since it's the record of data the
-  operator PAID for; redacting it there would override that directive. The
-  real residual risk was one step downstream: `cli::export::renderers::
-  render_full`'s "RAW SOURCE RECORDS" section embeds the archived body
-  verbatim into the dossier, and while the auto-written dossier is 0600, an
-  explicit `hse export -o <path>` is deliberately left to the user's umask
-  (S3's own note) — so an echoed key could ride a shared/exported dossier out
-  to a world-readable file. ✅ **Fixed at the render site, not the archive:**
-  new `render_raw_response_body` runs the existing `redact_credentials` over
-  the pretty-printed body before embedding it in the dossier text; `raw/*.json`
-  on disk stays byte-for-byte untouched, honouring the archive's own retention
-  policy. 1 new regression test (structural `api_key=` masking, no env
-  mutation — deterministic, no parallel-test race). Gate green: fmt/clippy `-D
+- **S4 · `[x]` P3 (LOW) — key-in-URL (mostly mitigated; render-site
+  archived-body residual now closed, one policy question flagged below).**
+  9 modules put the key in the query string (`shodan`/`hunter_io`/`whoisxml`/
+  `opencellid`/`opencorporates`/`mls`/`hlr_cnam`/`contact_enrich`/
+  `cell_intel`) and `ipqs` embeds it in the URL **path**
+  (`/api/json/{endpoint}/{key}/…`) — 10 modules in all. *(List re-verified
+  against the code 2026-07-02: the previous "~7" enumeration was both
+  overstated — `numverify` has since migrated to `apikey`-**header** auth, so
+  it is no longer key-in-URL — and understated: `hlr_cnam` (`api_key=` + its
+  OpenCNAM leg's `auth_token=`), `contact_enrich` (`access_key=`),
+  `cell_intel` (its OpenCelliD helper's `key=`), and `ipqs` (path) were all
+  missing.)* Well-contained: no module logs the keyed URL, `redact_credentials`
+  masks `api_key=`/`apiKey=`/`key=`/`token=`/`access_token=`/`secret=`/`auth=`
+  + literal `HUNTSMAN_*` on error paths, `raw_archive` stores only
+  `provider/endpoint/query` (not the URL).
+  **`[-]` Accepted-won't-build, archive itself (2026-07-02, explicit operator
+  directive: "never redact anything ever"):** the archived success **body**
+  is verbatim, so a key echoed by an upstream persists in `raw/*.json`.
+  Redacting the ON-DISK archive (`redact_literal_secrets(body,
+  own_api_keys())` — both already exist and were confirmed usable for this)
+  was investigated this cycle but is explicitly OUT OF SCOPE by direct
+  instruction, permanently — do not re-propose or re-investigate the
+  **on-disk `raw/*.json`** file without new, explicit operator authorisation.
+  The related "widen `redact_credentials`' param set for `ipqs`'s
+  path-embedded key / `access_key=`/`api_token=`/`auth_token=`" follow-up is
+  likewise not pursued for the archive itself, for the same reason.
+  *Residual (closed 2026-07-12, render site only — the archive is untouched):*
+  the real residual risk was one step downstream from the archive:
+  `cli::export::renderers::render_full`'s "RAW SOURCE RECORDS" section embeds
+  the archived body verbatim into the dossier, and while the auto-written
+  dossier is 0600, an explicit `hse export -o <path>` is deliberately left to
+  the user's umask (S3's own note) — so an echoed key could ride a
+  shared/exported dossier out to a world-readable file. ✅ **Fixed at the
+  render site, not the archive:** new `render_raw_response_body` (confirmed
+  live at `src/cli/export/renderers.rs:315-317`) runs the existing
+  `redact_credentials` over the pretty-printed body before embedding it in
+  the dossier text; `raw/*.json` on disk stays byte-for-byte untouched,
+  honouring the archive's own retention policy and the 2026-07-02 directive
+  above (which was scoped to the archive, not every downstream render). 1 new
+  regression test (structural `api_key=` masking, no env mutation —
+  deterministic, no parallel-test race). Gate green: fmt/clippy `-D
   warnings`/rustdoc clean, full suite 0 failures (4585 lib tests, +1).
   **Paired:** `SOLUTION_TREE` §7 S4 delivered + SOL-REDACT `◑`→`[x]`, §5 — same
   commit.
+
+  > **Merge note (policy tension, verified but not adjudicated):** this entry
+  > combines two branches' independent work on the same node. One branch
+  > recorded the archived-body redaction as `[-]` accepted-won't-build per a
+  > direct, in-the-moment operator instruction ("never redact anything
+  > ever"); the other branch built `render_raw_response_body` — redaction at
+  > the dossier *render* site, not the `raw/*.json` archive itself. Verified
+  > against the actual current `src/` tree (this doc-merge pass does not
+  > touch `src/`, so this reflects whatever the separate `src/`
+  > conflict-resolution already landed): `render_raw_response_body` genuinely
+  > exists and calls `crate::util::http::redact_credentials` on the dossier's
+  > embedded raw-response body — the fix is real and already shipped, not
+  > aspirational doc text. It is narrowly scoped (only the dossier *render*,
+  > never `raw/*.json` on disk — so it does not contradict
+  > `util::raw_archive`'s own doc-comment policy, "never encrypted, hashed, or
+  > redacted," which is specifically about that on-disk file). Whether the
+  > render-site redaction also falls under the broader, un-scoped "never
+  > redact anything ever" operator instruction is a policy question this
+  > doc-merge pass cannot and should not adjudicate — status is recorded as
+  > `[x]` because that is what the shipped code actually does and the archive
+  > itself remains untouched exactly as directed, but a human/operator should
+  > confirm the render-site redaction was intentionally authorised (e.g. as a
+  > narrower follow-up directive) rather than silently reversing the earlier
+  > instruction.
 - **S5 · `[x]` P3 (LOW) — install.sh prebuilt auto-trust.** The installer
   auto-discovers and runs an `hse` from world-writable `Downloads`/`/sdcard`; the
   SHA-256 check fires only *if a sidecar `.sha256` exists* — without one it runs an
@@ -8830,6 +9795,2021 @@ way, so this specific drift class can't recur silently again.
   `tempfile` (already a dev-dep) would support a local-repo-pair fixture,
   left as its own smaller follow-on. **Paired:** `SOLUTION_TREE` SOL-UPDATE +
   §4a + §5 — same commit.
+
+- **2026-07-01** — **That residual closed: real git-subprocess test for
+  `commits_behind`/`changelog_lines`.** Selected from a parallel discovery +
+  adversarial-verification pass (8 backlog candidates investigated
+  concurrently via the Workflow tool, given how much open backlog remains);
+  the reviewing agent for this candidate applied the proposed test verbatim
+  and ran the full verification gate against it before this cycle
+  re-applied and re-verified it directly. `cli/update.rs`'s `mod tests`
+  gains a real local git-repo-pair fixture (`tempfile::tempdir()`, a
+  "remote" plus a tracked "clone" — no network, local filesystem paths
+  only) proving `commits_behind`/`changelog_lines` against genuine `git`
+  subprocess output: up-to-date after a clone, correct count + newest-first
+  subjects after the remote advances, and the documented `None`/empty
+  fallback for a non-git directory. A `git_fixture` helper pins
+  `commit.gpgsign=false` and explicit author/committer env vars so the test
+  doesn't depend on this sandbox's own ambient signing config. Purely
+  additive — no non-test code touched. Gate green: 4264 lib tests (+1),
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-UPDATE + §5 — same commit.
+
+- **2026-07-01** — **T2.7 partial: `au_people`'s three HTML parsers gain
+  proptest never-panics coverage.** Second candidate picked from the same
+  parallel discovery + adversarial-verification pass (the reviewing agent
+  applied this exact `mod prop` block, ran `cargo test`, confirmed all three
+  pass, then reverted, before this cycle re-applied and re-verified it
+  directly). Re-confirmed the golden-fixture ask itself is still blocked for
+  the same reason every prior cycle found (live fetch or fabricated-looking
+  fixture) — this does not close that. Instead: `parse_whitepages_html`,
+  `parse_tps_html`, `parse_relatives` had no adversarial-input regression
+  test at all, despite the shared primitives they delegate to
+  (`util::html::strip_html`, `util::str_util::find_ascii_ci`) already
+  carrying exactly this proptest pattern. 3 new property tests
+  (`.{0,256}` arbitrary strings) added to `au_people/tests.rs`'s new
+  `mod prop`, mirroring `util::html::tests.rs`'s established shape. All 3
+  passed on first run — no latent panic found, only missing proof. T2.7
+  stays `[~]`: `au_electoral`/`au_property` have the identical gap
+  unaddressed, and the actual "layout drift fails a test" solution (golden
+  fixtures / SOL-HEALTH-SIGNAL) remains open. Gate green: 4267 lib tests
+  (+3), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  §2/§5 — same commit.
+
+- **2026-07-01** — **C1 (d) AU-0xx rule-gap audit closed as fully stale; C1
+  (c) timeline widened — tenure/recency now rendered in the CLI dossier and
+  SPA, not just the JSON API.** Third candidate from the same parallel
+  discovery + adversarial-verification pass. (d): every AU-0xx number in the
+  docs checked against `core::correlator::mod.rs`'s live dispatch table —
+  all dispatched except AU-065/066, deliberately engine-emitted, not a gap;
+  AU-047 ("controller behind reused secrets") already exists as a rule but
+  has no `Relation`-graph edge, so it's invisible to CONNECTIONS — a real,
+  smaller residual, left open rather than force-fit (needs a new,
+  serde-pinned `RelationKind` variant). (c): `online_tenure`/
+  `footprint_recency` were computed and returned by the JSON timeline API
+  but never read by the CLI dossier's TIMELINE section or the SPA's
+  `renderTimeline()` — dead JSON fields from a UX standpoint. Both now
+  render the same headline ("Online since X — Ny span, N breach
+  exposure(s), footprint STATUS"). New pure `tenure_headline` helper in
+  `cli/scan/dossier.rs`, unit-tested for exact wording including breach-count
+  pluralisation; SPA JS syntax verified with `node --check`; live CLI run on
+  a real scan confirmed the empty-timeline path is unchanged (no headline,
+  same "No dated events" message as before). Gate green: 4268 lib tests
+  (+1), fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-CORR + §5 — same commit.
+
+- **2026-07-01** — **C6 `[ ]`→`[~]`: exposure-dork coverage extended to
+  Phone/FullName targets; most of C6's other named pieces confirmed already
+  delivered.** Fourth candidate from the same parallel discovery +
+  adversarial-verification pass. Verified (not assumed): key_harvest's
+  entropy gate and `aho-corasick` scanner are already fully wired; the
+  credential-reuse graph is real (AU-047/AU-105/AU-048); `oathnet_pro`/
+  `see_know` already share one key pipeline. The one genuine gap:
+  `search_engines::queries::exposure::build_queries_exposure` silently
+  dropped `Phone`/`FullName` (and 10 other kinds) to an empty `Vec`, while
+  its doc comment falsely claimed only 3 kinds were excluded. Added
+  `phone_exposure`/`fullname_exposure` (breach-dump/pastebin/code-repo/
+  people-search dorks, mirroring the file's existing five per-kind
+  helpers), corrected the doc comment to the true exclusion list, added
+  dispatch + shape tests. Caught and fixed a real regression the change
+  exposed: `build_queries_fullname_pure_fn_matches_dispatch` had baked in
+  the old "FullName's full dispatch equals its base dorks, exposure is
+  always empty" assumption — now compares the verbatim-extraction claim
+  against `build_queries_base` specifically, and separately asserts the
+  exposure dorks are present in the full `build_queries` pipeline. C6 stays
+  narrow-scoped `[~]`: this closes one function's coverage gap, not the
+  whole node. Gate green: 4272 lib tests (+4 net), fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE +
+  §5 — same commit.
+
+- **2026-07-01** — **T2.7 continued: `au_electoral`/`au_property` gain the
+  same proptest never-panics coverage `au_people` got two cycles ago.**
+  T2.7's own note explicitly named these two as the remaining modules with
+  the identical gap, so this cycle closed it directly rather than
+  re-discovering it. `au_electoral::parse::extract_division` and
+  `au_property::parse::{parse_nsw_response,parse_vic_response,
+  parse_qld_response}` had zero adversarial-input regression tests despite
+  parsing untrusted scraped HTML/text, unlike the shared primitives they
+  delegate to. 4 new `proptest!` cases (`.{0,256}` arbitrary strings) added
+  in each module's `tests.rs`, mirroring `au_people`'s established `mod
+  prop` shape exactly. All 4 passed on first run — no latent panic found,
+  only missing proof. T2.7 stays `[~]`: `search_engines` and
+  `username_search` still lack this coverage, and the golden-fixture/
+  health-signal legs (T2.14, SOL-HEALTH-SIGNAL) remain fully open. Gate
+  green: 4276 lib tests (+4), fmt/clippy `--all-targets`/doc clean.
+  **Paired:** `SOLUTION_TREE` §2/§5 — same commit.
+
+- **2026-07-01** — **C7 `[ ]`→`[~]`: the event-log scan-recovery path now
+  canonicalises evidence order, closing a real forensic-determinism gap.**
+  Selected from a parallel discovery + adversarial-verification pass
+  (Workflow tool, 8 backlog areas investigated concurrently: T2.14, C2, C7,
+  F.1/bstr, C3, C4, a fresh stale-doc sweep, and `username_search`'s T2.7
+  scope) — of the 3 areas that produced a candidate, this one came back
+  cleanly `CONFIRMED` (the verifying agent independently reproduced the bug,
+  applied the fix, re-ran the proof, and reverted before this cycle applied
+  it for real). `Store::entities_from_events` — used whenever a scan didn't
+  finalise, which its own doc comment calls "routine on Termux/Android" —
+  folded entities via `Entity::merge` in raw event-arrival order and never
+  canonicalised the result, unlike the finalised-scan path
+  (`core::engine::run`), which explicitly calls
+  `Entity::canonicalize_order()` per entity specifically so concurrent
+  dispatch's completion order can't leak into the stored/exported result.
+  Every export surface (JSON, CSV, full dossier, debug bundle) reads
+  `e.evidence` in raw vec order, so a recovered *interrupted* scan's export
+  was not byte-stable across two otherwise-identical runs whose modules
+  merely completed in a different order — the opposite of what a forensic
+  export is supposed to guarantee. Fixed with the same one-line pattern
+  already used at the finalisation call site; added a regression test
+  building the same entity from two reversed event-arrival orders and
+  asserting the recovered evidence order is identical either way (and
+  matches `canonicalize_order`'s documented lexicographic-by-source order).
+  C7 stays `[~]`: this closes one concrete determinism bug in one recovery
+  path, not the full "prove every export path is deterministic" target.
+  Two other candidates from the same pass (a `C2` perf finding on
+  `run_expansion`'s O(n) per-candidate `HashSet` rebuild; a `C4` new
+  correlator-rule sketch for Cloudflare-origin unmasking) verified as real
+  but larger/`PARTIALLY_CONFIRMED` with plan gaps — left for a future cycle
+  rather than force-fit here. Gate green: 4277 lib tests (+1), fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §4a/§5 — same
+  commit.
+
+- **2026-07-01** — **C2 `[ ]`→`[~]`: closed the `run_expansion`/
+  `run_gap_fill` per-candidate `HashSet` rebuild the same discovery pass
+  flagged, verified and re-derived independently rather than applied
+  blindly.** The `PARTIALLY_CONFIRMED` candidate from this session's
+  parallel discovery pass (see the C7 entry above) had two accuracy nits in
+  its self-description — a wrong test-coverage citation and an understated
+  `DispatchState` blast radius (5 struct-literal sites, not 2) — so this
+  cycle re-verified the core finding directly against the live code before
+  implementing, rather than trusting the plan as written. Confirmed:
+  `before.clear(); before.extend(entity_map.keys().cloned())` ran once per
+  expansion candidate / gap-fill probe, an O(entity_map_size) allocation
+  each time, immediately followed by an O(entity_map_size) full-map rescan
+  to find what changed — both replaced by a `newly_inserted: Vec<String>`
+  buffer on `DispatchState`, appended only at the true-insert branch inside
+  `finalise_module_result` (never on merge), then drained directly. All 5
+  `DispatchState` construction sites updated (3 real call sites, 2 test
+  fixtures — the seed-dispatch site has no parent to attribute lineage to,
+  so it gets a discarded throwaway buffer). Verified against the actual
+  `expansion_records_derived_from_lineage` end-to-end integration test
+  (`tests/smoke.rs`), which exercises this exact lineage-attribution code
+  path against a real two-hop expansion — not a hand-built `Relation`
+  fixture — plus the full `cargo test` suite (lib + smoke + architecture +
+  doctests, all binaries). C2 stays `[~]`: this is one hot-loop
+  inefficiency closed, not the published throughput/RAM benchmark the node
+  ultimately targets. Gate green: 4277 lib tests (unchanged — this refactor
+  touches no observable behavior, only cost), fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` §4a/§5 — same commit.
+
+- **2026-07-01** — **New correlator rule AU-111: CDN origin-candidate
+  unmasking via a non-proxied MX/direct-connect sibling — the last verified
+  candidate from this session's discovery pass, closing the MX/
+  direct-connect-subdomain leg of C4's Cloudflare-origin-unmasking goal.**
+  The candidate came back `PARTIALLY_CONFIRMED`: the verifier confirmed the
+  gap and all the supporting plumbing (MX-tagged Domain entities,
+  subdomain-brute direct-connect labels, auto-derived `ResolvesTo` edges,
+  `is_cdn_edge_ip`) were real and ready, but the plan's proposed test
+  location was wrong and, on closer reading during implementation, its
+  "tag the IpAddress entity with origin-candidate" step was not actually
+  achievable — a `RelationRuleFn` takes `&[Entity]` (immutable) and
+  produces `Vec<Correlation>`; it cannot mutate/tag entities. Implemented
+  correctly instead, following AU-110's established shape exactly: the
+  origin-candidate IP is named in the `Correlation` record's
+  `entity_uids` and description, not stamped onto the entity. Groups
+  `ResolvesTo` edges by registrable domain; when the apex resolves
+  entirely to CDN/anycast edges and a sibling under the same registered
+  domain (an `mx`-tagged Domain, or a `subdomain`+`dns-brute` hit whose
+  leftmost label is `cpanel`/`ftp`/`mail`/`webmail`/`dev`) resolves to a
+  real, routable IP, fires a Medium correlation. 5 new unit tests
+  (positive MX-sibling fire, positive dns-brute-sibling fire, no-fire on a
+  non-CDN apex, no-fire when the sibling is equally CDN-fronted, no-fire
+  on a generic subdomain label / cross-registrable-domain leakage),
+  mirroring AU-110's fixture style exactly. Registered in
+  `RELATION_RULES`; both correlator architecture guards
+  (`every_dispatched_correlation_rule_has_a_firing_test`,
+  `no_two_correlation_rule_functions_share_a_number`) pass. C4 stays
+  `[~]`: this closes one leg (MX/direct-connect) of the origin-unmasking
+  goal; passive-DNS history and SSL-cert-hash pivoting need new data
+  sources and remain open. Gate green: 4282 lib tests (+5), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
+  same commit.
+
+- **2026-07-01** — **C5: `au_geo`'s exact ABS state answer now reaches the
+  correlator via an `au-state:XX` tag, sharpening AU-056/AU-085 —
+  selected from a second parallel discovery + adversarial-verification
+  pass (Workflow tool, 8 fresh backlog areas).** `au_geo::assemble()`
+  resolved the precise point-in-polygon state (`state_name_2021`) for
+  every coordinate but stored it only in evidence text; the entity itself
+  carried no `au-state:` tag, unlike every other geo module (`wigle`,
+  etc.). `core::correlator::rules::geo::coord_state()` — the helper
+  AU-056/AU-085 jurisdiction cross-checks depend on — prefers that tag and
+  only falls back to `au_state_for_coords` (a rectangular-bbox
+  approximation whose own doc comment admits border misattribution) when
+  it's absent, so `au_geo`'s more precise answer was silently discarded in
+  favour of a coarser one every time. Fixed by resolving the full state
+  name to its abbreviation via the already-tested `util::address_au::
+  state_code` (the same helper `au_people` already uses for this exact
+  purpose) and tagging the coordinate. 2 new unit tests. Genuinely fresh
+  finding — confirmed via grep that `au_geo` had never been mentioned in
+  either tree before this cycle, not a duplicate of the AU-052/057/059
+  centroid/median fusion work. Four other candidates from the same pass
+  were also `CONFIRMED`/`PARTIALLY_CONFIRMED` and left for future cycles:
+  `search_engines` proptest coverage (T2.7, matches the established
+  au_people/au_electoral/au_property pattern exactly), a VirusTotal
+  dropped-`last_dns_records`-field gap (C4's passive-DNS leg, smaller than
+  previously assumed — a depth fix on an already-called endpoint, not a
+  new integration), and two more stale-doc-claim findings (C3's
+  ASIC/cadastre "remaining" list undercounting what's actually shipped;
+  a §7 S2 status-marker drift). Gate green: 4283 lib tests (+1), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-GEOINT + §5 — same commit.
+
+- **2026-07-01** — **Two independent stale-doc-claim corrections, both from
+  the same second discovery pass's stale-doc-sweep candidate: C3's
+  "fuller ASIC/ABR graph; state cadastre/property" already delivered, and
+  §7 S2's status marker contradicted its own "Fixed" body.** (1) C3
+  narrowed: `asic_persons`/`asic_business_names`/`asic_banned_orgs`
+  (three more live ASIC registers, keyless, Corporate) and `qld_cadastre`
+  (free QLD DCDB coordinate lookup, Geo) are all registered in the live
+  dispatch table today — verified directly via `grep -c "Arc::new(" src/
+  modules/mod.rs` = 162 against the doc's last recorded snapshot of 126,
+  confirming substantial undocumented module growth. `Remaining` narrowed
+  to GNAF/AusPost address validation and non-QLD state cadastre. No
+  delivery date claimed for the four modules — this session's shallow
+  clone resolves `git log`/`git blame` for them to the single root import
+  commit, not a real history, the same attribution trap prior cycles
+  already found and worked around for AU-084/AU-060. (2) §7 S2's header
+  read `[ ]` P1 (HIGH) while its own body said "✅ Fixed", the paired
+  `SOLUTION_TREE` SOL-SSRF-WHOIS entry already showed `[x]`, and the live
+  fix (`client::resolve_public_whois`, hermetic test
+  `blocks_ssrf_and_non_whois_referrals`) is fully present — S2 was the
+  lone outlier among its S3/S4/S5 siblings, whose markers all correctly
+  match their bodies. Flipped to `[x]`. Doc-only; no code touched. Gate:
+  n/a (docs). **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-01** — **T2.7: `search_engines` gains the same proptest
+  never-panics coverage the other T2.7 modules already have — 4 of 5
+  modules now covered.** Picked directly from the second discovery pass's
+  `search-engines-proptest` candidate (`CONFIRMED` — the verifying agent
+  actually applied the exact proposed `mod prop` block and ran the full
+  gate before this cycle re-applied it for real). `search_engines` is
+  structurally different from `au_people`/`au_electoral`/`au_property`:
+  one generic `parse_results` (plus `HrefIter`/`CiteIter`/`GoogleUrlIter`/
+  `external_link_count`) handles all 17 SERPs rather than 17 bespoke
+  per-engine parsers. It already had a hand-written adversarial-input
+  test (`result_parsers_never_panic_on_adversarial_html`, ~20 hand-picked
+  hostile-byte cases) proving the maintainers already recognised this as
+  the untrusted-input surface — but not the randomized `proptest`
+  never-panics guarantee, which fuzzes the full `.{0,256}` space rather
+  than a fixed case list. 5 new `proptest!` cases added, mirroring the
+  established `mod prop` shape exactly; all passed on first run — a proof
+  gap, not a live panic bug. `username_search` is now the sole named T2.7
+  module without this coverage; its detection logic is table-driven
+  pattern matching rather than a bespoke HTML parser, so whether this
+  exact pattern applies is unconfirmed, left for a future cycle to scope
+  honestly rather than force-fit. Gate green: 4288 lib tests (+5), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-F3
+  + §5 — same commit.
+
+- **2026-07-01** — **C4: `virustotal` now surfaces its passive-DNS history
+  as pivot entities, closing the last verified candidate from this
+  session's second discovery pass.** The passive-DNS-history leg turned
+  out smaller than the doc assumed: `virustotal`'s already-called domain/
+  IP report endpoint (`GET /api/v3/domains/{d}` or
+  `/ip_addresses/{ip}`) returns `last_dns_records` (historical A/AAAA/MX/
+  NS/CNAME) that the module fetched but silently dropped — decoded
+  straight into a narrow `VtAttributes` struct with no field for it, the
+  same "dropped-field depth gap" class this session's earlier `austlii`/
+  `wigle` fixes closed. Verified real, not stale-doc noise, by confirming
+  a prior agent session's near-identical fix (commit `c809c1ad`) lives
+  only on an abandoned, never-merged branch (`git merge-base
+  --is-ancestor` → not an ancestor of this branch). `build_entity` →
+  `build_entities` (pure, returns `Vec<Entity>`): A/AAAA records become
+  `IpAddress` pivots, MX/NS/CNAME hostnames become `Domain` pivots, capped
+  at `MAX_DNS_RECORDS = 30`. Deliberately scoped narrower than the
+  abandoned commit, which also surfaced `as_owner`/`asn`/`network`/
+  `country`/`categories`/`tags` — a separate C4 asset-depth concern, left
+  out to avoid scope creep beyond this one verified gap. 2 new unit
+  tests (positive pivot extraction across all record types incl. a
+  non-parseable-IP and a TXT-is-not-a-pivot-kind rejection case; the
+  30-record cap). C4 stays `[~]`: SSL-cert-hash pivoting on Censys/Shodan
+  is the one remaining leg that genuinely needs new data-source work, not
+  just a dropped-field fix. This exhausts the second discovery pass's
+  candidate pool — all 5 `CONFIRMED`/`PARTIALLY_CONFIRMED` findings from
+  it are now implemented. Gate green: 4290 lib tests (+2), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
+  same commit.
+
+- **2026-07-01** — **C7: `Engine::checkpoint_entities` — the mid-scan
+  durability path hit at every productive round boundary — now
+  canonicalises evidence order too, closing the higher-impact half of the
+  determinism gap this session's earlier C7 fix only partly addressed.**
+  Selected from a third parallel discovery + adversarial-verification
+  pass (Workflow tool, 8 backlog areas). The earlier fix canonicalised
+  `entities_from_events` (the event-log recovery path used only when the
+  `entities` table is completely empty); this pass found that
+  `entities_for_scan` falls back to that canonicalizing path *only* when
+  the table is empty, so any scan that reached even one mid-scan
+  checkpoint before being interrupted — the common case, since
+  checkpointing happens at every productive round, not just at the very
+  end — never reaches the fix and reads back through the ordinary table
+  path, which never canonicalises. Reproduced empirically before the fix
+  (`EQUAL=false` across two arrival orders of the same evidence).
+  `checkpoint_entities` now takes `entities: &mut [Entity]` and
+  canonicalises before persist, exactly mirroring the finalise path's
+  existing pattern; both call sites (seed round at `mod.rs:469`,
+  expansion rounds at `mod.rs:1810`) updated to pass mutable snapshots.
+  New regression test (`checkpoint_entities_canonicalizes_evidence_order_
+  regardless_of_arrival_order`) proves arrival-order independence for the
+  checkpoint path specifically — verified as a genuine regression test by
+  temporarily reverting the fix and confirming it fails (`EQUAL=false`)
+  before restoring. C7 stays `[~]`: the export-path proptest coverage and
+  machine-diffable-audit guarantee remain open, but the two concrete
+  determinism bugs this session identified in the recovery/checkpoint
+  paths are both now closed. Gate green: 4291 lib tests (+1), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-FORENSIC +
+  §5 — same commit.
+
+- **2026-07-01** — **C9 rollout correction: `censys`/`trove_au` — both
+  named by C9's own problem statement as the motivating waste examples —
+  now actually opt into the inter-scan cache.** Selected from a third
+  discovery + adversarial-verification pass, which audited C8/C9 for
+  residuals rather than trusting their `[x]`/delivered status. C9's
+  caching *mechanism* is genuinely complete and correctly wired into all
+  three dispatch paths (sequential, Phase 1 paid-sync, Phase 2
+  concurrent) — no bug found there. But the *rollout* was overstated:
+  grepping all 33 `Paid`/`KeyGated` modules found only `hlr_cnam`/
+  `netlas`/`opencellid` had ever overridden `cache_ttl_secs()`; the other
+  30 — including `censys` and `trove_au`, which this node's own text
+  names as motivating "finite paid/keyed query allowance" examples —
+  silently defaulted to 0 (always live), the exact waste C9 exists to
+  stop. Both now override to 86400s (24h), matching the existing
+  bracket. 2 new test assertions extending each module's existing
+  metadata test. No `dispatch.rs` changes needed — the cache gate is
+  already generic over `module.cache_ttl_secs()`. ~28 other modules
+  remain uncached; left as a deliberate per-module audit (data-volatility
+  judgement varies per module) rather than a blanket flip, and tracked
+  separately rather than reopening this node. Same pass also confirmed
+  C8 (`streaming_probe`) is genuinely fully done, modulo a trivial
+  42-vs-43-site doc-count drift (43 sites live, docs still say 42 in
+  several places) — noted but not fixed this cycle (cosmetic, no
+  functional impact, deferred to avoid scope creep beyond the one
+  candidate implemented). Gate green: 4291 lib tests (unchanged — only
+  assertion lines added to existing tests, no new test functions), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-CACHE-INTERSCAN + §5 — same commit.
+
+- **2026-07-01** — **T2.14 `[ ]`→`[~]`: a third, differently-designed
+  dead-scan hint closes real value without hitting the noise problem
+  that blocked two prior attempts at literally reinstating either
+  original dead hint.** Selected from the same third discovery +
+  adversarial-verification pass. Two earlier investigations this session
+  had already concluded the scan-level "60s + zero-yield module"
+  reinstatement isn't actually simple (same noise problem as the
+  per-module hint); this pass tried a different angle instead of a third
+  attempt at the same reinstatement — a new, scan-wide "every dispatched
+  module ran and the scan found nothing at all" hint
+  (`entities.is_empty() && scan.modules_run > 0`), which fires at most
+  once per scan and is categorically distinct from the "many modules
+  found nothing for this kind" noise case, since it never fires when a
+  scan legitimately dispatched nothing (`modules_run == 0`, e.g. every
+  candidate module was gate-skipped for an unsupported target kind — a
+  different, already-explained situation). New pure
+  `total_dead_scan_hint` helper mirrors T2.13's
+  `zero_yield_keyed_or_paid_modules` pattern exactly; heads the
+  OPTIMIZATION HINTS list. 3 unit tests (fires when modules ran and found
+  nothing; silent when nothing was even dispatched; silent on a normal
+  successful scan). Noted honestly: this doesn't remove the pre-existing
+  misleading "well-tuned" fallback line, which can still print alongside
+  the new hint on an empty scan — a cosmetic redundancy, left for a
+  future polish pass, not glossed over. The two ORIGINAL dead hints
+  remain unrestored — T2.14 stays `[~]`, not `[x]`; this closes the
+  node's underlying value gap with a safer design, not the literal
+  restoration its title describes. Gate green: 4294 lib tests (+3), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-HINT-NOISE + §5 — same commit.
+
+- **2026-07-01** — **C6: `Address` gains the same exposure-dork coverage
+  Phone/FullName already got, closing a second, real slice of the
+  identical gap.** Selected from the same third discovery +
+  adversarial-verification pass. `build_queries_exposure`'s doc comment
+  blanket-excluded `Address` alongside `CryptoAddress` on the same
+  "doesn't add signal beyond `build_queries_base`" premise — true for
+  `CryptoAddress` (its base arm already has scam/fraud/attribution
+  dorks) but false for `Address` (real-estate/land-registry/ABN dorks
+  only, zero breach coverage). Added `address_exposure` (5 dorks: paste/
+  dehashed/leakcheck/snusbase breach dumps, github/s3 config-leak dorks,
+  people-search aggregators — same shape as the existing per-kind
+  helpers), corrected the doc comment. `AbnAcn` deliberately left
+  excluded — a registry number's breach-relevance is weaker than a
+  street address's, so it wasn't force-fit into scope alongside Address.
+  2 new tests (dispatch-level, shape-level) mirroring the Phone/FullName
+  precedent exactly; full `search_engines` suite (291 tests) re-run to
+  confirm no regression in the existing `build_queries_address_produces_
+  dorks` integration test. Gate green: 4296 lib tests (+2), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-OFFENSIVE +
+  §5 — same commit.
+
+- **2026-07-01** — **`hunter_io` now surfaces the `linkedin`/`twitter`
+  social-profile fields its own domain-search response already returns,
+  the fourth "dropped-field depth gap" this session found and closed
+  (after `austlii`, `wigle`, `virustotal`).** Selected from a third
+  discovery pass's round-2 dropped-field sweep. `struct HunterEmail`
+  deserialized only `value/confidence/first_name/last_name/position/
+  department/sources`, silently discarding the per-email `linkedin`/
+  `twitter` fields Hunter's API returns — no `deny_unknown_fields`, so
+  serde dropped them without a trace. The discovery pass's own plan
+  assumed both fields are always full profile URLs and proposed pushing
+  both as `EntityKind::Url`; adversarial verification caught this was
+  wrong — Hunter's documented examples show `twitter` as a bare handle,
+  not a URL, and the codebase's own established convention
+  (`fullcontact::build_entities`) already handles exactly this
+  distinction by inspecting the value's shape (`starts_with("http")`),
+  not assuming a fixed type per field name. Implemented that way instead:
+  a shared loop over `(network, value)` pairs emits `EntityKind::Url`
+  when the value looks like a URL, else a platform-prefixed
+  `EntityKind::Username` (`"twitter:handle"`), tagged `social-profile` in
+  both cases. `produces()` updated to declare the now-possible `Username`
+  kind. 3 new unit tests (LinkedIn-URL case, Twitter-handle case,
+  absent-field no-op case). Gate green: 4299 lib tests (+3), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean, including
+  `every_literal_constructed_entity_kind_is_declared_in_produces`. Not
+  tied to a specific capability node — a general per-module data-depth
+  completeness fix, same class as the AU register/WiGLE fixes.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-01** — **F.2 stale-count correction: the AU postcode gazetteer
+  grew from ~72 to 96 entries five days after this note was recorded, and
+  the doc was never updated across 20 subsequent doc-touching commits.**
+  Selected from the third discovery pass's third stale-doc sweep, which
+  also checked T2.9 (SQL tie-breaks) and T2.12 (CLI/periphery contract)
+  and found both fully accurate — not every audit finds a stale claim.
+  `src/util/postcode_au/mod.rs::offline_fallback` has 96 match arms
+  today (verified directly), consistent with the function's own doc
+  comment ("the same ~100 postcodes"). `git log -S` traced the "≈72"
+  figure to commit `868a83a2` (cycle 18, 2026-06-18) and the actual
+  growth to `a6f09f83` (2026-06-26, "add 24 major AU regional cities" —
+  72+24=96, exact match), 8 days later; the figure was correct when
+  written and simply never revisited. Corrected the 3 genuinely
+  prescriptive occurrences (this node's §2 text, plus two SOLUTION_TREE
+  spots) to "≈100" — matching the code's own doc-comment wording so
+  future gazetteer growth within that range doesn't re-stale the line —
+  while leaving the two §8/§5 historical log entries dated 2026-06-18
+  untouched (accurate point-in-time records of what the count was then,
+  per this session's append-only convention). The adjacent "phone area
+  codes ≈65 entries" figure was checked too and found genuinely
+  ambiguous (AU-only area codes = 5 entries; all-country area-code
+  tables combined = 83; neither cleanly matches 65) — left uncorrected
+  rather than guessing which scope was intended. Doc-only; no code
+  touched. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
+
+- **2026-07-01** — **`proxycurl` now surfaces the `certifications` its own
+  description promised but never parsed — the fifth "dropped-field depth
+  gap" this session found and closed (after `austlii`, `wigle`,
+  `virustotal`, `hunter_io`).** Unusually self-contradicting: the
+  module's `description()` string literally advertised "employment,
+  education, and certifications via Proxycurl", and the module doc's
+  field→output mapping table covered every field EXCEPT certifications —
+  but `struct LinkedInProfile` had no `certifications` field at all, so
+  serde silently dropped the entire array Proxycurl's Person Profile API
+  returns. Added a `Certification` struct (`name`/`authority`) with a
+  `describe()` method (`"Name (Authority)"`) mirroring the existing
+  `Education::describe()` precedent exactly, a `#[serde(default)]
+  certifications: Vec<Certification>` field, and a fold into a
+  `certifications` evidence attribute on the `Person` entity (capped at
+  `MAX_LISTED`, joined `"; "`, following the `education` attr pattern to
+  the letter — no new `EntityKind`). Also added the missing table row to
+  the module doc so the code's own promise now matches its behaviour. 3
+  new unit tests (the `describe()` name+authority/name-only/no-name
+  cases, a full-profile assertion, and an absent-field no-op regression).
+  Not tied to a specific capability node — a general per-module
+  data-depth completeness fix. Gate green: 4301 lib tests (+3), full
+  suite (lib + smoke + architecture + doctests, all binaries) green,
+  fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+
+- **2026-07-01** — **Baseline-header stale-count correction: the
+  top-of-file "Current baseline" said "64 native correlation rules
+  (AU-001…AU-064)" and "126 modules", both badly stale.** Selected from a
+  fourth discovery pass's stale-doc sweep, which ALSO independently
+  checked three other suspected-stale claims (C2's "no published
+  numbers", F.3's `cargo-fuzz` remaining, C4's SSL-cert-hash "needs new
+  data source") and confirmed all three still accurate — the sweep
+  reports precisely, not just when it finds something. Live verification:
+  `src/core/correlator/mod.rs`'s dispatch tables hold 96 entity rules
+  (`const RULES`) + 13 relation-graph rules (`const RELATION_RULES`) =
+  109 unique dispatched `rule_au_*` functions, ID ceiling AU-111 (added
+  same day in `ae49da6d`), not 64/AU-064. The changelog's own running
+  "Rule count N→N+1" self-tracker had stopped advancing at "68→69" ~40
+  cycles ago while the AU-070s through AU-111 families kept landing. The
+  module count was separately verified stale too: the guarded README
+  (`readme_module_overview_count_matches_registry` keeps it live) shows
+  161 modules, not 126. Corrected both aggregate figures; deliberately
+  did NOT re-derive the 14 per-category sub-counts (Infrastructure 21,
+  Geo 20, …) — those need running code to re-tally accurately, so rather
+  than guess, flagged them explicitly as the unverified 2026-06-18
+  snapshot. Doc-only; no code touched. Gate: n/a (docs). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-01** — **New correlator rule AU-112: a discovered IP inside a
+  discovered announced network block — the one rule that reads
+  `EntityKind::Cidr` (C4's ASN/BGP → org/prefix correlation leg).**
+  Selected from the same fourth discovery pass, `correlator-rule-coverage`
+  candidate: a systematic sweep of ~45 rule doc comments found NO
+  doc-vs-code mismatch (the rules are honest), but surfaced a real
+  cross-reference gap — `EntityKind::Cidr` was produced by four modules
+  (`bgpview`/`ripestat`/`netblock`/`intelx`, each carrying the owning
+  ASN/org in evidence) yet read by zero correlator rules and joined by
+  zero relation builders (`grep -rln "Cidr" src/core/correlator/` and
+  `src/core/relation/` both returned empty), so a subject's IP and the
+  block that provably contains it were never connected. AU-112 (entity-
+  only rule in `infra.rs`) closes it: containment test per (IP, block)
+  pair, Medium correlation on a hit naming the block's owner. Adversarial
+  verification caught and corrected the discovery plan's one material
+  error — it proposed hand-rolling new CIDR-masking code "adapted from
+  netblock", but a pure, tested containment primitive
+  (`util::spf::{Ipv4Cidr,Ipv6Cidr}`) already existed, so the rule reuses
+  it. That required a narrow addition to the
+  `core_does_not_import_util_directly` guard's allowlist for those two
+  pure/no-I/O structs — mirroring the existing `util::geometry` carve-out
+  exactly (the guard's designed mechanism for pure computational leaf
+  helpers, not a weakening). Registered in `RULES`; all four correlator
+  architecture guards pass (`every_dispatched_correlation_rule_has_a_
+  firing_test`, `correlation_rule_ids_match_their_function_number`,
+  `no_two_correlation_rule_functions_share_a_number`, plus the amended
+  import guard). 5 unit tests. Bumps the baseline count to 110 rules /
+  ceiling AU-112. *(Merge note, verified against `src/`: this specific
+  AU-112 implementation was superseded by a differently-scoped one before
+  origin/main was merged in — see `C1`'s 2026-07-13 entry and §3.2 C4's
+  "Superseded" note for what `rule_au_112_shared_cidr_infrastructure`
+  actually does today; kept here as the historical record.)* Gate green:
+  4306 lib tests (+5), full suite (lib +
+  smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-NETINT + §5 —
+  same commit.
+
+- **2026-07-01** — **C7: the full dossier now actually keeps its own
+  "nothing omitted" promise — `render_full` was silently dropping three
+  entity-level fields.** Selected from the fourth discovery pass's
+  export-renderer-completeness candidate (its verifier was rate-limited,
+  so this cycle re-verified the finding directly against the code before
+  acting). `render_full`'s doc comment promises "every attribute verbatim
+  … nothing hashed, masked, truncated, or omitted", but the per-entity
+  block never emitted the SHA-256 `uid`, the pre-normalisation
+  `raw_value`, or `observed_at` — all three of which `render_json` and the
+  CSV export already carry. `raw_value` genuinely diverges from the
+  normalised `value` for Email/Username/Domain (case-folding, sigil/quote
+  stripping), so the "full, unredacted" forensic artifact was hiding the
+  actual source spelling of every such finding. The existing
+  "dumps_every_field" test never caught it: its fixture was a `Password`
+  entity (a passthrough-normalise kind where `raw_value == value`), so the
+  divergent case was never exercised. Added the three fields to
+  `render_full` (`observed_at` rendered raw + compact-UTC via the existing
+  `util::timefmt::compact_utc` helper), and strengthened the test with a
+  mixed-case Email fixture whose `raw_value` provably diverges — verified
+  as a genuine regression test by reverting the renderer fix and watching
+  it fail. Additive text-renderer change; no identity/PII logic, no
+  architecture guard touched. Gate green: 4306 lib tests (+3), full suite
+  (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-FORENSIC +
+  §5 — same commit.
+
+- **2026-07-02** — **C4: `shodan`'s paid host lookup now surfaces the host
+  classification `tags` its free InternetDB path already emits — the
+  seventh "dropped-field depth gap" this session (after `austlii`,
+  `wigle`, `virustotal`, `hunter_io`, `proxycurl`).** Selected from a
+  fifth discovery pass's round-4 dropped-field sweep, re-verified directly
+  against both code paths before acting. The merged `shodan` module runs a
+  free path (`InternetDbResp`, no key) and a paid path (`HostResp`, keyed
+  `/shodan/host/{ip}`), with the module doc framing the paid path as a
+  strict superset of the free one — yet the free path deserialized and
+  emitted the top-level `tags` array (`compromised`/`malware`/`honeypot`/
+  `self-signed`/`vpn`/`cloud`/`cdn`…) as a `tags` evidence attr plus
+  per-tag `shodan:<tag>` entity tags, while the paid `HostResp` struct had
+  no `tags` field at all — so serde silently dropped it (no
+  `deny_unknown_fields`) and a keyed operator received *less* threat
+  classification than a free user, inverting the module's own contract.
+  Shodan documents the same `tags` array on both records, so this was a
+  pure parity omission, not a schema difference. This is the exact `tags`
+  field the earlier `virustotal` C4 leg explicitly deferred as "a separate
+  asset-depth concern"; this closes the Shodan slice. Fixed by adding
+  `#[serde(default)] tags: Vec<String>` to `HostResp` and an emission
+  block in `query_paid` that mirrors the free path to the letter (same
+  `ev.with_attr("tags", …)`, same per-tag `entity.tag(format!("shodan:
+  {t}"))`), so the tag vocabulary is now identical across both tiers and
+  existing correlator rules pivot on it uniformly. No new `EntityKind`, no
+  `produces()` change (the paid path already yields `IpAddress`), no
+  architecture-guard impact. 1 serde round-trip test
+  (`paid_host_resp_deserializes_the_tags_array`): populated array
+  deserializes, absent array defaults to empty. Gate green: 4307 lib tests
+  (+1), full suite (lib + smoke + architecture + doctests, all binaries)
+  green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-NETINT + §5 — same commit.
+
+- **2026-07-02** — **T2.12 follow-up: `hse diagnostics` couldn't aggregate a
+  self-test failure because `cmd_selftest` hard-exited the process.**
+  Selected from a fifth discovery pass's CLI-contract sweep. The aggregate
+  `hse diagnostics` command runs doctor → selftest → engines and promises —
+  in both its doc comment and its code (a `Vec<&str>` of failed sections, one
+  `Err` returned at the end) — to run all three in a single pass and print an
+  aggregate "N section(s) failed" summary. But section 2/3
+  (`selftest::cmd_selftest`) signalled failure with a direct
+  `std::process::exit(1)`, so a failing self-test killed the whole process
+  mid-pass: `engines` (3/3) never ran, the `if let Err(e)` arm meant to catch
+  it was unreachable, and the aggregate summary never printed. This is exactly
+  the exit-code-contract defect class T2.12 fixed elsewhere (`audit` always
+  `Ok`, `provision --verify` exit 0 on failure), but in `cli/diagnostics.rs`,
+  which was added 2026-06-30 — after the 2026-06-17 T2.12 sweep, so out of its
+  reach. `cmd_selftest` was the only one of the three sections that hard-exited
+  (`doctor`/`engines` correctly return `Result`). Fix: `cmd_selftest` now
+  *returns* `Err` on failure via a new pure `report_to_result(&Report)` helper —
+  the binary's `main` already maps any returned error to `exit(1)`, so the
+  standalone `hse selftest` non-zero-exit contract is unchanged, while
+  `cmd_diagnostics` can now catch the failure and finish its pass. The old
+  `process::exit` path was inherently untestable; the extracted pure helper is
+  covered by 2 unit tests (all-pass → `Ok`; any-fail → `Err` naming the count).
+  No identity/PII logic, no architecture guard, no clippy/unsafe posture
+  touched. Gate green: 4309 lib tests (+2), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` §5 (T2.12 node is `[x]`; recorded as a
+  dated follow-up, not a status change) — same commit.
+
+- **2026-07-02** — **F.3: property-test coverage for `util::extract`, the
+  shared free-text identifier miner — the parser F.3 flags as a panic surface
+  but that had zero proptest coverage.** Selected from a fifth discovery pass's
+  util-proptest-coverage candidate, after two other fifth-pass candidates
+  (a claimed `HostedOn` Url→IpAddress relation gap and a claimed CLI/SPA
+  `report.json` "Exposure Index" parity gap) were re-verified against the code
+  and REJECTED as not-real — `HostedOn` is defined and correctly derived as
+  Url→Domain (Url→IpAddress is intentionally a 2-hop path), and the CLI and API
+  reports call the same `build_scan_report` builder so their envelopes cannot
+  diverge (and no "Exposure Index" metric exists anywhere). `util::extract` is
+  the module every scraper/breach/stealer-log parser calls to mine emails,
+  phones, IBANs, MACs, SSIDs, and credential-field classifications out of fully
+  attacker-shaped input; it had thorough example-based tests but no property
+  coverage, despite housing the byte-walking `page_emails` (walks
+  `text.as_bytes()`, re-slices at computed offsets) and the char-slicing
+  `ibans`/`macs` normalisers — exactly the code F.3's plan names. Added a
+  `mod prop` (7 properties over arbitrary `.{0,256}` strings) asserting
+  totality + output well-formedness for the six extractors and totality +
+  internal consistency for `classify_credential_field`. The properties encode a
+  real behavioural asymmetry, not a blanket no-panic: strict `page_emails` is
+  asserted to always satisfy `looks_like_email`, while the looser regex-based
+  `emails` is deliberately NOT (it can match a dot-leading host the structural
+  gate rejects) — over-asserting there would be a false invariant. The
+  extractors proved already-total (no production bug surfaced), so this is a
+  pure test-hardening addition; no production code, no identity/PII logic, no
+  architecture guard, no clippy/unsafe posture touched. Gate green: 4316 lib
+  tests (+7), full suite (lib + smoke + architecture + doctests, all binaries)
+  green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE`
+  SOL-F3 + §5 — same commit.
+
+- **2026-07-02** — **SOL-MERGE enforcement: `au_people` was dropping
+  cross-source corroboration by de-duplicating with a keep-first `retain`
+  instead of a GREATEST-merge.** Selected from a fifth discovery pass's
+  dedup-merge-correctness candidate, verified directly against the code.
+  `au_people` scrapes two independent AU residential directories (White Pages
+  AU + True People Search AU, plus a relatives pass over each) and accumulates
+  every hit into one result vector, then calls `dedup_by_kind_value`. That
+  helper used `HashSet::retain`, keeping the FIRST entity for each `(kind,
+  value)` and discarding the rest. But the same address or phone is routinely
+  listed by BOTH directories: each emits an entity with the same normalised
+  `(kind, value)` — hence the same UID — but its own distinct source evidence.
+  Keep-first therefore silently threw away the second directory's independent
+  confirmation *at the module boundary*, before the engine's own UID-merge
+  (which correctly applies the GREATEST-semantics SOL-MERGE guarantees) could
+  ever see it — losing the max-confidence, the summed corroboration count, and
+  half the evidence trail on exactly the facts two sources agreed on. This is
+  a data-loss/correctness bug, distinct from T2.7's scraper-*resilience* axis
+  (panic-safety / layout drift) even though it lives in the same module. Fixed
+  by rewriting `dedup_by_kind_value` to fold duplicates through `Entity::merge`
+  (max confidence, saturating corroboration, evidence + tag union), preserving
+  first-occurrence order; `merge` is commutative in the folded signal, so the
+  result is order-independent. 1 regression test, red/green-verified: it asserts
+  the survivor carries BOTH directories' evidence, corroboration 2, and the
+  higher of the two confidences — all three of which the old keep-first
+  behaviour demonstrably failed (confirmed by reverting the fix and watching it
+  go red, then restoring). No identity/PII decision logic, no architecture
+  guard, no clippy/unsafe posture touched. Gate green: 4317 lib tests (+1), full
+  suite (lib + smoke + architecture + doctests, all binaries) green, fmt/clippy
+  `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` SOL-MERGE enforcement +
+  §5 — same commit.
+
+- **2026-07-02** — **§7 S4: corrected the stale key-in-URL module enumeration —
+  it was BOTH overstated and understated, in a security node whose whole purpose
+  is to bound the residual key-exposure surface.** Selected from a fifth
+  discovery pass's stale-doc-sweep candidate; the correction was derived by
+  re-verifying every keyed module's actual auth mechanism against the code, not
+  by trusting the candidate's summary. The S4 node listed "~7 modules" that put
+  the key in the query string (`shodan`/`hunter_io`/`whoisxml`/`numverify`/
+  `opencellid`/`opencorporates`/`mls`). Ground truth (grep of every module's URL
+  construction + header calls): `numverify` was migrated to `apikey`-**header**
+  auth (`.header("apikey", key)`, `api.apilayer.com` — no key in the URL), so
+  listing it is wrong; and four key-in-URL modules were missing — `hlr_cnam`
+  (`api_key=` plus its OpenCNAM leg's `auth_token=`), `contact_enrich`
+  (`access_key=`, `apilayer.net/api/validate`), `cell_intel` (its OpenCelliD
+  helper's `key=`), and `ipqs` (which embeds the key in the URL **path**,
+  `/api/json/{endpoint}/{key}/…`, not the query string at all). Corrected the
+  list to the accurate 10 modules (9 query-string + `ipqs` path), noted
+  `numverify`'s migration as an instance of the node's own "prefer header auth"
+  mitigation already applied, and made the `redact_credentials` masked-param
+  description match the actual set (`api_key`/`apiKey`/`key`/`token`/
+  `access_token`/`secret`/`auth`). Also flagged — explicitly as a follow-up, NOT
+  fixed this cycle to avoid scope creep — that `ipqs`'s path form and the
+  `access_key=`/`api_token=`/`auth_token=` param names sit outside that redaction
+  set. This is the eighth-plus instance of the recurring doc-drift pattern this
+  session keeps finding, and the most security-relevant: an S4 residual-surface
+  enumeration that names the wrong modules misdirects any operator or auditor
+  reasoning about where a key could leak. Doc-only; no code, tests, or
+  architecture changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §5 (the
+  SOL-REDACT node carries no module list, so no live-node text there changes) —
+  same commit.
+
+- **2026-07-02** — **C6: AU-105 credential-reuse was blind to cross-breach reuse
+  within `dehashed`/`see_know` because those modules label the breach name with
+  a non-canonical evidence attribute.** Selected from a fifth discovery pass's
+  evidence-attr-consistency candidate (`PARTIALLY_CONFIRMED`), promoted to a
+  real bug by re-verifying the attribute names against both the rule and the
+  modules. AU-105 (`rule_au_105_credential_reuse`) counts a secret's reuse
+  across DISTINCT breaches, and its `breach_of` helper reads the breach name
+  from the `dbname` evidence attribute, then `breach`, then falls back to the
+  Evidence `source` FIELD (which is the module name). `oathnet_pro` correctly
+  stamps `dbname`. But `dehashed` (`build.rs::record_evidence`) and `see_know`
+  (`extract/mod.rs::record_evidence`) both stamped the per-record breach
+  database name under a `source` **attribute** — a different thing from the
+  `source` FIELD `breach_of` falls back to, and one `breach_of` never inspects.
+  So every DeHashed record collapsed to the single pseudo-breach "dehashed" and
+  every SeekNow record to "see_know": a subject whose password appeared in three
+  different breaches, all surfaced by DeHashed, registered as ONE breach, so the
+  ≥2-distinct-breaches reuse finding — the whole point of AU-105, and the common
+  case for these aggregators — silently never fired. (For `see_know` the miss
+  was conditional: a record whose raw JSON already carried a literal `dbname`
+  field worked via the raw-field fold; only records labelling the breach under
+  `source` — which see_know's fold renames to `source_db` — were blind.) Fixed
+  additively: both modules now ALSO stamp the canonical `dbname` attribute
+  (`source` retained for existing consumers), matching `oathnet_pro`'s
+  convention, so AU-105 sees true per-breach granularity. 2 regression tests
+  (one per module), each red/green-verified by reverting the fix and watching it
+  fail. No identity/PII decision logic, no architecture guard, no clippy/unsafe
+  posture touched. Gate green: 4319 lib tests (+2), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` C6 + §5 — same commit.
+
+- **2026-07-02** — **T2.7 (SOL-F3): closed the `username_search`
+  adversarial-input question — the last of the 5 named scraper modules — by
+  covering the function it actually feeds attacker-controlled data into.** The
+  prior cycle left this "unconfirmed, left for a future cycle to scope." Scoped
+  it against the code: `username_search` genuinely has NO bespoke parser — its
+  `Detect` enum is three total variants (`StatusEq`/`StatusAndBody`/
+  `StatusAndNotBody`), resolved by an HTTP-status compare plus `str::contains`,
+  both total — so there is nothing parser-shaped to proptest at the module
+  level, and adding a module-level test would be near-vacuous busywork. Its ONE
+  untrusted-input processor is `scan_text_for_keys(&body)`, run over the fully
+  attacker-controlled probe-page body, which delegates to
+  `oathnet_pro::key_harvest::identify_api_key`. That delegate was the real,
+  uncovered panic surface: the existing `mod prop` never-panics property covered
+  only `identify_vendor_api_key`, but the PUBLIC `identify_api_key` is a superset
+  — it adds a generic-hex gate, URL-embedded-key extraction that byte-slices at a
+  computed offset under a 4 KiB cap, a `user:password` split, and a RECURSIVE
+  self-call — none of which the vendor-only property exercises, and all of which
+  process attacker-controlled bytes (also via `oathnet_pro` stealer harvesting).
+  Added a `.{0,512}` never-panics proptest for `identify_api_key`, plus a
+  deterministic regression test driving a `?key=` value far past the extraction
+  cap built from 3-byte characters so the byte cap lands mid-codepoint (a raw
+  `&rest[..cap]` slice would panic there; the extractor's `truncate_safe`
+  boundary-snap keeps it total). The function proved already-total (no bug
+  surfaced) — pure adversarial-input hardening, a property test for the
+  panic-on-hostile-input class (`CONVENTIONS.md` §7). So T2.7's adversarial-input
+  leg is now 5/5: four modules with bespoke-parser proptests + `username_search`
+  covered where its untrusted-input processing actually lives. No production
+  code, no identity/PII logic, no architecture guard, no clippy/unsafe posture
+  touched. Gate green: 4321 lib tests (+2), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` SOL-F3 + §5 — same commit.
+
+- **2026-07-02** — **Doc accuracy: `SOLUTION_TREE` §4a's `hse update --check
+  changelog` bullet claimed a "residual, real gap" (changelog_lines/
+  commits_behind untested) that was itself stale — the fixture test already
+  exists.** A code-grounded discovery pass this cycle found no new small code
+  gap (TODO/FIXME sweep clean; a `fullcontact` dropped-field hypothesis was
+  correctly rejected as ungroundable — the repo has only synthetic fixtures,
+  so claiming FullContact returns dropped `emails`/`phones` would be a
+  fabricated finding), but did confirm a stale finish-queue claim:
+  `cli/update.rs::commits_behind_and_changelog_lines_reflect_real_git_state`
+  is a real fixture test (local `tempfile` remote+clone git pair, no network)
+  exercising BOTH functions across the up-to-date / behind-by-2-with-subjects
+  / not-a-repo states, and it passes. Corrected the §4a note so the false
+  "untested" residual can't lure a future cycle into re-adding an
+  already-present test. Doc-only; no code, tests, or architecture changes.
+  Gate: n/a (docs). **Paired:** `SOLUTION_TREE` §4a + §5 — same commit.
+
+- **2026-07-02** — **Correlation accuracy: `social_probe`'s multi-platform
+  confirmations were invisible to AU-011 (cross-platform username footprint)
+  because it stamped the platform count under a non-canonical evidence
+  attribute — the same evidence-attr-consistency class as the AU-105
+  dehashed/see_know fix.** Found by a fresh code-grounded discovery pass this
+  cycle: after ruling the determinism vein clean (every module HashMap→output
+  path sorts with a deterministic tiebreak) and confirming every attribute the
+  correlator reads is written by some module, a closer look at the three
+  aggregate username probes surfaced a real miss. AU-011
+  (`rule_au_011_cross_platform_username`) counts how many platforms ONE module
+  confirmed a handle on by reading the `platforms_count` evidence attribute,
+  falling back to counting distinct `PLATFORM_SOURCES` modules when it is
+  absent. `username_search` and `streaming_probe` both stamp `platforms_count`;
+  `social_probe` stamped only `found` (its profiles-checked count) and
+  `platforms` (the list) — NOT `platforms_count` — and `social_probe` is not on
+  the `PLATFORM_SOURCES` fallback list. So a handle `social_probe` confirmed on
+  ≥3 platforms (which it even self-tags `multi-platform`) registered as a count
+  of 0 in AU-011 and silently never fired the cross-platform-footprint finding
+  — the one finding that exact confirmation is meant to produce. The value was
+  present all along, just under the wrong key, exactly like AU-105's breach name
+  under `source` instead of `dbname`. Fixed additively: `build_target_summary`
+  now also stamps `platforms_count = found_platforms.len()` (retaining `found`),
+  matching its two sibling probes and the attribute AU-011 reads. 1 regression
+  test (`build_target_summary_stamps_platforms_count_for_au011`),
+  red/green-verified by reverting the fix. No identity/PII decision logic, no
+  architecture guard, no clippy/unsafe posture touched. Gate green: 4322 lib
+  tests (+1), full suite (lib + smoke + architecture + doctests, all binaries)
+  green, fmt/clippy `--all-targets`/doc clean. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+
+- **2026-07-02** — **C5: `ip_whois_geo` never stamped the evidence attribute
+  that lets its geolocation fixes count as person-location corroboration —
+  the third evidence-attribute-consistency silent miss found this arc, after
+  AU-105 (dehashed/see_know) and AU-011 (social_probe).** A code-grounded
+  discovery pass systematically enumerated every attribute correlator rules
+  read (`grep` of every `.attributes.get(...)` in `src/core/correlator/`,
+  multi-line calls included) and cross-checked each against its producing
+  modules. `core::correlator::rules::location::person_login_ip_coords` — the
+  ONE shared definition `best_au_location_estimate` and
+  `au_location_corroboration` both call — recognises a `Coordinates` fix as a
+  subject's breach/stealer login-IP location only when its evidence carries
+  an `ip` attribute equal to that IP. `ip_geo` stamps it, with an explicit
+  comment explaining the tie-back is for exactly this purpose. `ip_whois_geo`
+  did not, despite its own module doc comment framing it as `ip_geo`'s
+  "second-source geo module... corroborating the location," and despite
+  `build_entities` explicitly skipping CDN/anycast edge IPs with the comment
+  "its geo is the datacenter's, not the subject's" — i.e. the module's own
+  code proves its fix is meant to represent the subject. So an ipwho.is fix
+  on the SAME login IP `ip_geo` also geolocated silently never contributed to
+  the person-location signal, weakening exactly the multi-source
+  corroboration this pair of modules exists to provide. Swept all 9 modules
+  that accept an IP target and produce `Coordinates`
+  (`ip2location`/`ip_whois_geo`/`ipinfo`/`ipquery`/`censys`/`shodan`/
+  `netlas`/`onyphe`/`whois`); confirmed `ip2location`/`shodan`/`netlas`/
+  `whois` already stamp `ip`. Deliberately scoped the fix to `ip_whois_geo`
+  only: `ipinfo`/`ipquery` are plausible instances of the same gap but were
+  not verified this cycle (left rather than guessed); `censys`/`onyphe` are
+  explicit infrastructure/host-scan tools whose geo fix more often reflects
+  hosting than the subject's own connection, so extending person-location
+  recognition to them risks fabricating corroboration rather than closing a
+  real gap — worse than missing coverage per the evidentiary doctrine. Fixed
+  by adding `.with_attr("ip", ip)` to `ip_whois_geo`'s evidence fold,
+  mirroring `ip_geo`'s exact pattern and rationale comment. 1 regression test
+  (`coordinates_carry_the_originating_ip_for_login_ip_recognition`),
+  red/green-verified by reverting the fix. No new `EntityKind`, no
+  architecture-guard impact, no identity/PII logic, no clippy/unsafe posture
+  touched. Gate green: 4323 lib tests (+1), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` SOL-GEOINT + §5 — same commit.
+
+- **2026-07-02** — **C5, cont'd: closed the deferred `ipinfo`/`ipquery`
+  person-location corroboration follow-up — verified (not assumed) as the
+  identical evidence-attribute-consistency gap `ip_whois_geo` had, fixed
+  additively in both.** The prior cycle explicitly left these two "unconfirmed
+  ... left for a future cycle to verify rather than guess"; this cycle did
+  exactly that. Both `ipinfo` and `ipquery` gate their Coordinates emission
+  behind the shared "is this actually the subject" trust logic
+  (`untrusted_ip_geo_reason`/`untrusted_geo_reason`, which `ipquery`'s own doc
+  comment says exists because admitting untrusted coords "poisons
+  identity-location correlation") and call the identical
+  `util::geo::coarse_provider_coords(lat, lon, 0.58, scan_id)` helper carrying
+  the identical "Confidence recalibrated 0.68 → 0.58 — see ip_geo.rs"
+  cross-reference comment — proof, not inference, that they are siblings in
+  `ip_geo`'s provider family and their fixes are meant to represent the
+  subject. Neither stamped the `ip` evidence attribute
+  `core::correlator::rules::location::person_login_ip_coords` requires to
+  recognise a login-IP fix. Fixed both: `ipinfo`'s evidence fold and
+  `ipquery`'s shared `geo_ev()` closure now carry `.with_attr("ip", ip)`
+  (mirroring `ip_geo`'s comment). `geo_ev()` is used for both `ipquery`'s
+  Coordinates AND Address evidence — harmless, since `ip` has exactly one
+  correlator consumer, which filters `EntityKind::Coordinates` only. 2
+  regression tests
+  (`coordinates_carry_the_originating_ip_for_login_ip_recognition`, one per
+  module), red/green-verified together by reverting both production fixes.
+  This closes C5's evidence-attribute-consistency sweep: of the 9
+  IP→Coordinates modules, 6 were already correct
+  (`ip2location`/`ip_geo`/`shodan`/`netlas`/`whois`, plus `ip_whois_geo` after
+  the prior fix), 2 fixed this cycle, and `censys`/`onyphe` deliberately
+  excluded (infra/host-scan tools where extension risks fabricating
+  corroboration, not closing a real gap). No new `EntityKind`, no
+  architecture-guard impact, no identity/PII logic, no clippy/unsafe posture
+  touched. Gate green: 4325 lib tests (+2), full suite (lib + smoke +
+  architecture + doctests, all binaries) green, fmt/clippy `--all-targets`/doc
+  clean. **Paired:** `SOLUTION_TREE` SOL-GEOINT + §5 — same commit.
+
+- **2026-07-02** — **`SOLUTION_TREE` §4a's C5 gap-analysis bullet was stale:
+  "Weiszfeld/Welzl centroid + provenance radius … still open" — both are
+  fully delivered and live, verified directly against the code (not
+  assumed).** `util::geometry::location_fix` — part of the original codebase
+  import, predating every dated "Delivered" note in either tree — fuses the
+  confidence-weighted geometric median (Weiszfeld, outlier-robust) with
+  Welzl's minimum enclosing circle into one `LocationFix`, and is fully wired
+  into AU-052 (`rule_au_052_geographic_area_of_operation`), whose
+  `Correlation::description` embeds `fix.location_summary()`: BOTH the robust
+  median radius and the Chebyshev bounding-circle radius, live, operator-
+  facing today. Separately, AU-059's headline synergy fix
+  (`au059_synergy_fix`) already uses `weighted_geometric_median` (Weiszfeld)
+  with a `median_distance_km` provenance radius — its own doc comment cites
+  "same fallback `LocationFix`… uses — PROBLEM_TREE C5" as the deliberate,
+  already-consistent design between the two rules. Welzl's worst-case bound is
+  correctly used only by AU-052 (bounding a whole area of operation, where a
+  worst-case radius is the right semantics), not AU-059 (a single best-point
+  estimate, where the robust median radius is the right semantics) — a
+  reasoned design choice, not a gap. This §4a bullet's claim was never true at
+  any point checked (`git log --follow` shows `location_fix`/AU-052 both date
+  to the repo's single root import commit), so it was stale from the moment it
+  was written, not a drift that developed later — the same
+  "docs describe a smaller/different codebase" failure mode this register's
+  own baseline note was opened to guard against. Corrected the §4a text to
+  drop the false claim; only *auto-sync* (the `cell_local` re-sync trigger)
+  remains genuinely open for C5, matching what the C5/SOL-GEOINT §2 node text
+  in both trees already correctly says (neither claimed Weiszfeld/Welzl were
+  open — only this one §4 gap-analysis bullet was wrong). Doc-only; no code,
+  tests, or architecture changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE`
+  §4a + §5 — same commit.
+
+- **2026-07-02** — **§7 S4 flipped `[ ]`→`[-]` (accepted-won't-build): the
+  archived-success-body redaction residual is now explicitly out of scope by
+  direct operator instruction ("never redact anything ever"), issued while
+  this cycle was investigating it as a candidate unit of work.** Before the
+  instruction landed, the investigation had confirmed the residual was
+  genuinely implementable as a small, well-scoped fix — `redact_literal_secrets`
+  (`util::http::redact.rs`, already handles path-embedded keys per its own
+  comment citing `ipqs` by name) and `own_api_keys()`
+  (`util::keys::constants.rs`) both already exist and compose exactly as the
+  node's own "→ Solution" line proposed — but the instruction is unambiguous
+  and immediate, so the investigation stopped there without writing any
+  redaction code, and the item is now recorded as permanently rejected rather
+  than left as a live-looking open TODO a future cycle could pick up and
+  re-attempt. Scope is deliberately narrow: this rejects only the *unbuilt*
+  archived-body extension and the related "widen `redact_credentials`'s
+  param set" follow-up: it does **not** touch the EXISTING
+  `redact_credentials`/`redact_literal_secrets` machinery already protecting
+  error bodies/URLs (S4's own "Well-contained" paragraph), which remains
+  exactly as it was — the instruction was given in response to a proposed
+  NEW redaction extension being investigated, not as a directive to remove
+  already-shipped security controls, and removing shipped controls was
+  neither requested nor undertaken. Doc-only; no code, tests, or architecture
+  changes. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` SOL-REDACT + §4a +
+  §5 — same commit.
+
+- **2026-07-02** — **T2.11: found a fourth, previously-untracked process-global-
+  state isolation defect — `search_engines::REGIONAL_SEARCH` — via direct code
+  investigation after the tracked `QuotaBudget` residual proved too large for
+  one cycle.** This cycle first investigated T2.11's own explicitly-noted
+  remaining item (the budget-static `reset_scan`-zeroing race) in real depth:
+  confirmed it is genuinely real (`QuotaBudget::reset_scan()` unconditionally
+  zeroes process-global `scan_count`/`quota_exhausted`/`cap_override` atomics
+  shared by oathnet/see_know/wigle's 7 budget instances, called from every
+  scan's `reset_per_scan` hook with no `scan_id` scoping), but converting it
+  to per-scan state is architecturally larger than the `found_keys` precedent
+  — `QuotaBudget::try_increment` is a hot-path lock-free CAS primitive
+  specifically designed to avoid contention across a scan's own concurrent
+  module dispatch, so per-scan keying would need a real design decision (a
+  `HashMap<String, …>` behind a lock reintroduces the exact contention the CAS
+  design avoids; an unbounded-growth/GC question for a long-running `hse
+  serve` process needs answering) rather than a direct pattern replication —
+  correctly left as still-open, not attempted this cycle. A broader sweep of
+  every process-global mutable `static` in the codebase (`Mutex`/`RwLock`/
+  `Atomic*`/`LazyLock<Mutex<…>>`) for a SMALLER, more directly-portable
+  instance of the same SOL-ISOLATE pattern surfaced
+  `search_engines::REGIONAL_SEARCH`: a single `AtomicBool`, structurally
+  identical in shape to the ALREADY-FIXED `found_keys` sink, whose own code
+  comment already self-documents the exact cross-scan race ("last writer wins
+  for the overlap window") but which neither tree had ever captured despite
+  T2.11 existing precisely to track this defect class. Confirmed via direct
+  reads of `core/engine/mod.rs` (where `set_regional` is called, in the same
+  `run_with_ledger_inner` body `reset_per_scan` already lives in) and
+  `core/engine/dispatch.rs:993` (the exact spawn point `found_keys::with_scan`
+  already re-scopes at, which a `with_regional` equivalent would need too).
+  The SOL-ISOLATE task-local pattern applies directly and with high
+  confidence — it is a proven, already-tested mechanism, not a novel design —
+  but implementing it requires retiring `core::hooks::ModuleHooks::set_regional`
+  (a `fn(bool)`-shaped hook that cannot wrap a future the way task-local
+  scoping needs) for a genuine future-wrapping combinator, which is a real
+  `core::hooks` interface change touching `core/hooks.rs`, both dispatch
+  paths, and a new `util` module — correctly scoped as its own unit rather
+  than rushed into this cycle's commit, per the "never expand scope mid-cycle"
+  constraint. Recorded as a new MED-severity T2.11 sub-item (the two other MED
+  items are financial-overspend and credential-mis-attribution; this one is a
+  determinism/search-result-quality corruption, the same severity class) with
+  the exact fix shape sketched, so a future cycle can implement it directly
+  rather than re-deriving this investigation. Doc-only this cycle; no code,
+  tests, or architecture changes — the fix itself is the next unit, not this
+  one. Gate: n/a (docs). **Paired:** `SOLUTION_TREE` SOL-ISOLATE + §5 — same
+  commit.
+
+- **2026-07-02** — **T2.11: implemented the sketched `REGIONAL_SEARCH`
+  isolation fix in full — the SOL-ISOLATE task-local pattern replicated
+  exactly, with a genuine dual-concurrent-scan integration proof.** New
+  `src/util/regional/mod.rs`: a `tokio::task_local!` ambient (`REGIONAL:
+  bool`) with `with_regional`/`regional_enabled`, mirroring
+  `util::found_keys::SCAN`/`with_scan`/`current_scan()` line-for-line.
+  `core::engine::mod.rs::run_with_ledger` now computes `regional_on` from
+  `scan.options.regional_search || settings::get_bool("feature.regional", …)`
+  BEFORE moving `scan` into `run_with_ledger_inner` (hoisted from where it
+  used to live, since the value must be known before the future is
+  constructed), and wraps the inner future in `with_regional(regional_on, …)`,
+  nested inside the pre-existing `found_keys::with_scan`.
+  `core::engine::dispatch.rs`'s concurrent spawn point (`set.spawn(...)` at
+  what was line 993) reads `regional_enabled()` — valid, since dispatch runs
+  on the same task the ambient was set on, right up to the spawn call — and
+  re-establishes it inside the spawned task via a second nested
+  `with_regional`, exactly mirroring the existing `found_keys::with_scan`
+  re-scope immediately above it (task-locals do not cross `spawn`). Retired
+  `core::hooks::ModuleHooks::set_regional` (a plain `fn(bool)` hook — it
+  cannot wrap a future, which task-local scoping structurally needs) and its
+  `modules::mod.rs` installation entirely; the engine now sets the ambient
+  directly via the allow-listed pure `core → util` leaf
+  (`util::regional::{with_regional,regional_enabled}` added to
+  `core_does_not_import_util_directly`'s allowlist, same justification as
+  `found_keys::with_scan`). `modules::search_engines::REGIONAL_SEARCH`
+  (`AtomicBool`) and its `set_regional` fn are gone; `regional_enabled()` is
+  now a one-line wrapper over the new `util` fn — every existing call site
+  (`mod.rs:450`'s trace log, `queries/mod.rs:326`'s `build_queries` gate)
+  needed zero changes, since they read the SAME function name with a swapped
+  implementation.
+  Three test layers, from narrowest to broadest: (1) 4 `util::regional` unit
+  tests (unscoped degrades to `false`; a scoped value reads back exactly;
+  nested scopes don't leak into each other after the inner exits; the async
+  `with_regional` wrapper scopes a real future). (2) A `search_engines` wiring
+  test, `build_queries_reads_the_per_scan_regional_ambient`, proving the ACTUAL
+  toggle consumer (`build_queries`, not just the primitive) reads the ambient
+  correctly, including through nested/overlapping scopes. (3) The strongest
+  proof — a genuine dual-concurrent-scan integration test in `tests/smoke.rs`,
+  `concurrent_scans_do_not_contaminate_each_others_regional_setting`: two real
+  scans, run genuinely concurrently via `tokio::join!` through the REAL engine
+  (`ScanEngine::run_with_ledger`, `max_concurrent: 4` so both exercise the
+  concurrent dispatch path — the one needing the `dispatch.rs` re-scope, not
+  just `run_with_ledger`'s outer wrap), with OPPOSITE `regional_search`
+  settings, asserting each scan's dispatched module observes only its OWN
+  setting via a purpose-built `RegionalProbeModule` that tags an entity with
+  what it saw. Verified as a genuine regression test, not just a passing test:
+  reverting ONLY the `dispatch.rs` re-scope (via `git stash push` on that one
+  file, confirmed via `git status`/`git stash list` before and after) and
+  re-running the integration test produced a FAILED result — the test did not
+  return within a 30 s bound and was killed by the harness's timeout, rather
+  than completing with a wrong-value assertion (the precise underlying
+  mechanism was not further root-caused; the FAILED outcome was sufficient
+  proof the re-scope is load-bearing). Restored the fix (`git stash pop`,
+  confirmed via `git status` and a direct grep for the restored code) and
+  re-ran: passes cleanly in well under a second.
+  Also corrected a stale `SOLUTION_TREE` §4d coverage-snapshot line while
+  refreshing T2.11's status (the gap changed): it previously conflated
+  SOL-BUDGET's accepted-`[-]` "does `reset_per_scan` get called" resolution
+  (cycle 18, unrelated) with the genuinely-still-open `QuotaBudget::reset_scan`
+  cross-scan zeroing race this session identified as real-but-architecturally-
+  larger — the two are different findings about different functions, and only
+  the QuotaBudget one remains open.
+  Full gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` (4330 lib tests, +8; every integration suite,
+  including `tests/smoke.rs`, green). Behaviour-touching change to
+  `core::engine`'s concurrency model, so also exercised the real CLI surface
+  per `CONVENTIONS.md` §9: `hse selftest` (161 modules, dispatch graph intact,
+  9/9 checks pass) and `hse doctor` both ran clean post-change. No identity/PII
+  logic, no weakening of `#![forbid(unsafe_code)]` or any architecture guard —
+  the `core_does_not_import_util_directly` allowlist addition EXTENDS the
+  guard's designed pure-leaf mechanism (the same one `found_keys::with_scan`
+  already uses), not a weakening of it. T2.11 remains `[~]` — the
+  `QuotaBudget::reset_scan` residual is still genuinely open. **Paired:**
+  `SOLUTION_TREE` SOL-ISOLATE + §4d correction + §5 — same commit.
+
+- **2026-07-02** — **AU-051's top-level doc comment was stale: it claimed the
+  rule "fires Critical" unconditionally and that "two unrelated people named
+  'Smith' never link," but the code (and 3 existing tests) already implement a
+  deliberate common-surname discount.** Found via a fresh discovery pass over
+  correlator rules whose doc comments state specific severity-escalation
+  thresholds (also checked AU-030's "Medium→High→Critical at 3/4/5+" and
+  AU-089's "escalates at three" claims — both verified accurate against the
+  code; not every audit finds a stale claim). `rule_au_051_shared_surname_kin`
+  (`src/core/correlator/rules/assoc.rs`) actually branches on
+  `util::surnames::is_common(&sn)`: a distinctive shared surname at one
+  residence still fires Critical ("likely relatives; kin pivot to reach the
+  subject"), but a common surname (Smith, Nguyen, …) is downgraded to High
+  with a "possibly relatives … verify before treating as a kin pivot"
+  qualifier — the exact behaviour already covered by
+  `au051_shared_surname_at_residence_is_kin`,
+  `au051_requires_shared_residence_and_distinguishes_roommates`, and
+  `au051_common_surname_is_a_high_lead_not_critical_kin`. Rewrote the doc
+  comment to describe the discount and correct the misleading framing: the
+  actual behaviour is a severity downgrade, not an exclusion — a
+  common-surname co-residence still fires, just at High rather than Critical.
+  Doc-only; no code, tests, or architecture changes — the code and its tests
+  were already correct. Gate: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc` (checked directly, since this edits a Rust doc comment,
+  not Markdown — confirmed the new
+  `crate::util::surnames::is_common` intra-doc link resolves clean)/
+  `cargo test` all clean (4330 lib tests unchanged, 0 failures). **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-02** — **C6: AU-019 temporal breach clustering was blind to
+  `psbdmp` and `niamonx` PBS-v1 hits — the temporal-clustering sibling of the
+  AU-105 `dbname` fix, same evidence-attribute-consistency class.** Surfaced by
+  a fresh 6-angle discovery pass (Workflow: 6 parallel finders → adversarial
+  verification, 11/13 candidates confirmed real+new+single-cycle-sized); this
+  was the highest-OSINT-value one, selected as the single unit this cycle.
+  AU-019 (`rule_au_019_temporal_breach_cluster`, `rules/breach.rs:697`) reads a
+  `breach`-tagged entity's exposure date only under
+  `breach_date`/`not_before`/`earliest_record`/`date`, then clusters entities
+  whose dates fall within a 30-day window (a coordinated-compromise signal).
+  `psbdmp` tags its re-emitted seed identity `breach` (`mod.rs:197`) but stamped
+  the earliest paste date under `earliest_paste` (`mod.rs:192`); `niamonx`'s
+  PBS-v1 breach-block path tags `breach` (`mod.rs:397`) but stamped the date
+  under `first_seen` (`mod.rs:407`) — while its own PBS-v2 path already used the
+  canonical `breach_date` (`mod.rs:535`), an intra-module inconsistency. So
+  neither producer's breach hits could ever enter AU-019's clustering despite
+  carrying a real exposure date. Verified every cited site against the actual
+  code myself before editing (the discovery finder's claim was not trusted
+  blindly). Fixed additively — each producer now ALSO stamps `breach_date`
+  (retaining its existing key for back-compat), the identical shape of the
+  already-shipped `xposed_or_not` breach_date fix and the `dehashed`/`see_know`
+  `dbname` fix. Regression coverage by extending each module's existing
+  temporal-signal test with a `breach_date` assertion — both assert an
+  attribute that did not exist pre-fix, so both are genuine red-before/
+  green-after. `hudsonrock` (same class: `breach`-tagged, date under
+  `date_compromised`) was deliberately **split off as the next unit**: its
+  evidence is built inline in an async `process()` with no pure test seam, so a
+  clean regression needs a small seam-extraction refactor first — not force-fit
+  into this commit (per "never expand scope mid-cycle"), mirroring how the
+  `ip_whois_geo` cycle deferred `ipinfo`/`ipquery` to the following cycle. Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4330 lib tests — existing tests extended, not added; full
+  suite across all binaries green). Behaviour-touching (two modules emit a new
+  evidence attribute), so also exercised the real CLI surface per
+  `CONVENTIONS.md` §9: `hse selftest` 9/9 pass, 161 modules, dispatch graph
+  intact. No identity/PII logic, no weakening of any architecture guard or
+  `#![forbid(unsafe_code)]`. **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) +
+  §5 — same commit.
+
+- **2026-07-02** — **C6: closed the `hudsonrock` third leg of the AU-019 arc —
+  the unit deliberately split off the prior cycle now finished.** Same
+  evidence-attribute-consistency gap as the `psbdmp`/`niamonx` fix above:
+  `hudsonrock`'s stealer-log evidence tags the subject `breach` (`mod.rs:173`)
+  but stamped the compromise date only under `date_compromised` (`mod.rs:210`)
+  and an index date under `date_uploaded` — neither a key AU-019's
+  `rule_au_019_temporal_breach_cluster` reads. Unlike `psbdmp`/`niamonx`, which
+  had pure `extract`/`emit_pbs_v1` seams to extend, `hudsonrock` built its
+  entities inline in the async `process()`, so this cycle first extracted a
+  behaviour-preserving pure seam `fn build_result(target, &data, scan_id) ->
+  ModuleResult` (everything after the HTTP fetch), matching the sibling
+  modules' testable-helper convention — then stamped `breach_date` from the
+  compromise date via the existing optional-attribute fold (only when present,
+  so AU-019 never parses the `"-"` placeholder the retained `date_compromised`
+  attribute carries). One new regression test
+  (`build_result_stamps_canonical_breach_date_for_au019`) drives the pure seam
+  with a `CavalierResp` fixture and asserts the `breach`-tagged subject entity
+  carries `breach_date` (red before the fix — the attribute did not exist); the
+  refactor is proven behaviour-preserving by the module's three existing
+  `process()`-driven tests still passing. A stale intra-doc link in the new
+  seam's doc comment (`crate::core::correlator::rules::…`, unreachable because
+  the `rules` module is private to `correlator`) surfaced under strict rustdoc
+  and was corrected to plain prose `(rules/breach.rs)`, matching the sibling
+  modules' comment style. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` (4331 lib tests, +1; full
+  suite across all binaries green). Behaviour-touching, so also `hse selftest`
+  9/9 (161 modules, dispatch graph intact) per `CONVENTIONS.md` §9. No
+  identity/PII logic, no weakening of any architecture guard or
+  `#![forbid(unsafe_code)]` — the pure `build_result` seam is an internal
+  refactor with no layering change. **The AU-019 arc is now complete across all
+  three breach-tagged producers** (`psbdmp`, `niamonx` PBS-v1, `hudsonrock`).
+  **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) + §5 — same commit.
+
+- **2026-07-02** — **T2.11: fixed a fifth process-global-isolation defect —
+  OathNet's `SEARCH_SESSION` single-slot global — by REMOVING the shared state
+  entirely (a cleaner shape than the SOL-ISOLATE task-local).** Selected from
+  the same fresh discovery pass that surfaced the AU-019 arc; investigated the
+  two most-promising process-global candidates in depth first. `typosquat`'s
+  `SEEN_REGISTRABLE` (a cross-scan dedup `HashSet`) is a genuine instance of the
+  class, but its dedup set must be scan-global (shared across the module's ~30
+  dispatches per scan, so a task-local set won't do), and it has no
+  scan-END drain hook — keying it by `scan_id` with only the scan-START
+  `reset_per_scan` cleanup would leak one bucket per scan on a long-running `hse
+  serve`, the same end-of-lifecycle design question that keeps
+  `QuotaBudget::reset_scan` open; left as a tracked T2.11 sub-item rather than
+  shipping a leaky fix. OathNet's `SEARCH_SESSION`, by contrast, admitted the
+  cleanest possible fix: it was a single-slot `Mutex<Option<(value,
+  session_id)>>` that `init_session` wrote and `search` read back via
+  `session_id_for(value)` to share one paid lookup across a target's breach +
+  stealer queries — but keyed only by value with room for one entry, a
+  concurrent scan's `init_session` clobbered it, so a scan whose `search` ran
+  after another scan's init silently lost its session and paid double quota (and
+  the session-less `hse oathnet` batch path could read a session id a concurrent
+  scan left behind). Because the session id is available right at the call site
+  (unlike `found_keys`/`regional`, which needed a task-local ambient to reach
+  deep into the shared HTTP layer), the fix simply threads it as an explicit
+  `session_id: Option<&str>` parameter and deletes the global: `init_session`
+  now only returns the id, `oathnet_pro::process` holds it in a local and passes
+  it to both `search` calls, the batch path passes `None`, and
+  `SEARCH_SESSION`/`session_id_for`/the now-unused `Mutex` import are gone.
+  Extracted a pure `build_search_url(base, path, field, value, page_size,
+  session_id)` seam so the threading is unit-testable without a live endpoint;
+  regression test `build_search_url_appends_search_id_only_when_a_session_is_supplied`
+  asserts the `&search_id=` param is appended (url-encoded) iff a session is
+  supplied — red against the old code, which sourced the id from the shared slot,
+  not the parameter. Verified each cited site against the real code before
+  editing. Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` (4332 lib tests, +1; full suite across all binaries
+  green). Behaviour-touching (a `pub` util signature change threaded through two
+  call sites + the CLI batch path), so also `hse selftest` 9/9 (161 modules,
+  dispatch graph intact) per `CONVENTIONS.md` §9. No identity/PII logic, no
+  weakening of any architecture guard or `#![forbid(unsafe_code)]` — this
+  removes shared mutable state rather than adding any. **Paired:**
+  `SOLUTION_TREE` SOL-ISOLATE + §5 — same commit.
+
+- **2026-07-02** — **AU-091/AU-093 (AU residential locality) were blind to
+  SeekNow's self-reported postcode — evidence-attribute-consistency, same class
+  as AU-105/AU-011/ip_whois_geo.** From the same discovery pass. AU-091
+  (`rule_au_091_au_postcode_locality`) and its AU-093 sibling mine a subject's
+  postcode from evidence attributes matching `POSTCODE_KEYS` (`postcode`/
+  `post_code`/`postal_code`/`postalcode`/`postcode_au`/`pcode` —
+  `rules/breach_pii.rs:521`), but SeekNow's `record_evidence`
+  (`see_know/extract/mod.rs`) folds the provider's raw `postal` field verbatim,
+  a key that list never contains, so a confirmed Person's genuine
+  self-reported AU postcode never reached either rule. **Fixed at the
+  producer, NOT the consumer:** `postal` is deliberately kept OUT of
+  `POSTCODE_KEYS` because the IP-geolocation modules (`ip_geo`/`ipinfo`/
+  `ip_whois_geo`) independently stamp their own `postal` attribute on
+  network-derived `Coordinates` entities — a different evidentiary class scanned
+  by the same shared confirmed-entity set — so widening the shared consumer list
+  would let a datacentre's geolocated ZIP masquerade as the subject's
+  self-reported breach-record postcode in AU-091's "breach record source(s)"
+  framing (the exact corroboration-fabrication risk the C5 sweep's
+  censys/onyphe exclusion already reasoned about). Instead, `record_evidence`
+  now additively stamps a canonical `postcode` attribute from a record's own
+  `postal` field (the raw `postal` retained for existing consumers), skipped
+  when the record already carries a canonical `postcode` so a real value is
+  never overridden — mirroring the `dbname` producer-side alias exactly.
+  Verified every link against the real code before editing (rule key list,
+  producer fold, the IP-geo `postal` collision, the reachable Person-evidence
+  path). Regression test `record_evidence_stamps_canonical_postcode_for_au091`
+  (sibling of `record_evidence_stamps_canonical_dbname_for_au105`) asserts a
+  `postal`-only record yields a `postcode` attr AND that a record already
+  carrying `postcode` keeps its own value — red against the unfixed producer.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4333 lib tests, +1; full suite green). Behaviour-touching
+  (module emits one new evidence attribute), so also `hse selftest` 9/9 (161
+  modules, dispatch graph intact) per `CONVENTIONS.md` §9. No identity/PII
+  decision logic (the SeekNow `postal` field is existing data; no new
+  collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` C5 (SOL-GEOINT) + §5 — same commit.
+
+- **2026-07-02** — **README's correlator-rule count had drifted ~49% low
+  (74 / "AU-001 through AU-086") against the real 110 / AU-112 — corrected and
+  guarded, same class as the F.2 gazetteer stale-count fix.** From the same
+  discovery pass (a hand-maintained-count-drift finding). Verified the real
+  figures directly: `RULES` holds 97 entity rules and `RELATION_RULES` 13
+  relation rules (110 total) in `core/correlator/mod.rs`, and the highest id
+  referenced anywhere in the correlator is AU-112 — not the README's stated 74 /
+  AU-086. The adjacent "3,100+ tests" line was likewise badly stale (the suite is
+  past 4,300 lib tests alone), though as a `+` lower bound it was not strictly
+  false. Corrected both README figures (74→110, AU-086→AU-112, 3,100+→4,300+) and
+  — the substantive part — added a CI guard,
+  `readme_correlator_rule_count_matches_the_registry`, a `core::correlator` unit
+  test (it must live there: `RULES`/`RELATION_RULES` are private to the module,
+  invisible to the integration `tests/architecture.rs` where the module-count
+  guard lives). It parses the README's "N correlator rules" figure and asserts it
+  equals `RULES.len() + RELATION_RULES.len()`, so a future rule addition that
+  skips the README fails CI — mirroring the existing
+  `readme_module_overview_count_matches_registry` protection. Verified as a
+  genuine guard (not a vacuous pass): temporarily setting the README to 99 made
+  it fail with "README says 99 … registry dispatches 110"; restored to 110, green.
+  **Deliberately deferred** (not force-fit into this commit): the README's
+  Module-Overview "(all 159)" and "API-Free — 92" section counts are also drifted,
+  but resolving them rests on an unsettled highlights-vs-complete question — the
+  free-highlights list enumerates 93 module names while the guarded headline says
+  128 free, so it is unclear whether "92" is an off-by-one caption typo or the
+  list is an intended subset; left for a cycle that can settle the intent rather
+  than guess (mirroring the earlier "phone area codes ≈65" deferral). Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test`
+  (4334 lib tests, +1 guard; full suite green). Docs + test only, no runtime
+  behaviour change, so no CLI surface to exercise; no identity/PII, architecture-
+  guard, or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+
+- **2026-07-02** — **C4: `netlas` decoded the Netlas search endpoint's top-level
+  `count` (total matches for the query) but never surfaced it — the
+  silently-dropped-response-field class (same as the shipped shodan `tags` /
+  proxycurl `certifications` fixes).** Found by a fleet-wide dropped-field sweep
+  (Workflow: 6 finders over module slices → adversarial verification). `NetlasResp`
+  declares `count: Option<u64>` (`netlas/mod.rs:32`), parsed from the API
+  response, but `build_entities` only ever iterated `body.items` and never read
+  `body.count`, so the query's total-match count — how many indexed responses
+  Netlas holds for the host, i.e. whether the returned `fields=*` page was
+  truncated — was discarded. Verified directly (grepped every `count` read in the
+  module dir; the only occurrences are the struct decl and `body.items`
+  iteration). Fixed in the existing pure `build_entities` seam: the IP entity's
+  evidence now carries a `result_count` attribute when `body.count` is present,
+  alongside the other previously-dropped `ssl_issuer`/`http_title`/`http_status`
+  fields (whose fix this mirrors). Regression coverage by extending the existing
+  `build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields` test
+  with a `"count": 42` fixture field and a `result_count == "42"` assertion — red
+  before the fix (the attribute did not exist). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4334 lib
+  tests — existing test extended, not added; full suite green). Behaviour-touching
+  (one new evidence attribute), so also `hse selftest` 9/9 (161 modules, dispatch
+  graph intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
+  `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` C4 (SOL-NETINT) +
+  §5 — same commit.
+
+- **2026-07-02** — **C4: `ripestat` never stamped the announcing ASN on its
+  `Cidr` evidence, so AU-112 could not attribute a ripestat-sourced netblock —
+  fixed at the PRODUCER (closing the gap), which also made the `cidr_owner`
+  doc accurate rather than just correcting it.** From the same discovery pass (a
+  doc-staleness candidate that, on investigation, was better resolved as a
+  producer fix). `cidr_owner` (`rules/infra.rs:598`), which supplies AU-112's
+  "(announced by <owner>)" attribution, reads the `name`/`asn` attributes "the
+  BGP/whois sources (bgpview/ripestat) already stamp" — but `bgpview` stamps both
+  (`asn_prefix_entities`), while `ripestat`'s `build_asns` (`ripestat/mod.rs:174`)
+  emitted the covering-prefix `Cidr` with a bare evidence record carrying NO
+  attributes, despite having the announcing ASN(s) (`ni.asns`) in hand at that
+  exact point. So a ripestat-only-sourced netblock silently got no owner in
+  AU-112 (which handles `None` gracefully — the clause is simply omitted). Rather
+  than the finder's suggested doc-correction ("state that ripestat-only Cidrs
+  return None"), fixed the actual gap: `build_asns` now stamps `asn` on the Cidr
+  evidence from `ni.asns` — but ONLY when the origin is unambiguous (a single
+  announcing ASN); a multi-origin (MOAS) prefix has no one holder to assert, so it
+  stays unattributed rather than fabricating a single owner (accuracy over
+  coverage). This makes the existing `cidr_owner` doc TRUE (both sources now stamp
+  the fields it reads) — the ideal resolution of a doc-vs-code mismatch: fix the
+  code to match the doc, closing the capability gap. Verified the org NAME is
+  genuinely unavailable at `build_asns` (it comes from a separate `as-overview`
+  fetch), so only `asn` can be stamped here — matching what `cidr_owner`'s
+  `name`-then-`asn` fallback already expects. Regression coverage: extended
+  `build_asns_emits_prefixed_asn_with_prefix_evidence` to assert the single-origin
+  Cidr now carries `asn`, plus a new
+  `build_asns_leaves_a_multi_origin_prefix_unattributed` proving MOAS stays
+  unattributed — the single-origin assertion is red against the unfixed producer.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4335 lib tests, +1; full suite green). Behaviour-touching
+  (ripestat Cidrs gain an `asn` attribute; AU-112 attribution improves), so also
+  `hse selftest` 9/9 (161 modules, dispatch graph intact) per `CONVENTIONS.md`
+  §9. No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` C4 (SOL-NETINT) + §5 — same commit.
+
+- **2026-07-02** — **`psbdmp` dropped the provider's own total-hit `count` — the
+  last dropped-field-class instance a fleet-wide sweep surfaced; also the sweep's
+  headline result: the class is essentially exhausted.** A second Workflow sweep
+  (6 finders over the ~165-module fleet → adversarial verification) for
+  parsed-but-never-read response fields returned EMPTY from 5 of 6 finders and one
+  low-confidence candidate — strong evidence that `netlas::count` (fixed the prior
+  cycle) was the one genuinely-valuable instance and the fleet is otherwise clean.
+  The one candidate, `psbdmp::SearchResp.count` (`psbdmp/mod.rs:33`), is real:
+  deserialized from the response envelope but never read — the module surfaces
+  `paste_count = seen.len()`, the DEDUPLICATED distinct-paste count, and never
+  touches `resp.count`. But unlike netlas (whose `items` page is capped by
+  `fields=*`, so `count` is a true truncation signal), psbdmp returns all hits
+  inline, so `count` usually equals the distinct count already surfaced. Fixed
+  HONESTLY rather than mirroring netlas's unconditional stamp: `extract` now
+  surfaces `provider_result_count` ONLY when `resp.count` EXCEEDS `paste_count`
+  — i.e. when the provider returned duplicate ids or a capped page and the true
+  exposure scale is larger than the distinct pastes shown — so the attribute
+  carries a genuine under-count signal instead of a near-always-redundant echo.
+  Regression test `extract_surfaces_provider_total_only_when_it_exceeds_distinct_pastes`
+  covers both the exceeds case (5 total vs 2 distinct → surfaces `5`, red before
+  the fix) and the equal case (no redundant attribute). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4336 lib
+  tests, +1; full suite green). Behaviour-touching (a new conditional evidence
+  attribute), so also `hse selftest` 9/9 (161 modules, dispatch graph intact) per
+  `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
+  `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE)
+  + §5 — same commit.
+
+- **2026-07-02** — **Robustness (same class as cycle 57's `see_know` non-JSON
+  fix): `fediverse`/`nostr` reported an UNREACHABLE probe domain as a
+  `module_error`, when it is a clean miss.** Surfaced by an operator-supplied real
+  debug bundle (a `full_name = Matthew Diegmann` self-test scan): its SELF-AUDIT
+  raised a MEDIUM "16 module errors across 6 modules" finding, and 4 of those were
+  `fediverse ×2` / `nostr ×2` — all of the shape `transport error (… url
+  (https://onet.eu/.well-known/webfinger?…)) and curl fallback failed`. Both
+  modules probe an ARBITRARY caller-supplied mail domain (discovered emails'
+  domains) for a federation/discovery endpoint it almost never runs — WebFinger
+  and NIP-05. Their own doc comments already frame the overwhelming outcome as
+  "a guaranteed 404 → clean miss," and they used `fetch_json_or_404`, which maps
+  404→`Ok(None)` but propagates a TRANSPORT failure (DNS/connection/TLS/timeout,
+  curl-fallback failure) as `Err`. For a speculative probe, "the domain serves no
+  such document" and "the domain is unreachable" are the SAME negative answer
+  ("no account here") — so an unreachable domain became a false `module_error`,
+  inflating the scan's error count and tripping the audit's "errors silently
+  shrink coverage" warning for a non-event (no coverage was lost — the domain
+  genuinely doesn't federate). Fixed with a new shared, self-documenting
+  `util::http::fetch_json_probe` helper that folds BOTH a 404 and any transport
+  failure into a clean-miss `None` (returning `Option<T>`, not `Result`, since a
+  failed speculative probe is not an error a caller can act on; the failure is
+  logged at `debug` so it stays traceable in the verbose log ring). `fediverse`
+  and `nostr` — deliberately-parallel modules (nostr's own doc notes "the
+  fediverse module applies the identical guard") — both now call it, so a future
+  federation probe has one honest primitive to reach for. Deliberately NOT applied
+  to modules' OWN known APIs, where a transport error IS actionable (a real
+  outage/rate-limit worth surfacing) — the helper's doc says so explicitly. The
+  other 12 errors in the bundle were left as-is: they are genuine upstream
+  conditions, not code bugs — `netlas ×3` (invalid API key), `see_know ×3` (curl
+  exit 6 = DNS failure), `crtsh ×3` (502/connection to a flaky CT log), and
+  `hudsonrock ×3` ("Email is required" from an API-side email-format rejection,
+  a distinct question not force-fit into this cycle). Regression test
+  `fetch_json_probe_treats_an_unreachable_domain_as_a_clean_miss` drives the
+  helper against an RFC 6761 `.invalid` domain (guaranteed resolution failure,
+  no network dependence) and asserts `None` — red against the old `?`-propagating
+  path, which returned `Err`. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` (4337 lib tests, +1; full
+  suite green). Behaviour-touching (nostr/fediverse now emit clean misses, not
+  errors, on unreachable probe domains), so also `hse selftest` 9/9 (161 modules,
+  dispatch graph intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-
+  guard, or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+
+- **2026-07-02** — **Diagnostics: `CurlClient::exec`'s promised stderr snippet on
+  a curl failure could never actually appear — `-s` alone suppresses curl's OWN
+  error text, not just its progress meter.** Surfaced by a second operator-
+  supplied real debug bundle (`username = mriconic`): its SELF-AUDIT again showed
+  `[LOW] module-errors` with the SAME bare shape as the prior bundle's — `[seek_now]
+  curl exited 6` — zero detail beyond the exit code, on BOTH separate real scans.
+  `CurlClient::exec`'s own doc comment (`curl_client/mod.rs:174-177`) explicitly
+  promises "curl's own exit code... plus a trimmed stderr snippet... so transient
+  upstream failures are diagnosable from the logs," implemented by reading
+  `output.stderr` and appending it to the error when non-empty. But the curl
+  invocation passed only `-s` (`--silent`) — which, per curl's own semantics,
+  suppresses BOTH the progress meter AND curl's error messages — never `-S`
+  (`--show-error`), the flag that re-enables just the error text while `-s` keeps
+  hiding the progress meter. So `output.stderr` was unconditionally empty on
+  every failure, and the code always fell through to the bare `"curl exited
+  {code}"` branch — the promised diagnosability never worked, on ANY of the
+  provider's failures (see_know, oathnet), across at least two independent real
+  scans. Empirically verified the exact mechanism directly with the sandbox's own
+  curl binary before touching code: `-s` alone against a failing target produces
+  zero stderr output; `-s -S` against the identical target produces a full
+  diagnostic message. Fixed: added `-S` alongside the existing `-s` in
+  `CurlClient::exec`'s arg list. The pre-existing test
+  `curl_failure_reports_exit_code_not_opaque_message` was extended with a new
+  assertion that the message now contains a `:`-delimited snippet (not just the
+  bare exit code) — genuinely red/green-verified by reverting only the `mod.rs`
+  arg change via `git stash` and re-running: the new assertion failed exactly as
+  expected (stderr still empty), then passed again once the fix was restored. In
+  the process, discovered and fixed a SECOND, latent test bug the fix exposed:
+  the same test's pre-existing `!err.contains("curl failed")` guard (meant to
+  rule out a historical bare opaque message) started false-failing once real curl
+  diagnostic text began flowing through, because curl's OWN prose for a TLS/cert
+  failure literally contains the English phrase "curl failed to verify the
+  legitimacy of the server" — a coincidental substring collision. Removed that
+  now-redundant, now-fragile guard (the positive `contains("curl exited")` check
+  already proves the historical opaque form is gone, since `detail` is always
+  built via `format!("curl exited {code}"...)`, never the old bare string).
+  Deliberately did NOT touch the separate free-function `curl::curl_exec` path
+  (`util/curl.rs`) — it never reads `output.stderr` at all (returns `None` on any
+  failure by design, a different silent-miss shape for modules like
+  `social_probe`/`search_engines` that treat a fetch miss as expected), so `-S`
+  would be a no-op there; this fix is scoped to the ONE path that actually
+  surfaces a diagnostic string. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` (4337 lib tests — existing
+  test extended, not added; full suite green). Behaviour-touching only in the
+  sense that error MESSAGE CONTENT changes on a curl failure (module success-path
+  output is unaffected), so also `hse selftest` 9/9 (161 modules, dispatch graph
+  intact) per `CONVENTIONS.md` §9. No identity/PII, architecture-guard, or
+  `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-03** — **C6: `oathnet_pro` — the highest-quality (paid) breach
+  source — joins the AU-019 arc as a fourth producer; its breach-search
+  response's `dbname_info` block was silently discarded at the parse
+  boundary.** Found by reading a third operator-supplied real debug bundle's
+  `RAW SOURCE RECORDS` section directly (`username = mriconic`): OathNet's
+  breach-search response carries a `dbname_info` object SIBLING to `items` —
+  per-`dbname` metadata (`BreachDate`/`Description`/`PwnCount`/`Title`, one
+  entry per distinct breach database the returned hits belong to). `SearchData`
+  (`util::oathnet::mod.rs`) never declared a field for it, so `serde_json`
+  silently ignored the whole block on every parse — not merely "unused by
+  callers" but discarded at the very first deserialization step, before any
+  caller could ever see it. Consequently NO oathnet-sourced breach hit — across
+  ANY module that calls `oathnet::search` — has ever carried a `breach_date`, so
+  none could enter AU-019's temporal clustering, despite OathNet being the
+  richest, paid breach source in the engine. Fixed additively, with zero call-
+  site changes: `SearchData` now also captures `dbname_info` (a new `DbMeta`
+  struct, `BreachDate` only — `Description`/`PwnCount`/`Title` deliberately
+  deferred to avoid scope creep); a new pure `enrich_with_breach_dates(items,
+  dbname_info)` helper stamps each row's own `dbname`-matched `BreachDate` onto
+  it (never overriding a row's own pre-existing `breach_date`) inside `search()`
+  BEFORE it returns — so `search()`'s public `Result<Vec<Value>>` signature is
+  completely unchanged, and NONE of its 3 call sites (oathnet_pro's breach AND
+  stealer queries, the `hse oathnet` batch CLI) needed touching. In
+  `oathnet_pro::breach.rs`'s `breach_evidence` (an EXPLICIT field-mapping
+  allowlist, unlike `see_know`'s verbatim fold — confirmed by reading it before
+  assuming the enrichment would just flow through automatically), added one
+  entry, `("breach_date", "breach_date")`, so the enriched key reaches the
+  canonical evidence attribute AU-019 reads; every `oathnet_pro` entity is
+  already `breach`-tagged (confirmed directly against the same debug bundle's
+  `ENTITIES` section), so this closes the whole gap. Three new tests, all
+  red/green-verified: `enrich_with_breach_dates_stamps_from_the_rows_own_dbname_only`
+  (stamp / no-matching-dbname / already-has-a-date / non-object-row /
+  no-BreachDate-on-that-db, in one pass) and
+  `enrich_with_breach_dates_is_a_no_op_when_dbname_info_is_empty` (the common
+  stealer-search-response shape, which has no `dbname_info` block at all) — both
+  pure-function tests, no live endpoint needed; plus
+  `breach_evidence_carries_breach_date_for_au019`, mirroring the file's existing
+  `dbname`-join-key test precedent, verified red via a scoped `git stash` revert
+  of just the one new mapping-table line. AU-019 now covers 4 independent
+  breach-tagged producers: `psbdmp`, `niamonx`, `hudsonrock`, `oathnet_pro`.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4340 lib tests, +3; every oathnet-related test — 261 total
+  — and the full suite green). Behaviour-touching (oathnet-sourced breach
+  entities gain a new evidence attribute), so also `hse selftest` 9/9 (161
+  modules, dispatch graph intact) per `CONVENTIONS.md` §9 — a live-endpoint
+  exercise was not possible (paid API, no network access from this
+  environment), so verification rests on unit tests built from the EXACT raw
+  response shape the operator's own debug bundle captured, not a synthetic
+  guess. No identity/PII decision logic (existing OathNet response data, no new
+  collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` C6 (SOL-OFFENSIVE) + §5 — same commit.
+
+- **2026-07-03** — **`coord_state()`'s doc comment was stale in two ways: "only
+  three" au-state-tagging modules is now off by roughly an order of magnitude,
+  and its own example list named `search_engines` as a non-tagger when it now
+  tags directly.** The last verified-real, single-cycle item carried over from
+  the fleet-wide discovery pass. Verified directly rather than trusting the
+  finder: `grep`-counted every module that constructs a `Coordinates` entity and
+  tags it `au-state:XX` — ~30 modules do (`au_geo`, `wigle`, `geocode`, `ip_geo`,
+  `search_engines`, and more), not the doc's stated three. Separately checked
+  each of the doc's three NAMED examples individually: `geo_normalize`
+  (`core::engine::enrich::enrich_geospatial`, a general-purpose engine
+  post-processing pass, not a `modules/` module) and `exif_geo` genuinely still
+  never tag `au-state:` (confirmed by direct grep — `geo_normalize` only tags
+  `country:{iso}`), so the comment's core POINT (the bbox fallback exists because
+  some Coordinates producers have no AU-specific logic to derive a state from)
+  remains true and valuable — but `search_engines` was listed as a third
+  non-tagger and now demonstrably tags `au-state:` directly at two sites
+  (`extract/mod.rs:148`, `build.rs:282,586`), so citing it as a non-tagging
+  example was actively wrong, not just an outdated count. Rewrote the comment to
+  drop the fragile exact count (replaced with "most... and ~25 others," a shape
+  that won't re-stale on the next module added) and to name only the two
+  examples still verified accurate (`geo_normalize`, `exif_geo`), removing
+  `search_engines` from the non-tagger list entirely. `coord_state()`'s own
+  logic is untouched — this is purely a doc-comment correction; its 4 existing
+  tests (`coord_state_prefers_the_au_state_tag`,
+  `coord_state_falls_back_to_lat_lon_when_untagged`,
+  `coord_state_none_below_threshold_or_wrong_kind`,
+  `au_056_derives_coord_state_from_latlong_without_a_tag`) already correctly
+  exercise both the tagged and untagged/fallback paths and pass unchanged. Gate:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc` (checked
+  directly since this is a Rust doc comment, not Markdown — the
+  `[`crate::util::geo::au_state_for_coords`]` intra-doc link still resolves)/
+  `cargo test` all clean (4340 lib tests unchanged, 0 failures). No behaviour
+  change, so no CLI surface to exercise. **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
+
+- **2026-07-03** — **`pypi_user`/`rubygems_user` fabricated a wrong coverage
+  count instead of honestly reporting a truncated one — worse than a silent
+  drop, since the wrong number is asserted as fact.** Found by a fresh
+  multi-angle discovery pass (Workflow: 5 finders on angles not yet swept this
+  session — determinism, dead public items, silent truncation, literal
+  TODO/FIXME markers, cross-module confidence consistency — → adversarial
+  verification; 6 of 8 candidates confirmed). Both modules cap their sample at
+  `MAX_PACKAGES`/`MAX_GEMS` (30) BEFORE computing the count they stamp into the
+  `packages`/`gems` evidence attribute (`… (N packages)` / `… (N gems)`): the
+  count used `pkg_names.len()`/`gem_names.len()` — the length AFTER `.take(30)`
+  — not the true total. So a maintainer with 40 PyPI packages or 35 RubyGems was
+  reported as having exactly 30, a specific, confidently-asserted, WRONG number,
+  not a vague "some data missing" signal — exactly the class this doctrine rates
+  worse than missing coverage (a false claim, not an honest gap). Verified both
+  modules directly (identical bug shape, same author pattern per the finder,
+  confirmed independently by reading both files): `pypi_user::build_entities`
+  takes `packages: &[(String, String)]` (a reference, so `packages.len()` stays
+  available after the `.take()`); `rubygems_user::build_entities` takes
+  `gems: Vec<RgGem>` BY VALUE and consumes it via `.into_iter()`, so the true
+  count had to be captured (`let total_gems = gems.len();`) before the
+  consuming loop. Fixed both: the `> 5`/count-format logic now reads the
+  captured true total instead of the post-cap sample's own length; the 5-item
+  text SAMPLE itself is unaffected (5 < 30 always, so it was never wrong) — only
+  the trailing `(N …)` count changes. New regression test per module
+  (`package_coverage_reports_the_true_total_not_the_max_packages_cap`,
+  `gem_coverage_reports_the_true_total_not_the_max_gems_cap`) constructs 40/35
+  items respectively and asserts the evidence attribute ends with the TRUE
+  count, not 30 — red/green-verified via a scoped `git stash` revert of both
+  `mod.rs` files together (both failed as expected; restored, both pass). Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` (4342 lib tests, +2; every existing test in both modules —
+  25 total — still passes unchanged; full suite green). Behaviour-touching (the
+  evidence attribute's count changes for any subject with >30 packages/gems), so
+  also `hse selftest` 9/9 (161 modules, dispatch graph intact) per
+  `CONVENTIONS.md` §9. No identity/PII decision logic (existing provider data,
+  no new collection), no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-03** — **`hse doctor`'s "HUNTSMAN_* keys loaded" listing violated
+  `CONVENTIONS.md` §5's determinism requirement — printed straight from a
+  `HashMap`, unsorted, so the same command against the identical environment
+  could print the keys in a different order on separate invocations.** Found by
+  the same fresh 5-angle discovery pass that surfaced the pypi_user/rubygems_user
+  fabricated-count fix (determinism angle, specifically named in this loop's own
+  operating doctrine — "no HashMap-iteration-order leaks into output"). Verified
+  directly: `cmd_doctor` (`cli/doctor/mod.rs`) collected `keys::load()`'s
+  `HashMap<String, String>` keys into a `Vec` with no `.sort()` before printing
+  — and its OWN sibling function `rank_unset_keys`, 60 lines below in the same
+  file, already carries the correct pattern with an explicit rationale ("Ties
+  within a tier sort by name for stable, run-to-run-identical output"), making
+  this look like a genuine oversight rather than a considered exception, not a
+  speculative concern. Fixed by extracting a pure `sorted_huntsman_keys(loaded:
+  &HashMap<String, String>) -> Vec<&str>` helper (mirroring `rank_unset_keys`'s
+  own pure/testable shape) that filters + sorts before `cmd_doctor` prints.
+  Regression test `loaded_huntsman_keys_are_sorted_regardless_of_insertion_order`
+  builds the identical key set via two different `HashMap` insertion orders and
+  asserts both produce the SAME sorted output (also proving a non-`HUNTSMAN_`
+  key like `HOME` is correctly filtered regardless of ordering) — red/green-
+  verified via a scoped `sed`-based removal of just the `.sort_unstable()` call
+  (failed on the very first run, confirming the bug was live, not merely
+  theoretical; restored and re-confirmed green). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` (4343 lib
+  tests, +1; full suite green). Behaviour-touching (CLI print ordering), so
+  exercised the real command directly per `CONVENTIONS.md` §9 — `hse doctor`
+  now prints its 6 loaded keys in stable alphabetical order — plus `hse
+  selftest` 9/9 (161 modules, dispatch graph intact). No identity/PII decision
+  logic, no architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-05** — **T2.14 `[~]`→`[x]`: closed the per-module noise decision
+  SOL-HINT-NOISE left open since 2026-07-01.** Two of the node's three
+  candidate designs (cap-to-worst-N, bounded summary count) were left on the
+  table in favour of the third: cost-gate `KeyGated`/`Paid`-only, mirroring
+  the already-shipped, already-tested T2.13 ROI hint exactly — a wasted
+  paid/key-gated module call is real, actionable signal; the dozens of `Free`
+  modules that legitimately find nothing for a given target kind are not, and
+  would flood the hints list if surfaced per-module (the noise problem the
+  node existed to resolve). New pure `keyed_or_paid_zero_yield_hint` in
+  `cli/scan/dossier.rs` formats the already-computed, already cost-gated
+  `zero_yield_keyed_or_paid_modules` set — no new gating logic, no
+  duplication — as a single `optimization_hints` entry, pushed alongside the
+  dossier's pre-existing `--exclude`-suggesting ROI println rather than
+  replacing it. 2 new unit tests (`..._fires_when_a_keyed_or_paid_module_
+  wasted_its_call`, `..._is_silent_when_nothing_wasted`), both exercising the
+  pure function directly since this is new functionality, not a behaviour
+  regression, matching how `total_dead_scan_hint`'s own tests were written.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc` (the new `[\`crate::util::diagnostics::analyse\`]` intra-doc
+  link resolves cleanly)/`cargo test` (4345 lib tests, +2; full suite —
+  unit + integration + doctests — green). Known residual, disclosed rather
+  than silently dropped: this hint (like `total_dead_scan_hint` before it)
+  reaches the CLI dossier surface only — `api::handlers`'s own `analyse()`
+  call discards its return value entirely (used only to update the
+  adaptive-routing ledger) and the plain `hse scan` diagnostics path never
+  renders `optimization_hints`, so neither hint reaches those surfaces; a
+  real, pre-existing cross-surface gap, not introduced by this change and
+  outside T2.14's own stated scope, left for a future node rather than
+  force-fit into this commit. No identity/PII decision logic, no
+  architecture-guard or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` §5 SOL-HINT-NOISE `[~]`→`[x]`, §4a entry
+  removed — same commit.
+
+- **2026-07-05** — **C7 `[~]`→`[x]`: export byte-determinism proven as a
+  general property, closing the node.** C7's own text named its sole
+  remaining open leg: "proptest coverage across every export path, a
+  machine-diffable-audit guarantee stated as policy" (the two concrete
+  determinism bugs — recovery + checkpoint evidence order — were already
+  fixed 2026-07-01; every other C7 leg delivered). Selected as the
+  cycle's unit after a five-angle survey (structured across T2.7, T2.11,
+  `SOLUTION_TREE` §4b, §4a remaining-notes, and a fresh discovery pass;
+  the strongest rival candidate — a real cross-scan `see_know`
+  `KEY_INVALID` contamination under concurrent `hse serve` — was
+  investigated and deliberately NOT taken: its correct fix is
+  architectural, not a drop-in, since the key is a shared process-wide
+  credential, so the survey agent's proposed per-scan task-local isolation
+  would be semantically wrong; surfaced for a future dedicated cycle rather
+  than force-fit here). The existing `export_formats_determinism_audit`
+  only double-renders ONE hand-built fixture (same store, twice) — the
+  "case-by-case" the node called out. New
+  `exports_are_insertion_order_independent` proptest (`src/cli/export/
+  tests.rs`, `mod prop`, 48 bounded cases) generates an arbitrary
+  entity/tag/evidence set, inserts it into two stores in OPPOSITE orders,
+  and asserts all five byte-deterministic renderers
+  (json/csv/gexf/full/debug) serialise identically — the `CONVENTIONS.md`
+  §5 property ("independent of … task-completion order"), exercising the
+  store's merge-on-conflict fold and each renderer's own
+  attribute/tag/evidence serialisation at once. `report.json`'s documented
+  `exported_at` wall-clock field stays excluded, exactly as the fixture
+  audit excludes it. Verified non-vacuous with a scoped red/green: with the
+  store's deterministic read order (`sort_entities_for_display` + SQL
+  `ORDER BY … uid`) temporarily removed, the proptest fails on a
+  two-entity minimal case ("json leaked insertion order"); restored, it
+  passes. Test-only change (no production behaviour touched — the
+  determinism it guards was already correct by construction), so no
+  identity/PII, architecture-guard, ATT&CK-mapping, or
+  `#![forbid(unsafe_code)]` impact. Gate green: fmt/clippy `--all-targets
+  -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4596 total pass
+  (+1). **Paired:** `SOLUTION_TREE` SOL-FORENSIC `[~]`→`[x]` + §4a + §5 —
+  same commit.
+
+- **2026-07-05** — **T2.7 / SOL-HEALTH-SIGNAL: delivered the health-signal
+  leg's achievable half — `last_success_at` + `consecutive_failures`
+  tracking, surfaced in `hse doctor`.** Selected after re-examining SOL-
+  HEALTH-SIGNAL's own text: it bundles two signals with genuinely different
+  prerequisites — `parse_rate` needs the golden-fixture corpus (still
+  infeasible per T2.7's own repeated confirmations), but
+  `last_success_at`/`consecutive_failures` need only the dispatch outcomes
+  `dispatch::finalise_module_result` already classifies, with zero
+  golden-fixture dependency. A rival candidate — the same survey's `see_know`
+  `KEY_INVALID`/`QUOTA_PROBED` cross-scan contamination under concurrent
+  `hse serve` — was investigated further this cycle and confirmed to
+  genuinely need a new "concurrent scan count" lifecycle primitive with
+  correct increment/decrement pairing across every exit path (success,
+  error, panic, cancellation) to fix safely; that risk profile is worse
+  than a single-cycle drop-in should carry, so it stays deferred, tracked
+  for a future cycle that can design the lifecycle hook properly. New
+  `core::engine::health` module: an in-process `Mutex<HashMap>`, deliberately
+  distinct from the sibling `core::engine::circuit` breaker it sits beside —
+  `circuit` clears all history on success and times cooldowns with monotonic
+  `Instant` (right for "is it safe to retry now"); `health` retains history
+  across successes using wall-clock epoch seconds (right for "when did this
+  source last actually work"). Wired into `finalise_module_result`'s three
+  real branches: timeout and hard-error record a failure, success stamps
+  `last_success_at` and clears the streak; `MissingKey` is correctly
+  excluded — an unconfigured optional provider opting out is not a failure
+  of the source. New `hse doctor` "Module health" section reports every
+  module with a nonzero failure streak, worst-first, ties broken by name for
+  deterministic output; quiet by default (a fresh/healthy process prints one
+  summary line, nothing per-module) — confirmed with a real run of `hse
+  doctor` on this session's own process. 9 new unit tests (6 in `health`,
+  covering independence across modules, the sort order, and that
+  `last_success_at` genuinely reflects a recorded success rather than an
+  untouched default; 3 in `cli::doctor` for the rendered line's wording).
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4605 total pass (+9). `parse_rate`/"drifted"
+  auto-flagging (blocked on the golden-fixture corpus) and the SPA health
+  panel remain open — T2.7 and SOL-HEALTH-SIGNAL both stay `[~]`, not `[x]`.
+  No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]` impact.
+  **Paired:** `SOLUTION_TREE` SOL-HEALTH-SIGNAL `[ ]`→`[~]` + §4a + §5 —
+  same commit.
+
+- **2026-07-05** — **New node T2.15, found and closed same-commit: a
+  previously-untracked determinism bug in `recall_prior_entities` — a
+  confidence-only sort with no uid tie-break, deciding WHICH entities
+  survive the 300-entity cap, not just their display order.** Surfaced by
+  a fresh five-angle backlog survey (in-progress nodes, §4b gap analysis,
+  two code-discovery sweeps, a test-coverage sweep), independently
+  cross-checked against the real code before being reported, then
+  personally re-verified against the current source before implementation
+  — the loop's own "treat any claimed root cause as a hypothesis" rule.
+  Read directly: `recall_prior_entities` merges a target's prior-scan
+  entity graph into a `HashMap<String, Entity>`, collects it via
+  `.into_values()` (a randomised-per-process iteration order), sorts by
+  confidence alone, then truncates to `MAX_ENTITIES` (300) — the exact
+  same rank-then-truncate shape as three sibling functions in the same
+  file (`rank_enrichment_leverage`, `rank_autonomous_targets`, the
+  autonomous-cluster ranking), all three of which already carry a
+  `.then_with(uid.cmp)` tie-break that this one lacked. Modules routinely
+  stamp flat literal confidences, so exact ties at the cutoff are
+  realistic, not contrived: two identical `hse scan` invocations of the
+  same target against the same DB state could retain a genuinely
+  *different set* of recalled entities, purely from HashMap iteration-
+  order randomness — a direct `CONVENTIONS.md` §5 violation, and more
+  consequential than the ordering-only bugs T1.1/T2.9 already closed
+  (this changes scan content, not just its display order). Fixed with the
+  same tie-break the siblings already use; extracted the sort+truncate
+  step into a standalone `rank_recalled_and_cap` (mirroring how the three
+  siblings are already separately-testable functions, unlike
+  `recall_prior_entities` itself) so the fix is independently unit-tested
+  without needing a full recall pipeline. New regression test: 305
+  identically-confident entities, fed forward vs. reversed, must truncate
+  to the byte-identical 300-entity survivor set — red/green-verified by
+  temporarily removing the tiebreak (failed, producing disjoint survivor
+  sets between the two orders) and restoring (passed). Both pre-existing
+  `recall_prior_entities` behavioural tests pass unchanged — the
+  extraction is behaviour-preserving, not a refactor-and-hope. A rival
+  survey candidate (exposing the already-built module-health data via a
+  new API endpoint + SPA panel) was confirmed real but deliberately not
+  picked this cycle: it is a larger surface (new handler, route, and
+  frontend JS) than this one-line-plus-extraction fix, and this bug is
+  higher-leverage — a core reproducibility guarantee, not a UI feature.
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` — 4606 total pass (+1). No identity/PII,
+  architecture-guard, or `#![forbid(unsafe_code)]` impact. **Paired:**
+  `SOLUTION_TREE` new node SOL-RECALL-ORDER `[x]` + capability table + §5
+  — same commit.
+
+- **2026-07-05** — **`urlscan` fabricated its scan-count evidence from the
+  page-capped result count, not URLScan.io's true total.** From the same
+  backlog survey that found T2.15, cross-checked independently before
+  implementation. `SearchResp` never deserialized the response's `total`
+  field; queries explicitly cap the page (`size=10` Domain/IpAddress,
+  `size=5` Url), so `summarize()`'s `scan_count: results.len()` reflects
+  only the returned page, not URLScan.io's real match count — the same
+  fabricated-count class already fixed in `netlas`/`psbdmp`/`pypi_user`/
+  `rubygems_user` this session, in a module none of those sweeps had
+  reached. Confirmed live: `curl 'https://urlscan.io/api/v1/search/
+  ?q=domain:"google.com"&size=3'` returns `total: 10000` alongside only 3
+  `results` — the true total sits in the same response, silently dropped
+  by serde's default ignore-unknown-fields behaviour. Fixed by adding
+  `total: Option<u64>` to `SearchResp`, mirroring `dehashed`'s identical
+  `total`-with-`results.len()`-fallback idiom; the evidence now
+  distinguishes `scan_count` (the true total) from a new `scans_shown`
+  (the actual page size), rather than conflating them. Extracted the
+  target-entity-building logic into a pure `build_target_entity` (mirroring
+  this file's own existing `child_entities` pattern) so the fix is directly
+  unit-tested without a live response. 4 new tests (`total` deserializes
+  present/absent; the entity reports the true total, not the shown count;
+  falls back correctly when `total` is absent) — red/green-verified by
+  temporarily reverting the evidence attribute to the pre-fix
+  page-capped value (failed) and restoring (passed). Gate green:
+  fmt/clippy/strict-rustdoc `cargo doc`/`cargo test` — 4610 total pass
+  (+4). No identity/PII, architecture-guard, or `#![forbid(unsafe_code)]`
+  impact. Logged here per the established precedent for this bug class
+  (pypi_user/rubygems_user, 2026-07-03): a contained, single-module fix,
+  not a new tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **`raw_archive`'s cheap filename pre-filter silently
+  dropped every archived response for a target with any uppercase letter —
+  i.e. virtually every Person/FullName-seeded scan — before the correct,
+  already-case-insensitive `_meta.query` check further down was ever
+  reached.** Found by reading a real, operator-uploaded debug bundle for a
+  FullName scan ("Brett Lawnton") whose dossier showed "RAW SOURCE RECORDS
+  (0 responses)" despite the same bundle's ENTITIES section clearly
+  containing real `oathnet_pro` breach data — i.e. a paid provider's
+  response genuinely existed but the archive reported nothing, directly
+  contradicting the module's own stated operator policy ("data that is
+  paid for must be kept in absolute completeness... must always be
+  retained"). Investigated via a five-angle survey of the bundle
+  (module-error causes, this rendering gap, the wrong-identity gate, and
+  `relations: 0`); independently traced the write/read path myself:
+  `raw_archive::format::slug` deliberately preserves case (for a legible
+  filename — pinned by `slug_is_human_legible_and_filesystem_safe`), but
+  `cli::export::renderers` builds its query set via
+  `scan.target.value.to_lowercase()` before calling
+  `records_for_queries` — and `query::records_filtered_dir`'s cheap
+  filename pre-filter (`want_slugs`/`fq_slug`) compared the two without
+  normalising case, so a FullName like "Brett Lawnton" (archived under its
+  original case) could never match its own lower-cased query slug and was
+  dropped by `continue` before the file was ever opened. Fixed by
+  lower-casing both sides of that one comparison, bringing the cheap
+  pre-filter into agreement with the authoritative `_meta.query` check
+  two steps later (`query.to_lowercase()` vs. an already-lower-cased
+  set), which was already correct. New regression test archives a
+  mixed-case "Brett Lawnton" query and confirms it survives the
+  lower-cased query-set filter — red/green-verified by temporarily
+  reverting to the case-sensitive comparison (failed, exactly reproducing
+  the bundle's symptom) and restoring (passed). Checked the rest of
+  `raw_archive` for the same write/read case-asymmetry (`slug` has
+  exactly two call sites — the write-time filename builder and this one
+  read-time comparison — both now consistent). A related, adversarially
+  confirmed bug from the same bundle review — the debug bundle's "BEST AU
+  LOCATION FIX" line mislabels a single-signal fallback estimate as an
+  "AU-059" synergy result with fabricated zero/blank fields
+  (`src/cli/export/renderers.rs:388-399` vs. the correct branching pattern
+  already used in `src/cli/scan/dossier.rs:602-630`) — was fully diagnosed
+  with a precise proposed patch but deliberately deferred to a future
+  cycle, since only one unit of work ships per cycle and this fix (a
+  complete silent-data-loss bug affecting the archive's core promise) is
+  the higher-impact of the two. Also investigated and correctly ruled out
+  as non-bugs: `see_know`'s "curl exited 6" (traced the full request-
+  building path — the host is always the hardcoded `see-know.eu` literal,
+  never seed-derived; a genuine environmental DNS failure), `asic_persons`'s
+  "timeout" (its 12s budget sits within its AU sibling modules' range), the
+  28 `identity_mismatch` exclusions (the three-layer quarantine pipeline —
+  `TargetMatch` → `demote_to_candidate` → `is_wrong_identity_pivot` —
+  working exactly as designed), and this same bundle's `relations: 0`
+  (initially flagged as a possible anomaly given the rich person-centric
+  evidence present, but the scan's own `status: Running` field settles it:
+  the relation graph is built once at scan finalisation, while
+  correlations stream live during ingestion — an in-progress scan
+  correctly shows correlations without relations yet). Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/
+  `cargo test` — 4611 total pass (+1). No identity/PII, architecture-guard,
+  or `#![forbid(unsafe_code)]` impact. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+
+- **2026-07-06** — **Picked up the AU-059 mislabeling bug deferred by the
+  previous entry: `cli::export::renderers::render_debug_bundle`'s "BEST AU
+  LOCATION FIX" line unconditionally labelled every non-null
+  `extract_au_location_fix` result "(AU-059)" and read
+  `synergy_confidence`/`severity` via `.unwrap_or` defaults regardless of
+  which of the function's two JSON shapes actually fired, and omitted
+  `radius_km` entirely from both.** `extract_au_location_fix`
+  (`src/api/scan_export/mod.rs:237-313`) returns either a true AU-059
+  cross-seed synergy fix (≥2 AU person-anchored coordinates across ≥2
+  orthogonal source classes — has `synergy_confidence`/`severity`) or a
+  coarser single-signal fallback (fires whenever ANY AU location signal
+  exists, down to a hardcoded landline-area-code anchor — has
+  `confidence`/`basis` instead, no `synergy_confidence` field at all). The
+  buggy code read the absent `synergy_confidence` as a silently-defaulted
+  `0.00` and still printed "(AU-059)", overstating a single coarse signal
+  (possibly just a phone area code) as a corroborated multi-source fix.
+  Before patching, did a recursive sweep of every consumer of
+  `extract_au_location_fix`'s two-shape output to confirm the bug's exact
+  scope: `src/api/scan_export/mod.rs:197` (report.json's `best_location`)
+  and `src/api/scan_handlers/analysis.rs:169-170` (the `/location` API) both
+  pass the `Value` straight through with no destructuring — safe;
+  `src/web/spa.html`'s `renderLocation` (lines 2325-2353) already branches
+  correctly on `synergy_confidence != null` — safe, reference-quality;
+  `src/cli/export/renderers.rs`'s debug-bundle line was the only unsafe
+  consumer. Fixed by branching on `fix["synergy_confidence"].as_f64()`,
+  mirroring the dual-branch pattern `src/cli/scan/dossier.rs:602-630`
+  already uses for the same two shapes, and adding the previously-omitted
+  `radius_km` field to both branches. Two new regression tests in
+  `cli::export::tests` — one drives a real 2-class AU-059 synergy fix and
+  asserts the "(AU-059)" label plus a non-zero `synergy_conf` and the
+  `radius_km` field; the other drives a lone AU coordinate (below the
+  synergy gate) and asserts the "(single-signal)" label with no
+  `synergy_conf=` at all — both red/green-verified by temporarily
+  reverting to the old unconditional-AU-059 code (both failed for the
+  right reason: the synergy test on the missing `radius_km` field, the
+  single-signal test on the wrong "(AU-059)" label) and restoring (both
+  passed). Gate green: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc`/`cargo test` — 4613 total pass (+2). No identity/PII,
+  architecture-guard, or `#![forbid(unsafe_code)]` impact. Logged here per
+  the established precedent for this bug class (raw_archive, this same
+  date; pypi_user/rubygems_user, 2026-07-03): a contained, single-function
+  fix, not a new tracked node. **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
+
+- **2026-07-06** — **`cli::import::combined`'s "Combined Search" aggregator
+  importer double-counted the operator-facing breach-record total for the
+  export shape a real paid combined-search aggregator actually produces.**
+  Reviewed a real-world Combined Search export (a multi-module breach
+  aggregator's TXT report) this cycle; its structure repeats every module's
+  results TWICE — once nested under a `Modules:` section, again verbatim
+  under a separate top-level `Results:` section keyed off the identical
+  underlying per-module data — a shape the existing `COMBINED` test fixture
+  never exercised (it only has the single nested occurrence). Per-field
+  entity dedup (the `seen` set) already prevented duplicate entities from
+  the repeated record, but `stats.breach_records` — printed verbatim as
+  "N breach" in every `hse import`'s operator-facing summary
+  (`print_import_stats`) — was incremented once per record regardless of
+  whether it was a repeat, so the reported count silently doubled for this
+  real export shape. The same fabricated-count bug class already fixed
+  for `netlas`/`psbdmp`/`pypi_user`/`rubygems_user`/`urlscan` this cycle,
+  now found in an importer rather than a scan module. No real third-party
+  data was ever written to a database or committed anywhere — the auto-mode
+  safety classifier correctly declined an attempted `hse import` smoke-test
+  against the uploaded real export, and the bug was instead reproduced with
+  a synthetic fixture (`COMBINED_DUPLICATE_TOP_LEVEL_RESULTS`, reusing the
+  established `jordanavery@gmail.com`/`Jordan Avery` synthetic placeholders)
+  built to the same structural shape. Fixed with a record-level dedup keyed
+  on the record's identity fields (email/username/name/password/hash/phone/
+  ip/lastip/url/source) rather than the record's raw field set, because the
+  LAST record in each of the two occurrences absorbs whatever incidental
+  trailing metadata (attempt/retry/cooldown counters) happens to precede
+  the next `[N]` marker or EOF, which can differ between two otherwise-
+  identical copies of the same record — confirmed by an initial raw-field-set
+  dedup attempt failing on exactly that edge (red: still off by one) before
+  landing on the identity-keyed signature. New regression test red/green-
+  verified: failed with the dedup check disabled (breach_records reported 4
+  instead of the true 2) and passed once restored. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4618 total pass (+1). No identity/PII impact (synthetic fixture only, no
+  real data ever persisted). Logged here per the established precedent for
+  this bug class: a contained, single-function fix, not a new tracked node.
+  **Paired:** `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-06** — **`wigle`'s "named WiFi network(s)" evidence headline
+  reported the 10-item attribute-string cap as if it were the true count of
+  named/business-identifier SSIDs found near a target — the same
+  fabricated-count bug class already fixed this arc in `netlas`/`psbdmp`/
+  `pypi_user`/`rubygems_user`/`urlscan`/`threatfox`, now found via a fresh
+  code-grounded discovery pass in a module none of those prior sweeps
+  touched.** `src/modules/wigle/mod.rs`'s SSID-intelligence block built the
+  full deduped `ssid_names: Vec<String>` (every named/business-shaped SSID
+  matching the filter), then truncated it to `top_ssids` (first 10, for the
+  bounded `named_ssids` attribute string) — but the evidence *headline text*
+  read `top_ssids.len()` instead of `ssid_names.len()`, so a location with
+  more than 10 named networks nearby (a dense urban WiFi environment — the
+  exact case the module's own `density` classification already flags as
+  "dense-urban" at ≥50 total networks) was told "10 named WiFi network(s)"
+  regardless of the true count, silently discarding every named network past
+  the 10th from the reported total. Confirmed genuinely uncaught: `grep` of
+  `wigle/tests.rs` for `named_ssid`/`top_ssids`/`ssid_names` returned zero
+  matches — the whole SSID-naming block was inline in the async, network-
+  calling `process()` method with no pure seam, so nothing exercised it.
+  Fixed by extracting the block into a new pure `named_ssid_evidence(results,
+  target_value, most_recent) -> Option<Evidence>` (mirroring the file's own
+  established `wifi_ap_entities` pure-function pattern immediately above it),
+  behaviour-preserving except for the one-line count fix (`ssid_names.len()`
+  in the headline; `top_ssids` stays truncated to 10 for the attribute string
+  only — the two must never be conflated again). New regression test builds
+  14 distinct named SSIDs and asserts the headline states "14", not "10";
+  red/green-verified by temporarily reverting the extracted function's count
+  back to `top_ssids.len()` (failed: "10 named WiFi network(s)" for 14 true
+  matches) and restoring (passed). A second test confirms the `None` short-
+  circuit when nothing matches the name-shape filter. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4369
+  total pass (+2). No identity/PII impact, no architecture-guard change, no
+  `#![forbid(unsafe_code)]` impact. Logged here per the established
+  precedent for this bug class: a contained, single-function fix, not a new
+  tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
 - **2026-07-04** — **MITRE mapping precision: `subdomain_takeover` was labelled
   passive when it actively scans for a vulnerability.** Grounded audit of the
   active-collection modules' ATT&CK overrides (the operator-endorsed inline
@@ -9762,7 +12742,8 @@ way, so this specific drift class can't recur silently again.
   URLs, trimmed + deduped, in order; fail-before: a capped five); all five modules' existing
   tests still pass. Gate green: fmt/clippy/doc clean, full suite 0 failures (4565).
   **Paired:** `SOLUTION_TREE` §5 — same commit.
-- **2026-07-05** — **Executed T2.15.** A fresh code-grounded discovery pass across the
+- **2026-07-05** — **Executed T2.158** *(renumbered from T2.15 during the
+  origin/main merge — see the T2.14 merge note above).* A fresh code-grounded discovery pass across the
   storage layer (post-fidelity-audit-arc) found every multi-row reader in `storage/`
   chaining a bare `.filter_map(...ok())` at both the SQL-extraction and JSON-deserialize
   layers — 8 sites across `list_scans`, `correlations_for_scan`, `relations_for_scan`,
@@ -9782,11 +12763,12 @@ way, so this specific drift class can't recur silently again.
   `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`). Gate green: fmt/clippy/doc
   clean, full suite 0 failures (4385 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
-- **2026-07-05** — **Executed T2.16.** Second item from the same storage-layer discovery
-  pass as T2.15: `Store::open`'s owner-only (0600) chmod loop over the db file and its
+- **2026-07-05** — **Executed T2.159** *(renumbered from T2.16 during the
+  origin/main merge).* Second item from the same storage-layer discovery
+  pass as T2.158: `Store::open`'s owner-only (0600) chmod loop over the db file and its
   `-wal`/`-shm` siblings discarded the `Result` via `let _ = ...`, with no
   `tracing::warn!` — unlike the FTS-rebuild best-effort step ~30 lines earlier in the same
-  function, which is explicitly best-effort AND never silent, and unlike T2.15's fix to the
+  function, which is explicitly best-effort AND never silent, and unlike T2.158's fix to the
   read paths just above. Since the store holds PII and harvested third-party keys per its
   own doc comment, a failed chmod silently left it at the process umask (often 0644,
   world-readable) with zero signal. Fix: extracted the loop into a private
@@ -9796,12 +12778,13 @@ way, so this specific drift class can't recur silently again.
   chmod on a nonexistent path reliably fails without a read-only-filesystem fixture;
   fail-before: the pre-fix `let _ = ...` produced no log at all). Gate green: fmt/clippy/doc
   clean, full suite 0 failures (4386 lib tests). **Paired:** `SOLUTION_TREE` §5 — same
-  commit. **This closes the storage-layer discovery-pass arc** (T2.15 + T2.16); the
+  commit. **This closes the storage-layer discovery-pass arc** (T2.158 + T2.159); the
   remaining item from that pass (no actual migration-application mechanism behind
   `SCHEMA_VERSION`) is already correctly captured as T2.10's own stated P3/advisory
   residual — a version stamp + forward-compat warning were the delivered scope, and
   there is no live non-additive migration to apply yet, so no new node is warranted.
-- **2026-07-05** — **Executed T2.17 (correction: the arc wasn't fully closed).** A
+- **2026-07-05** — **Executed T2.160** *(renumbered from T2.17 during the
+  origin/main merge; correction: the arc wasn't fully closed).* A
   direct follow-up grep sweep of `storage/mod.rs` for the same silent-swallow shape
   (prompted by checking on a background "fourth discovery pass: storage layer" agent
   that turned out to be unresolvable in this session — its task ID no longer exists,
@@ -13356,3 +16339,294 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4718 lib tests, +5).
   **Paired:** `SOLUTION_TREE` SOL-OATHNET-REAL-PAGINATION (new) +
   SOL-SEEKNOW-HONEST-COVERAGE (new) — same commit.
+- **2026-07-15** — **`util::oathnet::top_dbnames`'s tie-break was missing —
+  which of several equal-count breach databases lands in the top-`n` cutoff
+  (and in what order) depended on `HashMap` iteration order, feeding both the
+  operator-facing "OathNet: N matching breach record(s) … — {top_dbs}"
+  headline and the AU-047 reused-secret correlator's `distinct_sources`
+  reader — the same reproducibility bug class already closed elsewhere in
+  this codebase (T1.1, T2.9, T2.15, `wigle::mode`), found via a focused
+  investigation of `see_know`/`oathnet_pro` (both paid, highest-priority
+  breach sources) after the operator supplied a real debug bundle showing
+  `see_know` failing every attempt in a live scan and asked that both
+  modules be made to work to their fullest useful capacity.** Cross-checking
+  that bundle's evidence against current `HEAD` first: its raw `curl exited
+  N` errors (no diagnostic snippet) and missing `oathnet_pro` `breach_date`
+  attribute both turned out to be artifacts of a stale build — the bundle's
+  own embedded source-file manifest listed `curl_client/mod.rs` at 208 LOC
+  against current `HEAD`'s 216, and `git log` confirmed the gap is exactly
+  the already-shipped `-S`/`--show-error` fix (`b02476a1`) plus 17 further
+  commits including the `dbname_info`→`breach_date` enrichment — so neither
+  symptom was re-investigated as if it were a live bug (would have
+  duplicated already-closed work). `top_dbnames`'s `sorted.sort_by_key(|b|
+  std::cmp::Reverse(b.1))` sorts primary-key-only (count descending); its
+  pre-sort order comes from `counts.into_iter()` on a `HashMap`, so a tie at
+  the top-5 boundary (realistic — OathNet aggregates breach hits across many
+  same-frequency databases) is resolved by process-random hash-bucket order,
+  not any meaningful ranking. This directly changes `core/correlator/rules/
+  breach.rs`'s AU-047 rule output: `distinct_sources(secret)` reads the
+  `top_dbnames` evidence attribute (among others) and its `sources.iter()
+  .take(5)` feeds the operator-facing "reused across N source(s) (A, B, …)"
+  clause — so identical re-runs of the identical scan against the identical
+  data could name different specific breach databases in that clause.
+  Confirmed uncaught: the existing `top_dbnames_ranks_by_frequency` test
+  uses only strictly-distinct counts (3/2/1), no tie case anywhere in the
+  suite. Fixed with a deterministic secondary key (`.then_with(|| a.0.cmp(&
+  b.0))`, dbname ascending) — one line, exactly the `.then_with(...)`
+  idiom already established by `recall_prior_entities` and `wigle::mode` in
+  this codebase. New regression test (`top_dbnames_ties_break_alphabetically_
+  not_by_hashmap_order`) constructs a full 10-way tie and asserts the exact
+  alphabetically-first-5 result; red/green-verified by temporarily reverting
+  to the single-key sort (failed — a non-alphabetical, hash-order-dependent
+  set) and restoring (passed). Full downstream parity confirmed: all 30
+  `util::oathnet` tests, all 197 `oathnet_pro` module tests, and all 14
+  `core::correlator::rules::breach` tests pass unchanged — the fix only
+  resolves ties, non-tied output is byte-identical. Two other candidates
+  from the same investigation were surfaced but deliberately NOT picked this
+  cycle to keep the unit small: `see_know`'s `/search` may report a
+  page-capped hit count as the provider's true total (same fabricated-count
+  class as `wigle`/`netlas`, but the envelope field name needs confirming
+  against a live response before a fix lands) and `oathnet_pro`'s
+  `attack_techniques()` is missing `T1591.002` despite minting Organisation
+  entities (a documentation-accuracy gap, lowest severity of the three) —
+  both left open for a future cycle, not silently dropped. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4370 total pass (+1). No identity/PII impact (the real debug
+  bundle's PII was read only for structural/field-shape diagnosis, never
+  reproduced beyond what was needed to identify the code path). Logged here
+  per the established precedent for this bug class: a contained,
+  single-function fix, not a new tracked node. **Paired:** `SOLUTION_TREE`
+  §5 — same commit.
+
+- **2026-07-15 (cont'd)** — **`oathnet_pro`'s `attack_techniques()` was
+  missing `T1591.002` (Business Relationships) despite genuinely minting
+  `EntityKind::Organisation` entities — the second of the two candidates
+  the same `see_know`/`oathnet_pro` investigation surfaced but deliberately
+  deferred above.** Picked up this cycle after the first candidate (a
+  possible `see_know` `/search` capped-count headline) was re-verified and
+  confirmed to still lack the evidence needed for a safe fix: a repo-wide
+  search for any genuine captured `see-know.eu` `/search` response (test
+  fixtures, `testdata/`, raw-archive samples) found none, and the one
+  `envelope."total"` reference in `util/see_know/tests.rs` is incidental
+  test data for `parse_response`'s pass-through behaviour, not a captured
+  real response — while the `RICH_DETAIL_SKIP` denylist's `total`/
+  `breach_count`/`stealer_count`/`external_count` entries in
+  `src/modules/breach_rich.rs` are confirmed to operate PER-RECORD (the
+  catch-all walks each item's own fields), not proven to be ENVELOPE-level
+  fields sibling to `items`/`results` — so fixing the headline would mean
+  guessing at an unobserved API shape, which the standing "behavior must be
+  observed, not assumed" constraint forbids. Left open, more precisely
+  scoped than before. The T1591.002 gap, by contrast, is fully verifiable
+  from source with no external dependency: `oathnet_pro/breach.rs:560-576`
+  extracts `employer`/`company`/`organization`/`organisation`/`workplace`
+  fields into `EntityKind::Organisation` (tagged `employer-field`,
+  doc-commented "mirroring the see_know extractor"), and the *shared*
+  `breach_rich::extract_rich_detail` catch-all both `see_know` and
+  `oathnet_pro` run (`src/modules/breach_rich.rs:298-312`) mints the
+  identical entity kind from the identical field set a second time. Per
+  CLAUDE.md's ATT&CK-mapping invariant, every module's `attack_techniques()`
+  must accurately reflect what it extracts — `see_know` already correctly
+  declares `T1591.002` for this exact field set (`see_know/mod.rs:123`,
+  comment: "Business Relationships — company / employer / org"), making
+  `oathnet_pro`'s omission a verified inconsistency between two modules
+  sharing the same extractor, not a speculative gap. The existing test
+  `attack_techniques_reflect_breach_pool_not_role_identification` only
+  positively asserted the 5 present IDs and negatively asserted the absence
+  of `T1591.004` — it never checked `T1591.002`, so nothing caught the gap.
+  Fixed by adding `"T1591.002"` to the declared array (one line) and
+  extending the doc comment to explain the Organisation-minting basis;
+  `produces()` already declared `EntityKind::Organisation` (unchanged — no
+  new entity kind, no `produces()` change). Test extended in place to
+  assert the new ID alongside the existing five; red/green-verified by
+  temporarily removing the array entry (failed — assertion on `T1591.002`
+  presence) and restoring (passed). Full parity: all 197 `oathnet_pro`
+  tests + all 30 architecture guards (including the ATT&CK-catalogue
+  membership check in `tests/architecture.rs`) pass unchanged. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4370 total pass (same count — an existing test was extended, not
+  a new one added). No identity/PII impact, no architecture-guard change
+  beyond the intended catalogue-membership check passing for the new ID.
+  This closes the second of the two candidates the 2026-07-15 investigation
+  surfaced; only the `see_know` capped-count lead remains open, now with a
+  more precise "why it's still blocked" note for a future cycle. Logged
+  here per the established precedent for this bug class: a contained,
+  single-declaration fix, not a new tracked node. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-15 (cont'd 2)** — **`see_know::resolve_identity_pivots` marked a
+  discovered Discord/Steam ID as "resolved" the moment it was DISCOVERED,
+  not once it was actually DISPATCHED — so any id past what the shared,
+  per-scan-wide SeekNow budget could fit into a single hop's dispatch call
+  was silently, permanently blacklisted from every remaining hop of that
+  seed's pivot resolution, despite zero HTTP calls ever being attempted
+  for it.** Found via a fourth, deeper investigation pass over `see_know`/
+  `oathnet_pro` (explicitly scoped to areas the prior three passes had
+  touched only lightly — Discord/Steam pivot logic, associates/geo
+  extraction, budget scaling, endpoint dispatch tables — after the operator
+  repeated the standing "focus on seek and oathnet" request a fourth time).
+  `resolve_identity_pivots` (`src/modules/see_know/mod.rs:372-423`) built
+  its per-hop candidate lists via `discover_discord_pivots(result)
+  .into_iter().filter(|id| resolved.insert(format!("d:{id}"))).collect()`
+  — the `HashSet::insert` runs as a side effect of the filter, so EVERY
+  discovered id (not just the ones about to be dispatched) got marked
+  resolved unconditionally, before `dispatch_discord_pivots`/
+  `dispatch_steam_pivots` (`src/modules/see_know/pivots/mod.rs`) ever ran.
+  Those two dispatch functions cap how many ids they actually attempt to
+  the CURRENT remaining `see_know::scan_budget_remaining()` (2 slots per
+  discord id — `discord_user` + `discord_to_roblox`; 1 slot per steam id),
+  silently dropping the rest via an internal `break` — a design already
+  correct in isolation, but the caller's `resolved` bookkeeping never
+  distinguished "discovered" from "dispatched," directly contradicting the
+  function's own doc comment: "Distinct IDs already dispatched, so a chain
+  that loops back never re-resolves the same account." A subject whose
+  breach/stealer records surface more Discord/Steam ids in one hop than the
+  scan's shared budget can fit — realistic for a heavily-exposed target,
+  since `see_know::BUDGET` is a single process-wide static shared across
+  every module call in the scan, not reserved per-pivot-chase — would have
+  the overflow ids permanently excluded from consideration in hops 2 and 3
+  of that seed's resolution, weakening SeekNow's own self-described unique
+  differentiator ("only a breach/identity pool turns a Discord snowflake or
+  SteamID64 into its linked accounts"). Confirmed uncaught: the only
+  existing test, `resolve_identity_pivots_is_noop_and_terminates_without_
+  ids`, exercises only the empty-ids convergence case. Fixed by extracting
+  the dispatch functions' inline budget-truncation loops into two new pure,
+  directly-testable functions — `discord_attempt_slice`/
+  `steam_attempt_slice` in `pivots/mod.rs` — the SINGLE source of truth for
+  "which ids will actually be dispatched given this budget," so the
+  caller's bookkeeping can never independently drift from what the
+  dispatcher really does; `dispatch_discord_pivots`/`dispatch_steam_pivots`
+  now return `(results, attempted_ids)` instead of just `results`, and
+  `resolve_identity_pivots` marks `resolved` from the returned
+  `attempted_ids` AFTER dispatch, not from the raw discovery list before
+  it — an id the budget couldn't fit stays eligible for a later hop instead
+  of being wrongly blacklisted. Hand-verified the dispatch loops'
+  behaviour-preservation for every discord budget value 0 through 5 against
+  the pre-fix inline loop (the redundant top-of-loop budget check the old
+  code needed is provably unreachable once the caller pre-truncates to the
+  `attempt_slice`, confirmed by construction, not assumption). 6 new pure
+  unit tests on `discord_attempt_slice`/`steam_attempt_slice` (budget 0, 1,
+  2, 3, and ample-budget cases, matching the exact hand-derived per-id
+  2-slot/1-slot consumption formula) — no live network required, since the
+  actual bug lived entirely in control-flow bookkeeping the pure functions
+  now make the single source of truth for. Deliberately did NOT attempt an
+  end-to-end network-backed red/green test of the full async caller: doing
+  so would require either a live `see-know.eu` call (non-deterministic,
+  slow, against this codebase's own no-live-network-in-unit-tests
+  convention) or a new HTTP-injection test seam (a materially larger,
+  out-of-scope architecture change for this fix) — the pure functions carry
+  the actual defect and are exhaustively tested; the caller wiring itself
+  is a small, code-reviewable 2-line change (read `attempted`, not the
+  discovery list). Full parity: all 78 `see_know` tests (incl. the
+  pre-existing `resolve_identity_pivots_is_noop_and_terminates_without_ids`
+  integration test, unchanged) pass; the only call site of the two dispatch
+  functions is `resolve_identity_pivots` itself, already updated. Gate
+  green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test` — 4376 total pass (+6). No identity/PII impact, no
+  architecture-guard change. Logged here per the established precedent for
+  this bug class: a contained fix scoped to one module's internal
+  bookkeeping, not a new tracked node. **Paired:** `SOLUTION_TREE` §5 —
+  same commit.
+
+- **2026-07-15 (cont'd 3)** — **`dehashed` under-declared its ATT&CK
+  Reconnaissance coverage by 5 techniques — the same class of bug fixed for
+  `oathnet_pro` (T1591.002) this session, except dehashed's gap spanned the
+  whole shared-extractor surface, not one technique.** The operator
+  broadened the standing "focus on seek and oathnet" request to "other
+  breach and analogous sources," prompting a fresh investigation of
+  `dehashed`/`hibp`/`xposed_or_not`/`hudsonrock`/`comb_search`/`psbdmp`/
+  `niamonx`/`pwned_passwords`. `dehashed`'s `attack_techniques()`
+  (`src/modules/dehashed/mod.rs:90-92`) declared only `T1589.001,
+  T1589.002, T1589.003` (Credentials/Email/Employee Names), but its
+  `produces()` (same file) has always listed `IpAddress`, `Address`,
+  `Coordinates`, `Organisation`, `MacAddress`, `DeviceId` too — every one of
+  which is genuinely minted, verified directly against source: `build.rs:
+  304-315` extracts `IpAddress` from `ip_address`/`ip`/`last_ip` fields
+  inline, and `build.rs:391` calls the shared `breach_rich::
+  extract_rich_detail` "maximum raw data" pass (`src/modules/breach_rich.
+  rs`) — the SAME catch-all `see_know`/`oathnet_pro` run — which mints
+  `Organisation` (company/employer/org, 298-313), `MacAddress`/`DeviceId`
+  (mac/hwid/imei/serial/…, 316-365), platform `Username`s (telegram/
+  facebook/instagram/…, 367-390), and `Address`/`Coordinates` (street/
+  city/state/postal + geocoded composite, 393-452). `see_know` already
+  declares the correct 8-technique set for running this identical
+  extractor (`see_know/mod.rs:109-126`); dehashed's declaration was simply
+  never updated to match, despite calling the same shared code. Confirmed
+  uncaught: `grep` of `dehashed/tests.rs` for `attack_techniques` returned
+  zero matches — none of its 12 existing tests touched the declaration at
+  all. Also investigated (per the same agent pass) a second candidate,
+  `niamonx` missing `T1589.003` despite minting `Person` from
+  `meta.names` — real, smaller, and deliberately left open for a future
+  cycle to keep this unit focused on one module. Fixed by declaring the
+  full 8-technique set with per-line justification comments, mirroring
+  `see_know`'s exact pattern. New test
+  `attack_techniques_reflect_the_full_shared_breach_rich_extraction`
+  (mirroring `oathnet_pro`'s equivalent), red/green-verified by temporarily
+  reverting to the 3-technique declaration (failed on the 5 missing IDs)
+  and restoring (passed). Running the full architecture-guard suite after
+  the fix surfaced a genuine, pre-existing test defect the fix's own
+  correctness exposed: `attack_overrides_attribute_collection_modules_
+  precisely` (`tests/architecture.rs`) had `dehashed` and `intelx` pinned
+  to the SAME exact 3-technique assertion in one shared loop — a stale pin
+  that never accounted for dehashed's `breach_rich` extraction (the
+  original comment only justified the Person/T1589.003 gap, missing the
+  other five). Root-caused rather than masked: verified `intelx`
+  independently before touching anything — its own doc comment states it
+  "re-emits the scanned target as its own entity" rather than extracting
+  child entities from record content (confirmed: it does not call
+  `breach_rich`), so its 3-technique declaration is genuinely still
+  correct and was left untouched. Split the merged loop into two precisely-
+  scoped assertions — `intelx` unchanged, `dehashed` updated to the new
+  8-technique vector — making the guard MORE precise, not weaker; no
+  assertion was narrowed or removed. Full parity: all 13 `dehashed` tests
+  and all 30 architecture guards (including the corrected precise-override
+  guard) pass. Gate green: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc`/`cargo test` — 4377 total pass (+1). No identity/PII
+  impact. Logged here per the established precedent for this bug class: a
+  contained, single-declaration fix (plus a correctly root-caused test
+  correction it exposed), not a new tracked node. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+
+- **2026-07-15 (cont'd 4)** — **`niamonx` had no `attack_techniques()`
+  override at all, silently inheriting the 2-technique Breach-category
+  default (`T1589.001, T1589.002`) despite genuinely minting `Person`
+  entities — the second and last candidate the same "other breach and
+  analogous sources" investigation surfaced, picked up now that `dehashed`
+  is closed.** Verified directly against source before acting: `niamonx`'s
+  `category()` returns `ModuleCategory::Breach` and the module declares no
+  `attack_techniques()` override, so it silently falls through to `core::
+  attack::mod.rs`'s category-default table entry for `Breach` — confirmed
+  to be exactly `&["T1589.001", "T1589.002"]`. Its own `produces()`
+  comment (`niamonx/mod.rs:216`) already states "Person is emitted from
+  PBS v1 meta.names corroboration"; confirmed genuinely real, not stale
+  prose, by reading the actual emitter (`mod.rs:431-438`): every
+  corroborating name in a PBS v1 hit's `meta.names` array becomes an
+  `EntityKind::Person` pivot tagged `pbs-v1-pivot`. `T1589.003` (Employee
+  Names) is the catalogued technique for exactly this — the same pattern
+  `dehashed`/`see_know`/`oathnet_pro` all declare it for their own
+  name-field Person extraction, two of which were fixed for a closely
+  related gap earlier this same day. Confirmed uncaught: the only existing
+  assertion touching `attack_techniques()` was `module_metadata`'s
+  `!m.attack_techniques().is_empty()`, trivially satisfied by the 2-element
+  default and incapable of catching a missing technique; confirmed
+  `niamonx` has no pinned assertion anywhere in `tests/architecture.rs`
+  either (avoiding a repeat of the merged-loop surprise the `dehashed` fix
+  uncovered). Fixed by adding an explicit `attack_techniques()` override
+  declaring `T1589.001, T1589.002, T1589.003`, mirroring `dehashed`'s exact
+  comment style and justification. New test `attack_techniques_include_
+  employee_names_for_the_pbs_v1_name_pivot`, red/green-verified by
+  temporarily removing the override entirely (failed — the module fell
+  back to the 2-technique default and missed `T1589.003`) and restoring
+  (passed). Full parity: all 8 `niamonx` tests + all 30 architecture
+  guards pass unchanged — `produces()` and `category()` were both already
+  correct and untouched; this purely corrects the previously-absent
+  override. Gate green: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc`/`cargo test` — 4378 total pass (+1). No identity/PII
+  impact, no architecture-guard change. This closes both candidates the
+  2026-07-15 broadened-scope investigation surfaced (`dehashed`,
+  `niamonx`); the six modules read alongside them (`hibp`, `xposed_or_not`,
+  `hudsonrock`, `comb_search`, `psbdmp`, `pwned_passwords`) were confirmed
+  clean — internally consistent `produces()`/extraction/`attack_
+  techniques()`, no fabricated counts, deterministic ordering, no unguarded
+  panics on parsed HTTP bodies. Logged here per the established precedent
+  for this bug class: a contained, single-declaration fix, not a new
+  tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.

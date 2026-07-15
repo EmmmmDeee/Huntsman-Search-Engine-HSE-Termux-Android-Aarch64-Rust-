@@ -4,7 +4,7 @@
 //! source reads as implementation; tests reach private items via `use super::*`.
 
 use super::*;
-use crate::core::entity::{Entity, EntityKind};
+use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::event::EventKind;
 use crate::core::scan::{Scan, Target, TargetKind};
 
@@ -433,6 +433,69 @@ fn list_scans_empty_db_returns_empty_vec() {
 }
 
 #[test]
+fn radar_history_returns_only_radar_sentinel_scans_newest_first() {
+    use crate::core::entity::unix_now;
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    let base = unix_now();
+    // Two ordinary (non-radar) scans that must NEVER appear in radar history,
+    // even though one shares Coordinates/MacAddress kinds with a real value.
+    let mut ordinary_email = Scan::new("ordinary-email", Target::new(TargetKind::Email, "x@y.com"));
+    ordinary_email.started_at = base;
+    store.upsert_scan(&ordinary_email).unwrap();
+    let mut ordinary_coords = Scan::new(
+        "ordinary-coords",
+        Target::new(TargetKind::Coordinates, "-33.8688,151.2093"),
+    );
+    ordinary_coords.started_at = base + 50;
+    store.upsert_scan(&ordinary_coords).unwrap();
+    // The two genuine radar sentinel shapes `radar_scan_spec` produces.
+    let mut radar_gps = Scan::new("radar-gps", Target::new(TargetKind::Coordinates, "0,0"));
+    radar_gps.started_at = base + 100;
+    store.upsert_scan(&radar_gps).unwrap();
+    let mut radar_mac = Scan::new(
+        "radar-mac",
+        Target::new(TargetKind::MacAddress, "00:00:00:00:00:00"),
+    );
+    radar_mac.started_at = base + 200;
+    store.upsert_scan(&radar_mac).unwrap();
+
+    let sweeps = store.radar_history(10).unwrap();
+    assert_eq!(
+        sweeps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["radar-mac", "radar-gps"],
+        "only the two radar-sentinel scans must be returned, newest first: {sweeps:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_respects_limit() {
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    for i in 0..5 {
+        let mut scan = Scan::new(
+            format!("radar-{i}"),
+            Target::new(TargetKind::Coordinates, "0,0"),
+        );
+        scan.started_at = 1000 + i as u64;
+        store.upsert_scan(&scan).unwrap();
+    }
+    let sweeps = store.radar_history(2).unwrap();
+    assert_eq!(sweeps.len(), 2, "should return exactly 2 sweeps");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_empty_db_returns_empty_vec() {
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    let sweeps = store.radar_history(10).unwrap();
+    assert!(sweeps.is_empty());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn upsert_scan_updates_existing() {
     use crate::core::scan::ScanStatus;
     let path = tmp_db();
@@ -815,6 +878,76 @@ fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
         "finalised read uses the table, not events"
     );
     assert_eq!(finalised[0].value, "final@example.com");
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn entities_from_events_canonicalizes_evidence_order_regardless_of_arrival_order() {
+    // C7 (forensic determinism): entities_from_events is the recovery path used
+    // whenever a scan didn't finalise (routine on Termux/Android). The finalised
+    // path already normalises each entity's evidence/tag order before persist
+    // (core/engine/mod.rs, via Entity::canonicalize_order) so concurrent dispatch's
+    // completion-order merging can't leak into the exported result — this proves
+    // the recovery path gives the same guarantee, by folding the SAME two evidence
+    // sources in opposite arrival order across two scans and asserting the
+    // recovered entity's evidence vec is byte-identical either way.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-order-a");
+    insert_scan(&store, "scan-order-b");
+
+    let mut zzz_a = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    zzz_a.add_evidence(Evidence::new("zzz_module", "seen"));
+    let mut aaa_a = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    aaa_a.add_evidence(Evidence::new("aaa_module", "seen"));
+
+    // Scan A: zzz_module's EntityFound event arrives before aaa_module's.
+    for (i, entity) in [zzz_a, aaa_a].into_iter().enumerate() {
+        let mut ev = Event::new("scan-order-a", EventKind::EntityFound { entity });
+        ev.ts = 3000 + i as u64;
+        store.insert_event(&ev).unwrap();
+    }
+
+    // Scan B: the same two sources, reversed (aaa_module arrives first) — its
+    // own entities, scan_id-tagged "scan-order-b", not clones of scan A's (
+    // Entity::merge never updates scan_id, so reusing scan A's entities here
+    // would recover an entity whose scan_id lies about which scan it came
+    // from, masking any future regression where scan_id becomes relevant to
+    // recovery/export behaviour).
+    let mut zzz_b = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-b");
+    zzz_b.add_evidence(Evidence::new("zzz_module", "seen"));
+    let mut aaa_b = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-b");
+    aaa_b.add_evidence(Evidence::new("aaa_module", "seen"));
+    for (i, entity) in [aaa_b, zzz_b].into_iter().enumerate() {
+        let mut ev = Event::new("scan-order-b", EventKind::EntityFound { entity });
+        ev.ts = 3000 + i as u64;
+        store.insert_event(&ev).unwrap();
+    }
+
+    let recovered_a = store.entities_from_events("scan-order-a").unwrap();
+    let recovered_b = store.entities_from_events("scan-order-b").unwrap();
+    assert_eq!(recovered_a.len(), 1);
+    assert_eq!(recovered_b.len(), 1);
+    let sources_a: Vec<&str> = recovered_a[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    let sources_b: Vec<&str> = recovered_b[0]
+        .evidence
+        .iter()
+        .map(|ev| ev.source.as_str())
+        .collect();
+    assert_eq!(
+        sources_a, sources_b,
+        "evidence order must be canonicalised, not leak arrival order: {sources_a:?} vs {sources_b:?}"
+    );
+    assert_eq!(
+        sources_a,
+        ["aaa_module", "zzz_module"],
+        "canonical order is lexicographic by source, per Entity::canonicalize_order"
+    );
 
     let _ = std::fs::remove_file(&path);
 }
@@ -1334,6 +1467,46 @@ fn upsert_entity_cross_scan_merge_preserves_evidence_and_tags() {
     assert!(merged.has_tag("tag-a"), "tag-a must survive merge");
     assert!(merged.has_tag("tag-b"), "tag-b must survive merge");
     let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn upsert_entity_merge_result_is_insertion_order_independent() {
+    // `merge_and_persist_entity`'s slow (ON CONFLICT) path merges the
+    // incoming entity into the already-stored one via `Entity::merge`, whose
+    // `absorb` appends evidence/tags in whatever order the two sides happen
+    // to arrive in (see `Entity::absorb`'s doc comment) — so without a
+    // re-canonicalisation after the merge, which of two same-uid entities
+    // reaches storage FIRST leaks into the persisted evidence/tag order.
+    // `entities_from_events` already re-canonicalises after its own in-memory
+    // merge fold; this pins the same guarantee for the direct storage-merge
+    // path. Insert the same two entities in both orders and require
+    // byte-identical persisted evidence/tag order either way.
+    use crate::core::entity::Evidence;
+    let persisted_order = |first_source: &str, second_source: &str| -> (Vec<String>, Vec<String>) {
+        let path = tmp_db();
+        let store = Store::open(&path).unwrap();
+        insert_scan(&store, "order-scan");
+        let mut a = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "order-scan");
+        a.add_evidence(Evidence::new(first_source, "seen"));
+        a.tag("z-tag");
+        store.upsert_entity(&a).unwrap();
+        let mut b = Entity::new(EntityKind::Email, "dup@x.com", 0.5, "order-scan");
+        b.add_evidence(Evidence::new(second_source, "seen"));
+        b.tag("a-tag");
+        store.upsert_entity(&b).unwrap();
+        let merged = store.get_entity(&a.uid).unwrap().unwrap();
+        let _ = std::fs::remove_file(&path);
+        (
+            merged.evidence.iter().map(|e| e.source.clone()).collect(),
+            merged.tags,
+        )
+    };
+    let forward = persisted_order("mod_a", "mod_b");
+    let reversed = persisted_order("mod_b", "mod_a");
+    assert_eq!(
+        forward, reversed,
+        "persisted evidence/tag order must not depend on which same-uid entity was upserted first"
+    );
 }
 
 // ── upsert_entities_batch ──────────────────────────────────────────────

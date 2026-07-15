@@ -135,6 +135,34 @@ use super::*;
     }
 
     #[test]
+    fn coordinates_carry_the_originating_ip_for_login_ip_recognition() {
+        // The module's own doc comment frames it as `ip_geo`'s "second-source"
+        // corroborating partner, and `build_entities` explicitly filters CDN/
+        // anycast edge IPs because "its geo is the datacenter's, not the
+        // subject's" — this module's coordinate fix is meant to represent the
+        // SUBJECT's location, exactly like `ip_geo`'s. The correlator's shared
+        // `person_login_ip_coords` definition (used by both
+        // `best_au_location_estimate` and `au_location_corroboration`) only
+        // recognises a Coordinates fix as tied to a breach/stealer login IP when
+        // its evidence carries an `ip` attribute equal to that IP — `ip_geo`
+        // stamps it, but this module previously did not, so an ipwho.is fix on
+        // the exact same login IP silently never counted as person-location
+        // corroboration despite being eligible (not hosting/proxy/platform-infra
+        // tagged). The attribute must equal the input IP verbatim.
+        let body = resp(
+            r#"{"success": true, "country_code": "AU", "latitude": -33.8688, "longitude": 151.2093}"#,
+        );
+        let ents = build_entities(&body, "203.0.113.7", "s");
+        let coords = of_kind(&ents, EntityKind::Coordinates).expect("Coordinates entity");
+        assert_eq!(
+            coords.evidence[0].attributes.get("ip").map(String::as_str),
+            Some("203.0.113.7"),
+            "Coordinates evidence must carry the originating IP so \
+             person_login_ip_coords can recognise this as a login-IP fix"
+        );
+    }
+
+    #[test]
     fn unsuccessful_lookup_yields_nothing() {
         let body = resp(r#"{"success": false, "latitude": 1.0, "longitude": 1.0}"#);
         assert!(build_entities(&body, "1.2.3.4", "s").is_empty());

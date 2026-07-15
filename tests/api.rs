@@ -323,6 +323,33 @@ async fn modules_graph_endpoint_returns_kinds_and_edges() {
 }
 
 #[tokio::test]
+async fn modules_health_endpoint_returns_shape_the_spa_panel_expects() {
+    // /api/v1/modules/health (PROBLEM_TREE T2.7 / SOLUTION_TREE
+    // SOL-HEALTH-SIGNAL) — per-module failure-streak data previously
+    // reachable only from `hse doctor`, now surfaced for the SPA panel.
+    // The underlying health state is a process-global shared across every
+    // test in this binary, so this only pins the wire shape (an array plus
+    // a matching count), not specific content.
+    let app = test_app("modules_health");
+    let resp = app.oneshot(get("/api/v1/modules/health")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let modules = json["modules"]
+        .as_array()
+        .expect("modules must be an array");
+    assert_eq!(
+        json["count"].as_u64().unwrap(),
+        modules.len() as u64,
+        "count must match the modules array length"
+    );
+    if let Some(first) = modules.first() {
+        assert!(first.get("name").is_some());
+        assert!(first.get("consecutive_failures").is_some());
+        assert!(first.get("last_success_at").is_some());
+    }
+}
+
+#[tokio::test]
 async fn scan_create_accepts_expansion_strategy_option() {
     // The CLI/API surface for ExpansionStrategy must round-trip through
     // the scan-create endpoint so the SPA can offer it as a setting.

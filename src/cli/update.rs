@@ -478,63 +478,6 @@ mod tests {
     }
 
     #[test]
-    fn commits_behind_and_changelog_lines_reflect_real_git_state() {
-        let base = tempfile::tempdir().unwrap();
-        let origin = base.path().join("origin");
-        std::fs::create_dir(&origin).unwrap();
-        init_git_repo(&origin);
-        commit_file(&origin, "a.txt", "1", "initial commit");
-
-        let local = base.path().join("local");
-        run_git(
-            base.path(),
-            &[
-                "clone",
-                "--quiet",
-                origin.to_str().unwrap(),
-                local.to_str().unwrap(),
-            ],
-        );
-
-        // Origin gains two more commits after the clone — local's tracking
-        // branch (`@{u}`) is now two commits behind until the next fetch.
-        commit_file(&origin, "b.txt", "2", "feat: second commit");
-        commit_file(&origin, "c.txt", "3", "fix: third commit");
-
-        assert_eq!(
-            commits_behind(&local),
-            Some(2),
-            "commits_behind must fetch and count the two new origin commits"
-        );
-        let lines = changelog_lines(&local);
-        assert_eq!(lines.len(), 2, "one line per new commit: {lines:?}");
-        assert!(
-            lines[0].contains("third commit"),
-            "newest commit listed first: {lines:?}"
-        );
-        assert!(
-            lines[1].contains("second commit"),
-            "oldest of the two listed second: {lines:?}"
-        );
-
-        // `commits_behind` only ever fetches — it never advances local `HEAD` —
-        // so a repeated check with no local pull still reports the same 2
-        // behind, not a spuriously-reset 0.
-        assert_eq!(
-            commits_behind(&local),
-            Some(2),
-            "fetching again with no local pull must not change the behind-count"
-        );
-
-        // Once local's HEAD actually advances to match the tracking branch
-        // (what `hse update` does via `install.sh`'s `git pull`), both
-        // functions report the caught-up state.
-        run_git(&local, &["merge", "--ff-only", "@{u}"]);
-        assert_eq!(commits_behind(&local), Some(0));
-        assert!(changelog_lines(&local).is_empty());
-    }
-
-    #[test]
     fn commits_behind_returns_none_without_a_configured_upstream() {
         // A real git repo with no remote/tracking branch — `@{u}` cannot resolve,
         // mirroring the "git absent or remote unreachable" contract in the doc
@@ -573,5 +516,115 @@ mod tests {
                 || std::env::var_os("HOME").is_none(),
             "cache files live under ~/.cache when HOME is set"
         );
+    }
+
+    /// True when a `git` binary is reachable on `PATH` — checked once so
+    /// [`commits_behind_and_changelog_lines_reflect_real_git_state`] can skip
+    /// cleanly on a machine without git installed instead of panicking the
+    /// whole test binary. `commits_behind`/`changelog_lines` themselves treat
+    /// "git absent" as a documented, supported runtime fallback (`None`/
+    /// empty), not an error — the test suite should be no less portable than
+    /// the production code it exercises.
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
+    /// Run `git` with a fixed, isolated author/committer identity and gpg
+    /// signing off, so the fixture is deterministic regardless of the host's
+    /// ambient git config (this sandbox, for one, has `commit.gpgsign=true`
+    /// and a signing key set globally — a real config a CI runner won't
+    /// share, so relying on it either way would be non-portable).
+    fn git_fixture(dir: &Path, args: &[&str]) {
+        let status = std::process::Command::new("git")
+            .args(["-c", "commit.gpgsign=false"])
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "Test User")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "Test User")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .expect("git must be installed to run this test");
+        assert!(status.success(), "git {args:?} failed in {dir:?}");
+    }
+
+    /// `commits_behind`/`changelog_lines` shell out to real `git` — this
+    /// exercises them against a genuine local git-repo pair (a "remote" plus
+    /// a clone with upstream tracking) rather than trusting the subprocess
+    /// wiring untested. No network: the "remote" is a local filesystem path,
+    /// so `git fetch`/`git clone` never leave the temp directory.
+    #[test]
+    fn commits_behind_and_changelog_lines_reflect_real_git_state() {
+        if !git_available() {
+            eprintln!(
+                "skipping commits_behind_and_changelog_lines_reflect_real_git_state: git not installed"
+            );
+            return;
+        }
+        let tmp = tempfile::tempdir().unwrap();
+        let remote = tmp.path().join("remote");
+        let local = tmp.path().join("local");
+        std::fs::create_dir(&remote).unwrap();
+
+        git_fixture(&remote, &["init", "-q", "--initial-branch=main"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "init", "--allow-empty"]);
+        git_fixture(
+            tmp.path(),
+            &[
+                "clone",
+                "-q",
+                remote.to_str().unwrap(),
+                local.to_str().unwrap(),
+            ],
+        );
+
+        // Freshly cloned: local is fully up to date with no new upstream commits.
+        assert_eq!(commits_behind(&local), Some(0));
+        assert!(changelog_lines(&local).is_empty());
+
+        // Advance the "remote" by two commits without touching the clone.
+        std::fs::write(remote.join("a.txt"), "a").unwrap();
+        git_fixture(&remote, &["add", "a.txt"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "add a"]);
+        std::fs::write(remote.join("b.txt"), "b").unwrap();
+        git_fixture(&remote, &["add", "b.txt"]);
+        git_fixture(&remote, &["commit", "-q", "-m", "add b"]);
+
+        assert_eq!(commits_behind(&local), Some(2));
+        let lines = changelog_lines(&local);
+        assert_eq!(lines.len(), 2, "got: {lines:?}");
+        // `git log --oneline` is newest-first; hashes are non-deterministic,
+        // so assert on the subject text only.
+        assert!(lines[0].ends_with("add b"), "got: {lines:?}");
+        assert!(lines[1].ends_with("add a"), "got: {lines:?}");
+
+        // `commits_behind` only ever fetches — it never advances local `HEAD` —
+        // so a repeated check with no local pull still reports the same 2
+        // behind, not a spuriously-reset 0.
+        assert_eq!(
+            commits_behind(&local),
+            Some(2),
+            "fetching again with no local pull must not change the behind-count"
+        );
+
+        // Once local's HEAD actually advances to match the tracking branch
+        // (what `hse update` does via `install.sh`'s `git pull`), both
+        // functions report the caught-up state.
+        git_fixture(&local, &["merge", "-q", "--ff-only", "@{u}"]);
+        assert_eq!(commits_behind(&local), Some(0));
+        assert!(changelog_lines(&local).is_empty());
+
+        // No git repo at all → the documented "git absent/unreachable" fallback.
+        let not_git = tmp.path().join("not_a_repo");
+        std::fs::create_dir(&not_git).unwrap();
+        assert_eq!(commits_behind(&not_git), None);
+        assert!(changelog_lines(&not_git).is_empty());
     }
 }

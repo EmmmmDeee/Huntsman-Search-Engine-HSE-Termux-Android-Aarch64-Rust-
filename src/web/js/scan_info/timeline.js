@@ -32,7 +32,16 @@ export async function renderTimeline(host, id){
   }
   const day = s => esc((s||'').slice(0,10));
   const span = events.length>1 ? ` · ${day(events[0].iso)} → ${day(events[events.length-1].iso)}` : '';
+  // The API already computes this headline (core::timeline::online_tenure +
+  // footprint_recency, same computation the CLI dossier renders) — surface
+  // it instead of discarding data.tenure/data.recency.
+  const tenure = data && data.tenure;
+  const recency = data && data.recency;
+  const tenureLine = tenure
+    ? `<p class="text-muted" style="font-size:12px;margin-bottom:10px">Online since <b>${day(tenure.earliest_iso)}</b> — ${tenure.span_years}y span, ${tenure.breach_count} breach exposure${tenure.breach_count===1?'':'s'}, footprint <b>${esc((recency&&recency.status)||'')}</b>.</p>`
+    : '';
   let html = `<h4 style="margin-top:0"><i class="glyphicon glyphicon-time"></i>&nbsp;Footprint timeline</h4>
+    ${tenureLine}
     <p class="text-muted" style="font-size:12px;margin-bottom:10px"><b>${events.length}</b> dated event${events.length===1?'':'s'}, oldest first${span}.</p>
     <div class="tl">`;
   for (const ev of events){

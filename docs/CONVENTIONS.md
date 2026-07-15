@@ -126,4 +126,4 @@ A change is done when **all** of: `cargo fmt --check`, `cargo clippy
 --all-targets` (zero warnings), `RUSTDOCFLAGS="-D
 rustdoc::broken_intra_doc_links" cargo doc`, and `cargo test` pass — plus, for
 behaviour-touching changes, running the affected surface for real (`hse
-selftest`, or the command itself).
+diagnostics`, or the command itself).

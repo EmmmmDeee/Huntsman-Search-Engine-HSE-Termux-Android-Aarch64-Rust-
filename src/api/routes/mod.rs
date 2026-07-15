@@ -8,6 +8,7 @@
 //! | GET    | `/api/v1/version`                 | `version`                |
 //! | GET    | `/api/v1/modules`                 | `modules_list`           |
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
+//! | GET    | `/api/v1/modules/health`          | `modules_health`         |
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
 //! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
@@ -333,6 +334,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── modules ──
         .route("/modules", get(handlers::modules_list))
         .route("/modules/graph", get(handlers::modules_graph))
+        .route("/modules/health", get(handlers::modules_health))
         .route("/engines/health", get(handlers::engines_health))
         .route("/health/scrapers", get(handlers::scraper_health))
         .route("/stats", get(handlers::stats))
@@ -377,6 +379,11 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // Continuous autonomous radar: a zero-input live session that re-runs only
         // the on-device passive sensors, enumerating ambient signals in real time.
         .route("/radar/live", post(scan_handlers::radar_live))
+        // Historical review of past radar sweeps, sourced from the persisted
+        // `scans` table rather than in-memory session state — survives a
+        // `hse serve` restart, so "what was around me earlier" doesn't
+        // require remembering a session id.
+        .route("/radar/history", get(scan_handlers::radar_history))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import

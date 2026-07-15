@@ -532,6 +532,44 @@ fn print_connection_brokers(entities: &[Entity], relations: &[Relation]) {
     }
 }
 
+/// A near-certain misconfiguration/dead-target signal (PROBLEM_TREE T2.14):
+/// every dispatched module ran and the scan still yielded ZERO entities.
+/// Distinct from the per-module "many modules found nothing for this target
+/// kind" case (normal — a 40-module scan routinely leaves most modules at
+/// zero yield for a given kind, so flooding one line per module would be
+/// noise, not signal, per T2.14's own analysis): this fires at most once per
+/// scan, only when the scan-wide total is zero despite modules actually
+/// having run — never when every module was gate-skipped (`modules_run ==
+/// 0`, e.g. an unsupported target kind excluded every candidate module
+/// before dispatch), which is a different, already-explained situation. Pure
+/// and deterministic so it's testable without a live scan.
+fn total_dead_scan_hint(entities: &[Entity], modules_run: usize) -> Option<String> {
+    (entities.is_empty() && modules_run > 0).then(|| {
+        format!(
+            "{modules_run} module(s) ran and found nothing scan-wide — check the target is \
+             reachable/valid, or this seed kind may be unsupported"
+        )
+    })
+}
+
+/// The dossier's one-line "online since X" headline — the same tenure/
+/// recency computation `api::scan_handlers::intel::scan_timeline` already
+/// returns as `tenure`/`recency` JSON fields, rendered for the CLI. Pure so
+/// the exact wording is testable without a live scan.
+fn tenure_headline(
+    tenure: &crate::core::timeline::OnlineTenure,
+    recency: &crate::core::timeline::FootprintRecency,
+) -> String {
+    format!(
+        "Online since {} — {}y span, {} breach exposure{}, footprint {}",
+        tenure.earliest_iso,
+        tenure.span_years,
+        tenure.breach_count,
+        if tenure.breach_count == 1 { "" } else { "s" },
+        recency.status.as_str()
+    )
+}
+
 fn print_diagnostics(
     scan: &Scan,
     entities: &[Entity],
@@ -546,6 +584,9 @@ fn print_diagnostics(
         .unwrap_or(0)
         .saturating_mul(1000);
     let mut diag = crate::util::diagnostics::analyse(sid, kind, value, wall_ms, entities);
+    if let Some(hint) = total_dead_scan_hint(entities, scan.modules_run) {
+        diag.optimization_hints.insert(0, hint);
+    }
 
     println!("━━━ DIAGNOSTICS ━━━");
     println!();
@@ -712,6 +753,20 @@ fn print_diagnostics(
     let timeline = crate::core::timeline::reconstruct(entities);
     println!("━━━ TIMELINE ({} events) ━━━", timeline.len());
     println!();
+    // Headline first: the same tenure/recency summary the JSON timeline API
+    // already computes and returns (api::scan_handlers::intel::scan_timeline)
+    // but which, until now, only the API surfaced — the CLI dossier
+    // re-listed every event with no "online since X, Nyr span, footprint
+    // status" answer at the top. One computation (`online_tenure` +
+    // `footprint_recency`), now two renderings. `now` is the scan's own
+    // completion time, not a fresh clock read, so a re-rendered dossier for
+    // an old scan reports the recency as of when the data was gathered.
+    if let Some(tenure) = crate::core::timeline::online_tenure(&timeline) {
+        let now = i64::try_from(scan.finished_at.unwrap_or(scan.started_at)).unwrap_or(i64::MAX);
+        let recency = crate::core::timeline::footprint_recency(tenure.latest_ts, now);
+        println!("  {}", tenure_headline(&tenure, &recency));
+        println!();
+    }
     if timeline.is_empty() {
         println!("  No dated events reconstructed from the current entity set.");
     } else {
@@ -918,6 +973,72 @@ mod tests {
             keyed_or_paid_zero_yield_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
+    }
+
+    use super::tenure_headline;
+    use crate::core::timeline::{FootprintRecency, FootprintStatus, OnlineTenure};
+
+    fn tenure(breach_count: usize) -> OnlineTenure {
+        OnlineTenure {
+            earliest_ts: 0,
+            earliest_iso: "2008-01-01".into(),
+            latest_ts: 100,
+            latest_iso: "2025-01-01".into(),
+            span_years: 17,
+            event_count: 9,
+            breach_count,
+        }
+    }
+
+    fn recency(status: FootprintStatus) -> FootprintRecency {
+        FootprintRecency {
+            years_since_latest: 0,
+            status,
+        }
+    }
+
+    #[test]
+    fn tenure_headline_pluralises_breach_count() {
+        assert_eq!(
+            tenure_headline(&tenure(1), &recency(FootprintStatus::Active)),
+            "Online since 2008-01-01 — 17y span, 1 breach exposure, footprint active"
+        );
+        assert_eq!(
+            tenure_headline(&tenure(9), &recency(FootprintStatus::Dormant)),
+            "Online since 2008-01-01 — 17y span, 9 breach exposures, footprint dormant"
+        );
+        assert_eq!(
+            tenure_headline(&tenure(0), &recency(FootprintStatus::Recent)),
+            "Online since 2008-01-01 — 17y span, 0 breach exposures, footprint recent"
+        );
+    }
+
+    use super::total_dead_scan_hint;
+
+    /// The whole point of this hint: every dispatched module ran and the scan
+    /// still yielded nothing at all — a near-certain misconfiguration/dead-
+    /// target signal, distinct from the normal "many modules found nothing
+    /// for this kind" case.
+    #[test]
+    fn total_dead_scan_hint_fires_when_modules_ran_and_found_nothing() {
+        let hint = total_dead_scan_hint(&[], 12).expect("must fire");
+        assert!(hint.contains("12"));
+        assert!(hint.contains("scan-wide"));
+    }
+
+    /// Every candidate module was gate-skipped before dispatch (e.g. an
+    /// unsupported target kind) — a different, already-explained situation,
+    /// not "ran and found nothing". Must not fire.
+    #[test]
+    fn total_dead_scan_hint_is_silent_when_nothing_was_even_dispatched() {
+        assert_eq!(total_dead_scan_hint(&[], 0), None);
+    }
+
+    /// A normal successful scan — must never fire regardless of module count.
+    #[test]
+    fn total_dead_scan_hint_is_silent_when_entities_were_found() {
+        let entities = vec![Entity::new(EntityKind::Email, "a@b.com", 0.5, "s")];
+        assert_eq!(total_dead_scan_hint(&entities, 12), None);
     }
 
     #[test]

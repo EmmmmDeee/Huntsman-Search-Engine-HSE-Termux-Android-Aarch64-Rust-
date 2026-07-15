@@ -17,6 +17,89 @@ use super::*;
     }
 
     #[test]
+    fn build_search_url_appends_search_id_only_when_a_session_is_supplied() {
+        // The session id is threaded in explicitly (T2.11: it used to be read
+        // from a single-slot process-global a concurrent scan could clobber). No
+        // session ⇒ no `search_id`; a session ⇒ exactly that id, url-encoded.
+        let no_sess =
+            build_search_url("https://api", "/breach/search", "email", "a@b.com", 100, None);
+        assert_eq!(
+            no_sess,
+            "https://api/breach/search?email%5B%5D=a%40b.com&page_size=100&sort=indexed_at:desc"
+        );
+        assert!(
+            !no_sess.contains("search_id"),
+            "no session ⇒ no search_id param, got {no_sess}"
+        );
+
+        let with_sess = build_search_url(
+            "https://api",
+            "/breach/search",
+            "email",
+            "a@b.com",
+            100,
+            Some("sess/42"),
+        );
+        // Same base query, plus the session id appended and url-encoded (the `/`
+        // becomes %2F) so a raw session id can never break the query string.
+        assert_eq!(
+            with_sess,
+            "https://api/breach/search?email%5B%5D=a%40b.com&page_size=100&sort=indexed_at:desc&search_id=sess%2F42"
+        );
+    }
+
+    #[test]
+    fn enrich_with_breach_dates_stamps_from_the_rows_own_dbname_only() {
+        let items = vec![
+            json!({"dbname": "poshmark.com", "email": "a@x.com"}),
+            // A dbname with no dbname_info entry — untouched.
+            json!({"dbname": "unknown-db.com", "email": "b@x.com"}),
+            // Already carries its own breach_date — never overridden.
+            json!({"dbname": "poshmark.com", "email": "c@x.com", "breach_date": "1999-01-01"}),
+            // Not an object — passed through unchanged, no panic.
+            json!("not-an-object"),
+        ];
+        let mut dbname_info = std::collections::HashMap::new();
+        dbname_info.insert(
+            "poshmark.com".to_string(),
+            DbMeta {
+                breach_date: Some("2018-05-16".to_string()),
+            },
+        );
+        // wattpad.com has no BreachDate on this response — items from it must
+        // stay unenriched, not stamped with an empty/garbage value.
+        dbname_info.insert("wattpad.com".to_string(), DbMeta { breach_date: None });
+
+        let out = enrich_with_breach_dates(items, &dbname_info);
+
+        assert_eq!(
+            out[0].get("breach_date").and_then(Value::as_str),
+            Some("2018-05-16"),
+            "a row whose dbname has a BreachDate must be stamped"
+        );
+        assert!(
+            out[1].get("breach_date").is_none(),
+            "a row whose dbname has no dbname_info entry must stay unstamped"
+        );
+        assert_eq!(
+            out[2].get("breach_date").and_then(Value::as_str),
+            Some("1999-01-01"),
+            "a row's own pre-existing breach_date must never be overridden"
+        );
+        assert_eq!(out[3], json!("not-an-object"), "non-object rows pass through");
+    }
+
+    #[test]
+    fn enrich_with_breach_dates_is_a_no_op_when_dbname_info_is_empty() {
+        // The common case for non-breach-search endpoints (e.g. stealer search,
+        // which has no dbname_info block at all): items must be returned exactly
+        // as given, not merely "not stamped" but structurally untouched.
+        let items = vec![json!({"dbname": "x.com", "email": "a@x.com"})];
+        let out = enrich_with_breach_dates(items.clone(), &std::collections::HashMap::new());
+        assert_eq!(out, items);
+    }
+
+    #[test]
     fn budget_try_increment_enforces_a_finite_scan_cap() {
         // PROBLEM_TREE T2.11: oathnet's quota gate must be the atomic reserve
         // (`try_increment`/CAS), not the racy `remaining()`-then-`increment()` that
@@ -161,6 +244,35 @@ use super::*;
         let items = vec![json!({"other": "val"}), json!({"dbname": "x"})];
         let top = top_dbnames(&items, 10);
         assert_eq!(top, vec!["x"]);
+    }
+
+    #[test]
+    fn top_dbnames_ties_break_alphabetically_not_by_hashmap_order() {
+        // 10 distinct dbnames, each appearing exactly once — a full tie at
+        // every rank. Without a deterministic tie-break, which 5 of the 10
+        // land in the top-5 cutoff (and in what order) depends on the
+        // process-random `HashMap` iteration order the counts are collected
+        // through, so two identical scans could report a different set of
+        // "top" breach databases for the same subject. With the fix, the
+        // result is always the alphabetically-first 5 — the same every call.
+        let items = vec![
+            json!({"dbname": "zebra"}),
+            json!({"dbname": "yankee"}),
+            json!({"dbname": "xray"}),
+            json!({"dbname": "whiskey"}),
+            json!({"dbname": "victor"}),
+            json!({"dbname": "uniform"}),
+            json!({"dbname": "tango"}),
+            json!({"dbname": "sierra"}),
+            json!({"dbname": "romeo"}),
+            json!({"dbname": "quebec"}),
+        ];
+        let top = top_dbnames(&items, 5);
+        assert_eq!(
+            top,
+            vec!["quebec", "romeo", "sierra", "tango", "uniform"],
+            "a full tie must resolve deterministically (alphabetically), not by HashMap iteration order"
+        );
     }
 
     #[test]
