@@ -1,4 +1,8 @@
 use super::*;
+// `Account` is only constructed by the legacy-string test below; the module
+// body doesn't name it, so import it here (test-only) rather than in `mod.rs`
+// where it would be an unused import in non-test builds.
+use crate::util::gravatar::Account;
 
     #[test]
     fn gravatar_hash_is_md5_of_lowercased_trimmed_email() {

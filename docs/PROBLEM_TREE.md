@@ -2309,15 +2309,34 @@ direct.**
   fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
   test`. **Paired:** `SOLUTION_TREE` SOL-APIKEYPROBE-TRANSPORT-SWALLOW
   `[ ]`→`[x]` — same commit.
-- **`[ ]` T2.124 · `contact_enrich` hand-duplicates sibling `gravatar`
-  module's entire profile-enrichment logic (its own MD5 hash + response
-  types) instead of reusing it.**
-  The duplicated copy has drifted incomplete relative to the original it
-  copied. → **Solution:** have `contact_enrich` call into `gravatar`'s
-  shared enrichment logic instead of maintaining a parallel copy. **P2**.
-  *Queued from the 2026-07-14 comprehensive audit, wave 1 (module
-  categories) — not yet investigated or fixed.* **Paired:**
-  `SOLUTION_TREE` SOL-CONTACTENRICH-DEDUP (new stub).
+- **`[x]` T2.124 · `contact_enrich` hand-duplicated sibling `gravatar`
+  module's Gravatar profile parsing (its own MD5 hash + response types)
+  instead of sharing one definition — and the copy had drifted incomplete.**
+  Confirmed against the code: both modules independently declared the same
+  Gravatar request-hash and response schema. `gravatar/mod.rs` had a full
+  `GravatarResp`/`Entry`/`Name`/`Account`/`UrlEntry`/`PhotoEntry` (parsing the
+  linked-social-`accounts` array and a bool-or-string `verified`, T2.101);
+  `contact_enrich/mod.rs` had a *drifted* `ProfileResp`/`ProfileEntry`/… that
+  **lacked `accounts` entirely** and mis-modelled `photos` as
+  `Option<Vec<..>>`. Two copies of one external API contract meant a live
+  schema change (or a bug fix like T2.101) had to be made twice or silently
+  regress one consumer. → **Resolved** the doctrine-correct way (not the
+  audit's first-guess "call into `gravatar`", which would violate the §1
+  layering rule that modules never import sibling modules): extracted the
+  shared **API contract** — the request hash + the response schema — into a
+  new `util::gravatar` (mirroring `util::ckan` for CKAN), a single superset
+  `Profile`/`Entry`/`Name`/`Account`/`UrlEntry`/`PhotoEntry` + `hash()`. Both
+  modules now deserialise into it and call `hash()`; each keeps its own
+  entity-building. `contact_enrich`'s missing-`accounts` drift is gone by
+  construction — there is one definition. **P2**. *Queued from the 2026-07-14
+  comprehensive audit, wave 1 (module categories).* **Fix:** new
+  `util::gravatar` (+3 contract tests: canonical-hash, full-live-shape-incl-
+  `accounts`/`photos`, bool-or-string `verified`); both modules rewired to
+  import it under their established local names; all pre-existing gravatar +
+  contact_enrich tests unchanged and green (the behaviour-preservation proof).
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
+  doc`/`cargo test`. **Paired:** `SOLUTION_TREE` SOL-CONTACTENRICH-DEDUP
+  `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.125 · `doh_resolver` hand-rolls its own SOA-RNAME-to-email
   decoder instead of reusing `dns_intel`'s, and mishandles decimal
   escapes.**
@@ -17330,3 +17349,29 @@ way, so this specific drift class can't recur silently again.
   fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
   test` — 4869 total pass (+3). **Paired:** `SOLUTION_TREE`
   SOL-APIKEYPROBE-TRANSPORT-SWALLOW `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15** — **Executed T2.124** (queued from the 2026-07-14
+  comprehensive audit, wave 1: `contact_enrich` hand-duplicated sibling
+  `gravatar`'s Gravatar profile parsing — its own MD5 hash + response types —
+  and the copy had drifted incomplete). Read both modules directly: each
+  independently declared the same external Gravatar contract; `gravatar` had
+  the full `Entry`/`Account`/… parsing the linked-social-`accounts` array and
+  the bool-or-string `verified` (T2.101), while `contact_enrich`'s
+  `ProfileEntry` **lacked `accounts` entirely** and mis-modelled `photos` as
+  `Option<Vec<..>>`. Two copies of one API contract = a live schema change or
+  a bug fix (T2.101) had to be made twice or silently regress one consumer.
+  Rejected the audit's first-guess "call into `gravatar`" (would breach §1 —
+  modules never import sibling modules) and instead extracted the shared
+  **contract** — request hash + response schema — into a new `util::gravatar`,
+  exactly as `util::ckan` single-sources the CKAN contract: one superset
+  `Profile`/`Entry`/`Name`/`Account`/`UrlEntry`/`PhotoEntry` + `hash()`. Both
+  modules now import it under their established local names
+  (`GravatarResp`/`Entry`/`gravatar_hash` in `gravatar`;
+  `ProfileResp`/`ProfileEntry`/`gravatar_hash` in `contact_enrich`) and keep
+  their own entity-building; the drift is gone by construction. **Behaviour-
+  preservation proof:** every pre-existing gravatar (15) + contact_enrich (14)
+  test passes unchanged against the rewired code; the new `util::gravatar`
+  carries 3 contract tests (canonical hash `0bc83cb5…`, full-live-shape incl.
+  `accounts`+`photos`, bool-or-string `verified`). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4872
+  total pass (+3). **Paired:** `SOLUTION_TREE` SOL-CONTACTENRICH-DEDUP
+  `[ ]`→`[x]`, §5 — same commit.

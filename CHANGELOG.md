@@ -407,6 +407,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   total is now 161.
 
 ### Changed
+- **Internal: the `gravatar` and `contact_enrich` modules now share one
+  definition of the Gravatar profile API contract (the request hash + the
+  response schema) instead of each hand-declaring its own copy.** Both
+  modules independently parsed the same external Gravatar shape, and
+  `contact_enrich`'s copy had drifted incomplete — it lacked the linked-
+  social-`accounts` array `gravatar` parses and mis-modelled `photos`. The
+  shared contract now lives once in a new `util::gravatar` module (mirroring
+  `util::ckan` for CKAN): a single superset response schema plus the MD5
+  `hash()` helper, which both modules import. Deduplicating removes the drift
+  by construction and means a future Gravatar schema change (or a parse fix
+  like the earlier bool-or-string `verified` handling) lands in one place for
+  both consumers. No visible behavior change (every pre-existing gravatar and
+  contact_enrich test passes unchanged).
 - **Internal: `netlas`'s response parser no longer declares a `count` field
   that could never hold real data.** A sweep for the same "parsed but never
   read" pattern behind three recent evidentiary-disclosure fixes (paste

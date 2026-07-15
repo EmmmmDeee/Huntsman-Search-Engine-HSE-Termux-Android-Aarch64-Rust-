@@ -24,6 +24,7 @@ pub mod freq;
 pub mod geo;
 pub mod geohash;
 pub mod geometry;
+pub mod gravatar;
 pub mod hashcat;
 pub mod html;
 pub mod http;
