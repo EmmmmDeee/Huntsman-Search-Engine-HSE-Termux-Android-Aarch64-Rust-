@@ -477,6 +477,22 @@ pub async fn system_debug_bundle(
     // One lock for body + count so the "N lines" header can't disagree with the
     // dumped body (a line landing between two separate ring locks).
     let (log_dump, log_lines) = crate::util::log_capture::dump_with_count();
+    // Update / build-freshness snapshot, read once under a poison-safe lock
+    // (mirrors `update_handlers::get_status`), preserving the `Error` payload.
+    let (update_commits_behind, update_last_checked, update_phase) = {
+        let info = s
+            .update_info
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let phase = match &info.phase {
+            crate::api::UpdatePhase::Idle => "idle".to_string(),
+            crate::api::UpdatePhase::Checking => "checking".to_string(),
+            crate::api::UpdatePhase::Applying => "applying".to_string(),
+            crate::api::UpdatePhase::Restarting => "restarting".to_string(),
+            crate::api::UpdatePhase::Error(msg) => format!("error: {msg}"),
+        };
+        (info.commits_behind, info.last_checked, phase)
+    };
     let inputs = crate::cli::export::SystemDebugInputs {
         selftest,
         scans,
@@ -484,6 +500,9 @@ pub async fn system_debug_bundle(
         scraper_events_checked,
         log_dump,
         log_lines,
+        update_commits_behind,
+        update_last_checked,
+        update_phase,
     };
     // Render off the reactor too: it reads the log ring + spawns `curl` (via the
     // environment fingerprint) — both blocking — and builds a potentially large
