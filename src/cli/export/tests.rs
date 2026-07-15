@@ -751,6 +751,8 @@ fn healthy_issue_inputs() -> IssueInputs<'static> {
         scrapers_yield_drifted: vec![],
         failed_scans: 0,
         quota_exhausted_providers: vec![],
+        update_error: None,
+        update_commits_behind: None,
     }
 }
 
@@ -824,6 +826,35 @@ fn detect_issues_flags_an_exhausted_provider_quota_as_a_warning() {
 }
 
 #[test]
+fn detect_issues_flags_a_stale_build_as_a_warning_pointing_at_update() {
+    // Grounded in a real operator debug bundle: three module errors, every one
+    // already fixed upstream, on a build with no way to say "you're behind".
+    let mut inp = healthy_issue_inputs();
+    inp.update_commits_behind = Some(12);
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].severity, SEV_WARNING);
+    assert_eq!(issues[0].category, "update");
+    assert!(issues[0].detail.contains("12 commit"));
+    assert!(issues[0].detail.contains("hse update"));
+    // A commits_behind of 0 (up to date) must NOT raise an issue.
+    let mut fresh = healthy_issue_inputs();
+    fresh.update_commits_behind = Some(0);
+    assert!(detect_issues(&fresh).is_empty());
+}
+
+#[test]
+fn detect_issues_flags_a_failed_self_update_as_critical() {
+    let mut inp = healthy_issue_inputs();
+    inp.update_error = Some("git pull rejected: local changes");
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].severity, SEV_CRITICAL);
+    assert_eq!(issues[0].category, "update");
+    assert!(issues[0].detail.contains("git pull rejected"));
+}
+
+#[test]
 fn detect_issues_sorts_critical_before_warning() {
     let mut inp = healthy_issue_inputs();
     inp.curl_present = false; // 1 critical
@@ -862,6 +893,9 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
         scraper_events_checked: 0,
         log_dump: "TRACE hse::marker unique-log-line-42\n".into(),
         log_lines: 1,
+        update_commits_behind: Some(3),
+        update_last_checked: 1_700_000_000,
+        update_phase: "idle".into(),
     };
     let out = render_system_debug_bundle(&inputs);
 
@@ -869,6 +903,7 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
         "HUNTSMAN SYSTEM DEBUG BUNDLE",
         "── DETECTED ISSUES",
         "── ENVIRONMENT",
+        "── UPDATE STATUS ──",
         "── DISABLED CAPABILITIES",
         "── VALIDATION (SELF-TEST) ──",
         "── MODULE HEALTH",
@@ -881,6 +916,8 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
     ] {
         assert!(out.contains(header), "missing section header: {header}");
     }
+    // The stale-build fixture (3 commits behind) surfaces the update prompt.
+    assert!(out.contains("3 commit(s) BEHIND"));
     // The self-diagnosing verdict surfaces the failing self-test check.
     assert!(out.contains("[CRITICAL]"), "verdict must flag the failure");
     assert!(out.contains("temp db open failed"));
@@ -902,6 +939,9 @@ fn system_bundle_reports_all_clear_when_healthy() {
         scraper_events_checked: 0,
         log_dump: String::new(),
         log_lines: 0,
+        update_commits_behind: Some(0),
+        update_last_checked: 0,
+        update_phase: "idle".into(),
     };
     let out = render_system_debug_bundle(&inputs);
     // NOTE: the DETECTED ISSUES verdict is deliberately NOT asserted here — the

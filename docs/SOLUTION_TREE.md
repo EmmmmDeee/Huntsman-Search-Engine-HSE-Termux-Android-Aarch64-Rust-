@@ -3828,13 +3828,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   detect-existing-install path with a reproducible over-install run that
   preserves DB/keys/settings and upgrades the binary/schema in place** →
   **T2.167**. Queued — see `PROBLEM_TREE` T2.167.
-- **`[ ]` SOL-BUNDLE-ENRICH · Add the four verification-confirmed diagnostic
+- **`[~]` SOL-BUNDLE-ENRICH · Add the four verification-confirmed diagnostic
   surfaces the T2.163 bundle omits — key-pool/dead-key health, real on-disk DB
   integrity + WAL, update phase, and cell-tower GEOINT dataset — each with a
   pure `detect_issues` arm so a silently-dead key / corrupt DB / failed update
-  / empty cell-DB reaches the headline verdict** → **T2.168**. Queued —
-  confirmed by the T2.163 adversarial verification workflow; see `PROBLEM_TREE`
-  T2.168.
+  / empty cell-DB reaches the headline verdict** → **T2.168**. **Update-status
+  leg delivered 2026-07-15** (UPDATE STATUS section + failed-update-CRITICAL /
+  stale-build-WARNING arms), prioritised by a real operator debug bundle whose
+  three deterministic module errors were all already fixed upstream — the
+  bundle just couldn't say "you're on an old build". Key-pool, DB-integrity,
+  and cell-DB legs remain. See `PROBLEM_TREE` T2.168.
 - **`[x]` SOL-OATHNET-FULL-PAGINATION · Raise OathNet `page_size` to the
   documented per-endpoint maximum and implement real cursor-based
   pagination** → **T2.151**. Delivered 2026-07-14: Breach Search page_size
@@ -12133,3 +12136,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   T2.164–T2.167 (SOL-UI-SIMPLIFY-DEBUG / SOL-CLI-CONSOLIDATE /
   SOL-SCAN-MAX-POWER / SOL-INSTALL-IDEMPOTENT) rather than sprawl this commit.
   **Paired:** `PROBLEM_TREE` T2.163 `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-BUNDLE-ENRICH update-status leg delivered**
+  (`[ ]`→`[~]`), driven by a REAL operator debug bundle (Termux aarch64,
+  v1.13.0, `username=rhino.ryno23`). Investigated the bundle's own failures
+  first per the loop's real-evidence priority: its 4 module errors were
+  `see_know` `curl exited 6`, `stackoverflow_user` HTTP-400 "Invalid filter",
+  `bluesky_user` HTTP-400 "Profile not found", `social_probe` timeout — and
+  the three deterministic ones were **all already fixed in current `main`**
+  (`.icu`→`.eu` T2.83; hard-coded SO filter removed; Bluesky 400 treated as a
+  clean negative). The operator was simply on a stale build with no signal
+  saying so. Added an UPDATE STATUS section (commits-behind / phase /
+  last-checked, threaded from `AppState.update_info` through
+  `SystemDebugInputs`) + two pure `detect_issues` arms — failed self-update →
+  CRITICAL, `commits_behind > 0` → WARNING pointing at `hse update` and noting
+  errors may already be fixed upstream. +2 unit arms, render + integration
+  section guards extended, real-binary smoke confirmed. Gate green — 4883 lib
+  + 103 api pass. Remaining legs (key-pool, DB integrity, cell-DB) keep the
+  node `[~]`. **Paired:** `PROBLEM_TREE` T2.168 `[ ]`→`[~]` — same commit.

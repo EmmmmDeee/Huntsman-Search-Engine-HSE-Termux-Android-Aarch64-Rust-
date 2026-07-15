@@ -28,7 +28,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   from a single file. Loopback-only (the log ring can contain scan targets /
   PII) and secret-free (key names only, never values). The same renderer backs
   a future CLI parity path and shares its environment fingerprint with the
-  per-scan `debug.txt` bundle.
+  per-scan `debug.txt` bundle. The bundle also carries an **UPDATE STATUS**
+  section and, when the build is behind upstream or a self-update has failed,
+  the DETECTED ISSUES verdict says so — pointing a lagging operator at `hse
+  update` and noting that module errors they are seeing may already be fixed in
+  a newer build (motivated by a real operator debug bundle whose three
+  deterministic module errors were each already fixed upstream).
 - **Live radar now has a historical-review surface: `GET /api/v1/radar/history`
   plus a "Radar history" panel on the Live page.** Previously every radar
   sweep (`hse radar` / the web "Activate Live Radar" button / continuous

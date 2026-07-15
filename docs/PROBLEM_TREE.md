@@ -3971,9 +3971,26 @@ direct.**
   detect-existing-install path with a reproducible over-install run. **P2.**
   *Not yet investigated.* **Paired:** `SOLUTION_TREE` SOL-INSTALL-IDEMPOTENT
   (new stub).
-- **`[ ]` T2.168 · Enrich the system self-diagnosis bundle (T2.163) with four
+- **`[~]` T2.168 · Enrich the system self-diagnosis bundle (T2.163) with four
   more diagnostic surfaces an adversarial verification pass confirmed as
   high-value repair signals it currently omits.**
+  **Update-status leg DELIVERED 2026-07-15**, prioritised because a **real
+  operator debug bundle** (a Termux aarch64 `username=rhino.ryno23` scan,
+  v1.13.0) made the case concrete: its self-audit flagged 4 module errors
+  (`see_know` `curl exited 6`, `stackoverflow_user` HTTP-400 "Invalid filter
+  specified", `bluesky_user` HTTP-400 "Profile not found", `social_probe`
+  timeout) — and **every one of the three deterministic errors was already
+  fixed in current `main`** (`see_know` `.icu`→`.eu` default T2.83;
+  `stackoverflow_user` hard-coded `filter=!9Z(-x.hbL` removed; `bluesky_user`
+  400-not-found treated as a clean negative). The operator was running a stale
+  build and nothing in the bundle said so. Added an **UPDATE STATUS** section
+  (commits-behind / phase / last-checked, threaded from `AppState.update_info`
+  through `SystemDebugInputs`) and two pure `detect_issues` arms: a failed
+  self-update (`UpdatePhase::Error`) → CRITICAL, and `commits_behind > 0` →
+  WARNING "build is N commit(s) behind — run `hse update`; module errors you
+  are seeing may already be fixed in a newer build". *Remaining legs (still
+  `[~]`):* key-pool/dead-key health, real on-disk DB integrity+WAL, and
+  cell-tower GEOINT dataset.
   A 4-lens verification workflow over the T2.163 delivery (each finding
   re-verified against real code) confirmed the bundle silently misses: (1)
   **key-pool / dead-key health** — when a service's keys are all
@@ -17525,3 +17542,30 @@ way, so this specific drift class can't recur silently again.
   integrity+WAL, update phase, cell-DB health) as **T2.168** — rather than
   sprawl this commit. **Paired:** `SOLUTION_TREE` SOL-SYSTEM-DEBUG-BUNDLE
   `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15** — **Executed T2.168 (update-status leg)** driven by a **real
+  operator debug bundle** (Termux aarch64, v1.13.0, `username=rhino.ryno23`,
+  96 entities, self-audit A/97). Investigated the bundle's concrete failures
+  first (the loop's real-evidence priority): its self-audit `module-errors`
+  finding named 4 erroring modules; read each against current `main` and
+  confirmed all THREE deterministic ones were **already fixed** — `see_know`
+  `curl exited 6` was the `.icu` carrier-DNS-filtering failure fixed by the
+  `.icu`→`.eu` default (T2.83), `stackoverflow_user` HTTP-400 "Invalid filter"
+  was the hard-coded `filter=!9Z(-x.hbL` since removed, `bluesky_user` HTTP-400
+  "Profile not found" is now treated as a clean negative via
+  `fetch_json_or_absent`; only `social_probe` timeout was transient mobile
+  network. Root cause: the operator ran a **stale build reproducing
+  already-fixed bugs, with nothing in the bundle telling them so.** Closed that
+  self-debugging gap: added an UPDATE STATUS section (commits-behind / phase /
+  last-checked, threaded from `AppState.update_info` through
+  `SystemDebugInputs`, poison-safe lock mirroring `update_handlers::get_status`)
+  and two pure `detect_issues` arms — failed self-update → CRITICAL,
+  `commits_behind > 0` → WARNING "run `hse update`; module errors you are
+  seeing may already be fixed in a newer build". **Tests:** +2 `detect_issues`
+  arms (stale-build WARNING incl. the up-to-date=0 no-issue case; failed-update
+  CRITICAL) + UPDATE STATUS added to the render + integration section-presence
+  guards. **Genuine execution:** the real `hse serve` binary curled on loopback
+  renders the section ("unknown / idle / never" on a fresh server, no false
+  warning). Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc/
+  `cargo test` — 4883 lib + 103 api pass. T2.168 stays `[~]` (key-pool, DB
+  integrity, cell-DB legs remain). **Paired:** `SOLUTION_TREE` SOL-BUNDLE-ENRICH
+  `[ ]`→`[~]`, §5 — same commit.

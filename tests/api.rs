@@ -3185,6 +3185,7 @@ async fn system_debug_bundle_returns_the_diagnostic_artifact_on_loopback() {
         "HUNTSMAN SYSTEM DEBUG BUNDLE",
         "── DETECTED ISSUES",
         "── ENVIRONMENT",
+        "── UPDATE STATUS ──",
         "── DISABLED CAPABILITIES",
         "── VALIDATION (SELF-TEST) ──",
         "── MODULE HEALTH",

@@ -637,6 +637,12 @@ pub(crate) struct IssueInputs<'a> {
     /// keyed-provider budgets whose daily/session quota is exhausted right now —
     /// the reason a keyed module returns nothing until the quota resets.
     pub quota_exhausted_providers: Vec<&'a str>,
+    /// the self-update error message, if the update lifecycle is in its `Error`
+    /// phase (a failed auto-update leaves the binary stale).
+    pub update_error: Option<&'a str>,
+    /// commits behind upstream (`Some(n>0)` ⇒ a newer build exists) — surfaced
+    /// because a stale build may be reproducing already-fixed bugs.
+    pub update_commits_behind: Option<u64>,
 }
 
 /// Join every health signal into one worst-first problem list. **Pure** (no
@@ -728,6 +734,28 @@ pub(crate) fn detect_issues(inp: &IssueInputs) -> Vec<DetectedIssue> {
             ),
         });
     }
+    // A failed self-update leaves the binary stale — surface it loudly.
+    if let Some(msg) = inp.update_error {
+        issues.push(DetectedIssue {
+            severity: SEV_CRITICAL,
+            category: "update",
+            detail: format!("self-update FAILED — the binary is stale: {msg}"),
+        });
+    }
+    // Running behind upstream: a stale build may be reproducing bugs already
+    // fixed in a newer release. Grounded in a real operator debug bundle whose
+    // three module errors (`stackoverflow_user` invalid-filter, `bluesky_user`
+    // 400-not-found, `see_know` `.icu` DNS) were each already fixed upstream —
+    // the bundle just had no way to say "you are on an old build; update".
+    if let Some(behind) = inp.update_commits_behind.filter(|n| *n > 0) {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "update",
+            detail: format!(
+                "build is {behind} commit(s) behind upstream — run `hse update`; module errors you are seeing may already be fixed in a newer build"
+            ),
+        });
+    }
     issues.sort_by(|a, b| {
         severity_rank(a.severity)
             .cmp(&severity_rank(b.severity))
@@ -759,6 +787,16 @@ pub(crate) struct SystemDebugInputs {
     pub scraper_events_checked: usize,
     pub log_dump: String,
     pub log_lines: usize,
+    /// Commits the running binary is behind upstream, or `None` if never
+    /// checked / offline. A build that is behind may be hitting bugs already
+    /// fixed upstream — the exact situation a real operator debug bundle showed
+    /// (three module errors, every one already fixed in a newer build).
+    pub update_commits_behind: Option<u64>,
+    /// Unix seconds of the last successful upstream check, `0` if never.
+    pub update_last_checked: u64,
+    /// The update lifecycle phase, stringified — `"idle"`/`"checking"`/
+    /// `"applying"`/`"restarting"`, or `"error: <msg>"` preserving the payload.
+    pub update_phase: String,
 }
 
 /// Render the consolidated **system self-diagnosis bundle**: one artifact that
@@ -870,6 +908,10 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             .collect(),
         failed_scans,
         quota_exhausted_providers: quota_exhausted.clone(),
+        // The handler stringifies the update phase as `"error: <msg>"` for the
+        // `Error` variant; recover the message for the verdict.
+        update_error: inp.update_phase.strip_prefix("error: "),
+        update_commits_behind: inp.update_commits_behind,
     });
     let (crit, warn) = issues.iter().fold((0usize, 0usize), |(c, w), i| {
         if i.severity == SEV_CRITICAL {
@@ -896,6 +938,22 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
     // ── 1. Environment fingerprint (build / host / module set / key presence) ──
     // Reuse the `curl_present` already computed for the verdict — one spawn, not two.
     s.push_str(&super::environment::render_environment(curl_present));
+
+    // ── 1a. Update / build freshness — is this binary current? ──
+    let _ = writeln!(s, "\n── UPDATE STATUS ──");
+    let behind = match inp.update_commits_behind {
+        Some(0) => "up to date".to_string(),
+        Some(n) => format!("{n} commit(s) BEHIND upstream — run `hse update`"),
+        None => "unknown (never checked / offline)".to_string(),
+    };
+    let _ = writeln!(s, "  commits_behind: {behind}");
+    let _ = writeln!(s, "  phase         : {}", inp.update_phase);
+    let last = if inp.update_last_checked == 0 {
+        "never".to_string()
+    } else {
+        crate::util::timefmt::compact_utc(inp.update_last_checked)
+    };
+    let _ = writeln!(s, "  last_checked  : {last}");
 
     // ── 1b. Disabled capabilities (operator toggles) — the single most direct
     //        answer to "why didn't module/feature X run?" that isn't a bug: an
