@@ -33,7 +33,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   the DETECTED ISSUES verdict says so — pointing a lagging operator at `hse
   update` and noting that module errors they are seeing may already be fixed in
   a newer build (motivated by a real operator debug bundle whose three
-  deterministic module errors were each already fixed upstream).
+  deterministic module errors were each already fixed upstream). It also
+  carries a **KEY POOL** section (value-free per-service active/untested/
+  rate-limited/exhausted/invalid/revoked counts + mean health) and flags a
+  **fully-dead key pool** — a service whose keys are all non-active, whose
+  keyed modules silently return nothing — in the DETECTED ISSUES verdict,
+  pointing at `hse keys` to top up or rotate.
 - **Live radar now has a historical-review surface: `GET /api/v1/radar/history`
   plus a "Radar history" panel on the Live page.** Previously every radar
   sweep (`hse radar` / the web "Activate Live Radar" button / continuous

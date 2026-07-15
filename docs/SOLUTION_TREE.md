@@ -12153,3 +12153,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   section guards extended, real-binary smoke confirmed. Gate green — 4883 lib
   + 103 api pass. Remaining legs (key-pool, DB integrity, cell-DB) keep the
   node `[~]`. **Paired:** `PROBLEM_TREE` T2.168 `[ ]`→`[~]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-BUNDLE-ENRICH key-pool leg delivered** (the
+  verification workflow's #1 completeness finding). Added a KEY POOL section +
+  a `detect_issues` dead-pool WARNING so a service whose keys are all dead
+  (zero active AND zero untested) reaches the headline verdict — the "largest
+  invisible failure class", since a dead-key module returns `Ok(empty)` with no
+  error. Value-free (reuses `summarize_pool`, mapped to a renderer-owned
+  `KeyPoolSummary`; `cli::export` never touches key material). A real `hse
+  serve` run caught a false positive (an UNTESTED key flagged "ALL DEAD");
+  fixed by excluding untested keys from the dead test (`is_dead`), with a
+  regression test, re-confirmed on the binary. +2 unit tests, render +
+  integration guards extended. Gate green — 4885 lib + 103 api pass. DB
+  integrity+WAL and cell-DB legs remain, node stays `[~]`. **Paired:**
+  `PROBLEM_TREE` T2.168 — same commit.

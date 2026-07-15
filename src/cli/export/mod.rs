@@ -17,7 +17,7 @@ mod tests;
 
 pub(crate) use dossier::write_full_dossier;
 pub(crate) use renderers::{
-    SystemDebugInputs, render_debug_bundle, render_full, render_system_debug_bundle,
+    KeyPoolSummary, SystemDebugInputs, render_debug_bundle, render_full, render_system_debug_bundle,
 };
 
 use crate::core::error::{Error, Result};

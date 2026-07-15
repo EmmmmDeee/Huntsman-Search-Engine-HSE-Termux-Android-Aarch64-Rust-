@@ -1,7 +1,7 @@
 use super::dossier::join_or_dash;
 use super::renderers::{
-    IssueInputs, SEV_CRITICAL, SEV_WARNING, SystemDebugInputs, detect_issues, render_csv,
-    render_debug_bundle, render_full, render_gexf, render_json, render_report,
+    IssueInputs, KeyPoolSummary, SEV_CRITICAL, SEV_WARNING, SystemDebugInputs, detect_issues,
+    render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_report,
     render_system_debug_bundle,
 };
 use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
@@ -753,6 +753,7 @@ fn healthy_issue_inputs() -> IssueInputs<'static> {
         quota_exhausted_providers: vec![],
         update_error: None,
         update_commits_behind: None,
+        dead_key_services: vec![],
     }
 }
 
@@ -844,6 +845,56 @@ fn detect_issues_flags_a_stale_build_as_a_warning_pointing_at_update() {
 }
 
 #[test]
+fn detect_issues_flags_a_fully_dead_key_pool_as_a_warning() {
+    // The "largest invisible failure class": a service with keys but 0 active
+    // returns Ok(empty) with no error, so only the pool can surface it.
+    let mut inp = healthy_issue_inputs();
+    inp.dead_key_services = vec![("seeknow", 2), ("hibp", 1)];
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 2);
+    assert!(issues.iter().all(|i| i.severity == SEV_WARNING));
+    assert!(issues.iter().all(|i| i.category == "key-pool"));
+    let seeknow = issues
+        .iter()
+        .find(|i| i.detail.contains("seeknow"))
+        .unwrap();
+    assert!(seeknow.detail.contains("all 2 pooled key"));
+    assert!(seeknow.detail.contains("hse keys"));
+}
+
+#[test]
+fn key_pool_untested_key_is_not_counted_dead() {
+    // Regression (found by a real `hse serve` run): an UNTESTED key has simply
+    // not been probed yet — it may work on first use — so a pool holding only
+    // untested keys is NOT dead and must not be flagged.
+    let untested = KeyPoolSummary {
+        service: "shodan".into(),
+        total: 1,
+        active: 0,
+        untested: 1,
+        rate_limited: 0,
+        exhausted: 0,
+        invalid: 0,
+        revoked: 0,
+        avg_health: 0.97,
+    };
+    assert!(!untested.is_dead(), "an untested-only pool is not dead");
+    // But an all-exhausted/invalid pool with no untested key IS dead.
+    let dead = KeyPoolSummary {
+        service: "seeknow".into(),
+        total: 2,
+        active: 0,
+        untested: 0,
+        rate_limited: 0,
+        exhausted: 2,
+        invalid: 0,
+        revoked: 0,
+        avg_health: 0.05,
+    };
+    assert!(dead.is_dead());
+}
+
+#[test]
 fn detect_issues_flags_a_failed_self_update_as_critical() {
     let mut inp = healthy_issue_inputs();
     inp.update_error = Some("git pull rejected: local changes");
@@ -893,6 +944,17 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
         scraper_events_checked: 0,
         log_dump: "TRACE hse::marker unique-log-line-42\n".into(),
         log_lines: 1,
+        key_pool: vec![KeyPoolSummary {
+            service: "seeknow".into(),
+            total: 2,
+            active: 0,
+            untested: 0,
+            rate_limited: 1,
+            exhausted: 1,
+            invalid: 0,
+            revoked: 0,
+            avg_health: 0.1,
+        }],
         update_commits_behind: Some(3),
         update_last_checked: 1_700_000_000,
         update_phase: "idle".into(),
@@ -910,6 +972,7 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
         "── SEARCH-ENGINE LIVENESS",
         "── SCRAPER HEALTH",
         "── PROVIDER QUOTAS",
+        "── KEY POOL",
         "── RECENT SCANS",
         "── RECENT LOGS",
         "── SOURCE FILES",
@@ -918,6 +981,9 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
     }
     // The stale-build fixture (3 commits behind) surfaces the update prompt.
     assert!(out.contains("3 commit(s) BEHIND"));
+    // The fully-dead seeknow pool is marked and reaches the verdict.
+    assert!(out.contains("ALL DEAD"));
+    assert!(out.contains("all 2 pooled key"));
     // The self-diagnosing verdict surfaces the failing self-test check.
     assert!(out.contains("[CRITICAL]"), "verdict must flag the failure");
     assert!(out.contains("temp db open failed"));
@@ -939,6 +1005,7 @@ fn system_bundle_reports_all_clear_when_healthy() {
         scraper_events_checked: 0,
         log_dump: String::new(),
         log_lines: 0,
+        key_pool: vec![],
         update_commits_behind: Some(0),
         update_last_checked: 0,
         update_phase: "idle".into(),

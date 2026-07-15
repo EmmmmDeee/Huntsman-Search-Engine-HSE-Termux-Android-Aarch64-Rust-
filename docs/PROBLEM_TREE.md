@@ -3988,9 +3988,22 @@ direct.**
   through `SystemDebugInputs`) and two pure `detect_issues` arms: a failed
   self-update (`UpdatePhase::Error`) → CRITICAL, and `commits_behind > 0` →
   WARNING "build is N commit(s) behind — run `hse update`; module errors you
-  are seeing may already be fixed in a newer build". *Remaining legs (still
-  `[~]`):* key-pool/dead-key health, real on-disk DB integrity+WAL, and
-  cell-tower GEOINT dataset.
+  are seeing may already be fixed in a newer build". **Key-pool/dead-key leg
+  DELIVERED 2026-07-15** (the workflow's #1 completeness finding, the "largest
+  invisible failure class"): a KEY POOL section (value-free per-service
+  active/untested/rate-limited/exhausted/invalid/revoked counts + mean health,
+  reusing `keys_status`' `summarize_pool`, mapped in the handler to a renderer-
+  owned `KeyPoolSummary` so `cli::export` never touches key material) + a pure
+  `detect_issues` arm: a service with keys but ZERO active AND zero untested
+  (`KeyPoolSummary::is_dead`) → WARNING "all N pooled key(s) non-active — its
+  keyed modules return nothing silently; top up or rotate (`hse keys`)". A
+  keyed module short-circuits on a dead key (`see_know` on `is_key_invalid()`/
+  exhausted budget) returning `Ok(empty)` with no error, so the pool is the
+  only place the silent death is visible. **A real `hse serve` run caught a
+  false positive** — an UNTESTED key (not yet probed, may work on first use)
+  was flagged "ALL DEAD"; fixed by excluding untested from the dead test, with
+  a regression test. *Remaining legs (still `[~]`):* real on-disk DB
+  integrity+WAL, and cell-tower GEOINT dataset.
   A 4-lens verification workflow over the T2.163 delivery (each finding
   re-verified against real code) confirmed the bundle silently misses: (1)
   **key-pool / dead-key health** — when a service's keys are all
@@ -17569,3 +17582,25 @@ way, so this specific drift class can't recur silently again.
   `cargo test` — 4883 lib + 103 api pass. T2.168 stays `[~]` (key-pool, DB
   integrity, cell-DB legs remain). **Paired:** `SOLUTION_TREE` SOL-BUNDLE-ENRICH
   `[ ]`→`[~]`, §5 — same commit.
+- **2026-07-15** — **Executed T2.168 (key-pool/dead-key leg)** — the
+  verification workflow's #1 completeness finding, the "largest invisible
+  failure class": a keyed module whose keys are all dead returns `Ok(empty)`
+  with no error and no failure streak (`see_know` short-circuits on
+  `is_key_invalid()`/exhausted budget), so it never reaches the error-based
+  health arms — the key pool is the only place the silent death shows. Added a
+  KEY POOL section (value-free per-service active/untested/rate-limited/
+  exhausted/invalid/revoked + mean health, reusing the api layer's
+  `summarize_pool`, mapped in the handler to a renderer-owned `KeyPoolSummary`
+  so `cli::export` stays self-contained and never touches key material) + a
+  pure `detect_issues` arm flagging a service with keys but zero active AND
+  zero untested (`is_dead`) as a WARNING pointing at `hse keys`. **Genuine
+  execution caught a real bug:** a first `hse serve` smoke flagged an UNTESTED
+  `shodan` key (health 0.97, not yet probed) as "ALL DEAD" — corrected the
+  dead test to exclude untested keys (an untested key may work on first use),
+  with a regression test, and re-confirmed on the real binary (0 fully dead,
+  clean verdict). **Tests:** +2 (`detect_issues` dead-pool WARNING;
+  `is_dead` untested-vs-exhausted regression) + KEY POOL added to the render +
+  integration section guards. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc/`cargo test` — 4885 lib + 103 api pass. T2.168 stays
+  `[~]` (DB integrity+WAL and cell-DB legs remain). **Paired:** `SOLUTION_TREE`
+  SOL-BUNDLE-ENRICH (still `[~]`), §5 — same commit.
