@@ -1017,6 +1017,89 @@ fn people_search_name_extraction_requires_on_target_relation() {
 }
 
 #[test]
+fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision() {
+    // Live-reproduced from a real "Brett Lawnton" scan's debug bundle
+    // (2026-07-15): "Lawnton" is both the subject's surname AND a real
+    // Brisbane, QLD suburb (postcode 4501). Every real-estate/reverse-lookup
+    // page ABOUT the suburb satisfies `result_names_the_subject` (the surname
+    // string appears, because it IS the suburb name) even though none of these
+    // pages are actually about the subject. ~99 such hits pushed the resulting
+    // "Lawnton, QLD" address entity to corroboration=99, class=VERIFIED in the
+    // real scan. All evidence on this path shares one literal source string
+    // ("search_engines"), so `source_count()` is always 1 and `c_effective()`
+    // equals the raw (capped) `confidence` — repetition alone must never be
+    // able to cross `Classification::VERIFIED_MIN` (0.75).
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..99).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the suburb-collision address must still be extracted (it's real AU place data)");
+    assert!(
+        addr.corroboration >= 50,
+        "sanity: this test must actually exercise heavy repetition, got corroboration={}",
+        addr.corroboration
+    );
+    assert!(
+        addr.c_effective() < crate::core::entity::Classification::VERIFIED_MIN,
+        "99 same-source-type hits, all about the SUBURB not the subject, must not reach \
+         Verified via pure repetition: c_effective={} corroboration={}",
+        addr.c_effective(),
+        addr.corroboration
+    );
+}
+
+#[test]
+fn address_corroboration_counts_each_result_once_despite_two_extracted_variants() {
+    // Found in review of the fix above: `extract_addresses_from_text` deliberately
+    // emits BOTH a bare "City, STATE" and a more specific postcode-qualified
+    // "City, STATE 1234" for the SAME underlying locality when a snippet's text
+    // contains both (its own pass 3: the postcode form is "a more-specific
+    // variant of a matched City, STATE"), and `normalise_address_key`
+    // deliberately collapses both to the same dedup key. Without a per-result
+    // dedup, ONE search result yielding both variants would be counted as TWO
+    // independent corroborations (create + immediate self-merge) — silently
+    // doubling `corroboration` and the confidence-bump count for a single real
+    // hit. Two results, each with a snippet that yields both variants, must
+    // produce EXACTLY corroboration=2 (one per real result), not 4.
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..2).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the address must still be extracted");
+    assert_eq!(
+        addr.corroboration, 2,
+        "2 real search results, each yielding a bare + postcode-qualified variant of the \
+         SAME address, must count as 2 corroborations, not 4 (one per variant per result): {addr:?}"
+    );
+    // The postcode-qualified (more informative) variant must be the one kept.
+    assert!(
+        addr.value.to_lowercase().contains("4501")
+            || addr.raw_value.to_lowercase().contains("4501"),
+        "the postcode-qualified variant should be preferred when both are present: {addr:?}"
+    );
+}
+
+#[test]
 fn captcha_page_detection() {
     assert!(is_captcha_page(
         "<html><body>captcha-delivery.com script</body></html>"

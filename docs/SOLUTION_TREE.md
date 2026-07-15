@@ -11642,3 +11642,61 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
   failures (4718 lib tests, +5). **Paired:** `PROBLEM_TREE` T2.156 (new)
   + T2.157 (new), both `[ ]`→`[x]` + §8 — same commit.
+- **2026-07-15** — **T2.161 closed** (address-corroboration cap allowing a
+  surname/placename collision to reach `class=VERIFIED`). Diagnosed from a
+  real operator-supplied `hse export --format debug` bundle, not a
+  synthetic scenario — a live "Brett Lawnton" scan surfaced "Lawnton, QLD"
+  (a real Brisbane suburb sharing the subject's surname) at
+  `corroboration=99`/`class=VERIFIED`, sourced entirely from real-estate/
+  reverse-lookup pages about the SUBURB. Root cause: `search_engines`'
+  address-merge path (`build.rs`) directly mutates the entity's base
+  `confidence` field per repeated hit, capped at `corr_cap`; every piece of
+  evidence on this path shares the literal source string `"search_engines"`
+  so `Entity::source_count()` is always 1 and `c_effective()` equals the raw
+  capped `confidence` with no distinct-source discount — the safeguard the
+  rest of the codebase relies on (`Entity::c_effective`'s documented
+  "single source-type shouldn't inflate confidence" design) never applied
+  here because `corr_cap` for a postcode-qualified address was 0.75, exactly
+  `Classification::VERIFIED_MIN`. Fixed by lowering `corr_cap` to 0.70
+  (bare city+state unchanged at 0.65) and correcting the surrounding
+  comment, which had already drifted from the real cap value. New
+  regression test `address_corroboration_cannot_reach_verified_on_a_
+  surname_placename_collision`, red/green-verified against a temporary
+  revert of the cap. Two other candidates the same debug bundle raised were
+  investigated and ruled out as non-bugs: the scan's `status: Running` was
+  a mid-flight export (not a hung process — a `module_start`/`module_done`+
+  `module_error` accounting check confirmed the only unterminated dispatch
+  was the scan's own still-in-progress final `search_engines` round), and
+  `see_know`'s "curl exited 6" DNS errors were traced to the already-fixed
+  `.icu`→`.eu` domain bug via the bundle's own environment fingerprint
+  (781 files/208,702 LOC — confirms the device's installed binary predates
+  both that fix and this session's `origin/main` merge).
+  Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
+  `cargo doc`/`cargo test` — 4848 total pass (+1). **Paired:**
+  `PROBLEM_TREE` T2.161 (new) — same commit.
+- **2026-07-15 (cont'd)** — **T2.162 closed** (address-merge loop
+  double-counting one search result's two extracted address variants, in
+  the same `search_engines::build.rs` code path as T2.161). Surfaced by a
+  GitHub Copilot automated review comment on the T2.161 pull request (#236)
+  — verified for real rather than taken on faith: `extract_addresses_
+  from_text`'s pass 3 deliberately emits both a bare "City, STATE" and a
+  postcode-qualified "City, STATE 1234" for one locality when a single
+  result's text contains both, and `normalise_address_key` deliberately
+  strips the postcode so both variants share one dedup key — correct for
+  merging a bare mention in one result with a postcode-qualified mention in
+  a DIFFERENT result, but wrong when both variants come from the SAME
+  result: the corroboration loop counted that one real hit twice (two
+  `corroboration` increments, two confidence bumps). Confirmed with a
+  temporary debug print that a real two-variant snippet does trigger this.
+  Fixed with a per-result, insertion-ordered `Vec<(String, String)>` dedup
+  immediately before the corroboration loop — not a `HashMap`, preserving
+  `docs/CONVENTIONS.md` §5's determinism-by-construction — collapsing each
+  result to one variant per normalised key, preferring the postcode-
+  qualified (more-informative) form. New regression test
+  `address_corroboration_counts_each_result_once_despite_two_extracted_
+  variants` (2 results × 2 variants each must yield `corroboration=2`, not
+  4), red/green-verified by temporarily disabling the dedup and confirming
+  the test failed at `corroboration=4`. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
+  4849 total pass (+1). **Paired:** `PROBLEM_TREE` T2.162 (new) — same
+  commit.

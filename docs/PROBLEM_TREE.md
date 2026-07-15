@@ -3546,6 +3546,52 @@ direct.**
   structure exactly — `Ok(None)` now means only "no complete scan exists";
   any SQL or deserialize failure on the matched row propagates as `Err`.
   **P1** (a real wrong-result bug, not just a missing diagnostic).
+- **`[x]` T2.161 · `search_engines`' address-corroboration cap let pure
+  repetition of the same weak signal reach `class=VERIFIED`** — found from a
+  real operator-supplied debug bundle (`hse export --format debug`), not a
+  synthetic scenario. A live "Brett Lawnton" scan surfaced "Lawnton, QLD" (a
+  real Brisbane suburb sharing the subject's surname) at
+  `corroboration=99`/`class=VERIFIED`, sourced entirely from real-estate/
+  reverse-lookup pages about the SUBURB, not the subject — every such page
+  satisfied `result_names_the_subject` because the surname string IS the
+  suburb name. All evidence on this path shares the literal source string
+  `"search_engines"`, so `Entity::source_count()` is always 1 and
+  `c_effective()` equals the raw capped `confidence` — but `corr_cap` for a
+  postcode-qualified address was 0.75, exactly `Classification::VERIFIED_MIN`,
+  contradicting the surrounding comment's own stated intent ("prevent pure
+  suburb mentions reaching Probable via repetition alone"; the comment's own
+  cited cap value, 0.60, had also drifted from the real 0.75 in code). →
+  **Solution:** lowered `corr_cap` to 0.70 for postcode-qualified addresses
+  (bare city+state unchanged at 0.65) so same-source-type repetition can
+  land at most in Probable, never Verified; corrected the doc comment.
+  **P1** (a real false-positive at the tool's highest confidence tier).
+- **`[x]` T2.162 · `search_engines`' address-merge loop double-counted a
+  single search result when one snippet yielded two address variants** —
+  found by a GitHub Copilot automated review comment on the T2.161 fix's PR,
+  then independently confirmed against real extractor behaviour (not taken
+  on faith). `extract_addresses_from_text` deliberately emits BOTH a bare
+  "City, STATE" and a more-specific postcode-qualified "City, STATE 1234"
+  for the SAME locality when a single result's title+snippet text contains
+  both (its own pass 3: the postcode form is documented as "a more-specific
+  variant of a matched City, STATE"), and `normalise_address_key`
+  deliberately strips trailing postcode tokens so both variants share one
+  dedup key — by design, so a bare mention in one result and a
+  postcode-qualified mention in a DIFFERENT result correctly merge into one
+  entity. But without a per-result dedup step, the SAME result's two
+  variants also merged with each other in the corroboration loop, counting
+  one real search hit as two independent corroborations (two `+0.10`-class
+  confidence bumps, two `corroboration` increments) — inflating confidence
+  faster than genuine independent evidence would, compounding the T2.161
+  risk rather than eliminating it. → **Solution:** added a per-result,
+  insertion-ordered `Vec`-based dedup (not a `HashMap`, per
+  `docs/CONVENTIONS.md` §5's determinism-by-construction rule) immediately
+  before the corroboration loop, collapsing to at most one variant per
+  normalised key per result and preferring the postcode-qualified
+  (more-informative) form when both are present. New regression test
+  `address_corroboration_counts_each_result_once_despite_two_extracted_
+  variants`, red/green-verified (2 results each yielding 2 variants must
+  count as `corroboration=2`, not 4). **P1** (real confidence-inflation bug
+  in the same code path as T2.161, same root evidentiary concern).
 - **`[x]` T2.18 · `core::exposure`'s `DOB_KEYS` missing Wikidata's own DOB
   spelling** — the Exposure Index's `sensitive_component` scores a "date of
   birth" disclosure (+7 of the 30-point Sensitive PII ceiling) only when an
@@ -16630,3 +16676,48 @@ way, so this specific drift class can't recur silently again.
   panics on parsed HTTP bodies. Logged here per the established precedent
   for this bug class: a contained, single-declaration fix, not a new
   tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-15** — **Executed T2.161** (address-corroboration cap allowing a
+  surname/placename collision to reach `class=VERIFIED`). Diagnosed from a
+  real operator-supplied `hse export --format debug` bundle (a live scan of
+  "Brett Lawnton" — the surname coincides with a real Brisbane, QLD suburb).
+  Before assuming a bug, ruled out two other candidates the same bundle
+  raised: the scan's `status: Running` was just a mid-flight export (a
+  `module_start`/`module_done`+`module_error` count mismatch traced to the
+  scan's own final, still-in-flight `search_engines` dispatch, not a hung
+  process), and the `see_know` "curl exited 6" DNS errors were traced to the
+  already-fixed `.icu`→`.eu` domain bug (the bundle's own environment
+  fingerprint — 781 files/208,702 LOC — confirmed the installed binary
+  predates that fix and this session's merge, so no new code change was
+  needed there). The address bug was real: fixed `corr_cap` from 0.75 to
+  0.70 for postcode-qualified addresses in `search_engines::build.rs`
+  (`Classification::VERIFIED_MIN` is 0.75; every evidence record on this
+  path shares one literal source string, so `c_effective()` equals the raw
+  capped `confidence` with no distinct-source discount). New regression
+  test `address_corroboration_cannot_reach_verified_on_a_surname_placename_
+  collision`, red/green-verified (fails at the old 0.75 cap with
+  `c_effective=0.75`, passes at 0.70). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4848
+  total pass (+1). **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-15** — **Executed T2.162** (address-merge loop double-counting a
+  single search result's two extracted address variants). Surfaced by a
+  GitHub Copilot automated review comment on T2.161's PR (#236), not
+  self-discovered — verified for real before acting on it: re-read
+  `extract_addresses_from_text`'s pass 3 and `normalise_address_key`'s doc
+  comment, confirmed via a temporary debug print that a genuine two-result
+  fixture (`"Located in Lawnton, QLD 4501"`) really does extract both
+  `"Lawnton, QLD"` and `"Lawnton, QLD 4501"` per result, and that the
+  existing dedup-by-key was firing across the two variants of one result as
+  well as across results. Fixed with a per-result, insertion-ordered
+  `Vec<(String, String)>` dedup in `search_engines::build.rs` immediately
+  before the corroboration loop (deliberately not a `HashMap` — CONVENTIONS
+  §5 determinism-by-construction), collapsing each result to at most one
+  variant per normalised address key, preferring the postcode-qualified
+  form. Verified with the same red/green methodology as T2.161: temporarily
+  disabled the new dedup, confirmed the new test failed
+  (`corroboration=4` instead of `2`), restored the fix, confirmed green.
+  New regression test `address_corroboration_counts_each_result_once_
+  despite_two_extracted_variants`. Gate green: fmt (one pre-existing
+  rustfmt-style diff in the new test's `assert!` line-wrap, corrected)/
+  clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4849 total pass (+1). **Paired:** `SOLUTION_TREE` §5 — same
+  commit.
