@@ -2117,14 +2117,45 @@ direct.**
   `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test`.
   **Paired:** `SOLUTION_TREE` SOL-NINE-SOCIAL-FAKE-404 `[ ]`→`[x]` — same
   commit.
-- **`[ ]` T2.118 · `asic_persons`/`asic_banned_orgs`/`asic_business_names`
+- **`[x]` T2.118 · `asic_persons`/`asic_banned_orgs`/`asic_business_names`
   hand-roll their own fetch instead of the shared `util::ckan::Response`.**
   Hand-rolling drops CKAN's `success` field and swallows every real
   failure that the shared response type would have surfaced. → **Solution:**
   migrate all three modules onto `util::ckan::Response`. **P2**. *Queued
-  from the 2026-07-14 comprehensive audit, wave 1 (module categories) —
-  not yet investigated or fixed.* **Paired:** `SOLUTION_TREE`
-  SOL-ASIC-CKAN-HANDROLL (new stub).
+  from the 2026-07-14 comprehensive audit, wave 1 (module categories).*
+  **Fixed (2026-07-15):** confirmed by direct read that each of the three
+  declared a local `CkanResp { result: CkanResult { records } }` that omits
+  the `success` field entirely, and an `async fn ckan_query(…) -> Vec<Map>`
+  that collapsed a transport error, a non-2xx status, a body-read failure,
+  AND a CKAN application error (`success: false`, which CKAN returns with
+  HTTP 200 on a bad resource id / offline datastore / rate-limit) all into
+  the same empty `Vec` a genuine "not in this register" also produces — the
+  exact loss the shared `util::ckan::Response` (whose own doc comment already
+  calls this out) exists to prevent, and which the sibling `acnc_charities`
+  already handles correctly. Migrated all three onto `util::ckan::{Response,
+  datastore_search_url, field_str}` + `util::http::fetch_json`, mirroring
+  `acnc_charities`' idiom: `fetch_json` propagates transport/status/parse
+  failures via `?`, a `success == Some(false)` envelope becomes an explicit
+  `Error::module`, and a genuine empty `result` stays the honest clean miss.
+  `asic_persons` fires three concurrent register queries (banned/advisers/
+  credit) via `tokio::join!`, so — recognising it as the same shape as
+  `niamonx` (T2.114) — its `process()` folds the three `Result`s through
+  `ModuleResult::or_hard_failure`: real evidence from any register that DID
+  answer is always kept, only an all-fail-with-nothing outcome surfaces as an
+  error. Each module's local `field()` now delegates to the shared `field_str`
+  (CONVENTIONS §4) while preserving its own dataset-specific sentinel filter
+  (`"null"`, plus `"Not available"` for `asic_banned_orgs`); the
+  hand-rolled URL builder is replaced by `datastore_search_url` (single-sourced,
+  injection-safe). Dropped the now-needless `UA_BROWSER` header (the sibling
+  `acnc_charities` already reaches the same data.gov.au host via `fetch_json`'s
+  default client). **Empirically validated against the real API:** all three
+  modules' live `#[ignore]` tests, run against the real data.gov.au ASIC
+  datastore (reachable this cycle), pass end-to-end through the migrated path
+  (`asic_*_live_*` — 3/3), and a direct `curl` confirmed the live response is
+  `{"success": true, "result": {"records":[…]}}` — the exact shape the shared
+  `Response` parses. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test`. **Paired:** `SOLUTION_TREE`
+  SOL-ASIC-CKAN-HANDROLL `[ ]`→`[x]` — same commit.
 - **`[ ]` T2.119 · `au_unclaimed`, the sole remaining QLD CKAN data source,
   swallows any transport/parse failure into a clean empty result.**
   The module's own doc self-documents this as intentional, but it means a
@@ -17111,3 +17142,39 @@ way, so this specific drift class can't recur silently again.
   hardcoded-URL `process()` has no hermetic instance-level red/green, so the
   contract is guarded once at the primitive). **Paired:** `SOLUTION_TREE`
   SOL-NINE-SOCIAL-FAKE-404 `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.118** (three ASIC modules —
+  `asic_persons`, `asic_banned_orgs`, `asic_business_names` — hand-rolling a
+  `success`-less CKAN `CkanResp` + a swallow-to-empty `ckan_query` instead of
+  the shared `util::ckan::Response`). A reuse-and-honesty fix in one: verified
+  each hand-rolled type omits the `success` field and collapses transport
+  errors, non-2xx statuses, body-read failures, and CKAN application errors
+  (`success:false`, returned with HTTP 200) all into an empty `Vec`
+  indistinguishable from "not in this register" — precisely what the shared
+  `Response` (and the sibling `acnc_charities` that already uses it) exists to
+  prevent. Migrated all three onto `util::ckan::{Response, datastore_search_url,
+  field_str}` + `util::http::fetch_json`, mirroring `acnc_charities`' idiom;
+  `asic_persons`' three concurrent register queries fold through the
+  `niamonx`/T2.114 `ModuleResult::or_hard_failure` so partial success is
+  preserved and only a total outage errors. Each local `field()` now delegates
+  to the shared `field_str` (CONVENTIONS §4) while keeping its dataset-specific
+  `"null"`/`"Not available"` sentinel filter — the one reachable difference
+  (`field_str` renders a JSON bool where the old `field()` dropped it) cannot
+  occur in these flat text/numeric CKAN columns. Replaced the hand-rolled URL
+  builder with the injection-safe `datastore_search_url`, and dropped the
+  now-needless `UA_BROWSER` header (`acnc_charities` already reaches the same
+  data.gov.au host on the default client). **Empirically validated with
+  genuine execution, not just unit tests:** a direct `curl` confirmed the live
+  data.gov.au response is `{"success": true, "result": {"records":[…]}}` (the
+  exact shape the shared `Response` parses), and all three modules' live
+  `#[ignore]` tests — run against the real ASIC datastore, reachable this
+  cycle — pass end-to-end through the migrated fetch path (3/3). No new unit
+  test: the migration rests entirely on already-tested shared contracts
+  (`util::ckan::tests::response_captures_application_error` pins `success:false`
+  parsing; `fetch_json_propagates_a_non_2xx_status_as_err` pins the transport/
+  status propagation) plus the real live end-to-end validation — the same
+  shared-layer-guard rationale as T2.115/T2.117, and matching the sibling
+  `acnc_charities` precedent that introduced this exact idiom. Gate green:
+  fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4864 total pass (net 0; a pure reuse refactor onto tested shared
+  code). **Paired:** `SOLUTION_TREE` SOL-ASIC-CKAN-HANDROLL `[ ]`→`[x]`, §5 —
+  same commit.
