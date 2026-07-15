@@ -2,7 +2,7 @@
 
 Huntsman Search Engine (HSE) is an evidentiary OSINT/GEOINT/NETINT engine.
 Every claim it emits will be acted on. False confidence is worse than missing
-coverage. These two binding rules exist to keep the engine trustworthy.
+coverage. These three binding rules exist to keep the engine trustworthy.
 
 ---
 
@@ -94,6 +94,59 @@ at face value.
 
 Ask via a direct question **before** work, not after. Once you understand the
 intent, execute it as stated. Do not hedge or reinterpret in execution.
+
+---
+
+## RULE 3: Automatically Harvest All API Keys
+
+**Every API key pattern recognized by HSE must be automatically detected,
+extracted, and banked whenever HSE processes any data — whether from breach
+dumps, stealer logs, response bodies, or any other source. No key detection is
+optional; no pattern goes unharvested.**
+
+### Why
+
+An API key is not just a credential — **which provider it belongs to is itself
+intelligence.** A key for Shodan, Dehashed, Hunter, OathNet, SeekNow, or any
+OSINT provider found in a victim's data says the holder **runs OSINT**. They are
+a fellow practitioner, an investigator, a researcher, or an adversary doing
+reconnaissance. That makes the key a first-class OSINT **pivot**: from the
+key's provider you learn the holder's tradecraft, tooling, and likely intent.
+
+Missing a harvestable key is missing a lead. Every pattern, every time, always.
+
+### What It Means
+
+- **Automatic extraction:** Every module that processes external data (breach
+  results, API responses, HTML, JSON, logs, emails, etc.) must call the key
+  harvester for API key patterns.
+- **No skipping:** Do not decide "this field isn't where keys usually live" or
+  "this provider is unlikely to include API keys". Extract from every data
+  point.
+- **Recognise 80+ patterns:** HSE's key catalogue covers Shodan, Hunter, Dehashed,
+  IntelX, OathNet, SeekNow, WiGLE, HIBP, VirusTotal, Censys, ZoomEye, and many
+  others. Use the authoritative pattern set in `core::keys::PATTERNS` or the
+  equivalent live pattern catalogue.
+- **Bank every find:** Each harvested key is stored with its provider
+  classification, source context (module, endpoint, timestamp), and usage status.
+  The key becomes a dossier pivot — an entity in its own right.
+- **Surface intent signals:** A harvested key's provider category (breach-leak,
+  attack-surface, threat-intel, email-people, ip-geo, domain-cert, social-link-analysis)
+  tags the holder's operational profile. Wire this signal into correlations so
+  the operator knows "this entity was running Shodan recon" or "this email was
+  in a stealer log alongside a hunter.io key".
+
+### When You Cannot Harvest
+
+If an API key pattern exists but HSE does not yet recognize it:
+
+1. Document it plainly: `// Unrecognised API key pattern found in response:
+   <description>. Pattern not yet in HSE's catalogue.`
+2. Log its presence (not its value) with source context.
+3. Add the pattern to the roadmap so it gets integrated in the next cycle.
+
+Never silently drop a key because HSE doesn't recognize it yet. Make the
+absence visible.
 
 ---
 
@@ -411,4 +464,4 @@ responsibility for misuse.
 
 ---
 
-**Both rules are binding. Follow them both. If you cannot, the work is not ready.**
+**All three rules are binding. Follow them all. If you cannot, the work is not ready.**
