@@ -166,6 +166,16 @@ pub trait StoragePort: Send + Sync {
         Ok(())
     }
 
+    /// Run the backing store's integrity check, returning the check rows —
+    /// exactly `["ok"]` for a healthy database, or one or more problem
+    /// descriptions for a corrupt one. Default `["ok"]` for backends without a
+    /// verifier (test doubles); the SQLite store runs `PRAGMA integrity_check`.
+    /// Surfaced by the system debug bundle so on-disk corruption — invisible to
+    /// every other health signal — reaches the DETECTED ISSUES verdict.
+    fn integrity_check(&self) -> Result<Vec<String>> {
+        Ok(vec!["ok".to_string()])
+    }
+
     /// Bound the `events` table: delete rows older than `max_age_secs` and
     /// any beyond the newest `max_rows`. Returns the number pruned. Default
     /// no-op so non-`Store` ports (e.g. test doubles) need not implement it;

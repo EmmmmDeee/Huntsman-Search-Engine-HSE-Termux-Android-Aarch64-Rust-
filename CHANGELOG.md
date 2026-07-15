@@ -38,7 +38,11 @@ versions can include breaking changes; patch versions are bug-fix-only.
   rate-limited/exhausted/invalid/revoked counts + mean health) and flags a
   **fully-dead key pool** — a service whose keys are all non-active, whose
   keyed modules silently return nothing — in the DETECTED ISSUES verdict,
-  pointing at `hse keys` to top up or rotate.
+  pointing at `hse keys` to top up or rotate. A **STORAGE HEALTH** section
+  checks the real on-disk database (`PRAGMA integrity_check`) and the `-wal`
+  size, raising a CRITICAL on corruption and a WARNING on a runaway WAL — the
+  self-test only checks a throwaway temp DB, so real-store corruption had no
+  surface before.
 - **Live radar now has a historical-review surface: `GET /api/v1/radar/history`
   plus a "Radar history" panel on the Live page.** Previously every radar
   sweep (`hse radar` / the web "Activate Live Radar" button / continuous
