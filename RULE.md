@@ -2,14 +2,16 @@
 
 Huntsman Search Engine (HSE) is an evidentiary OSINT/GEOINT/NETINT engine.
 Every claim it emits will be acted on. False confidence is worse than missing
-coverage. These three binding rules exist to keep the engine trustworthy.
+coverage. These three rules are **binding without exception, without restriction,
+and without compromise**. They are absolute.
 
 ---
 
 ## RULE 1: Nothing Ships Unless Backed by Verifiable Evidence
 
 **Nothing — code, tests, docs, data, or any finding the engine emits — ships
-unless it is backed by verifiable evidence from an authoritative source.**
+unless it is backed by verifiable evidence from an authoritative source.
+No exceptions. No workarounds. No assumptions.**
 
 ### Why
 
@@ -68,7 +70,7 @@ One look at the authoritative spec would have caught it. That look is now mandat
 
 **When given a directive, the latest (most recent) instruction supersedes all
 prior instructions. It must be followed exactly as stated, without omission,
-reinterpretation, or negotiation.**
+reinterpretation, or negotiation. No hedging. No second-guessing. No exceptions.**
 
 ### Why
 
@@ -102,7 +104,8 @@ intent, execute it as stated. Do not hedge or reinterpret in execution.
 **Every API key pattern recognized by HSE must be automatically detected,
 extracted, and banked whenever HSE processes any data — whether from breach
 dumps, stealer logs, response bodies, or any other source. No key detection is
-optional; no pattern goes unharvested.**
+optional; no pattern goes unharvested. No exceptions. Every pattern. Every time.
+Always.**
 
 ### Why
 
@@ -464,4 +467,6 @@ responsibility for misuse.
 
 ---
 
-**All three rules are binding. Follow them all. If you cannot, the work is not ready.**
+**All three rules are absolute and binding without exception, restriction, or
+compromise. They are not guidelines, not suggestions, not aspirations. They are
+laws. Follow them all, without fail. If you cannot, the work does not ship.**
