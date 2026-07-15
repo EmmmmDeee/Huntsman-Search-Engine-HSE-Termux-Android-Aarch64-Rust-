@@ -34,6 +34,11 @@ pub enum KeyPlacement {
     Header(&'static str),
     BasicAuth,
     BearerAuth,
+    /// A header carrying a custom scheme prefix directly followed by the key
+    /// (header name, prefix) — e.g. OpenSanctions' `Authorization: ApiKey
+    /// <key>`. Distinct from `BearerAuth`, which is hardcoded to the literal
+    /// `bearer` scheme and can't express a different prefix word.
+    HeaderPrefixed(&'static str, &'static str),
 }
 
 static SERVICE_DEFS: &[ServiceDef] = &[
@@ -339,6 +344,18 @@ static SERVICE_DEFS: &[ServiceDef] = &[
         category: "identity",
         test_url: "https://api.opencorporates.com/v0.4/companies/search?q=test",
         key_header: KeyPlacement::QueryParam("api_token"),
+        rate_limit_reset_secs: 60,
+    },
+    // OpenSanctions — sanctions/PEP/watchlist screening (OFAC, UN, EU, DFAT
+    // AU, 400+ sources). /statements is free to call (no quota charge) but
+    // still requires a valid key, so it validates without spending a paid
+    // /match query.
+    ServiceDef {
+        name: "opensanctions",
+        env_var: "HUNTSMAN_OPENSANCTIONS_KEY",
+        category: "identity",
+        test_url: "https://api.opensanctions.org/statements",
+        key_header: KeyPlacement::HeaderPrefixed("Authorization", "ApiKey "),
         rate_limit_reset_secs: 60,
     },
     // SeekNow (see-know.eu) — direct OathNet competitor with 5000 daily

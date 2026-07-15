@@ -52,6 +52,17 @@ pub const PROXY: &str = "proxy";
 pub const VPN: &str = "vpn";
 pub const VULNERABLE: &str = "vulnerable";
 
+// Sanctions / regulatory risk
+/// Listed on a sanctions list (OFAC SDN, UN, EU, DFAT, …) — carried by a
+/// `Person`/`Organisation` entity an `opensanctions`-style module escalates.
+pub const SANCTIONED: &str = "sanctioned";
+/// Politically Exposed Person — an official/political role that elevates
+/// corruption/bribery risk under AML/CTF due-diligence conventions.
+pub const PEP: &str = "pep";
+/// Debarred from public contracting (World Bank, IDB, and similar
+/// multilateral debarment lists).
+pub const DEBARRED: &str = "debarred";
+
 // Identity
 pub const DERIVED: &str = "derived";
 pub const SOCIAL_PROFILE: &str = "social-profile";

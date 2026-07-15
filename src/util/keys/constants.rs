@@ -49,6 +49,7 @@ pub const KNOWN_KEYS: &[&str] = &[
     "HUNTSMAN_TROVE_KEY",
     // OSINT orchestration APIs
     "HUNTSMAN_SEON_KEY",
+    "HUNTSMAN_OPENSANCTIONS_KEY",
     "HUNTSMAN_EPIEOS_KEY",
     "HUNTSMAN_PROXYCURL_KEY",
     "HUNTSMAN_OPENCORP_KEY",
@@ -114,6 +115,9 @@ pub fn signup_hint(env: &str) -> Option<&'static str> {
         }
         "HUNTSMAN_PROXYCURL_KEY" => "Proxycurl — paid, https://nubela.co/proxycurl",
         "HUNTSMAN_SEON_KEY" => "SEON — free trial at https://seon.io",
+        "HUNTSMAN_OPENSANCTIONS_KEY" => {
+            "OpenSanctions — free trial/nonprofit key at https://www.opensanctions.org/api/"
+        }
         "HUNTSMAN_EPIEOS_KEY" => "Epieos — https://epieos.com",
         "HUNTSMAN_SEEKNOW_KEY" => "SeekNow (see-know.eu) — https://see-know.eu",
         "HUNTSMAN_OATHNET_KEY" => "OathNet — https://oathnet.org",

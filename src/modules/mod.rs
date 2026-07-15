@@ -118,6 +118,7 @@ pub mod oathnet_pro;
 pub mod onyphe;
 pub mod opencellid;
 pub mod opencorporates;
+pub mod opensanctions;
 pub mod osintcat;
 pub mod overpass;
 pub mod payid;
@@ -399,6 +400,7 @@ pub fn registry() -> Vec<Arc<dyn Module>> {
         Arc::new(chain_intel::ChainIntel),
         // OSINT orchestration API modules
         Arc::new(seon::Seon),
+        Arc::new(opensanctions::OpenSanctions),
         Arc::new(keybase::Keybase),
         Arc::new(emailrep::EmailRep),
         Arc::new(epieos::Epieos),

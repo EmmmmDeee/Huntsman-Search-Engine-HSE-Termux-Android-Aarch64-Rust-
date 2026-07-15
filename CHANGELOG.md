@@ -11,6 +11,21 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **New module: `opensanctions` — sanctions, politically-exposed-person
+  (PEP), and watchlist screening for a full name.** Screens against OFAC's
+  SDN list, the UN Security Council list, the EU consolidated list, UK
+  OFSI, and — notably — Australia's own DFAT Consolidated List, which has
+  no public real-time API of its own; querying OpenSanctions' aggregated
+  index brings Australian sanctions coverage in automatically alongside
+  400+ other global sources, instead of needing a bespoke scraper for the
+  periodic XLSX DFAT publishes. Only a definitive match is turned into a
+  finding — a weak, fuzzy name-only near-miss is never reported as a
+  sanctions/PEP hit, since a false accusation here is a serious mistake.
+  A match carries which list(s) it came from, the person's listed
+  political/official role where known, and is tagged distinctly when the
+  hit is on Australia's own list. Key-gated (free trial/nonprofit signup
+  available); company/organisation sanctions screening is planned as a
+  follow-up.
 - **`hse doctor` now reports per-module health: which sources are actively
   failing this process, and when each last succeeded.** Previously there
   was no way to see a scraper's health short of watching logs — a source

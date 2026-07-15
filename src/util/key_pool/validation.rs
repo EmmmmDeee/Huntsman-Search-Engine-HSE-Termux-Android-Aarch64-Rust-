@@ -99,6 +99,10 @@ async fn validate_against_endpoint(sdef: &ServiceDef, key: &str) -> bool {
             let h = format!("Authorization: bearer {key}");
             cmd.args(["-H", &h, "--", sdef.test_url]);
         }
+        KeyPlacement::HeaderPrefixed(header, prefix) => {
+            let h = format!("{header}: {prefix}{key}");
+            cmd.args(["-H", &h, "--", sdef.test_url]);
+        }
     }
 
     cmd.kill_on_drop(true);

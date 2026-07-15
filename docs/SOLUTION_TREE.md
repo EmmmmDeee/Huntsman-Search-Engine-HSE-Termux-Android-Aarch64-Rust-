@@ -495,6 +495,27 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   this node's last recorded 126). No delivery date claimed — this
   session's shallow clone can't attribute one reliably for these four.
   *Remaining:* GNAF/AusPost; non-QLD state cadastre/property.
+  *Delivered (2026-07-15):* sanctions/PEP/watchlist screening —
+  `opensanctions` (`FullName` → `Person`, key-gated
+  `HUNTSMAN_OPENSANCTIONS_KEY`, priority 115, People). Closes a genuine gap
+  SpiderFoot also lacks (no sanctions/PEP module in its 200+ catalogue).
+  Australia's DFAT Consolidated List has no public real-time API of its own
+  (only a periodic XLSX download); this queries OpenSanctions' aggregated
+  `/match` endpoint (`default` scope), which folds DFAT together with OFAC
+  SDN/UN/EU/UK-OFSI/400+ other sources behind one fuzzy name-match call, so
+  AU sanctions coverage arrives free alongside global coverage rather than
+  needing a bespoke DFAT scraper. Only `match: true` (the API's own
+  definitive-match verdict) is escalated into an entity, per this project's
+  "false positive is worse than missing coverage" doctrine; escalated
+  matches carry `sanctioned`/`pep`/`debarred` tags, an `au-sanctions` tag
+  when DFAT is among the source `datasets`, and the PEP's `position` where
+  listed. 12 new tests (fixture built from OpenSanctions' own published
+  example response), full 30/30 architecture-guard parity, `hse selftest`
+  9/9 (162 modules). Module count 161→162; People 16→17. Closes: nothing
+  new in `PROBLEM_TREE` §3 (a capability addition, not a defect) — tracked
+  under **C3**. *Remaining (now, combined with the above):* GNAF/AusPost;
+  non-QLD state cadastre/property; `opensanctions`'
+  `Company`/`Organization` schema leg (`PROBLEM_TREE` T2.17).
 - **`[~]` SOL-NETINT · CDN-origin unmasking + asset depth** → **C4**: union subdomain
   discovery, ASN/BGP pivots, passive-DNS/cert-hash origin candidates; v4+**v6**
   `is_cdn_edge_ip` already demotes the noise.
@@ -4713,3 +4734,78 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
   doc`/`cargo test` — 4388 total pass. T2.16 is now fully closed on both
   API surfaces. Paired: `PROBLEM_TREE` T2.16 — same commit.
+
+- **2026-07-15 (cont'd 7)** — **New module `opensanctions` (SOL-AU-MOAT →
+  C3 delivery; new node `PROBLEM_TREE` T2.17 for the deferred leg)**:
+  sourced from surveying a public AML-investigator toolbox
+  (`start.me/p/rxeRqr/aml-toolbox`) at the operator's request for anything
+  genuinely person-centric and automatable, with an Australia emphasis.
+  Most of the toolbox (arms-trade registries, press/NGO reference links,
+  country-risk maps, currency converters) is human-browsed reference
+  material with no real API — out of scope for an automated engine, so not
+  built. Surveyed HSE's existing 160-module registry first (via a research
+  agent) to avoid duplicating coverage: confirmed corporate-registry
+  (`asic_director`/`asic_persons`/`asic_business_names`/`asic_banned_orgs`/
+  `abn_lookup`/`opencorporates`/`gleif_lei`), charity (`acnc_charities`),
+  and crypto-wallet (`chain_intel`) coverage already exist and are AU-heavy;
+  confirmed via direct source grep that sanctions/PEP screening had ZERO
+  coverage anywhere (`ofac`/`sanctions`/`pep`: no hits in `src/`) — the one
+  clean, high-value, API-backed gap, and one SpiderFoot also lacks (no
+  `sfp_ofac`/`sfp_sanctions`/`sfp_pep`-class module in its 200+ module
+  catalogue, confirmed against its live listing). Independently verified
+  Australia's DFAT Consolidated List has no public real-time API (XLSX
+  download only, periodically updated) — OpenSanctions' aggregated
+  `/match` endpoint (`default` dataset scope) folds DFAT together with
+  OFAC SDN, UN Security Council, EU consolidated, UK OFSI and 400+ other
+  sources behind one fuzzy name-matching call, fetched and read directly
+  from OpenSanctions' own live OpenAPI spec and matching-API quickstart
+  tutorial (not inferred) before writing any types. Built `src/modules/
+  opensanctions` (`types.rs`/`entity_builders.rs`/`mod.rs`/`tests.rs`,
+  mirroring `seon`'s file layout): `FullName` (≥2 tokens, mirroring
+  `au_people`'s identical `accepts()`/`consumes()` gate) → `Person`,
+  key-gated (`HUNTSMAN_OPENSANCTIONS_KEY`), priority 115, People category.
+  Only `match: true` (the API's own definitive-match verdict) is escalated
+  into an entity — a fuzzy near-miss below the API's own threshold is never
+  turned into a sanctions/PEP claim about a real person, since a false
+  positive here is a serious, reputationally consequential mistake (this
+  codebase's evidentiary-honesty doctrine: false positives are worse than
+  missing coverage). Escalated matches carry `sanctioned`/`pep`/`debarred`
+  tags (new `core::tags` constants, from the API's `topics`), an
+  `au-sanctions` tag when `au_dfat_sanctions` is among the source
+  `datasets`, and a `high-confidence-match` tag above a 0.90 score. New
+  `attack_techniques()` (`T1589.003`, `T1591.004`) declared explicitly
+  though it matches the People category default, self-documenting why —
+  T1591.004 is genuinely earned via the PEP `position` field (unlike the
+  identical-looking claim already corrected for `seon` this session), not
+  inherited silently. Added a new `KeyPlacement::HeaderPrefixed` variant to
+  `util::service_defs` (header name + scheme prefix) since OpenSanctions'
+  `Authorization: ApiKey <key>` scheme fit neither the existing `Header`
+  (no prefix) nor `BearerAuth` (hardcoded `bearer` prefix) variants — a
+  small, reusable extension, not a one-off hack; wired its
+  `key_pool::validation` match arm and a `ServiceDef` entry pointing at
+  `/statements` (free to call, still requires a valid key, so validates
+  without spending a paid `/match` query). Registered in `KNOWN_KEYS` +
+  `signup_hint()` (`util::keys::constants`) and both `env_template.txt`
+  copies for full Settings-UI/doctor/provisioning parity with every other
+  keyed module. 12 new tests including a fixture built from OpenSanctions'
+  own published quickstart example response (a real, publicly-designated
+  sanctioned individual — exactly the kind of subject a sanctions database
+  exists to describe — plus synthetic `Jordan Avery`-placeholder fixtures
+  for the PEP/AU-dataset/non-match paths), full 30/30 architecture-guard
+  parity. Two doc-sync guards caught the expected drift immediately
+  (`modules_md_lists_every_registered_module`,
+  `readme_module_overview_count_matches_registry`) — fixed by updating
+  `docs/MODULES.md` (new row + 161→162/16→17 counts) and `README.md`
+  (three count occurrences). Scoped to `Person`/`FullName` screening only
+  this cycle — the same `/match` endpoint also supports a
+  `Company`/`Organization` schema for corporate sanctions/debarment
+  screening, deliberately deferred (one target-kind surface per cycle, the
+  same discipline `seon`'s email→phone split followed) and tracked as
+  `PROBLEM_TREE` T2.17. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4400 total pass
+  (+12). `hse selftest` 9/9 (162 modules, dispatch graph intact) and
+  `hse modules` confirm real registration/dispatch wiring — no live key
+  available in this sandbox, so this is the exercised-real-surface
+  substitute per `CONVENTIONS.md` §9. No identity/PII impact beyond the
+  established synthetic-fixture convention. Paired: `PROBLEM_TREE` §4 C3 +
+  new T2.17 — same commit.

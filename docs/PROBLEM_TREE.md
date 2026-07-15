@@ -74,11 +74,12 @@ quality/robustness · **P3** minor · **CAP** capability/feature.
 Each node: **ID · statement · location · impact · → optimal solution · prio · status**.
 
 Current baseline (grounded in the codebase; aggregate counts re-verified
-2026-07-01, per-category split as of 2026-06-18): **161 modules** (live registry
-size, guarded by `readme_module_overview_count_matches_registry`); the
-per-category split below is the 2026-06-18 snapshot and has NOT been
-re-derived — 14 categories (Infrastructure 21, Geo 20, People 16, DnsRecon 13,
-Breach 11, Social 11, Email 6, Corporate 9, Phone 3, Web 5, Sensor 4, Threat 3,
+2026-07-15, per-category split as of 2026-06-18 except People, bumped for the
+`opensanctions` addition): **162 modules** (live registry size, guarded by
+`readme_module_overview_count_matches_registry`); the per-category split
+below is otherwise the 2026-06-18 snapshot and has NOT been re-derived — 14
+categories (Infrastructure 21, Geo 20, People 17, DnsRecon 13, Breach 11,
+Social 11, Email 6, Corporate 9, Phone 3, Web 5, Sensor 4, Threat 3,
 Search/Other 2 each) — treat the sub-counts as approximate until re-tallied;
 **110 native correlation rules** (dispatched `rule_au_*` functions: 97 entity
 rules + 13 relation-graph rules; ID ceiling AU-112; a few IDs like AU-065/066
@@ -1128,6 +1129,19 @@ direct.**
   values synthetic). T2.16 is now fully closed on both API surfaces.
   **Paired:** `SOLUTION_TREE` §5 — same commit.
 
+- **`[ ]` T2.17 · `opensanctions`'s `/match` endpoint also supports a
+  `Company`/`Organization` schema query for corporate sanctions/debarment
+  screening (an `Organisation` target — company name → sanctioned/debarred
+  entity match), deliberately not built this cycle (2026-07-15) — scoped to
+  `Person`/`FullName` screening only, one target-kind surface per cycle, per
+  the same discipline `seon`'s email→phone split followed (T2.16). Real,
+  concrete, and low-risk to add later: the response schema, `match: true`
+  gate, and tag/evidence conventions this cycle established for `Person`
+  carry over directly. **P2** (a genuine coverage gap, not a defect — no
+  urgency, tracked so it isn't silently dropped). See `docs/PROBLEM_TREE.md`
+  §4 C3 (2026-07-15 delivery) for the full context. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.
+
 ---
 
 ## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
@@ -1255,6 +1269,44 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   registries are still a real, open gap).
   *Remaining:* GNAF/AusPost address validation; state cadastre/property
   for states beyond QLD.
+  *Delivered (2026-07-15): sanctions/PEP/watchlist screening — a genuine
+  coverage gap SpiderFoot also lacks (no `sfp_ofac`/`sfp_sanctions`/
+  `sfp_pep`-class module in its 200+ catalogue, confirmed against its live
+  module listing).* Sourced from surveying a public AML-investigator toolbox
+  (`start.me/p/rxeRqr/aml-toolbox`) for anything genuinely person-centric and
+  automatable — most of it (arms-trade registries, press/NGO reference
+  links, country-risk maps) is human-browsed reference material with no real
+  API, out of scope for an automated engine; the one clean, high-value,
+  API-backed gap was sanctions/PEP screening, confirmed absent via direct
+  source grep (zero `ofac`/`sanctions`/`pep` hits anywhere in `src/`) before
+  building anything. Australia has no public real-time API for its own DFAT
+  Consolidated List (only a periodic XLSX download) — `opensanctions`
+  (`src/modules/opensanctions`) closes this by querying OpenSanctions'
+  aggregated `/match` API (`default` dataset scope), which folds DFAT
+  together with OFAC SDN, UN Security Council, EU consolidated, UK OFSI and
+  400+ other sources behind one fuzzy name-matching call, so Australian
+  sanctions coverage arrives for free alongside global coverage rather than
+  needing its own bespoke scraper. `FullName` → `Person`, key-gated
+  (`HUNTSMAN_OPENSANCTIONS_KEY`, free trial/nonprofit signup), priority 115,
+  People category. Only `match: true` (the API's own definitive-match
+  verdict) is escalated into an entity — a fuzzy near-miss is never turned
+  into a sanctions/PEP claim about a real person, consistent with this
+  project's "a false positive is worse than missing coverage" doctrine.
+  Escalated matches carry `sanctioned`/`pep`/`debarred` tags (from the
+  API's `topics`), an `au-sanctions` tag when DFAT is among the source
+  `datasets`, and the PEP's official `position` where listed (genuinely
+  earning `T1591.004` Identify Roles, not a category-default over-claim).
+  Scoped to `Person`/`FullName` screening only this cycle — the same
+  `/match` endpoint also supports `Company`/`Organization` schema queries
+  for corporate sanctions/debarment screening, deliberately deferred to a
+  follow-up (T2.17). 12 new tests including a fixture built from
+  OpenSanctions' own published example response; full 30/30
+  architecture-guard parity. Module count 161→162 (128 free · 29 key-gated ·
+  5 paid); People category 16→17. Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4400 total pass (+12).
+  `hse selftest` 9/9 (162 modules, dispatch graph intact) confirms real
+  registration/dispatch wiring without a live key. *Remaining:* the
+  `Company`/`Organization` schema leg (T2.17).
 - **`[~]` C4 · NETINT depth** — *Current:* `dns_intel`, `cert_intel`, `crtsh`,
   `shodan` (free InternetDB), `censys`, `zoomeye`, `subdomain_takeover`,
   `waf_detect`, `portscan`, `bgpview`, `ripestat`. CDN/Cloudflare noise is already
