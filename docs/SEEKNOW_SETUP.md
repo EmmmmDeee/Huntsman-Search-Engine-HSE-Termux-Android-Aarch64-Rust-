@@ -66,7 +66,7 @@ dispatch code, not assumed from the vendor's docs):
 | Category | Endpoints | Credits | Status |
 |----------|-----------|---------|--------|
 | **Search** | `/search` | 1 | **Wired** — the universal call, dispatched for every target kind |
-| **Search** | `/search/deep` | 1 | Not implemented — HSE always calls fast `/search`, never deep |
+| **Search** | `/search/deep` | 1 | **Wired** — fallback when fast `/search` draws a blank on a TYPED query (email/username/phone/domain/ip); never called for the auto/name path or after a fast HIT |
 | **Stealer Logs** | `/stealer` | 2 | Removed — live-verified 404 against the real API; its data still arrives via `/search`'s stealer-shaped response instead |
 | **Social/Gaming** | `/username/{github,twitter,tiktok,reddit,social,history}`, `/discord/{user,to-roblox}`, `/gaming/{xbox,roblox,minecraft}` | 1 each | **Wired** (9 endpoints) |
 | **Network** | `/network/{ip,email-check,phone}` | 1 each | **Wired** (3 endpoints) |
@@ -484,7 +484,11 @@ hse scan --kind email --value admin@mycompany.com --depth 3 --full
 **Q: What's the difference between `/search` and `/search/deep`?**
 - **Fast (~5s):** Local DB + low-latency sources, 212M+ records
 - **Deep (~40s):** Fast + slower high-yield databases, maximum coverage
-- HSE auto-selects based on target type and expansion depth
+- HSE calls fast `/search` first for every target; deep only fires as a
+  fallback when fast draws a genuine blank on a TYPED query (email, username,
+  phone, domain, or IP) — never spent on a fast HIT, and never chained after
+  the auto/name path (which already runs close to this module's timeout
+  budget on the fast call alone)
 
 **Q: How many credits do typical scans use?**
 - Single email lookup: 1–5 credits

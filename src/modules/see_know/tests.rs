@@ -1041,3 +1041,116 @@ use crate::core::entity::Entity;
             result.entities.iter().map(|e| &e.kind).collect::<Vec<_>>()
         );
     }
+
+    // ── /search/deep fallback (T-current: the largest documented,
+    //    previously-unwired SeekNow coverage gap) ────────────────────────
+
+    #[test]
+    fn deep_search_fires_only_on_a_typed_query_that_drew_a_genuine_blank() {
+        // The core policy this fallback exists to express: never spend the
+        // extra ~40s latency when fast /search already found something, and
+        // never on the auto/name path (excluded — see `max_timeout_ms`'s doc
+        // comment for the timeout-budget arithmetic this protects).
+        assert!(
+            should_try_deep_search(0, "email", false),
+            "a genuine typed miss must trigger the fallback"
+        );
+        assert!(
+            !should_try_deep_search(1, "email", false),
+            "a typed HIT must never trigger the fallback — wasted latency+quota"
+        );
+        assert!(
+            !should_try_deep_search(0, "", false),
+            "the auto/name path (empty query_type) must never chain deep search"
+        );
+        assert!(
+            !should_try_deep_search(0, "email", true),
+            "a cancelled scan must never trigger a fresh ~40s call"
+        );
+    }
+
+    #[test]
+    fn deep_search_max_timeout_covers_the_typed_fast_plus_deep_worst_case() {
+        // 110s must comfortably exceed both the pre-existing single-call
+        // worst case (~60s, name/auto path, unaffected by this change) and
+        // the new chained worst case (typed fast ~15s + deep ~45s ≈ 60s) with
+        // real headroom — never regress to a budget that risks a spurious
+        // module-level timeout truncating a real deep-search response.
+        assert!(SeekNow.max_timeout_ms() >= 100_000);
+    }
+
+    #[test]
+    fn absorb_search_hits_builds_the_breach_parent_and_extracts_records_for_the_deep_endpoint() {
+        // Proves the refactored helper generalises correctly to the NEW
+        // /search/deep call site (not just the pre-existing fast /search
+        // behaviour the old inline code covered) — same construction, only
+        // the endpoint labels differ.
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let items = vec![serde_json::json!({
+            "email": "subject@example.com",
+            "dbname": "examplebreach.com",
+        })];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        absorb_search_hits(
+            &items,
+            &target,
+            "subject@example.com",
+            "/api/v1/search/deep",
+            "search/deep",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+
+        let parent = result
+            .entities
+            .iter()
+            .find(|e| e.value == "subject@example.com" && e.has_tag(crate::core::tags::BREACH))
+            .expect("a BREACH parent entity for the matched subject");
+        assert!(parent.has_tag("see-know"));
+        let ev = &parent.evidence[0];
+        assert_eq!(
+            ev.attributes.get("endpoint").map(String::as_str),
+            Some("/api/v1/search/deep"),
+            "the deep endpoint's own path must be recorded, not fast /search's"
+        );
+        assert!(
+            ev.summary.contains("/api/v1/search/deep"),
+            "the evidence summary must name the endpoint that actually produced the hit: {}",
+            ev.summary
+        );
+    }
+
+    #[test]
+    fn absorb_search_hits_skips_the_breach_parent_when_no_row_matches_the_subject() {
+        // A broad seed can return term-sharing strangers; the parent stamp
+        // must stay gated on `search_subject_present`, exactly as the
+        // pre-refactor inline fast-path logic did.
+        let target = Target::new(TargetKind::Email, "subject@example.com");
+        let items = vec![serde_json::json!({
+            "email": "someone-else@example.com",
+            "dbname": "examplebreach.com",
+        })];
+        let mut seen: HashSet<String> = HashSet::new();
+        let mut result = ModuleResult::new();
+        absorb_search_hits(
+            &items,
+            &target,
+            "subject@example.com",
+            "/api/v1/search",
+            "search",
+            "see-know.eu:test",
+            "scan-1",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result
+                .entities
+                .iter()
+                .any(|e| e.value == "subject@example.com" && e.has_tag(crate::core::tags::BREACH)),
+            "no row identified the subject — no BREACH parent should be minted"
+        );
+    }

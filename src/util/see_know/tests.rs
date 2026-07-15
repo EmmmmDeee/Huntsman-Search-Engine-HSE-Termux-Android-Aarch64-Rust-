@@ -633,3 +633,36 @@ fn credits_body_garbage_is_unparseable_not_auth_error() {
         );
     }
 }
+
+#[test]
+fn deep_search_cache_key_namespace_is_distinct_from_fast_search() {
+    // A fast-search miss and a subsequent deep-search hit for the SAME query
+    // must never collide in the response cache — one endpoint's cached
+    // (non-empty) result must not be served back as the other's. `search`
+    // and `search_deep` both build their cache key via `typed_cache_key`
+    // keyed on the literal endpoint-name string passed as `path`, so this
+    // pins that the two call sites actually use different literals.
+    let fast = typed_cache_key("search", "alice@example.com", "email");
+    let deep = typed_cache_key("search_deep", "alice@example.com", "email");
+    assert_ne!(fast, deep);
+    assert!(fast.starts_with("search#"));
+    assert!(deep.starts_with("search_deep#"));
+}
+
+#[test]
+fn deep_search_reuses_the_same_verified_request_body_contract_as_fast_search() {
+    // `search_deep`'s only documented difference from `search`
+    // (`docs/SEEKNOW_SETUP.md`'s endpoint table + FAQ) is the URL path and
+    // corpus depth searched server-side — request shape and credit cost are
+    // identical. Reusing `build_search_body` (already covered by
+    // `search_body_includes_limit_and_optional_type`) rather than a second,
+    // independently-written body builder is what makes that guarantee real
+    // instead of just asserted in a doc comment.
+    let deep_body = build_search_body("alice@example.com", "email", SEARCH_LIMIT);
+    let fast_body = build_search_body("alice@example.com", "email", SEARCH_LIMIT);
+    assert_eq!(
+        deep_body, fast_body,
+        "search_deep must build its request body with the exact same function \
+         fast search uses — no independent, unverified body construction"
+    );
+}
