@@ -166,3 +166,68 @@ use super::*;
              timeout — a bare Vec<JoinHandle<_>> would let it run to completion"
         );
     }
+
+    // ── T2.123: a total transport failure must not read as "no keys found" ──
+
+    #[test]
+    fn all_probes_failed_to_execute_only_when_nothing_ran_and_nothing_matched() {
+        // Every probe failed to execute AND nothing was identified → error.
+        assert!(all_probes_failed_to_execute(23, 23, 0));
+        // At least one probe RAN (match or honest negative) → clean negative,
+        // not an error, even though the rest failed to execute.
+        assert!(!all_probes_failed_to_execute(22, 23, 0));
+        // Something WAS identified → never an error, regardless of failures.
+        assert!(!all_probes_failed_to_execute(23, 23, 1));
+        // No probes at all → not an error (nothing to fail).
+        assert!(!all_probes_failed_to_execute(0, 0, 0));
+    }
+
+    /// A one-shot local HTTP server that answers with a fixed JSON body — a real
+    /// (not mocked) endpoint for the curl-subprocess `probe_endpoint` to hit.
+    async fn serve_once_json(body: &'static str) -> std::net::SocketAddr {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = vec![0u8; 2048];
+                let _ = sock.read(&mut buf).await;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body.as_bytes()).await;
+                let _ = sock.flush().await;
+            }
+        });
+        addr
+    }
+
+    #[tokio::test]
+    async fn probe_endpoint_reports_transport_failure_on_an_unreachable_host() {
+        // T2.123 regression: previously a probe that could not execute returned
+        // the same `None` a genuine non-match did. Port 1 has nothing listening,
+        // so curl exits non-zero (connection refused) — a real transport failure
+        // that must now be reported as such, not folded into a miss.
+        let outcome = probe_endpoint("http://127.0.0.1:1/", "test-key-12345678", &[]).await;
+        assert!(
+            matches!(outcome, ProbeOutcome::TransportFailure),
+            "an unreachable host must be a TransportFailure, not an Executed miss"
+        );
+    }
+
+    #[tokio::test]
+    async fn probe_endpoint_reports_executed_when_the_host_answers() {
+        // The host answered with a real body — that is `Executed(Some(..))`, a
+        // negative the caller can evaluate, NOT a transport failure.
+        let addr = serve_once_json(r#"{"plan":"free"}"#).await;
+        let outcome = probe_endpoint(&format!("http://{addr}/"), "test-key-12345678", &[]).await;
+        match outcome {
+            ProbeOutcome::Executed(Some(body)) => assert!(body.contains("free")),
+            other @ (ProbeOutcome::Executed(None) | ProbeOutcome::TransportFailure) => {
+                let _ = other;
+                panic!("a host that answered with a JSON body must be Executed(Some(..))")
+            }
+        }
+    }

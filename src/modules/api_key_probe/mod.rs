@@ -12,7 +12,7 @@ use serde_json::Value;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -87,7 +87,7 @@ impl Module for ApiKeyProbe {
         // runtime after the engine had already moved on. The index travels
         // with each result since `join_next` resolves in completion order,
         // not spawn order, but the probe lookup below needs the original.
-        let mut tasks: tokio::task::JoinSet<(usize, Option<String>)> = tokio::task::JoinSet::new();
+        let mut tasks: tokio::task::JoinSet<(usize, ProbeOutcome)> = tokio::task::JoinSet::new();
 
         for (i, probe) in all_probes.iter().enumerate() {
             let key = key.to_string();
@@ -97,15 +97,26 @@ impl Module for ApiKeyProbe {
 
         let pool = key_pool::global_pool();
         let mut identified = Vec::new();
+        // Probes that never got an answer (no network, DNS/TLS failure, timeout)
+        // are counted separately from probes that ran and simply didn't match, so
+        // a total transport failure can be told apart from a genuine "matches no
+        // known service" after the loop (T2.123).
+        let mut transport_failures = 0usize;
 
         while let Some(joined) = tasks.join_next().await {
-            let Ok((i, response)) = joined else {
+            let Ok((i, outcome)) = joined else {
                 continue;
             };
             let probe = &all_probes[i];
-            let response = match response {
-                Some(body) => body,
-                None => continue,
+            let response = match outcome {
+                ProbeOutcome::Executed(Some(body)) => body,
+                // The host answered but with nothing usable — a real negative.
+                ProbeOutcome::Executed(None) => continue,
+                // The probe never executed — count it, don't treat it as a miss.
+                ProbeOutcome::TransportFailure => {
+                    transport_failures += 1;
+                    continue;
+                }
             };
 
             let json: Value = match serde_json::from_str(&response) {
@@ -191,6 +202,19 @@ impl Module for ApiKeyProbe {
             identified.push((probe.service, probe.category, info));
         }
 
+        // If NOTHING was identified and EVERY probe failed to even execute (e.g.
+        // no network on-device), that is a total transport failure — surface it
+        // as a real error rather than the same clean empty result a genuine
+        // "this key matches no known service" produces (T2.123). If even one
+        // probe ran (match or not), the empty result is an honest negative.
+        if all_probes_failed_to_execute(transport_failures, all_probes.len(), identified.len()) {
+            return Err(Error::module(
+                SRC,
+                "every API-key probe failed at the transport level (no network reachable?) — \
+                 cannot determine whether this key matches any known service",
+            ));
+        }
+
         if let Err(e) = key_pool::save_pool(&pool) {
             tracing::warn!("failed to save key pool: {e}");
         }
@@ -230,7 +254,38 @@ impl Module for ApiKeyProbe {
     }
 }
 
-async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Option<String> {
+/// The outcome of a single [`probe_endpoint`] call, distinguishing a probe that
+/// COULD NOT EXECUTE — no answer from the host: a timeout, a curl spawn failure,
+/// or curl's own non-zero exit (a connection/DNS/TLS failure) — from one that
+/// RAN and got an answer (whether or not that answer is a usable match). This
+/// distinction is what lets `process()` tell a total network outage (every probe
+/// failing to execute) apart from a genuine "this key matches no known service"
+/// (T2.123); collapsing both into `None` hid the former as the latter.
+enum ProbeOutcome {
+    /// The host answered. `Some(body)` is a usable body to parse; `None` is an
+    /// empty / too-short / non-UTF-8 response — the host replied, but with
+    /// nothing to match (a legitimate negative).
+    Executed(Option<String>),
+    /// The probe never got an answer — it could not execute at all.
+    TransportFailure,
+}
+
+/// Whether `process()` should surface a hard error instead of a clean empty
+/// result: true only when NOTHING was identified AND every probe failed at the
+/// transport level (none even got an answer). A total network outage must not
+/// masquerade as "this key matches no known service" (T2.123); but if even one
+/// probe executed — a match, or an honest negative — the empty result is a
+/// genuine no-match and stays a clean `Ok`. Pure, so it is unit-tested.
+#[must_use]
+fn all_probes_failed_to_execute(
+    transport_failures: usize,
+    total_probes: usize,
+    identified: usize,
+) -> bool {
+    identified == 0 && total_probes > 0 && transport_failures == total_probes
+}
+
+async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> ProbeOutcome {
     let secs = 10u64.to_string();
     let mut cmd = tokio::process::Command::new("curl");
     cmd.args(["-s", "--max-time", &secs]);
@@ -258,20 +313,29 @@ async fn probe_endpoint(url: &str, key: &str, headers: &[(&str, String)]) -> Opt
     cmd.args(["--", url]);
     cmd.kill_on_drop(true);
 
-    let output = tokio::time::timeout(Duration::from_secs(12), cmd.output())
-        .await
-        .ok()?
-        .ok()?;
+    // Timeout elapsed, or curl failed to spawn — the probe never executed.
+    let output = match tokio::time::timeout(Duration::from_secs(12), cmd.output()).await {
+        Ok(Ok(output)) => output,
+        Ok(Err(_)) | Err(_) => return ProbeOutcome::TransportFailure,
+    };
 
+    // curl exits non-zero on a connection-refused / DNS / TLS / curl-timeout
+    // failure. It returns 0 for ANY HTTP response actually received (no `-f`
+    // flag), so a non-zero exit means the request never completed — a genuine
+    // transport failure, NOT a "the host answered 401/404" negative.
     if !output.status.success() {
-        return None;
+        return ProbeOutcome::TransportFailure;
     }
 
-    let body = String::from_utf8(output.stdout).ok()?;
+    // The host answered. A non-UTF-8 or too-short body is a real (if unusable)
+    // response — a negative, not a failure to execute.
+    let Ok(body) = String::from_utf8(output.stdout) else {
+        return ProbeOutcome::Executed(None);
+    };
     if body.len() < 2 {
-        return None;
+        return ProbeOutcome::Executed(None);
     }
-    Some(body)
+    ProbeOutcome::Executed(Some(body))
 }
 
 fn is_error_response(v: &Value) -> bool {
