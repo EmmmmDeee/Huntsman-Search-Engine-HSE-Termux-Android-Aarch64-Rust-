@@ -47,6 +47,30 @@ fn cost_is_paid() {
 }
 
 #[test]
+fn attack_techniques_reflect_the_full_shared_breach_rich_extraction() {
+    use crate::core::attack;
+    let t = DeHashed.attack_techniques();
+    // Each claimed technique is backed by a concrete extractor: credentials,
+    // emails, employee names (this file), IP addresses (this file), and —
+    // via the shared `breach_rich` catch-all this module runs — physical
+    // locations, business relationships, host fingerprints, and social
+    // media handles.
+    for id in [
+        "T1589.001",
+        "T1589.002",
+        "T1589.003",
+        "T1590.005",
+        "T1591.001",
+        "T1591.002",
+        "T1592",
+        "T1593.001",
+    ] {
+        assert!(t.contains(&id), "dehashed must claim {id}, got {t:?}");
+        assert!(attack::technique(id).is_some(), "{id} must be catalogued");
+    }
+}
+
+#[test]
 fn selector_covers_every_accepted_kind() {
     for k in [
         TargetKind::Email,

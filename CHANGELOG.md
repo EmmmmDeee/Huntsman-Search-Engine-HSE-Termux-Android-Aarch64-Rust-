@@ -433,6 +433,12 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`dehashed`'s MITRE ATT&CK coverage report was missing 5 techniques —
+  IP addresses, physical locations, business relationships, device
+  fingerprints, and social media handles — despite the module already
+  extracting all of that from breach records.** It runs the same
+  extraction logic as `see_know`/`oathnet_pro`, which already declared
+  the full set correctly; `dehashed` now does too.
 - **`see_know` no longer permanently drops Discord/Steam identity pivots it
   discovered but couldn't immediately query due to the scan's shared quota
   running low.** Cross-platform ID resolution (chasing a Discord snowflake

@@ -6154,3 +6154,62 @@ historical per-release `CHANGELOG` counts are correctly frozen and left as-is).
   this bug class: a contained fix scoped to one module's internal
   bookkeeping, not a new tracked node. **Paired:** `SOLUTION_TREE` §5 —
   same commit.
+
+- **2026-07-15 (cont'd 3)** — **`dehashed` under-declared its ATT&CK
+  Reconnaissance coverage by 5 techniques — the same class of bug fixed for
+  `oathnet_pro` (T1591.002) this session, except dehashed's gap spanned the
+  whole shared-extractor surface, not one technique.** The operator
+  broadened the standing "focus on seek and oathnet" request to "other
+  breach and analogous sources," prompting a fresh investigation of
+  `dehashed`/`hibp`/`xposed_or_not`/`hudsonrock`/`comb_search`/`psbdmp`/
+  `niamonx`/`pwned_passwords`. `dehashed`'s `attack_techniques()`
+  (`src/modules/dehashed/mod.rs:90-92`) declared only `T1589.001,
+  T1589.002, T1589.003` (Credentials/Email/Employee Names), but its
+  `produces()` (same file) has always listed `IpAddress`, `Address`,
+  `Coordinates`, `Organisation`, `MacAddress`, `DeviceId` too — every one of
+  which is genuinely minted, verified directly against source: `build.rs:
+  304-315` extracts `IpAddress` from `ip_address`/`ip`/`last_ip` fields
+  inline, and `build.rs:391` calls the shared `breach_rich::
+  extract_rich_detail` "maximum raw data" pass (`src/modules/breach_rich.
+  rs`) — the SAME catch-all `see_know`/`oathnet_pro` run — which mints
+  `Organisation` (company/employer/org, 298-313), `MacAddress`/`DeviceId`
+  (mac/hwid/imei/serial/…, 316-365), platform `Username`s (telegram/
+  facebook/instagram/…, 367-390), and `Address`/`Coordinates` (street/
+  city/state/postal + geocoded composite, 393-452). `see_know` already
+  declares the correct 8-technique set for running this identical
+  extractor (`see_know/mod.rs:109-126`); dehashed's declaration was simply
+  never updated to match, despite calling the same shared code. Confirmed
+  uncaught: `grep` of `dehashed/tests.rs` for `attack_techniques` returned
+  zero matches — none of its 12 existing tests touched the declaration at
+  all. Also investigated (per the same agent pass) a second candidate,
+  `niamonx` missing `T1589.003` despite minting `Person` from
+  `meta.names` — real, smaller, and deliberately left open for a future
+  cycle to keep this unit focused on one module. Fixed by declaring the
+  full 8-technique set with per-line justification comments, mirroring
+  `see_know`'s exact pattern. New test
+  `attack_techniques_reflect_the_full_shared_breach_rich_extraction`
+  (mirroring `oathnet_pro`'s equivalent), red/green-verified by temporarily
+  reverting to the 3-technique declaration (failed on the 5 missing IDs)
+  and restoring (passed). Running the full architecture-guard suite after
+  the fix surfaced a genuine, pre-existing test defect the fix's own
+  correctness exposed: `attack_overrides_attribute_collection_modules_
+  precisely` (`tests/architecture.rs`) had `dehashed` and `intelx` pinned
+  to the SAME exact 3-technique assertion in one shared loop — a stale pin
+  that never accounted for dehashed's `breach_rich` extraction (the
+  original comment only justified the Person/T1589.003 gap, missing the
+  other five). Root-caused rather than masked: verified `intelx`
+  independently before touching anything — its own doc comment states it
+  "re-emits the scanned target as its own entity" rather than extracting
+  child entities from record content (confirmed: it does not call
+  `breach_rich`), so its 3-technique declaration is genuinely still
+  correct and was left untouched. Split the merged loop into two precisely-
+  scoped assertions — `intelx` unchanged, `dehashed` updated to the new
+  8-technique vector — making the guard MORE precise, not weaker; no
+  assertion was narrowed or removed. Full parity: all 13 `dehashed` tests
+  and all 30 architecture guards (including the corrected precise-override
+  guard) pass. Gate green: fmt/clippy `--all-targets -D warnings`/strict-
+  rustdoc `cargo doc`/`cargo test` — 4377 total pass (+1). No identity/PII
+  impact. Logged here per the established precedent for this bug class: a
+  contained, single-declaration fix (plus a correctly root-caused test
+  correction it exposed), not a new tracked node. **Paired:**
+  `SOLUTION_TREE` §5 — same commit.

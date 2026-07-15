@@ -608,20 +608,45 @@ fn attack_overrides_attribute_collection_modules_precisely() {
         "urlscan → IP Addresses + Physical Locations + Scan Databases"
     );
 
-    // DeHashed + IntelX: Breach category covers Credentials (T1589.001) and
-    // Email Addresses (T1589.002) but both modules also emit real-name Person
+    // IntelX: Breach category covers Credentials (T1589.001) and Email
+    // Addresses (T1589.002), but the module also emits real-name Person
     // entities → T1589.003 Employee Names must be declared explicitly.
-    for name in ["dehashed", "intelx"] {
-        assert_eq!(
-            techniques(name),
-            vec!["T1589.001", "T1589.002", "T1589.003"],
-            "{name} → Credentials + Email Addresses + Employee Names"
-        );
-        assert!(
-            techniques(name).contains(&"T1589.003"),
-            "{name} emits Person entities; must claim Employee Names (T1589.003)"
-        );
-    }
+    // Unlike DeHashed below, IntelX re-emits the scanned target as its own
+    // entity rather than extracting child entities from record content (its
+    // own doc comment: "does not extract child entities — see the
+    // no-document-bodies invariant"), so it does not run the shared
+    // `breach_rich` pass and does not need that pass's broader technique set.
+    assert_eq!(
+        techniques("intelx"),
+        vec!["T1589.001", "T1589.002", "T1589.003"],
+        "intelx → Credentials + Email Addresses + Employee Names"
+    );
+    assert!(
+        techniques("intelx").contains(&"T1589.003"),
+        "intelx emits Person entities; must claim Employee Names (T1589.003)"
+    );
+
+    // DeHashed: Breach category covers Credentials + Email Addresses, but the
+    // module's own per-record extractor plus the shared `breach_rich`
+    // "maximum raw data" pass it runs (see `dehashed/build.rs`'s call site)
+    // together mint Person, IP, Address/Coordinates, Organisation, host
+    // fingerprints (MAC/device id), and social-media handles — the full
+    // breach-pool surface `see_know`/`oathnet_pro` declare for running the
+    // identical shared extractor, not just credentials/email/name.
+    assert_eq!(
+        techniques("dehashed"),
+        vec![
+            "T1589.001",
+            "T1589.002",
+            "T1589.003",
+            "T1590.005",
+            "T1591.001",
+            "T1591.002",
+            "T1592",
+            "T1593.001",
+        ],
+        "dehashed → the full shared breach_rich extraction surface"
+    );
 
     // WiGLE: Geo category (T1591.001 Physical Locations) but also surfaces
     // the cellular carrier / WiFi network operator as an Organisation →

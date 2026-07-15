@@ -4530,3 +4530,33 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   as a dated entry, not a new tracked node — same precedent as the entries
   above: a contained fix scoped to one module's internal bookkeeping.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-15 (cont'd 3)** — **`dehashed` ATT&CK-mapping fix: declared the
+  full 8-technique breach-pool surface it actually collects, instead of
+  the 3-technique subset that predated its `breach_rich` extraction.**
+  Found after the operator broadened the standing "seek and oathnet"
+  request to "other breach and analogous sources"; verified directly
+  against source that `dehashed` runs the identical shared `breach_rich::
+  extract_rich_detail` catch-all `see_know`/`oathnet_pro` already declare
+  the full technique set for, plus its own inline `IpAddress` extraction —
+  yet its own declaration never accounted for any of it. Fixed by matching
+  `see_know`'s exact 8-technique pattern with per-line justification
+  comments. New test (mirroring `oathnet_pro`'s equivalent), red/green-
+  verified. Running the full architecture-guard suite surfaced a real,
+  pre-existing test defect: `attack_overrides_attribute_collection_
+  modules_precisely` had pinned `dehashed` and `intelx` to an identical
+  3-technique assertion in one shared loop, never updated for dehashed's
+  broader extraction. Root-caused rather than masked — independently
+  verified `intelx` genuinely does NOT run `breach_rich` (its own doc
+  comment: re-emits the scanned target rather than extracting child
+  entities from record content), so its assertion is still correct and
+  was left untouched; split the loop into two precisely-scoped assertions,
+  making the guard more precise, not weaker. Full parity: all 13
+  `dehashed` tests + all 30 architecture guards pass. Gate green: fmt/
+  clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
+  test` — 4377 total pass (+1). No identity/PII impact. A second candidate
+  from the same investigation (`niamonx` missing `T1589.003`) was
+  deliberately left open for a future cycle. Logged as a dated entry, not
+  a new tracked node — same precedent as the entries above: a contained,
+  single-declaration fix plus a correctly root-caused test correction.
+  Paired: `PROBLEM_TREE` §8 — same commit.
