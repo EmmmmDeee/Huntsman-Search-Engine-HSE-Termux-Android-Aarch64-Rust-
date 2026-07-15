@@ -472,6 +472,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`chain_intel` conflated a source failure with a deliberate
+  unsupported-chain no-op (T2.122).** Each of the five per-chain enrichers
+  returned `Option<Enrichment>` and swallowed its sole data source's failure
+  (`fetch_json(…).await.ok()?`) into `None` — indistinguishable from the
+  `_ => None` "chain not wired" no-op or a supported chain with no on-chain
+  activity. Changed all five to `Result<Option<Enrichment>>`: a real
+  transport/non-2xx/parse failure now propagates as an error, `Ok(None)` is
+  the honest empty, and `process()`'s match uses `_ => Ok(None)` for the
+  unsupported no-op — so a down explorer surfaces instead of masquerading as
+  "unsupported chain" or "empty wallet." Two new hermetic tests pin the
+  behaviour on the URL-parameterized `enrich_esplora`.
 - **`au_unclaimed`, the sole remaining QLD CKAN unclaimed-money source,
   swallowed its primary fetch failure into a silent empty result
   (T2.119).** `process_qld` discarded the primary QLD query's transport/

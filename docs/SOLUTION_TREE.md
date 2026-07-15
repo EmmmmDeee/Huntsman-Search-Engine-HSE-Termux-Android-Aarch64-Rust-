@@ -3669,9 +3669,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   explicitly); this node was queued from a separate audit wave the same
   day and never cross-closed. No code change — see `PROBLEM_TREE` T2.121
   and §5 below.
-- **`[ ]` SOL-CHAININTEL-SINGLE-SOURCE · Distinguish unsupported-chain from
-  fetch-failure in the returned result/error** → **T2.122**. Queued, not
-  yet started — see `PROBLEM_TREE` T2.122 for the finding.
+- **`[x]` SOL-CHAININTEL-SINGLE-SOURCE · Distinguish unsupported-chain from
+  fetch-failure in the returned result/error** → **T2.122**. Delivered
+  2026-07-15: the five per-chain enrichers (`enrich_esplora`/`enrich_eth`/
+  `enrich_sol`/`enrich_doge`) changed from `Option<Enrichment>` (which
+  `fetch_json(…).await.ok()?` collapsed a source failure into) to
+  `Result<Option<Enrichment>>` — a real failure now propagates as `Err`, while
+  `Ok(None)` is reserved for an honest "nothing to enrich". `process()`'s
+  `match` gained `_ => Ok(None)` (the deliberate unsupported-chain no-op) and a
+  `?`, so an unsupported chain / empty address stays a clean miss while a real
+  source outage surfaces. Two new hermetic tests drive the URL-parameterized
+  `enrich_esplora` against a real local server (503→`Err`, 200→parsed); the
+  fixture shape was confirmed against a live `blockstream.info` `curl`. See
+  `PROBLEM_TREE` T2.122 for the full finding.
 - **`[ ]` SOL-APIKEYPROBE-TRANSPORT-SWALLOW · Track transport-failure count
   separately from non-match count, surface an error when all probes fail**
   → **T2.123**. Queued, not yet started — see `PROBLEM_TREE` T2.123 for the
@@ -4646,7 +4656,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   Response`, surfacing CKAN `success:false` + fetch failures instead of
   swallowing them) delivered 2026-07-15. **T2.119** (`au_unclaimed`'s sole
   QLD source now surfaces a primary-fetch failure / `success:false` instead
-  of swallowing it) delivered 2026-07-15. 30 of 49 still queued (19 of
+  of swallowing it) delivered 2026-07-15. **T2.122** (`chain_intel`'s five
+  per-chain enrichers now return `Result<Option>` so a source failure is
+  distinguished from an unsupported-chain no-op / empty address) delivered
+  2026-07-15. 29 of 49 still queued (20 of
   T2.102–T2.150 now `[x]`, machine-counted against the tree).*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
@@ -11981,3 +11994,16 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4864
   total pass (+1 `#[ignore]` live test). **Paired:** `PROBLEM_TREE` T2.119
   `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-CHAININTEL-SINGLE-SOURCE closed**
+  (`chain_intel`'s five single-source chains swallowing a source failure into
+  the same clean result as a deliberate unsupported-chain no-op). The five
+  enrichers changed from `Option<Enrichment>` (which `fetch_json(…).await.ok()?`
+  collapsed a failure into) to `Result<Option<Enrichment>>`: a real
+  transport/non-2xx/parse failure propagates as `Err`, `Ok(None)` is the honest
+  empty; `process()`'s `match` gained `_ => Ok(None)` (unsupported no-op) + a
+  `?`. Two new hermetic tests drive the URL-parameterized `enrich_esplora`
+  against a real local server (503→`Err` red/green, 200→parsed); fixture shape
+  confirmed against a live `blockstream.info` `curl`; the other four rest on
+  `fetch_json`'s already-tested contract. Gate green: fmt/clippy `--all-targets
+  -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4866 total pass (+2).
+  **Paired:** `PROBLEM_TREE` T2.122 `[ ]`→`[x]` — same commit.

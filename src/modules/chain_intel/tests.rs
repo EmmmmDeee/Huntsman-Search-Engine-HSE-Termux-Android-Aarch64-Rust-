@@ -333,3 +333,84 @@ fn format_units_zero_and_minimal() {
     // Exactly 1 unit.
     assert_eq!(format_units(100_000_000, 8), "1");
 }
+
+// ── enrich_esplora: a source failure must surface, not masquerade as a
+// clean no-op (T2.122) ──────────────────────────────────────────────────
+//
+// `enrich_esplora` is the one enricher whose base URL is a parameter, so it can
+// be driven against a real local server (the other four hardcode their host and
+// rely on `fetch_json`'s already-tested non-2xx→Err contract). These pin the
+// exact T2.122 fix: the old `fetch_json(…).await.ok()?` turned a 5xx into
+// `None`, indistinguishable from a recognised-but-unwired chain or an empty
+// address; it must now be an `Err`.
+
+fn live_ctx() -> ModuleContext {
+    let (bus, _rx) = tokio::sync::broadcast::channel(1);
+    ModuleContext {
+        scan_id: "test".into(),
+        bus,
+        http: reqwest::Client::new(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    }
+}
+
+/// A one-shot local HTTP server that answers with `status` + `body` — a real
+/// (not mocked) transport for `enrich_esplora` to hit. Mirrors the pattern the
+/// `ip_reputation`/`pwned_passwords` tests use.
+async fn serve_once(status: u16, body: &'static str) -> std::net::SocketAddr {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        let Ok((mut sock, _)) = listener.accept().await else {
+            return;
+        };
+        let mut buf = vec![0u8; 2048];
+        let _ = sock.read(&mut buf).await;
+        let reason = if status == 200 { "OK" } else { "Error" };
+        let head = format!(
+            "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+            body.len()
+        );
+        let _ = sock.write_all(head.as_bytes()).await;
+        let _ = sock.write_all(body.as_bytes()).await;
+        let _ = sock.flush().await;
+    });
+    addr
+}
+
+#[tokio::test]
+async fn enrich_esplora_propagates_a_source_error_instead_of_a_silent_none() {
+    // Regression for T2.122: previously a 503 became `None`, indistinguishable
+    // from an unsupported chain / empty address.
+    let addr = serve_once(503, "upstream down").await;
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
+    let ctx = live_ctx();
+    let out = enrich_esplora(&ctx, &format!("http://{addr}"), "1BTCaddr", "BTC").await;
+    assert!(
+        out.is_err(),
+        "a 5xx from the sole Esplora source must surface as Err, not a hollow None"
+    );
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // reset breaker after the 503
+}
+
+#[tokio::test]
+async fn enrich_esplora_parses_a_real_shaped_body_into_enrichment() {
+    // A real blockstream.info `/address/<a>` body shape (extra fields ignored by
+    // `#[serde(default)]`); balance = funded − spent, tx_count = chain + mempool.
+    let body = r#"{"address":"1BTCaddr",
+        "chain_stats":{"funded_txo_count":5,"funded_txo_sum":200000000,"spent_txo_count":3,"spent_txo_sum":50000000,"tx_count":7},
+        "mempool_stats":{"funded_txo_count":0,"funded_txo_sum":0,"spent_txo_count":0,"spent_txo_sum":0,"tx_count":1}}"#;
+    let addr = serve_once(200, body).await;
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let ctx = live_ctx();
+    let enr = enrich_esplora(&ctx, &format!("http://{addr}"), "1BTCaddr", "BTC")
+        .await
+        .expect("a well-formed 200 body must parse to Ok")
+        .expect("a real address body must yield Some(Enrichment)");
+    assert_eq!(enr.balance, 150_000_000, "200000000 funded − 50000000 spent");
+    assert_eq!(enr.received, Some(200_000_000));
+    assert_eq!(enr.tx_count, Some(8), "7 chain + 1 mempool");
+    assert_eq!(enr.unit, "BTC");
+}
