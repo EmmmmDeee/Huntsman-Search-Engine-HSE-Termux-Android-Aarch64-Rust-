@@ -45,7 +45,7 @@ use async_trait::async_trait;
 
 use crate::core::{
     entity::EntityKind,
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleCost, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -114,10 +114,13 @@ impl Module for AuUnclaimed {
 
         // Queensland Public Trustee register — the only AU jurisdiction with a
         // queryable CKAN unclaimed-money datastore (see the module docs for the
-        // empirical per-state verification). A portal/transport error is
-        // swallowed inside `process_qld`, so the module degrades to an empty
-        // result rather than erroring or tripping the circuit breaker.
-        process_qld(target, ctx, &mut result).await;
+        // empirical per-state verification). Because QLD is the *sole* source,
+        // a genuine failure of its primary query (transport error, non-2xx
+        // status, unparseable body, or a CKAN `success:false` application
+        // error) is propagated as a real module error rather than swallowed
+        // into an empty result (T2.119) — a real data.qld.gov.au outage must
+        // not read as "no unclaimed money found for this person."
+        process_qld(target, ctx, &mut result).await?;
 
         Ok(result)
     }
@@ -128,11 +131,18 @@ impl Module for AuUnclaimed {
 /// with an exact-name pass, owner Person/Organisation extraction, and
 /// suburb-level locality enumeration restricted to the seed's own postcodes).
 ///
-/// Extends `out` in place; a portal/transport error is logged-as-skipped so
-/// [`AuUnclaimed::process`] degrades to an empty result rather than aborting
-/// or tripping the circuit breaker. QLD is the only pass — see the module docs
-/// for why every other state/territory lacks a queryable datastore.
-async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResult) {
+/// Extends `out` in place. QLD is the *only* pass (see the module docs for why
+/// every other state/territory lacks a queryable datastore), so a genuine
+/// failure of its **primary** query — a transport error, non-2xx status, or
+/// unparseable body (propagated by `fetch_json` via `?`), or a CKAN
+/// `success:false` application error — is returned as a real `Error` (T2.119)
+/// rather than swallowed into an empty result; [`AuUnclaimed::process`]
+/// surfaces it so a real outage of the last QLD source is visible instead of
+/// masquerading as "no unclaimed money found." A genuinely empty result set
+/// (no `result`, or no matching records) stays the honest clean miss, and the
+/// *secondary* exact-name fetch + per-postcode locality lookups remain
+/// best-effort enrichment layered on the primary records already in hand.
+async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResult) -> Result<()> {
     use qld_helpers::{
         derive_query, exact_postcodes, merge_records, query_url, records_to_entities,
         suburbs_to_entities,
@@ -140,21 +150,22 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
 
     let full = target.value.trim();
     if full.len() < 3 {
-        return;
+        return Ok(());
     }
     let surname = derive_query(target);
 
-    let broad: CkanResp = match fetch_json(&ctx.http, qld_helpers::SRC, &query_url(surname)).await {
-        Ok(r) => r,
-        Err(_) => return,
-    };
-    // A `success:false` (bad resource id / portal error) means no QLD data — skip
-    // the QLD pass but let the other states run.
+    let broad: CkanResp = fetch_json(&ctx.http, qld_helpers::SRC, &query_url(surname)).await?;
+    // A `success:false` (bad resource id / portal error) is a genuine
+    // application-level failure of the sole QLD source, not a "no data" result —
+    // surface it as a module error (mirrors `acnc_charities`/the ASIC modules).
     if broad.success == Some(false) {
-        return;
+        return Err(Error::module(
+            qld_helpers::SRC,
+            "CKAN datastore_search returned success=false (bad resource id or portal error)",
+        ));
     }
     let Some(broad_res) = broad.result else {
-        return;
+        return Ok(());
     };
     let total = broad_res.total.unwrap_or(broad_res.records.len() as u64);
     let mut records = broad_res.records;
@@ -185,6 +196,7 @@ async fn process_qld(target: &Target, ctx: &ModuleContext, out: &mut ModuleResul
         &ctx.scan_id,
     ));
     out.extend(suburbs_to_entities(&pc_localities, &ctx.scan_id));
+    Ok(())
 }
 
 #[cfg(test)]

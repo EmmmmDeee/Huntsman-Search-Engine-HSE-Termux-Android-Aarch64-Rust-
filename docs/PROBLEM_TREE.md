@@ -2156,14 +2156,43 @@ direct.**
   `Response` parses. Gate green: fmt/clippy `--all-targets -D warnings`/
   strict-rustdoc `cargo doc`/`cargo test`. **Paired:** `SOLUTION_TREE`
   SOL-ASIC-CKAN-HANDROLL `[ ]`→`[x]` — same commit.
-- **`[ ]` T2.119 · `au_unclaimed`, the sole remaining QLD CKAN data source,
+- **`[x]` T2.119 · `au_unclaimed`, the sole remaining QLD CKAN data source,
   swallows any transport/parse failure into a clean empty result.**
   The module's own doc self-documents this as intentional, but it means a
   real outage of the last QLD source reads as "no unclaimed money found."
   → **Solution:** surface transport/parse failure as an error instead of a
   silent empty result. **P2**. *Queued from the 2026-07-14 comprehensive
-  audit, wave 1 (module categories) — not yet investigated or fixed.*
-  **Paired:** `SOLUTION_TREE` SOL-AU-UNCLAIMED-SWALLOWED (new stub).
+  audit, wave 1 (module categories).* **Fixed (2026-07-15):** the module had
+  already been migrated onto the shared `util::ckan::Response` (it captures
+  `success`), but `process_qld` still swallowed the **primary** QLD query's
+  failure two ways — `match fetch_json(…) { Ok(r) => r, Err(_) => return }`
+  discarded a transport error / non-2xx / unparseable body, and a
+  `success == Some(false)` envelope returned early as a skip — while
+  `process()` unconditionally returned `Ok`, and the doc comments described
+  this as deliberate ("degrades to an empty result… let the other states
+  run"). That rationale was itself stale: QLD is the *only* pass (every other
+  state/territory was empirically verified to lack a queryable datastore), so
+  there are no "other states" to protect, and a failure of the sole source is
+  a total failure. Made `process_qld` return `Result<()>`: the primary fetch
+  now propagates via `?`, a `success:false` envelope becomes an
+  `Error::module` (mirroring `acnc_charities`/the T2.118 ASIC fix), and
+  `process()` surfaces it with `?`. A genuinely empty result set (no `result`
+  / no matching records) stays the honest clean miss, and the **secondary**
+  exact-name fetch + per-postcode locality lookups remain best-effort
+  enrichment (they layer on the primary records already in hand, so their
+  failure must not erase a real hit). **Empirically validated against the
+  real API:** a direct `curl` confirmed the live `data.qld.gov.au` response is
+  `{"success": true, "result": {"records":[…]}}`, and a new live `#[ignore]`
+  test drives the real `process()` end-to-end against the register —
+  `au_unclaimed_live_finds_qld_records_for_a_common_surname` surfaced **528
+  real entities** for a `John Smith` query, proving the fixed path fetches,
+  checks `success`, parses, and returns `Ok` on a healthy query (never the new
+  error path spuriously). The honest-failure propagation itself rests on
+  `fetch_json`'s already-hermetically-tested non-2xx→`Err` contract
+  (`fetch_json_propagates_a_non_2xx_status_as_err`), same rationale as
+  T2.115/T2.118. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test`. **Paired:** `SOLUTION_TREE`
+  SOL-AU-UNCLAIMED-SWALLOWED `[ ]`→`[x]` — same commit.
 - **`[x]` T2.120 · `asic_director::process()` swallows every failure
   (transport error, non-2xx, oversized body) into a silent
   `Ok(ModuleResult::new())`.**
@@ -17178,3 +17207,29 @@ way, so this specific drift class can't recur silently again.
   test` — 4864 total pass (net 0; a pure reuse refactor onto tested shared
   code). **Paired:** `SOLUTION_TREE` SOL-ASIC-CKAN-HANDROLL `[ ]`→`[x]`, §5 —
   same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.119** (`au_unclaimed`, the sole
+  remaining QLD CKAN source, swallowing its primary fetch failure into a
+  silent empty result). Read the code before trusting the stub: the module
+  had already been migrated onto the shared `util::ckan::Response` (so it
+  parses `success`), but `process_qld` still discarded the **primary** QLD
+  query's `Err` (`match … { Ok(r) => r, Err(_) => return }`) and returned
+  early on `success:false`, with `process()` always `Ok` — and the doc
+  comments rationalised the swallow as "degrade to empty… let the other
+  states run." That rationale was stale: QLD is the *only* pass (every other
+  state/territory was empirically verified to lack a queryable datastore), so
+  a failure of the sole source is total, not partial. Made `process_qld`
+  return `Result<()>`, propagating the primary fetch failure via `?` and
+  turning `success:false` into an `Error::module` (mirroring
+  `acnc_charities`/T2.118); the secondary exact-name fetch + locality lookups
+  stay best-effort (they enrich the primary records already in hand). Fixed
+  the stale doc comments to match. **Validated with genuine execution:** a
+  `curl` confirmed the live `data.qld.gov.au` `{"success":true,"result":…}`
+  shape, and a NEW live `#[ignore]` test
+  (`au_unclaimed_live_finds_qld_records_for_a_common_surname`) drives the real
+  `process()` end-to-end — 528 real entities for `John Smith`, proving the
+  fixed path returns `Ok` on a healthy query, not the new error path. The
+  honest-failure propagation rests on `fetch_json`'s already-tested non-2xx→
+  `Err` contract (same rationale as T2.115/T2.118). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4864
+  total pass (+1 `#[ignore]` live test, not counted). **Paired:**
+  `SOLUTION_TREE` SOL-AU-UNCLAIMED-SWALLOWED `[ ]`→`[x]`, §5 — same commit.

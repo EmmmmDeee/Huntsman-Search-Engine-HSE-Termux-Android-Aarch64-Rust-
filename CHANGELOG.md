@@ -472,6 +472,17 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`au_unclaimed`, the sole remaining QLD CKAN unclaimed-money source,
+  swallowed its primary fetch failure into a silent empty result
+  (T2.119).** `process_qld` discarded the primary QLD query's transport/
+  status/parse error and returned early on a CKAN `success:false` envelope,
+  so a real `data.qld.gov.au` outage read as "no unclaimed money found." It
+  now returns a `Result`: the primary fetch propagates via `?`,
+  `success:false` surfaces as a module error, and `process()` reports it
+  (the secondary exact-name fetch and locality lookups remain best-effort).
+  Validated end-to-end against the real register (a new live test surfaced
+  528 real entities for a common surname). The stale "swallow to let other
+  states run" doc comment was corrected — QLD is the only pass.
 - **Three ASIC modules (`asic_persons`, `asic_banned_orgs`,
   `asic_business_names`) hand-rolled a CKAN fetch that dropped the `success`
   field and swallowed every failure into an empty result (T2.118).** A
