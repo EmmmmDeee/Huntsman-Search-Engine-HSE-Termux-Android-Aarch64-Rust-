@@ -1017,6 +1017,48 @@ fn people_search_name_extraction_requires_on_target_relation() {
 }
 
 #[test]
+fn address_corroboration_cannot_reach_verified_on_a_surname_placename_collision() {
+    // Live-reproduced from a real "Brett Lawnton" scan's debug bundle
+    // (2026-07-15): "Lawnton" is both the subject's surname AND a real
+    // Brisbane, QLD suburb (postcode 4501). Every real-estate/reverse-lookup
+    // page ABOUT the suburb satisfies `result_names_the_subject` (the surname
+    // string appears, because it IS the suburb name) even though none of these
+    // pages are actually about the subject. ~99 such hits pushed the resulting
+    // "Lawnton, QLD" address entity to corroboration=99, class=VERIFIED in the
+    // real scan. All evidence on this path shares one literal source string
+    // ("search_engines"), so `source_count()` is always 1 and `c_effective()`
+    // equals the raw (capped) `confidence` — repetition alone must never be
+    // able to cross `Classification::VERIFIED_MIN` (0.75).
+    let target = Target::new(TargetKind::FullName, "Brett Lawnton");
+    let mk = |n: usize| SearchResult {
+        url: format!("https://view.com.au/property/qld/lawnton-4501/listing-{n}/"),
+        title: "Property for sale".to_string(),
+        snippet: "Located in Lawnton, QLD 4501".to_string(),
+        engine: "brave",
+        query: "Brett Lawnton".to_string(),
+    };
+    let results: Vec<SearchResult> = (0..99).map(mk).collect();
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    let addr = res
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::Address && e.value.to_lowercase().contains("lawnton"))
+        .expect("the suburb-collision address must still be extracted (it's real AU place data)");
+    assert!(
+        addr.corroboration >= 50,
+        "sanity: this test must actually exercise heavy repetition, got corroboration={}",
+        addr.corroboration
+    );
+    assert!(
+        addr.c_effective() < crate::core::entity::Classification::VERIFIED_MIN,
+        "99 same-source-type hits, all about the SUBURB not the subject, must not reach \
+         Verified via pure repetition: c_effective={} corroboration={}",
+        addr.c_effective(),
+        addr.corroboration
+    );
+}
+
+#[test]
 fn captcha_page_detection() {
     assert!(is_captcha_page(
         "<html><body>captcha-delivery.com script</body></html>"

@@ -472,6 +472,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`search_engines`' address extraction could reach the highest confidence
+  tier (Verified) on pure repetition of the same weak signal, when a
+  subject's surname happens to also be a real place name.** Live-reproduced
+  from a real "Brett Lawnton" scan's debug bundle: "Lawnton" is both the
+  subject's surname and a real Brisbane, QLD suburb, so every real-estate/
+  reverse-lookup page merely ABOUT the suburb (not the subject) satisfied
+  the module's subject-relevance gate — the surname string appears, because
+  it IS the suburb name. ~99 such hits pushed a "Lawnton, QLD" address
+  entity to `corroboration=99`, `class=VERIFIED`. All of that evidence
+  shares one literal source string (`"search_engines"`), so the entity's
+  distinct-source count was always 1 and its effective confidence was, by
+  design, supposed to equal the raw (capped) confidence value — but that
+  cap sat exactly at the Verified threshold (0.75) for a postcode-qualified
+  address, so as few as 2-3 hits could cross it, with the other ~96 doing
+  nothing further except inflating the displayed corroboration count.
+  Lowered the cap to 0.70 (bare city+state stays at its existing 0.65) so
+  same-source-type repetition can land at most in the Probable range, never
+  Verified — matching the documented intent of the surrounding code, which
+  had already drifted from the actual cap value. New regression test
+  reproduces the exact 99-hit scenario and proves it stays below Verified.
 - **OathNet's automatic pagination — added in the previous release — never
   actually worked against the real API.** A page of search results beyond
   the first was supposed to be fetched automatically, but a mismatch

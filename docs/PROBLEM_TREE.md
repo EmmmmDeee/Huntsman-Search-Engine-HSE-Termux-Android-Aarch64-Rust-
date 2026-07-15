@@ -3546,6 +3546,25 @@ direct.**
   structure exactly — `Ok(None)` now means only "no complete scan exists";
   any SQL or deserialize failure on the matched row propagates as `Err`.
   **P1** (a real wrong-result bug, not just a missing diagnostic).
+- **`[x]` T2.161 · `search_engines`' address-corroboration cap let pure
+  repetition of the same weak signal reach `class=VERIFIED`** — found from a
+  real operator-supplied debug bundle (`hse export --format debug`), not a
+  synthetic scenario. A live "Brett Lawnton" scan surfaced "Lawnton, QLD" (a
+  real Brisbane suburb sharing the subject's surname) at
+  `corroboration=99`/`class=VERIFIED`, sourced entirely from real-estate/
+  reverse-lookup pages about the SUBURB, not the subject — every such page
+  satisfied `result_names_the_subject` because the surname string IS the
+  suburb name. All evidence on this path shares the literal source string
+  `"search_engines"`, so `Entity::source_count()` is always 1 and
+  `c_effective()` equals the raw capped `confidence` — but `corr_cap` for a
+  postcode-qualified address was 0.75, exactly `Classification::VERIFIED_MIN`,
+  contradicting the surrounding comment's own stated intent ("prevent pure
+  suburb mentions reaching Probable via repetition alone"; the comment's own
+  cited cap value, 0.60, had also drifted from the real 0.75 in code). →
+  **Solution:** lowered `corr_cap` to 0.70 for postcode-qualified addresses
+  (bare city+state unchanged at 0.65) so same-source-type repetition can
+  land at most in Probable, never Verified; corrected the doc comment.
+  **P1** (a real false-positive at the tool's highest confidence tier).
 - **`[x]` T2.18 · `core::exposure`'s `DOB_KEYS` missing Wikidata's own DOB
   spelling** — the Exposure Index's `sensitive_component` scores a "date of
   birth" disclosure (+7 of the 30-point Sensitive PII ceiling) only when an
@@ -16630,3 +16649,25 @@ way, so this specific drift class can't recur silently again.
   panics on parsed HTTP bodies. Logged here per the established precedent
   for this bug class: a contained, single-declaration fix, not a new
   tracked node. **Paired:** `SOLUTION_TREE` §5 — same commit.
+- **2026-07-15** — **Executed T2.161** (address-corroboration cap allowing a
+  surname/placename collision to reach `class=VERIFIED`). Diagnosed from a
+  real operator-supplied `hse export --format debug` bundle (a live scan of
+  "Brett Lawnton" — the surname coincides with a real Brisbane, QLD suburb).
+  Before assuming a bug, ruled out two other candidates the same bundle
+  raised: the scan's `status: Running` was just a mid-flight export (a
+  `module_start`/`module_done`+`module_error` count mismatch traced to the
+  scan's own final, still-in-flight `search_engines` dispatch, not a hung
+  process), and the `see_know` "curl exited 6" DNS errors were traced to the
+  already-fixed `.icu`→`.eu` domain bug (the bundle's own environment
+  fingerprint — 781 files/208,702 LOC — confirmed the installed binary
+  predates that fix and this session's merge, so no new code change was
+  needed there). The address bug was real: fixed `corr_cap` from 0.75 to
+  0.70 for postcode-qualified addresses in `search_engines::build.rs`
+  (`Classification::VERIFIED_MIN` is 0.75; every evidence record on this
+  path shares one literal source string, so `c_effective()` equals the raw
+  capped `confidence` with no distinct-source discount). New regression
+  test `address_corroboration_cannot_reach_verified_on_a_surname_placename_
+  collision`, red/green-verified (fails at the old 0.75 cap with
+  `c_effective=0.75`, passes at 0.70). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4848
+  total pass (+1). **Paired:** `SOLUTION_TREE` §5 — same commit.

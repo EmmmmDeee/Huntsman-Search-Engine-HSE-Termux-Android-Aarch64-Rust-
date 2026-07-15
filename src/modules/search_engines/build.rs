@@ -287,8 +287,20 @@ pub(super) fn build_entities(
         //   City + State + Postcode → 0.55 (well-localised, AU-specific)
         //   City + State only       → 0.45 (standard locality mention)
         //   AU place contextual     → 0.42 (context-inferred, no explicit state)
-        // Corroboration cap for postcode-only / bare addresses is 0.60 to prevent
-        // pure suburb mentions reaching Probable (0.75+) via repetition alone.
+        // Corroboration cap (`corr_cap` below) must stay strictly below
+        // `Classification::VERIFIED_MIN` (0.75, not 0.60 as an earlier revision
+        // of this comment claimed): pure repetition of the SAME source type
+        // (`search_engines`, one evidence entry per hit) is exactly the case
+        // `Entity::c_effective`'s distinct-source model is designed not to
+        // over-credit, and an address entity must never present as Verified on
+        // that basis alone. Live-reproduced (2026-07-15): a real "Brett Lawnton"
+        // scan pushed "Lawnton, QLD" (a real Brisbane suburb that happens to
+        // share the subject's surname) to `corroboration=99`/`class=VERIFIED`
+        // purely from ~99 real-estate/reverse-lookup pages about the SUBURB, not
+        // the subject — the surname/placename collision let every such page
+        // satisfy `result_names_the_subject` below, and the old 0.75 cap for a
+        // postcode-qualified address sat exactly AT `VERIFIED_MIN`, so as few as
+        // 2-3 hits could cross it.
         //
         // Gated on the same `result_names_the_subject` subject-relevance check
         // computed above for email/phone extraction (originally: a live "Cindy
@@ -308,10 +320,13 @@ pub(super) fn build_entities(
                 .last()
                 .is_some_and(|t| t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()));
             let base_conf = if has_postcode { 0.55 } else { 0.45 };
-            // Cap for multi-source merge: postcode-qualified can reach 0.75;
-            // bare city+state is capped lower at 0.65 to prevent suburb noise
-            // from inflating to Probable via pure repetition.
-            let corr_cap = if has_postcode { 0.75 } else { 0.65 };
+            // Cap for multi-source merge: postcode-qualified can reach 0.70;
+            // bare city+state is capped lower at 0.65. Both stay strictly below
+            // `Classification::VERIFIED_MIN` (0.75) — pure repetition of the
+            // same source type must land at most in the Probable range, never
+            // Verified (see this block's header comment for the live "Brett
+            // Lawnton" case that crossed 0.75 via repetition alone).
+            let corr_cap = if has_postcode { 0.70 } else { 0.65 };
             if seen_domains.insert(addr_key.clone()) {
                 let mut e = Entity::new(EntityKind::Address, &addr, base_conf, scan_id);
                 e.tag(tags::SEARCH_DISCOVERED);
