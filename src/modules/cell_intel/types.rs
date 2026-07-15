@@ -91,4 +91,13 @@ pub(super) struct OpenCellidResp {
     pub(super) range: Option<u64>,
     #[serde(default)]
     pub(super) status: Option<String>,
+    /// OpenCelliD signals a bad/unknown API key as a plain HTTP `200` whose
+    /// entire body is `{"error":"API Key not known: <key>","code":2}` — no
+    /// HTTP-level 401/403/429 at all. Live-confirmed 2026-07-15 (same shape
+    /// `modules::opencellid::CellEntry::error` documents for the standalone
+    /// module sharing this key). Every other field is naturally absent on
+    /// this shape, so a bad key was previously indistinguishable from a
+    /// genuine "no fix" `status: "error"` response.
+    #[serde(default)]
+    pub(super) error: Option<String>,
 }

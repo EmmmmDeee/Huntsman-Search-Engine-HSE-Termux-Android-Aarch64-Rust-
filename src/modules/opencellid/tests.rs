@@ -126,4 +126,35 @@ fn cell_entry_optional_fields_default_to_none() {
     assert_eq!(c.range, None);
     assert_eq!(c.average_signal, None);
     assert_eq!(c.samples, None);
+    assert_eq!(c.error, None);
+}
+
+#[test]
+fn cell_entry_captures_the_real_live_confirmed_bad_key_error_shape() {
+    // Live-confirmed 2026-07-15: a garbage key against the real `cell/get`
+    // endpoint returns HTTP 200 with exactly this body — no HTTP-level
+    // 401/403/429 at all, so `error` is the only signal a bad key ever
+    // leaves. Every geo/tower field is absent, same as a genuine "not
+    // found" — `process_tower`'s `error.is_some()` check is what tells the
+    // two apart and reports the key to the pool.
+    let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
+    let c: super::CellEntry = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        c.error.as_deref(),
+        Some("API Key not known: garbage00000invalid")
+    );
+    assert_eq!(c.mcc, None, "the error shape carries no tower fields");
+}
+
+#[test]
+fn area_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
+    // Same live-confirmed shape as `cell/get`, for `cell/getInArea` — no
+    // "cells" key at all on an error response.
+    let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
+    let resp: AreaResp = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("API Key not known: garbage00000invalid")
+    );
+    assert_eq!(resp.cells.len(), 0);
 }

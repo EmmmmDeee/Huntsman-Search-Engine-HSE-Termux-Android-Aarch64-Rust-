@@ -133,11 +133,11 @@ impl Module for AbnLookup {
             TargetKind::AbnAcn => {
                 let digits = crate::util::str_util::ascii_digits(value);
                 if digits.len() == 11 {
-                    if let Some(data) = fetch::fetch_abn(guid, &digits).await? {
+                    if let Some(data) = fetch::fetch_abn(ctx, guid, &digits).await? {
                         parse::parse_abn_result(&data, &ctx.scan_id, &mut result);
                     }
                 } else if digits.len() == 9 {
-                    if let Some(data) = fetch::fetch_acn(guid, &digits).await? {
+                    if let Some(data) = fetch::fetch_acn(ctx, guid, &digits).await? {
                         parse::parse_abn_result(&data, &ctx.scan_id, &mut result);
                     }
                 } else {
@@ -148,7 +148,7 @@ impl Module for AbnLookup {
                 }
             }
             TargetKind::Organisation | TargetKind::FullName => {
-                if let Some(data) = fetch::fetch_name(guid, value).await? {
+                if let Some(data) = fetch::fetch_name(ctx, guid, value).await? {
                     parse::parse_name_results(&data, value, &ctx.scan_id, &mut result);
                 }
             }

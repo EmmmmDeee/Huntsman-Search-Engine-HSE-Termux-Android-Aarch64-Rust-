@@ -6,6 +6,7 @@ use serde_json::Value;
 use tokio::process::Command;
 
 use crate::core::error::{Error, Result};
+use crate::core::module::ModuleContext;
 
 use super::{BASE_URL, SRC};
 
@@ -13,18 +14,18 @@ use super::{BASE_URL, SRC};
 /// `Ok(None)` when the API is unreachable or returns a 4xx other than the
 /// auth/rate-limit cases that [`fetch_jsonp`] promotes to errors. The ABN is
 /// pre-validated as digits-only by the caller, so it needs no URL-encoding.
-pub(super) async fn fetch_abn(guid: &str, abn: &str) -> Result<Option<Value>> {
+pub(super) async fn fetch_abn(ctx: &ModuleContext, guid: &str, abn: &str) -> Result<Option<Value>> {
     let url = format!("{BASE_URL}/AbnDetails.aspx?abn={abn}&callback=cb&guid={guid}");
-    fetch_jsonp(&url).await
+    fetch_jsonp(ctx, guid, &url).await
 }
 
 /// Fetch the ABR record for an exact 9-digit ACN (`AcnDetails.aspx`). The ABR
 /// resolves the ACN to its parent ABN, so the payload parses through the same
 /// [`parse::parse_abn_result`](super::parse::parse_abn_result) path as an ABN
 /// hit. See [`fetch_abn`] for the `Ok(None)` / error contract.
-pub(super) async fn fetch_acn(guid: &str, acn: &str) -> Result<Option<Value>> {
+pub(super) async fn fetch_acn(ctx: &ModuleContext, guid: &str, acn: &str) -> Result<Option<Value>> {
     let url = format!("{BASE_URL}/AcnDetails.aspx?acn={acn}&callback=cb&guid={guid}");
-    fetch_jsonp(&url).await
+    fetch_jsonp(ctx, guid, &url).await
 }
 
 /// Fuzzy-match an organisation or person name against the register
@@ -32,10 +33,14 @@ pub(super) async fn fetch_acn(guid: &str, acn: &str) -> Result<Option<Value>> {
 /// [`parse::parse_name_results`](super::parse::parse_name_results). Unlike the
 /// ABN/ACN paths the name is free text, so it is URL-encoded before
 /// interpolation. See [`fetch_abn`] for the `Ok(None)` / error contract.
-pub(super) async fn fetch_name(guid: &str, name: &str) -> Result<Option<Value>> {
+pub(super) async fn fetch_name(
+    ctx: &ModuleContext,
+    guid: &str,
+    name: &str,
+) -> Result<Option<Value>> {
     let encoded = crate::util::http::urlencode(name);
     let url = format!("{BASE_URL}/MatchingNames.aspx?name={encoded}&callback=cb&guid={guid}");
-    fetch_jsonp(&url).await
+    fetch_jsonp(ctx, guid, &url).await
 }
 
 /// Fetch `url` via the system `curl`, returning `(body, http_status,
@@ -162,8 +167,14 @@ pub(super) fn parse_jsonp_body(body: &str) -> Option<Value> {
 /// unregistered GUID, which is operator-actionable, not a transient miss. Any
 /// other `>= 400` degrades to `Ok(None)` ("no record"). A success body is
 /// handed to [`parse_jsonp_body`]. A curl/transport failure ([`curl_with_status`]
-/// returning `None`) is also `Ok(None)`.
-async fn fetch_jsonp(url: &str) -> Result<Option<Value>> {
+/// returning `None`) is also `Ok(None)`. Every 401/403/429 is also reported to
+/// the key pool (`report_key_exhausted` against the registered `"abr"`
+/// service) — curl's own status-only round-trip previously surfaced these as
+/// a module error the operator could see, but never told the pool, so the
+/// GUID never showed as degraded on the health dashboard and (for an
+/// operator with more than one registered GUID) the pool never rotated away
+/// from a dead one.
+async fn fetch_jsonp(ctx: &ModuleContext, guid: &str, url: &str) -> Result<Option<Value>> {
     let (body, status, retry_after) = match curl_with_status(url, 10_000).await {
         Some(triple) => triple,
         None => return Ok(None),
@@ -177,9 +188,11 @@ async fn fetch_jsonp(url: &str) -> Result<Option<Value>> {
             None => return Ok(None),
         };
         if status == 429 {
+            ctx.report_key_exhausted("abr", guid, status);
             return Err(Error::module(SRC, "rate-limited (429) after retry"));
         }
         if status == 401 || status == 403 {
+            ctx.report_key_exhausted("abr", guid, status);
             return Err(Error::module(
                 SRC,
                 format!("HTTP {status}: unauthorized or forbidden"),
@@ -188,10 +201,13 @@ async fn fetch_jsonp(url: &str) -> Result<Option<Value>> {
         if status >= 400 {
             return Ok(None);
         }
-        return Ok(parse_jsonp_body(&body));
+        let parsed = parse_jsonp_body(&body);
+        report_if_invalid_guid(ctx, guid, parsed.as_ref());
+        return Ok(parsed);
     }
 
     if status == 401 || status == 403 {
+        ctx.report_key_exhausted("abr", guid, status);
         return Err(Error::module(
             SRC,
             format!("HTTP {status}: unauthorized or forbidden"),
@@ -202,5 +218,42 @@ async fn fetch_jsonp(url: &str) -> Result<Option<Value>> {
         return Ok(None);
     }
 
-    Ok(parse_jsonp_body(&body))
+    let parsed = parse_jsonp_body(&body);
+    report_if_invalid_guid(ctx, guid, parsed.as_ref());
+    Ok(parsed)
+}
+
+/// The ABR API does NOT signal a bad/unregistered GUID via an HTTP status —
+/// live-confirmed (2026-07-15): a garbage GUID against the real endpoint
+/// returns a plain `200` with `{"Message":"The GUID entered is not
+/// recognised as a Registered Party", ...}` (every other field blank). The
+/// existing parser (`parse::parse_abn_result`/`parse_name_results`) already
+/// treats ANY non-empty `Message` as a no-op "no match", which is correct
+/// for a genuine miss — but it never told the key pool when the message was
+/// actually about the credential, not the subject. Matches case-insensitive
+/// `"guid"` in the message text: narrow enough not to false-positive on a
+/// genuine "no records found"/"no match" miss (verified against the
+/// existing `Message: "No records found"` test fixture — it doesn't contain
+/// "guid"), broad enough to catch ABR's own wording without hardcoding the
+/// exact sentence, in case the API rephrases it.
+pub(super) fn is_invalid_guid_message(msg: &str) -> bool {
+    msg.to_ascii_lowercase().contains("guid")
+}
+
+/// Report a bad GUID to the key pool if `body`'s `Message` field indicates
+/// one — the body-level counterpart to the HTTP-status-level
+/// `report_key_exhausted` calls above, since ABR signals this case as a 200,
+/// not a 401/403. `401` is passed as the representative status (there is no
+/// real wire-level code to report; `report_key_exhausted` only branches on
+/// whether it's exactly `429`, so any non-429 value correctly lands `Invalid`
+/// rather than the auto-recovering `RateLimited` — this is a permanently bad
+/// credential, not a transient throttle).
+fn report_if_invalid_guid(ctx: &ModuleContext, guid: &str, body: Option<&Value>) {
+    if body
+        .and_then(|v| v.get("Message"))
+        .and_then(|m| m.as_str())
+        .is_some_and(is_invalid_guid_message)
+    {
+        ctx.report_key_exhausted("abr", guid, 401);
+    }
 }

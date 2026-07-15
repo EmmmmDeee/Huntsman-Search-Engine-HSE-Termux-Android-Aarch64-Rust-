@@ -301,3 +301,39 @@ fn build_tower_device_defaults_absent_signal_fields_to_zero() {
     assert_eq!(attrs.get("level").map(String::as_str), Some("0"));
     assert_eq!(attrs.get("registered").map(String::as_str), Some("false"));
 }
+
+// ---- OpenCellidResp bad-key error shape ----
+
+use super::types::OpenCellidResp;
+
+#[test]
+fn opencellid_resp_captures_the_real_live_confirmed_bad_key_error_shape() {
+    // Live-confirmed 2026-07-15: a garbage key against the real
+    // `cell/get` endpoint (the same one `query_opencellid` calls) returns
+    // HTTP 200 with exactly this body — no HTTP-level 401/403/429 at all.
+    // `query_opencellid`'s `data.error.is_some()` check is what tells this
+    // apart from a genuine "couldn't geolocate this tower" negative.
+    let raw = r#"{"error":"API Key not known: garbage00000invalid","code":2}"#;
+    let resp: OpenCellidResp = serde_json::from_str(raw).unwrap();
+    assert_eq!(
+        resp.error.as_deref(),
+        Some("API Key not known: garbage00000invalid")
+    );
+    assert_eq!(resp.lat, None, "the error shape carries no geo fields");
+    assert_eq!(
+        resp.status, None,
+        "distinct from the status:\"error\" shape"
+    );
+}
+
+#[test]
+fn opencellid_resp_status_error_is_distinct_from_the_body_error_field() {
+    // The pre-existing "no fix available" negative (a real key, genuinely no
+    // data) uses `status`, never `error` — the two fields must not be
+    // conflated, or a real key would wrongly report itself exhausted on
+    // every ordinary miss.
+    let raw = r#"{"status":"error"}"#;
+    let resp: OpenCellidResp = serde_json::from_str(raw).unwrap();
+    assert_eq!(resp.status.as_deref(), Some("error"));
+    assert_eq!(resp.error, None);
+}

@@ -348,6 +348,26 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **A single (non-comma) API key configured for a service never actually
+  registered with the key-rotation system at all — the root cause
+  underneath the "nine providers had no key rotation" fix below.** Only
+  the multi-key (`KEY=key1,key2,key3`) path ever added a key to the
+  rotation pool's tracked state; a plain single `KEY=value` — the normal
+  configuration for almost every operator, since most people configure
+  exactly one key per service — was silently invisible to it. In
+  practice this meant a rejected or rate-limited key was never actually
+  recorded anywhere: not on the health dashboard, not for automatic
+  rotation, nothing — for any operator running the default one-key-per-
+  service setup, regardless of which provider or how correct that
+  provider's own error handling was. Every key is now registered with
+  the rotation system the same way, whether it's alone or one of
+  several. Two providers also had their own separate issue found and
+  fixed during the same pass: the Australian Business Register and
+  OpenCelliD lookups both signal a bad/expired key by returning a normal
+  "success" response with the error described inside it, rather than the
+  usual rejected-request signal every other provider uses — both are now
+  checked for that case too, so a bad key is finally recognised rather
+  than silently retried forever.
 - **Nine of HSE's API-key-gated providers (GitHub, abuse.ch/URLhaus,
   hlrlookups.com, OpenCNAM, Trove, FullContact, domainsdb.info, NiamonX,
   OsintCat) had no key rotation, no health-dashboard visibility, and the

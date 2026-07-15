@@ -2304,6 +2304,113 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   the intervening T2.111 ip_reputation fix landed +6 in the same window).
   **Paired:** `SOLUTION_TREE` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES (extended)
   + SOL-KEYPOOL-REGISTRY-GAPS (new node), §5 — same commit.
+- **`[x]` T2.154 · The key pool never received a SINGLE (non-comma — the
+  documented, default, majority real-world) operator-configured key at
+  all, so every `report_key_exhausted` call anywhere in the codebase —
+  including every T2.152/T2.153 fix — was a silent no-op for it.** Direct
+  continuation of "the rotating API keys of all types," found by live
+  end-to-end testing of the T2.153 fixes rather than trusting the unit
+  tests alone: a real `hse scan` against `abn_lookup`/`opencellid` with
+  confirmed-dead live credentials, then `hse keys status`, showed the pool
+  completely empty (`"services": {}`) despite the scan visibly triggering
+  the new detection code. Root-caused to `util::keys::io::load`: its
+  CSV-multi-key-expansion loop was the ONLY code path in the entire tree
+  that ever called `KeyPool::add`, and it only fired when a configured
+  value contained a `,`. `KeyPool::mark_status`/`record_error` — the
+  landing point of every `report_key_exhausted` call anywhere in the
+  codebase — only UPDATE an existing entry
+  (`data.services.get_mut(&lower).find(|e| e.value == value)`) and
+  silently no-op when none exists. A plain `HUNTSMAN_X_KEY=value` with no
+  comma is the documented, default configuration for an operator running
+  exactly one key per service — not a corner case, the common case — so
+  every keyed module's error-reporting has likely never actually written
+  to the pool for a single-key operator in production, regardless of how
+  correct any individual module's own status-code handling was. Two
+  further gaps surfaced by the same live pass, needed for
+  `register_configured_keys` to have anything real to report: ABR
+  (`abn_lookup`) and OpenCelliD (`opencellid`/`cell_intel`, an independent
+  duplicate implementation of the same third-party API) each signal a bad
+  credential via HTTP `200` with the error embedded in the JSON body,
+  never via HTTP status — live-confirmed (2026-07-15) against the real
+  endpoints: `curl` against
+  `https://abr.business.gov.au/json/AbnDetails.aspx?...&guid=00000000-0000-0000-0000-000000000000`
+  returns `cb({"Abn":"","AbnStatus":"",...,"Message":"The GUID entered is
+  not recognised as a Registered Party"})` at HTTP 200; OpenCelliD's
+  `cell/getInArea`/`cell/get` with a garbage key return
+  `{"error":"API Key not known: garbage00000invalid","code":2}`, also HTTP
+  200. Both modules' existing 401/403/429 status checks (added or
+  confirmed present in the T2.153 round) were therefore structurally
+  unable to ever see these specific failures — correct as written, but
+  inert against the real API contract. **P1** (evidentiary integrity — the
+  "looks empty, is actually broken" class this project's doctrine already
+  treats seriously, T2.99/T2.111/T2.151/T2.152/T2.153 — but one layer
+  deeper, at the pool's data-model itself: a defect here silently voids
+  every fix built on top of it, in every module, forever, for the common
+  configuration). → **Solution:** new
+  `util::keys::io::register_configured_keys(map, pool)`, extracted from
+  `load()`'s inline CSV loop and extended to ALSO call `pool.add()` for a
+  plain non-empty single value (as `KeyStatus::Active`), not just a
+  comma-joined one; `load()` now calls it in place of the old inline loop.
+  Takes `pool: &KeyPool` as an explicit parameter rather than reaching for
+  the process-global `global_pool()` internally, so tests exercise a
+  fresh, isolated `KeyPool::new()` instead of racing the singleton.
+  `pool.add`'s own pre-existing dedup-by-exact-value
+  (`entries.iter().any(|e| e.value == key.value)`, gated first on
+  `is_poolable_service`) means calling this unconditionally on every
+  `load()` is safe: a key already tracked — including one already marked
+  `Invalid`/`RateLimited` from an earlier failure and then persisted — is
+  never silently reset back to `Active` by a later call.
+  `abn_lookup::fetch::fetch_jsonp` gained a new pure
+  `is_invalid_guid_message`/`report_if_invalid_guid` pair detecting ABR's
+  body-level `Message` signal (case-insensitive `"guid"` match — narrow
+  enough not to false-positive on a genuine "No records found" miss,
+  confirmed against the module's own existing test fixture for that
+  case). `opencellid::{AreaResp,CellEntry}` and
+  `cell_intel::types::OpenCellidResp` each gained an `error: Option
+  <String>` field checked immediately after a successful deserialize,
+  alongside the existing HTTP-status check —
+  `cell_intel::helpers::query_opencellid` additionally needed its first
+  parameter widened from `&reqwest::Client` to `&ModuleContext` to reach
+  `report_key_exhausted`/`note_keyed_error` at all, and both calls report
+  against the literal registered service name `"opencellid"`, not the
+  module's own `SRC` constant (`"cell_intel"`, which is not — and must
+  not be — a registered service; reporting against it would have silently
+  reintroduced this exact bug class one layer down, caught and corrected
+  before shipping by explicitly checking `SRC`'s value rather than
+  assuming). Live-verified against the real compiled binary end to end:
+  with `HUNTSMAN_ABR_GUID=00000000-0000-0000-0000-000000000000` and
+  `HUNTSMAN_OPENCELLID_KEY=garbage00000invalid` (real, confirmed-dead
+  credentials against the real APIs) in an isolated `$HOME`, a real `hse
+  scan --kind abn_acn --value 51824753556 --modules abn_lookup` and `hse
+  scan --kind coordinates --value "-33.8688,151.2093" --modules
+  opencellid` followed by `hse keys status`/`hse keys list` confirmed
+  BEFORE the fix a completely empty pool despite both scans visibly
+  triggering the new body-level detection code, and AFTER the fix both
+  `abr` and `opencellid` correctly showing `1 key, 0 active, 1 invalid` —
+  plus, as a side-confirmation of the fix's real-world reach, the
+  project's own embedded default keys (`hibp`, `see_know`, `wigle`,
+  `wigle_user`) now also correctly appear in the pool's data model for the
+  first time. 12 new regression tests:
+  `is_invalid_guid_message_matches_the_real_live_confirmed_abr_wording`/
+  `_is_case_insensitive`/`_does_not_false_positive_on_a_genuine_no_match`
+  on `abn_lookup`;
+  `cell_entry_captures_the_real_live_confirmed_bad_key_error_shape`/
+  `area_resp_captures_the_real_live_confirmed_bad_key_error_shape` on
+  `opencellid`;
+  `opencellid_resp_captures_the_real_live_confirmed_bad_key_error_shape`/
+  `opencellid_resp_status_error_is_distinct_from_the_body_error_field` on
+  `cell_intel` (all four pinned against the exact live-confirmed JSON
+  shapes above); and on `register_configured_keys`:
+  `_registers_a_plain_single_key`, `_still_splits_comma_separated_values`,
+  `_never_overwrites_an_already_tracked_key`,
+  `_ignores_unregistered_and_empty_values`, and
+  `_reports_the_now_live_confirmed_abr_and_opencellid_gap` (reproduces the
+  exact live-confirmed gap end to end against a local `KeyPool::new()`
+  instance, not the global singleton). Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4711 lib tests, +12).
+  **Paired:** `SOLUTION_TREE` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES (extended
+  again) + SOL-KEYPOOL-PLAIN-KEY-REGISTRATION (new node), §5 — same
+  commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -12871,3 +12978,40 @@ way, so this specific drift class can't recur silently again.
   warnings`/rustdoc clean, full suite 0 failures (4699 lib tests — no Rust
   changes this increment). **Paired:** `SOLUTION_TREE`
   SOL-STEALER-LOGS-VIEWER `[~]`→`[x]`, §4 note updated — same commit.
+- **2026-07-15** — **T2.154: the key pool's data model never received a
+  single (non-comma) operator-configured key at all — the root cause
+  underneath every T2.152/T2.153 fix.** Standing operator instruction to
+  keep diagnosing the rate-limit/key-rotation gap rather than stop at the
+  first layer of fixes. Live end-to-end testing of the T2.153 fixes (real
+  `hse scan` runs against `abn_lookup`/`opencellid` with confirmed-dead
+  live credentials, then `hse keys status`) found the pool completely
+  empty despite the scans visibly triggering the new detection code.
+  Root-caused to `util::keys::io::load`: only its CSV-multi-key-expansion
+  loop ever called `KeyPool::add`; a plain single `HUNTSMAN_X_KEY=value`
+  — the documented, default, majority real-world configuration — never
+  entered the pool's data at all, so `mark_status`/`record_error` (the
+  landing point of every `report_key_exhausted` call in the entire
+  codebase) silently no-op'd for it regardless of how correct any given
+  module's own error handling was. The same live pass also proactively
+  re-applied the "never assume, always live-test" discipline that caught
+  the T2.153 `niamonx`/`osintcat`/`urlhaus`/`domainsdb` mistakes: found
+  ABR and OpenCelliD (`opencellid` + the independent `cell_intel`
+  duplicate) both signal a bad credential via HTTP 200 with the error
+  embedded in the JSON body, never via HTTP status, so their existing
+  401/403/429 checks were correct but structurally inert against the real
+  API contract. Fixed via a new `register_configured_keys()` (registers a
+  plain single key exactly like the comma path already did, with
+  `pool.add`'s pre-existing dedup-by-value protecting any key already
+  tracked from being reset) plus body-level `Message`/`error` field
+  detection added to `abn_lookup`, `opencellid`, and `cell_intel`. 12 new
+  regression tests. Live-verified against the real compiled binary and
+  real live endpoints throughout, never synthetic: before the fix, `hse
+  keys status` showed a totally empty pool after real scans against real
+  dead credentials that DID trigger detection; after the fix, both
+  services correctly show `1 key, 0 active, 1 invalid`, and the project's
+  own embedded default keys (`hibp`, `see_know`, `wigle`, `wigle_user`)
+  also newly appear in the pool for the first time. Gate green: fmt/clippy
+  `-D warnings`/rustdoc clean, full suite 0 failures (4711 lib tests,
+  +12). **Paired:** `SOLUTION_TREE` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES
+  (extended again) + SOL-KEYPOOL-PLAIN-KEY-REGISTRATION (new) — same
+  commit.

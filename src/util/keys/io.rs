@@ -81,17 +81,62 @@ pub fn load() -> HashMap<String, String> {
         );
     }
 
-    // Multi-key support: if an env var contains comma-separated values,
-    // load each into the pool for round-robin rotation. The first key
-    // stays in the env map for backward compat; extras go to the pool.
+    // Register every configured key into the pool — multi-key (comma-
+    // separated) AND single-key alike. See `register_configured_keys`'s own
+    // doc comment for why the single-key path matters.
     let pool = crate::util::key_pool::global_pool();
+    register_configured_keys(&mut map, &pool);
+    // Fill any env var still missing a value from the pool. Single-sourced with
+    // the pool's own gap-fill helper instead of re-inlining the
+    // skip-if-present-else-`next_key` loop (the two had drifted apart). A
+    // CSV-expanded service already has its env entry set above, so this skips it.
+    crate::util::key_pool::merge_pool_into_env(&pool, &mut map);
+
+    map
+}
+
+/// Register every `HUNTSMAN_*` key present in `map` into `pool` — multi-key
+/// (comma-separated) AND single-key alike.
+///
+/// Previously ONLY the comma path registered anything: a plain single
+/// `HUNTSMAN_X_KEY=value` (the common case — most operators configure
+/// exactly one key per service, never run `hse keys add`, and never have a
+/// second key to comma-join) was never added to `pool`'s data at all. Since
+/// [`KeyPool::mark_status`](crate::util::key_pool::KeyPool)/`record_error`
+/// — the entire landing point of every `report_key_exhausted` call across
+/// every keyed module, including the T2.152/T2.153 fixes and this file's
+/// own callers — only UPDATE an existing entry and silently no-op when none
+/// exists, a single-key operator's key could never be marked rate-limited/
+/// invalid, never appeared on the health dashboard, and never benefited
+/// from the pool's rotation infrastructure at all — regardless of how
+/// correct each module's own status-code handling was. This is the root
+/// cause underneath every module-level rate-limit fix in this codebase: the
+/// reporting endpoint was correct, but had nothing to report INTO for the
+/// majority real-world configuration.
+///
+/// `pool.add` already dedups by exact value (a no-op if this key is already
+/// present, e.g. from a previous call this process, or already correctly
+/// marked Invalid/Revoked from an earlier failure) — so calling this
+/// unconditionally on every `load()` is safe and never clobbers existing
+/// state. On the multi-key path, `map` is updated in place so the first key
+/// stays the "primary" env value (unchanged behaviour); the single-key path
+/// never needs to touch `map`, since the value is already exactly what's
+/// there. Takes `pool` explicitly (rather than reaching for the global
+/// singleton itself) so a test can exercise it against a fresh, isolated
+/// [`KeyPool`](crate::util::key_pool::KeyPool) instead of the process-global
+/// one every other test also mutates.
+pub(super) fn register_configured_keys(
+    map: &mut HashMap<String, String>,
+    pool: &crate::util::key_pool::KeyPool,
+) {
     for svc in crate::util::key_pool::service_defs() {
-        // Avoid cloning the value in the common case (no comma / no rotation).
-        // Bind the entry once and clone only after confirming rotation is needed
-        // — a single map lookup with no fallible unwrap.
-        if let Some(raw) = map.get(svc.env_var)
-            && raw.contains(',')
-        {
+        // Avoid cloning the value in the common (single-key, no rotation)
+        // case. Bind the entry once and clone only after confirming rotation
+        // is needed — a single map lookup with no fallible unwrap.
+        let Some(raw) = map.get(svc.env_var) else {
+            continue;
+        };
+        if raw.contains(',') {
             let val = raw.clone();
             let keys: Vec<&str> = val
                 .split(',')
@@ -112,15 +157,12 @@ pub fn load() -> HashMap<String, String> {
                     keys.len()
                 );
             }
+        } else if !raw.is_empty() {
+            let mut entry = crate::util::key_pool::KeyEntry::new(raw.clone());
+            entry.status = crate::util::key_pool::KeyStatus::Active;
+            pool.add(svc.name, entry);
         }
     }
-    // Fill any env var still missing a value from the pool. Single-sourced with
-    // the pool's own gap-fill helper instead of re-inlining the
-    // skip-if-present-else-`next_key` loop (the two had drifted apart). A
-    // CSV-expanded service already has its env entry set above, so this skips it.
-    crate::util::key_pool::merge_pool_into_env(&pool, &mut map);
-
-    map
 }
 
 /// Proactively populate API keys before a scan starts:

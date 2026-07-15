@@ -195,6 +195,35 @@ fn parse_jsonp_body_returns_none_for_malformed_inner_json() {
 }
 
 #[test]
+fn is_invalid_guid_message_matches_the_real_live_confirmed_abr_wording() {
+    use super::fetch::is_invalid_guid_message;
+    // Live-confirmed 2026-07-15: a garbage GUID against the real ABR endpoint
+    // returns HTTP 200 with exactly this message (every other field blank) —
+    // the API never signals a bad credential via status code at all.
+    assert!(is_invalid_guid_message(
+        "The GUID entered is not recognised as a Registered Party"
+    ));
+}
+
+#[test]
+fn is_invalid_guid_message_is_case_insensitive() {
+    use super::fetch::is_invalid_guid_message;
+    assert!(is_invalid_guid_message("guid revoked"));
+    assert!(is_invalid_guid_message("GUID REVOKED"));
+    assert!(is_invalid_guid_message("Invalid Guid supplied"));
+}
+
+#[test]
+fn is_invalid_guid_message_does_not_false_positive_on_a_genuine_no_match() {
+    use super::fetch::is_invalid_guid_message;
+    // The existing fixture used by `parse_abn_response`'s sibling "no match"
+    // test elsewhere in this file — a real ABR "clean miss" message must
+    // never be misread as a bad-credential signal.
+    assert!(!is_invalid_guid_message("No records found"));
+    assert!(!is_invalid_guid_message(""));
+}
+
+#[test]
 fn split_curl_headers_extracts_retry_after_and_the_real_body() {
     use super::fetch::split_curl_headers;
     let raw = "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 30\r\nContent-Type: text/plain\r\n\r\ncb({\"Abn\":\"123\"})";

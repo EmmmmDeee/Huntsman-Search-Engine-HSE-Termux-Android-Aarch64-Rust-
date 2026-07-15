@@ -38,7 +38,7 @@ pub(super) fn build_tower_device(cell: &Cell, key: &TowerKey, scan_id: &str) -> 
 }
 
 pub(super) async fn query_opencellid(
-    http: &reqwest::Client,
+    ctx: &crate::core::module::ModuleContext,
     api_key: &str,
     tower: &TowerKey<'_>,
     radio: &str,
@@ -57,19 +57,38 @@ pub(super) async fn query_opencellid(
         urlencode(radio),
     );
 
-    let resp = http
+    let resp = ctx
+        .http
         .get(&url)
         .header("Accept", "application/json")
         .send()
         .await
         .ok()?;
 
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // Reported against the registered "opencellid" SERVICE, not this
+        // module's own `SRC` ("cell_intel") — `HUNTSMAN_OPENCELLID_KEY` is
+        // the same key the standalone `opencellid` module uses and reports
+        // against; reporting under "cell_intel" would silently no-op (no
+        // such service registered) and the pool would never learn the real
+        // "opencellid" key was rejected/throttled, exactly the T2.153 class
+        // of bug this fixes.
+        crate::util::http::note_keyed_error(status.as_u16(), "opencellid", api_key, ctx);
         return None;
     }
 
     let data: OpenCellidResp = crate::util::http::json_scanned(resp, SRC).await.ok()?;
 
+    if data.error.is_some() {
+        // See `OpenCellidResp::error`'s doc comment — a body-level key
+        // failure OpenCelliD signals as a plain 200, so this can't be
+        // caught by the status check above. Distinct from the `status:
+        // "error"` case just below (a genuine "couldn't geolocate this
+        // tower" negative with a real key — not a key problem).
+        crate::util::http::note_keyed_error(401, "opencellid", api_key, ctx);
+        return None;
+    }
     if data.status.as_deref() == Some("error") {
         return None;
     }

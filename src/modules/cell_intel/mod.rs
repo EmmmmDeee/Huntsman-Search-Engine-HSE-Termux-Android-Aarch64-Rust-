@@ -127,7 +127,7 @@ impl Module for CellIntel {
             let radio = key.radio_code();
 
             if let Some(api) = api_key
-                && let Some((lat, lon, range)) = query_opencellid(&ctx.http, api, &key, radio).await
+                && let Some((lat, lon, range)) = query_opencellid(ctx, api, &key, radio).await
             {
                 let coords = format!("{lat:.6},{lon:.6}");
                 let confidence = accuracy_to_confidence(range);
