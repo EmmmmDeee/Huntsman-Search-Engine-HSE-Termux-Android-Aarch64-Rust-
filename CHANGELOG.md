@@ -11,6 +11,24 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **One-click consolidated system self-diagnosis bundle: `GET /api/v1/debug/bundle`
+  plus a "Download full diagnostic bundle" button in Settings → Diagnostics.**
+  A single downloadable file that encompasses the whole engine's diagnostic +
+  validation state — led by an auto-computed **DETECTED ISSUES** verdict (it
+  runs the self-test and joins every otherwise-fragmented health signal into
+  one worst-first list: failed self-test checks and missing `curl` as CRITICAL;
+  module / search-engine / scraper drift, failed scans, and exhausted provider
+  quotas as WARNING) — then the environment fingerprint, disabled capabilities
+  (modules, engines, and features turned off), the full self-test, live and
+  cross-scan module / engine / scraper health, provider quotas, the recent-scan
+  index with each failed scan's error inline, the verbose log ring, and the
+  source-file manifest. It joins the previously-scattered `/health`,
+  `/selftest`, `/modules/health`, `/engines/health`, `/health/scrapers`, and
+  `/logs` surfaces into one artifact organised so the engine can be repaired
+  from a single file. Loopback-only (the log ring can contain scan targets /
+  PII) and secret-free (key names only, never values). The same renderer backs
+  a future CLI parity path and shares its environment fingerprint with the
+  per-scan `debug.txt` bundle.
 - **Live radar now has a historical-review surface: `GET /api/v1/radar/history`
   plus a "Radar history" panel on the Live page.** Previously every radar
   sweep (`hse radar` / the web "Activate Live Radar" button / continuous

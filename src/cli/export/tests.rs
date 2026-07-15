@@ -1,6 +1,8 @@
 use super::dossier::join_or_dash;
 use super::renderers::{
-    render_csv, render_debug_bundle, render_full, render_gexf, render_json, render_report,
+    IssueInputs, SEV_CRITICAL, SEV_WARNING, SystemDebugInputs, detect_issues, render_csv,
+    render_debug_bundle, render_full, render_gexf, render_json, render_report,
+    render_system_debug_bundle,
 };
 use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
 use crate::storage::Store;
@@ -699,4 +701,219 @@ mod prop {
             );
         }
     }
+}
+
+// ── System self-diagnosis bundle ───────────────────────────────────────────
+
+fn passing_selftest() -> crate::selftest::Report {
+    crate::selftest::Report {
+        ok: true,
+        passed: 1,
+        warned: 0,
+        failed: 0,
+        total: 1,
+        elapsed_ms: 3,
+        version: "test".into(),
+        checks: vec![crate::selftest::Check {
+            name: "modules.registry".into(),
+            status: crate::selftest::Status::Pass,
+            detail: "ok".into(),
+        }],
+    }
+}
+
+fn failing_selftest() -> crate::selftest::Report {
+    crate::selftest::Report {
+        ok: false,
+        passed: 0,
+        warned: 0,
+        failed: 1,
+        total: 1,
+        elapsed_ms: 4,
+        version: "test".into(),
+        checks: vec![crate::selftest::Check {
+            name: "storage".into(),
+            status: crate::selftest::Status::Fail,
+            detail: "temp db open failed".into(),
+        }],
+    }
+}
+
+fn healthy_issue_inputs() -> IssueInputs<'static> {
+    IssueInputs {
+        selftest_ok: true,
+        selftest_failures: vec![],
+        curl_present: true,
+        unhealthy_modules: vec![],
+        engines_down: vec![],
+        engines_blocked: vec![],
+        scrapers_drifted: vec![],
+        scrapers_yield_drifted: vec![],
+        failed_scans: 0,
+        quota_exhausted_providers: vec![],
+    }
+}
+
+#[test]
+fn detect_issues_is_empty_for_a_fully_healthy_engine() {
+    // The idempotency/"all green" case: nothing wrong ⇒ no issues, which the
+    // renderer turns into an explicit "no issues auto-detected".
+    assert!(detect_issues(&healthy_issue_inputs()).is_empty());
+}
+
+#[test]
+fn detect_issues_flags_a_failing_selftest_check_as_critical() {
+    let mut inp = healthy_issue_inputs();
+    inp.selftest_ok = false;
+    inp.selftest_failures = vec![("storage", "temp db open failed")];
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].severity, SEV_CRITICAL);
+    assert_eq!(issues[0].category, "self-test");
+    assert!(issues[0].detail.contains("storage"));
+    assert!(issues[0].detail.contains("temp db open failed"));
+}
+
+#[test]
+fn detect_issues_flags_missing_curl_as_critical() {
+    let mut inp = healthy_issue_inputs();
+    inp.curl_present = false;
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].severity, SEV_CRITICAL);
+    assert_eq!(issues[0].category, "environment");
+    assert!(issues[0].detail.contains("curl"));
+}
+
+#[test]
+fn detect_issues_flags_module_engine_scraper_drift_and_failed_scans_as_warnings() {
+    let mut inp = healthy_issue_inputs();
+    inp.unhealthy_modules = vec![("gravatar", 3)];
+    inp.engines_down = vec!["bing"];
+    inp.engines_blocked = vec!["brave"];
+    inp.scrapers_drifted = vec![("psbdmp", 5)];
+    inp.scrapers_yield_drifted = vec!["hibp"];
+    inp.failed_scans = 2;
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 6, "one issue per distinct signal");
+    assert!(
+        issues.iter().all(|i| i.severity == SEV_WARNING),
+        "degradations are warnings, not criticals"
+    );
+    let cats: std::collections::BTreeSet<&str> = issues.iter().map(|i| i.category).collect();
+    for expected in [
+        "module-health",
+        "search-engine",
+        "scraper-drift",
+        "scraper-yield-drift",
+        "scans",
+    ] {
+        assert!(cats.contains(expected), "missing category {expected}");
+    }
+}
+
+#[test]
+fn detect_issues_flags_an_exhausted_provider_quota_as_a_warning() {
+    let mut inp = healthy_issue_inputs();
+    inp.quota_exhausted_providers = vec!["seeknow", "wigle:geo"];
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 2);
+    assert!(issues.iter().all(|i| i.severity == SEV_WARNING));
+    assert!(issues.iter().all(|i| i.category == "provider-quota"));
+    assert!(issues.iter().any(|i| i.detail.contains("seeknow")));
+}
+
+#[test]
+fn detect_issues_sorts_critical_before_warning() {
+    let mut inp = healthy_issue_inputs();
+    inp.curl_present = false; // 1 critical
+    inp.engines_down = vec!["bing"]; // 1 warning
+    let issues = detect_issues(&inp);
+    assert_eq!(issues.len(), 2);
+    assert_eq!(
+        issues[0].severity, SEV_CRITICAL,
+        "critical issues must render first"
+    );
+    assert_eq!(issues[1].severity, SEV_WARNING);
+}
+
+#[test]
+fn detect_issues_ordering_is_deterministic_across_input_permutations() {
+    // Two IssueInputs describing the same state but built in a different order
+    // must yield byte-identical verdicts, so two bundles diff cleanly.
+    let mut a = healthy_issue_inputs();
+    a.engines_down = vec!["bing", "brave"];
+    a.unhealthy_modules = vec![("gravatar", 2), ("psbdmp", 4)];
+    let mut b = healthy_issue_inputs();
+    b.engines_down = vec!["brave", "bing"];
+    b.unhealthy_modules = vec![("psbdmp", 4), ("gravatar", 2)];
+    assert_eq!(detect_issues(&a), detect_issues(&b));
+}
+
+#[test]
+fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_error() {
+    let mut scan = Scan::new("scan-sysdbg", Target::new(TargetKind::Email, "x@y.com"));
+    scan.status = ScanStatus::Failed;
+    scan.error = Some("connector boom".into());
+    let inputs = SystemDebugInputs {
+        selftest: failing_selftest(),
+        scans: vec![scan],
+        scraper_health: vec![],
+        scraper_events_checked: 0,
+        log_dump: "TRACE hse::marker unique-log-line-42\n".into(),
+        log_lines: 1,
+    };
+    let out = render_system_debug_bundle(&inputs);
+
+    for header in [
+        "HUNTSMAN SYSTEM DEBUG BUNDLE",
+        "── DETECTED ISSUES",
+        "── ENVIRONMENT",
+        "── DISABLED CAPABILITIES",
+        "── VALIDATION (SELF-TEST) ──",
+        "── MODULE HEALTH",
+        "── SEARCH-ENGINE LIVENESS",
+        "── SCRAPER HEALTH",
+        "── PROVIDER QUOTAS",
+        "── RECENT SCANS",
+        "── RECENT LOGS",
+        "── SOURCE FILES",
+    ] {
+        assert!(out.contains(header), "missing section header: {header}");
+    }
+    // The self-diagnosing verdict surfaces the failing self-test check.
+    assert!(out.contains("[CRITICAL]"), "verdict must flag the failure");
+    assert!(out.contains("temp db open failed"));
+    // The failed scan's error is inline — the debuggability gap the UI map
+    // flagged (a failed scan's top-level error was unreachable in the SPA).
+    assert!(out.contains("error: connector boom"));
+    // Traceability with no redaction: the exact log line is carried verbatim.
+    assert!(out.contains("unique-log-line-42"));
+}
+
+#[test]
+fn system_bundle_reports_all_clear_when_healthy() {
+    // A passing self-test, no scans, no drift ⇒ the headline verdict is the
+    // explicit all-clear, not a blank section.
+    let inputs = SystemDebugInputs {
+        selftest: passing_selftest(),
+        scans: vec![],
+        scraper_health: vec![],
+        scraper_events_checked: 0,
+        log_dump: String::new(),
+        log_lines: 0,
+    };
+    let out = render_system_debug_bundle(&inputs);
+    // NOTE: the DETECTED ISSUES verdict is deliberately NOT asserted here — the
+    // renderer reads live process-global health (the shared module-health map,
+    // the engine-liveness cache, real `curl`) that this test doesn't inject, so
+    // an "all clear" is not guaranteed in a polluted/parallel test binary or on
+    // a host without curl. The all-clear CLASSIFICATION is covered hermetically
+    // by `detect_issues_is_empty_for_a_fully_healthy_engine`; here we assert
+    // only what the injected inputs deterministically control.
+    assert!(
+        out.contains("log ring empty"),
+        "empty log ring must be stated, not silently omitted"
+    );
+    assert!(out.contains("HUNTSMAN SYSTEM DEBUG BUNDLE"));
 }

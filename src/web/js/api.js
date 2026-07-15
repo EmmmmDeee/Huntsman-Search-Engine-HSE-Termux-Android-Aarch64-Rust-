@@ -129,6 +129,11 @@ export const API = {
   radarHistory: limit=>API._req('/api/v1/radar/history'+(limit?('?limit='+encodeURIComponent(limit)):'')),
   selftest:     ()=>API._req('/api/v1/selftest'),
   logsUrl:      ()=>'/api/v1/logs',
+  // One-click consolidated system self-diagnosis bundle (loopback-only):
+  // DETECTED ISSUES verdict + environment + self-test + module/engine/scraper
+  // health + recent scans + logs + source manifest — everything needed to
+  // repair the engine, in one downloadable file.
+  debugBundleUrl: ()=>'/api/v1/debug/bundle',
   updateStatus: ()=>API._req('/api/v1/update/status'),
   updateTrigger:()=>API._req('/api/v1/update/trigger',{method:'POST'}),
   // Cell-tower DB (backs Live Signal Radar / cell_intel geolocation).
