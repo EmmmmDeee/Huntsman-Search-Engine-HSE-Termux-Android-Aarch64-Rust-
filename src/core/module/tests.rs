@@ -290,3 +290,46 @@ use super::*;
             assert_eq!(back, cat, "{cat:?} did not round-trip through serde");
         }
     }
+
+    // ── ModuleResult::or_hard_failure ────────────────────────────────────
+
+    #[test]
+    fn or_hard_failure_errors_when_empty_and_a_hard_failure_occurred() {
+        // The exact regression this shares across every multi-sub-fetch
+        // module (T2.111 ip_reputation, T2.114 niamonx): previously this
+        // situation silently returned Ok(empty) — the operator could not
+        // tell a real outage from a clean negative.
+        let empty = ModuleResult::new();
+        let err = Error::module("test", "boom");
+        let out = empty.or_hard_failure(Some(err));
+        assert!(
+            out.is_err(),
+            "an empty result with a genuine failure must surface as Err, not a hollow Ok"
+        );
+    }
+
+    #[test]
+    fn or_hard_failure_stays_ok_when_empty_and_no_failure_occurred() {
+        // A real clean negative (every sub-fetch ran fine, found nothing)
+        // must NOT be turned into a spurious error.
+        let empty = ModuleResult::new();
+        let out = empty.or_hard_failure(None);
+        assert!(out.is_ok(), "a clean negative must stay Ok(empty)");
+        assert!(out.unwrap().is_empty());
+    }
+
+    #[test]
+    fn or_hard_failure_preserves_evidence_despite_a_sibling_failure() {
+        // If one sub-fetch hard-fails but ANOTHER already found real
+        // evidence, that evidence must never be thrown away just because a
+        // sibling sub-fetch also failed.
+        let mut with_data = ModuleResult::new();
+        with_data.push(Entity::new(EntityKind::IpAddress, "1.2.3.4", 0.9, "test-scan"));
+        let err = Error::module("test", "a sibling sub-fetch failed");
+        let out = with_data.or_hard_failure(Some(err));
+        assert!(
+            out.is_ok(),
+            "real evidence from one sub-fetch must survive a sibling's failure"
+        );
+        assert_eq!(out.unwrap().len(), 1);
+    }

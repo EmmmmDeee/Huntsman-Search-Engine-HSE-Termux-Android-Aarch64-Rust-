@@ -182,31 +182,44 @@ impl Module for Gravatar {
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
-        let mut result = ModuleResult::new();
         let email = target.value.trim();
         if !email.contains('@') {
-            return Ok(result);
+            return Ok(ModuleResult::new());
         }
         let hash = gravatar_hash(email);
         let url = format!("https://gravatar.com/{hash}.json");
 
-        // "No public profile" reaches us several ways: a 404, or a 200 whose
-        // body is the literal `"User not found"` (the shape Gravatar returns on
-        // the curl fallback) or otherwise isn't a `GravatarResp`. None of these
-        // is an operational error — they all mean the email has no Gravatar, a
-        // clean miss. Only an unparseable body was previously propagated via `?`
-        // as a spurious module error; fold it into the empty-result path.
-        let resp: GravatarResp = match fetch_json_or_404(&ctx.http, SRC, &url).await {
-            Ok(Some(r)) => r,
-            Ok(None) | Err(_) => return Ok(result),
-        };
-        let Some(entry) = resp.entry.into_iter().next() else {
-            return Ok(result);
-        };
-
-        extract_entry(&entry, &hash, &ctx.scan_id, &mut result);
-        Ok(result)
+        let fetched = fetch_json_or_404(&ctx.http, SRC, &url).await;
+        resolve_profile(fetched, &hash, &ctx.scan_id)
     }
+}
+
+/// Turn the profile fetch's raw outcome into `process()`'s return value.
+///
+/// `Ok(None)` is Gravatar's own live "no such profile" signal — a genuine
+/// HTTP 404 (reconfirmed live 2026-07-15 against a random unregistered
+/// email; `fetch_json_or_404` maps a 404 straight to `None` before any body
+/// is even read) — and stays the ordinary, honest empty success. Every
+/// `Err` (a non-2xx status such as 429/5xx, or a transport failure even the
+/// curl fallback could not rescue) is a genuine operational failure, not a
+/// clean miss, and must propagate — surfacing as a real `ModuleError` event
+/// and feeding the T2.7 health-signal streak — instead of silently
+/// masquerading as "this email has no Gravatar profile" (T2.112: the
+/// previous `Ok(None) | Err(_) => return Ok(result)` collapsed both into the
+/// same empty result, making a real outage indistinguishable from a clean
+/// negative). Pure (no I/O), so it is unit-testable without a live server,
+/// unlike `process()` itself, whose URL is hardcoded to gravatar.com.
+fn resolve_profile(
+    fetched: Result<Option<GravatarResp>>,
+    hash: &str,
+    scan_id: &str,
+) -> Result<ModuleResult> {
+    let mut result = ModuleResult::new();
+    let Some(entry) = fetched?.and_then(|r| r.entry.into_iter().next()) else {
+        return Ok(result);
+    };
+    extract_entry(&entry, hash, scan_id, &mut result);
+    Ok(result)
 }
 
 /// Turn a Gravatar profile entry into entities. Pure of I/O so it is unit-tested

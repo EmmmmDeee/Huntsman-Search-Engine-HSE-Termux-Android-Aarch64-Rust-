@@ -27,7 +27,7 @@ use regex::Regex;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
-    error::Result,
+    error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
@@ -166,6 +166,16 @@ impl Module for EmployerPivot {
                 }
             }
         }
+        if fetch_failed(homepage_ok, !all_text.is_empty()) {
+            return Err(Error::module(
+                SRC,
+                format!(
+                    "employer site {domain} never answered — the homepage request failed \
+                     at the transport level, returned a non-success HTTP status, or its body \
+                     was unreadable; not \"no business info found\""
+                ),
+            ));
+        }
         if all_text.is_empty() {
             return Ok(result);
         }
@@ -299,6 +309,26 @@ impl Module for EmployerPivot {
 
         Ok(result)
     }
+}
+
+/// Whether `process()`'s page-fetch loop should be surfaced as a real
+/// `Error::module` failure rather than its ordinary empty success. True
+/// precisely when the homepage was never successfully fetched
+/// (`homepage_ok` false — a transport error, non-success HTTP status, or an
+/// unreadable body on the very first request) AND no page's content was
+/// collected at all (`collected_any_content` false). Under the loop's own
+/// break-on-homepage-failure guard the two conditions always agree (a failed
+/// homepage means no other path is even attempted), but both are checked
+/// explicitly — mirroring `asic_director`'s `request_failed` two-bool
+/// decision table (T2.120) — so this stays correct even if the loop's
+/// early-break logic changes later. A homepage that answered fine but simply
+/// carried no business info (or whose later contact/about sub-pages 404) is
+/// not a failure — only "this domain never actually answered" is. Pure and
+/// free of `ModuleContext`/network, so it is unit-testable without a live
+/// server — see `tests::fetch_failed_*`.
+#[must_use]
+fn fetch_failed(homepage_ok: bool, collected_any_content: bool) -> bool {
+    !homepage_ok && !collected_any_content
 }
 
 fn domain_for_target(t: &Target) -> Option<String> {
