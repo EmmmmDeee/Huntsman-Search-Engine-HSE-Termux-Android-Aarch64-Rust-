@@ -59,14 +59,24 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
     let mut body = String::with_capacity(192 + entities.len() * 192);
     // `evidence_urls` + `evidence` make every row self-verifiable: the operator
     // can follow the source links and read each module's finding without
-    // reconstructing anything from the value alone.
-    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags\n");
+    // reconstructing anything from the value alone. `source_count` +
+    // `corroborating_sources` sit next to `corroboration` + `sources` for the
+    // same reason: `corroboration` is a raw per-module observation magnitude
+    // (summed on merge, never deduplicated) that does NOT drive `c_effective`
+    // — `source_count` (distinct corroborating sources) does. Without both
+    // numbers side by side, a reader has no way to tell from the CSV alone
+    // whether a high `corroboration` reflects genuine independent agreement.
+    body.push_str("kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags\n");
     for e in entities {
         let eff = e.c_effective();
+        let source_count = e.source_count();
         let tier = e.classify().to_string();
         let mut sources: Vec<&str> = e.evidence_sources().into_iter().collect();
         sources.sort_unstable();
         let sources = sources.join("|");
+        let mut corroborating: Vec<&str> = e.corroborating_sources().into_iter().collect();
+        corroborating.sort_unstable();
+        let corroborating_sources = corroborating.join("|");
         let tags = e.tags.join("|");
 
         // Distinct full URLs across all evidence (the verifiable links), and a
@@ -111,16 +121,18 @@ pub(crate) fn entities_to_csv(entities: &[crate::core::entity::Entity]) -> Strin
 
         let _ = writeln!(
             body,
-            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{}",
+            "{},{},{},{:.3},{:.3},{},{},{},{},{},{},{},{},{}",
             csv_escape(&e.kind.to_string()),
             csv_escape(&e.value),
             csv_escape(&e.raw_value),
             e.confidence,
             eff,
             e.corroboration,
+            source_count,
             tier,
             e.observed_at,
             csv_escape(&sources),
+            csv_escape(&corroborating_sources),
             csv_escape(&evidence_urls),
             csv_escape(&evidence),
             csv_escape(&tags),
@@ -134,21 +146,30 @@ pub async fn scan_report_json(
     Path(id): Path<String>,
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
-    match build_scan_report(
-        &*s.store,
-        &id,
-        wants_candidates(&params),
-        wants_infra(&params),
-    ) {
-        Ok(Some(report)) => {
-            let body = serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
-                tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
-                "{}".into()
-            });
+    // Offload to a blocking thread: build_scan_report does 3 synchronous SQLite
+    // reads + AU-location extraction and the pretty-JSON serialize is CPU-bound, so
+    // running them inline would stall one of the ~2 async reactor workers (matches
+    // scan_entities_csv / scan_export_gexf / scan_debug_bundle in this module).
+    let (id2, store) = (id.clone(), Arc::clone(&s.store));
+    let (cand, infra) = (wants_candidates(&params), wants_infra(&params));
+    let built = tokio::task::spawn_blocking(move || {
+        build_scan_report(store.as_ref(), &id2, cand, infra).map(|opt| {
+            opt.map(|report| {
+                serde_json::to_string_pretty(&report).unwrap_or_else(|e| {
+                    tracing::warn!(error = %e, "failed to serialize scan report to JSON string");
+                    "{}".into()
+                })
+            })
+        })
+    })
+    .await;
+    match built {
+        Ok(Ok(Some(body))) => {
             download_response(body, "application/json; charset=utf-8", &id, "json")
         }
-        Ok(None) => not_found(),
-        Err(e) => internal_error(&e),
+        Ok(Ok(None)) => not_found(),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("report task failed: {e}")),
     }
 }
 
@@ -315,13 +336,14 @@ pub(crate) fn extract_au_location_fix(
 pub async fn scan_export_gexf(
     State(s): State<Arc<AppState>>,
     Path(id): Path<String>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> impl IntoResponse {
     if let Some(resp) = scan_missing(&s, &id) {
         return resp;
     }
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let (entities, relations) = match tokio::task::spawn_blocking(move || {
+    let (mut entities, relations) = match tokio::task::spawn_blocking(move || {
         Ok::<_, crate::core::error::Error>((
             store.entities_for_scan(&id2)?,
             store.relations_for_scan(&id2)?,
@@ -333,6 +355,14 @@ pub async fn scan_export_gexf(
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
+    // Quarantine candidates by default (opt in with `?include_candidates=1`) —
+    // matches `scan_entities_csv`, `report.json`, and the CLI `render_gexf`, so
+    // the graph export can't leak a foreign breach-victim list under the subject's
+    // scan. The relation set stays full; `entities_to_gexf` drops any edge whose
+    // endpoint is no longer a node, so filtering here cannot leave a dangling edge.
+    if !wants_candidates(&params) {
+        entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+    }
     let body = crate::core::gexf::entities_to_gexf(&entities, &relations, &id);
     download_response(body, "application/xml; charset=utf-8", &id, "gexf")
 }
@@ -403,10 +433,18 @@ pub(crate) fn csv_escape(s: &str) -> String {
     // open — a hostile API response with `first_name = "=cmd|'/c calc'!A1"`
     // could otherwise turn an exported scan CSV into RCE on the operator's
     // workstation. Prepend a single quote to defang per OWASP guidance.
+    //
+    // A leading apostrophe is ALSO guarded (doubled). Without that the escape
+    // isn't invertible: a genuine value like `'=hunter` would export unchanged
+    // as `'=hunter`, indistinguishable from a guarded `=hunter`, and the import
+    // reverse (`strip_csv_formula_guard`) would strip its real apostrophe. By
+    // escaping any leading `'` too, this is a clean bijection — export prepends
+    // `'` iff the first byte is a trigger OR `'`, and import strips exactly one
+    // leading `'` — so every value round-trips byte-for-byte at any nesting.
     let needs_formula_guard = s
         .as_bytes()
         .first()
-        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r'));
+        .is_some_and(|b| matches!(*b, b'=' | b'+' | b'-' | b'@' | b'\t' | b'\r' | b'\''));
     let body = if needs_formula_guard {
         format!("'{s}")
     } else {

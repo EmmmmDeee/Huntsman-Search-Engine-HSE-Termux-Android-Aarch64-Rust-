@@ -313,7 +313,7 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
     use crate::util::geohash::haversine_km;
     use crate::util::geometry::{geo_footprint, point_in_convex_hull, weighted_centroid};
 
-    let parsed = person_anchored_coords(entities);
+    let mut parsed = person_anchored_coords(entities);
     // Need an established area (≥3) plus at least one candidate outlier.
     if parsed.len() < 4 {
         return Vec::new();
@@ -321,6 +321,17 @@ pub(in crate::core::correlator) fn rule_au_053_out_of_area_location(
     if distinct_geo_sources(&parsed) < 2 {
         return Vec::new();
     }
+
+    // Determinism: the greedy single-link clustering below compares each point
+    // only to its cluster's FOUNDING point (`parsed[cl[0]]`), so which point
+    // founds a cluster — and thus the dominant-area/outlier split — depends on
+    // iteration order. The live incremental pass feeds entities in HashMap
+    // (randomised) order while the finalise pass is deterministically ordered,
+    // so the same entity set could yield different dominant/outlier uid sets
+    // that both persist as distinct AU-053 rows (the containment dedup can't
+    // fold non-superset sets). Sort by uid first so identical entity sets always
+    // cluster identically — the exact guard AU-017/AU-027 already apply.
+    parsed.sort_by(|a, b| a.0.uid.cmp(&b.0.uid));
 
     // Cluster by 0.5° boxes (same locality grain as AU-017), tracking indices.
     let mut clusters: Vec<Vec<usize>> = Vec::new();
@@ -580,15 +591,30 @@ pub(crate) fn au059_synergy_fix(entities: &[Entity]) -> Option<SynergyFix> {
     // Confidence-weighted geometric median (Weiszfeld) — outlier-robust, unlike
     // a plain centroid: a single disagreeing sighting pulls a centroid toward it
     // proportionally to its weight, but pulls the median only as far as the
-    // majority of *other* sightings allow. Each weight is boosted by class
-    // diversity so a point corroborated across more orthogonal classes pulls
-    // proportionally more. Falls back to the weighted centroid on the rare
+    // majority of *other* sightings allow. Each point's weight is boosted by
+    // *its own* class diversity so a coordinate corroborated across more
+    // orthogonal source classes pulls proportionally more than a single-class
+    // sighting. This MUST be per-point: a bonus derived from the scan-wide class
+    // count would scale every weight by the same constant, and the weighted
+    // median/centroid is invariant to a global positive rescaling — so a global
+    // bonus is a silent no-op. Falls back to the weighted centroid on the rare
     // non-convergent/degenerate input (same fallback `LocationFix` and
     // `cluster_coordinates` use — PROBLEM_TREE C5).
-    let class_bonus = 1.0 + (classes.len() as f64 - 1.0) * 0.10;
+    let point_class_count = |e: &Entity| -> usize {
+        e.corroborating_sources()
+            .into_iter()
+            .filter(|s| is_anchoring_geo_source(s))
+            .map(geo_source_class)
+            .collect::<std::collections::HashSet<GeoSourceClass>>()
+            .len()
+            .max(1)
+    };
     let weighted: Vec<((f64, f64), f64)> = parsed
         .iter()
-        .map(|(e, ll)| (*ll, e.c_effective() * class_bonus))
+        .map(|(e, ll)| {
+            let class_bonus = 1.0 + (point_class_count(e) as f64 - 1.0) * 0.10;
+            (*ll, e.c_effective() * class_bonus)
+        })
         .collect();
     let (lat, lon) = crate::util::geometry::weighted_geometric_median(&weighted)
         .or_else(|| crate::util::geometry::weighted_centroid(&weighted))?;

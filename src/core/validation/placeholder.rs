@@ -46,13 +46,16 @@ pub(super) fn url_host_is_placeholder(u: &str) -> bool {
 
 /// True if a name string looks like a username masquerading as a real name.
 /// Breach databases sometimes store `full_name = "{username} {username}"` when
-/// only a username is available.  These patterns are detected by:
+/// only a username is available (previously observed live: a scan seeded on
+/// `oathnet_pro`'s `full_name` field emitted `Person("rhino-ryno23
+/// rhino-ryno23")`, which the engine expanded into a 123-entity, 94%-noise
+/// child scan). These patterns are detected by:
 /// - Doubled-token pattern where both space-separated words are identical
 ///   (e.g. `"rhino-ryno23 rhino-ryno23"`)
 /// - A slug-style token that contains **both** a hyphen and a digit
 ///   (e.g. `"rhino-ryno23"`).  Legitimate hyphenated surnames like
 ///   `"Smith-Jones"` never contain digits.
-pub fn is_username_derived_name(name: &str, _query_value: &str) -> bool {
+pub fn is_username_derived_name(name: &str) -> bool {
     let parts: Vec<&str> = name.split_whitespace().collect();
     if parts.len() == 2 && parts[0].eq_ignore_ascii_case(parts[1]) {
         return true;

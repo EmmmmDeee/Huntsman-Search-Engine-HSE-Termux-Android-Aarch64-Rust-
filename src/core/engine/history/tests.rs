@@ -242,6 +242,39 @@ fn cooccurrence_is_idempotent_and_never_inflates_confidence() {
 }
 
 #[test]
+fn idempotency_probes_match_the_delimited_partner_token_not_a_substring() {
+    // Regression: the probes keyed on `summary.contains(partner)`, an unanchored
+    // substring, so an entity already linked to `alice2` / `bob2` was mistaken for
+    // already carrying a NEW link to `alice` / `bob` (substrings), silently dropping
+    // the genuine distinct link on re-run. They now match the DELIMITED token the
+    // summary writes (`` `{partner}` `` for co-occurrence; `({kind})` + `` `{partner}` ``
+    // for relation recall).
+    let mut e = Entity::new(EntityKind::Email, "hub@example.com", 0.7, "s");
+    e.add_evidence(Evidence::new(
+        CROSS_SCAN_SOURCE,
+        cooccurrence_summary("alice2", 1),
+    ));
+    e.add_evidence(Evidence::new(
+        CROSS_SCAN_SOURCE,
+        relation_recall_summary("subdomain_of", "bob2", 1),
+    ));
+
+    // The exact recorded partners are still found (idempotency preserved)…
+    assert!(endpoint_has_cooccurrence(&e, "alice2"));
+    assert!(endpoint_has_relation_recall(&e, "subdomain_of", "bob2"));
+    // …but a partner that is only a SUBSTRING of a recorded one must NOT match
+    // (fail-before: these returned true, dropping the real new link).
+    assert!(
+        !endpoint_has_cooccurrence(&e, "alice"),
+        "a substring partner must not false-match an existing co-occurrence link"
+    );
+    assert!(
+        !endpoint_has_relation_recall(&e, "subdomain_of", "bob"),
+        "a substring partner must not false-match an existing relation-recall link"
+    );
+}
+
+#[test]
 fn cooccurrence_partners_recorded_in_deterministic_order() {
     let store = InMemoryStore::new();
     // One prior scan recorded a phone alongside TWO emails.

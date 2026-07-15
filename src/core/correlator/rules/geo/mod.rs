@@ -27,8 +27,15 @@ pub(in crate::core::correlator) use profile::*;
 /// added). The bbox fallback exists precisely for that remaining set. Only
 /// confirmed fixes (≥0.50) count, so an off-region candidate can't assert a
 /// jurisdiction.
+///
+/// Infrastructure coordinates are excluded ([`is_infrastructure_geo`]): a bare
+/// IP-geo/hosting/registrant fix locates the datacentre or domain owner, not the
+/// subject, so it must not vote the subject's jurisdiction — the same guard every
+/// sibling location rule applies (AU-018/026/030, AU-052/053/059). Without it a
+/// Sydney-datacentre server IP behind the subject's domain would assert `NSW` and
+/// manufacture a false AU-056 "jurisdiction conflict" against a real QLD address.
 pub(super) fn coord_state(e: &Entity) -> Option<&'static str> {
-    if e.kind != EntityKind::Coordinates || e.confidence < 0.50 {
+    if e.kind != EntityKind::Coordinates || e.confidence < 0.50 || is_infrastructure_geo(e) {
         return None;
     }
     const AU_STATES: [&str; 8] = ["ACT", "NSW", "NT", "QLD", "SA", "TAS", "VIC", "WA"];
@@ -62,11 +69,14 @@ pub(in crate::core::correlator) fn rule_au_099_coordinate_reverse_geocode(
     use std::collections::{BTreeMap, BTreeSet};
 
     // locality -> (state, nearest km seen, contributing coordinate uids).
+    // Infrastructure coordinates are excluded ([`is_infrastructure_geo`]): a bare
+    // IP-geo/hosting fix is the datacentre's position, not the subject's, so it must
+    // not be announced as "the subject's coordinate fix" — the same guard the
+    // location-voting rules (AU-052/053/059, coord_state) already apply.
     let mut by_loc: BTreeMap<&'static str, (&'static str, f64, BTreeSet<String>)> = BTreeMap::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Coordinates && e.confidence >= 0.50)
-    {
+    for e in entities.iter().filter(|e| {
+        e.kind == EntityKind::Coordinates && e.confidence >= 0.50 && !is_infrastructure_geo(e)
+    }) {
         if let Some((lat, lon)) = crate::util::geohash::parse_coords(&e.value)
             && let Some((name, state, km)) = crate::util::geo::nearest_au_locality(lat, lon)
         {
@@ -241,15 +251,22 @@ mod tests {
 
     #[test]
     fn coord_state_prefers_the_au_state_tag() {
+        use crate::core::entity::Evidence;
+        // A real person-anchored fix (carries an anchoring geo source), so it is
+        // not excluded as infrastructure geo.
         let mut e = Entity::new(EntityKind::Coordinates, "-27.47,153.02", 0.6, "s");
         e.tag("au-state:QLD");
+        e.add_evidence(Evidence::new("exif_geo", "photo GPS"));
         assert_eq!(coord_state(&e), Some("QLD"));
     }
 
     #[test]
     fn coord_state_falls_back_to_lat_lon_when_untagged() {
-        // Brisbane, no tag → derived from the coordinate.
-        let e = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+        use crate::core::entity::Evidence;
+        // Brisbane, no tag → derived from the coordinate. A real person-anchored
+        // fix (anchoring source present), so not excluded as infrastructure geo.
+        let mut e = Entity::new(EntityKind::Coordinates, "-27.4705,153.0260", 0.6, "s");
+        e.add_evidence(Evidence::new("exif_geo", "photo GPS"));
         assert_eq!(coord_state(&e), Some("QLD"));
     }
 
@@ -326,6 +343,55 @@ mod tests {
         assert!(
             !rule_au_018_email_address_colocation(&[email, home], "s", 0).is_empty(),
             "a real geocoded address still co-locates with the email"
+        );
+    }
+
+    #[test]
+    fn coord_state_excludes_bare_ip_geo_infrastructure_coordinate() {
+        use crate::core::entity::Evidence;
+        // A datacentre server IP behind the subject's domain, geolocated to Sydney
+        // by ip_geo (a non-anchoring source) and tagged au-state:NSW. It locates
+        // the host, not the subject, so it must NOT assert a jurisdiction — else it
+        // manufactures a false AU-056 "coordinate vs address" conflict against a
+        // real interstate home address.
+        let mut infra = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.60, "s");
+        infra.tag("au-state:NSW");
+        infra.add_evidence(Evidence::new(
+            "ip_geo",
+            "IP geolocation for the domain's host",
+        ));
+        assert_eq!(
+            coord_state(&infra),
+            None,
+            "a bare IP-geo (infrastructure) coordinate must not vote a state"
+        );
+
+        // Control: a person-anchored EXIF/GPS fix at the same point STILL asserts
+        // NSW — the guard targets infrastructure geo, not real subject fixes.
+        let mut anchored = Entity::new(EntityKind::Coordinates, "-33.8688,151.2093", 0.60, "s");
+        anchored.tag("au-state:NSW");
+        anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+        assert_eq!(coord_state(&anchored), Some("NSW"));
+    }
+
+    #[test]
+    fn au099_reverse_geocode_excludes_infrastructure_coordinates() {
+        use crate::core::entity::Evidence;
+        // A bare IP-geo datacentre coordinate must not be announced as "the
+        // subject's coordinate fix" resolving to an AU locality.
+        let mut infra = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.60, "s");
+        infra.add_evidence(Evidence::new("ip_geo", "IP city"));
+        assert!(
+            rule_au_099_coordinate_reverse_geocode(&[infra], "s", 0).is_empty(),
+            "AU-099 must not reverse-geocode an infrastructure coordinate as the subject's fix"
+        );
+
+        // Control: a genuine EXIF fix at the same point IS reverse-geocoded.
+        let mut anchored = Entity::new(EntityKind::Coordinates, "-27.4698,153.0251", 0.60, "s");
+        anchored.add_evidence(Evidence::new("exif_geo", "photo GPS"));
+        assert!(
+            !rule_au_099_coordinate_reverse_geocode(&[anchored], "s", 0).is_empty(),
+            "AU-099 must still reverse-geocode a real person-anchored coordinate fix"
         );
     }
 

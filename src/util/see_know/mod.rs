@@ -28,6 +28,10 @@ mod budget;
 mod client;
 mod endpoints;
 
+// Enterprise plan parameters (the 15,000-daily-credit budget config the live
+// `budget` module reads via `enterprise_config::ENTERPRISE`).
+pub mod enterprise_config;
+
 #[cfg(test)]
 mod tests;
 

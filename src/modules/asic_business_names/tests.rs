@@ -105,7 +105,6 @@ async fn asic_business_names_live_resolves_a_name() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = AsicBusinessNames
         .process(&Target::new(TargetKind::Organisation, "Cut Above Painting"), &ctx)

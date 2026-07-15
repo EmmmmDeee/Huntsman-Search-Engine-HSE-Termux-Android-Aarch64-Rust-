@@ -41,12 +41,25 @@ const BBOX_DELTA: f64 = 0.005;
 pub(super) struct AreaResp {
     #[serde(default)]
     pub(super) cells: Vec<CellEntry>,
+    /// Present (with no `cells` key at all) on a key-level failure — see
+    /// [`CellEntry::error`].
+    #[serde(default)]
+    pub(super) error: Option<String>,
 }
 
 /// Shared field layout for both `cell/getInArea` (array element) and `cell/get`
 /// (top-level object).  OpenCelliD uses the same field aliases in both responses.
 #[derive(Deserialize)]
 pub(super) struct CellEntry {
+    /// OpenCelliD signals a bad/unknown API key as a plain HTTP `200` whose
+    /// ENTIRE body is `{"error":"API Key not known: <key>","code":2}` — no
+    /// HTTP-level 401/403/429 at all. Live-confirmed 2026-07-15. Every other
+    /// field below is naturally absent (`#[serde(default)]`) on this shape, so
+    /// checking `error.is_some()` after a successful deserialize is the only
+    /// way to detect it — a bad key was previously indistinguishable from a
+    /// genuine "no towers here" empty result.
+    #[serde(default)]
+    pub(super) error: Option<String>,
     #[serde(default)]
     pub(super) radio: Option<String>,
     #[serde(default)]
@@ -116,7 +129,13 @@ impl Module for OpenCellId {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        &["T1591.001", "T1596", "T1596.001"]
+        // Querying the OpenCelliD crowdsourced cell-tower database to place towers
+        // (and thus the subject) is Search Open Technical Databases (T1596) →
+        // Determine Physical Locations (T1591.001). It is NOT DNS/Passive DNS
+        // (T1596.001, dropped): OpenCelliD is a radio/geolocation database, and
+        // this module makes no DNS query. There is no cell-database sub-technique,
+        // so the honest mapping stops at the T1596 parent.
+        &["T1591.001", "T1596"]
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -175,7 +194,12 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
     let Ok(resp) = resp else {
         return Ok(ModuleResult::new());
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // A present key that gets rejected/throttled must be reported to the
+        // pool, or a dead/throttled key silently degrades every future scan
+        // with no operator-visible signal and no chance to rotate.
+        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
         return Ok(ModuleResult::new());
     }
 
@@ -183,6 +207,13 @@ async fn process_area(target: &Target, ctx: &ModuleContext, api_key: &str) -> Re
         Ok(d) => d,
         Err(_) => return Ok(ModuleResult::new()),
     };
+    if data.error.is_some() {
+        // See `CellEntry::error`'s doc comment — a body-level key failure
+        // OpenCelliD signals as a plain 200, so this can't be caught by the
+        // status check above.
+        crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
+        return Ok(ModuleResult::new());
+    }
 
     let mut result = ModuleResult::new();
     for cell in &data.cells {
@@ -221,7 +252,10 @@ async fn process_tower(
     let Ok(resp) = resp else {
         return Ok(ModuleResult::new());
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // Same reporting rationale as `process_area` above.
+        crate::util::http::note_keyed_error(status.as_u16(), SRC, api_key, ctx);
         return Ok(ModuleResult::new());
     }
 
@@ -229,6 +263,11 @@ async fn process_tower(
         Ok(d) => d,
         Err(_) => return Ok(ModuleResult::new()),
     };
+    if cell.error.is_some() {
+        // See `CellEntry::error`'s doc comment.
+        crate::util::http::note_keyed_error(401, SRC, api_key, ctx);
+        return Ok(ModuleResult::new());
+    }
 
     let mut result = ModuleResult::new();
     emit_cell_entities(&mut result, &cell, &ctx.scan_id);

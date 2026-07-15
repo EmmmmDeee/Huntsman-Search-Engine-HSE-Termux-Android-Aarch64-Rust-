@@ -10,7 +10,9 @@
 //! | GET    | `/api/v1/modules/graph`           | `modules_graph` (v1.1+)  |
 //! | GET    | `/api/v1/modules/health`          | `modules_health`         |
 //! | GET    | `/api/v1/engines/health`          | `engines_health` (v1.3+) |
+//! | GET    | `/api/v1/health/scrapers`         | `scraper_health` (v1.13+) |
 //! | GET    | `/api/v1/keys/patterns`           | `keys_patterns` (v1.4+)  |
+//! | GET    | `/api/v1/keys/harvest`            | `keys_harvest`           |
 //! | POST   | `/api/v1/scans`                   | `scan_create`            |
 //! | GET    | `/api/v1/scans`                   | `scan_list`              |
 //! | GET    | `/api/v1/scans/{id}`              | `scan_get`               |
@@ -20,6 +22,7 @@
 //! | GET    | `/api/v1/scans/{id}/entities.csv` | `scan_entities_csv`      |
 //! | GET    | `/api/v1/scans/{id}/correlations` | `scan_correlations` (v0.4+) |
 //! | GET    | `/api/v1/scans/{id}/relations`    | `scan_relations`         |
+//! | GET    | `/api/v1/scans/{id}/stealer-rows` | `scan_stealer_rows` (v1.13+) |
 //! | GET    | `/api/v1/scans/{id}/audit`        | `scan_audit` (v1.3+)     |
 //! | GET    | `/api/v1/scans/{id}/events`       | `scan_events_sse` (SSE)  |
 //! | POST   | `/api/v1/live`                    | `live_create` (v0.5+)    |
@@ -33,8 +36,12 @@
 //! | PUT    | `/api/v1/settings/toggles`        | `settings_toggles_put`   |
 //! | GET    | `/api/v1/update/status`           | `get_status` (v1.5+)     |
 //! | POST   | `/api/v1/update/trigger`          | `post_trigger` (v1.5+)   |
+//! | GET    | `/api/v1/cells/status`            | `cells_status` (v1.13+)  |
+//! | POST   | `/api/v1/cells/import`            | `cells_import` (v1.13+)  |
+//! | POST   | `/api/v1/cells/clear`             | `cells_clear` (v1.13+)   |
+//! | GET    | `/api/v1/scan/profiles`           | `scan_profiles` (v1.13+) |
 //! | *      | `/api/*` (unmatched)              | `api_not_found` (JSON 404) |
-//! | GET    | `/static/{file}`                  | `vendor_handler`         |
+//! | GET    | `/static/{*file}`                 | `vendor_handler`         |
 //! | GET    | `/*` (fallback)                   | `spa_handler` (static)   |
 
 use std::sync::Arc;
@@ -50,70 +57,258 @@ use serde_json::json;
 use tower_http::compression::CompressionLayer;
 use tower_http::cors::CorsLayer;
 
-use super::{AppState, handlers, scan_export, scan_handlers, settings_handlers, update_handlers};
+use super::{
+    AppState, cells_handlers, handlers, key_harvest_handlers, scan_export, scan_handlers,
+    settings_handlers, update_handlers,
+};
 
 /// Embedded SPA — single self-contained HTML file with inline CSS + JS.
 /// Lives in `src/web/spa.html` and is compiled into the binary at build time
 /// so the release artefact is still a single file.
 const SPA_HTML: &str = include_str!("../../web/spa.html");
 
-/// Vendor bundle — Spiderfoot's exact stack (Bootstrap 3.4.1, jQuery 3.7,
-/// D3 v3, tablesorter, alertify) plus Spiderfoot's own CSS file. Embedded
-/// at compile time so the release artefact is still a single binary.
+/// Vendor bundle — now just D3 v3, the force-directed graph rendering
+/// engine. Bootstrap, jQuery, tablesorter, and alertify (SpiderFoot's
+/// original UI-framework stack) were dropped entirely in favour of a
+/// from-scratch design system (`src/web/css/app.css`) plus small vanilla-JS
+/// replacements (`src/web/js/ui.js`) for the handful of interactive
+/// behaviours those libraries provided (navbar collapse, the About modal,
+/// sortable tables, toast/confirm/prompt dialogs) — see `ui.js`'s own doc
+/// comment. D3 stays vendored because it is a rendering engine, not a
+/// look-and-feel dependency: every visual property of the graph (node
+/// colours, sizes, the canvas background) is already this project's own
+/// code. Dropping the vendored alertify build also happens to close a
+/// standing licensing question noted in `docs/PROBLEM_TREE.md` §7
+/// (Deferred — Privacy/Legal/Licensing): alertify was GPL-licensed with no
+/// accompanying `NOTICE`.
 ///
-/// All entries are served from `/static/{file}` with a one-year
-/// `Cache-Control` header — browsers cache aggressively, so the ~510 KB
-/// bundle is paid for exactly once per device.
-const VENDOR_FILES: &[(&str, &str, &[u8])] = &[
+/// Embedded at compile time so the release artefact is still a single
+/// binary. Served from `/static/{*file}`, alongside [`APP_FILES`], with a
+/// one-hour `Cache-Control: must-revalidate` header — see
+/// [`vendor_handler`]'s ETag/conditional-GET handling for why.
+const VENDOR_FILES: &[(&str, &str, &[u8])] = &[(
+    "d3.min.js",
+    "application/javascript",
+    include_bytes!("../../web/vendor/d3.min.js"),
+)];
+
+/// First-party SPA modules (split from the former monolithic `spa.html` for
+/// maintainability — see each module's own doc comment in `src/web/js/`).
+/// Embedded at compile time so the release artefact is still a single binary;
+/// served from `/static/{path}` alongside [`VENDOR_FILES`], keyed on the path
+/// relative to `src/web/` (e.g. `js/main.js`, `css/app.css`) so nested module
+/// paths resolve exactly as written in each file's own
+/// `import … from '/static/js/…';` statement.
+const APP_FILES: &[(&str, &str, &[u8])] = &[
     (
-        "bootstrap.min.css",
+        "css/app.css",
         "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/bootstrap.min.css"),
+        include_bytes!("../../web/css/app.css"),
     ),
     (
-        "bootstrap.min.js",
+        "js/api.js",
         "application/javascript",
-        include_bytes!("../../web/vendor/bootstrap.min.js"),
+        include_bytes!("../../web/js/api.js"),
     ),
     (
-        "jquery.min.js",
+        "js/helpers.js",
         "application/javascript",
-        include_bytes!("../../web/vendor/jquery.min.js"),
+        include_bytes!("../../web/js/helpers.js"),
     ),
     (
-        "d3.min.js",
+        "js/main.js",
         "application/javascript",
-        include_bytes!("../../web/vendor/d3.min.js"),
+        include_bytes!("../../web/js/main.js"),
     ),
     (
-        "jquery.tablesorter.min.js",
+        "js/router.js",
         "application/javascript",
-        include_bytes!("../../web/vendor/jquery.tablesorter.min.js"),
+        include_bytes!("../../web/js/router.js"),
     ),
     (
-        "jquery.tablesorter.theme.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/jquery.tablesorter.theme.css"),
-    ),
-    (
-        "alertify.min.js",
+        "js/scan_info/audit.js",
         "application/javascript",
-        include_bytes!("../../web/vendor/alertify.min.js"),
+        include_bytes!("../../web/js/scan_info/audit.js"),
     ),
     (
-        "alertify.min.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/alertify.min.css"),
+        "js/scan_info/benchmark.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/benchmark.js"),
     ),
     (
-        "alertify.bootstrap.min.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/alertify.bootstrap.min.css"),
+        "js/scan_info/browse.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/browse.js"),
     ),
     (
-        "spiderfoot-style.css",
-        "text/css; charset=utf-8",
-        include_bytes!("../../web/vendor/spiderfoot-style.css"),
+        "js/scan_info/communities.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/communities.js"),
+    ),
+    (
+        "js/scan_info/correlations.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/correlations.js"),
+    ),
+    (
+        "js/scan_info/duplicates.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/duplicates.js"),
+    ),
+    (
+        "js/scan_info/gaps.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/gaps.js"),
+    ),
+    (
+        "js/scan_info/graph.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/graph.js"),
+    ),
+    (
+        "js/scan_info/identities.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/identities.js"),
+    ),
+    (
+        "js/scan_info/index.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/index.js"),
+    ),
+    (
+        "js/scan_info/info.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/info.js"),
+    ),
+    (
+        "js/scan_info/leads.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/leads.js"),
+    ),
+    (
+        "js/scan_info/location.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/location.js"),
+    ),
+    (
+        "js/scan_info/log.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/log.js"),
+    ),
+    (
+        "js/scan_info/metrics.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/metrics.js"),
+    ),
+    (
+        "js/scan_info/network.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/network.js"),
+    ),
+    (
+        "js/scan_info/path.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/path.js"),
+    ),
+    (
+        "js/scan_info/pivots.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/pivots.js"),
+    ),
+    (
+        "js/scan_info/relations.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/relations.js"),
+    ),
+    (
+        "js/scan_info/report.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/report.js"),
+    ),
+    (
+        "js/scan_info/status.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/status.js"),
+    ),
+    (
+        "js/scan_info/stealer.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/stealer.js"),
+    ),
+    (
+        "js/scan_info/timeline.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/timeline.js"),
+    ),
+    (
+        "js/scan_info/trust.js",
+        "application/javascript",
+        include_bytes!("../../web/js/scan_info/trust.js"),
+    ),
+    (
+        "js/state.js",
+        "application/javascript",
+        include_bytes!("../../web/js/state.js"),
+    ),
+    (
+        "js/theme.js",
+        "application/javascript",
+        include_bytes!("../../web/js/theme.js"),
+    ),
+    (
+        "js/timers.js",
+        "application/javascript",
+        include_bytes!("../../web/js/timers.js"),
+    ),
+    (
+        "js/ui.js",
+        "application/javascript",
+        include_bytes!("../../web/js/ui.js"),
+    ),
+    (
+        "js/views/dash.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/dash.js"),
+    ),
+    (
+        "js/views/diff.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/diff.js"),
+    ),
+    (
+        "js/views/engines.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/engines.js"),
+    ),
+    (
+        "js/views/key_harvest.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/key_harvest.js"),
+    ),
+    (
+        "js/views/live.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/live.js"),
+    ),
+    (
+        "js/views/new_scan.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/new_scan.js"),
+    ),
+    (
+        "js/views/opts.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/opts.js"),
+    ),
+    (
+        "js/views/scans.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/scans.js"),
+    ),
+    (
+        "js/views/search.js",
+        "application/javascript",
+        include_bytes!("../../web/js/views/search.js"),
     ),
 ];
 
@@ -141,6 +336,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/modules/graph", get(handlers::modules_graph))
         .route("/modules/health", get(handlers::modules_health))
         .route("/engines/health", get(handlers::engines_health))
+        .route("/health/scrapers", get(handlers::scraper_health))
         .route("/stats", get(handlers::stats))
         // ── diagnostics: self-test + downloadable verbose logs ──
         .route("/selftest", get(handlers::selftest_run))
@@ -148,6 +344,7 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── key-detector catalogue (v1.4+) ──
         .route("/keys/patterns", get(settings_handlers::keys_patterns))
         .route("/keys/status", get(settings_handlers::keys_status))
+        .route("/keys/harvest", get(key_harvest_handlers::keys_harvest))
         .route("/keys/pool", get(settings_handlers::keys_pool_get))
         .route(
             "/keys/pool/revoke",
@@ -174,11 +371,19 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         .route("/scan/auto/sweep", post(scan_handlers::scan_auto_sweep))
         // Forward-only scan-plan preview: which modules a seed engages, no scan run.
         .route("/plan", get(scan_handlers::plan_preview))
+        // Named scan-profile catalogue (recommended/passive/footprint/investigate/
+        // fast/skiptrace) — feeds the New Scan wizard's profile picker.
+        .route("/scan/profiles", get(scan_handlers::scan_profiles))
         // Live-radar button: ONE autonomous device-sensor sweep, no target seed.
         .route("/radar", post(scan_handlers::radar_sweep))
         // Continuous autonomous radar: a zero-input live session that re-runs only
         // the on-device passive sensors, enumerating ambient signals in real time.
         .route("/radar/live", post(scan_handlers::radar_live))
+        // Historical review of past radar sweeps, sourced from the persisted
+        // `scans` table rather than in-memory session state — survives a
+        // `hse serve` restart, so "what was around me earlier" doesn't
+        // require remembering a session id.
+        .route("/radar/history", get(scan_handlers::radar_history))
         .route(
             "/scans/import",
             // Raise this route's body cap from axum's 2 MB default to the import
@@ -219,6 +424,12 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
             get(scan_handlers::scan_correlations),
         )
         .route("/scans/{id}/relations", get(scan_handlers::scan_relations))
+        // Paired stealer-log credential rows (login+password+domain+machine,
+        // kept together) — powers the web UI Stealer Logs Viewer.
+        .route(
+            "/scans/{id}/stealer-rows",
+            get(scan_handlers::scan_stealer_rows),
+        )
         // Subject-centric relationship synthesis — powers the web UI Network view.
         .route("/scans/{id}/network", get(scan_handlers::scan_network))
         // People-centric co-reference resolution — scores which selectors name the
@@ -288,17 +499,27 @@ pub fn router(state: Arc<AppState>, bind: &str) -> Router {
         // ── update (v1.5+) ──
         .route("/update/status", get(update_handlers::get_status))
         .route("/update/trigger", post(update_handlers::post_trigger))
+        // ── cells (v1.14+): web-UI equivalent of `hse cells status|import|clear` ──
+        .route("/cells/status", get(cells_handlers::cells_status))
+        .route("/cells/import", post(cells_handlers::cells_import))
+        .route("/cells/clear", post(cells_handlers::cells_clear))
         .fallback(api_not_found);
 
     // /api — outer layer catches `/api/v2/...` / `/api/typo` /
     // anything under /api but outside /v1, again returning JSON 404
-    // rather than SPA HTML.
-    let api = Router::new().nest("/v1", api_v1).fallback(api_not_found);
+    // rather than SPA HTML. The CSRF guard wraps every `/api` request so a
+    // cross-site simple-request POST to any mutating endpoint is rejected.
+    let api = Router::new()
+        .nest("/v1", api_v1)
+        .fallback(api_not_found)
+        .layer(axum::middleware::from_fn(enforce_csrf));
 
     let app = Router::new()
         .nest("/api", api)
-        // ── static vendor bundle (Bootstrap 3, jQuery, D3, tablesorter, alertify) ──
-        .route("/static/{file}", get(vendor_handler))
+        // ── static bundle (D3 vendored + first-party app.css/js modules) ──
+        // `{*file}` (wildcard, not `{file}`) so nested first-party module paths
+        // (`js/scan_info/browse.js`) match, not just a single flat segment.
+        .route("/static/{*file}", get(vendor_handler))
         // ── favicon — browsers (esp. Chrome-on-Android) request /favicon.ico
         //    unconditionally; without this route it would hit the SPA fallback
         //    and return the whole HTML document as an "image". Serve the same
@@ -392,6 +613,39 @@ async fn enforce_host_allowlist(
     } else {
         next.run(req).await
     }
+}
+
+/// CSRF guard on every state-changing API request.
+///
+/// A cross-site page can issue a CORS *simple request* (a bodyless or
+/// `text/plain` `POST`) to `http://127.0.0.1:8080/...` with **no preflight**; the
+/// Host-allowlist only defeats DNS rebinding (an attacker *domain*), and CORS
+/// only blocks *reading* the response, not the state-changing side effect. The
+/// one thing a cross-site page cannot do is set a **custom request header** on a
+/// simple request without turning it into a *preflighted* request — which the
+/// strict CORS layer then rejects. So requiring `X-HSE-CSRF` on every mutating
+/// method is the control that blocks the drive-by-POST class: a malicious page
+/// forcing `/update/trigger`'s binary self-update + `exec()`, activating the
+/// phone's `radar` sensor sweep, or dispatching quota-burning `scan/auto` runs.
+/// `scans/import` already required this header; this closes the same gap on every
+/// other mutating endpoint uniformly (and future ones automatically). GET/HEAD
+/// and the `OPTIONS` preflight pass through untouched; the same-origin SPA injects
+/// the header on every mutating `fetch`, and a CLI/API client sends
+/// `-H 'X-HSE-CSRF: 1'`.
+async fn enforce_csrf(req: axum::extract::Request, next: axum::middleware::Next) -> Response {
+    let mutating = matches!(
+        *req.method(),
+        Method::POST | Method::PUT | Method::DELETE | Method::PATCH
+    );
+    if mutating && !req.headers().contains_key("x-hse-csrf") {
+        return (
+            StatusCode::FORBIDDEN,
+            [(header::CONTENT_TYPE, "application/json")],
+            r#"{"error":"missing X-HSE-CSRF header (cross-site request blocked)"}"#,
+        )
+            .into_response();
+    }
+    next.run(req).await
 }
 
 /// Content-Security-Policy for the embedded SPA.
@@ -551,17 +805,22 @@ async fn api_not_found(method: Method, OriginalUri(uri): OriginalUri) -> impl In
     )
 }
 
-/// Serve one of the embedded vendor files (Bootstrap, jQuery, etc.).
-/// Returns 404 for any name not in [`VENDOR_FILES`] — there's no
-/// path traversal to worry about because the match is on the exact
-/// filename and `Path<String>` doesn't decode slashes by default.
+/// Serve the one embedded vendor file (D3) or a first-party SPA module
+/// (`js/…`, `css/app.css`). Returns 404 for any path
+/// not in [`VENDOR_FILES`] or [`APP_FILES`] — there's no path traversal to
+/// worry about despite the wildcard route (`/static/{*file}`, needed so
+/// nested app paths like `js/scan_info/browse.js` match): every candidate
+/// byte slice is already embedded in the binary at compile time, and the
+/// match is exact-string equality against that fixed, known-good list, never
+/// a filesystem lookup — a `file` value like `../../etc/passwd` simply
+/// matches nothing and falls through to the 404 below.
 async fn vendor_handler(Path(file): Path<String>, headers: HeaderMap) -> Response {
-    for (name, ct, bytes) in VENDOR_FILES {
+    for (name, ct, bytes) in VENDOR_FILES.iter().chain(APP_FILES.iter()) {
         if *name == file {
             // ETag is the crate version (which uniquely identifies the
             // embedded bytes — the bundle ships in-binary). We deliberately
             // do NOT use `Cache-Control: immutable` because the URL
-            // (`/static/bootstrap.min.css`) is stable across upgrades;
+            // (`/static/d3.min.js`) is stable across upgrades;
             // pairing immutable with a stable URL leaves the browser stuck
             // on old bytes after a binary upgrade. Instead `must-revalidate`
             // plus the conditional-request handling below lets the browser

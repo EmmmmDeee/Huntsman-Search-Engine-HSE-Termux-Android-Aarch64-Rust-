@@ -1,12 +1,31 @@
-//! Australian people-finder — White Pages AU + True People Search AU.
+//! Australian people-finder — True People Search AU.
 //!
-//! Scrapes the public search results pages for a full-name seed (optionally
+//! Scrapes the public search results page for a full-name seed (optionally
 //! location-qualified) and extracts names, addresses, phone numbers, and
 //! suburb/state data as structured entities.
 //!
-//! Sources (both keyless, free):
-//!   * White Pages AU — `https://www.whitepages.com.au/residential/search/{FirstName}+{LastName}`
+//! Sources (keyless, free):
 //!   * True People Search AU — `https://www.truepeoplesearch.com.au/results?name={Full+Name}`
+//!
+//! No White Pages AU leg: `whitepages.com.au/residential/search/{name}` is
+//! retired — live-confirmed (2026-07-13) via three real `GET` requests (a
+//! nonsense name, the common real name "John Smith", and the bare
+//! `/residential/search/` root), every one returning a generic HTTP 404
+//! rather than a query-specific result. The site's own markup confirms
+//! this isn't transient: it now serves a Nuxt.js client-rendered SPA (no
+//! server-rendered search form at all), so the legacy path this module
+//! queried no longer exists in any form. Repointing to whatever data API
+//! the SPA now calls client-side is a distinct future capability (not
+//! confirmed reachable/stable from a quick static check), not a same-shape
+//! endpoint repair, so the dead dispatch was removed rather than left to
+//! silently pay a wasted request/timeout cost on every scan — `process()`
+//! already gated the parse on `resp.status().is_success()`, so this never
+//! risked misparsing the 404 page, only ever contributed nothing. The
+//! `parse_whitepages_html` parser (and its `clean_au_locality` helper) were
+//! removed along with the dispatch, not kept dormant: they parse the
+//! retired server-rendered HTML shape specifically, which a future SPA-API
+//! repoint would need an entirely new parser for anyway (a different data
+//! shape, not a revived old one).
 //!
 //! MITRE ATT&CK:
 //!   * T1591.001 — Determine Physical Locations (residential address + suburb)
@@ -65,253 +84,6 @@ pub(super) fn split_name(full: &str) -> (&str, &str) {
 /// Extract au-state tag from suburb/state text. Pure.
 pub(super) fn state_tag_from_text(text: &str) -> Option<String> {
     crate::util::address_au::state_code(text).map(|s| format!("au-state:{s}"))
-}
-
-/// Isolate the canonical `Suburb, STATE POSTCODE` locality from a noisy
-/// directory window. **Pure.**
-///
-/// The White Pages parser grabs a ±60-char byte window around each postcode,
-/// which captures page chrome adjacent to the address — breadcrumb labels
-/// ("Australian Suburbs"), section headings, "profile"/"results" boilerplate.
-/// Emitting the raw window as the Address value produced malformed entities
-/// like `"Australian SuburbsWoronora, NSW 2232"` (observed live: it then became
-/// a re-scan seed, wasting classifier/search/geocode dispatches on garbage).
-///
-/// This keeps only the 1-3 capitalised words immediately before the
-/// `STATE POSTCODE` tail and drops a leading directory-chrome stop-word so a
-/// genuine multi-word suburb ("Gold Coast", "St Kilda") survives while
-/// "Australian Suburbs Woronora" collapses to "Woronora". Returns `None` when
-/// the window holds no recognisable `Suburb STATE POSTCODE` shape.
-pub(super) fn clean_au_locality(window: &str) -> Option<String> {
-    static LOCALITY_RE: LazyLock<Regex> = LazyLock::new(|| {
-        // 1-3 capitalised words, optional comma, AU state, 4-digit postcode.
-        Regex::new(
-            r"([A-Z][A-Za-z'.\-]+(?:\s+[A-Z][A-Za-z'.\-]+){0,2}),?\s+(NSW|VIC|QLD|SA|WA|TAS|NT|ACT)\s+(\d{4})\b",
-        )
-        .expect("constant AU locality regex")
-    });
-    // Words that head page chrome but never a real AU suburb — stripped from the
-    // front of the captured suburb run (data-driven from live scan artifacts).
-    const CHROME_WORDS: &[&str] = &[
-        "Australian",
-        "Suburbs",
-        "Suburb",
-        "Profile",
-        "Profiles",
-        "Results",
-        "Result",
-        "Search",
-        "Background",
-        "View",
-        "Address",
-        "Addresses",
-        "Location",
-        "Locations",
-        "Home",
-        "Find",
-        "People",
-        "Name",
-        "Names",
-        "Phone",
-    ];
-    // The window can hold several matches (e.g. a breadcrumb postcode then the
-    // result's own); the LAST is the one adjacent to the postcode we scanned.
-    let caps = LOCALITY_RE.captures_iter(window).last()?;
-    let suburb_raw = caps.get(1)?.as_str();
-    let state = caps.get(2)?.as_str();
-    let postcode = caps.get(3)?.as_str();
-
-    // Drop leading chrome words; keep the trailing real suburb tokens.
-    let mut words: Vec<&str> = suburb_raw.split_whitespace().collect();
-    while words.len() > 1 && CHROME_WORDS.contains(&words[0]) {
-        words.remove(0);
-    }
-    // A suburb that is ONLY a chrome word is not a real locality.
-    if words.len() == 1 && CHROME_WORDS.contains(&words[0]) {
-        return None;
-    }
-    let suburb = words.join(" ");
-    if suburb.is_empty() {
-        return None;
-    }
-    Some(format!("{suburb}, {state} {postcode}"))
-}
-
-/// Parse White Pages AU result HTML for address/phone/name entries.
-/// Looks for structured microdata and text patterns. Pure.
-pub(super) fn parse_whitepages_html(html: &str, full_name: &str, scan_id: &str) -> Vec<Entity> {
-    let mut out = Vec::new();
-    let name_lc = full_name.to_lowercase();
-
-    // White Pages AU structures results as repeated blocks containing suburb, state, phone.
-    // We scan for AU postcode patterns (4 digits) surrounded by suburb/state context.
-    let bytes = html.as_bytes();
-    let len = bytes.len();
-    let mut i = 0;
-
-    // Look for phone number patterns: (0X) XXXX XXXX or 04XX XXX XXX
-    let mut seen_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut seen_addresses: std::collections::HashSet<String> = std::collections::HashSet::new();
-
-    // Extract phone numbers via extract::phones (E.164 +61 format) — but White Pages
-    // uses local AU format so we also scan for 10-digit AU mobile/landline patterns.
-    // AU mobile: 04XX XXX XXX; Landline: (0X) XXXX XXXX
-    while i < len {
-        // Scan for "04" prefix mobile numbers in text.
-        if i + 10 < len
-            && bytes[i] == b'0'
-            && bytes[i + 1] == b'4'
-            && bytes[i..i + 2]
-                .iter()
-                .all(|b| b.is_ascii_digit() || *b == b'0' || *b == b'4')
-        {
-            let start = i;
-            let mut digits = 0u32;
-            let mut j = i;
-            while j < len && (bytes[j].is_ascii_digit() || bytes[j] == b' ') && digits <= 10 {
-                if bytes[j].is_ascii_digit() {
-                    digits += 1;
-                }
-                j += 1;
-            }
-            if digits == 10 {
-                let raw: String = html[start..j]
-                    .chars()
-                    .filter(char::is_ascii_digit)
-                    .collect();
-                // Convert local AU 04XX → E.164 +614XX
-                if raw.starts_with('0') {
-                    let e164 = format!("+61{}", raw.strip_prefix('0').unwrap_or(&raw));
-                    if seen_phones.insert(e164.clone()) {
-                        let mut e = Entity::new(EntityKind::Phone, &e164, 0.50, scan_id);
-                        e.tag(SRC);
-                        e.tag("au-directory");
-                        e.tag("whitepages");
-                        e.tag("country:AU");
-                        e.add_evidence(
-                            Evidence::new(SRC, format!("White Pages AU phone for {full_name}"))
-                                .with_attr("raw", &raw)
-                                .with_attr("source", "whitepages_au"),
-                        );
-                        out.push(e);
-                    }
-                }
-            }
-            i = j;
-            continue;
-        }
-
-        // Scan for 4-digit AU postcodes in text context — build Address entities.
-        if i + 4 <= len
-            && bytes[i].is_ascii_digit()
-            && bytes[i + 1].is_ascii_digit()
-            && bytes[i + 2].is_ascii_digit()
-            && bytes[i + 3].is_ascii_digit()
-            && (i == 0 || !bytes[i - 1].is_ascii_digit())
-            && (i + 4 >= len || !bytes[i + 4].is_ascii_digit())
-        {
-            let postcode = &html[i..i + 4];
-            // Only process valid AU postcode ranges (2000-7999).
-            if let Ok(pc) = postcode.parse::<u32>()
-                && (2000..=7999).contains(&pc)
-            {
-                // Grab a ~120-char window around the postcode for suburb/state
-                // context. `i±60` are arbitrary byte offsets into untrusted
-                // response HTML; a raw `&html[..]` panics when one lands inside a
-                // multibyte character (accented suburb names, typographic quotes,
-                // NBSP — all common in real pages), so clamp to char boundaries.
-                let context =
-                    crate::util::str_util::char_window(html, i.saturating_sub(60), i + 64);
-                // Strip HTML tags from context.
-                let stripped = strip_html(context);
-                let trimmed = stripped.trim().replace("  ", " ");
-                // Isolate the canonical `Suburb, STATE POSTCODE` locality from the
-                // noisy window — the raw window carries page chrome adjacent to the
-                // postcode (breadcrumb labels, headings) that must not become part
-                // of the Address value. Skip the postcode entirely if no clean
-                // locality is recoverable.
-                let Some(locality) = clean_au_locality(&trimmed) else {
-                    i += 4;
-                    continue;
-                };
-                if !seen_addresses.insert(locality.clone()) {
-                    i += 4;
-                    continue;
-                }
-                {
-                    // Does the seed name appear in the HTML up to just past the
-                    // postcode? `i + 64` is a byte offset into untrusted HTML, so
-                    // clamp it to a char boundary (raw `html[..i+64]` panics on
-                    // multibyte content); lower-case the window once, not per token.
-                    let window_lc =
-                        crate::util::str_util::truncate_safe(html, i + 64).to_lowercase();
-                    let addr_conf = if name_lc
-                        .split_whitespace()
-                        .all(|tok| window_lc.contains(tok))
-                    {
-                        0.55
-                    } else {
-                        0.42
-                    };
-                    let mut ae = Entity::new(EntityKind::Address, &locality, addr_conf, scan_id);
-                    ae.tag(SRC);
-                    ae.tag("au-directory");
-                    ae.tag("whitepages");
-                    ae.tag("country:AU");
-                    if let Some(st) = state_tag_from_text(&locality) {
-                        ae.tag(st);
-                    }
-                    ae.add_evidence(
-                        Evidence::new(
-                            SRC,
-                            format!("White Pages AU address context for {full_name}"),
-                        )
-                        .with_attr("postcode", postcode)
-                        // Preserve the raw window for provenance/audit.
-                        .with_attr("context", &trimmed),
-                    );
-                    if let Some((lat, lon)) = crate::util::city_coords::city_coords(&locality) {
-                        let coord_val = format!("{lat:.4},{lon:.4}");
-                        let mut c = Entity::new(
-                            EntityKind::Coordinates,
-                            &coord_val,
-                            addr_conf - 0.10,
-                            scan_id,
-                        );
-                        c.tag(SRC);
-                        c.tag("addr-derived");
-                        c.tag("geoint");
-                        c.tag("country:AU");
-                        c.add_evidence(Evidence::new(
-                            SRC,
-                            format!("Geocode of White Pages AU address for {full_name}"),
-                        ));
-                        out.push(c);
-                    }
-                    out.push(ae);
-                }
-            }
-            i += 4;
-            continue;
-        }
-
-        i += 1;
-    }
-
-    // Mine any email addresses visible in the HTML.
-    out.extend(page_emails(html).into_iter().map(|email| {
-        let mut e = Entity::new(EntityKind::Email, &email, 0.45, scan_id);
-        e.tag(SRC);
-        e.tag("au-directory");
-        e.tag("whitepages");
-        e.add_evidence(
-            Evidence::new(SRC, format!("White Pages AU contact email for {full_name}"))
-                .with_attr("source", "whitepages_au"),
-        );
-        e
-    }));
-
-    out
 }
 
 /// Parse True People Search AU HTML for name-confirmed address and phone entities.
@@ -620,7 +392,9 @@ impl Module for AuPeople {
     }
 
     fn max_timeout_ms(&self) -> u64 {
-        12_000
+        // One remaining lookup (TPS AU) now that the retired White Pages
+        // AU leg is gone — was 12,000 for the two sequential calls.
+        6_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -632,25 +406,8 @@ impl Module for AuPeople {
 
         let mut result = ModuleResult::new();
 
-        // White Pages AU search.
-        let wp_url = format!(
-            "https://www.whitepages.com.au/residential/search/{}+{}",
-            crate::util::http::urlencode(first),
-            crate::util::http::urlencode(last),
-        );
-        if let Ok(resp) = ctx
-            .http
-            .get(&wp_url)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .header("User-Agent", crate::util::http::UA_BROWSER)
-            .send_tagged(SRC)
-            .await
-            && resp.status().is_success()
-            && let Some(html) = read_body_capped(resp, 1_000_000).await
-        {
-            result.extend(parse_whitepages_html(&html, full_name, &ctx.scan_id));
-            result.extend(parse_relatives(&html, full_name, &ctx.scan_id));
-        }
+        // No White Pages AU leg: see the module doc comment — the endpoint
+        // this used to query is retired (confirmed 404 for any name).
 
         // True People Search AU.
         let tps_url = format!(
@@ -683,7 +440,7 @@ impl Module for AuPeople {
                     SRC,
                     format!("Name '{full_name}' found in AU residential directory"),
                 )
-                .with_attr("source", "whitepages_au+tps_au"),
+                .with_attr("source", "tps_au"),
             );
             result.push(person);
         }

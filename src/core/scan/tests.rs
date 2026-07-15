@@ -26,6 +26,17 @@ fn sanitise_strips_surrounding_quotes_and_stray_punctuation() {
         sanitise_target_input("jordanavery@gmail.com"),
         "jordanavery@gmail.com"
     );
+    // Regression: an invisible/format char adjacent to a surrounding quote must not
+    // shield the quote from the strip. Before the fix the zero-width char sat
+    // between the quote and the edge (so first/last weren't the quote pair), the
+    // unwrap skipped it, and `strip_invisible` — run afterwards — removed the char,
+    // leaving `"jdoe"` (quotes intact) on the value.
+    assert_eq!(sanitise_target_input("\u{200b}\"jdoe\""), "jdoe");
+    assert_eq!(sanitise_target_input("\"jdoe\"\u{200b}"), "jdoe");
+    // …and the sanitised value is a fixed point (re-sanitising is a no-op).
+    let once = sanitise_target_input("\u{200d}\"Jane Roe\",");
+    assert_eq!(once, "Jane Roe");
+    assert_eq!(sanitise_target_input(&once), once);
     assert_eq!(sanitise_target_input(""), "");
 }
 
@@ -433,6 +444,29 @@ fn cidr_is_geo_convergent_and_outranks_its_parent_asn() {
 }
 
 #[test]
+fn ssid_is_geo_convergent_on_par_with_its_wigle_peer_mac() {
+    // An SSID geo-resolves through WiGLE (ssid_search → Coordinates) in exactly
+    // one hop — the same path a MacAddress takes (bssid_lookup → Coordinates) —
+    // so it must carry the same geo-proximity boost, not fall through to the
+    // non-geo 1.0 default (which the `wigle` module, geo_npv 14.0, and
+    // seed_marginal_yield all contradict). At equal confidence, and since both
+    // share geo_npv 14.0 with no domain dampener, their expansion weights match.
+    let ssid = expansion_weight(TargetKind::Ssid, 0.8, "HomeNetwork", false);
+    let mac = expansion_weight(TargetKind::MacAddress, 0.8, "aa:bb:cc:dd:ee:ff", false);
+    assert!(
+        (ssid - mac).abs() < 1e-9,
+        "SSID ({ssid:.3}) must rank on par with its WiGLE peer MAC ({mac:.3})"
+    );
+    // And an SSID must beat a non-geo terminal kind of equal confidence — proof
+    // it is no longer scored as non-geo (boost 1.0).
+    let crypto = expansion_weight(TargetKind::CryptoAddress, 0.8, "bc1qxyz", false);
+    assert!(
+        ssid > crypto,
+        "SSID ({ssid:.2}) is geo-convergent vs crypto ({crypto:.2})"
+    );
+}
+
+#[test]
 fn expansion_weight_respects_confidence() {
     let high = expansion_weight(TargetKind::Domain, 0.90, "example.com", false);
     let low = expansion_weight(TargetKind::Domain, 0.45, "example.com", false);
@@ -635,6 +669,11 @@ fn detect_classifies_structured_kinds() {
         ("51 824 753 556", AbnAcn), // spaced ABN
         ("+61 400 123 456", Phone),
         ("(07) 3000 1234", Phone),
+        // Cell-tower ID (mcc-mnc-lac-cid) — more specific than a dialable digit run,
+        // so it classifies as DeviceId, NOT Phone. Regression: the phone check
+        // previously ran first and swallowed it, leaving DeviceId dead.
+        ("505-1-2020-12345", DeviceId),
+        ("310-410-7-84215", DeviceId),
         // CIDR — checked after a bare IP, before domain.
         ("192.0.2.0/24", Cidr),
         ("2001:db8::/48", Cidr),
@@ -807,6 +846,41 @@ fn validate_rejects_mixed_script_homograph() {
     assert!(
         Target::new(TargetKind::Domain, "paypal.com")
             .validate()
+            .is_ok()
+    );
+}
+
+#[test]
+fn validate_verbose_names_the_ascii_skeleton_for_a_homograph() {
+    // The operator-facing detail `validate`'s bare &'static str can't carry:
+    // WHAT the spoofed value normalizes to, not just that it was rejected.
+    let err = Target::new(TargetKind::Domain, "p\u{0430}ypal.com")
+        .validate_verbose()
+        .expect_err("a mixed-script homograph must still be rejected");
+    assert!(
+        err.contains("mixed-script homograph"),
+        "must keep validate()'s original reason: {err}"
+    );
+    assert!(
+        err.contains("ascii skeleton: paypal.com"),
+        "must name the normalized ASCII form: {err}"
+    );
+
+    // Every OTHER rejection reuses validate()'s exact static message, unchanged.
+    assert_eq!(
+        Target::new(TargetKind::Email, "x@y\ncom").validate_verbose(),
+        Target::new(TargetKind::Email, "x@y\ncom")
+            .validate()
+            .map_err(std::borrow::Cow::Borrowed)
+    );
+
+    // The clean ASCII seed still passes (no behavioural change for legitimate
+    // input) and allocates nothing (Cow::Borrowed on the Ok/other-error path
+    // is the whole point — this is a happy-path capability add, not a hot-path
+    // regression).
+    assert!(
+        Target::new(TargetKind::Domain, "paypal.com")
+            .validate_verbose()
             .is_ok()
     );
 }
@@ -990,6 +1064,100 @@ fn expansion_strategy_default_is_geo_converge() {
 }
 
 #[test]
+fn effective_max_concurrent_clamps_operator_input() {
+    // `max_concurrent` is deserialised straight from API/CLI input into the
+    // engine's `Semaphore::new`, which PANICS above `Semaphore::MAX_PERMITS`.
+    // `effective_max_concurrent()` is the single chokepoint that bounds it, so a
+    // config value can neither crash the scan nor defeat the gentle-pacing
+    // default. 0 (sequential) passes through; in-range values are unchanged; an
+    // absurd value — including the `usize::MAX` that would otherwise panic
+    // Semaphore::new — is clamped to MAX_CONCURRENT.
+    let mk = |n: usize| ScanOptions {
+        max_concurrent: n,
+        ..Default::default()
+    };
+    assert_eq!(mk(0).effective_max_concurrent(), 0, "sequential preserved");
+    assert_eq!(
+        mk(2).effective_max_concurrent(),
+        2,
+        "gentle default unchanged"
+    );
+    assert_eq!(
+        mk(MAX_CONCURRENT).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "at the ceiling"
+    );
+    assert_eq!(
+        mk(MAX_CONCURRENT + 1).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "above the ceiling clamps"
+    );
+    assert_eq!(
+        mk(usize::MAX).effective_max_concurrent(),
+        MAX_CONCURRENT,
+        "the Semaphore::new-panicking value is bounded"
+    );
+}
+
+#[test]
+fn effective_throttle_ms_clamps_to_ceiling() {
+    // throttle_ms is an UNINTERRUPTIBLE inter-module sleep; an extreme value
+    // would hold a scan past its wall-time watchdog. 0 (no throttle) and in-range
+    // values pass through; anything above the ceiling is bounded.
+    let mk = |n: u64| ScanOptions {
+        throttle_ms: n,
+        ..Default::default()
+    };
+    assert_eq!(mk(0).effective_throttle_ms(), 0, "no throttle preserved");
+    assert_eq!(mk(250).effective_throttle_ms(), 250, "in-range unchanged");
+    assert_eq!(
+        mk(THROTTLE_CEILING_MS).effective_throttle_ms(),
+        THROTTLE_CEILING_MS
+    );
+    assert_eq!(
+        mk(u64::MAX).effective_throttle_ms(),
+        THROTTLE_CEILING_MS,
+        "a units-confused huge throttle is bounded to the ceiling"
+    );
+}
+
+#[test]
+fn effective_confidence_floors_coerce_non_finite_to_safe_defaults() {
+    // A CLI `--min-confidence nan` / `--min-expand-confidence inf` parses via
+    // clap's f64::from_str (which accepts nan/inf), and a non-finite threshold
+    // silently inverts the < comparison — NaN makes it always-false (filter
+    // disabled / expand everything), +inf always-true (expand nothing). The
+    // effective_* accessors coerce ONLY the meaningless non-finite case; a finite
+    // value (even an unusual one) is left exactly as the operator set it.
+    let with = |f: f64| ScanOptions {
+        min_expand_confidence: f,
+        min_confidence: Some(f),
+        min_marginal_yield: Some(f),
+        ..Default::default()
+    };
+    // Finite values pass through untouched (operator intent preserved).
+    let ok = with(0.42);
+    assert!((ok.effective_min_expand_confidence() - 0.42).abs() < 1e-9);
+    assert_eq!(ok.effective_min_confidence(), Some(0.42));
+    assert_eq!(ok.effective_min_marginal_yield(), Some(0.42));
+    // Non-finite collapses to the safe default (expand floor) / None (filters).
+    for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+        let b = with(bad);
+        assert_eq!(
+            b.effective_min_expand_confidence(),
+            crate::core::scan::DEFAULT_MIN_EXPAND_CONFIDENCE,
+            "non-finite expand floor -> product default"
+        );
+        assert_eq!(
+            b.effective_min_confidence(),
+            None,
+            "non-finite drop filter -> disabled (None), never inverted"
+        );
+        assert_eq!(b.effective_min_marginal_yield(), None);
+    }
+}
+
+#[test]
 fn target_kind_canonical_str_matches_serde() {
     // CONVENTIONS.md §3: canonical_str is the persisted `scans.target_kind`
     // column, a scan_id hash input, and the event/API wire label — and its
@@ -1021,30 +1189,34 @@ fn scan_status_as_str_matches_serde() {
 }
 
 #[test]
-fn expansion_strategy_round_trips_json() {
-    for s in [
+fn expansion_strategy_every_variant_round_trips_as_str_serde_and_from_str() {
+    // DRIFT GUARD (was a hardcoded 4-variant array a 5th variant would skip).
+    // `as_str` is the single wire form shared by serde, the CLI
+    // `--expansion-strategy` arg, and `FromStr`, so all three must agree for
+    // EVERY variant. `EVERY` is walked by an arm-less `match` (no `_`): adding an
+    // `ExpansionStrategy` variant fails to compile here until it is listed, then
+    // the loop proves as_str == serde, serde round-trips, and FromStr(as_str)
+    // round-trips for the whole set — the compile-forced exhaustiveness the
+    // sibling `target_kind_canonical_str_matches_serde` gets from ALL_TARGET_KINDS.
+    const EVERY: &[ExpansionStrategy] = &[
         ExpansionStrategy::GeoConverge,
         ExpansionStrategy::BreadthFirst,
         ExpansionStrategy::DepthFirst,
         ExpansionStrategy::RichestFirst,
-    ] {
+    ];
+    for &s in EVERY {
+        match s {
+            ExpansionStrategy::GeoConverge
+            | ExpansionStrategy::BreadthFirst
+            | ExpansionStrategy::DepthFirst
+            | ExpansionStrategy::RichestFirst => {}
+        }
         let json = serde_json::to_string(&s).unwrap();
-        assert_eq!(json.trim_matches('"'), s.as_str());
+        assert_eq!(json.trim_matches('"'), s.as_str(), "as_str vs serde: {s:?}");
         let back: ExpansionStrategy = serde_json::from_str(&json).unwrap();
-        assert_eq!(back, s);
-    }
-}
-
-#[test]
-fn expansion_strategy_from_str_accepts_every_variant() {
-    for s in [
-        ExpansionStrategy::GeoConverge,
-        ExpansionStrategy::BreadthFirst,
-        ExpansionStrategy::DepthFirst,
-        ExpansionStrategy::RichestFirst,
-    ] {
+        assert_eq!(back, s, "serde round-trip: {s:?}");
         let parsed: ExpansionStrategy = s.as_str().parse().unwrap();
-        assert_eq!(parsed, s);
+        assert_eq!(parsed, s, "FromStr(as_str) round-trip: {s:?}");
     }
 }
 
@@ -1263,5 +1435,52 @@ fn scan_request_defaults_to_comprehensive_options() {
             Some(2500),
             "entity cap literal for {body}"
         );
+    }
+}
+
+/// Property tests for the pure target-model functions — this module eats
+/// untrusted, user-supplied text, so the doctrine (unit tests AND `proptest`
+/// no-panic / invariant properties) applies to every entry point.
+#[cfg(test)]
+mod prop {
+    use super::super::*;
+    use proptest::prelude::*;
+
+    fn any_target_kind() -> impl Strategy<Value = TargetKind> {
+        prop::sample::select(crate::core::dependency::ALL_TARGET_KINDS.to_vec())
+    }
+
+    proptest! {
+        /// `TargetKind::detect` and the raw-input `detect_kind` are TOTAL: they
+        /// never panic on ANY input — arbitrary bytes, multibyte, control chars —
+        /// and always return a kind. The unified-scan contract is that the caller
+        /// always gets a target to run; a panic here would abort the request.
+        #[test]
+        fn detect_never_panics(v in ".{0,80}") {
+            let _ = TargetKind::detect(&v);
+            let _ = detect_kind(&v);
+        }
+
+        /// `sanitise_target_input` is IDEMPOTENT — a fixed point. Re-sanitising an
+        /// already-sanitised value must not change it, or the same pasted seed keys
+        /// to two different values across runs. Regression guard for the class where
+        /// an invisible/format char adjacent to a surrounding quote (`\u{200b}"x"`)
+        /// shielded the quote on the first pass but is removed by a re-sanitise,
+        /// leaking the quote onto the value.
+        #[test]
+        fn sanitise_is_idempotent(v in ".{0,80}") {
+            let once = sanitise_target_input(&v);
+            let twice = sanitise_target_input(&once);
+            prop_assert_eq!(&once, &twice, "value={:?}", v);
+        }
+
+        /// `Target::validate` is TOTAL over every (kind, value): for any kind paired
+        /// with arbitrary text it returns Ok/Err but NEVER panics — no unchecked
+        /// slice / parse / index on user input can escape it.
+        #[test]
+        fn validate_never_panics(kind in any_target_kind(), v in ".{0,80}") {
+            let t = Target { kind, value: v };
+            let _ = t.validate();
+        }
     }
 }

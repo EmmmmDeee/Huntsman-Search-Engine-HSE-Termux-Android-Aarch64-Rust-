@@ -75,6 +75,16 @@ impl Module for StructuredId {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // The Social-category default (T1593.001 Social Media + T1589.003 Employee
+        // Names) is wrong for both legs: this module does not search social media —
+        // it decodes a structured ID OFFLINE — and emits no real-name `Person`. Its
+        // signal is the generating machine's MAC address embedded in a UUIDv1: host
+        // hardware identification, so it maps to T1592.001 (Gather Victim Host
+        // Information: Hardware), not the inherited social-presence pair.
+        &["T1592.001"]
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let mut result = ModuleResult::new();
         let v = target.value.trim();

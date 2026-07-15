@@ -9,11 +9,76 @@ fn accepts_org_and_fullname() {
 }
 
 #[test]
+fn abn_acn_search_is_restricted_to_australia() {
+    // An ABN/ACN is Australian by construction — it could never appear in a
+    // non-AU registry, so restricting the search saves quota.
+    let url = build_search_url(TargetKind::AbnAcn, "51824753556");
+    assert!(url.contains("/v0.4/companies/search"));
+    assert!(url.contains("jurisdiction_code=au"));
+}
+
+#[test]
+fn organisation_search_is_global() {
+    // No jurisdiction signal in a bare company name — search all ~140
+    // jurisdictions OpenCorporates indexes, not just AU.
+    let url = build_search_url(TargetKind::Organisation, "Globex Inc");
+    assert!(url.contains("/v0.4/companies/search"));
+    assert!(!url.contains("jurisdiction_code"));
+}
+
+#[test]
+fn full_name_search_uses_officer_endpoint_and_is_global() {
+    let url = build_search_url(TargetKind::FullName, "Jane Roe");
+    assert!(url.contains("/v0.4/officers/search"));
+    assert!(!url.contains("jurisdiction_code"));
+}
+
+#[test]
+fn should_report_key_status_covers_401_403_429_but_not_404_or_success() {
+    assert!(should_report_key_status(401));
+    assert!(should_report_key_status(403));
+    assert!(should_report_key_status(429));
+    assert!(!should_report_key_status(404));
+    assert!(!should_report_key_status(200));
+}
+
+#[test]
 fn module_metadata() {
     assert_eq!(OpenCorporates.name(), "opencorporates");
     // Government / public-records band (see priority() doc).
     assert_eq!(OpenCorporates.priority(), 116);
     assert_eq!(OpenCorporates.max_timeout_ms(), 10_000);
+    // Key-gated since OpenCorporates withdrew its keyless public tier (2023);
+    // a `Free` classification silently swallowed the 401 on every scan.
+    assert!(matches!(
+        OpenCorporates.cost(),
+        crate::core::module::ModuleCost::KeyGated
+    ));
+}
+
+#[tokio::test]
+async fn missing_key_yields_a_clean_needs_key_skip_not_a_silent_empty() {
+    // Regression: the keyless public tier is gone (every anonymous request
+    // 401s), so an unconfigured scan must surface `Error::MissingKey` — which
+    // dispatch renders as a "needs API key" skip with the signup hint — NOT
+    // the `Ok(empty)` the pre-fix `key_opt` + 401-swallow path produced on
+    // every scan, hiding the fact a key is required.
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let ctx = ModuleContext {
+        scan_id: "t".into(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let err = OpenCorporates
+        .process(&Target::new(TargetKind::Organisation, "Atlassian"), &ctx)
+        .await
+        .expect_err("an unconfigured key must be a MissingKey skip, not a silent empty result");
+    assert!(
+        matches!(err, crate::core::error::Error::MissingKey(ref k) if k == KEY_ENV),
+        "must name the OpenCorporates key env so the operator sees the signup hint: {err:?}"
+    );
 }
 
 #[test]

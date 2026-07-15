@@ -119,7 +119,7 @@ use super::*;
         // (the SPA download button, external tooling) parse this header row.
         assert_eq!(
             entities_to_csv(&[]).trim_end(),
-            "kind,value,raw_value,confidence,c_effective,corroboration,classification,observed_at,sources,evidence_urls,evidence,tags"
+            "kind,value,raw_value,confidence,c_effective,corroboration,source_count,classification,observed_at,sources,corroborating_sources,evidence_urls,evidence,tags"
         );
 
         let mut e = Entity::new(EntityKind::Email, "a@b.com", 0.60, "src");
@@ -204,6 +204,46 @@ use super::*;
         assert!(
             row.contains("[breach_rich] breach record found"),
             "the prose summary must still be present alongside the attributes: {row}"
+        );
+    }
+
+    #[test]
+    fn csv_source_count_and_corroborating_sources_reflect_the_filtered_count_not_the_raw_magnitude() {
+        // Regression: `corroboration` is a raw per-module observation magnitude
+        // (summed on merge, never deduplicated) that does NOT drive `c_effective`
+        // — a real scan showed ~19 mutually-exclusive breach-derived addresses
+        // all carrying an identical `corroboration=8` inherited from the emitting
+        // module, with no CSV column anywhere showing the `source_count` that
+        // actually drove confidence. A reader had no way to tell from the CSV
+        // alone whether that "8" meant anything.
+        use crate::core::entity::{Entity, EntityKind, Evidence};
+        let mut e = Entity::new(EntityKind::Address, "1 Example St", 0.82, "src");
+        // Raw magnitude seeded high, as a breach module might.
+        e.corroboration = 8;
+        // Only two evidence sources are genuinely corroborating; `geo_normalize`
+        // is a deterministic enrichment pass and must not count.
+        e.add_evidence(Evidence::new("oathnet_pro", "Breach on ebay.com"));
+        e.add_evidence(Evidence::new("search_engines", "5 engines returned results"));
+        e.add_evidence(Evidence::new("geo_normalize", "Address parse + normalization"));
+
+        let csv = entities_to_csv(&[e]);
+        let header: Vec<&str> = csv.lines().next().unwrap().split(',').collect();
+        let row: Vec<&str> = csv.lines().nth(1).unwrap().split(',').collect();
+
+        let col = |name: &str| {
+            let idx = header.iter().position(|h| *h == name).unwrap();
+            row[idx]
+        };
+        assert_eq!(col("corroboration"), "8", "raw magnitude is unchanged");
+        assert_eq!(
+            col("source_count"),
+            "2",
+            "source_count must reflect the 2 genuinely distinct, non-enrichment sources"
+        );
+        assert_eq!(
+            col("corroborating_sources"),
+            "oathnet_pro|search_engines",
+            "corroborating_sources must list only the genuine sources, excluding geo_normalize"
         );
     }
 

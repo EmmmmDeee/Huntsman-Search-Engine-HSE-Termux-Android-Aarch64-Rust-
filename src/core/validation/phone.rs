@@ -1,9 +1,9 @@
 use super::report::ValidationReport;
 
 /// True if `s` is a syntactically valid E.164 number: leading `+`,
-/// then 8 to 15 digits, with the country code in the conventional
-/// 1-3 digit range. Does NOT verify the number is dial-able; only
-/// the format.
+/// then 10 to 15 digits, with the country code in the conventional
+/// 1-3 digit range (and never a leading `0`). Does NOT verify the number is
+/// dial-able; only the format.
 pub fn validate_phone_e164(s: &str) -> ValidationReport {
     if !s.starts_with('+') {
         return ValidationReport::fail("e164.missing_plus", "must start with '+'");
@@ -54,10 +54,15 @@ pub fn to_e164_au(s: &str) -> Option<String> {
         return validate_phone_e164(&compact).valid.then_some(compact);
     }
 
-    // AU international without the `+`: `61` + a 9-digit national number.
+    // AU international without the `+`: `61` + a 9-digit national number. The first
+    // national digit must be a real ACMA AU national-significant-number lead
+    // (2/3/4/5/7/8) — the SAME gate the local branch below applies. The old
+    // `!starts_with('0')` check only excluded a leading 0, so `61` + a foreign
+    // 9-digit national number whose lead is 1/6/9 (e.g. an Irish "61" + a mobile
+    // "8xxxxxxxx"… or any non-AU lead) was re-typed as a fabricated `+61` AU number.
     if let Some(nat) = compact.strip_prefix("61")
         && nat.len() == 9
-        && !nat.starts_with('0')
+        && matches!(nat.as_bytes()[0], b'2' | b'3' | b'4' | b'5' | b'7' | b'8')
     {
         let e164 = format!("+61{nat}");
         return validate_phone_e164(&e164).valid.then_some(e164);
@@ -162,6 +167,32 @@ mod e164_au_tests {
                 to_e164_au(&local),
                 None,
                 "lead digit {lead} is not a real AU trunk code: {local}"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_61_prefix_requires_a_real_au_trunk_digit() {
+        // The `61`-without-`+` branch must apply the SAME ACMA trunk-lead gate as
+        // the local branch — else a foreign national number whose first digit is a
+        // non-AU lead (1/6/9) is fabricated into a `+61` AU number. A French mobile
+        // "06 12 34 56 78" written international-without-`+` as "61612345678" has
+        // lead `6` and must be rejected (fail-before: yielded "+61612345678").
+        for lead in ['1', '6', '9'] {
+            let intl = format!("61{lead}12345678");
+            assert_eq!(
+                to_e164_au(&intl),
+                None,
+                "bare-61 lead digit {lead} is not a real AU trunk code: {intl}"
+            );
+        }
+        // A genuine AU number in the bare-`61` form still canonicalises.
+        for lead in ['2', '3', '4', '5', '7', '8'] {
+            let intl = format!("61{lead}12345678");
+            assert_eq!(
+                to_e164_au(&intl).as_deref(),
+                Some(format!("+61{lead}12345678").as_str()),
+                "a real AU number in bare-61 form (lead {lead}) must canonicalise: {intl}"
             );
         }
     }

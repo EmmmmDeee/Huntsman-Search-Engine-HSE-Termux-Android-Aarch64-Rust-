@@ -35,9 +35,6 @@ const SRC: &str = "github_commits";
 /// Commits scanned per email. The author identity repeats across commits, so a
 /// small page is plenty to recover it without paying for deep pagination.
 const PER_PAGE: u32 = 20;
-/// Bound the distinct entities minted from one noisy/shared email.
-const MAX_NAMES: usize = 3;
-const MAX_LOGINS: usize = 5;
 
 pub struct GithubCommits;
 
@@ -140,7 +137,14 @@ impl Module for GithubCommits {
         let resp = req.send_tagged(SRC).await?;
         // Search is best-effort and free: a 403/429 means "rate-limited", not a
         // scan error. Degrade to an empty result rather than failing the module.
-        if !resp.status().is_success() {
+        let status = resp.status();
+        if !status.is_success() {
+            // If a token was in play, the key pool must still learn a 401/403/429
+            // happened, or a dead/throttled token silently degrades every future
+            // scan with no operator-visible signal and no chance to rotate.
+            if let Some(token) = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN") {
+                crate::util::http::note_keyed_error(status.as_u16(), "github", token, ctx);
+            }
             return Ok(ModuleResult::new());
         }
         // json_scanned: commit messages are free-form text that can carry leaked
@@ -164,9 +168,11 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
 
     for item in items {
         // The GitHub account GitHub itself tied to this email — a verified
-        // email ↔ account mapping, the stronger of the two signals.
-        if seen_login.len() < MAX_LOGINS
-            && let Some(gh) = &item.author
+        // email ↔ account mapping, the stronger of the two signals. Every
+        // DISTINCT login is emitted (deduped by `seen_login`): a shared/role
+        // email can front several real accounts, and dropping the extras hides
+        // genuine identities.
+        if let Some(gh) = &item.author
             && let Some(login) = gh
                 .login
                 .as_deref()
@@ -201,10 +207,10 @@ fn extract(items: &[CommitItem], email: &str, scan_id: &str) -> Vec<Entity> {
 
         // The git author name — a self-asserted real name behind the email.
         // Multi-word + non-placeholder only, so a handle or the `git` default
-        // ("Your Name") never becomes a Person.
-        if seen_name.len() < MAX_NAMES
-            && let Some(name) = item.commit.author.as_ref().and_then(|a| a.name.as_deref())
-        {
+        // ("Your Name") never becomes a Person. Every DISTINCT real name is
+        // emitted (deduped by `seen_name`): a shared/role email can front several
+        // genuine contributors, and dropping the 4th+ hides real identities.
+        if let Some(name) = item.commit.author.as_ref().and_then(|a| a.name.as_deref()) {
             let name = name.trim();
             if is_real_name(name) && seen_name.insert(name.to_ascii_lowercase()) {
                 let mut p = Entity::new(EntityKind::Person, name, 0.62, scan_id);

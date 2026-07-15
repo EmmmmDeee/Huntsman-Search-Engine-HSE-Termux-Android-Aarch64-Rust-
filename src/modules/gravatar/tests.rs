@@ -97,3 +97,64 @@ use super::*;
         assert!(expected_url.contains(&hash));
         assert!(expected_url.ends_with(".json"));
     }
+
+    #[test]
+    fn real_profile_response_with_boolean_verified_parses_and_yields_entities() {
+        // Real body fetched live 2026-07-14 from
+        // gravatar.com/205e460b479e2e5b48aec07710c08d50.json (Gravatar's own
+        // documented example profile). `accounts[0].verified` is a genuine JSON
+        // `true`, not the string `"true"` `Account::verified` used to require —
+        // before the fix this failed `serde_json::from_str` outright (the error
+        // was `invalid type: boolean true, expected a string`), and because
+        // `Entry` nests inside `GravatarResp`, that one field's type mismatch
+        // failed the WHOLE profile parse. `process()` folds any parse error into
+        // the same "no Gravatar profile" empty result as a real 404, so every
+        // profile with a linked account — the common, valuable case — was
+        // silently dropped as a false miss.
+        let body = r##"{"entry":[{"hash":"22bd03ace6f176bfe0c593650bcf45d8","requestHash":"205e460b479e2e5b48aec07710c08d50","profileUrl":"https://gravatar.com/beau","preferredUsername":"beau","thumbnailUrl":"https://0.gravatar.com/avatar/22bd03ace6f176bfe0c593650bcf45d8","photos":[{"value":"https://0.gravatar.com/avatar/22bd03ace6f176bfe0c593650bcf45d8","type":"thumbnail"}],"displayName":"Beau Lebens","pronouns":"he/him","aboutMe":"Lead of WooCommerce, at Automattic.","currentLocation":"Golden, CO","job_title":"Lead, WooCommerce","company":"Automattic","contactInfo":[{"type":"contactform","value":"https://beau.blog/about"}],"emails":[{"primary":"true","value":"beau@automattic.com"}],"accounts":[{"domain":"x.com","display":"@beaulebens","url":"https://x.com/beaulebens","iconUrl":"https://gravatar.com/icons/x.svg","is_hidden":false,"username":"beaulebens","verified":true,"name":"X","shortname":"twitter"}],"profileBackground":{"url":"https://2.gravatar.com/bg/1428/5eb8482783a9b095bc8c43399f845ad2","color":"#7a866a","opacity":1,"primaryColor":"#566039"}}]}"##;
+        let parsed: GravatarResp =
+            serde_json::from_str(body).expect("the real, live API response shape must parse");
+        let entry = parsed.entry.into_iter().next().expect("one entry");
+
+        let mut r = ModuleResult::new();
+        extract_entry(&entry, "22bd03ace6f176bfe0c593650bcf45d8", "scan", &mut r);
+
+        // The bare-username pivot from the (correctly parsed) verified account,
+        // tagged both with the platform and "verified".
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Username
+                    && e.value == "beaulebens"
+                    && e.has_tag("twitter")
+                    && e.has_tag("verified")),
+            "verified account should yield a tagged Username pivot: {:?}",
+            r.entities
+        );
+        // The rest of the profile survives too — it was previously lost
+        // wholesale by the same parse failure.
+        assert!(r.entities.iter().any(|e| e.kind == EntityKind::Person));
+        assert!(
+            r.entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Address && e.value == "Golden, CO")
+        );
+    }
+
+    #[test]
+    fn account_verified_accepts_legacy_string_shape_too() {
+        // The field was originally typed for the string "true"/"false" shape;
+        // the fix must stay backward-compatible with it, not just add the bool
+        // shape.
+        let json = serde_json::json!({"shortname": "github", "verified": "true"});
+        let acct: Account = serde_json::from_value(json).unwrap();
+        assert_eq!(acct.verified, Some(true));
+
+        let json = serde_json::json!({"shortname": "github", "verified": "false"});
+        let acct: Account = serde_json::from_value(json).unwrap();
+        assert_eq!(acct.verified, Some(false));
+
+        let json = serde_json::json!({"shortname": "github"});
+        let acct: Account = serde_json::from_value(json).unwrap();
+        assert_eq!(acct.verified, None);
+    }

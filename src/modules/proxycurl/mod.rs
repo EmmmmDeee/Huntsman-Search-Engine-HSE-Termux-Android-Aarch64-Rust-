@@ -44,9 +44,9 @@ use crate::util::http::RequestBuilderExt;
 const KEY_ENV: &str = "HUNTSMAN_PROXYCURL_KEY";
 pub(super) const SRC: &str = "proxycurl";
 
-/// Caps on per-profile output, keeping a single dump bounded.
-pub(super) const MAX_EMAILS: usize = 3;
-pub(super) const MAX_PHONES: usize = 3;
+/// Caps on per-profile output, keeping a single dump bounded. Personal emails and
+/// phones are NOT capped — they are the subject's own discovered contact pivots
+/// (a handful per profile) and dropping them loses real leads.
 pub(super) const MAX_EXPERIENCES: usize = 5;
 pub(super) const MAX_LISTED: usize = 3; // companies/schools surfaced inline on the Person
 

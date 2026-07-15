@@ -445,6 +445,11 @@ impl Ipv4Cidr {
         let m = self.mask();
         (u32::from(ip) & m) == (u32::from(self.addr) & m)
     }
+    /// The network's prefix length (0..=32).
+    #[must_use]
+    pub fn prefix_len(self) -> u8 {
+        self.prefix
+    }
 }
 
 /// An IPv6 network: address + prefix length, with containment.
@@ -476,6 +481,11 @@ impl Ipv6Cidr {
     pub fn contains(self, ip: Ipv6Addr) -> bool {
         let m = self.mask();
         (u128::from(ip) & m) == (u128::from(self.addr) & m)
+    }
+    /// The network's prefix length (0..=128).
+    #[must_use]
+    pub fn prefix_len(self) -> u8 {
+        self.prefix
     }
 }
 

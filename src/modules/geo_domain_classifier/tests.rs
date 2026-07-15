@@ -62,7 +62,6 @@ fn classifies_known_australian_service() {
             http: reqwest::Client::new(),
             keys: Default::default(),
             cancel: Default::default(),
-            proxy_pool: Default::default(),
         };
         let r = m.process(&target, &ctx).await.unwrap();
         assert_eq!(r.len(), 1);
@@ -80,7 +79,6 @@ fn classifies_known_australian_service() {
             http: reqwest::Client::new(),
             keys: Default::default(),
             cancel: Default::default(),
-            proxy_pool: Default::default(),
         }
     }
 
@@ -237,7 +235,6 @@ fn classifies_known_australian_service() {
             http: reqwest::Client::new(),
             keys: Default::default(),
             cancel: Default::default(),
-            proxy_pool: Default::default(),
         };
         let r = m.process(&target, &ctx).await.unwrap();
         // Exactly one Address (state grain), tagged with the jurisdiction; NO

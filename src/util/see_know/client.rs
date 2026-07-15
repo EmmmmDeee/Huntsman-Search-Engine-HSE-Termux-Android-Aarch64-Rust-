@@ -8,25 +8,34 @@ use crate::util::curl_client::{AuthScheme, CurlClient};
 use crate::util::response_cache::ResponseCache;
 
 use super::budget::{mark_key_invalid, mark_quota_exhausted};
+use super::enterprise_config::ENTERPRISE;
 
 // Embedded fallback: the single-source-of-truth default lives in `util::keys`.
 const HARDCODED_KEY: &str = crate::util::keys::SEEKNOW_DEFAULT_KEY;
 
 /// Per-process response cache backed by the shared
-/// [`ResponseCache`] primitive (cap 1024 — sized to comfortably hold
-/// every distinct endpoint × query a single scan generates).
-pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> = ResponseCache::new(1024);
+/// [`ResponseCache`] primitive (cap [`ENTERPRISE`]`.cache_size` — sized to
+/// comfortably hold every distinct endpoint × query a single scan
+/// generates).
+pub(super) static RESPONSE_CACHE: ResponseCache<Vec<Value>> =
+    ResponseCache::new(ENTERPRISE.cache_size);
 
 /// Shared curl-subprocess client. `X-API-Key` auth (per the see-know.eu spec —
 /// the server rejects `Authorization: Bearer` with "Missing API key. Use
-/// X-API-Key"), 75s curl timeout, 78s outer tokio timeout.
+/// X-API-Key"), [`ENTERPRISE`]`.curl_timeout_secs` curl timeout,
+/// `.tokio_timeout_millis` outer tokio timeout.
 // The name/auto `/search` path has a server-side cap of ~55s and routinely
 // responds in 50–60s with real data. The previous 12s curl / 15s outer budget
 // guaranteed a timeout-exit (curl 28) on every name search, surfacing as an
 // opaque "curl failed" with zero entities. Budget above the cap: 75s curl,
 // 78s outer (curl < outer so curl's own exit code is observed), paired with an
 // 80s module max_timeout in `modules::see_know`.
-pub(super) static CLIENT: CurlClient = CurlClient::new("seek_now", AuthScheme::XApiKey, 75, 78_000);
+pub(super) static CLIENT: CurlClient = CurlClient::new(
+    "seek_now",
+    AuthScheme::XApiKey,
+    ENTERPRISE.curl_timeout_secs,
+    ENTERPRISE.tokio_timeout_millis,
+);
 
 /// Cache key combining endpoint path, normalised query, and query
 /// type (when applicable). Disambiguates the universal /search path
@@ -61,8 +70,21 @@ pub(super) fn cache_put(key: String, items: Vec<Value>) {
 }
 
 pub(super) fn base_url() -> String {
-    std::env::var("HUNTSMAN_SEEKNOW_BASE")
-        .unwrap_or_else(|_| "https://see-know.eu/api/v1".to_string())
+    // Default corrected (2026-07-14) from `.icu` back to the vendor's own stated
+    // domain, `.eu` — every other reference to SeekNow in this codebase (module
+    // docs, error strings, `key_harvest::service_domains`, `service_defs`, the
+    // operator-facing setup guide) already names `.eu`, and a real operator's
+    // freshly-generated SeekNow export footer states the platform's own domain as
+    // `https://see-know.eu`. `.icu` had been sandbox-confirmed reachable
+    // (T2.83, 2026-07-13) and was promoted to default on that basis, but a real
+    // device's own DNS resolver failed to resolve `.icu` at all (`curl exited 6`)
+    // in the same scan where a different provider's host on the same client
+    // machinery succeeded — `.icu`-TLD domains are commonly caught by carrier/ISP
+    // DNS-level abuse filtering, a real-world failure mode a sandboxed reachability
+    // probe cannot see. Vet the operator's override: refuse non-https /
+    // private-host redirects and WARN on a divergent host, so a key-bearing
+    // request can't be silently redirected to a look-alike or an internal address.
+    crate::util::endpoint_override::resolve("HUNTSMAN_SEEKNOW_BASE", "https://see-know.eu/api/v1")
 }
 
 /// The SeekNow API key to use for a request: the per-scan context key `ctx_key`
@@ -114,35 +136,76 @@ pub(super) fn is_auth_error(body: &str) -> bool {
         || body.contains("plan_required")
 }
 
-pub(super) fn parse_response(body: &str) -> Result<Value> {
-    // Invalid/rejected API key — curl returns the 401 body as "success", so
-    // detect it here, latch it, and surface the actionable warning.
-    if is_auth_error(body) {
-        mark_key_invalid(body);
-        return Ok(Value::Null);
+/// A terminal condition that should stop the scan from spending more budget on
+/// the held key — split so the caller latches the right global.
+enum Terminal {
+    /// The key itself is rejected (`invalid_api_key` / `plan_required`).
+    Auth,
+    /// The key is fine but its quota/credits are spent for the rest of the
+    /// day — retrying can't help until the next billing period, so this
+    /// latches [`mark_quota_exhausted`] and the scan gives up on SeekNow.
+    Quota,
+    /// A transient burst-rate-limit (`{"error":"rate_limit"}`) — DISTINCT
+    /// from [`Terminal::Quota`]: the key still has credits, the request was
+    /// simply too fast. Diagnosed as a real bug: this used to be classified
+    /// identically to true quota exhaustion, so one 429-shaped response
+    /// permanently latched the budget and silently abandoned SeekNow for the
+    /// rest of the scan (every remaining endpoint call, often dozens) with
+    /// zero backoff or retry. Callers should back off and retry instead.
+    RateLimited,
+}
+
+/// True if either `credits_remaining` meter (top-level, or nested under `data`)
+/// reads exactly 0 — the JSON-scoped quota signal.
+fn credits_exhausted(v: &Value) -> bool {
+    let zero = |o: &Value| o.get("credits_remaining").and_then(Value::as_i64) == Some(0);
+    zero(v) || v.get("data").is_some_and(zero)
+}
+
+/// Classify a PARSED see-know response for a terminal auth/quota/rate-limit
+/// condition, scoped to the top-level `error`/`message` envelope strings and
+/// the `credits_remaining` meter. Deliberately does NOT scan the data
+/// payload: a breach/stealer record whose captured content happens to
+/// contain a marker like `invalid_api_key` (routine in leaked config blobs)
+/// must never be mistaken for a provider-level failure — the previous
+/// whole-body substring scan did exactly that, silently disabling the
+/// provider for the whole scan on a single record.
+///
+/// `rate_limit` is intentionally its OWN [`Terminal::RateLimited`] variant,
+/// not folded into [`Terminal::Quota`]: a burst rate-limit means "the key
+/// still has credits, slow down," which is recoverable within the same scan
+/// via backoff — unlike true exhaustion (`credits_exhausted` /
+/// `quota_exceeded` / `daily limit reached`), which cannot recover until the
+/// next billing period.
+fn classify_terminal(v: &Value) -> Option<Terminal> {
+    let err = v.get("error").and_then(Value::as_str).unwrap_or_default();
+    let msg = v.get("message").and_then(Value::as_str).unwrap_or_default();
+    if is_auth_error(err) || is_auth_error(msg) {
+        return Some(Terminal::Auth);
     }
-    // Detect quota exhaustion. Per docs the rate-limit error contains
-    // "rate limit" or "credits" with a specific exhaustion message.
-    if body.contains("\"credits_remaining\":0")
-        || body.contains("daily limit reached")
-        || body.contains("\"error\":\"rate_limit\"")
-        || body.contains("quota_exceeded")
+    if err == "rate_limit" {
+        return Some(Terminal::RateLimited);
+    }
+    if credits_exhausted(v) || err.contains("quota_exceeded") || msg.contains("daily limit reached")
     {
-        mark_quota_exhausted();
-        return Ok(Value::Null);
+        return Some(Terminal::Quota);
     }
+    None
+}
+
+pub(super) fn parse_response(body: &str) -> Result<Value> {
     // A non-JSON response body — empty, a whitespace-only 200, an HTML error /
-    // challenge / gateway page, or a plain-text message — is "no results", not a
-    // module failure. Treat it as such (the same `Ok(Value::Null)` sentinel the
-    // auth/quota branches use, which `extract_items` reads as an empty result) so a
-    // normal empty response never errors the module or trips the circuit breaker.
-    // Without this, such a body surfaces as the serde "expected value at line 1
-    // column 1" error and cools the provider off after a perfectly ordinary
-    // no-match. A body that *looks* like JSON (starts with `{`/`[`) but won't parse
-    // is genuinely malformed → still surfaced as an error (real schema drift).
+    // challenge / gateway page, or a plain-text message (including a plaintext auth
+    // rejection like "Invalid API key") — is "no results", not a module failure. It
+    // carries no data payload, so the substring auth check is safe here and still
+    // latches a plaintext rejection. Everything else degrades to the `Ok(Value::Null)`
+    // sentinel (read as empty by `extract_items`) so a normal empty response never
+    // errors the module or trips the circuit breaker.
     let trimmed = body.trim_start();
     if !trimmed.starts_with('{') && !trimmed.starts_with('[') {
-        if !trimmed.is_empty() {
+        if is_auth_error(body) {
+            mark_key_invalid(body);
+        } else if !trimmed.is_empty() {
             tracing::debug!(
                 preview = %body.chars().take(60).collect::<String>(),
                 "see_know: non-JSON response body treated as no results"
@@ -150,7 +213,31 @@ pub(super) fn parse_response(body: &str) -> Result<Value> {
         }
         return Ok(Value::Null);
     }
-    serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))
+    // A JSON body: parse FIRST, then inspect ONLY the top-level error/quota envelope
+    // (never the raw payload) so a breach record whose captured content contains an
+    // auth/quota marker cannot disable the provider for the whole scan. A body that
+    // looks like JSON but won't parse is genuine schema drift → surfaced as an error.
+    let value: Value =
+        serde_json::from_str(body).map_err(|e| Error::module("seek_now", e.to_string()))?;
+    match classify_terminal(&value) {
+        Some(Terminal::Auth) => {
+            mark_key_invalid(body);
+            Ok(Value::Null)
+        }
+        Some(Terminal::Quota) => {
+            mark_quota_exhausted();
+            Ok(Value::Null)
+        }
+        // Surfaced as an `Err` (not `Ok(Value::Null)`) so the retry loops in
+        // `endpoints.rs` can distinguish "back off and retry" from a normal
+        // empty result — see `Terminal::RateLimited`'s doc comment for why
+        // this must NOT latch `mark_quota_exhausted()`.
+        Some(Terminal::RateLimited) => Err(Error::RateLimited(format!(
+            "seek_now: {}",
+            body.chars().take(120).collect::<String>()
+        ))),
+        None => Ok(value),
+    }
 }
 
 pub(super) async fn get_json(url: &str, key: &str, endpoint: &str, query: &str) -> Result<Value> {

@@ -51,6 +51,47 @@ use super::*;
     }
 
     #[test]
+    fn load_side_strips_quarantined_candidate_entities_from_a_scan() {
+        // A candidate-tagged entity (a breach co-occurrence "stranger" — non-
+        // subject PII) must never surface from the scan-id branch, matching the
+        // export path's `confirmed_entities` filter. Otherwise it leaks as
+        // foreign PII in the diff output, and — for the documented
+        // export-then-diff workflow — every candidate on a re-scan would show
+        // up as spuriously "added" even when nothing about the target changed.
+        use crate::core::scan::{Scan, ScanStatus, Target, TargetKind};
+        let store = Store::open(":memory:").unwrap();
+        let mut scan = Scan::new("scan-y", Target::new(TargetKind::Domain, "example.org"));
+        scan.status = ScanStatus::Complete;
+        store.upsert_scan(&scan).unwrap();
+        store
+            .upsert_entity(&Entity::new(
+                EntityKind::Domain,
+                "example.org",
+                0.9,
+                "scan-y",
+            ))
+            .unwrap();
+        let mut stranger = Entity::new(EntityKind::Email, "stranger@other.com", 0.4, "scan-y");
+        stranger.tag(crate::core::tags::CANDIDATE);
+        store.upsert_entity(&stranger).unwrap();
+
+        let side = load_side(&store, "scan-y").unwrap();
+        assert_eq!(
+            side.entities.len(),
+            1,
+            "the candidate-tagged stranger must be stripped, not just the confirmed domain: {:?}",
+            side.entities.iter().map(|e| &e.value).collect::<Vec<_>>()
+        );
+        assert!(
+            !side
+                .entities
+                .iter()
+                .any(|e| e.has_tag(crate::core::tags::CANDIDATE)),
+            "no remaining entity may carry the candidate tag"
+        );
+    }
+
+    #[test]
     fn load_side_reads_json_entity_snapshot_file() {
         let store = Store::open(":memory:").unwrap();
         let ents = vec![Entity::new(EntityKind::Email, "a@b.com", 0.8, "s")];

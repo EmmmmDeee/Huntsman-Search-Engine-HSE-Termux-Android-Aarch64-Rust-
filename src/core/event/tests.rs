@@ -121,6 +121,136 @@ use super::*;
         }
     }
 
+    // ── Wire-contract drift guard (event_type_str ⇄ serde `type`) ───────
+
+    #[test]
+    fn event_type_str_matches_serde_tag_for_every_variant() {
+        use crate::core::correlator::{Correlation, Severity};
+        use crate::core::entity::{Entity, EntityKind};
+
+        // DRIFT GUARD. `event_type_str()` is a hand-written 15-arm match that MUST
+        // equal the serde `type` tag for EVERY variant: the SPA switches on
+        // `evt.type === 'module_start'`, and the SQLite event log / SSE stream both
+        // carry the serde form — so a single divergent arm (e.g. `live_ticks` vs
+        // `live_tick`) silently breaks that event in the live UI with no error.
+        // Previously only ONE variant (entity_excluded) pinned this equality.
+        //
+        // `every` holds one representative per variant. The arm-less `match` (no
+        // `_`) inside the loop is over the EventKind *type*, so adding a variant
+        // fails to compile here until it is handled — the author then adds it to
+        // `every` too (kept adjacent for exactly that reason). The loop proves, for
+        // the whole set, that the hand tag equals the serde tag and that the tag
+        // survives a JSON round-trip.
+        let every = [
+            EventKind::ScanStart {
+                target_kind: "email".into(),
+                target_value: "a@b.com".into(),
+            },
+            EventKind::ModuleStart { module: "m".into() },
+            EventKind::ModuleDone {
+                module: "m".into(),
+                found: 1,
+            },
+            EventKind::ModuleError {
+                module: "m".into(),
+                error: "e".into(),
+            },
+            EventKind::ModuleSkipped {
+                module: "m".into(),
+                reason: "r".into(),
+            },
+            EventKind::EntityFound {
+                entity: Entity::new(EntityKind::Email, "a@b.com", 0.5, "s"),
+            },
+            EventKind::ExpansionTick {
+                depth: 1,
+                queued: 2,
+                visited: 3,
+            },
+            EventKind::ExpansionStop { reason: "r".into() },
+            EventKind::EntityExcluded {
+                kind: "ip_address".into(),
+                value: "1.2.3.4".into(),
+                reason: "r".into(),
+            },
+            EventKind::CorrelationFound {
+                correlation: Correlation::new(
+                    "AU-001",
+                    "rule",
+                    Severity::High,
+                    "d".into(),
+                    vec!["u".into()],
+                    "s",
+                    0,
+                ),
+            },
+            EventKind::CorrelationsDone { count: 1 },
+            EventKind::LiveStart {
+                live_id: "l".into(),
+                target_kind: "email".into(),
+                target_value: "a@b.com".into(),
+                interval_secs: 60,
+            },
+            EventKind::LiveTick {
+                live_id: "l".into(),
+                iteration: 1,
+                scan_id: "s".into(),
+            },
+            EventKind::LiveStop {
+                live_id: "l".into(),
+                reason: "r".into(),
+            },
+            EventKind::ScanComplete {
+                scan_id: "s".into(),
+                entity_count: 0,
+            },
+        ];
+
+        for kind in &every {
+            // Compile-time tripwire: NO `_` arm, so a new EventKind variant fails to
+            // compile until it is handled (and added to `every` above).
+            match kind {
+                EventKind::ScanStart { .. }
+                | EventKind::ModuleStart { .. }
+                | EventKind::ModuleDone { .. }
+                | EventKind::ModuleError { .. }
+                | EventKind::ModuleSkipped { .. }
+                | EventKind::EntityFound { .. }
+                | EventKind::ExpansionTick { .. }
+                | EventKind::ExpansionStop { .. }
+                | EventKind::EntityExcluded { .. }
+                | EventKind::CorrelationFound { .. }
+                | EventKind::CorrelationsDone { .. }
+                | EventKind::LiveStart { .. }
+                | EventKind::LiveTick { .. }
+                | EventKind::LiveStop { .. }
+                | EventKind::ScanComplete { .. } => {}
+            }
+
+            let value = serde_json::to_value(kind).unwrap();
+            let serde_tag = value
+                .get("type")
+                .and_then(|t| t.as_str())
+                .unwrap_or_else(|| panic!("event serialised without a `type` tag: {value}"));
+            assert_eq!(
+                serde_tag,
+                kind.event_type_str(),
+                "event_type_str() diverged from the serde `type` tag",
+            );
+
+            // The tag survives a full JSON round-trip (the SSE/event-log path).
+            let json = serde_json::to_string(kind).unwrap();
+            let back: EventKind = serde_json::from_str(&json).unwrap();
+            assert_eq!(
+                back.event_type_str(),
+                kind.event_type_str(),
+                "tag changed across a JSON round-trip",
+            );
+        }
+
+        assert_eq!(every.len(), 15, "one representative per EventKind variant");
+    }
+
     // ── Full Event round-trip ───────────────────────────────────────────
 
     #[test]

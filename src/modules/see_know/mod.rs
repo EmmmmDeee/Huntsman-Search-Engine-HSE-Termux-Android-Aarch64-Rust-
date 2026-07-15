@@ -1,6 +1,8 @@
 //! SeekNow (see-know.eu) — parallel breach + stealer + OSINT pool.
 //!
-//! Direct OathNet competitor with its own 5,000-lookup daily quota.
+//! Direct OathNet competitor with its own 15,000-lookup daily quota
+//! (`util::see_know::enterprise_config::ENTERPRISE` — the single source of
+//! truth for this and every other quota figure quoted in this file).
 //! Runs alongside oathnet_pro so each scan effectively gets 2 parallel
 //! Multiplier-tier pools (separate quotas, overlapping but distinct
 //! data corpora — combining them maximises coverage).
@@ -23,13 +25,21 @@
 //!   FullName   → /search (auto-detect) — no add-on needed
 //!
 //! Single-origin presence checks (github/twitter/reddit/tiktok/roblox/xbox/
-//! minecraft) are deliberately NOT dispatched — the free `username_search`
-//! stack (600+ sites), `social_probe`, and `search_engines` scraping already
-//! cover those, so SeekNow's paid lookups go only to the broad `/search`,
-//! username-history aggregation, and cross-platform ID resolution. See the
-//! `endpoints` submodule (`FREE_COVERED_SINGLE_ORIGIN` / `effective_plan`).
+//! minecraft) ARE dispatched for every Username target, alongside the free
+//! `username_search` stack (600+ sites)/`social_probe`/`search_engines`
+//! scraping that also covers those platforms — the operator's maximisation
+//! directive means every endpoint adding platform-specific profile depth or
+//! breach context fires, with the per-scan budget cap as the only rate
+//! limiter, not a platform-presence filter. (An OLDER revision of this
+//! comment described a filter, `FREE_COVERED_SINGLE_ORIGIN`, that stripped
+//! these before dispatch — that filter was removed; the constant is kept
+//! `#[allow(dead_code)]` for documentation/future policy control, but
+//! `effective_plan()` no longer applies it. See the `endpoints` submodule's
+//! own, up-to-date doc comments.)
 //!
-//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 160).
+//! Each scan spends up to HUNTSMAN_SEEKNOW_SCAN_CAP lookups (default 300,
+//! dynamically scaled up to 750 after the per-scan `/credits` probe —
+//! `clamp(daily_limit / 20, 300, 2500)`; session ceiling 100,000).
 //! Discovered credentials feed the same key-harvest pipeline as oathnet_pro
 //! — extract_api_keys_from_item recognises the same 80+ prefix patterns.
 
@@ -45,18 +55,17 @@ use crate::core::{
     scan::{Target, TargetKind},
     tags,
 };
-use crate::modules::oathnet_pro::key_harvest::{extract_api_keys_from_item, store_api_credential};
+use crate::util::key_harvest::{extract_api_keys_from_item, store_api_credential};
 use crate::util::preflight::{is_local_domain, is_placeholder_username, is_private_ip};
 use crate::util::see_know;
+use crate::util::target_match::TargetMatch;
 
 mod endpoints;
 mod extract;
 mod pivots;
 
 use endpoints::{dispatch_plan, effective_plan};
-use extract::{
-    extract_entities, extract_geo_entities, extract_message_emails, extract_message_mentions,
-};
+use extract::{extract_entities, extract_geo_entities};
 use pivots::{
     discover_discord_pivots, discover_steam_pivots, dispatch_discord_pivots, dispatch_steam_pivots,
 };
@@ -239,17 +248,30 @@ impl Module for SeekNow {
         let total = items.len();
 
         if total > 0 {
-            let mut parent = target.to_entity(0.85, &ctx.scan_id);
-            parent.tag(tags::BREACH);
-            parent.tag("see-know");
-            parent.add_evidence(
-                Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
-                    .with_attr("hits", total.to_string())
-                    .with_attr("endpoint", "/api/v1/search")
-                    .with_attr("provider", "see-know.eu")
-                    .with_attr("api_key_origin", &key_fp),
-            );
-            result.push(parent);
+            // `/search` on a broad seed (above all a `full_name` auto-detect,
+            // but also an address-adjacent phone/IP) can return rows for
+            // strangers who merely share a term with the target. Minting the
+            // 0.85 BREACH parent off raw `total` re-affirms the seed's own UID
+            // — merging via `absorb` (GREATEST semantics) straight into the
+            // pre-existing entity — even when NONE of the returned rows
+            // actually identify the subject. `search_subject_present` mirrors
+            // the same match gate `oathnet_pro::breach::breach_parent_entity`
+            // already applies to its parent; the per-record extraction below
+            // is unaffected — it demotes non-matching rows individually via
+            // `is_target` inside `extract_entities`.
+            if search_subject_present(v, &items) {
+                let mut parent = target.to_entity(0.85, &ctx.scan_id);
+                parent.tag(tags::BREACH);
+                parent.tag("see-know");
+                parent.add_evidence(
+                    Evidence::new(SRC, format!("SeekNow: {total} record(s) via /search"))
+                        .with_attr("hits", total.to_string())
+                        .with_attr("endpoint", "/api/v1/search")
+                        .with_attr("provider", "see-know.eu")
+                        .with_attr("api_key_origin", &key_fp),
+                );
+                result.push(parent);
+            }
 
             // Each record yields at least one entity; reserve up front so the
             // result vector doesn't repeatedly realloc as records are walked.
@@ -265,25 +287,30 @@ impl Module for SeekNow {
                     &mut seen,
                     &mut result,
                 );
-                store_api_credential(item);
-                extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                store_api_credential(item, SRC);
+                extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
             }
         }
 
         // ── Per-seed endpoint matrix: maximise SeekNow's UNIQUE coverage ──
         //
-        // Each target kind plans the relevant SeekNow endpoints, then
-        // `effective_plan` strips the single-origin presence checks the free
-        // username stack already covers, and the remainder dispatch
-        // concurrently (bounded by remaining scan + session budget). What
-        // actually runs:
+        // Each target kind plans the relevant SeekNow endpoints via
+        // `effective_plan` (an unfiltered pass-through of `plan_endpoints`
+        // — see the `endpoints` submodule's own doc comments for why the
+        // single-origin filter this comment used to describe was removed),
+        // and the whole plan dispatches concurrently (bounded by remaining
+        // scan + session budget). What actually runs:
         //
         // (breach + stealer + external records already arrived via the broad
-        // `/search` above; these add-ons only cover what `/search` does not):
+        // `/search` above; these add-ons cover what `/search` does not, PLUS
+        // the single-origin platform-presence checks — see below):
         //
         //   Email     → email-check (account/service existence map)
         //   Username  → social (multi-platform aggregate, 1 call),
-        //               username-history
+        //               github, twitter, reddit, tiktok, roblox, xbox,
+        //               minecraft (platform-specific profile depth beyond
+        //               what free `username_search`'s presence-only check
+        //               returns), username-history
         //               (+ discord/user + discord-to-roblox when the value
         //                parses as a Discord ID; + steam when a Steam ID —
         //                ID resolution, not single-site enumeration)
@@ -292,18 +319,15 @@ impl Module for SeekNow {
         //   IpAddress → network/ip
         //   FullName  → (none — `/search` auto-detect already covers it)
         //
-        // The single-origin github/twitter/reddit/tiktok/roblox/xbox/minecraft
-        // endpoints are filtered out — free `username_search` handles those, so
-        // paid quota isn't wasted re-confirming them.
-        //
         // Within each plan, calls run via `join_all` — the wall-time
         // collapses to the slowest single endpoint instead of summing
         // every call's latency. Budget gates inside util::see_know
         // turn no-quota calls into instant empty-vec returns.
         if !ctx.cancel.is_cancelled() && see_know::budget_remaining() {
-            // effective_plan() drops single-origin endpoints the free
-            // username stack already covers, so paid quota is spent only on
-            // breach / history / multi-platform aggregation and ID pivots.
+            // effective_plan() dispatches the FULL matrix, including the
+            // single-origin platform checks — the maximisation directive
+            // means SeekNow's platform-specific profile depth is worth the
+            // quota even where free coverage exists at presence-only depth.
             let plan = effective_plan(target.kind, v);
             let endpoint_results = dispatch_plan(key, v, &plan).await;
 
@@ -329,8 +353,8 @@ impl Module for SeekNow {
                         &mut seen,
                         &mut result,
                     );
-                    store_api_credential(item);
-                    extract_api_keys_from_item(item, &ctx.scan_id, &mut seen, &mut result);
+                    store_api_credential(item, SRC);
+                    extract_api_keys_from_item(item, &ctx.scan_id, SRC, &mut seen, &mut result);
                     // Geo-specific extraction — pull coordinates/timezone/
                     // location directly when the endpoint returns them.
                     extract_geo_entities(item, endpoint, &ctx.scan_id, &mut seen, &mut result);
@@ -419,20 +443,53 @@ async fn resolve_identity_pivots(
         }
 
         let before = result.entities.len();
-        for (endpoint, items) in &pivot_results {
-            for item in items {
-                extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
-                extract_geo_entities(item, endpoint, scan_id, seen, result);
-                if *endpoint == "discord_messages" {
-                    extract_message_emails(item, scan_id, seen, result);
-                    extract_message_mentions(item, scan_id, seen, result);
-                }
-            }
-        }
+        extract_pivot_entities(&pivot_results, seed_value, scan_id, key_fp, seen, result);
         if result.entities.len() == before {
             break; // a hop that surfaced nothing new — stop chasing
         }
     }
+}
+
+/// Extract entities (identity + geo + message + API-key) from one hop's
+/// worth of identity-pivot responses (discord/user, discord/to-roblox,
+/// gaming/steam). Split out of [`resolve_identity_pivots`] — which requires a
+/// live network round-trip to populate `pivot_results` — so this pure mapping
+/// step is directly unit-testable against synthetic response shapes.
+///
+/// The key-harvest pass (`store_api_credential` + `extract_api_keys_from_item`)
+/// was, until this fix, the one SeekNow data-ingestion point that skipped it:
+/// every other endpoint in this module (the broad `/search` call and the
+/// per-seed endpoint matrix) already runs every returned item through it. The
+/// identity-pivot chase is SeekNow's own stated "unique value" over the free
+/// username stack — a linked account's own `password`/`token`/`note` field
+/// leaking a credential was silently missed here while a structurally
+/// identical field in every other SeekNow response was already caught.
+fn extract_pivot_entities(
+    pivot_results: &[(&'static str, Vec<Value>)],
+    seed_value: &str,
+    scan_id: &str,
+    key_fp: &str,
+    seen: &mut HashSet<String>,
+    result: &mut ModuleResult,
+) {
+    for (endpoint, items) in pivot_results {
+        for item in items {
+            extract_entities(item, seed_value, scan_id, endpoint, key_fp, seen, result);
+            extract_geo_entities(item, endpoint, scan_id, seen, result);
+            store_api_credential(item, SRC);
+            extract_api_keys_from_item(item, scan_id, SRC, seen, result);
+        }
+    }
+}
+
+/// True if at least one `/search` row actually identifies the scan subject,
+/// per the shared [`TargetMatch`] rules. Gates the top-level breach-parent
+/// stamp (see `process`) so a page of term-sharing strangers doesn't
+/// re-affirm the seed at full confidence; pure function of `(target_value,
+/// items)` so the gate is testable without a live HTTP round-trip.
+fn search_subject_present(target_value: &str, items: &[Value]) -> bool {
+    let match_ctx = TargetMatch::new(target_value);
+    items.iter().any(|item| match_ctx.matches(item))
 }
 
 /// True if a seed is junk that should never reach a SeekNow HTTP call — local

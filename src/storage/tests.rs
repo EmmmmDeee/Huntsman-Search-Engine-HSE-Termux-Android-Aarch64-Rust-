@@ -48,6 +48,32 @@ fn open_restricts_the_db_file_to_owner_only() {
 }
 
 #[test]
+#[cfg(unix)]
+fn restrict_to_owner_only_logs_when_a_chmod_fails() {
+    // The chmod loop in `open` is best-effort (must not block startup on a
+    // transient/permission-denied failure) but must not be silent — the
+    // store holds PII + harvested keys, so a failed chmod leaving it at the
+    // process umask (often world-readable) deserves a trace. A chmod on a
+    // nonexistent path reliably fails without needing a read-only fixture.
+    let missing = format!(
+        "{}/.huntsman-missing-{}-{}.db",
+        std::env::temp_dir().to_string_lossy(),
+        std::process::id(),
+        line!()
+    );
+    let _ = std::fs::remove_file(&missing);
+    let (_, log) = capture_warn_logs(|| restrict_to_owner_only(std::slice::from_ref(&missing)));
+    assert!(
+        log.contains(&missing),
+        "the warning must name the failing path; got: {log:?}"
+    );
+    assert!(
+        log.contains("failed to restrict"),
+        "the warning must say why; got: {log:?}"
+    );
+}
+
+#[test]
 fn integrity_check_reports_ok_on_healthy_db() {
     // A fresh, written-to database must report exactly `["ok"]` — the
     // signal `hse doctor` relies on to distinguish a clean store from a
@@ -110,6 +136,39 @@ fn latest_completed_scan_is_deterministic_on_same_second_ties() {
             "latest must be stable across repeated calls on identical state"
         );
     }
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none() {
+    // `latest_completed_scan` backs `resolve_scan_id`'s `latest` selector
+    // (`hse export/diff/audit latest`, the SPA's "open latest scan"). If the
+    // one row matching `status = 'complete'` has a corrupted/schema-drifted
+    // `data_json`, the function must propagate that as an `Err` — exactly
+    // like the sibling `get_scan` already does via `?` — never silently
+    // report `Ok(None)`, which `resolve_scan_id` turns into the misleading
+    // "no completed scans in store" when a complete scan actually exists.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    {
+        let conn = store.conn.lock();
+        // Valid JSON (so the `json_extract(...) = 'complete'` SQL filter
+        // matches and the row is selected) but missing every field `Scan`
+        // requires, so `serde_json::from_str::<Scan>` fails.
+        conn.execute(
+            "INSERT INTO scans(id, target_kind, target_value, status, started_at, \
+             finished_at, entity_count, error, data_json) \
+             VALUES('scan-corrupt', 'email', 'x@y.com', 'complete', 0, 0, 0, NULL, ?1)",
+            params![r#"{"status":"complete"}"#],
+        )
+        .unwrap();
+    }
+    let result = store.latest_completed_scan();
+    assert!(
+        result.is_err(),
+        "a corrupted complete-scan row must surface as an error, not Ok(None) \
+         (which resolve_scan_id would misreport as 'no completed scans'); got: {result:?}"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -374,6 +433,69 @@ fn list_scans_empty_db_returns_empty_vec() {
 }
 
 #[test]
+fn radar_history_returns_only_radar_sentinel_scans_newest_first() {
+    use crate::core::entity::unix_now;
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    let base = unix_now();
+    // Two ordinary (non-radar) scans that must NEVER appear in radar history,
+    // even though one shares Coordinates/MacAddress kinds with a real value.
+    let mut ordinary_email = Scan::new("ordinary-email", Target::new(TargetKind::Email, "x@y.com"));
+    ordinary_email.started_at = base;
+    store.upsert_scan(&ordinary_email).unwrap();
+    let mut ordinary_coords = Scan::new(
+        "ordinary-coords",
+        Target::new(TargetKind::Coordinates, "-33.8688,151.2093"),
+    );
+    ordinary_coords.started_at = base + 50;
+    store.upsert_scan(&ordinary_coords).unwrap();
+    // The two genuine radar sentinel shapes `radar_scan_spec` produces.
+    let mut radar_gps = Scan::new("radar-gps", Target::new(TargetKind::Coordinates, "0,0"));
+    radar_gps.started_at = base + 100;
+    store.upsert_scan(&radar_gps).unwrap();
+    let mut radar_mac = Scan::new(
+        "radar-mac",
+        Target::new(TargetKind::MacAddress, "00:00:00:00:00:00"),
+    );
+    radar_mac.started_at = base + 200;
+    store.upsert_scan(&radar_mac).unwrap();
+
+    let sweeps = store.radar_history(10).unwrap();
+    assert_eq!(
+        sweeps.iter().map(|s| s.id.as_str()).collect::<Vec<_>>(),
+        vec!["radar-mac", "radar-gps"],
+        "only the two radar-sentinel scans must be returned, newest first: {sweeps:?}"
+    );
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_respects_limit() {
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    for i in 0..5 {
+        let mut scan = Scan::new(
+            format!("radar-{i}"),
+            Target::new(TargetKind::Coordinates, "0,0"),
+        );
+        scan.started_at = 1000 + i as u64;
+        store.upsert_scan(&scan).unwrap();
+    }
+    let sweeps = store.radar_history(2).unwrap();
+    assert_eq!(sweeps.len(), 2, "should return exactly 2 sweeps");
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn radar_history_empty_db_returns_empty_vec() {
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    let sweeps = store.radar_history(10).unwrap();
+    assert!(sweeps.is_empty());
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn upsert_scan_updates_existing() {
     use crate::core::scan::ScanStatus;
     let path = tmp_db();
@@ -606,6 +728,87 @@ fn event_log_round_trips_in_emission_order() {
 }
 
 #[test]
+fn recent_module_outcome_events_filters_orders_and_bounds_across_scans() {
+    // The substrate for the per-source health signal (T2.7 / SOL-HEALTH-SIGNAL):
+    // only ModuleDone/ModuleError matter, newest-first, across ALL scan_ids, and
+    // respecting the caller's limit.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-a");
+    insert_scan(&store, "scan-b");
+
+    let rows = [
+        (
+            "scan-a",
+            100,
+            EventKind::ScanStart {
+                target_kind: "domain".into(),
+                target_value: "example.com".into(),
+            },
+        ),
+        (
+            "scan-a",
+            101,
+            EventKind::ModuleStart {
+                module: "dns_intel".into(),
+            },
+        ),
+        (
+            "scan-a",
+            102,
+            EventKind::ModuleDone {
+                module: "dns_intel".into(),
+                found: 3,
+            },
+        ),
+        (
+            "scan-b",
+            200,
+            EventKind::ModuleError {
+                module: "shodan".into(),
+                error: "timeout".into(),
+            },
+        ),
+        (
+            "scan-b",
+            201,
+            EventKind::ModuleSkipped {
+                module: "crtsh".into(),
+                reason: "no key".into(),
+            },
+        ),
+    ];
+    for (scan_id, ts, kind) in rows {
+        let mut ev = Event::new(scan_id, kind);
+        ev.ts = ts;
+        store.insert_event(&ev).unwrap();
+    }
+
+    let outcomes = store.recent_module_outcome_events(100).unwrap();
+    assert_eq!(
+        outcomes.len(),
+        2,
+        "only module_done/module_error rows, across both scans"
+    );
+    // Newest first.
+    assert!(matches!(
+        &outcomes[0].kind,
+        EventKind::ModuleError { module, .. } if module == "shodan"
+    ));
+    assert!(matches!(
+        &outcomes[1].kind,
+        EventKind::ModuleDone { module, .. } if module == "dns_intel"
+    ));
+
+    // limit is respected.
+    let bounded = store.recent_module_outcome_events(1).unwrap();
+    assert_eq!(bounded.len(), 1);
+    assert!(matches!(&bounded[0].kind, EventKind::ModuleError { .. }));
+
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
 fn entities_for_scan_recovers_from_event_log_when_not_finalised() {
     // The "Ali Kareem" failure: a scan found 558 entities but the export read
     // an empty result because the scan never finalised (a module hung / the
@@ -817,6 +1020,37 @@ fn entities_filtered_by_kind() {
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].kind, EntityKind::Email);
+    let _ = std::fs::remove_file(&path);
+}
+
+#[test]
+fn entities_filtered_returns_the_complete_result_not_a_capped_500() {
+    // Full-fidelity: a breach-heavy scan's filtered result can exceed 500 entities;
+    // the filtered query must return the COMPLETE deterministically-ordered set — it
+    // is a SUBSET of the canonical `entities_for_scan`, which is itself unbounded.
+    // Fail-before: a hardcoded `LIMIT 500` silently dropped the lowest-confidence
+    // matches past rank 500 with no total/flag/pagination.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "big-scan");
+    for i in 0..600 {
+        let conf = 0.30 + (i % 50) as f64 / 100.0; // varied, exercises the ordering
+        let e = Entity::new(
+            EntityKind::Email,
+            format!("user{i:04}@example.com"),
+            conf,
+            "big-scan",
+        );
+        store.upsert_entity(&e).unwrap();
+    }
+    let results = store
+        .entities_filtered("big-scan", Some("email"), None, None)
+        .unwrap();
+    assert_eq!(
+        results.len(),
+        600,
+        "the filtered query must return every matching entity, not a capped 500"
+    );
     let _ = std::fs::remove_file(&path);
 }
 
@@ -1421,10 +1655,13 @@ fn open_produces_exact_schema_and_pragmas() {
         "index|idx_entities_kind",
         "index|idx_entities_scan",
         "index|idx_events_scan",
+        "index|idx_events_type",
         "index|idx_obs_entity",
         "index|idx_obs_scan",
         "index|idx_relations_scan",
         "index|idx_scans_started",
+        "index|idx_stealer_rows_log",
+        "index|idx_stealer_rows_scan",
         "index|sqlite_autoindex_correlations_1",
         "index|sqlite_autoindex_entities_1",
         "index|sqlite_autoindex_entity_observations_1",
@@ -1453,6 +1690,7 @@ fn open_produces_exact_schema_and_pragmas() {
         // planner, no app data, and improve query plans on Termux.
         "table|sqlite_stat1",
         "table|sqlite_stat4",
+        "table|stealer_rows",
     ];
     assert_eq!(got, expected, "schema (tables + indexes) must be identical");
 
@@ -1630,5 +1868,125 @@ fn delete_scan_syncs_fts_so_rowid_reuse_cannot_poison_search() {
         )
         .expect("FTS index must match the entities content table after delete_scan");
     }
+    let _ = std::fs::remove_file(&path);
+}
+
+/// A `MakeWriter` that tees formatted log lines into a shared buffer, so a
+/// test can assert on what a scoped `tracing` subscriber actually emitted
+/// without touching the process-global subscriber. Mirrors the pattern
+/// established in `core::engine::tests::module_dispatch_is_logged_...`.
+#[derive(Clone)]
+struct VecWriter(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+impl std::io::Write for VecWriter {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.lock().unwrap().extend_from_slice(buf);
+        Ok(buf.len())
+    }
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+impl tracing_subscriber::fmt::MakeWriter<'_> for VecWriter {
+    type Writer = VecWriter;
+    fn make_writer(&self) -> Self::Writer {
+        self.clone()
+    }
+}
+
+fn capture_warn_logs<T>(f: impl FnOnce() -> T) -> (T, String) {
+    let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_writer(VecWriter(std::sync::Arc::clone(&buf)))
+        .with_max_level(tracing::Level::WARN)
+        .without_time()
+        .finish();
+    let out = tracing::subscriber::with_default(subscriber, f);
+    let log = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    (out, log)
+}
+
+#[test]
+fn deserialize_rows_drops_corrupt_json_but_logs_the_failure() {
+    // Every multi-row reader used to swallow a bad `data_json` row via a
+    // bare `.filter_map(|s| serde_json::from_str(&s).ok())`, with zero
+    // trace — the same "search is broken, no diagnostic" failure mode the
+    // FTS-rebuild path already treats as unacceptable. `deserialize_rows`
+    // must keep the "one bad row must not fail the whole page" behaviour
+    // AND leave a trace naming the caller; a bare filter_map would pass the
+    // first assertion here but not the second.
+    #[derive(serde::Deserialize)]
+    struct Probe {
+        uid: String,
+    }
+    let raw = vec![
+        r#"{"uid":"e1"}"#.to_string(),
+        "not valid json".to_string(),
+        r#"{"uid":"e2"}"#.to_string(),
+    ];
+    let (out, log) = capture_warn_logs(|| deserialize_rows::<Probe>(raw, "test_probe_deserialize"));
+
+    assert_eq!(
+        out.iter().map(|p| p.uid.as_str()).collect::<Vec<_>>(),
+        vec!["e1", "e2"],
+        "the well-formed rows must survive, in order, around the corrupt one"
+    );
+    assert!(
+        log.contains("test_probe_deserialize"),
+        "dropped-row warning must be keyed by the caller's context; got: {log:?}"
+    );
+    assert!(
+        log.contains("failed to deserialize"),
+        "dropped-row warning must say why; got: {log:?}"
+    );
+}
+
+#[test]
+fn collect_rows_drops_sql_errors_but_logs_the_failure() {
+    // Mirror of the deserialize_rows test above, for the SQL-extraction
+    // layer: a genuine per-row read error (e.g. a corrupt column) must be
+    // dropped without failing the whole page, but must not vanish silently.
+    let rows: Vec<rusqlite::Result<String>> = vec![
+        Ok("a".to_string()),
+        Err(rusqlite::Error::QueryReturnedNoRows),
+        Ok("b".to_string()),
+    ];
+    let (out, log) = capture_warn_logs(|| collect_rows(rows.into_iter(), "test_probe_collect"));
+
+    assert_eq!(out, vec!["a".to_string(), "b".to_string()]);
+    assert!(
+        log.contains("test_probe_collect"),
+        "dropped-row warning must be keyed by the caller's context; got: {log:?}"
+    );
+    assert!(
+        log.contains("failed to read a stored row"),
+        "dropped-row warning must say why; got: {log:?}"
+    );
+}
+
+#[test]
+fn list_scans_drops_a_corrupt_row_end_to_end_without_erroring() {
+    // Integration-level proof that the collect_rows/deserialize_rows wiring
+    // in `list_scans` is real, not just exercised in isolation above: a
+    // corrupt `data_json` row inserted directly (bypassing upsert_scan)
+    // must not error or panic the read, and the well-formed sibling row
+    // must still come back.
+    let path = tmp_db();
+    let store = Store::open(&path).unwrap();
+    insert_scan(&store, "scan-good");
+    {
+        let conn = store.conn.lock();
+        conn.execute(
+            "INSERT INTO scans(id, target_kind, target_value, status, started_at, \
+             finished_at, entity_count, error, data_json) \
+             VALUES('scan-corrupt', 'email', 'x@y.com', 'completed', 0, NULL, 0, NULL, ?1)",
+            params!["not valid json"],
+        )
+        .unwrap();
+    }
+    let scans = store
+        .list_scans(10)
+        .expect("a corrupt sibling row must not fail the whole read");
+    assert_eq!(scans.len(), 1, "only the well-formed row must be returned");
+    assert_eq!(scans[0].id, "scan-good");
     let _ = std::fs::remove_file(&path);
 }

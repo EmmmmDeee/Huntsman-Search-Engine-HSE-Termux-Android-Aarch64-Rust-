@@ -2,8 +2,18 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::{LazyLock, Mutex};
 
 use super::types::ModulePerformance;
+
+/// Serializes the ledger's read-modify-write across concurrent scan
+/// completions. `persist_ledger` reads the whole ledger, accumulates this
+/// scan's deltas, and writes it back; two `serve` scans finishing at once
+/// would otherwise interleave read/read/write/write and lose one scan's
+/// accumulation (a lost-update race). `atomic_file::write` gives crash
+/// durability — it does NOT serialize concurrent accumulators, which is what
+/// this guard adds. Held across the entire read+accumulate+write below.
+static LEDGER_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 fn ledger_path() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
@@ -14,6 +24,13 @@ fn ledger_path() -> PathBuf {
 
 pub(super) fn persist_ledger(modules: &[ModulePerformance], kinds: &HashMap<String, usize>) {
     use super::types::{LedgerEntry, ModuleLedger};
+    // Hold the lock for the whole read-modify-write so overlapping scan
+    // completions apply their deltas sequentially. Recover from a poisoned lock
+    // (a prior panic while holding it): the guarded data is just `()`, so the
+    // in-progress ledger state is unaffected and continuing is safe.
+    let _guard = LEDGER_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let path = ledger_path();
     if let Some(parent) = path.parent() {
         let _ = std::fs::create_dir_all(parent);

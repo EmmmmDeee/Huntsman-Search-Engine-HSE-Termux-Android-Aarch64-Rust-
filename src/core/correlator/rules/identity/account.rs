@@ -190,15 +190,19 @@ pub(in crate::core::correlator) fn rule_au_048_shared_public_key(
                 uids.push((*uid).to_owned());
             }
         }
-        let listed: Vec<&str> = accounts.iter().take(6).map(String::as_str).collect();
         out.push(Correlation {
             rule_id: "AU-048".into(),
             rule_name: "Shared public key links accounts".into(),
             severity: Severity::Critical,
             description: format!(
-                "A reused public key proves one person controls {} accounts (same private key): {}",
-                accounts.len(),
-                listed.join(", ")
+                "A reused public key proves one person controls {} accounts (same private key) \
+                 — key evidence names: {}",
+                // Count DISTINCT controllers (handles), not identifier spellings: the
+                // guard above already treats "alice" + "alice@x.com" as ONE account,
+                // so reporting `accounts.len()` here would over-state control (e.g.
+                // "3 accounts" for alice's login+email plus bob, who are 2 owners).
+                handles.len(),
+                join_capped(accounts.iter().map(String::as_str), 6)
             ),
             entity_uids: uids,
             scan_id: scan_id.into(),
@@ -420,6 +424,12 @@ pub(in crate::core::correlator) fn rule_au_036_email_alias_convergence(
 /// `username_search`'s `platforms_count`: AU-038 fires from the search-engine or
 /// social-probe signal alone, so either source surfaces the cross-platform
 /// identity on its own.
+///
+/// Excludes `weak-detection`-tagged URLs for the same reason as AU-055: a
+/// `social-profile` tag is applied to a bare HTTP-status guess just as readily
+/// as to a body-marker-confirmed hit, and this rule's own name promises
+/// "verified" — a claim only the latter earns. See AU-055's doc comment for
+/// the real-scan finding that surfaced this.
 pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
     entities: &[Entity],
     scan_id: &str,
@@ -431,6 +441,7 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
         .filter(|e| {
             e.kind == EntityKind::Url
                 && (e.has_tag("confirmed-profile") || e.has_tag("social-profile"))
+                && !e.has_tag("weak-detection")
         })
         .collect();
     // Distinct registrable-ish hosts among the confirmed profiles (www-stripped).
@@ -470,37 +481,67 @@ pub(in crate::core::correlator) fn rule_au_038_verified_cross_platform_identity(
     )]
 }
 
-/// AU-042 — two or more email addresses bound to the same PGP key (`pgp` module):
-/// strong same-owner evidence (the key holder asserted these are theirs).
-/// `High`. One grouped firing over all key-linked emails.
+/// AU-042 — two or more email addresses bound to the **same** PGP key (`pgp`
+/// module): strong same-owner evidence (the key holder asserted these are theirs).
+/// `High`. One firing PER KEY, over the emails that key binds.
+///
+/// Partitioned by the key fingerprint each `pgp-linked` email carries (the
+/// `key_fingerprint` evidence attribute the `pgp` module attaches): emails bound
+/// to DIFFERENT keys are separate assertions — possibly different people — so they
+/// must never be fused into one owner, and a key binding only ONE address is not
+/// multi-email evidence, so it does not fire (the rule's "two or more" contract).
+/// An email with no fingerprint can't be attributed to a key and is excluded.
 pub(in crate::core::correlator) fn rule_au_042_pgp_email_identity(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    let linked: Vec<&Entity> = entities
+    use std::collections::{BTreeMap, BTreeSet};
+    // fingerprint -> (address -> emitting uid). BTreeMaps keep the output
+    // deterministic (fingerprint order, then address order) with no HashMap leak.
+    let mut by_key: BTreeMap<&str, BTreeMap<&str, String>> = BTreeMap::new();
+    for e in entities
         .iter()
         .filter(|e| e.kind == EntityKind::Email && e.has_tag("pgp-linked"))
-        .collect();
-    if linked.is_empty() {
-        return Vec::new();
+    {
+        // An email merged from several keyserver hits can carry more than one
+        // fingerprint; it legitimately belongs to each key that bound it.
+        let fingerprints: BTreeSet<&str> = e
+            .evidence
+            .iter()
+            .filter_map(|ev| ev.attributes.get("key_fingerprint").map(String::as_str))
+            .filter(|f| !f.is_empty())
+            .collect();
+        for fpr in fingerprints {
+            by_key
+                .entry(fpr)
+                .or_default()
+                .entry(e.value.as_str())
+                .or_insert_with(|| e.uid.clone());
+        }
     }
-    let mut addrs: Vec<&str> = linked.iter().map(|e| e.value.as_str()).collect();
-    addrs.sort_unstable();
-    let uids: Vec<String> = linked.iter().map(|e| e.uid.clone()).collect();
-    vec![Correlation::new(
-        "AU-042",
-        "PGP key binds multiple emails to one identity",
-        Severity::High,
-        format!(
-            "A PGP key links {} email address(es) to one owner: {}",
-            addrs.len(),
-            addrs.join(", ")
-        ),
-        uids,
-        scan_id,
-        ts,
-    )]
+
+    by_key
+        .into_iter()
+        .filter(|(_, addrs)| addrs.len() >= 2)
+        .map(|(fpr, addrs)| {
+            let addr_list: Vec<&str> = addrs.keys().copied().collect();
+            let uids: Vec<String> = addrs.values().cloned().collect();
+            Correlation::new(
+                "AU-042",
+                "PGP key binds multiple emails to one identity",
+                Severity::High,
+                format!(
+                    "PGP key {fpr} links {} email address(es) to one owner: {}",
+                    addr_list.len(),
+                    addr_list.join(", ")
+                ),
+                uids,
+                scan_id,
+                ts,
+            )
+        })
+        .collect()
 }
 
 /// AU-044 — Shared web-analytics ID ⇒ common ownership. A Google Analytics /
@@ -642,6 +683,18 @@ pub(in crate::core::correlator) fn rule_au_054_data_broker_exposure(
 /// is the broker's listing, not the subject's account, and belongs to AU-054
 /// (low-credibility), never here.
 ///
+/// Also excludes `weak-detection`-tagged URLs: `username_search`/
+/// `streaming_probe` tag a hit `social-profile` regardless of whether the
+/// match came from a body-marker check (`verified-detection`) or a bare
+/// HTTP-status guess (`weak-detection` — a soft-404/SPA-shell can fake this
+/// for almost any handle). A real scan against a guessed handle produced a
+/// `CRITICAL "primary-source accounts... the subject controls"` finding
+/// across 60+ platforms where nearly every one was `weak-detection` — status-
+/// only guesses presented as confirmed ownership. Requiring the absence of
+/// that tag means a lone `verified-detection` hit (or a tag-only source with
+/// no strength marker at all, e.g. a real account API) still fires this rule
+/// the same as before; only the unverified guesses are excluded.
+///
 /// Severity puts primary sources above brokers by construction: High for one or
 /// two confirmed accounts, Critical for a confirmed footprint across ≥3 distinct
 /// platforms — always outranking AU-054's Low/Medium broker findings.
@@ -662,13 +715,15 @@ pub(in crate::core::correlator) fn rule_au_055_primary_source_accounts(
 
     // Distinct platform hosts (www-stripped) of confirmed owned-account URLs,
     // and the backing uids. Broker hosts are excluded — a broker listing is not
-    // an account the subject controls.
+    // an account the subject controls. `weak-detection`-tagged hits are
+    // excluded too — a bare status-code guess is not a confirmed account.
     let mut platforms: BTreeSet<String> = BTreeSet::new();
     let mut uids: Vec<String> = Vec::new();
-    for e in entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Url && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t)))
-    {
+    for e in entities.iter().filter(|e| {
+        e.kind == EntityKind::Url
+            && OWNED_ACCOUNT_TAGS.iter().any(|t| e.has_tag(t))
+            && !e.has_tag("weak-detection")
+    }) {
         let Some(host) = url::Url::parse(&e.value).ok().and_then(|u| {
             u.host_str()
                 .map(|h| h.trim_start_matches("www.").to_lowercase())
@@ -803,9 +858,9 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
                  and {} username form(s) ({}); the username is the email login (free, offline, \
                  zero-API identity resolution)",
                 email_vals.len(),
-                join_capped(&email_vals, 8),
+                join_capped(email_vals.iter().copied(), 8),
                 uname_vals.len(),
-                join_capped(&uname_vals, 8),
+                join_capped(uname_vals.iter().copied(), 8),
             )
         };
 
@@ -821,18 +876,6 @@ pub(in crate::core::correlator) fn rule_au_076_email_username_localpart_bridge(
         });
     }
     out
-}
-
-/// Join up to `cap` comma-separated values from an ordered set, appending
-/// `(+N more)` when the set is larger — keeps a consolidated finding's text
-/// bounded while still naming the representative values.
-fn join_capped(values: &std::collections::BTreeSet<&str>, cap: usize) -> String {
-    let shown: Vec<&str> = values.iter().take(cap).copied().collect();
-    let mut s = shown.join(", ");
-    if values.len() > cap {
-        s.push_str(&format!(" (+{} more)", values.len() - cap));
-    }
-    s
 }
 
 /// AU-077 — Name-derived username independently confirmed on a platform.
@@ -1283,8 +1326,19 @@ pub(in crate::core::correlator) fn rule_au_080_recurring_cooccurrence_link(
 /// Gates: both entities must have ≥ 2 non-trivial (len ≥ 2) name tokens
 /// after normalisation, and must come from at least one source family the
 /// other does not share (independence requirement).  Single-token names
-/// (initials only, or a known-common first name like "John") are too
-/// ambiguous to link — excluded by the token-count floor.
+/// (initials only) are too ambiguous to link — excluded by the token-count
+/// floor.
+///
+/// Commonness discount (mirrors AU-051 / AU-061 / `derive_kinship`): a full
+/// name containing a *common* family name ("John Smith", "David Jones") is a
+/// high-volume coincidence — many unrelated people share it, so an
+/// independent match is a lead to VERIFY, not a confirmed merge. Such matches
+/// fire at [`Severity::Medium`]; a match on a *distinctive* name (no common
+/// token) stays [`Severity::High`], the confident identity bridge it has
+/// always been. Conflating two real strangers who happen to share "John
+/// Smith" mis-attributes evidence between them — the worst outcome for an
+/// evidentiary tool, so the discount is applied here exactly as the kin rules
+/// apply it to shared-surname pivots.
 pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
     entities: &[Entity],
     scan_id: &str,
@@ -1327,29 +1381,42 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
             let e1 = persons[i].1;
             let e2 = persons[j].1;
 
-            // Independence: require at least one source family that differs.
-            let fam1: HashSet<&str> = e1
-                .evidence
-                .iter()
-                .map(|ev| source_family(ev.source.as_str()))
-                .collect();
-            let fam2: HashSet<&str> = e2
-                .evidence
-                .iter()
-                .map(|ev| source_family(ev.source.as_str()))
-                .collect();
-            // `is_disjoint` → no shared family at all (strongest independence).
-            // Relax to "not identical" so that e.g. two breach-derived records
-            // from different databases (both family "breach") still fire — the
-            // *database names* differ even if the family doesn't.  Gate instead
-            // on source identity: skip only when the full source sets are equal.
-            let src1: HashSet<&str> = e1.evidence.iter().map(|ev| ev.source.as_str()).collect();
-            let src2: HashSet<&str> = e2.evidence.iter().map(|ev| ev.source.as_str()).collect();
+            // Independence gate. "Independent" means the two records were
+            // collected by genuinely different real-world methods — so every part
+            // of the gate runs over CORROBORATING sources only
+            // ([`Entity::corroborating_sources`]), NOT the raw `evidence` list.
+            // The deterministic self-enrichment passes (`name_intel`'s own
+            // firstname/lastname permutation of the seed, `geo_normalize`) and the
+            // `recall` / `cross_scan_history` replays attach useful evidence but
+            // are NOT independent observations — `name_intel` in particular DERIVES
+            // a `Person` from the seed name and maps to the real `identity_registry`
+            // family, so hand-rolling the sets from raw `evidence` (as this rule
+            // used to) let the tool's OWN name derivation pose as a second,
+            // independently-sourced record and manufacture a High "same individual"
+            // match. This is the identical honest set `source_families` /
+            // `source_count` already build on.
+            let src1 = e1.corroborating_sources();
+            let src2 = e2.corroborating_sources();
+            // (0) A name known ONLY from the tool's own derivation (`name_intel`)
+            //     or a prior-scan replay (`recall`) is not an independently
+            //     collected record at all — a side with no corroborating source
+            //     can never be one half of an "independent match".
+            if src1.is_empty() || src2.is_empty() {
+                continue;
+            }
+            // (1) Skip when the exact corroborating-source SETS are equal —
+            //     literally the same source(s) re-derived the name.
             if src1 == src2 {
                 continue; // exactly the same source(s) — not independent
             }
-            // Require at least one family from each entity is NOT shared, so
-            // purely co-derived records (e.g. two name_intel outputs) don't fire.
+            // (2) Skip when the source FAMILY sets are equal — records of the same
+            //     family are co-derived, not independent, so two breach databases
+            //     (both family "breach") do NOT fire on their own; a match needs at
+            //     least one differing family (e.g. breach + social). This is
+            //     stricter than gate (1): identical families can still have
+            //     different `source` strings, which (1) alone would let through.
+            let fam1: HashSet<&str> = src1.iter().map(|s| source_family(s)).collect();
+            let fam2: HashSet<&str> = src2.iter().map(|s| source_family(s)).collect();
             if fam1 == fam2 {
                 continue;
             }
@@ -1360,25 +1427,54 @@ pub(in crate::core::correlator) fn rule_au_081_canonical_person_name_match(
                 continue;
             }
 
-            let src1_label = e1
-                .evidence
-                .first()
-                .map_or("unknown", |ev| ev.source.as_str());
-            let src2_label = e2
-                .evidence
-                .first()
-                .map_or("unknown", |ev| ev.source.as_str());
+            // Label the match with the first genuine (corroborating) source, never
+            // a `name_intel`/`recall` pass — the gate above guarantees both sides
+            // carry one, so the `"unknown"` fallback is purely defensive. A local
+            // `fn` (not a closure) so the returned `&str` borrows from its argument.
+            fn corr_label(e: &Entity) -> &str {
+                e.evidence
+                    .iter()
+                    .map(|ev| ev.source.as_str())
+                    .find(|s| !crate::core::entity::is_non_corroborating_source(s))
+                    .unwrap_or("unknown")
+            }
+            let src1_label = corr_label(e1);
+            let src2_label = corr_label(e2);
 
             let mut uids = vec![e1.uid.clone(), e2.uid.clone()];
             uids.sort_unstable();
+
+            // A common family name inflates full-name coincidence (many
+            // unrelated "John Smith"s share it), so an independent match is a
+            // lead to VERIFY — not a confirmed merge. Mirror the AU-051 /
+            // AU-061 / kinship commonness discount: distinctive names stay a
+            // High identity bridge, common ones drop to a Medium lead. The
+            // canonical name is already lowercased and space-joined, so its
+            // tokens feed `is_common` directly.
+            let common = persons[i]
+                .0
+                .split(' ')
+                .any(crate::util::surnames::is_common);
+            let (severity, tail) = if common {
+                (
+                    Severity::Medium,
+                    "a COMMON name many unrelated people share — a lead to VERIFY, \
+                     not a confirmed merge",
+                )
+            } else {
+                (
+                    Severity::High,
+                    "independently-sourced records for the same individual \
+                     (free, offline identity bridge)",
+                )
+            };
             out.push(Correlation {
                 rule_id: "AU-081".into(),
                 rule_name: "Canonical person name match".into(),
-                severity: Severity::High,
+                severity,
                 description: format!(
                     "Person records '{}' (via {src1_label}) and '{}' (via {src2_label}) \
-                     normalise to the same canonical name — independently-sourced records \
-                     for the same individual (free, offline identity bridge)",
+                     normalise to the same canonical name — {tail}",
                     e1.value, e2.value,
                 ),
                 entity_uids: uids,

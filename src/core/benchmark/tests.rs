@@ -78,6 +78,35 @@ fn report_consolidates_metrics_timing_and_pivots() {
 }
 
 #[test]
+fn scorecard_cut_vertex_count_is_the_full_articulation_total_past_the_pivot_cap() {
+    // A 30-node path has 28 internal (articulation-point) nodes — more than the
+    // pivot::detect PIVOT_CAP of 25. The scorecard must report the FULL 28; it used
+    // to count cut vertices off the truncated top-25 pivot list, capping at 25.
+    let nodes: Vec<Entity> = (0..30)
+        .map(|i| Entity::new(EntityKind::Username, format!("n{i:02}"), 0.6, "s1"))
+        .collect();
+    let relations: Vec<Relation> = nodes
+        .windows(2)
+        .map(|w| {
+            Relation::new(
+                w[0].uid.as_str(),
+                w[1].uid.as_str(),
+                RelationKind::AssociatedWith,
+                0.6,
+                "s1",
+            )
+        })
+        .collect();
+    let mut scan = Scan::new("s1", Target::new(TargetKind::Username, "n00"));
+    scan.status = ScanStatus::Complete;
+    let r = report(&scan, &nodes, &relations);
+    assert_eq!(
+        r.scorecard.cut_vertex_count, 28,
+        "all 28 internal path nodes are articulation points, not a cap of 25"
+    );
+}
+
+#[test]
 fn report_handles_an_unfinished_empty_scan_without_panicking() {
     let scan = Scan::new("s2", Target::new(TargetKind::Domain, "example.com"));
     let r = report(&scan, &[], &[]);

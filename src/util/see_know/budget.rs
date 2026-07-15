@@ -10,31 +10,22 @@ use crate::util::budget::QuotaBudget;
 // (`api::handlers::stats`) keep working through the original path.
 pub use crate::util::budget::BudgetSnapshot;
 
+use super::enterprise_config::ENTERPRISE;
+
 /// Per-scan + per-session quota budget for SeekNow API calls.
 ///
-/// The operator is on SeekNow's highest-tier plan. The exact daily limit
-/// is discovered at scan start by probing the `/credits` endpoint and used
-/// to set the scan cap dynamically via [`scale_scan_cap_from_daily`] — see
-/// that function's doc for the scaling formula. The static defaults below
-/// are only consulted when the probe fails or is not yet complete.
+/// Hardcoded for enterprise plan: 15,000 daily credits. Dynamically scaled at
+/// scan start by probing the `/credits` endpoint via [`scale_scan_cap_from_daily`].
 ///
-/// Scan cap (default 300, overridden at scan start by the quota probe,
-/// env `HUNTSMAN_SEEKNOW_SCAN_CAP`, runtime `ScanOptions::seeknow_scan_cap`):
-///   A full Username scan uses the 18-endpoint matrix (~10 calls per seed).
-///   The dynamic cap is set to `clamp(daily_limit / 20, 300, 2500)` so a
-///   larger plan yields proportionally more pivots per round. The cap is
-///   refreshed at each expansion-round boundary ([`refresh_round_budget`])
-///   so SeekNow participates in EVERY iteration.
+/// Scan cap: `clamp(daily_limit / 20, 300, 2500)` = 750 credits per scan for 15k plan.
+///   Refreshed at each expansion-round boundary so SeekNow participates in EVERY iteration.
 ///
-/// Session cap (default 100,000, env `HUNTSMAN_SEEKNOW_SESSION_CAP`):
-///   Set deliberately high so the server's own daily-quota enforcement is
-///   the real backstop — not an artificial local cap. On the highest plan
-///   this means all available quota can be consumed in one session without
-///   hitting the local ceiling first.
+/// Session cap: 100,000 (set high; server quota is the backstop).
+///   Allows consuming all available quota in one session on the 15k plan.
 pub(super) static BUDGET: QuotaBudget = QuotaBudget::new(
     "seeknow",
-    300,
-    100_000,
+    ENTERPRISE.scan_budget_floor,
+    ENTERPRISE.session_cap,
     "HUNTSMAN_SEEKNOW_SCAN_CAP",
     "HUNTSMAN_SEEKNOW_SESSION_CAP",
 );
@@ -74,7 +65,7 @@ pub fn scale_scan_cap_from_daily(daily_limit: u32) {
     {
         return;
     }
-    let cap = (daily_limit / 20).clamp(300, 2500);
+    let cap = (daily_limit / 20).clamp(ENTERPRISE.scan_budget_floor, ENTERPRISE.scan_budget_ceil);
     BUDGET.set_scan_cap_override(cap);
     tracing::debug!(
         daily_limit,
@@ -155,6 +146,13 @@ pub fn reset_budget() {
     KEY_INVALID.store(false, Ordering::Relaxed);
     // Allow the quota probe to fire again on the next scan.
     QUOTA_PROBED.store(false, Ordering::Relaxed);
+    // Clear the cross-module response cache: it dedups identical endpoint
+    // queries WITHIN one scan (see `client::RESPONSE_CACHE`'s own doc
+    // comment), but with no scan-boundary reset a long-lived `hse serve` /
+    // `hse live` process would silently keep returning the first scan's
+    // cached SeekNow records for every later re-scan of the same
+    // email/username/phone, indefinitely, with no live re-check.
+    super::client::RESPONSE_CACHE.clear();
 }
 
 /// Refresh SeekNow's per-round budget at each expansion-round boundary so it is
@@ -172,8 +170,11 @@ pub(super) fn mark_quota_exhausted() {
     tracing::warn!("SeekNow daily quota exhausted — skipping remaining queries");
 }
 
-/// True once see-know.eu has rejected the key. The diagnostic accessor for
-/// `hse doctor` / the selftest to report it as an actionable problem.
+/// True once see-know.eu has rejected the key. The diagnostic accessor
+/// `hse doctor`'s "SeekNow account" section reads after probing `/credits` —
+/// that probe (`endpoints::query_credits`) is the one call site that can
+/// classify+latch this from a FRESH process (before any data-bearing
+/// `search`/`get_path` call has had the chance to).
 pub fn is_key_invalid() -> bool {
     KEY_INVALID.load(Ordering::Relaxed)
 }

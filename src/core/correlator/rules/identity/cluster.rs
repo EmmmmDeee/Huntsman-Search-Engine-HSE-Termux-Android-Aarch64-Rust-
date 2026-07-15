@@ -70,6 +70,41 @@ pub(in crate::core::correlator) fn rule_au_002_identity_cluster(
     }]
 }
 
+/// Distinct provider families across an entity's corroborating evidence,
+/// EXCLUDING any source whose only contribution is a `weak-detection`
+/// (status-only) hit — the bare HTTP-status guess `username_search`/
+/// `social_probe`/`streaming_probe` self-report via a `detection: status-only`
+/// evidence attribute when there's no body-marker to confirm the match. A
+/// live scan against a guessed handle showed exactly this: `username_search`
+/// (family "presence") and `social_probe` (family "social") both hit the same
+/// unverified handle via a bare status-code check, and — being classified
+/// into two DIFFERENT families purely by platform category, not by detection
+/// rigour — satisfied AU-045's "two distinct service families" bar despite
+/// neither one being an actual confirmation. A source counts toward family
+/// diversity only if at least one of its evidence records for this entity is
+/// NOT status-only.
+fn strong_corroborating_families(e: &Entity) -> std::collections::BTreeSet<&'static str> {
+    use std::collections::BTreeMap;
+    let mut strong_by_source: BTreeMap<&str, bool> = BTreeMap::new();
+    for ev in &e.evidence {
+        let src = ev.source.as_str();
+        if crate::core::entity::is_non_corroborating_source(src) {
+            continue;
+        }
+        let status_only = ev.attributes.get("detection").map(String::as_str) == Some("status-only");
+        let entry = strong_by_source.entry(src).or_insert(false);
+        if !status_only {
+            *entry = true;
+        }
+    }
+    strong_by_source
+        .into_iter()
+        .filter(|(_, strong)| *strong)
+        .map(|(src, _)| source_family(src))
+        .filter(|f| *f != "other")
+        .collect()
+}
+
 /// AU-045 — Multi-service identity confirmation.
 ///
 /// An identity value (email / username / person) whose corroborating sources
@@ -89,7 +124,6 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::BTreeSet;
     const MIN_FAMILIES: usize = 2;
     entities
         .iter()
@@ -104,15 +138,9 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
             _ => false,
         })
         .filter_map(|e| {
-            // Distinct provider families across this entity's corroborating
-            // sources, ignoring the unclassified `other` bucket so a stray
-            // unknown source can't fabricate diversity.
-            let families: BTreeSet<&'static str> = e
-                .corroborating_sources()
-                .iter()
-                .map(|s| source_family(s))
-                .filter(|f| *f != "other")
-                .collect();
+            // Distinct STRONG provider families — see `strong_corroborating_families`
+            // for why a status-only hit can't contribute one.
+            let families = strong_corroborating_families(e);
             if families.len() < MIN_FAMILIES {
                 return None;
             }
@@ -149,14 +177,19 @@ pub(in crate::core::correlator) fn rule_au_045_multi_service_identity(
 ///
 /// Distinct from AU-045 (which only confirms the handle exists across families)
 /// and AU-002 (which needs email+username+phone all present): AU-046 is the
-/// *handle → identity* edge, drawn only from identifiers a platform account
-/// itself published, so it can't fuse unrelated breach-dump strangers.
+/// *handle → identity* edge, drawn only from identifiers **the alias's own
+/// account(s) published** — an identifier is resolved to a given alias only when
+/// it shares ≥1 concrete corroborating source with that alias (the same platform
+/// module that confirmed the handle also surfaced the identifier). This scopes
+/// each resolution to the alias's own accounts, so a co-author's email, another
+/// alias's identifiers, or an unrelated breach-dump stranger can't be fused in;
+/// role mailboxes are excluded as well.
 pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolution(
     entities: &[Entity],
     scan_id: &str,
     ts: u64,
 ) -> Vec<Correlation> {
-    use std::collections::BTreeSet;
+    use std::collections::{BTreeSet, HashSet};
     // Platform-account provider families — the ones where a confirmed handle is
     // an account a person controls (not infra/breach corpora).
     let is_platform = |f: &str| matches!(f, "code" | "forum" | "social" | "presence");
@@ -184,28 +217,56 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
         return Vec::new();
     }
 
-    // Real-world identifiers the platform accounts themselves exposed.
-    let resolved: Vec<&Entity> = entities
+    // Candidate real-world identifiers: an Email or Person a platform-family
+    // source exposed. Each is paired with its concrete corroborating-source set so
+    // it can be tied back to a SPECIFIC alias below. Role mailboxes (`noreply@`,
+    // `abuse@`, …) are never a person's real-world identifier and are excluded,
+    // mirroring the AU-045 gate — a registrant/support desk exposed by a platform
+    // must not be fused into someone's identity.
+    let platform_identifiers: Vec<(&Entity, HashSet<&str>)> = entities
         .iter()
         .filter(|e| matches!(e.kind, EntityKind::Email | EntityKind::Person))
         .filter(|e| {
-            e.corroborating_sources()
+            e.kind != EntityKind::Email || !crate::core::validation::is_role_mailbox(&e.value)
+        })
+        .filter_map(|e| {
+            let srcs: HashSet<&str> = e.corroborating_sources();
+            let platform_sourced = srcs
                 .iter()
-                .any(|s| matches!(source_family(s), "code" | "forum" | "social"))
+                .any(|s| matches!(source_family(s), "code" | "forum" | "social"));
+            platform_sourced.then_some((e, srcs))
         })
         .collect();
-    if resolved.is_empty() {
+    if platform_identifiers.is_empty() {
         return Vec::new();
     }
 
-    let resolved_uids: Vec<String> = resolved.iter().map(|e| e.uid.clone()).collect();
     aliases
         .iter()
-        .map(|(alias, fams)| {
+        .filter_map(|(alias, fams)| {
+            // Only identifiers the ALIAS's OWN account(s) published: they share ≥1
+            // concrete corroborating SOURCE with the alias (the same platform module
+            // that confirmed the handle also surfaced the identifier). The previous
+            // form fused EVERY platform-sourced Email/Person in the whole scan into
+            // every alias — a co-author's email, another alias's identifiers, or a
+            // stranger from a different platform account were all mis-attributed as
+            // this person's identity. Requiring a shared source scopes the resolution
+            // to the alias's own accounts, which is what the docstring already claims.
+            let alias_srcs: HashSet<&str> = alias.corroborating_sources();
+            let mut resolved_uids: Vec<String> = platform_identifiers
+                .iter()
+                .filter(|(_, srcs)| !alias_srcs.is_disjoint(srcs))
+                .map(|(e, _)| e.uid.clone())
+                .collect();
+            if resolved_uids.is_empty() {
+                return None;
+            }
+            resolved_uids.sort_unstable();
+            let resolved_count = resolved_uids.len();
             let fam_list: Vec<&str> = fams.iter().copied().collect();
             let mut uids = vec![alias.uid.clone()];
-            uids.extend(resolved_uids.iter().cloned());
-            Correlation {
+            uids.extend(resolved_uids);
+            Some(Correlation {
                 rule_id: "AU-046".into(),
                 rule_name: "Cross-platform identity resolution".into(),
                 severity: Severity::High,
@@ -214,13 +275,13 @@ pub(in crate::core::correlator) fn rule_au_046_cross_platform_identity_resolutio
                     alias.value,
                     fam_list.len(),
                     fam_list.join(", "),
-                    resolved.len()
+                    resolved_count
                 ),
                 entity_uids: uids,
                 scan_id: scan_id.into(),
                 ts,
                 rank: 0.0,
-            }
+            })
         })
         .collect()
 }
@@ -246,6 +307,22 @@ pub(in crate::core::correlator) fn rule_au_003_high_corroboration(
     entities
         .iter()
         .filter_map(|e| {
+            // A `weak-detection`-only entity (a bare status-code guess from
+            // `username_search`/`streaming_probe` — no accompanying
+            // `verified-detection` from a body-marker check or another
+            // strong source) is not "high cross-source corroboration" no
+            // matter how many modules independently ran the same shallow
+            // check: a real scan against a guessed handle showed several
+            // status-only probes (plus `webserver_banner`, which — before
+            // its own fix — mis-attributed a domain-root HTTP-header check
+            // to the specific guessed path) reaching `source_count() >= 3`
+            // and a reported `C_eff=1.000` (VERIFIED-tier certainty) for a
+            // handle that was never actually confirmed. If the entity also
+            // carries `verified-detection` from some other source, that IS
+            // real corroboration and still counts.
+            if e.has_tag("weak-detection") && !e.has_tag("verified-detection") {
+                return None;
+            }
             // Compute the distinct-source count ONCE and reuse it for the gate,
             // the message, AND the C_eff. `source_count()` re-scans the whole
             // evidence chain (O(k²)) on every call; the prior form paid for it

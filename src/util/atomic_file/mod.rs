@@ -39,6 +39,26 @@ pub fn write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
     let result = write_inner(&tmp, path, bytes);
     if result.is_err() {
         let _ = std::fs::remove_file(&tmp);
+        return result;
+    }
+    // Best-effort fsync of the PARENT DIRECTORY so the rename itself is durable,
+    // not just the file's data. `write_inner` fsyncs the temp file's bytes, but
+    // the rename only updates the directory entry that points `path` at the new
+    // inode; on ext4/f2fs (the Termux/Android targets) a power-cut or OOM-kill
+    // immediately after `rename` returns can lose that entry and leave the OLD
+    // file — or nothing — despite the durable data. fsyncing the directory
+    // commits the rename. Swallowed: a directory that cannot be fsynced must
+    // never fail an otherwise-successful write — this is a durability upgrade,
+    // not a correctness gate. Unix-only (directory fsync is a POSIX concept).
+    #[cfg(unix)]
+    {
+        let dir = path
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or_else(|| Path::new("."));
+        if let Ok(d) = std::fs::File::open(dir) {
+            let _ = d.sync_all();
+        }
     }
     result
 }
@@ -79,23 +99,6 @@ pub fn create_dir_private(path: &Path) -> std::io::Result<()> {
     #[cfg(not(unix))]
     {
         std::fs::create_dir_all(path)
-    }
-}
-
-/// Best-effort restrict an **existing** file to owner-only (`0600` on unix). For
-/// files a third party creates for us — e.g. SQLite opens its own DB / `-wal` /
-/// `-shm`, so we can't pass `mode` at create time. No-op off unix; the caller
-/// decides whether a missing file is an error.
-pub fn set_private(path: &Path) -> std::io::Result<()> {
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
-    }
-    #[cfg(not(unix))]
-    {
-        let _ = path;
-        Ok(())
     }
 }
 

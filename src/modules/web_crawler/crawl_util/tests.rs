@@ -15,6 +15,7 @@ use super::*;
             emails: HashSet::new(),
             phones: HashSet::new(),
             tracking_ids: HashSet::new(),
+            hydration_findings: Vec::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
             security_headers: Vec::new(),
@@ -135,6 +136,39 @@ use super::*;
         assert!(!emails.contains("john..doe@example.com")); // consecutive dots
         assert!(!emails.contains(".lead@example.com")); // leading dot
         assert!(!emails.contains("trail.@example.com")); // trailing-dot local
+    }
+
+    #[test]
+    fn email_extraction_keeps_a_percent_in_the_local_part() {
+        // `%` is in the canonical EMAIL_RE local class, so the byte-scanner must not
+        // truncate the mailbox at it (matching its util::extract::page_emails twin).
+        let mut emails = HashSet::new();
+        extract_emails("reach with%percent@example.com today", &mut emails);
+        assert!(
+            emails.contains("with%percent@example.com"),
+            "the %-containing mailbox must not be truncated: {emails:?}"
+        );
+    }
+
+    #[test]
+    fn email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts() {
+        // This module's page byte-scanner is a third copy of the same email-mining
+        // logic as `util::extract::page_emails`; it must not be more permissive.
+        // The old `contains('.') && len > 3` gate admitted an IP-literal host, a
+        // numeric pseudo-TLD and a 1-char TLD as bogus `Email` entities that would
+        // then poison correlation. Routing it through the canonical
+        // `host_has_alpha_tld` (which requires a final label of ≥2 ASCII letters)
+        // rejects all three, while a genuine address alongside them still surfaces.
+        let mut emails = HashSet::new();
+        extract_emails(
+            "junk admin@10.0.0.1 and user@host.123 and short@host.c \
+             but real ops@acme.com",
+            &mut emails,
+        );
+        assert!(emails.contains("ops@acme.com"), "got {emails:?}");
+        assert!(!emails.contains("admin@10.0.0.1"), "IP-literal host leaked");
+        assert!(!emails.contains("user@host.123"), "numeric TLD leaked");
+        assert!(!emails.contains("short@host.c"), "1-char TLD leaked");
     }
 
     #[test]
@@ -376,7 +410,8 @@ use super::*;
         };
         assert_eq!(scraped(), 0, "precondition: a clean pool for this domain");
 
-        // (1) Length gate: <16 or >200 chars are never classified.
+        // (1) Length gate: shorter than `found_keys::MIN_TOKEN` (16) is never
+        //     classified.
         extract_api_keys_from_body("short ghp_x", domain);
         // (2) A VALID github token is classified by identify_api_key but github is
         //     not a poolable provider, so pool.add rejects it.
@@ -402,4 +437,41 @@ use super::*;
                 }
             }
         }
+    }
+
+    #[test]
+    fn extract_api_keys_from_body_does_not_truncate_at_the_old_200_char_cap() {
+        // Regression test for the merge onto `found_keys::key_tokens`: this
+        // harvester used to hand-roll a `16..=200` char window, silently
+        // dropping any longer real-world key/PAT/JWT. The shared tokenizer's
+        // cap is `found_keys::MAX_TOKEN` (4096), so a 234-char BinaryEdge-shaped
+        // token (poolable — proving it went all the way through classification
+        // AND `pool.add`) must now be picked up.
+        let pool = crate::util::key_pool::global_pool();
+        let domain = "crawlutil-longkey-test.example";
+        let long_key = format!(
+            "bp0_{}",
+            "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
+        );
+        assert!(
+            long_key.len() > 200 && long_key.len() <= crate::util::found_keys::MAX_TOKEN,
+            "fixture must exceed the old 200-char cap and fit under the real one"
+        );
+
+        extract_api_keys_from_body(&format!("prefix {long_key} suffix"), domain);
+
+        let found = pool
+            .snapshot()
+            .services
+            .get("binaryedge")
+            .into_iter()
+            .flatten()
+            .any(|e| e.value == long_key);
+        if found {
+            pool.remove("binaryedge", &long_key);
+        }
+        assert!(
+            found,
+            "a >200-char poolable key must survive the tokenizer's length gate"
+        );
     }

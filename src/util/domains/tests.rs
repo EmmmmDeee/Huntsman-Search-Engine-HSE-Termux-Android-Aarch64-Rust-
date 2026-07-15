@@ -1,6 +1,24 @@
 use super::*;
 
     #[test]
+    fn noreply_email_domain_detects_forge_masking_addresses() {
+        // Masking is in the DOMAIN, not the local part — so is_role_localpart
+        // (which only checks the local part) misses these; this catches them.
+        assert!(is_noreply_email_domain("crystal@noreply.codeberg.org"));
+        assert!(is_noreply_email_domain("alice@users.noreply.github.com"));
+        assert!(is_noreply_email_domain(
+            "123456+alice@users.noreply.github.com"
+        ));
+        assert!(is_noreply_email_domain("bob@no-reply.gitlab.com"));
+        // A real personal address on an ordinary domain is NOT masked.
+        assert!(!is_noreply_email_domain("jose.valim@gmail.com"));
+        assert!(!is_noreply_email_domain("wojtek@wojtekmach.pl"));
+        // `noreply` as a LOCAL part (not the domain) is not this function's job.
+        assert!(!is_noreply_email_domain("noreply@example.com"));
+        assert!(!is_noreply_email_domain("not-an-email"));
+    }
+
+    #[test]
     fn infrastructure_email_detects_role_and_provider_mailboxes() {
         // Role local-parts on any domain.
         assert!(is_infrastructure_email("abuse@cloudflare.com"));
@@ -41,6 +59,32 @@ use super::*;
     }
 
     #[test]
+    fn role_localpart_matches_provider_prefixed_system_mailboxes() {
+        // Regression (found by a live dns_intel scan of amazon.com, surfaced by
+        // `hse audit`): a provider-prefixed system mailbox — the standard AWS
+        // Route53 SOA RNAME `awsdns-hostmaster` and friends — is a role account
+        // that the whole-string match misses, so `awsdns-hostmaster@amazon.com`
+        // leaked into a scan as if it were the subject's email. A system-role
+        // token is now matched as a separator-delimited segment too.
+        assert!(is_role_localpart("awsdns-hostmaster"));
+        assert!(is_role_localpart("dns-hostmaster"));
+        assert!(is_role_localpart("cloudflare-abuse"));
+        assert!(is_role_localpart("hostmaster-aws"));
+        assert!(is_role_localpart("mail.postmaster"));
+        // …so is_infrastructure_email gates the SOA admin address, and
+        // dns_intel's `!is_infrastructure_email` guard suppresses it.
+        assert!(is_infrastructure_email("awsdns-hostmaster@amazon.com"));
+        // But a BUSINESS token as a segment is NOT segment-matched — a real
+        // subject's local-part can legitimately contain `info`/`contact`/`sales`,
+        // and suppressing a genuine subject email is worse than missing an infra
+        // one. These stay whole-string-only (so they do NOT match as a segment).
+        assert!(!is_role_localpart("jane-info"));
+        assert!(!is_role_localpart("john.contact"));
+        assert!(!is_role_localpart("sam-sales"));
+        assert!(!is_infrastructure_email("jane-info@example.com"));
+    }
+
+    #[test]
     fn freemail_basics() {
         assert!(is_freemail("gmail.com"));
         assert!(is_freemail("bigpond.com"));
@@ -73,6 +117,18 @@ use super::*;
         assert!(!is_app_package_id("com.au"));
         // A 3+-label host that does NOT lead with a generic TLD is a domain.
         assert!(!is_app_package_id("api.stripe.com"));
+        // Regression: `app.` and `dev.` are common real subdomain prefixes, NOT
+        // reverse-DNS package leads. They were misclassified as packages and the
+        // valid Domain silently dropped; both must now survive as domains.
+        assert!(!is_app_package_id("app.example.com"));
+        assert!(!is_app_package_id("dev.portal.com"));
+        assert!(!is_app_package_id("dev.azure.com"));
+        assert!(!is_app_package_id("app.slack.com"));
+        assert!(looks_like_domain("app.example.com"));
+        assert!(looks_like_domain("dev.portal.com"));
+        // The genuinely-generic leads still gate reverse-DNS packages.
+        assert!(is_app_package_id("io.metamask.MetaMask"));
+        assert!(is_app_package_id("net.whatsapp.WhatsApp"));
     }
 
     #[test]

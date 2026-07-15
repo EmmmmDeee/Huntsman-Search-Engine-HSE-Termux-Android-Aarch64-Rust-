@@ -97,9 +97,31 @@ impl Module for IpRegistry {
 
 async fn process_ip(target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
     let ip = target.value.trim();
-    let (rdap_res, bgp_res) = tokio::join!(rdap_lookup_ip(ip, ctx), bgp_lookup_ip(ip, ctx),);
-    let mut result = rdap_res?;
-    result.extend(bgp_res?.entities);
+    let (rdap_res, bgp_res) = tokio::join!(rdap_lookup_ip(ip, ctx), bgp_lookup_ip(ip, ctx));
+    // Merge partial successes: RDAP and BGPView are independent sources, so one
+    // failing must not discard the other's already-fetched result. The old
+    // `rdap_res?` / `bgp_res?` propagated either error and reported total module
+    // failure, losing the good half. Only error when BOTH sources fail.
+    let mut result = ModuleResult::new();
+    let mut rdap_err = None;
+    match rdap_res {
+        Ok(r) => result.extend(r.entities),
+        Err(e) => {
+            tracing::debug!(source = SRC, ip, error = %e, "ip_registry: RDAP lookup failed");
+            rdap_err = Some(e);
+        }
+    }
+    match bgp_res {
+        Ok(b) => result.extend(b.entities),
+        Err(e) => {
+            tracing::debug!(source = SRC, ip, error = %e, "ip_registry: BGPView lookup failed");
+            if let Some(rerr) = rdap_err {
+                // Both sources failed — surface a real error so the circuit breaker
+                // still registers the outage (matches the old `?`-propagation).
+                return Err(rerr);
+            }
+        }
+    }
     Ok(result)
 }
 

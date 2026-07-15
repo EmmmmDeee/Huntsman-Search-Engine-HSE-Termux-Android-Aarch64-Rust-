@@ -66,6 +66,103 @@ fn build_entities_surfaces_previously_dropped_cert_issuer_and_http_fields() {
 }
 
 #[test]
+fn build_entities_emits_every_unique_san_domain_and_email() {
+    use crate::core::entity::EntityKind;
+    // A multi-SAN certificate with 25 distinct SAN domains and an HTTP body exposing
+    // 12 distinct contact emails: every UNIQUE record must surface as a Domain/Email
+    // BFS pivot — no silent `.take(20)` / `.take(10)`. Fail-before: 20 domains + 10
+    // emails; the certificate's own genuine pivots past those caps were dropped.
+    let domains: Vec<String> = (0..25).map(|i| format!("sub{i:02}.example.com")).collect();
+    let emails: Vec<String> = (0..12).map(|i| format!("user{i:02}@example.com")).collect();
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "203.0.113.10",
+            "certificate": { "domains": domains },
+            "http": { "emails": emails }
+        }}]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let domain_ct = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Domain && e.has_tag("ssl-san"))
+        .count();
+    let email_ct = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Email && e.has_tag("ssl-extracted"))
+        .count();
+    assert_eq!(
+        domain_ct, 25,
+        "every unique SAN domain must be emitted, not capped at 20"
+    );
+    assert_eq!(
+        email_ct, 12,
+        "every unique extracted email must be emitted, not capped at 10"
+    );
+}
+
+#[test]
+fn build_entities_emits_every_unique_cert_subject_org() {
+    use crate::core::entity::EntityKind;
+    // A shared-hosting IP whose certificate Subject O carries 6 distinct verified
+    // legal-entity names: each is an attribution pivot and must surface as an
+    // Organisation — the prior `.take(3)` silently dropped three.
+    let orgs: Vec<String> = (0..6).map(|i| format!("Acme Legal Entity {i}")).collect();
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [{ "data": {
+            "ip": "203.0.113.10",
+            "certificate": { "subject": { "organization": orgs } }
+        }}]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let org_ct = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Organisation && e.has_tag("ssl-subject-org"))
+        .count();
+    assert_eq!(
+        org_ct, 6,
+        "every unique cert Subject O must be emitted, not capped at 3"
+    );
+}
+
+#[test]
+fn build_entities_emits_a_deterministic_jarm_fingerprint() {
+    use crate::core::entity::EntityKind;
+    // A host can expose several JARM fingerprints (one per TLS service), but only
+    // one is surfaced as `jarm_fingerprint`. It must be chosen DETERMINISTICALLY
+    // (the lexicographically smallest), not by `HashSet` iteration order — which is
+    // randomised per process and would emit a different fingerprint between
+    // otherwise-identical runs, breaking byte-identical output. Items are supplied
+    // in non-sorted order to prove the choice is by value, not insertion.
+    let body: super::NetlasResp = serde_json::from_value(serde_json::json!({
+        "items": [
+            { "data": { "ip": "203.0.113.10", "port": 443,  "jarm": "cccc3333" } },
+            { "data": { "ip": "203.0.113.10", "port": 8443, "jarm": "aaaa1111" } },
+            { "data": { "ip": "203.0.113.10", "port": 9443, "jarm": "bbbb2222" } },
+        ]
+    }))
+    .unwrap();
+    let r = super::build_entities(&body, "203.0.113.10", "scan");
+    let ip = r
+        .entities
+        .iter()
+        .find(|e| e.kind == EntityKind::IpAddress)
+        .expect("ip entity");
+    assert_eq!(
+        ip.evidence[0]
+            .attributes
+            .get("jarm_fingerprint")
+            .map(String::as_str),
+        Some("aaaa1111"),
+        "the smallest JARM fingerprint must be emitted, deterministically"
+    );
+}
+
+#[test]
 fn netlas_query_by_kind() {
     use super::netlas_query;
     use crate::core::scan::Target;

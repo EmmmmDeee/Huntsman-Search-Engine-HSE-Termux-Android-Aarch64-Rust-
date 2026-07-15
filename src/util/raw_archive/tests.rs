@@ -123,6 +123,34 @@ fn describe_url_derives_endpoint_and_query() {
 }
 
 #[test]
+fn describe_url_redacts_a_path_embedded_own_key() {
+    // IPQS/ABR-style: the operator's OWN key sits in the URL PATH, not the query.
+    // It must NEVER become the endpoint/query label (which lands in the archive
+    // filename, `_meta`, and every dossier / one-click debug bundle). Regression
+    // for the path-embedded-key leak the query-param CRED_PARAMS skip missed.
+    let own = crate::util::keys::own_api_keys();
+    let Some(key) = own.iter().next().cloned() else {
+        return; // no embedded/own keys in this build → nothing to assert
+    };
+    let (endpoint, value) = describe_url(&format!(
+        "https://www.ipqualityscore.com/api/json/ip/{key}/1.1.1.1"
+    ));
+    assert_ne!(
+        endpoint, key,
+        "a path-embedded API key must not become the endpoint label"
+    );
+    assert!(
+        !endpoint.contains(&key),
+        "endpoint must not contain the key"
+    );
+    assert_eq!(
+        (endpoint.as_str(), value.as_str()),
+        ("ip", "1.1.1.1"),
+        "the key segment is dropped; endpoint/value are the real ones around it"
+    );
+}
+
+#[test]
 fn records_in_window_recovers_full_responses_and_filters_by_time() {
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -245,6 +273,38 @@ fn records_for_a_mixed_case_query_are_not_dropped_by_the_filename_prefilter() {
     );
     assert_eq!(got[0].query, "Brett Lawnton");
 
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
+fn records_filtered_dir_matches_query_set_case_insensitively() {
+    // Regression: the filename pre-filter compared the archived query slug
+    // case-sensitively while the authoritative `_meta.query` check is
+    // case-insensitive (`to_lowercase`). `slug()` preserves case, so a mixed-case
+    // query (a name/username like `JaneSmith`) was skipped before its file was even
+    // opened and silently dropped from the dossier — though the authoritative
+    // check would have kept it.
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.as_nanos());
+    let dir = std::env::temp_dir().join(format!("hse_case_{}_{nanos}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    write_file(
+        &dir.join(build_filename("see-know", "search", "JaneSmith", 1000, 1)),
+        &build_body("see-know", "search", "JaneSmith", 1000, r#"{"hit":true}"#),
+    )
+    .unwrap();
+    // The caller passes the lower-cased query set (as the authoritative check
+    // itself requires); the mixed-case archived response must still be returned.
+    let mut want: std::collections::HashSet<String> = std::collections::HashSet::new();
+    want.insert("janesmith".to_string());
+    let got = records_filtered_dir(&dir, 900, 1100, Some(&want));
+    assert_eq!(
+        got.len(),
+        1,
+        "a mixed-case query's archived response must survive the pre-filter"
+    );
+    assert_eq!(got[0].query, "JaneSmith");
     let _ = std::fs::remove_dir_all(&dir);
 }
 

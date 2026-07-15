@@ -93,6 +93,47 @@ mod qld {
     }
 
     #[test]
+    fn per_record_address_tags_are_correct_before_any_merge() {
+        // Real-scan reproduction (a "Riley Morley" scan): two records at the SAME
+        // postcode (4001), NEITHER owner matching the seed — "ANN SQUARE
+        // INVESTMENT PTY LTD" (a company, no person name at all) and "FLANNAN
+        // MORLEY & GERALDINE F MORLEY" (surname-only family). Per
+        // `records_to_entities`'s own contract, EVERY Address it returns for
+        // these two records must be tagged `family-candidate`, never
+        // `exact-name-match` — confirms the per-record classification itself is
+        // sound before any entity-merge step (which happens downstream, outside
+        // this function) has a chance to union tags across postcode-sharing
+        // records.
+        let raw = r#"{"result":{"total":2,"records":[
+            {"_id":100,"Owner":"ANN SQUARE INVESTMENT PTY LTD","Amount":"714.65","SenderName":"OFFICE OF INDUSTRIAL RELATIONS","DateRec":"2024-10-31","PCode":"4001"},
+            {"_id":101,"Owner":"FLANNAN MORLEY & GERALDINE F MORLEY","Amount":"55.65","PCode":"4001"}
+        ]}}"#;
+        let recs = serde_json::from_str::<CkanResp>(raw)
+            .unwrap()
+            .result
+            .unwrap()
+            .records;
+        let ents = records_to_entities(&recs, 2, "Riley Morley", true, "s");
+        let addrs: Vec<&Entity> = ents
+            .iter()
+            .filter(|e| e.kind == EntityKind::Address)
+            .collect();
+        assert_eq!(addrs.len(), 2, "one Address entity per record");
+        for a in &addrs {
+            assert!(
+                a.tags.iter().any(|t| t.as_str() == "family-candidate"),
+                "postcode-only address from a non-exact owner must be family-candidate: {:?}",
+                a.tags
+            );
+            assert!(
+                !a.tags.iter().any(|t| t.as_str() == "exact-name-match"),
+                "neither owner matches 'Riley Morley' — must NOT be exact-name-match: {:?}",
+                a.tags
+            );
+        }
+    }
+
+    #[test]
     fn company_owner_emits_organisation_for_abn_pivot() {
         let raw = r#"{"result":{"total":1,"records":[
             {"_id":7,"Owner":"ACME WIDGETS PTY LTD","Amount":"1200.00","SenderName":"ASX","PCode":"4000"}

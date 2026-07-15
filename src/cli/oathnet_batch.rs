@@ -7,6 +7,8 @@
 //! no quota spent); `--execute` dispatches it, bounded by the shared OathNet
 //! per-session budget so a batch can't silently blow the daily allowance.
 
+use std::collections::HashMap;
+
 use crate::core::error::{Error, Result};
 use crate::core::scan::detect_kind;
 use crate::util::oathnet;
@@ -146,16 +148,51 @@ async fn execute_plan(plan: &[BatchQuery], page_size: u32, json: bool) -> Result
     let mut total_hits = 0usize;
     let mut stopped_on_budget = false;
     let mut rows: Vec<(usize, &BatchQuery, usize)> = Vec::new();
+    // Session IDs initialised so far this run, keyed by lowercased target
+    // value — the generator (`oathnet_batch::query_gen::add`) deliberately
+    // emits a breach+stealer PAIR on the identical field+value for every
+    // stealer-indexable selector specifically so a session covers both
+    // (the vendor's own "#1 optimisation": N calls on one query = 1 lookup
+    // instead of N). Previously `execute_plan` never called `init_session`
+    // at all, so every single dispatched query paid its own full lookup
+    // regardless — this pairing existed in the generated plan but its
+    // quota saving was never actually realised. Tracked locally (never via
+    // shared process state — a concurrent `hse serve` scan could otherwise
+    // clobber which session a query for the same value uses) and threaded
+    // into [`oathnet::search`] explicitly, so the SECOND query for the same
+    // value reuses the session this run already paid to initialise instead
+    // of redundantly re-initing or silently picking up a foreign session.
+    let mut sessioned: HashMap<String, Option<String>> = HashMap::new();
 
     for q in plan {
         if !oathnet::has_budget() {
             stopped_on_budget = true;
             break;
         }
-        // No session for the batch path — pass None explicitly rather than
-        // relying on (now-removed) shared session state, which a concurrent
-        // `hse serve` scan could otherwise have populated for the same value.
-        match oathnet::search(key, q.surface.path(), q.field, &q.value, page_size, None).await {
+        let lower_value = q.value.to_lowercase();
+        let session_id = if let Some(sid) = sessioned.get(&lower_value) {
+            sid.clone()
+        } else {
+            let sid = oathnet::init_session(key, &q.value).await;
+            sessioned.insert(lower_value, sid.clone());
+            sid
+        };
+        // Clamp to this specific surface's own documented ceiling — Breach
+        // and Stealer have different maximums (1000 vs 100), so a single
+        // flat `--page-size` can't be passed through uncapped to a plan
+        // that spans both without risking an over-limit request to
+        // whichever surface has the smaller one.
+        let effective_page_size = page_size.min(q.surface.max_page_size());
+        match oathnet::search(
+            key,
+            q.surface.path(),
+            q.field,
+            &q.value,
+            effective_page_size,
+            session_id.as_deref(),
+        )
+        .await
+        {
             Ok(items) => {
                 dispatched += 1;
                 total_hits += items.len();

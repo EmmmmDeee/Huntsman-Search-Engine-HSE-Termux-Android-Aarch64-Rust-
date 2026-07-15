@@ -79,8 +79,42 @@ struct Account {
     domain: Option<String>,
     username: Option<String>,
     url: Option<String>,
-    /// Gravatar serialises this as the string `"true"`/`"false"`.
-    verified: Option<String>,
+    /// Accepts either shape Gravatar has shipped this flag as: a genuine JSON
+    /// boolean (the live API, confirmed 2026-07-14 — see
+    /// `real_profile_response_with_boolean_verified_parses_and_yields_entities`)
+    /// or the string `"true"`/`"false"` this field was originally typed for.
+    /// Before this fix the field was a
+    /// bare `Option<String>`, so a real profile's genuine JSON `true` failed
+    /// `serde` deserialization outright — `GravatarResp` doesn't just lose the
+    /// `verified` flag, the WHOLE profile response fails to parse (`Entry` is
+    /// nested inside it), which `process()` then folds into the identical
+    /// "no Gravatar profile" empty result as a real 404. Every profile with
+    /// at least one linked account — the common, most valuable case — was
+    /// silently dropped as a false miss.
+    #[serde(deserialize_with = "deserialize_flexible_bool", default)]
+    verified: Option<bool>,
+}
+
+/// Deserialize a field that may arrive as a genuine JSON boolean or as the
+/// string `"true"`/`"false"`, normalising both to `Option<bool>`. See
+/// [`Account::verified`]'s doc comment for why this flexibility is load-bearing
+/// rather than defensive-programming excess: the real API sends a boolean and
+/// the old bare-`String` typing silently dropped every matching profile.
+fn deserialize_flexible_bool<'de, D>(deserializer: D) -> std::result::Result<Option<bool>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    #[derive(Deserialize)]
+    #[serde(untagged)]
+    enum BoolOrString {
+        Bool(bool),
+        Str(String),
+    }
+    Ok(match Option::<BoolOrString>::deserialize(deserializer)? {
+        Some(BoolOrString::Bool(b)) => Some(b),
+        Some(BoolOrString::Str(s)) => Some(s.eq_ignore_ascii_case("true")),
+        None => None,
+    })
 }
 
 #[derive(Deserialize, Default)]
@@ -293,7 +327,7 @@ fn extract_entry(entry: &Entry, hash: &str, scan_id: &str, result: &mut ModuleRe
             .or(acct.domain.as_deref())
             .unwrap_or("account")
             .trim();
-        let verified = acct.verified.as_deref() == Some("true");
+        let verified = acct.verified == Some(true);
         let mut tags: Vec<&str> = vec![platform, "gravatar-pivot"];
         if verified {
             tags.push("verified");

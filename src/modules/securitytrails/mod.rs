@@ -34,6 +34,12 @@ struct SubdomainResp {
 struct AssociatedResp {
     #[serde(default)]
     records: Vec<AssociatedRecord>,
+    /// SecurityTrails' reported total of domains associated with the IP. Often
+    /// larger than `records.len()` (the API pages), so it is the honest measure
+    /// of how shared the host is. `None` when the field is absent — fall back to
+    /// the number of records actually returned, never a fabricated total.
+    #[serde(default)]
+    record_count: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -42,9 +48,15 @@ struct AssociatedRecord {
     hostname: Option<String>,
 }
 
-/// Cap on associated-domain records turned into entities from one reverse-IP
-/// lookup — a busy shared host can list thousands; 30 is enough to pivot on
-/// without flooding expansion.
+/// Cap on associated-domain records turned into ENTITIES from one reverse-IP
+/// lookup. Unlike a domain's own subdomains, reverse-IP neighbours on a shared
+/// host / CDN are mostly unrelated co-tenants — not the subject's data — so
+/// minting thousands of them as first-class pivots would flood expansion with
+/// noise. The cap bounds only the entity fan-out; the FULL associated-domain
+/// **count** is never hidden — it is surfaced on every emitted entity as the
+/// `total_associated` evidence attribute (mirroring the subdomain path's
+/// `total_subdomains`), so an analyst always sees how shared the host is even
+/// when only the first records become entities.
 const MAX_REVERSE_RECORDS: usize = 30;
 
 /// Build the `Domain` entity for one enumerated subdomain label under `domain`.
@@ -76,7 +88,14 @@ fn build_subdomain_entity(
 /// network/IO): trims a trailing dot and rejects anything that is not a usable
 /// hostname — blank, a bare IP literal (the PTR pointing back at the IP itself),
 /// or a single label with no dot. Returns `None` for a rejected record.
-fn build_associated_entity(ip: &str, hostname: Option<&str>, scan_id: &str) -> Option<Entity> {
+/// `total_str` is the IP's full associated-domain count, carried as evidence so
+/// the cap on entity fan-out never hides how shared the host is.
+fn build_associated_entity(
+    ip: &str,
+    hostname: Option<&str>,
+    total_str: &str,
+    scan_id: &str,
+) -> Option<Entity> {
     let hostname = hostname?.trim().trim_end_matches('.');
     if hostname.is_empty()
         || hostname.parse::<std::net::IpAddr>().is_ok()
@@ -92,9 +111,33 @@ fn build_associated_entity(ip: &str, hostname: Option<&str>, scan_id: &str) -> O
             SRC,
             format!("Domain associated with {ip} per SecurityTrails"),
         )
-        .with_attr("ip", ip),
+        .with_attr("ip", ip)
+        .with_attr("total_associated", total_str),
     );
     Some(e)
+}
+
+/// Map a reverse-IP response's records to `Domain` entities. **Pure** (no
+/// network/IO) so the cap + count-surfacing is unit-tested without a live key.
+/// The entity fan-out is capped at [`MAX_REVERSE_RECORDS`] (co-tenant flood
+/// guard), but the honest total — SecurityTrails' `record_count` when present,
+/// else the number of records returned — is threaded onto every entity, so the
+/// aggregate signal ("this IP has N associated domains") is never dropped.
+fn associated_entities(
+    records: &[AssociatedRecord],
+    record_count: Option<u64>,
+    ip: &str,
+    scan_id: &str,
+) -> Vec<Entity> {
+    let total = record_count.unwrap_or(records.len() as u64);
+    let total_str = total.to_string();
+    records
+        .iter()
+        .take(MAX_REVERSE_RECORDS)
+        .filter_map(|record| {
+            build_associated_entity(ip, record.hostname.as_deref(), &total_str, scan_id)
+        })
+        .collect()
 }
 
 pub struct SecurityTrails;
@@ -197,14 +240,12 @@ impl SecurityTrails {
         };
 
         let mut result = ModuleResult::new();
-        result.extend(
-            body.records
-                .iter()
-                .take(MAX_REVERSE_RECORDS)
-                .filter_map(|record| {
-                    build_associated_entity(ip, record.hostname.as_deref(), &ctx.scan_id)
-                }),
-        );
+        result.extend(associated_entities(
+            &body.records,
+            body.record_count,
+            ip,
+            &ctx.scan_id,
+        ));
         Ok(result)
     }
 

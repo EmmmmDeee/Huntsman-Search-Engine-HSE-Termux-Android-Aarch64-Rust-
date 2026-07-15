@@ -64,7 +64,6 @@ pub const PEP: &str = "pep";
 pub const DEBARRED: &str = "debarred";
 
 // Identity
-pub const DERIVED: &str = "derived";
 pub const SOCIAL_PROFILE: &str = "social-profile";
 pub const CANDIDATE: &str = "candidate";
 

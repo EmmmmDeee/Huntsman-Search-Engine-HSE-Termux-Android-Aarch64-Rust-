@@ -225,21 +225,6 @@ impl KeyPool {
         true
     }
 
-    /// Assign a key to an `environment` (e.g. "prod"/"dev"). Returns true if
-    /// found.
-    pub fn set_environment(&self, service: &str, value: &str, env: &str) -> bool {
-        let mut data = self.data.lock();
-        if let Some(entries) = data.services.get_mut(&service.to_lowercase()) {
-            for e in entries.iter_mut() {
-                if e.value == value {
-                    e.environment = Some(env.to_string());
-                    return true;
-                }
-            }
-        }
-        false
-    }
-
     /// Select a key for a service with telemetry-driven, load-spreading rotation.
     ///
     /// Among the USABLE keys (cooled-down / invalid / revoked already filtered by
@@ -260,7 +245,10 @@ impl KeyPool {
         }
 
         let mut indices = self.indices.lock();
-        let idx = indices.entry(lower.clone()).or_insert(0);
+        // `lower` is not read again after this point (the `entries` borrow above
+        // is tied to `data.services`, not to `lower`), so move it into the second
+        // map's key instead of cloning — one allocation per call instead of two.
+        let idx = indices.entry(lower).or_insert(0);
         let len = entries.len();
 
         let mut best: Option<usize> = None;

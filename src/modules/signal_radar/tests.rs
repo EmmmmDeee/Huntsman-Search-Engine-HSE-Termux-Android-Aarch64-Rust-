@@ -111,19 +111,6 @@ fn bluetooth_skip_placeholder_address() {
     assert_eq!(result.len(), 1);
 }
 
-#[test]
-fn bluetooth_hcitool_parse() {
-    let text = b"Scanning ...\n\t11:22:33:44:55:66\tMouse\n\t77:88:99:AA:BB:CC\tKeyboard\n";
-    let result = bluetooth::parse_hcitool(text, "test-scan");
-    assert_eq!(result.len(), 2);
-    // hcitool addresses are passed through as-is; normalisation may lower-case
-    assert_eq!(
-        result.entities[0].value.to_ascii_lowercase(),
-        "11:22:33:44:55:66"
-    );
-    assert!(result.entities[0].has_tag("bt-classic"));
-}
-
 // ── cell parser ────────────────────────────────────────────────────────────
 
 #[test]
@@ -157,6 +144,34 @@ fn cell_skip_incomplete_towers() {
     ]"#;
     let result = cell::parse_cells(json, "test-scan");
     assert!(result.is_empty());
+}
+
+// ── scan_cell (redundant signalstrength call) ──────────────────────────────
+
+#[tokio::test]
+async fn scan_cell_does_not_spawn_the_discarded_signalstrength_tool() {
+    use crate::util::termux::{clear_unavailable_for_test, is_marked_unavailable_for_test};
+
+    // Known state regardless of what earlier tests in this process did.
+    clear_unavailable_for_test("termux-telephony-cellinfo");
+    clear_unavailable_for_test("termux-telephony-signalstrength");
+
+    let _ = scan_cell("test-scan").await;
+
+    // Off-device (this sandbox), the real tool fails to spawn (ENOENT),
+    // which caches it unavailable — proves the harness genuinely exercised
+    // termux_cmd rather than short-circuiting before ever calling it.
+    assert!(
+        is_marked_unavailable_for_test("termux-telephony-cellinfo"),
+        "cellinfo must actually be invoked by scan_cell"
+    );
+    // signalstrength's result was always discarded (`_sigstrength`), so it
+    // must never be spawned at all now. This fails against the pre-fix code,
+    // which called (and threw away) it on every scan.
+    assert!(
+        !is_marked_unavailable_for_test("termux-telephony-signalstrength"),
+        "signalstrength must not be spawned when its result is unused"
+    );
 }
 
 // ── ARP parser ─────────────────────────────────────────────────────────────

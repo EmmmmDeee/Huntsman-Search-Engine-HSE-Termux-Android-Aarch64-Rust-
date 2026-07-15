@@ -43,8 +43,6 @@ use crate::util::http::{handle_keyed_error, urlencode};
 
 const KEY_ENV: &str = "HUNTSMAN_ONYPHE_KEY";
 const SRC: &str = "onyphe";
-/// Cap emitted resolutions — a domain summary can list thousands of subdomains.
-const MAX_DOMAINS: usize = 64;
 
 #[derive(Deserialize, Default)]
 struct OnypheResp {
@@ -172,114 +170,175 @@ impl Module for Onyphe {
             return Ok(ModuleResult::new());
         }
 
-        let mut result = ModuleResult::new();
-        let mut seen: HashSet<String> = HashSet::new();
         // For an IP target that is a CDN/anycast edge, the geoloc is the answering
         // datacentre, not the subject — suppress coordinates (as ip_geo does).
         let skip_coords = matches!(target.kind, TargetKind::IpAddress)
             && crate::core::validation::is_cdn_edge_ip(value);
 
-        let mut domains_emitted = 0usize;
-        for r in &body.results {
-            let category = vstr(r, "@category").unwrap_or_default();
-            let ev = || {
-                let mut e = Evidence::new(SRC, format!("ONYPHE {selector} summary: {value}"));
-                if !category.is_empty() {
-                    e = e.with_attr("category", &category);
-                }
-                e
+        Ok(extract_entities(
+            &body.results,
+            target,
+            value,
+            selector,
+            skip_coords,
+            &ctx.scan_id,
+        ))
+    }
+}
+
+/// Pure entity extraction over the ONYPHE summary `results` documents — unit-
+/// tested against fixtures so the network shell in `process` stays a thin
+/// adapter. `skip_coords` is precomputed by the caller (the CDN-edge suppression
+/// needs the IP target). No per-module output cap: every distinct in-scope
+/// resolution is emitted (see the resolutions block).
+fn extract_entities(
+    results: &[Value],
+    target: &Target,
+    value: &str,
+    selector: &str,
+    skip_coords: bool,
+    scan_id: &str,
+) -> ModuleResult {
+    let mut result = ModuleResult::new();
+    let mut seen: HashSet<String> = HashSet::new();
+    for r in results {
+        let category = vstr(r, "@category").unwrap_or_default();
+        let ev = || {
+            let mut e = Evidence::new(SRC, format!("ONYPHE {selector} summary: {value}"));
+            if !category.is_empty() {
+                e = e.with_attr("category", &category);
+            }
+            e
+        };
+
+        // ── Geolocation ──────────────────────────────────────────────────
+        if !skip_coords
+            && let Some((lat, lon)) = coords(r)
+            && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
+            && let Some(mut ce) = crate::util::geo::coarse_provider_coords(lat, lon, 0.55, scan_id)
+        {
+            if let Some(cc) = vstr(r, "country") {
+                ce.tag(format!("country:{}", cc.to_uppercase()));
+            }
+            ce.add_evidence(ev());
+            result.push(ce);
+        }
+
+        // ── City / country as an Address ────────────────────────────────
+        if let Some(city) = vstr(r, "city") {
+            let country = vstr(r, "countryname").or_else(|| vstr(r, "country"));
+            let addr = match country {
+                Some(c) => format!("{city}, {c}"),
+                None => city,
             };
-
-            // ── Geolocation ──────────────────────────────────────────────────
-            if !skip_coords
-                && let Some((lat, lon)) = coords(r)
-                && seen.insert(format!("@coord:{lat:.4},{lon:.4}"))
-                && let Some(mut ce) =
-                    crate::util::geo::coarse_provider_coords(lat, lon, 0.55, &ctx.scan_id)
-            {
-                if let Some(cc) = vstr(r, "country") {
-                    ce.tag(format!("country:{}", cc.to_uppercase()));
-                }
-                ce.add_evidence(ev());
-                result.push(ce);
-            }
-
-            // ── City / country as an Address ────────────────────────────────
-            if let Some(city) = vstr(r, "city") {
-                let country = vstr(r, "countryname").or_else(|| vstr(r, "country"));
-                let addr = match country {
-                    Some(c) => format!("{city}, {c}"),
-                    None => city,
-                };
-                if seen.insert(format!("@addr:{}", addr.to_lowercase())) {
-                    let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, &ctx.scan_id);
-                    ae.tag(crate::core::tags::GEOINT);
-                    ae.add_evidence(ev());
-                    result.push(ae);
-                }
-            }
-
-            // ── ASN + operator org ──────────────────────────────────────────
-            if let Some(asn) = vstr(r, "asn").map(|a| {
-                if a.starts_with("AS") {
-                    a
-                } else {
-                    format!("AS{a}")
-                }
-            }) && asn.len() > 2
-                && seen.insert(asn.to_lowercase())
-            {
-                let mut ae = Entity::new(EntityKind::Asn, &asn, 0.75, &ctx.scan_id);
+            if seen.insert(format!("@addr:{}", addr.to_lowercase())) {
+                let mut ae = Entity::new(EntityKind::Address, &addr, 0.55, scan_id);
+                ae.tag(crate::core::tags::GEOINT);
                 ae.add_evidence(ev());
                 result.push(ae);
             }
-            if let Some(org) = vstr(r, "organization").filter(|o| o.len() >= 3)
-                && seen.insert(format!("@org:{}", org.to_lowercase()))
-            {
-                let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, &ctx.scan_id);
-                oe.add_evidence(ev());
-                result.push(oe);
-            }
+        }
 
-            // ── Resolved IPs (domain target) ────────────────────────────────
-            if matches!(target.kind, TargetKind::Domain)
-                && let Some(ip) = vstr(r, "ip")
-                && ip != value
-                && seen.insert(ip.clone())
-            {
-                let mut ie = Entity::new(EntityKind::IpAddress, &ip, 0.70, &ctx.scan_id);
-                ie.add_evidence(ev());
-                result.push(ie);
+        // ── ASN + operator org ──────────────────────────────────────────
+        if let Some(asn) = vstr(r, "asn").map(|a| {
+            if a.starts_with("AS") {
+                a
+            } else {
+                format!("AS{a}")
             }
+        }) && asn.len() > 2
+            && seen.insert(asn.to_lowercase())
+        {
+            let mut ae = Entity::new(EntityKind::Asn, &asn, 0.75, scan_id);
+            ae.add_evidence(ev());
+            result.push(ae);
+        }
+        if let Some(org) = vstr(r, "organization").filter(|o| o.len() >= 3)
+            && seen.insert(format!("@org:{}", org.to_lowercase()))
+        {
+            let mut oe = Entity::new(EntityKind::Organisation, &org, 0.55, scan_id);
+            oe.add_evidence(ev());
+            result.push(oe);
+        }
 
-            // ── Resolutions: hostnames / subdomains / domains ───────────────
-            for field in ["hostname", "subdomains", "domain"] {
-                for host in vstrs(r, field) {
-                    if domains_emitted >= MAX_DOMAINS {
-                        break;
-                    }
-                    let h = host.trim().trim_end_matches('.').to_lowercase();
-                    // Skip the seed itself, malformed hosts, and shared
-                    // infrastructure / mega platforms (graph-pollution guard).
-                    if h.len() < 4
-                        || !h.contains('.')
-                        || h == value.to_lowercase()
-                        || crate::core::scan::is_noncentral_domain(&h)
-                        || !seen.insert(h.clone())
-                    {
-                        continue;
-                    }
-                    let mut de = Entity::new(EntityKind::Domain, &h, 0.65, &ctx.scan_id);
-                    de.tag("onyphe");
-                    de.add_evidence(ev());
-                    result.push(de);
-                    domains_emitted += 1;
+        // ── Resolved IPs (domain target) ────────────────────────────────
+        if matches!(target.kind, TargetKind::Domain)
+            && let Some(ip) = vstr(r, "ip")
+            && ip != value
+            && seen.insert(ip.clone())
+        {
+            let mut ie = Entity::new(EntityKind::IpAddress, &ip, 0.70, scan_id);
+            ie.add_evidence(ev());
+            result.push(ie);
+        }
+
+        // ── Threat-list hits ─────────────────────────────────────────────
+        // ONYPHE's `threatlist` category records that `value` appears on a
+        // named third-party block/threat list, with optional descriptive
+        // `tag`s (e.g. "Scanner", "SSH"). Both fields were already parsed
+        // into the raw `Value` for every other category above but never read
+        // back out for `threatlist` specifically — this module's own
+        // top-of-file doc comment claims "threatlist classification is
+        // surfaced", but until this fix no code path read either field, so
+        // every threat-list hit ONYPHE returned was silently dropped.
+        if category == "threatlist" {
+            let list_name = vstr(r, "threatlist");
+            let list_tags = vstrs(r, "tag");
+            if (list_name.is_some() || !list_tags.is_empty())
+                && seen.insert(format!(
+                    "@threat:{}:{}",
+                    list_name.as_deref().unwrap_or(""),
+                    list_tags.join(",").to_lowercase()
+                ))
+            {
+                let mut te = target.to_entity(0.6, scan_id);
+                te.tag(crate::core::tags::THREAT_INTEL);
+                te.tag(crate::core::tags::MALICIOUS);
+                let mut tev = Evidence::new(SRC, format!("ONYPHE threatlist hit: {value}"));
+                if let Some(name) = &list_name {
+                    tev = tev.with_attr("threatlist", name);
                 }
+                if !list_tags.is_empty() {
+                    tev = tev.with_attr("tags", list_tags.join(", "));
+                }
+                te.add_evidence(tev);
+                result.push(te);
             }
         }
 
-        Ok(result)
+        // ── Resolutions: hostnames / subdomains / domains ───────────────
+        // Every DISTINCT in-scope resolution is emitted — no per-module cap.
+        // Each host is a real BFS expansion pivot AND a record in the output;
+        // the expansion frontier is owned by the engine's ROI Top-K gate
+        // (`core::roi::top_k_for_round`), which ranks candidates BY WEIGHT per
+        // round. A leaf `MAX_DOMAINS` cap here would instead drop by ONYPHE's
+        // arbitrary return order — silently hiding subdomains from the output
+        // and pre-empting the engine's ranked selection with a worse one. The
+        // `is_noncentral_domain` / dedup / malformed guards below already strip
+        // shared-infra and platform noise, mirroring the crtsh + netlas cert
+        // paths (which dropped the same class of leaf cap for this reason).
+        for field in ["hostname", "subdomains", "domain"] {
+            for host in vstrs(r, field) {
+                let h = host.trim().trim_end_matches('.').to_lowercase();
+                // Skip the seed itself, malformed hosts, and shared
+                // infrastructure / mega platforms (graph-pollution guard).
+                if h.len() < 4
+                    || !h.contains('.')
+                    || h == value.to_lowercase()
+                    || crate::core::scan::is_noncentral_domain(&h)
+                    || !seen.insert(h.clone())
+                {
+                    continue;
+                }
+                let mut de = Entity::new(EntityKind::Domain, &h, 0.65, scan_id);
+                de.tag("onyphe");
+                de.add_evidence(ev());
+                result.push(de);
+            }
+        }
     }
+
+    result
 }
 
 /// Extract a trimmed, non-empty string field from a result document.

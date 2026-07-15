@@ -54,6 +54,35 @@ fn replace_overwrites_previous_entry() {
 }
 
 #[test]
+fn prune_deletes_expired_rows_and_caps_to_newest() {
+    let store = open_temp();
+    let e = vec![make_entity("1.1.1.1")];
+    // Three still-fresh entries (ttl 3600) plus one already-expired (ttl 0).
+    for key in ["A", "B", "C"] {
+        store.archive_module_result(key, 3600, &e).unwrap();
+    }
+    store.archive_module_result("X", 0, &e).unwrap(); // expired on write
+
+    // Cap to the newest 2 fresh rows: prune must delete the expired X AND one
+    // excess fresh row (3 fresh − cap 2 = 1), never more.
+    let pruned = store.prune_raw_archive(2).expect("prune");
+    assert_eq!(pruned, 2, "one expired + one excess row deleted");
+
+    // The expired entry is gone regardless of which fresh rows the cap kept.
+    assert!(
+        store.lookup_module_result_fresh("X").unwrap().is_none(),
+        "expired row must be pruned"
+    );
+    // Exactly the cap of fresh rows survives (which two is timing-dependent on the
+    // one-second archival tie-break, so assert the count, not the identity).
+    let survivors = ["A", "B", "C"]
+        .iter()
+        .filter(|k| store.lookup_module_result_fresh(k).unwrap().is_some())
+        .count();
+    assert_eq!(survivors, 2, "capped to the newest max_rows fresh rows");
+}
+
+#[test]
 fn expired_entry_returns_none() {
     // TTL of 0 means the entry expires immediately (archived_at + 0 ≤ unixepoch()).
     let store = open_temp();

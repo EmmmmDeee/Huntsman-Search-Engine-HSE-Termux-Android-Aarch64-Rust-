@@ -17,7 +17,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `exa_search` | email, username, phone, full_name, domain, organisation | key_gated | no | 87 | url, domain, email, phone |
 | `search_engines` | email, username, phone, full_name, ip_address, domain, url, asn, coordinates, address, organisation, abn_acn | free | no | 113 | url, domain, email, username, phone, address, coordinates, person, organisation, abn_acn |
 
-### social (34)
+### social (36)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -25,7 +25,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `gaming_profile` | username | free | no | 106 | username, url |
 | `social_probe` | username, full_name | free | no | 108 | url, username, person, domain |
 | `streaming_probe` | username | free | no | 108 | url, username |
-| `steam_profile` | username | free | no | 105 | person, username, url, address, coordinates |
+| `steam_profile` | username | free | no | 105 | person, username, url, address, coordinates, email, domain |
 | `structured_id` | username | free | **yes** | 103 | username, mac_address |
 | `fediverse` | email | free | no | 104 | username, url, email |
 | `nostr` | username, email | free | no | 105 | url, username, email |
@@ -100,7 +100,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `phone_au` | phone | free | **yes** | 138 | phone |
 | `phone_intl` | phone | free | **yes** | 140 | phone |
 
-### breach (11)
+### breach (12)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -125,7 +125,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `threatfox` | ip_address, domain | key_gated | no | 109 | domain, ip_address, url |
 | `virustotal` | ip_address, domain | key_gated | no | 55 | — |
 
-### corporate (13)
+### corporate (14)
 
 | Module | Targets | Cost | Passive | Pri | Produces |
 |---|---|---|---|---|---|
@@ -136,9 +136,10 @@ records. The engine knows nothing else — every module is a one-file change.
 | `asic_banned_orgs` | organisation | free | no | 112 | organisation, abn_acn |
 | `au_unclaimed` | full_name, organisation | free | no | 114 | address, coordinates, organisation, person |
 | `abn_lookup` | full_name, organisation, abn_acn | key_gated | no | 118 | abn_acn, address, organisation, person |
-| `opencorporates` | full_name, organisation, abn_acn | free | no | 116 | organisation, abn_acn, address |
+| `opencorporates` | full_name, organisation, abn_acn | key_gated | no | 116 | organisation, abn_acn, address |
 | `acnc_charities` | organisation | free | no | 112 | organisation, abn_acn, address, domain |
 | `gleif_lei` | organisation | free | no | 111 | organisation, abn_acn, address |
+| `sanctions_ofac` | full_name, organisation | free | no | 111 | person, organisation |
 | `trove_au` | organisation, abn_acn | key_gated | no | 57 | organisation |
 | `acma_rrl` | organisation, abn_acn, coordinates | free | no | 48 | organisation, abn_acn |
 | `austlii` | full_name, organisation | free | no | 55 | url, organisation |
@@ -159,7 +160,7 @@ records. The engine knows nothing else — every module is a one-file change.
 | `crtsh` | email, domain, url | free | no | 29 | domain, email, organisation |
 | `typosquat` | domain | free | no | 34 | domain |
 | `hackertarget` | ip_address, domain, url | free | no | 24 | domain, ip_address |
-| `domainsdb` | full_name, domain, organisation | free | no | 19 | domain |
+| `domainsdb` | full_name, domain, organisation | key_gated | no | 19 | domain |
 
 ### infrastructure (20)
 
@@ -220,7 +221,6 @@ records. The engine knows nothing else — every module is a one-file change.
 | `mylnikov` | mac_address | free | no | 17 | coordinates |
 | `overpass` | coordinates | free | no | 15 | coordinates |
 | `social_location` | — | free | no | 15 | address |
-| `mls` | mac_address | free | no | 12 | coordinates |
 | `wigle` | coordinates, mac_address, ssid | key_gated | no | 10 | coordinates, address, mac_address, organisation |
 | `sunrise_sunset` | coordinates | free | no | 10 | coordinates |
 | `breach_timezone` | email, username, phone | free | **yes** | 7 | address |

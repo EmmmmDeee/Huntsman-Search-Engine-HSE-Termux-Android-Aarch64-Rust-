@@ -78,6 +78,100 @@ pub(super) fn is_incidental_infra_entity(seed_kind: TargetKind, entity: &Entity)
     }
 }
 
+/// The engine's entity-admission policy as a PURE decision: given the scan's
+/// `seed_kind`, the effective `min_confidence` floor, and a freshly-emitted
+/// `entity`, return the `entity_excluded` reason string if the entity should be
+/// refused, or `None` if it is admitted. No `self`, no events, no mutation — so
+/// the whole drop-filter policy is unit-testable in isolation;
+/// `finalise_module_result` wraps it with the `emit_excluded` side effect and the
+/// `continue`.
+///
+/// The order is load-bearing (cheapest / most-decisive gates first) and three of
+/// the eight filters carry kind-specific preconditions (`IpAddress`, `Phone`, the
+/// four human-text kinds), so this is a straight-line sequence of guards rather
+/// than a predicate table — the exact ordering stays legible and no closures are
+/// needed.
+pub(super) fn admission_rejection(
+    seed_kind: TargetKind,
+    min_confidence: Option<f64>,
+    entity: &Entity,
+) -> Option<&'static str> {
+    use crate::core::entity::EntityKind;
+    use crate::core::validation;
+
+    if let Some(min) = min_confidence
+        && entity.confidence < min
+    {
+        // Visible like every other admission drop ("never a black box") — this
+        // was the one silent rejection.
+        return Some("below_min_confidence");
+    }
+    // Drop guaranteed-bogus IPs (documentation / reserved / benchmark ranges,
+    // e.g. 192.0.2.1 scraped off a tutorial page) at admission so they never
+    // enter the graph, fire correlations, or appear as findings. RFC1918 private
+    // and loopback are intentionally kept — local sensors surface those
+    // legitimately on-device.
+    if entity.kind == EntityKind::IpAddress && validation::is_bogus_ip(&entity.value) {
+        return Some("bogus_ip");
+    }
+    // Drop documentation / placeholder artifacts (example.com,
+    // jordan@example.com, http://example.com, the `example` username, "John
+    // Doe", …) at admission so they never enter the graph, expand into whole
+    // infrastructure rounds, or fire correlations. Inherently-unique secrets
+    // (passwords / API keys / credentials) are exempt — see
+    // `validation::is_placeholder_entity`.
+    if validation::is_placeholder_entity(&entity.kind, &entity.value) {
+        return Some("placeholder_artifact");
+    }
+    // Drop truncated / incomplete values (`@gmail`, a domain-less email, a bare
+    // dotless host, a `@`-prefixed handle that failed to normalise) at admission
+    // so the user never sees an unverifiable fragment. The auditor independently
+    // flags any that somehow slip through (`fragment-values`).
+    if validation::is_fragment_value(&entity.kind, &entity.value) {
+        return Some("fragment_value");
+    }
+    // Drop an implausible phone at admission. A value that CLAIMS E.164 (leading
+    // `+`) but fails the country-code/length rules — e.g. "+1240893", a NANP
+    // number with only 6 national digits — is a scrape artifact, never a dialable
+    // number. Gated here so it holds for every module and every expansion round;
+    // national/ambiguous (no `+`) phones are left alone, since the modules already
+    // emit E.164.
+    if entity.kind == EntityKind::Phone
+        && entity.value.starts_with('+')
+        && !validation::validate_phone_e164(&entity.value).valid
+    {
+        return Some("implausible_phone");
+    }
+    // Incidental-infrastructure / role-mailbox noise gate: a CDN-edge IP, shared
+    // provider / registrar / DNS / mega domain, or role/provider mailbox
+    // surfacing on an identity-seeded scan maps a provider's estate, not the
+    // subject. Dropped at admission (never enters the graph, correlator, or view),
+    // like the other admission filters. The seed-aware decision lives in
+    // `is_incidental_infra_entity` (infrastructure-seeded scans are exempt — there
+    // the infrastructure IS the subject).
+    if is_incidental_infra_entity(seed_kind, entity) {
+        return Some("incidental_infra");
+    }
+    // Spam / homoglyph content gate. A breach co-occurrence dump mints junk: scam
+    // Address text and "names" built from Cyrillic/Greek glyphs that spoof ASCII
+    // (`Bеcоme а bitcоin milliоnairе`), or random consonant strings
+    // (`ZonJZRJHHWD`). Drop a cross-script homograph for any human-text kind, and
+    // a gibberish random string for Person, at admission — neither is ever the
+    // subject. Both gates are conservative (a real accented name never trips them
+    // — see the validators).
+    if matches!(
+        entity.kind,
+        EntityKind::Person | EntityKind::Address | EntityKind::Username | EntityKind::Organisation
+    ) && validation::is_confusable_mixed_script(&entity.value)
+    {
+        return Some("confusable_homoglyph");
+    }
+    if entity.kind == EntityKind::Person && validation::looks_like_gibberish_name(&entity.value) {
+        return Some("gibberish_value");
+    }
+    None
+}
+
 /// Emit the uniform per-module dispatch trace, paired with the `ModuleStart` bus
 /// event at every dispatch site (sequential + both concurrent phases). Without it
 /// the raw debug log showed a module's outcome (done/skipped/errored/timeout) but
@@ -382,13 +476,14 @@ impl super::ScanEngine {
     /// with the finding. Sourced from the dispatched `Module` object at the call
     /// site (never `crate::modules`, which `core` may not name), so the engine
     /// stays module-agnostic.
-    fn finalise_module_result(
+    pub(super) fn finalise_module_result(
         &self,
         cx: &DispatchCx,
         name: &'static str,
         result: TimeoutResult,
         state: &mut DispatchState,
         attack_techniques: &'static [&'static str],
+        from_cache: bool,
     ) {
         state.stats.run += 1;
         match result {
@@ -451,102 +546,32 @@ impl super::ScanEngine {
                 );
             }
             Ok(Ok(mut mr)) => {
-                // A completed dispatch (even an empty one) proves the provider is
+                // A completed *dispatch* (even an empty one) proves the provider is
                 // reachable — clear any failure streak so a recovered source is
-                // trusted again immediately.
-                super::circuit::record_success(name);
-                super::health::record_success(name);
+                // trusted again immediately. A CACHE REPLAY, however, made no
+                // provider call: recording a success on it would clear a failure
+                // streak the live calls legitimately earned this scan (masking a
+                // degrading provider, or resetting a soft-trip countdown), so the
+                // breaker's success path is skipped for replays. A replay is
+                // neither success nor failure to the breaker — it is invisible.
+                // `health::record_success` mirrors `circuit::record_success`'s
+                // recovery philosophy by design (see its own doc comment), so the
+                // same cache-replay exclusion applies to it too.
+                if !from_cache {
+                    super::circuit::record_success(name);
+                    super::health::record_success(name);
+                }
                 let mut found = 0usize;
                 for mut entity in mr.entities.drain(..) {
-                    if let Some(min) = cx.opts.min_confidence
-                        && entity.confidence < min
-                    {
-                        // Visible like every other admission drop ("never a
-                        // black box") — this was the one silent rejection.
-                        self.emit_excluded(cx.scan_id, &entity, "below_min_confidence");
-                        continue;
-                    }
-                    // Drop guaranteed-bogus IPs (documentation / reserved /
-                    // benchmark ranges, e.g. 192.0.2.1 scraped off a tutorial
-                    // page) at admission so they never enter the graph, fire
-                    // correlations, or appear as findings. RFC1918 private and
-                    // loopback are intentionally kept — local sensors surface
-                    // those legitimately on-device.
-                    if entity.kind == crate::core::entity::EntityKind::IpAddress
-                        && crate::core::validation::is_bogus_ip(&entity.value)
-                    {
-                        self.emit_excluded(cx.scan_id, &entity, "bogus_ip");
-                        continue;
-                    }
-                    // Drop documentation / placeholder artifacts (example.com,
-                    // jordan@example.com, http://example.com, the `example`
-                    // username, "John Doe", …) at admission so they never enter
-                    // the graph, expand into whole infrastructure rounds, or
-                    // fire correlations. Inherently-unique secrets (passwords /
-                    // API keys / credentials) are exempt — see
-                    // `validation::is_placeholder_entity`.
-                    if crate::core::validation::is_placeholder_entity(&entity.kind, &entity.value) {
-                        self.emit_excluded(cx.scan_id, &entity, "placeholder_artifact");
-                        continue;
-                    }
-                    // Drop truncated / incomplete values (`@gmail`, a domain-less
-                    // email, a bare dotless host, a `@`-prefixed handle that
-                    // failed to normalise) at admission so the user never sees an
-                    // unverifiable fragment. The auditor independently flags any
-                    // that somehow slip through (`fragment-values`).
-                    if crate::core::validation::is_fragment_value(&entity.kind, &entity.value) {
-                        self.emit_excluded(cx.scan_id, &entity, "fragment_value");
-                        continue;
-                    }
-                    // Drop an implausible phone at admission. A value that CLAIMS
-                    // E.164 (leading `+`) but fails the country-code/length rules
-                    // — e.g. "+1240893", a NANP number with only 6 national
-                    // digits — is a scrape artifact, never a dialable number.
-                    // Gated here so it holds for every module and every expansion
-                    // round; national/ambiguous (no `+`) phones are left alone,
-                    // since the modules already emit E.164.
-                    if entity.kind == crate::core::entity::EntityKind::Phone
-                        && entity.value.starts_with('+')
-                        && !crate::core::validation::validate_phone_e164(&entity.value).valid
-                    {
-                        self.emit_excluded(cx.scan_id, &entity, "implausible_phone");
-                        continue;
-                    }
-                    // Incidental-infrastructure / role-mailbox noise gate: a
-                    // CDN-edge IP, shared provider / registrar / DNS / mega domain,
-                    // or role/provider mailbox surfacing on an identity-seeded scan
-                    // maps a provider's estate, not the subject. Dropped at
-                    // admission (never enters the graph, correlator, or view), like
-                    // the other admission filters. The seed-aware decision lives in
-                    // `is_incidental_infra_entity` (infrastructure-seeded scans are
-                    // exempt — there the infrastructure IS the subject).
-                    if is_incidental_infra_entity(cx.seed_kind, &entity) {
-                        self.emit_excluded(cx.scan_id, &entity, "incidental_infra");
-                        continue;
-                    }
-                    // Spam / homoglyph content gate. A breach co-occurrence dump
-                    // mints junk: scam Address text and "names" built from
-                    // Cyrillic/Greek glyphs that spoof ASCII (`Bеcоme а bitcоin
-                    // milliоnairе`), or random consonant strings (`ZonJZRJHHWD`).
-                    // Drop a cross-script homograph for any human-text kind, and a
-                    // gibberish random string for Person, at admission — neither is
-                    // ever the subject. Both gates are conservative (a real
-                    // accented name never trips them — see the validators).
-                    if matches!(
-                        entity.kind,
-                        crate::core::entity::EntityKind::Person
-                            | crate::core::entity::EntityKind::Address
-                            | crate::core::entity::EntityKind::Username
-                            | crate::core::entity::EntityKind::Organisation
-                    ) && crate::core::validation::is_confusable_mixed_script(&entity.value)
-                    {
-                        self.emit_excluded(cx.scan_id, &entity, "confusable_homoglyph");
-                        continue;
-                    }
-                    if entity.kind == crate::core::entity::EntityKind::Person
-                        && crate::core::validation::looks_like_gibberish_name(&entity.value)
-                    {
-                        self.emit_excluded(cx.scan_id, &entity, "gibberish_value");
+                    // Admission drop-filters (pure policy in `admission_rejection`);
+                    // emit the reason + skip on rejection, exactly as the inline
+                    // chain did — same order, same reason strings, same continue.
+                    if let Some(reason) = admission_rejection(
+                        cx.seed_kind,
+                        cx.opts.effective_min_confidence(),
+                        &entity,
+                    ) {
+                        self.emit_excluded(cx.scan_id, &entity, reason);
                         continue;
                     }
                     // Universal MITRE ATT&CK provenance: stamp every ADMITTED
@@ -598,6 +623,63 @@ impl super::ScanEngine {
                 );
                 info!(module = name, found, "done");
             }
+        }
+    }
+
+    /// Replay an inter-scan cache hit for `module`: re-stamp the archived
+    /// entities to the CURRENT scan and finalise them WITHOUT feeding the circuit
+    /// breaker (no provider call was made). Single source of what were three
+    /// byte-for-byte copies — the sequential path and both concurrent phases —
+    /// so the scan_id re-stamp and the `from_cache = true` flag (the
+    /// count-vs-list-consistency invariant) can never drift between them. Each
+    /// call site keeps only its own divergent tail (hot-inject / cancel / throttle).
+    fn replay_cached_result(
+        &self,
+        cx: &DispatchCx,
+        module: &dyn Module,
+        cached: Vec<Entity>,
+        state: &mut DispatchState,
+    ) {
+        let name = module.name();
+        state.stats.cached += 1;
+        debug!(module = name, "cache hit — replaying archived entities");
+        // Re-stamp replayed entities to the CURRENT scan. The cache returns
+        // entities carrying the ARCHIVING scan's scan_id, and the
+        // observation-junction insert keys on entity.scan_id; without this the
+        // current scan's observation collides (INSERT OR IGNORE) with the
+        // archiving scan's row and is dropped, so the finding silently vanishes
+        // from this scan's read-back (entities_for_scan) while still being counted
+        // — a count-vs-list inconsistency.
+        let mut cached = cached;
+        for e in &mut cached {
+            e.scan_id = cx.scan_id.to_owned();
+        }
+        // from_cache = true: a replay must not feed the circuit breaker's success
+        // path (no provider call was made).
+        self.finalise_module_result(
+            cx,
+            name,
+            Ok(Ok(ModuleResult { entities: cached })),
+            state,
+            module.attack_techniques(),
+            true,
+        );
+    }
+
+    /// Archive a successful, non-empty module result to the inter-scan entity
+    /// cache under `cache_key` with `ttl_secs`, when caching is enabled for the
+    /// module (`cache_key` is `Some`). Best-effort — a store failure is ignored (a
+    /// cache miss only costs a re-query, never correctness). Single source of the
+    /// three archive-on-success guards (sequential path, concurrent Phase 1, and
+    /// the concurrent join drain).
+    fn archive_if_eligible(&self, cache_key: Option<&str>, ttl_secs: u64, result: &TimeoutResult) {
+        if let Some(key) = cache_key
+            && let Ok(Ok(mr)) = result
+            && !mr.entities.is_empty()
+        {
+            let _ = self
+                .store
+                .archive_module_result(key, ttl_secs, &mr.entities);
         }
     }
 
@@ -700,22 +782,13 @@ impl super::ScanEngine {
             if let Some(ref key) = cache_key
                 && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
             {
-                state.stats.cached += 1;
-                debug!(module = name, "cache hit — replaying archived entities");
-                let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(
-                    cx,
-                    name,
-                    Ok(Ok(mr)),
-                    state,
-                    module.attack_techniques(),
-                );
+                self.replay_cached_result(cx, &**module, cached, state);
                 super::hot_inject_keys(&mut ctx.keys);
                 if ctx.cancel.is_cancelled() {
                     return Ok(());
                 }
-                if cx.opts.throttle_ms > 0 {
-                    sleep(Duration::from_millis(cx.opts.throttle_ms)).await;
+                if cx.opts.effective_throttle_ms() > 0 {
+                    sleep(Duration::from_millis(cx.opts.effective_throttle_ms())).await;
                 }
                 continue;
             }
@@ -747,14 +820,9 @@ impl super::ScanEngine {
             .await;
 
             // Inter-scan entity cache (C9): archive a successful result.
-            if let Some(ref key) = cache_key
-                && let Ok(Ok(ref mr)) = result
-                && !mr.entities.is_empty()
-            {
-                let _ = self.store.archive_module_result(key, ttl, &mr.entities);
-            }
+            self.archive_if_eligible(cache_key.as_deref(), ttl, &result);
 
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), false);
 
             super::hot_inject_keys(&mut ctx.keys);
 
@@ -767,8 +835,8 @@ impl super::ScanEngine {
             if ctx.cancel.is_cancelled() {
                 return Ok(());
             }
-            if cx.opts.throttle_ms > 0 {
-                sleep(Duration::from_millis(cx.opts.throttle_ms)).await;
+            if cx.opts.effective_throttle_ms() > 0 {
+                sleep(Duration::from_millis(cx.opts.effective_throttle_ms())).await;
             }
         }
         Ok(())
@@ -787,17 +855,27 @@ impl super::ScanEngine {
         ctx: &mut ModuleContext,
         state: &mut DispatchState<'_>,
     ) -> Result<()> {
-        use tokio::sync::Semaphore;
-        use tokio::task::JoinSet;
+        // Key-discovery-first: this target's Paid modules run synchronously first
+        // so any keys they discover hot-inject into `ctx` BEFORE the free/key-gated
+        // modules are spawned concurrently against a snapshot of it. Both phases
+        // share the same O(1) dispatch-index walk (`graph.modules_for`) rather than
+        // allocating a per-target `Vec<Arc<dyn Module>>`.
+        self.run_paid_phase(cx, ctx, state).await;
+        self.spawn_free_phase(cx, ctx, state).await
+    }
 
-        // O(1) dispatch-index lookup — only modules accepting `target.kind`
-        // are even considered. Phase 1 then filters to Paid. We iterate
-        // indices directly rather than allocating a `Vec<Arc<dyn Module>>`
-        // and Arc-cloning per target; on the hot path this saves a heap
-        // allocation + N atomic increments per dispatch.
-
-        // Phase 1: Run Paid modules synchronously so discovered keys are
-        // available via hot-inject before the concurrent phase begins.
+    /// Phase 1 of the concurrent dispatcher: run this target's **Paid** modules
+    /// synchronously, in priority order. Paid providers (oathnet_pro, dehashed,
+    /// intelx, …) discover API keys that `hot_inject_keys` folds into `ctx`, so
+    /// running them first lets the concurrently-spawned Phase 2 modules see those
+    /// keys. Mutates `state` (entity_map / stats / dedup ledger) in place; the
+    /// whole phase is best-effort per module, so it never returns an error.
+    async fn run_paid_phase(
+        &self,
+        cx: &DispatchCx<'_>,
+        ctx: &mut ModuleContext,
+        state: &mut DispatchState<'_>,
+    ) {
         let target_sources = target_distinct_sources(state.entity_map, cx.target);
         for &idx in self.graph.modules_for(cx.target.kind) {
             let Some(module) = self.modules.get(idx) else {
@@ -837,16 +915,7 @@ impl super::ScanEngine {
             if let Some(ref key) = cache_key
                 && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(key)
             {
-                state.stats.cached += 1;
-                debug!(module = name, "cache hit — replaying archived entities");
-                let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(
-                    cx,
-                    name,
-                    Ok(Ok(mr)),
-                    state,
-                    module.attack_techniques(),
-                );
+                self.replay_cached_result(cx, &**module, cached, state);
                 super::hot_inject_keys(&mut ctx.keys);
                 continue;
             }
@@ -871,26 +940,41 @@ impl super::ScanEngine {
             ))
             .await;
             // Inter-scan entity cache (C9): archive a successful result.
-            if let Some(ref key) = cache_key
-                && let Ok(Ok(ref mr)) = result
-                && !mr.entities.is_empty()
-            {
-                let _ = self.store.archive_module_result(key, ttl, &mr.entities);
-            }
-            self.finalise_module_result(cx, name, result, state, module.attack_techniques());
+            self.archive_if_eligible(cache_key.as_deref(), ttl, &result);
+            self.finalise_module_result(cx, name, result, state, module.attack_techniques(), false);
             // Hot-inject discovered keys so Phase 2 modules can use them.
             // Multiplier-tier keys (Shodan, Censys, Hunter, Proxycurl etc.)
             // cascade — their outputs feed web_crawler/search_engines, which
             // discover MORE keys.
             super::hot_inject_keys(&mut ctx.keys);
         }
+    }
 
-        // Phase 2: Spawn remaining (Free + KeyGated) modules concurrently.
-        // ctx now contains any keys discovered in Phase 1. Same
-        // index-iteration pattern as Phase 1 — Arc::clone moves to the
-        // single spawn site below, instead of being paid for every
-        // candidate during candidate-list construction.
-        let sem = Arc::new(Semaphore::new(cx.opts.max_concurrent));
+    /// Phase 2 of the concurrent dispatcher: spawn this target's remaining (Free +
+    /// KeyGated) modules concurrently — bounded by a `Semaphore` sized to
+    /// `effective_max_concurrent()` — and finalise their results as they complete.
+    /// Runs AFTER [`run_paid_phase`](Self::run_paid_phase), so `ctx` already
+    /// carries any keys the paid providers discovered. Mutates `state` in place.
+    async fn spawn_free_phase(
+        &self,
+        cx: &DispatchCx<'_>,
+        ctx: &mut ModuleContext,
+        state: &mut DispatchState<'_>,
+    ) -> Result<()> {
+        use tokio::sync::Semaphore;
+        use tokio::task::JoinSet;
+
+        // ctx now contains any keys discovered in Phase 1. Same index-iteration
+        // pattern as Phase 1 — Arc::clone moves to the single spawn site below,
+        // instead of being paid for every candidate during candidate-list
+        // construction.
+        // `effective_max_concurrent()` bounds the operator-supplied value to
+        // `MAX_CONCURRENT`: a raw `max_concurrent` reaches here straight from
+        // API/CLI input, and `Semaphore::new` panics above `MAX_PERMITS`, so the
+        // clamp is what stops a config value from crashing the scan (and from
+        // defeating the gentle-pacing default). The `== 0` sequential branch (see
+        // `dispatch_target`) is unaffected (the clamp preserves 0).
+        let sem = Arc::new(Semaphore::new(cx.opts.effective_max_concurrent()));
         let mut set: JoinSet<DispatchOutcome> = JoinSet::new();
         let scan_id_arc: Arc<str> = cx.scan_id.into();
         // Share one context across all spawned modules in this round instead of
@@ -956,16 +1040,7 @@ impl super::ScanEngine {
             if ttl_secs > 0
                 && let Ok(Some(cached)) = self.store.lookup_module_result_fresh(&cache_key)
             {
-                state.stats.cached += 1;
-                debug!(module = name, "cache hit — replaying archived entities");
-                let mr = ModuleResult { entities: cached };
-                self.finalise_module_result(
-                    cx,
-                    name,
-                    Ok(Ok(mr)),
-                    state,
-                    module.attack_techniques(),
-                );
+                self.replay_cached_result(cx, &**module, cached, state);
                 continue;
             }
 
@@ -978,7 +1053,7 @@ impl super::ScanEngine {
             let ctx = Arc::clone(&ctx_shared);
             let emitter = self.emitter.clone();
             let sid = Arc::clone(&scan_id_arc);
-            let throttle_ms = cx.opts.throttle_ms;
+            let throttle_ms = cx.opts.effective_throttle_ms();
             let module_timeout_ms = super::resolve_timeout(cx.opts, &*module_arc);
             // Capture the producing module's ATT&CK Reconnaissance techniques
             // before the spawn: `module` is unavailable at the join site (only a
@@ -1097,22 +1172,21 @@ impl super::ScanEngine {
             }
         };
         // Inter-scan entity cache (C9): archive before finalise consumes the result.
-        if outcome.ttl_secs > 0
-            && let Ok(Ok(ref mr)) = outcome.result
-            && !mr.entities.is_empty()
-        {
-            let _ = self.store.archive_module_result(
-                &outcome.cache_key,
-                outcome.ttl_secs,
-                &mr.entities,
-            );
-        }
+        self.archive_if_eligible(
+            (outcome.ttl_secs > 0).then_some(outcome.cache_key.as_str()),
+            outcome.ttl_secs,
+            &outcome.result,
+        );
+        // A joined outcome is always a real spawned dispatch — the concurrent
+        // cache-hit path replays and finalises inline before ever spawning, so it
+        // never reaches here. from_cache = false.
         self.finalise_module_result(
             cx,
             outcome.name,
             outcome.result,
             state,
             outcome.attack_techniques,
+            false,
         );
     }
 }

@@ -124,3 +124,56 @@ use super::*;
         assert!(techniques.contains(&"T1596"));
         assert!(techniques.contains(&"T1589.002"));
     }
+
+    #[test]
+    fn mine_keys_from_body_pools_a_leaked_key_with_wayback_provenance() {
+        // A 234-char BinaryEdge-shaped (`bp0_`-prefixed, poolable) key embedded
+        // in a synthetic archived page body — same fixture shape used to prove
+        // the web_crawler/username_search tokenizer merge (T2.80), reused here
+        // to prove wayback's NEW key-mining pass actually reaches `pool.add`
+        // with the archive-specific provenance (timestamp + original URL), not
+        // just a generic "found it" no-op.
+        let leaked_key = format!(
+            "bp0_{}",
+            "oHBvRPOIvGrv5iFlbCBFNOgmBjMtpsiaOclRz3AwzKsbVRJN9wVGFYGW2WmQzCudiH7YFjS1on43XkMtECqOxSF2O3GYRdo1XKXWNqRs7rpEmoKiuPKdYR7osjOrU1xxDO0CzUZREN68k4tUNpfZ46pdJQIPvjiQvlb5lZXOIgfFwD3HJoKyrbmEYYmdhQj38AruHr4iwRxpVHSbKdA9u4uQgwLg6G3oT1ogmM"
+        );
+        let body = format!(
+            "<html><body>Contact us. API_KEY={leaked_key} Thanks.</body></html>"
+        );
+        let pool = crate::util::key_pool::global_pool();
+        let domain = "wayback-keymine-test.example";
+        let ts_iso = "2019-03-14 00:00:00 UTC";
+        let original_url = "http://wayback-keymine-test.example/contact";
+
+        mine_keys_from_body(&pool, &body, domain, ts_iso, original_url);
+
+        let entry = pool
+            .snapshot()
+            .services
+            .get("binaryedge")
+            .into_iter()
+            .flatten()
+            .find(|e| e.value == leaked_key)
+            .cloned();
+        let found = entry.is_some();
+        if let Some(e) = &entry {
+            assert_eq!(
+                e.discovered_by.as_deref(),
+                Some(format!("wayback:{domain}").as_str()),
+                "provenance must name wayback, not a generic/wrong source"
+            );
+            assert!(
+                e.notes.as_deref().is_some_and(|n| n.contains(ts_iso)
+                    && n.contains(original_url)),
+                "notes must carry the archive timestamp + original URL, got {:?}",
+                e.notes
+            );
+        }
+        if found {
+            pool.remove("binaryedge", &leaked_key);
+        }
+        assert!(
+            found,
+            "a leaked key in an archived page body must reach the key pool"
+        );
+    }

@@ -8,7 +8,7 @@ fn resolve_or_default_policy() {
     assert_eq!(resolve_or_default(Some("real-key"), "default"), "real-key");
     assert_eq!(resolve_or_default(None, "default"), "default");
     // A present-but-empty value falls back to the default rather than being
-    // used verbatim — the bug the wigle/wifi_intel/mls modules had before
+    // used verbatim — the bug the wigle/wifi_intel modules had before
     // they were routed through this function.
     assert_eq!(resolve_or_default(Some(""), "default"), "default");
 }
@@ -362,6 +362,159 @@ fn pool_keys_fill_empty_env_slots() {
     let _ = map;
 }
 
+// ---- register_configured_keys: the T2.153-root-cause fix ----
+//
+// Every test below uses a FRESH, LOCAL `KeyPool::new()` — never
+// `global_pool()` — so these assertions are exact and can't race with any
+// other test mutating the process-global pool.
+
+use super::io::register_configured_keys;
+use crate::util::key_pool::{KeyPool, KeyStatus};
+
+#[test]
+fn register_configured_keys_registers_a_plain_single_key() {
+    // The bug this closes: previously ONLY a comma-separated value ever
+    // reached the pool — a single `HUNTSMAN_SHODAN_KEY=value` (the common,
+    // majority real-world case) never got a pool entry at all, which made
+    // every `report_key_exhausted`/`mark_status` call for it a silent no-op
+    // forever, regardless of how correct the calling module's own
+    // status-code handling was.
+    let pool = KeyPool::new();
+    let mut map: std::collections::HashMap<String, String> = [(
+        "HUNTSMAN_SHODAN_KEY".to_string(),
+        "single-key-abc123".to_string(),
+    )]
+    .into();
+
+    register_configured_keys(&mut map, &pool);
+
+    assert_eq!(pool.total_keys(), 1, "the single key must reach the pool");
+    assert_eq!(
+        pool.entry_status("shodan", "single-key-abc123"),
+        Some(KeyStatus::Active),
+        "a freshly-registered configured key starts Active, matching the \
+         existing CSV-multi-key path's own convention"
+    );
+}
+
+#[test]
+fn register_configured_keys_still_splits_comma_separated_values() {
+    // The pre-existing behaviour must survive the refactor unchanged.
+    let pool = KeyPool::new();
+    let mut map: std::collections::HashMap<String, String> = [(
+        "HUNTSMAN_SHODAN_KEY".to_string(),
+        "keyA111111,keyB222222,keyC333333".to_string(),
+    )]
+    .into();
+
+    register_configured_keys(&mut map, &pool);
+
+    assert_eq!(pool.service_count("shodan"), 3);
+    assert_eq!(
+        pool.entry_status("shodan", "keyA111111"),
+        Some(KeyStatus::Active)
+    );
+    assert_eq!(
+        pool.entry_status("shodan", "keyB222222"),
+        Some(KeyStatus::Active)
+    );
+    assert_eq!(
+        pool.entry_status("shodan", "keyC333333"),
+        Some(KeyStatus::Active)
+    );
+    // The first key stays the "primary" env-map value — unchanged behaviour.
+    assert_eq!(
+        map.get("HUNTSMAN_SHODAN_KEY").map(String::as_str),
+        Some("keyA111111")
+    );
+}
+
+#[test]
+fn register_configured_keys_never_overwrites_an_already_tracked_key() {
+    // A key the pool already correctly knows is Invalid (from an earlier
+    // real 401/403) must NOT be silently reset back to Active just because
+    // the operator's env var still holds the same (still-dead) value —
+    // `pool.add`'s own exact-value dedup is what protects this, exercised
+    // here through `register_configured_keys` specifically.
+    let pool = KeyPool::new();
+    pool.add(
+        "shodan",
+        crate::util::key_pool::KeyEntry::new("dead-key-999"),
+    );
+    pool.mark_status("shodan", "dead-key-999", KeyStatus::Invalid);
+    assert_eq!(
+        pool.entry_status("shodan", "dead-key-999"),
+        Some(KeyStatus::Invalid)
+    );
+
+    let mut map: std::collections::HashMap<String, String> = [(
+        "HUNTSMAN_SHODAN_KEY".to_string(),
+        "dead-key-999".to_string(),
+    )]
+    .into();
+    register_configured_keys(&mut map, &pool);
+
+    assert_eq!(
+        pool.entry_status("shodan", "dead-key-999"),
+        Some(KeyStatus::Invalid),
+        "a previously-marked-Invalid key must stay Invalid, not reset to Active"
+    );
+    assert_eq!(pool.total_keys(), 1, "must not duplicate the entry either");
+}
+
+#[test]
+fn register_configured_keys_ignores_unregistered_and_empty_values() {
+    let pool = KeyPool::new();
+    let mut map: std::collections::HashMap<String, String> = [
+        // Not a registered service_defs env_var at all.
+        (
+            "HUNTSMAN_TOTALLY_MADE_UP_KEY".to_string(),
+            "value".to_string(),
+        ),
+        // A registered env_var, but blank — nothing to register.
+        ("HUNTSMAN_SHODAN_KEY".to_string(), String::new()),
+    ]
+    .into();
+
+    register_configured_keys(&mut map, &pool);
+
+    assert_eq!(pool.total_keys(), 0);
+}
+
+#[test]
+fn register_configured_keys_reports_the_now_live_confirmed_abr_and_opencellid_gap() {
+    // The exact real-world scenario this fix was diagnosed from: an operator
+    // sets ONE `HUNTSMAN_ABR_GUID` and ONE `HUNTSMAN_OPENCELLID_KEY` (the
+    // ordinary way to configure either service — neither has ever been
+    // configured with more than one key in practice), and both must now
+    // reach the pool so `abn_lookup`/`opencellid`/`cell_intel`'s
+    // `report_key_exhausted`/`note_keyed_error` calls have something real to
+    // update instead of silently no-op'ing.
+    let pool = KeyPool::new();
+    let mut map: std::collections::HashMap<String, String> = [
+        (
+            "HUNTSMAN_ABR_GUID".to_string(),
+            "00000000-0000-0000-0000-000000000000".to_string(),
+        ),
+        (
+            "HUNTSMAN_OPENCELLID_KEY".to_string(),
+            "garbage00000invalid".to_string(),
+        ),
+    ]
+    .into();
+
+    register_configured_keys(&mut map, &pool);
+
+    assert_eq!(
+        pool.entry_status("abr", "00000000-0000-0000-0000-000000000000"),
+        Some(KeyStatus::Active)
+    );
+    assert_eq!(
+        pool.entry_status("opencellid", "garbage00000invalid"),
+        Some(KeyStatus::Active)
+    );
+}
+
 #[test]
 fn default_seed_precedence_env_wins_then_file_then_none() {
     use std::collections::HashMap;
@@ -396,4 +549,48 @@ fn default_seed_only_reads_the_seed_key() {
     let file: HashMap<String, String> =
         [("HUNTSMAN_SHODAN_KEY".to_string(), "abc".to_string())].into();
     assert_eq!(pick_default_seed(None, &file), None);
+}
+
+#[test]
+fn concurrent_vault_writes_never_corrupt_or_strand() {
+    // The vault (`~/.huntsman.env`) is written from overlapping scans harvesting
+    // keys and from `PUT`s toggling keys mid-scan. The previous hand-rolled write
+    // used a FIXED temp (`path.with_extension("env.tmp")`), so two concurrent
+    // writers to one $HOME both opened, truncated and interleaved into the same
+    // temp and could rename a corrupt (or empty) file over the vault — which the
+    // loader reads as "no keys". Routing through the unique-temp atomic writer
+    // makes every write self-contained. Eight writers hammering one vault must
+    // always leave a readable file that still holds the key, and no temp
+    // straggler. (Mirrors `atomic_file`'s own concurrency property test.)
+    let dir = tempdir().unwrap();
+    let path = dir.path().join(".huntsman.env");
+    write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", "seed")]), &[]).unwrap();
+
+    let handles: Vec<_> = (0..8)
+        .map(|i| {
+            let path = path.clone();
+            std::thread::spawn(move || {
+                for j in 0..20u32 {
+                    let v = format!("k{i}_{j}");
+                    let _ =
+                        write_keys_at(&path, &map_of(&[("HUNTSMAN_OATHNET_KEY", v.as_str())]), &[]);
+                }
+            })
+        })
+        .collect();
+    for h in handles {
+        h.join().unwrap();
+    }
+
+    let content = std::fs::read_to_string(&path).expect("vault still readable");
+    assert!(
+        content.contains("HUNTSMAN_OATHNET_KEY="),
+        "concurrent writes must never corrupt/empty the vault: {content:?}"
+    );
+    let strays = std::fs::read_dir(dir.path())
+        .unwrap()
+        .filter_map(Result::ok)
+        .filter(|e| e.file_name().to_string_lossy().contains(".tmp"))
+        .count();
+    assert_eq!(strays, 0, "no temp straggler after concurrent vault writes");
 }

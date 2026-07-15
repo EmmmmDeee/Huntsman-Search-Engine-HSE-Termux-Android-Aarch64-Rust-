@@ -29,7 +29,7 @@ mod options;
 pub(crate) use options::default_scan_options;
 pub use options::{
     DEFAULT_MAX_ENTITIES, DEFAULT_MIN_EXPAND_CONFIDENCE, DEFAULT_SCAN_DEPTH, ExpansionStrategy,
-    MAX_DEPTH, ScanOptions,
+    MAX_CONCURRENT, MAX_DEPTH, ScanOptions, THROTTLE_CEILING_MS,
 };
 // Re-exported so external callers keep using `crate::core::scan::expansion_weight`
 // etc. unchanged after the expansion-economics model moved to `scoring`.
@@ -185,10 +185,18 @@ impl TargetKind {
             // Lax default; `Target::validate` rejects the empty value anyway.
             return Self::Username;
         }
-        let lower = v.to_ascii_lowercase();
+        // `detect` runs on every classified candidate across the whole scan (via
+        // `core::classifier::extract`/`classify`), so avoid allocating a full
+        // lowercased copy of `value` just to run 3 ASCII-case-insensitive checks
+        // below (the URL-scheme prefix, the ASN "as" prefix, and the company-suffix
+        // match) — each compares directly against `v`'s bytes instead.
+        let starts_with_ci = |prefix: &str| {
+            let pb = prefix.as_bytes();
+            v.len() >= pb.len() && v.as_bytes()[..pb.len()].eq_ignore_ascii_case(pb)
+        };
 
         // 1. URL — explicit scheme.
-        if lower.starts_with("http://") || lower.starts_with("https://") {
+        if starts_with_ci("http://") || starts_with_ci("https://") {
             return Self::Url;
         }
         // 2. Email — one '@', non-empty local + dotted host, no whitespace.
@@ -226,10 +234,12 @@ impl TargetKind {
         {
             return Self::Coordinates;
         }
-        // 6. ASN — "AS" + digits.
-        if let Some(rest) = lower.strip_prefix("as")
-            && !rest.is_empty()
-            && rest.chars().all(|c| c.is_ascii_digit())
+        // 6. ASN — "AS" + digits (case-insensitive prefix, matched without an
+        // allocation; the two matched prefix bytes are each single-byte ASCII, so
+        // `v[2..]` always lands on a char boundary).
+        if v.len() > 2
+            && v.as_bytes()[..2].eq_ignore_ascii_case(b"as")
+            && v[2..].bytes().all(|b| b.is_ascii_digit())
         {
             return Self::Asn;
         }
@@ -243,7 +253,25 @@ impl TargetKind {
                 return Self::AbnAcn;
             }
         }
-        // 8. Phone — '+' country code or a punctuated digit run, no letters.
+        // 8. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 hyphen segments, MCC in
+        // 200-999). Checked BEFORE the phone shape because it is MORE SPECIFIC — a
+        // generic dialable digit run (`is_phone_shaped`) would otherwise swallow a
+        // `mcc-mnc-lac-cid` and leave this DeviceId branch dead for realistic inputs
+        // (the detector's documented most-specific-first ordering).
+        {
+            let parts: Vec<&str> = v.split('-').collect();
+            if parts.len() == 4
+                && parts
+                    .iter()
+                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
+                && parts[0]
+                    .parse::<u32>()
+                    .is_ok_and(|mcc| (200..=999).contains(&mcc))
+            {
+                return Self::DeviceId;
+            }
+        }
+        // 8b. Phone — '+' country code or a punctuated digit run, no letters.
         if is_phone_shaped(v) {
             return Self::Phone;
         }
@@ -258,20 +286,6 @@ impl TargetKind {
         if crate::core::crypto::classify_crypto_address(v).is_some() {
             return Self::CryptoAddress;
         }
-        // 9c. Cell tower ID: mcc-mnc-lac-cid (all-numeric, 4 segments, MCC in 200-999).
-        {
-            let parts: Vec<&str> = v.split('-').collect();
-            if parts.len() == 4
-                && parts
-                    .iter()
-                    .all(|p| !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()))
-                && parts[0]
-                    .parse::<u32>()
-                    .is_ok_and(|mcc| (200..=999).contains(&mcc))
-            {
-                return Self::DeviceId;
-            }
-        }
         // 9d. Tracking ID — Google Analytics (UA-XXXXXXX-X / G-XXXXXXXXXX),
         //     Google Tag Manager (GTM-XXXXXXX), Google Ads (AW-XXXXXXXXX).
         //     Must be checked before the general Username fallback.
@@ -279,7 +293,7 @@ impl TargetKind {
             return Self::TrackingId;
         }
         // 10. Free text → Organisation / Address / FullName / Username.
-        if has_company_suffix(&lower) {
+        if has_company_suffix(v) {
             return Self::Organisation;
         }
         if is_address_shaped(v) {
@@ -323,7 +337,19 @@ fn sanitise_target_input(raw: &str) -> String {
     // Separators a list/CSV paste leaves dangling on an end. Never bound a target.
     let stray = |c: char| matches!(c, ',' | ';' | '|');
 
-    let mut s = raw.trim();
+    // Drop invisible/format characters (zero-width, bidi controls, soft hyphen,
+    // word joiner, BOM) FIRST — BEFORE the quote/separator unwrap below, not after.
+    // Two reasons: (1) two seeds a human reads as identical but that differ only by
+    // such a char must deduplicate; (2) an invisible char sitting BETWEEN a
+    // surrounding quote and the string edge (`\u{200b}"x"`, routine in rich-text /
+    // chat copy-paste) makes the first/last char NOT the quote pair, so the unwrap
+    // below skips it — leaving the quote ON the value (the exact leak this function
+    // exists to prevent) AND breaking idempotence, because a re-sanitise of the
+    // now-invisible-free value WOULD strip the quote. Stripping up front lets the
+    // unwrap loop reach a true fixed point. `strip_invisible` borrows (no
+    // allocation) for the common clean input.
+    let stripped = crate::core::validation::strip_invisible(raw);
+    let mut s = stripped.trim();
     loop {
         let before = s;
         s = s.trim_matches(stray).trim();
@@ -337,12 +363,7 @@ fn sanitise_target_input(raw: &str) -> String {
             break;
         }
     }
-    // Drop invisible/format characters (zero-width, bidi controls, soft hyphen,
-    // word joiner) that have no place in a seed value: two seeds a human reads
-    // as identical but that differ only by such a character would otherwise
-    // never deduplicate. `strip_invisible` borrows (no allocation) for the
-    // common clean input, so this is free when there is nothing to strip.
-    crate::core::validation::strip_invisible(s).into_owned()
+    s.to_string()
 }
 
 /// Detect a [`TargetKind`] from a **raw**, user-supplied value — sanitising
@@ -416,7 +437,7 @@ impl Target {
         // Cyrillic-`а` in `paypal.com`). A legitimate all-one-script non-ASCII
         // value has no ASCII letters to mix, so it is not flagged.
         if crate::core::validation::is_confusable_mixed_script(v) {
-            return Err("value contains a mixed-script homograph (possible spoof)");
+            return Err(HOMOGRAPH_REASON);
         }
         match self.kind {
             TargetKind::Email => {
@@ -592,7 +613,30 @@ impl Target {
         }
         Ok(())
     }
+
+    /// Same rejection as [`Self::validate`], but the mixed-script-homograph
+    /// case additionally names the ASCII skeleton the value normalizes to
+    /// (e.g. `pаypal.com` → `paypal.com`) — the concrete, auditable detail an
+    /// operator needs to see *why* a spoofed seed was refused, which
+    /// `validate`'s `&'static str` return can't carry without an allocation.
+    /// Every other rejection reuses `validate`'s message unchanged (zero-cost
+    /// `Cow::Borrowed`). Matches on the shared `HOMOGRAPH_REASON` constant
+    /// rather than a duplicated string literal, so the two can never drift.
+    pub fn validate_verbose(&self) -> std::result::Result<(), std::borrow::Cow<'static, str>> {
+        match self.validate() {
+            Err(HOMOGRAPH_REASON) => Err(std::borrow::Cow::Owned(format!(
+                "{HOMOGRAPH_REASON} — ascii skeleton: {}",
+                crate::core::validation::skeleton(self.value.trim())
+            ))),
+            Err(msg) => Err(std::borrow::Cow::Borrowed(msg)),
+            Ok(()) => Ok(()),
+        }
+    }
 }
+
+/// The mixed-script-homograph rejection message, single-sourced so
+/// [`Target::validate`] and [`Target::validate_verbose`] can never drift.
+const HOMOGRAPH_REASON: &str = "value contains a mixed-script homograph (possible spoof)";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

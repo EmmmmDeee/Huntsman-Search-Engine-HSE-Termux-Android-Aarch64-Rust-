@@ -130,6 +130,51 @@ fn bucket_family_collapses_dotted_names() {
 }
 
 #[test]
+fn text_search_withholds_the_strong_exposure_tags() {
+    use crate::core::tags;
+    use std::collections::BTreeSet;
+
+    let families: BTreeSet<String> = ["leaks", "pastes", "darknet"]
+        .into_iter()
+        .map(String::from)
+        .collect();
+
+    // Structured selector (email/domain/…): a `leaks`/`pastes` hit is validated
+    // against the exact value, so it earns the full exposure semantics.
+    let structured = exposure_tags(false, &families);
+    assert!(structured.iter().any(|t| t == tags::BREACH));
+    assert!(structured.iter().any(|t| t == tags::PASSWORD_AT_RISK));
+    assert!(structured.iter().any(|t| t == tags::PASTE_EXPOSED));
+    assert!(structured.iter().any(|t| t == "intelx-source:darknet"));
+
+    // Unscoped TEXT search (username/full-name): a hit is a mere text-contains
+    // match, so the breach / password-at-risk / paste-exposed claims are withheld
+    // — every family collapses to neutral provenance. This is the fabrication the
+    // gate prevents: a same-name stranger's leaked paste no longer stamps
+    // `password-at-risk` on the subject's anchor.
+    let text = exposure_tags(true, &families);
+    assert!(
+        !text
+            .iter()
+            .any(|t| t == tags::BREACH || t == tags::PASSWORD_AT_RISK),
+        "a text search must not assert breach/password-at-risk exposure"
+    );
+    assert!(
+        !text.iter().any(|t| t == tags::PASTE_EXPOSED),
+        "a text search must not assert paste exposure"
+    );
+    assert_eq!(
+        text,
+        vec![
+            "intelx-source:darknet".to_string(),
+            "intelx-source:leaks".to_string(),
+            "intelx-source:pastes".to_string(),
+        ],
+        "every family collapses to neutral provenance, in deterministic order"
+    );
+}
+
+#[test]
 fn result_resp_terminal_status_parsing() {
     let running: ResultResp = serde_json::from_str(r#"{"status":1,"records":[]}"#).unwrap();
     assert_eq!(running.status, Some(1)); // must NOT be treated as terminal

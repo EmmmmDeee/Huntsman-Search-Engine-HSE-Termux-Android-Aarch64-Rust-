@@ -49,8 +49,6 @@ const API: &str = "https://www.wikidata.org/w/api.php";
 
 /// Max same-name items surfaced (1 primary + the rest as candidates).
 const MAX_CANDIDATES: usize = 6;
-/// Max social handles fanned out from the primary item.
-pub(super) const MAX_HANDLES: usize = 12;
 
 // Confidence tiers vs the 0.50 noisy-OR expansion floor. The primary pivots;
 // candidates stay sub-floor. People are kept a touch lower than orgs because a

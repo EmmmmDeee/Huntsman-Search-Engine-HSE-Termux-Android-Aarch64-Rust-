@@ -24,12 +24,12 @@ pub mod intel;
 
 pub use analysis::{
     scan_correlations, scan_diff, scan_entities, scan_entities_facets, scan_entities_filter,
-    scan_identities, scan_location, scan_network, scan_relations,
+    scan_identities, scan_location, scan_network, scan_relations, scan_stealer_rows,
 };
 pub use core::{
-    plan_preview, radar_live, radar_sweep, scan_auto, scan_auto_plan, scan_auto_sweep, scan_batch,
-    scan_cancel, scan_create, scan_delete, scan_events_history, scan_get, scan_import, scan_list,
-    scan_rerun,
+    plan_preview, radar_history, radar_live, radar_sweep, scan_auto, scan_auto_plan,
+    scan_auto_sweep, scan_batch, scan_cancel, scan_create, scan_delete, scan_events_history,
+    scan_get, scan_import, scan_list, scan_profiles, scan_rerun,
 };
 pub use diagnostics::{
     scan_audit, scan_benchmark, scan_duplicates, scan_gaps, scan_metrics, scan_pivots,
@@ -39,6 +39,8 @@ pub use intel::{scan_communities, scan_leads, scan_path, scan_timeline, scan_tru
 // Re-exported for tests (private helper, only needed in the test module).
 #[cfg(test)]
 pub(crate) use core::radar_scan_spec;
+#[cfg(test)]
+pub(crate) use diagnostics::snapshot_still_relevant_to;
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -60,7 +62,11 @@ pub(super) fn build_scan_from_request(req: ScanRequest) -> Result<(Scan, Target)
     if let Some(ref profile_name) = opts.profile
         && let Some(profile_opts) = crate::core::profiles::resolve_profile(profile_name)
     {
-        opts = profile_opts;
+        // Field-by-field overlay — the SAME policy the CLI's `--profile` flag
+        // uses — not a wholesale replace. A full `opts = profile_opts` used to
+        // silently discard every other client-supplied option (`modules`,
+        // `min_confidence`, `webhook_url`, …) the moment a profile was named.
+        opts = crate::core::profiles::apply_profile_overlay(opts, profile_opts);
     }
     let scan = Scan::new(sid, target.clone()).with_options(opts.clamp_depth());
     Ok((scan, target))

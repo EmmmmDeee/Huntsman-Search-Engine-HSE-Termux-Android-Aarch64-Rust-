@@ -11,12 +11,29 @@
 //!   * ETH/EVM — Blockscout v2 (`eth.blockscout.com`): balance, tx count, and
 //!     the reverse **ENS name** when set — an EVM address → human handle edge
 //!     that feeds the username/identity graph.
+//!   * SOL — the public Solana JSON-RPC (`api.mainnet-beta.solana.com`)'s
+//!     `getBalance` method: balance only (lamports). No cheap authoritative
+//!     "total transactions for this address" RPC method exists — getting an
+//!     exact count would mean fully paginating `getSignaturesForAddress`
+//!     (potentially thousands of calls for a busy address), so `tx_count`/
+//!     `received` are left `None` rather than faked or capped-and-mislabelled,
+//!     same honesty discipline as the ETH path's missing "total received".
+//!   * DOGE — BlockCypher's `/v1/doge/main/addrs/<addr>/balance`: balance,
+//!     total received, and tx count, all directly reported (no summing
+//!     confirmed+mempool needed, unlike Esplora). `dogechain.info` — the more
+//!     commonly cited keyless DOGE source — returned 403 on every fetch
+//!     attempt during this module's extension, including its own docs page,
+//!     so it was rejected as unverifiable; BlockCypher was confirmed live and
+//!     reachable, and its response was checked against a real high-activity
+//!     address before wiring it in.
 //!
 //! Honesty is a hard requirement: an evidence field is emitted only when the
 //! source actually provides it (e.g. ETH reports no "total received" cheaply, so
-//! that attribute is simply absent rather than faked). DOGE/SOL/XMR are
-//! recognised by the classifier but have no wired free keyless explorer, so the
-//! module returns cleanly for them. One-to-two small JSON GETs; Termux-friendly.
+//! that attribute is simply absent rather than faked). XMR is recognised by the
+//! classifier but is cryptographically unenrichable from a bare address — its
+//! whole design goal is that balances/activity are NOT observable without the
+//! private view key, so no explorer, free or paid, could ever answer this for a
+//! raw address string. One-to-two small JSON requests per chain; Termux-friendly.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -28,7 +45,7 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::http::fetch_json;
+use crate::util::http::{RequestBuilderExt, fetch_json};
 
 const SRC: &str = "chain_intel";
 
@@ -51,12 +68,31 @@ struct EsploraStats {
     tx_count: u64,
 }
 
-/// Blockscout v2 `/addresses/<addr>` — current balance (wei) + reverse ENS name.
+/// Blockscout v2 `/addresses/<addr>` — current balance (wei) + reverse ENS name,
+/// plus Blockscout's own curated reputation signal: whether the address is
+/// flagged as a scam, its reputation verdict, a known entity/contract name,
+/// and any public tags analysts have attached to it (exchange, mixer, etc.).
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct BlockscoutAddress {
     coin_balance: Option<String>,
     ens_domain_name: Option<String>,
+    is_scam: Option<bool>,
+    reputation: Option<String>,
+    name: Option<String>,
+    public_tags: Vec<BlockscoutTag>,
+}
+
+/// One entry of Blockscout's `public_tags` array — a curated label the
+/// explorer's own operators/community have attached to the address (e.g.
+/// "exchange", "mixer"). `display_name` is the human-facing label;
+/// `label` is its machine-facing slug, kept as a fallback in case a tag
+/// only has one or the other set.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct BlockscoutTag {
+    label: Option<String>,
+    display_name: Option<String>,
 }
 
 /// Blockscout v2 `/addresses/<addr>/counters` — authoritative tx count.
@@ -64,6 +100,33 @@ struct BlockscoutAddress {
 #[serde(default)]
 struct BlockscoutCounters {
     transactions_count: Option<String>,
+}
+
+/// Solana JSON-RPC `getBalance` response: `{"result":{"value":<lamports>}}`
+/// (plus a `context` object this module doesn't need).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SolBalanceResp {
+    result: Option<SolBalanceResult>,
+}
+
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct SolBalanceResult {
+    value: Option<u64>,
+}
+
+/// BlockCypher `/v1/doge/main/addrs/<addr>/balance` — reports amounts in the
+/// chain's base unit (koinu, 8 decimals — same convention as the
+/// Esplora-sourced BTC/LTC), and unlike Esplora, gives the netted balance and
+/// total received directly rather than requiring a funded-minus-spent
+/// subtraction.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+struct BlockcypherBalance {
+    balance: u64,
+    total_received: u64,
+    n_tx: u64,
 }
 
 /// Normalised enrichment for any chain — only the fields the source genuinely
@@ -78,6 +141,18 @@ struct Enrichment {
     tx_count: Option<u64>,
     /// Reverse ENS name (EVM only), e.g. `vitalik.eth`.
     ens: Option<String>,
+    /// Blockscout's own scam flag (EVM only — no equivalent on the other
+    /// sources this module calls).
+    is_scam: Option<bool>,
+    /// Blockscout's reputation verdict, e.g. `"ok"`/`"scam"` (EVM only).
+    reputation: Option<String>,
+    /// A known contract/entity name Blockscout has identified, e.g.
+    /// `"UniswapV2Router02"` (EVM only).
+    known_name: Option<String>,
+    /// Curated public tags Blockscout has attached to the address, e.g.
+    /// `["exchange"]` (EVM only). Empty when the source has none — never
+    /// fabricated.
+    public_tags: Vec<String>,
 }
 
 #[async_trait]
@@ -87,7 +162,7 @@ impl Module for ChainIntel {
     }
 
     fn description(&self) -> &'static str {
-        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH, free)"
+        "Cryptocurrency wallet enrichment — on-chain balance, activity & ENS (BTC/LTC/ETH/SOL/DOGE, free)"
     }
 
     fn priority(&self) -> u8 {
@@ -129,6 +204,8 @@ impl Module for ChainIntel {
             "crypto_btc" => enrich_esplora(ctx, "https://blockstream.info/api", addr, "BTC").await,
             "crypto_ltc" => enrich_esplora(ctx, "https://litecoinspace.org/api", addr, "LTC").await,
             "crypto_eth" => enrich_eth(ctx, addr).await,
+            "crypto_sol" => enrich_sol(ctx, addr).await,
+            "crypto_doge" => enrich_doge(ctx, addr).await,
             // Recognised but no free keyless explorer wired — clean no-op.
             _ => None,
         };
@@ -140,6 +217,7 @@ impl Module for ChainIntel {
         let mut e = Entity::new(EntityKind::CryptoAddress, addr, 0.80, &ctx.scan_id);
         e.tag("crypto-address");
         e.tag(format!("chain:{}", chain_label(chain)));
+        apply_scam_tags(&mut e, &enr);
         e.add_evidence(build_evidence(chain_label(chain), &enr));
         result.push(e);
 
@@ -181,6 +259,17 @@ fn format_units(amount: u128, decimals: u32) -> String {
     }
 }
 
+/// Tags the entity `MALICIOUS`/`THREAT_INTEL` when the source's own curated
+/// scam flag is `true` — never when it is absent or `false`, so a source
+/// that doesn't report a scam verdict at all can't be mistaken for a clean
+/// bill of health. Pure (no I/O) for unit testing.
+fn apply_scam_tags(entity: &mut Entity, e: &Enrichment) {
+    if e.is_scam == Some(true) {
+        entity.tag(crate::core::tags::MALICIOUS);
+        entity.tag(crate::core::tags::THREAT_INTEL);
+    }
+}
+
 /// Build enrichment evidence, emitting only the fields the source provided. The
 /// activity verdict prefers the precise tx-count signal; absent that, it falls
 /// back to a coarser funded/empty signal from the balance — never claiming more
@@ -211,6 +300,18 @@ fn build_evidence(chain: &str, e: &Enrichment) -> Evidence {
     if let Some(ens) = &e.ens {
         ev = ev.with_attr("ens_name", ens);
     }
+    if let Some(name) = &e.known_name {
+        ev = ev.with_attr("known_name", name);
+    }
+    if let Some(reputation) = &e.reputation {
+        ev = ev.with_attr("reputation", reputation);
+    }
+    if let Some(is_scam) = e.is_scam {
+        ev = ev.with_attr("is_scam", is_scam.to_string());
+    }
+    if !e.public_tags.is_empty() {
+        ev = ev.with_attr("public_tags", e.public_tags.join(", "));
+    }
     ev
 }
 
@@ -232,6 +333,10 @@ async fn enrich_esplora(
         received: Some(received),
         tx_count: Some(a.chain_stats.tx_count + a.mempool_stats.tx_count),
         ens: None,
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
     })
 }
 
@@ -259,6 +364,82 @@ async fn enrich_eth(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
         received: None, // Blockscout balance endpoint doesn't expose lifetime received.
         tx_count,
         ens: a.ens_domain_name.filter(|s| !s.is_empty()),
+        is_scam: a.is_scam,
+        reputation: a.reputation.filter(|s| !s.is_empty()),
+        known_name: a.name.filter(|s| !s.is_empty()),
+        public_tags: blockscout_tag_labels(&a.public_tags),
+    })
+}
+
+/// Reduces Blockscout's `public_tags` array down to display strings, preferring
+/// each tag's human-facing `display_name` and falling back to its machine
+/// `label` slug only when `display_name` is absent — never emitting a blank
+/// entry for a tag with neither field set.
+fn blockscout_tag_labels(tags: &[BlockscoutTag]) -> Vec<String> {
+    tags.iter()
+        .filter_map(|t| {
+            t.display_name
+                .as_deref()
+                .or(t.label.as_deref())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        })
+        .collect()
+}
+
+/// Solana enrichment via the public JSON-RPC's `getBalance` method — balance
+/// only; see the module doc for why `tx_count`/`received` are never populated
+/// for SOL rather than estimated from a bounded `getSignaturesForAddress` call.
+async fn enrich_sol(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+    let resp = ctx
+        .http
+        .post("https://api.mainnet-beta.solana.com")
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "getBalance",
+            "params": [addr]
+        }))
+        .send_tagged(SRC)
+        .await
+        .ok()?;
+    if !resp.status().is_success() {
+        return None;
+    }
+    let body: SolBalanceResp = crate::util::http::json_decode(SRC, resp).await.ok()?;
+    let balance = body.result?.value?;
+    Some(Enrichment {
+        unit: "SOL",
+        decimals: 9,
+        balance: u128::from(balance),
+        received: None,
+        tx_count: None,
+        ens: None,
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
+    })
+}
+
+/// Dogecoin enrichment via BlockCypher (see module doc for why this source,
+/// not `dogechain.info`, was chosen).
+async fn enrich_doge(ctx: &ModuleContext, addr: &str) -> Option<Enrichment> {
+    let url = format!("https://api.blockcypher.com/v1/doge/main/addrs/{addr}/balance");
+    let b: BlockcypherBalance = fetch_json(&ctx.http, SRC, &url).await.ok()?;
+    Some(Enrichment {
+        unit: "DOGE",
+        decimals: 8,
+        balance: u128::from(b.balance),
+        received: Some(u128::from(b.total_received)),
+        tx_count: Some(b.n_tx),
+        ens: None,
+        is_scam: None,
+        reputation: None,
+        known_name: None,
+        public_tags: Vec::new(),
     })
 }
 

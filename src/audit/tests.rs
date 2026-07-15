@@ -5,7 +5,6 @@ fn ent(kind: &str, value: &str, c: f64, corr: u32, tags: &[&str]) -> AuditEntity
     AuditEntity {
         kind: kind.into(),
         value: value.into(),
-        confidence: c,
         c_effective: c,
         corroboration: corr,
         sources: vec!["test".into()],

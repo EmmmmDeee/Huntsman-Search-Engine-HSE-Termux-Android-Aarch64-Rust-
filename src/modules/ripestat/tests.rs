@@ -19,8 +19,8 @@ use super::*;
         let cidr_e = es.iter().find(|e| e.kind == EntityKind::Cidr).unwrap();
         assert_eq!(cidr_e.value, "8.8.8.0/24");
         assert!(cidr_e.has_tag("network-prefix"));
-        // Single announcing ASN ⇒ the covering Cidr carries the origin `asn`, so
-        // AU-112's `cidr_owner` can attribute an IP in this prefix to AS15169.
+        // Single announcing ASN ⇒ the covering Cidr carries the origin `asn`
+        // as evidence, naming this prefix's origin network (AS15169).
         assert_eq!(
             cidr_e.evidence[0].attributes.get("asn").map(String::as_str),
             Some("15169")
@@ -30,8 +30,8 @@ use super::*;
     #[test]
     fn build_asns_leaves_a_multi_origin_prefix_unattributed() {
         // A MOAS (multiple-origin AS) prefix has no single owner to assert, so the
-        // covering Cidr must NOT carry an `asn` — AU-112 then omits the attribution
-        // clause rather than naming an arbitrary one of the origins.
+        // covering Cidr must NOT carry an `asn` — the origin is left unattributed
+        // rather than naming an arbitrary one of the origins.
         let ni = NetworkInfo {
             asns: vec!["64512".into(), "64513".into()],
             prefix: Some("203.0.113.0/24".into()),

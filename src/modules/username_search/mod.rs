@@ -113,6 +113,18 @@ impl Module for UsernameSearch {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default is T1593.001 (Social Media) + T1589.003 (Employee
+        // Names), but this module only ENUMERATES handle presence across 300+
+        // sites: it emits a profile `Url` and the confirmed `Username` (see
+        // `produces`) and never resolves a real-name `Person`, so T1589.003 is
+        // over-claimed — the same correction already applied to hacker_news /
+        // lobsters / nostr / reddit_user. Unlike those it has no bio-email path
+        // (no `Email` in `produces`), so T1593.001 (searching open websites for
+        // the account) is the single precise technique.
+        &["T1593.001"]
+    }
+
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let username = target.value.trim();
         if username.is_empty() || username.len() > 64 {
@@ -381,10 +393,10 @@ enum ProbeResult {
 /// floor — a status-200 hit is still worth pivoting on — but ranks visibly below
 /// a body-confirmed 0.92 so the correlator and SPA can weight it accordingly.
 fn detection_strength(detect: &Detect) -> (f64, bool) {
-    match detect {
-        Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..) => (0.92, true),
-        Detect::StatusEq(_) => (0.74, false),
-    }
+    crate::util::probe_confidence::detection_strength(matches!(
+        detect,
+        Detect::StatusAndBody(..) | Detect::StatusAndNotBody(..)
+    ))
 }
 
 /// True when a zero-hit run is *inconclusive* rather than a confirmed absence:
@@ -418,14 +430,11 @@ trait WithSite: Sized + std::future::Future<Output = ProbeResult> {
 impl<F> WithSite for F where F: std::future::Future<Output = ProbeResult> + Send + 'static {}
 
 fn scan_text_for_keys(body: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
     let pool = crate::util::key_pool::global_pool();
-    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
-        let t = word.trim();
-        if t.len() >= 16
-            && t.len() <= 200
-            && let Some((service, key_val)) = identify_api_key(t)
-        {
+    for t in key_tokens(body, MAX_TOKEN) {
+        if let Some((service, key_val)) = identify_api_key(t) {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.status = crate::util::key_pool::KeyStatus::Untested;
             entry.notes = Some("Profile page body".into());

@@ -87,12 +87,14 @@ fn test_app(suffix: &str) -> axum::Router {
         http: reqwest::Client::new(),
         allow_key_write: false,
         cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        proxy_pool: Default::default(),
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
         )),
         update_info: Arc::new(std::sync::Mutex::new(
             huntsman_search_engine::api::UpdateInfo::default(),
+        )),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::CellsImportPhase::default(),
         )),
     });
     router(state, "127.0.0.1:8080")
@@ -125,12 +127,14 @@ fn test_app_with_store(suffix: &str) -> (axum::Router, Arc<Store>) {
         http: reqwest::Client::new(),
         allow_key_write: false,
         cancellations: Arc::new(parking_lot::Mutex::new(HashMap::new())),
-        proxy_pool: Default::default(),
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             huntsman_search_engine::api::MAX_CONCURRENT_SCANS,
         )),
         update_info: Arc::new(std::sync::Mutex::new(
             huntsman_search_engine::api::UpdateInfo::default(),
+        )),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            huntsman_search_engine::api::CellsImportPhase::default(),
         )),
     });
     (router(state, "127.0.0.1:8080"), store)
@@ -149,21 +153,25 @@ fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
-/// Shorthand: build a POST request with a JSON body.
+/// Shorthand: build a POST request with a JSON body. Carries the `X-HSE-CSRF`
+/// header the API's CSRF guard requires on every mutating request (the SPA
+/// injects it transparently; tests/clients send it explicitly).
 fn post_json(uri: &str, body: &str) -> Request<Body> {
     Request::builder()
         .method("POST")
         .uri(uri)
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(body.to_string()))
         .unwrap()
 }
 
-/// Shorthand: build a DELETE request.
+/// Shorthand: build a DELETE request (with the required CSRF header).
 fn delete(uri: &str) -> Request<Body> {
     Request::builder()
         .method("DELETE")
         .uri(uri)
+        .header("x-hse-csrf", "1")
         .body(Body::empty())
         .unwrap()
 }
@@ -606,6 +614,39 @@ async fn autonomous_plan_previews_the_queue_without_dispatching() {
 }
 
 #[tokio::test]
+async fn autonomous_plan_considers_the_full_scan_history_not_just_the_newest_50() {
+    // `scan_auto`/`scan_auto_plan`/`scan_auto_sweep`'s own doc comments promise the
+    // candidate pool is ranked from "everything the platform has discovered" — but
+    // a hardcoded `list_scans(50)` silently bounded the pool to the 50 MOST RECENT
+    // scans, so an entity discovered in any older scan could never be selected, no
+    // matter how high its leverage. Seed 55 scans, each with one distinct
+    // cross-scan-candidate entity, and confirm every one is considered — not just
+    // the newest 50.
+    let (app, store) = test_app_with_store("autonomous-pool-bound");
+    for i in 0..55u64 {
+        let target = Target::new(TargetKind::Email, format!("history{i}@poolbound.io"));
+        let mut scan = Scan::new(format!("hist-scan-{i:03}"), target.clone());
+        // Distinct, ascending timestamps — scan 0 is the OLDEST and would be the
+        // first one dropped by a `list_scans(50)`-style newest-first cap.
+        scan.started_at = 1_700_000_000 + i;
+        store.upsert_scan(&scan).unwrap();
+        let e = Entity::new(EntityKind::Email, &target.value, 0.9, &scan.id);
+        store.upsert_entities_batch(&[e]).unwrap();
+    }
+    let resp = app
+        .oneshot(get("/api/v1/scan/auto/plan?limit=200"))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["considered"].as_u64().unwrap(),
+        55,
+        "every scan's entity must be considered, not just the 50 most recent: {json}"
+    );
+}
+
+#[tokio::test]
 async fn autonomous_sweep_dispatches_without_input() {
     // `POST /api/v1/scan/auto/sweep` takes NO body, NO seed — the platform plans the
     // diversity-aware queue and dispatches its top `breadth` targets in one call. On
@@ -971,6 +1012,48 @@ async fn dossier_upload_creates_a_complete_scan_with_entities() {
 }
 
 #[tokio::test]
+async fn stealer_log_upload_persists_paired_rows_retrievable_via_stealer_rows_endpoint() {
+    // Wiring: a Stealerlogs-format upload must persist paired credential
+    // rows (login+password+machine, kept together) retrievable via the
+    // dedicated Stealer Logs Viewer endpoint — not just the flattened,
+    // unpaired Email/Username/Credential entities the generic entities
+    // endpoint already returns.
+    let app = test_app("stealer-rows");
+    let stealer = "Module: Stealerlogs\nVictims:\n  [1]\n    Log Id:\n      ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831\n    Credentials:\n      [1]\n        Username:\n          jordanavery@gmail.com\n        Password:\n          Hunter2pass\n        Pwned At:\n          2026-05-20T21:00:00Z\n      [2]\n        Username:\n          javery\n        Password:\n          Hunter2pass\n        Pwned At:\n          2026-05-20T21:00:00Z\n    Domains:\n      [1]\n        acme-corp.com\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(stealer))
+        .unwrap();
+    let resp = app.clone().oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let sid = json["scan_id"].as_str().expect("scan_id").to_string();
+
+    let resp = app
+        .oneshot(get(&format!("/api/v1/scans/{sid}/stealer-rows")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let out = body_json(resp).await;
+    let rows = out["rows"].as_array().expect("rows array");
+    assert_eq!(rows.len(), 2, "both credentials in the one victim block");
+    assert!(
+        rows.iter().any(|r| r["login"] == "jordanavery@gmail.com"
+            && r["password"] == "Hunter2pass"
+            && r["pwned_at"] == "2026-05-20T21:00:00Z"
+            && r["log_id"] == "ea0621568ccd7fee2bd78e16f637727612aca78d4b3d1f6bf8175cf2ca8de831"),
+        "login+password+pwned_at+log_id must survive paired in one row: {rows:?}"
+    );
+    assert!(
+        rows.iter().any(|r| r["login"] == "javery"),
+        "the second credential in the same victim block must also be a row: {rows:?}"
+    );
+}
+
+#[tokio::test]
 async fn dossier_upload_derives_and_persists_entity_relations() {
     // An imported scan must carry the same deterministic relation graph a live
     // scan would (structural/geo/DNS/WHOIS/name-lineage). This dossier yields a
@@ -996,6 +1079,67 @@ async fn dossier_upload_derives_and_persists_entity_relations() {
             >= 1,
         "the URL→domain structural edge must be derived and persisted: {json}"
     );
+}
+
+#[tokio::test]
+async fn dossier_upload_reports_relation_count_as_a_true_zero_within_the_enrichment_cap() {
+    // A dossier with no relatable entities (one bare email, no shared
+    // domain/URL to link) is well within `IMPORT_ENRICH_MAX_ENTITIES`, so
+    // enrichment actually runs and the reported zero is a REAL zero — not the
+    // size-skip zero the over-cap case below also reports as `0`.
+    let app = test_app("import-real-zero");
+    let dossier = "Entry #1\n\u{2022} email: solo@enrichcheck.io\n";
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(
+        json["enrichment_skipped"], false,
+        "a dossier within the enrichment cap must not be flagged as skipped: {json}"
+    );
+}
+
+#[tokio::test]
+async fn dossier_upload_flags_enrichment_skipped_above_the_entity_cap() {
+    // Above `IMPORT_ENRICH_MAX_ENTITIES` (5,000) the O(n²) relation/correlator
+    // pass is skipped for device safety — every entity is still persisted, but
+    // the response must say so rather than reporting the SAME `relation_count:
+    // 0` / `correlation_count: 0` a genuinely relation-free small dossier
+    // (the sibling test above) also reports.
+    let app = test_app("import-enrich-cap");
+    let mut dossier = String::with_capacity(500_000);
+    for i in 0..5_100u32 {
+        dossier.push_str(&format!(
+            "Entry #{i}\n\u{2022} email: user{i}@enrichcap{i}.io\n"
+        ));
+    }
+    let req = Request::builder()
+        .method("POST")
+        .uri("/api/v1/scans/import")
+        .header("content-type", "text/plain")
+        .header("x-hse-csrf", "1")
+        .body(Body::from(dossier))
+        .unwrap();
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert!(
+        json["entity_count"].as_u64().unwrap() > 5_000,
+        "fixture must exceed the enrichment cap: {json}"
+    );
+    assert_eq!(
+        json["enrichment_skipped"], true,
+        "an over-cap import must flag that enrichment was skipped, not silently \
+         report a zero indistinguishable from a genuinely relation-free import: {json}"
+    );
+    assert_eq!(json["relation_count"], 0);
+    assert_eq!(json["correlation_count"], 0);
 }
 
 #[tokio::test]
@@ -1175,12 +1319,43 @@ async fn stats_returns_counts() {
     assert!(json.get("version").is_some(), "stats must include version");
 }
 
+#[tokio::test]
+async fn scraper_health_reports_an_honest_empty_state_for_a_fresh_database() {
+    // The SPA counterpart of `hse doctor`'s "Scraper health" section
+    // (T2.7 / SOL-HEALTH-SIGNAL): a brand-new test database has dispatched no
+    // modules at all, so this must report a genuine empty state — zero
+    // tracked sources, zero drifted — never a fabricated result.
+    let app = test_app("scraper_health_empty");
+    let resp = app.oneshot(get("/api/v1/health/scrapers")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    assert_eq!(json["tracked"], 0);
+    assert_eq!(json["events_checked"], 0);
+    assert!(json["drifted"].as_array().unwrap().is_empty());
+    assert!(
+        json.get("drifted_threshold").is_some(),
+        "must surface the drift threshold so the SPA panel can explain the bar"
+    );
+    // The silent zero-yield ("parse-rate") drift signal — same honest-empty
+    // contract, never fabricated for a database with no history.
+    assert!(json["yield_drifted"].as_array().unwrap().is_empty());
+    assert!(
+        json.get("yield_drift_threshold").is_some(),
+        "must surface the yield-drift threshold so the SPA panel can explain the bar"
+    );
+}
+
 // ── 16. Settings keys GET ─────────────────────────────────────────────────
 
 #[tokio::test]
 async fn settings_keys_get_lists_keys() {
+    use std::net::SocketAddr;
     let app = test_app("keys_get");
-    let resp = app.oneshot(get("/api/v1/settings/keys")).await.unwrap();
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/settings/keys");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
     let json = body_json(resp).await;
     assert!(
@@ -1188,6 +1363,26 @@ async fn settings_keys_get_lists_keys() {
         "response must contain keys array"
     );
     assert!(json["keys"].as_array().is_some());
+}
+
+#[tokio::test]
+async fn settings_keys_get_refuses_non_loopback_peer() {
+    // Which key services are configured (+ the on-disk env path) is the same
+    // class of sensitive infra metadata `keys_status`/`keys_pool_get` already
+    // gate loopback-only, and this route's own PUT sibling already refuses a
+    // non-loopback peer — this GET must match, not leak silently under an
+    // operator-chosen LAN bind.
+    use std::net::SocketAddr;
+    let app = test_app("keys_get_lan");
+    let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/settings/keys");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "settings/keys GET must be loopback-only"
+    );
 }
 
 // ── 17. Settings keys PUT (forbidden) ─────────────────────────────────────
@@ -1207,6 +1402,7 @@ async fn settings_keys_put_forbidden_without_flag() {
         .method("PUT")
         .uri("/api/v1/settings/keys")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(body))
         .unwrap();
 
@@ -1283,6 +1479,7 @@ async fn settings_toggles_put_rejects_non_loopback_peer() {
         .method("PUT")
         .uri("/api/v1/settings/toggles")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(r#"{"key":"engine.google","enabled":false}"#))
         .unwrap();
     let addr: SocketAddr = "192.168.1.50:5555".parse().unwrap();
@@ -1302,6 +1499,7 @@ async fn settings_toggles_put_rejects_unknown_key() {
         .method("PUT")
         .uri("/api/v1/settings/toggles")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(
             r#"{"key":"module.not_a_real_module","enabled":false}"#,
         ))
@@ -1363,6 +1561,66 @@ async fn scan_entities_csv_returns_csv_content_type() {
     assert!(
         body.starts_with("kind,"),
         "CSV should start with header row"
+    );
+}
+
+// ── GEXF export ─────────────────────────────────────────────────────────
+
+#[tokio::test]
+async fn scan_gexf_quarantines_candidate_nodes_by_default() {
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("gexf_candidate");
+    let sid = "s-gexf-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    // A confirmed subject entity plus a quarantined candidate breach-victim.
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+
+    // Default: the quarantined candidate must NOT leak as a node — matching CSV,
+    // report.json, and the CLI GEXF export.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!("/api/v1/scans/{sid}/graph.gexf")))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let bytes = axum::body::to_bytes(resp.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body = String::from_utf8_lossy(&bytes);
+    assert!(
+        body.contains("subject@real.example"),
+        "the confirmed subject node must be present: {body}"
+    );
+    assert!(
+        !body.contains("stranger@breach.example"),
+        "a quarantined candidate breach-victim must not leak into the graph export: {body}"
+    );
+
+    // Opt-in: `?include_candidates=1` returns the full set (parity with CSV).
+    let resp2 = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/graph.gexf?include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+    let bytes2 = axum::body::to_bytes(resp2.into_body(), 5_000_000)
+        .await
+        .unwrap();
+    let body2 = String::from_utf8_lossy(&bytes2);
+    assert!(
+        body2.contains("stranger@breach.example"),
+        "include_candidates=1 must return the candidate node: {body2}"
     );
 }
 
@@ -1468,6 +1726,74 @@ async fn scan_entities_filter_returns_entities() {
     assert!(json["entities"].is_array());
 }
 
+#[tokio::test]
+async fn scan_entities_filter_quarantines_candidate_entities_by_default() {
+    // Regression: unlike `scan_entities`, `scan_entities_csv`, `report.json`, and
+    // GEXF export, `/entities/filter` never applied the candidate quarantine — a
+    // caller could route around the quarantine every sibling endpoint enforces
+    // simply by adding a `kind`/`min_confidence`/`q` query param.
+    use huntsman_search_engine::core::tags::CANDIDATE;
+    let (app, store) = test_app_with_store("filter_candidate");
+    let sid = "s-filter-cand";
+    store
+        .upsert_scan(&Scan::new(
+            sid,
+            Target::new(TargetKind::FullName, "Jordan Avery"),
+        ))
+        .unwrap();
+    let subject = Entity::new(EntityKind::Email, "subject@real.example", 0.9, sid);
+    let mut candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, sid);
+    candidate.tag(CANDIDATE);
+    store.upsert_entity(&subject).unwrap();
+    store.upsert_entity(&candidate).unwrap();
+
+    // Default: the quarantined candidate must not leak through the filter route.
+    let resp = app
+        .clone()
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities/filter?kind=email"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let values: Vec<&str> = json["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["value"].as_str())
+        .collect();
+    assert!(
+        values.contains(&"subject@real.example"),
+        "the confirmed subject entity must be present: {json}"
+    );
+    assert!(
+        !values.contains(&"stranger@breach.example"),
+        "a quarantined candidate breach-victim must not leak through /entities/filter: {json}"
+    );
+
+    // Opt-in: `?include_candidates=1` returns the full set (parity with the other
+    // entity-listing endpoints).
+    let resp2 = app
+        .oneshot(get(&format!(
+            "/api/v1/scans/{sid}/entities/filter?kind=email&include_candidates=1"
+        )))
+        .await
+        .unwrap();
+    assert_eq!(resp2.status(), 200);
+    let json2 = body_json(resp2).await;
+    let values2: Vec<&str> = json2["entities"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter_map(|e| e["value"].as_str())
+        .collect();
+    assert!(
+        values2.contains(&"stranger@breach.example"),
+        "include_candidates=1 must return the candidate entity: {json2}"
+    );
+}
+
 // ── Live list (empty) ───────────────────────────────────────────────────
 
 #[tokio::test]
@@ -1556,6 +1882,7 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities/filter?kind=email",
         "correlations",
         "relations",
+        "stealer-rows",
         "entities.csv",
         "events.history",
         "graph.gexf",
@@ -1574,6 +1901,7 @@ async fn sub_resource_endpoints_404_for_unknown_scan() {
         "entities/facets",
         "correlations",
         "relations",
+        "stealer-rows",
         "entities.csv",
         "events.history",
         "graph.gexf",
@@ -1686,14 +2014,62 @@ fn segments_after(text: &str, prefix: &str, keep: impl Fn(char) -> bool) -> Vec<
     out
 }
 
+/// Crawl every asset the served SPA shell depends on: its own `<link>` /
+/// `<script src>` references, plus every `import … from '/static/js/…'` inside
+/// each fetched JS module (transitively — `main.js` alone pulls in ~35 view
+/// modules). The former monolithic `spa.html` held every view inline, so a
+/// content check could just scan the one served document; now that it's split
+/// across `src/web/js/`, the same checks need the concatenation of the shell
+/// plus every module it transitively loads. Returns `(combined text, sorted
+/// list of every `/static/…` path discovered)`.
+async fn spa_bundle(app: &axum::Router) -> (String, Vec<String>) {
+    fn path_char(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_' || c == '/'
+    }
+
+    let (_, shell) = fetch_text(app, "/").await;
+    let mut queue: Vec<String> = segments_after(&shell, "/static/", path_char)
+        .into_iter()
+        .map(|p| format!("/static/{p}"))
+        .collect();
+    let mut combined = shell.clone();
+    let mut seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut discovered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    let mut i = 0;
+    while i < queue.len() {
+        let path = queue[i].clone();
+        i += 1;
+        if !seen.insert(path.clone()) {
+            continue;
+        }
+        discovered.insert(path.clone());
+        let (status, body) = fetch_text(app, &path).await;
+        if status != http::StatusCode::OK {
+            continue;
+        }
+        combined.push('\n');
+        combined.push_str(&body);
+        if path.ends_with(".js") {
+            for imp in segments_after(&body, "from '/static/", path_char) {
+                let full = format!("/static/{imp}");
+                if !seen.contains(&full) {
+                    queue.push(full);
+                }
+            }
+        }
+    }
+    (combined, discovered.into_iter().collect())
+}
+
 #[tokio::test]
 async fn spa_served_with_required_ui_structure() {
     let app = test_app("spa-structure");
-    let (status, html) = fetch_text(&app, "/").await;
+    let (status, _) = fetch_text(&app, "/").await;
     assert_eq!(status, http::StatusCode::OK);
+    let (html, _) = spa_bundle(&app).await;
     assert!(
         html.len() > 10_000,
-        "SPA document suspiciously small ({} bytes)",
+        "SPA bundle suspiciously small ({} bytes)",
         html.len()
     );
     // Directive UI checklist — this scaffolding must stay present.
@@ -1721,7 +2097,7 @@ async fn spa_references_only_registered_api_endpoints() {
     // never the `api_not_found` fallback. A new SPA endpoint with no probe here
     // fails loudly, forcing its route to be confirmed.
     let app = test_app("spa-endpoints");
-    let (_, html) = fetch_text(&app, "/").await;
+    let (html, _) = spa_bundle(&app).await;
 
     let bases = segments_after(&html, "/api/v1/", |c| c.is_ascii_lowercase() || c == '_');
     assert!(
@@ -1770,6 +2146,8 @@ async fn spa_references_only_registered_api_endpoints() {
             // Forward-only scan-plan preview — parameter-driven; a bare value
             // exercises the registered route (returns 200, never the fallback 404).
             "plan" => "/api/v1/plan?value=example.com".to_string(),
+            // Cell-tower DB status — ungated GET, safe to probe with no side effects.
+            "cells" => "/api/v1/cells/status".to_string(),
             other => panic!(
                 "SPA references /api/v1/{other} but this test has no probe for it — \
                  add one and confirm the route is registered in src/api/routes.rs"
@@ -1789,22 +2167,19 @@ async fn spa_references_only_served_static_assets() {
     // Every vendored `/static/<file>` the SPA links must be served (200,
     // non-empty) by the vendor handler — guards a broken-link regression.
     let app = test_app("spa-static");
-    let (_, html) = fetch_text(&app, "/").await;
-    let files = segments_after(&html, "/static/", |c| {
-        c.is_ascii_alphanumeric() || c == '.' || c == '-' || c == '_'
-    });
+    let (_, files) = spa_bundle(&app).await;
     assert!(
         files.len() >= 5,
-        "expected the SPA to load several vendored assets, found {files:?}"
+        "expected the SPA to load several vendored/app assets, found {files:?}"
     );
     for f in &files {
-        let (status, body) = fetch_text(&app, &format!("/static/{f}")).await;
+        let (status, body) = fetch_text(&app, f).await;
         assert_eq!(
             status,
             http::StatusCode::OK,
-            "vendored asset /static/{f} not served (broken link)"
+            "asset {f} not served (broken link)"
         );
-        assert!(!body.is_empty(), "vendored asset /static/{f} served empty");
+        assert!(!body.is_empty(), "asset {f} served empty");
     }
 }
 
@@ -1816,8 +2191,9 @@ async fn spa_api_client_calls_are_all_defined() {
     // catches (the route can exist while the JS helper is missing/misspelled).
     // Pure static scan of the served document; no JS engine, no browser.
     let app = test_app("spa-api-client");
-    let (status, html) = fetch_text(&app, "/").await;
+    let (status, _) = fetch_text(&app, "/").await;
     assert_eq!(status, http::StatusCode::OK, "SPA `/` must serve 200");
+    let (html, _) = spa_bundle(&app).await;
 
     // Identifiers written as `API.<name>` — this captures call sites
     // (`API.foo(`, `API.csvUrl(`) but NOT the object-literal definitions
@@ -2049,12 +2425,33 @@ async fn keys_status_endpoint_returns_service_summary_shape() {
     // asserts the wire contract, not specific data: a `{ count, services[] }`
     // object with the two in sync. The per-service counting + value-free
     // guarantee are unit-tested in handlers::tests::summarize_pool_*.
+    // The endpoint is loopback-only (per-service pool inventory is sensitive
+    // infra metadata), so inject a loopback ConnectInfo like keys/pool does.
+    use std::net::SocketAddr;
     let app = test_app("keys-status");
-    let resp = app.oneshot(get("/api/v1/keys/status")).await.unwrap();
+    let loopback: SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/keys/status");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), 200);
     let j = body_json(resp).await;
     let services = j["services"].as_array().expect("services array");
     assert_eq!(j["count"].as_u64().unwrap() as usize, services.len());
+}
+
+#[tokio::test]
+async fn keys_status_endpoint_refuses_non_loopback_peer() {
+    // Per-service key-pool inventory (which services hold keys, how healthy)
+    // must not leak to a LAN peer under an operator-chosen non-loopback bind —
+    // the same guard keys/pool GET already enforces for this data class.
+    use std::net::SocketAddr;
+    let app = test_app("keys-status-lan");
+    let lan: SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/keys/status");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(resp.status(), 403, "key-pool status must be loopback-only");
 }
 
 #[tokio::test]
@@ -2108,9 +2505,15 @@ async fn selftest_endpoint_returns_structured_report() {
 #[tokio::test]
 async fn logs_endpoint_serves_downloadable_text_attachment() {
     // GET /api/v1/logs streams the verbose debug-log ring buffer as a
-    // downloadable text file (the Settings "Download debug log" button).
+    // downloadable text file (the Settings "Download debug log" button). The
+    // endpoint is loopback-only (TRACE logs hold scan PII), so inject a loopback
+    // peer via request extensions the way the key-pool test does.
     let app = test_app("logs-ep");
-    let resp = app.oneshot(get("/api/v1/logs")).await.unwrap();
+    let loopback: std::net::SocketAddr = "127.0.0.1:9999".parse().unwrap();
+    let mut req = get("/api/v1/logs");
+    req.extensions_mut()
+        .insert(axum::extract::ConnectInfo(loopback));
+    let resp = app.oneshot(req).await.unwrap();
     assert_eq!(resp.status(), http::StatusCode::OK);
     let ct = resp
         .headers()
@@ -2136,6 +2539,19 @@ async fn logs_endpoint_serves_downloadable_text_attachment() {
     assert!(
         String::from_utf8_lossy(&bytes).contains("Huntsman Search Engine"),
         "dump carries its header"
+    );
+
+    // A NON-loopback peer must be refused — the TRACE ring buffer holds scan PII
+    // and must not stream to a LAN peer under a non-loopback bind.
+    let app = test_app("logs-ep2");
+    let lan: std::net::SocketAddr = "192.168.1.50:40000".parse().unwrap();
+    let mut req = get("/api/v1/logs");
+    req.extensions_mut().insert(axum::extract::ConnectInfo(lan));
+    let resp = app.oneshot(req).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        http::StatusCode::FORBIDDEN,
+        "debug logs must be loopback-only"
     );
 }
 
@@ -2167,6 +2583,7 @@ async fn keys_pool_get_is_masked_and_revoke_is_write_gated() {
         .method("POST")
         .uri("/api/v1/keys/pool/revoke")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(r#"{"service":"shodan","id":"deadbeef"}"#))
         .unwrap();
     post.extensions_mut()
@@ -2190,6 +2607,7 @@ async fn keys_pool_rotate_is_write_gated() {
         .method("POST")
         .uri("/api/v1/keys/pool/rotate")
         .header("content-type", "application/json")
+        .header("x-hse-csrf", "1")
         .body(Body::from(
             r#"{"service":"shodan","id":"deadbeef","new":"NEW-VAL"}"#,
         ))
@@ -2223,6 +2641,47 @@ async fn plan_preview_lists_engaged_modules_for_a_seed() {
     // An empty value is rejected cleanly, not a panic.
     let resp = app.oneshot(get("/api/v1/plan?value=")).await.unwrap();
     assert_eq!(resp.status(), 400);
+}
+
+#[tokio::test]
+async fn scan_profiles_lists_the_full_named_catalogue_including_skiptrace() {
+    // The New Scan wizard's profile picker has no other source of truth for
+    // the name/description list — this pins the wire shape it depends on,
+    // and that `skiptrace` (the debtor-location profile, previously
+    // unreachable from the browser at all) is actually present.
+    let app = test_app("scan-profiles");
+    let resp = app.oneshot(get("/api/v1/scan/profiles")).await.unwrap();
+    assert_eq!(resp.status(), 200);
+    let json = body_json(resp).await;
+    let profiles = json["profiles"].as_array().expect("profiles array");
+    assert_eq!(
+        profiles.len(),
+        6,
+        "every core::profiles::list_profiles() entry must be present"
+    );
+    let names: Vec<&str> = profiles
+        .iter()
+        .map(|p| p["name"].as_str().unwrap())
+        .collect();
+    for expected in [
+        "recommended",
+        "passive",
+        "footprint",
+        "investigate",
+        "fast",
+        "skiptrace",
+    ] {
+        assert!(
+            names.contains(&expected),
+            "missing profile {expected} — got {names:?}"
+        );
+    }
+    for p in profiles {
+        assert!(
+            p["description"].as_str().is_some_and(|d| !d.is_empty()),
+            "every profile must carry a non-empty description for the picker's tooltip/help text"
+        );
+    }
 }
 
 #[tokio::test]
@@ -2621,5 +3080,41 @@ async fn scan_import_requires_csrf_header() {
         resp.status(),
         403,
         "with X-HSE-CSRF the import is not CSRF-blocked"
+    );
+}
+
+#[tokio::test]
+async fn bodyless_mutating_post_requires_csrf_header() {
+    // The vulnerability the CSRF middleware closes: a BODYLESS mutating POST is a
+    // CORS simple request (no preflight), so a cross-site page could previously
+    // drive /scan/auto, /radar, /update/trigger and the scan controls without the
+    // header — only /scans/import checked. The guard now rejects ANY mutating
+    // request lacking X-HSE-CSRF, before the handler runs (no side effect). Using
+    // a cancel of a non-existent scan keeps the with-header case side-effect-free.
+    let app = test_app("csrf_bodyless");
+    let uri = "/api/v1/scans/does-not-exist/cancel";
+    let no_hdr = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.clone().oneshot(no_hdr).await.unwrap();
+    assert_eq!(
+        resp.status(),
+        403,
+        "a bodyless mutating POST without X-HSE-CSRF must be blocked"
+    );
+
+    let with_hdr = Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("x-hse-csrf", "1")
+        .body(Body::empty())
+        .unwrap();
+    let resp = app.oneshot(with_hdr).await.unwrap();
+    assert_ne!(
+        resp.status(),
+        403,
+        "with X-HSE-CSRF the request reaches the handler (404 for the missing scan)"
     );
 }

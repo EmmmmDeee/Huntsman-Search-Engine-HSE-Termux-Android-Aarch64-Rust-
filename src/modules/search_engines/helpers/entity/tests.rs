@@ -79,6 +79,44 @@ use super::*;
         );
     }
 
+    #[test]
+    fn extract_addresses_deduplicates_repeated_mentions_within_one_text() {
+        // Found via a real scan's debug log: a single SERP result's combined
+        // title+snippet text mentioned the same locality twice (once in each),
+        // and the STATES pass (unlike the AU_PLACES pass, which already dedupes
+        // via `seen_addr_keys`) pushed the identical "City, State" string once
+        // per repeat. build.rs's per-result merge loop then recorded the SAME
+        // search result as its own "corroboration" of an address it had just
+        // emitted, inflating the entity's `corroboration` field with duplicate,
+        // non-independent evidence for a single result.
+        let addrs = extract_addresses_from_text(
+            "Autobarn Lawnton — 707 Gympie Road, Lawnton, Queensland. \
+             This designer townhouse is in the heart of Lawnton, Queensland.",
+        );
+        let count = addrs.iter().filter(|a| *a == "Lawnton, Queensland").count();
+        assert_eq!(
+            count, 1,
+            "a locality repeated twice in one text must be extracted once, got {addrs:?}"
+        );
+    }
+
+    #[test]
+    fn extract_addresses_states_and_au_places_passes_share_one_dedup_set() {
+        // Both passes independently derive "Brisbane, QLD" from this text: the
+        // STATES pass via the literal ", QLD" comma pattern, the AU_PLACES pass
+        // via its own "Brisbane" + nearby "qld" context scan. The AU_PLACES
+        // pass must not re-add the address the STATES pass already found —
+        // verified end-to-end (a shared, cross-pass dedup set), not just via
+        // the AU_PLACES-internal set alone.
+        let addrs =
+            extract_addresses_from_text("Now in Brisbane, QLD — Brisbane is home to the QLD Museum.");
+        let count = addrs.iter().filter(|a| *a == "Brisbane, QLD").count();
+        assert_eq!(
+            count, 1,
+            "STATES and AU_PLACES passes must not double-emit the same locality: {addrs:?}"
+        );
+    }
+
     // ── score_username ───────────────────────────────────────────────────────
 
     #[test]
@@ -196,6 +234,46 @@ use super::*;
         assert_eq!(conf, 0.55);
     }
 
+    #[test]
+    fn score_username_business_slug_containing_the_surname_stays_candidate() {
+        // Regression: a live "Brett Lawnton" scan surfaced a real "Tackle World
+        // Lawnton" fishing-tackle retailer (named after the Lawnton suburb, QLD —
+        // unrelated to the subject) whose Facebook slug "tackle_world_lawnton"
+        // reached PROBABLE via Signal 1 (bare surname-anchor match) alone, then
+        // got recycled into a further search purely because "lawnton" is a
+        // substring — pulling the business's own web presence into the subject's
+        // identity graph. "tackle"/"world" match neither the given nor surname
+        // term, so this compound slug must be capped at CANDIDATE.
+        let terms = vec!["brett".to_string(), "lawnton".to_string()];
+        let r = sr(
+            "Tackle World Lawnton",
+            "Your local independent fishing expert",
+            "https://m.facebook.com/tackle_world_lawnton",
+            "\"tackleworldlawnton1\"",
+        );
+        let (score, conf) = score_username("tackle_world_lawnton", "facebook.com", &terms, &r);
+        assert!(
+            score < 3,
+            "an unrelated business slug containing only the surname must not reach PROBABLE: {score}"
+        );
+        assert_eq!(conf, 0.30);
+    }
+
+    #[test]
+    fn score_username_genuine_firstname_lastname_handle_still_reaches_probable() {
+        // The fix must not over-broadly demote a real compound personal handle:
+        // every part of "brett_lawnton" belongs to the subject's own name (no
+        // foreign part), so Signal 1 alone still reaches PROBABLE.
+        let terms = vec!["brett".to_string(), "lawnton".to_string()];
+        let r = sr("Brett Lawnton", "profile", "https://x.com/brett_lawnton", "brett lawnton");
+        let (score, conf) = score_username("brett_lawnton", "x.com", &terms, &r);
+        assert!(
+            score >= 3,
+            "a genuine firstname_lastname handle must still reach PROBABLE: {score}"
+        );
+        assert_eq!(conf, 0.55);
+    }
+
     // ── normalise_address_key ────────────────────────────────────────────────
 
     #[test]
@@ -251,5 +329,38 @@ use super::*;
             dd,
             vec!["https://x.io/a".to_string()],
             "deduped; bare scheme dropped"
+        );
+    }
+
+    #[test]
+    fn extract_urls_from_text_keeps_balanced_trailing_paren() {
+        // Regression (real-execution derived): a live `rust-lang.org` search
+        // produced BOTH the correct URL and a truncated duplicate missing the
+        // closing paren, because the trailing-punctuation trim stripped the
+        // balanced `)` of a Wikipedia disambiguation path. A matched `)` must
+        // be kept; only a DANGLING one (prose `(...)` wrapping) is stripped.
+        let urls = extract_urls_from_text(
+            "ref: https://en.wikipedia.org/wiki/Rust_(programming_language)",
+        );
+        assert_eq!(
+            urls,
+            vec!["https://en.wikipedia.org/wiki/Rust_(programming_language)".to_string()],
+            "balanced trailing ) is part of the URL and must be preserved"
+        );
+
+        // A DANGLING close paren from prose wrapping is still stripped.
+        let wrapped = extract_urls_from_text("(see https://example.com/path)");
+        assert_eq!(
+            wrapped,
+            vec!["https://example.com/path".to_string()],
+            "unbalanced ) from prose wrapping is trimmed"
+        );
+
+        // Balanced paren then sentence punctuation: keep the ), drop the period.
+        let sentence = extract_urls_from_text("End: https://ex.com/a_(b).");
+        assert_eq!(
+            sentence,
+            vec!["https://ex.com/a_(b)".to_string()],
+            "trailing sentence period trimmed; balanced ) kept"
         );
     }

@@ -1,5 +1,9 @@
 use super::*;
 
+    fn extract_first(text: &str) -> Option<AuAddress> {
+        extract_all(text).into_iter().next()
+    }
+
     #[test]
     fn parses_level_address() {
         let s = "Our office is at Level 11, 133 Mary Street, Brisbane City QLD 4000";
@@ -186,6 +190,39 @@ use super::*;
     }
 
     #[test]
+    fn normalise_phone_nine_digit_nsn_matches_the_ten_digit_trunk_lead_set() {
+        // The 9-digit national-significant-number branch must accept exactly the
+        // ACMA lead set the 10-digit `0…` branch documents — {2,3,4,5,7,8}. It
+        // previously omitted `5` (location-independent / VoIP `05x` numbers), so a
+        // VoIP number's bare 9-digit NSN form was rejected while its equivalent
+        // 10-digit `05…` form was accepted: the two spellings of one number
+        // disagreed, and the 10-digit branch's comment falsely claimed parity.
+        for lead in ['2', '3', '4', '5', '7', '8'] {
+            let nsn = format!("{lead}12345678"); // lead + 8 digits = 9 total
+            let with_zero = format!("0{nsn}"); // = 10 digits
+            assert_eq!(
+                normalise_phone(&nsn).as_deref(),
+                Some(format!("+61{nsn}").as_str()),
+                "9-digit NSN with real AU lead {lead} must normalise: {nsn}"
+            );
+            // Both spellings of the same number must produce the same E.164.
+            assert_eq!(
+                normalise_phone(&nsn),
+                normalise_phone(&with_zero),
+                "9-digit and 10-digit forms of one number must agree: {nsn}"
+            );
+        }
+        // Non-lead digits are still rejected by the 9-digit branch.
+        for lead in ['0', '1', '6', '9'] {
+            assert_eq!(
+                normalise_phone(&format!("{lead}12345678")),
+                None,
+                "lead digit {lead} is not a real AU trunk code"
+            );
+        }
+    }
+
+    #[test]
     fn au_phone_region_maps_geographic_area_codes() {
         // The four geographic area codes → region + member states.
         assert_eq!(
@@ -258,13 +295,10 @@ use super::*;
 
     #[test]
     fn au_line_type_predicates_split_personal_from_business() {
-        assert!(AuLineType::Mobile.is_personal());
-        assert!(AuLineType::GeographicFixed.is_personal());
         assert!(!AuLineType::Mobile.is_business_service());
         assert!(AuLineType::Freephone.is_business_service());
         assert!(AuLineType::LocalRate.is_business_service());
         assert!(AuLineType::Premium.is_business_service());
-        assert!(!AuLineType::Freephone.is_personal());
         // Slugs are stable.
         assert_eq!(AuLineType::Mobile.slug(), "mobile");
         assert_eq!(AuLineType::GeographicFixed.slug(), "geographic");

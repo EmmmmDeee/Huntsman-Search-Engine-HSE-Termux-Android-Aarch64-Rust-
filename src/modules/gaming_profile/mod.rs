@@ -126,6 +126,15 @@ impl Module for GamingProfile {
         KINDS
     }
 
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // Social default carries T1589.003 (Employee Names), but this module only
+        // searches gaming PLATFORMS for a handle and emits a profile `Url` + the
+        // `Username` — never a real-name `Person` — so T1589.003 is over-claimed
+        // (same correction as hacker_news / reddit_user / username_search).
+        // Searching the platforms is T1593.001 (Social Media).
+        &["T1593.001"]
+    }
+
     fn max_timeout_ms(&self) -> u64 {
         // Roblox is a two-stage round-trip (resolve then profile); the 3 s
         // default would clip the second hop on a slow mobile network.

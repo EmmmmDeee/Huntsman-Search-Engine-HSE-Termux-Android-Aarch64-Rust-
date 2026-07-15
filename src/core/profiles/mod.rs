@@ -45,8 +45,50 @@ pub fn resolve_profile(name: &str) -> Option<ScanOptions> {
     }
 }
 
-/// Every selectable profile as `(name, one-line description)` — the catalogue the
-/// CLI `--help` and the API/SPA profile picker render. Aliases are omitted (each
+/// Overlay a resolved profile's TUNING fields onto `base`, leaving every
+/// orthogonal field (module selection/exclusion, throttle, per-module
+/// timeout, min_confidence, tags/notes, webhook, max_roi/convex_budget,
+/// min_marginal_yield, seeknow_scan_cap, expand_all_identities,
+/// gate_speculative, …) from `base` untouched.
+///
+/// This is the SINGLE field-by-field merge policy shared by the CLI
+/// (`--profile`) and the API (`"profile": "…"` in the request body), so a
+/// profile means the same thing everywhere — matching this function's own
+/// name and the field's own doc ("overrides individual option fields with
+/// the profile's values"), not a wholesale replace. Previously the CLI
+/// overlaid an incomplete field list (missing `expansion_strategy` /
+/// `regional_search` — dormant only because `ScanOptions::default()`
+/// happens to coincide with every current profile's values for those two
+/// fields) and the API did `opts = profile_opts`, a full replace that
+/// silently discarded every client-supplied option — `{"profile":
+/// "skiptrace", "modules": ["hunter_io"]}` lost `modules` entirely.
+///
+/// The field list here is exactly the set every `resolve_profile` preset
+/// function (`recommended`/`passive`/`footprint`/`investigate`/`fast`/
+/// `skiptrace`) explicitly sets before falling through to
+/// `..Default::default()` — i.e. every field a profile can meaningfully
+/// tune. Add a field here whenever a new profile starts tuning it.
+#[must_use]
+pub fn apply_profile_overlay(base: ScanOptions, profile: ScanOptions) -> ScanOptions {
+    ScanOptions {
+        free_only: profile.free_only,
+        passive_only: profile.passive_only,
+        depth: profile.depth,
+        min_expand_confidence: profile.min_expand_confidence,
+        max_concurrent: profile.max_concurrent,
+        max_entities: profile.max_entities,
+        max_wall_time_secs: profile.max_wall_time_secs,
+        category_focus: profile.category_focus,
+        expansion_strategy: profile.expansion_strategy,
+        regional_search: profile.regional_search,
+        ..base
+    }
+}
+
+/// Every selectable profile as `(name, one-line description)` — the single
+/// source of the profile catalogue. Rendered by the CLI's unknown-`--profile`
+/// error (so the help text can't drift from [`resolve_profile`]'s accepted set)
+/// and available to the API/SPA profile picker. Aliases are omitted (each
 /// profile is listed once under its canonical name).
 #[must_use]
 pub fn list_profiles() -> Vec<(&'static str, &'static str)> {

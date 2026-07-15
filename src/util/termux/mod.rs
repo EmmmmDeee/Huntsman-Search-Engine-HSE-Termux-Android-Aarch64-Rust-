@@ -98,6 +98,23 @@ pub async fn termux_cmd(cmd: &str, args: &[&str], timeout_ms: u64) -> Option<Vec
     }
 }
 
+/// Test-only accessor: was `cmd` cached as unavailable by a real
+/// `termux_cmd` call? Lets a sibling module's test pin "did this code path
+/// actually invoke the tool" against the real, process-global cache instead
+/// of re-implementing it — without exposing the cache outside test builds.
+#[cfg(test)]
+pub(crate) fn is_marked_unavailable_for_test(cmd: &str) -> bool {
+    skip_until(cmd).is_some()
+}
+
+/// Test-only accessor: clear any cached-unavailable mark for `cmd`, so a
+/// test starts from a known state regardless of what earlier tests in the
+/// same process did to the shared [`UNAVAILABLE`] map.
+#[cfg(test)]
+pub(crate) fn clear_unavailable_for_test(cmd: &str) {
+    mark_available(cmd);
+}
+
 #[cfg(test)]
 mod tests {
     include!("tests.rs");

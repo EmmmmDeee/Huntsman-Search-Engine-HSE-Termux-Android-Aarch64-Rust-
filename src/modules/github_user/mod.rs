@@ -59,8 +59,26 @@ impl Module for GithubUser {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // A code-hosting profile — ATT&CK Code Repositories (T1593.003), not the Social-Media default its category implies.
-        &["T1593.003"]
+        // A code-hosting profile — ATT&CK Code Repositories (T1593.003), not
+        // the Social-Media default (T1593.001) its category implies — but
+        // this REPLACED the whole default array instead of substituting just
+        // that one technique, silently dropping T1589.003 (Employee Names)
+        // even though a real name → Person is emitted below, and omitting
+        // techniques for the Email/Organisation/Address/Coordinates/
+        // Credential entities this module also produces (`produces()` lists
+        // all of them). The `attack:<ID>` tag every admitted entity carries
+        // is sourced directly from this list (core::engine::dispatch), so
+        // the gap wasn't cosmetic — every Person/Email/Organisation/Address/
+        // Coordinates/Credential this module emits carried NO matching
+        // provenance tag. Declare the precise set instead.
+        &[
+            "T1589.001", // Credentials — published SSH public keys
+            "T1589.002", // Email Addresses — published profile/gist/commit emails
+            "T1589.003", // Employee Names — Person from the profile's real name
+            "T1591.001", // Determine Physical Locations — Address/Coordinates from location
+            "T1591.002", // Business Relationships — Organisation from company/orgs
+            "T1593.003", // Code Repositories — Username via the GitHub profile itself
+        ]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
@@ -347,7 +365,7 @@ impl Module for GithubUser {
 
         // GitHub organisations this user belongs to → Organisation entities.
         let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
-        let org_logins = fetch::fetch_orgs(&ctx.http, login, token).await;
+        let org_logins = fetch::fetch_orgs(ctx, login, token).await;
         for org_login in org_logins {
             let mut org = Entity::new(EntityKind::Organisation, &org_login, 0.70, &ctx.scan_id);
             org.tag("github-org");
@@ -365,7 +383,7 @@ impl Module for GithubUser {
         // Public gists → tag profile entity, then scan content for emails and
         // leaked API keys (send_tagged inside fetch_gist_content routes every
         // response body through the found_keys scanner automatically).
-        let gist_ids = fetch::fetch_gists(&ctx.http, login, token).await;
+        let gist_ids = fetch::fetch_gists(ctx, login, token).await;
         if !gist_ids.is_empty()
             && let Some(first) = result.entities.first_mut()
         {

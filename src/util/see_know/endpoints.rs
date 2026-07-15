@@ -2,10 +2,26 @@
 
 use serde_json::Value;
 
-use crate::core::error::Result;
+use crate::core::error::{Error, Result};
+use crate::util::backoff::BackoffPolicy;
 
-use super::budget::{budget_try_increment, is_key_invalid};
-use super::client::{base_url, cache_get, cache_put, get_json, post_json, typed_cache_key};
+use super::budget::{budget_try_increment, is_key_invalid, mark_key_invalid};
+use super::client::{
+    base_url, cache_get, cache_put, get_json, is_auth_error, post_json, typed_cache_key,
+};
+use super::enterprise_config::ENTERPRISE;
+
+/// Retry pacing for a transient see-know.eu rate-limit response
+/// (`Error::RateLimited`, distinct from true quota exhaustion — see
+/// `client::Terminal::RateLimited`'s doc comment). [`ENTERPRISE`]`.max_retries`
+/// attempts (the initial call plus 2 retries), doubling 2s → 4s, capped at
+/// 8s, jittered so several concurrently-dispatched endpoint calls that all
+/// get rate-limited at once don't all retry in lockstep. These are the same
+/// figures a prior, never-wired `RETRY_STRATEGY` constant in
+/// `orchestration.rs` already specified — reused here now that they have a
+/// real, live call site.
+const RATE_LIMIT_BACKOFF: BackoffPolicy =
+    BackoffPolicy::new(ENTERPRISE.max_retries, 2_000, 8_000, true);
 
 /// Max records per the see-know.eu Universal Search spec (`limit`, default 100,
 /// **max 500**). Requested in full — the standing directive is to use
@@ -58,13 +74,20 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
     } else {
         format!("search-{query_type}")
     };
-    // The name/auto `/search` path intermittently returns `total:0` even when
-    // the record exists (server-side cap races). Retry once on a transient
-    // empty before giving up. `cache_put` already refuses to memoise an empty
-    // result, so a transient miss can never poison later lookups of this query.
-    const MAX_ATTEMPTS: u32 = 2;
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
+    // Two independent, differently-paced retry classes share this loop:
+    //  - a transient EMPTY result (server-side cap race on the name/auto path)
+    //    → retry once immediately, no delay. `cache_put` already refuses to
+    //    memoise an empty result, so a transient miss can never poison later
+    //    lookups of this query.
+    //  - a transient RATE-LIMIT response (`Error::RateLimited`, distinct from
+    //    true quota exhaustion — see `client::Terminal::RateLimited`) → retry
+    //    with exponential backoff (`RATE_LIMIT_BACKOFF`) instead of giving up
+    //    immediately, which is what happened before this was diagnosed: a
+    //    burst throttle used to latch the shared budget and silently abandon
+    //    SeekNow for the rest of the scan.
+    const EMPTY_RETRY_ATTEMPTS: u32 = 2;
+    let mut attempt = 0u32;
+    loop {
         match post_json(&url, key, &body, &archive_endpoint, query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
@@ -72,23 +95,43 @@ pub async fn search(key: &str, query: &str, query_type: &str) -> Result<Vec<Valu
                     cache_put(ck, items.clone());
                     return Ok(items);
                 }
-                // Transient empty: not cached. Retry if attempts remain.
+                attempt += 1;
+                if attempt >= EMPTY_RETRY_ATTEMPTS {
+                    // Every attempt came back empty — an uncached genuine miss.
+                    return Ok(Vec::new());
+                }
+                tracing::debug!(
+                    query_type,
+                    attempt,
+                    "see_know /search returned empty — retrying once"
+                );
             }
-            Err(e) => last_err = Some(e),
+            Err(Error::RateLimited(msg)) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(Error::RateLimited(msg));
+                }
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    query_type,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know /search rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= EMPTY_RETRY_ATTEMPTS {
+                    return Err(e);
+                }
+                tracing::debug!(
+                    query_type,
+                    attempt,
+                    "see_know /search errored — retrying once"
+                );
+            }
         }
-        if attempt + 1 < MAX_ATTEMPTS {
-            tracing::debug!(
-                query_type,
-                attempt = attempt + 1,
-                "see_know /search returned empty or errored — retrying once"
-            );
-        }
-    }
-    // Both attempts empty/errored. Surface the error (so the curl exit code
-    // reaches the logs) if we have one; otherwise an uncached empty vec.
-    match last_err {
-        Some(e) => Err(e),
-        None => Ok(Vec::new()),
     }
 }
 
@@ -155,30 +198,44 @@ pub(crate) async fn get_path(key: &str, path: &str, params: &[(&str, &str)]) -> 
     // returns empty for a given seed, and retrying those would double scan
     // wall-time for no gain. `cache_put` already refuses to memoise an empty
     // result, so a genuine miss never poisons a later lookup.
-    const MAX_ATTEMPTS: u32 = 2;
-    let mut last_err = None;
-    for attempt in 0..MAX_ATTEMPTS {
+    //
+    // A `RateLimited` error is paced separately (`RATE_LIMIT_BACKOFF`,
+    // distinct from true quota exhaustion — see `client::Terminal::
+    // RateLimited`): previously this response was classified identically to
+    // exhausted credits, latching the shared budget and silently abandoning
+    // SeekNow for every remaining endpoint call in the scan with zero
+    // backoff or retry.
+    const TRANSPORT_RETRY_ATTEMPTS: u32 = 2;
+    let mut attempt = 0u32;
+    loop {
         match get_json(&url, key, path, archive_query).await {
             Ok(resp) => {
                 let items = extract_items(&resp);
                 cache_put(ck.clone(), items.clone());
                 return Ok(items);
             }
-            Err(e) => {
-                if attempt + 1 < MAX_ATTEMPTS {
-                    tracing::debug!(
-                        path,
-                        attempt = attempt + 1,
-                        "see_know GET errored — retrying once"
-                    );
+            Err(Error::RateLimited(msg)) => {
+                if !RATE_LIMIT_BACKOFF.should_retry(attempt) {
+                    return Err(Error::RateLimited(msg));
                 }
-                last_err = Some(e);
+                let delay = RATE_LIMIT_BACKOFF.delay(attempt);
+                tracing::debug!(
+                    path,
+                    attempt = attempt + 1,
+                    delay_ms = delay.as_millis() as u64,
+                    "see_know GET rate-limited — backing off"
+                );
+                tokio::time::sleep(delay).await;
+                attempt += 1;
+            }
+            Err(e) => {
+                attempt += 1;
+                if attempt >= TRANSPORT_RETRY_ATTEMPTS {
+                    return Err(e);
+                }
+                tracing::debug!(path, attempt, "see_know GET errored — retrying once");
             }
         }
-    }
-    match last_err {
-        Some(e) => Err(e),
-        None => Ok(Vec::new()),
     }
 }
 
@@ -259,6 +316,13 @@ fn flatten_victims(victims: &[Value]) -> Vec<Value> {
 /// NOT consume a budget slot — it is a meta-query used to scale the scan cap
 /// dynamically to the operator's actual plan, not a data lookup.
 ///
+/// Also the diagnostic probe `hse doctor` uses to catch a dead/rejected key
+/// BEFORE a scan discovers it only as SeekNow silently returning nothing:
+/// an `invalid_api_key`/`plan_required` response here now latches
+/// [`mark_key_invalid`] (previously only the data-bearing `search`/`get_path`
+/// calls did this classification — a fresh process that only ever calls
+/// `query_credits`, like `hse doctor`, could not detect a dead key at all).
+///
 /// Handles several observed response shapes:
 /// ```json
 /// {"credits_remaining": 4200, "daily_limit": 5000, "plan": "…"}
@@ -270,15 +334,61 @@ pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
     let url = format!("{}/credits", base_url());
     // Direct HTTP call — no budget gate, no archive (meta-query, not paid data).
     let body = super::client::CLIENT.get(&url, key).await.ok()?;
-    let v: serde_json::Value = serde_json::from_str(body.trim()).ok()?;
+    match parse_credits_body(&body) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => Some((remaining, daily_limit)),
+        // A genuine, classified auth rejection — latch it so `is_key_invalid()`
+        // reflects reality even when `query_credits` (not a data-bearing
+        // `search`/`get_path` call) is the first-ever call this process made.
+        CreditsOutcome::AuthError => {
+            mark_key_invalid(&body);
+            None
+        }
+        // Network noise / an unrecognised schema — NOT a confirmed dead key,
+        // so this must never latch `mark_key_invalid`.
+        CreditsOutcome::Unparseable => None,
+    }
+}
+
+/// The three distinguishable outcomes of parsing a raw `/credits` response
+/// body. Kept separate from `Option<(u32, Option<u32>)>` specifically so an
+/// auth rejection (a REAL, classified "this key is dead" signal) can never
+/// be conflated with a merely-unparseable body (network noise, a schema this
+/// function doesn't recognise) — the two must not both collapse to a bare
+/// `None` the caller can't tell apart, since only the former should latch
+/// [`mark_key_invalid`].
+pub(super) enum CreditsOutcome {
+    Data {
+        remaining: u32,
+        daily_limit: Option<u32>,
+    },
+    AuthError,
+    Unparseable,
+}
+
+/// Parse a raw `/credits` response body. Pure (no network, no global state)
+/// so the classification is unit-tested directly, without a live HTTP
+/// round-trip.
+pub(super) fn parse_credits_body(body: &str) -> CreditsOutcome {
+    if is_auth_error(body) {
+        return CreditsOutcome::AuthError;
+    }
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(body.trim()) else {
+        return CreditsOutcome::Unparseable;
+    };
     // Walk candidate shapes to find (remaining, daily_limit).
     let root = if let Some(d) = v.get("data") { d } else { &v };
     let inner = root.get("credits").unwrap_or(root);
 
-    let remaining = inner
+    let Some(remaining) = inner
         .get("credits_remaining")
         .or_else(|| inner.get("remaining"))
-        .and_then(serde_json::Value::as_u64)? as u32;
+        .and_then(serde_json::Value::as_u64)
+    else {
+        return CreditsOutcome::Unparseable;
+    };
 
     let daily_limit = inner
         .get("daily_limit")
@@ -287,9 +397,20 @@ pub async fn query_credits(key: &str) -> Option<(u32, Option<u32>)> {
         .and_then(serde_json::Value::as_u64)
         .map(|v| v as u32);
 
-    Some((remaining, daily_limit))
+    CreditsOutcome::Data {
+        remaining: remaining as u32,
+        daily_limit,
+    }
 }
 
+/// Escape `s` for embedding inside a JSON string literal — the two body-builder
+/// call sites add the surrounding quotes, so this returns the interior only.
+/// Delegates to `serde_json` so backslash, quote AND the control bytes (`\n`,
+/// `\r`, `\t`, other `< 0x20`) that are illegal raw in a JSON string are all
+/// escaped; the hand-rolled version escaped only `\` and `"`, so a query
+/// carrying a newline/tab produced invalid JSON. `to_string()` on a JSON string
+/// `Value` yields `"…"`; strip the wrapping ASCII quotes to keep the contract.
 pub(super) fn escape_json(s: &str) -> String {
-    s.replace('\\', "\\\\").replace('"', "\\\"")
+    let quoted = serde_json::Value::String(s.to_owned()).to_string();
+    quoted[1..quoted.len() - 1].to_owned()
 }

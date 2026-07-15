@@ -12,13 +12,30 @@ pub(super) fn describe_url(url: &str) -> (String, String) {
         Some((h, p)) => (h, p),
         None => (host_path, ""),
     };
-    let segs: Vec<&str> = path.split('/').filter(|s| !s.is_empty()).collect();
     let urldecode = crate::util::http::urldecode;
+    // The operator's OWN configured API keys. A key can sit ANYWHERE in a request
+    // URL — a PATH segment (`…/ip/<KEY>/<value>`, IPQS/ABR-style) or a query value
+    // under a non-obvious param name (`?guid=<KEY>`) — and archiving is on by
+    // default, so surfacing any of them as the endpoint/query label would write the
+    // key into the archive FILENAME, `_meta`, and every dossier / one-click debug
+    // bundle that renders raw source records. Exclude them everywhere (the same set
+    // `found_keys` uses); this complements the CRED_PARAMS param-NAME skip below,
+    // which only catches conventionally-named query keys.
+    let own_keys = crate::util::keys::own_api_keys();
+    let is_own_key = |s: &str| !own_keys.is_empty() && own_keys.contains(urldecode(s).as_str());
+    // Path segments, EXCLUDING any that is one of our own keys, so a path-embedded
+    // key can never become the endpoint label (IPQS `/api/json/ip/<KEY>/<IP>` →
+    // endpoint `ip`, value `<IP>`, never the key).
+    let segs: Vec<&str> = path
+        .split('/')
+        .filter(|s| !s.is_empty() && !is_own_key(s))
+        .collect();
     // First NON-credential query value. Picking the first value blindly would
     // write our OWN auth key into the filename + `_meta.query` for endpoints that
     // put credentials first (`?api_key=…&q=…`) — archiving is on by default, so
-    // that would leak the operator's key onto disk. Credential-named params are
-    // skipped; the value we surface is the actual lookup term.
+    // that would leak the operator's key onto disk. Credential-named params AND any
+    // value that is one of our own keys are skipped; the value we surface is the
+    // actual lookup term.
     const CRED_PARAMS: &[&str] = &[
         "key",
         "api_key",
@@ -37,7 +54,8 @@ pub(super) fn describe_url(url: &str) -> (String, String) {
     ];
     let first_qval = query_str.split('&').find_map(|kv| {
         let (k, v) = kv.split_once('=')?;
-        if v.is_empty() || CRED_PARAMS.contains(&k.trim().to_lowercase().as_str()) {
+        if v.is_empty() || CRED_PARAMS.contains(&k.trim().to_lowercase().as_str()) || is_own_key(v)
+        {
             return None;
         }
         Some(v)

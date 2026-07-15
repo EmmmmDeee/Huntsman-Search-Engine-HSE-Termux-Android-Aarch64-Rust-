@@ -53,9 +53,42 @@ fn after_cooldown_allows_once_and_goes_half_open() {
     // At exactly retry_at the probe is admitted and the state becomes HalfOpen.
     assert!(b.allow(T0 + COOLDOWN_SECS), "probe admitted once the cooldown passes");
     assert_eq!(b.state(), BreakerState::HalfOpen);
-    // HalfOpen keeps allowing (it represents the one in-flight probe) — the
-    // outcome, not a second allow, decides the next state.
-    assert!(b.allow(T0 + COOLDOWN_SECS));
+    // HalfOpen admits exactly ONE probe: a second concurrent caller is denied so
+    // the recovering host isn't hit by a thundering herd. The probe's OUTCOME
+    // (recorded via on_success/on_failure), not a second allow, decides the next
+    // state.
+    assert!(
+        !b.allow(T0 + COOLDOWN_SECS),
+        "a second concurrent caller must be denied while the probe is in flight"
+    );
+    assert_eq!(b.state(), BreakerState::HalfOpen);
+}
+
+#[test]
+fn half_open_admits_exactly_one_probe_and_self_heals_a_lost_outcome() {
+    let mut b = Breaker::new();
+    for _ in 0..FAILURE_THRESHOLD {
+        b.on_failure(T0);
+    }
+    let probe_at = T0 + COOLDOWN_SECS;
+    // The first caller after cooldown gets the single probe…
+    assert!(b.allow(probe_at), "first caller after cooldown gets the probe");
+    assert_eq!(b.state(), BreakerState::HalfOpen);
+    // …every concurrent caller while it is in flight is short-circuited.
+    for dt in [0, 1, COOLDOWN_SECS - 1] {
+        assert!(
+            !b.allow(probe_at + dt),
+            "concurrent caller at +{dt}s must be denied while the probe is in flight"
+        );
+    }
+    // Safety valve: if the probe's outcome is never recorded (a dropped request),
+    // the breaker doesn't wedge HalfOpen forever — one cooldown later a fresh
+    // probe is admitted.
+    assert!(
+        b.allow(probe_at + COOLDOWN_SECS),
+        "a probe whose outcome was never recorded is retried after the deadline"
+    );
+    assert_eq!(b.state(), BreakerState::HalfOpen);
 }
 
 #[test]

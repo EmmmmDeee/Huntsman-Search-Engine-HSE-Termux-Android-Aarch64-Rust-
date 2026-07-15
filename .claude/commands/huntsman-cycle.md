@@ -7,15 +7,17 @@ description: Run one cycle of Huntsman's autonomous improvement loop — idempot
 You are running one cycle of the standing autonomous loop that drives Huntsman
 toward `docs/PROBLEM_TREE.md`'s mission: the fastest, most correct, most
 reproducible on-device OSINT/GEOINT/NETINT engine, surpassing SpiderFoot and
-Maltego without heavy in-app graphing. `CLAUDE.md` is your standing contract
-(verification gate, layering, ATT&CK mapping); this command is the loop that
-runs on top of it, unattended, cycle after cycle, until the project is
-finished.
+Maltego, without ever fabricating a finding. `docs/CONVENTIONS.md` holds the
+standing source-tree rules (layering, module-per-file, single-sourced
+vocabularies, determinism) this loop's step 2 must honour; step 4 below runs
+the full verification gate directly — this command is self-contained, cycle
+after cycle, until there is nothing left to do.
 
-Treat idempotency as the primary correctness property: running this cycle
-when real work remains must make genuine, verified progress; running it when
-nothing remains must change nothing except to confirm that. Never invent work
-to look busy.
+This prompt is meant to be **run again and again, unattended, until the
+project is finished**. Treat idempotency as the primary correctness property:
+running this cycle when real work remains must make genuine, verified
+progress; running it when nothing remains must change nothing except to
+confirm that. Never invent work to look busy.
 
 ## 0. Orient — read the live state, don't assume it
 
@@ -63,7 +65,8 @@ Smallest, highest-leverage, real. In priority order:
 
 Pick **one** — this loop advances by many small, honest cycles, not one large
 sweep (step 3 below records each cycle's log entry; see the recent entries
-there for the established granularity).
+there — and `docs/SOLUTION_TREE.md` §5's "Cycle N" log — for the established
+granularity).
 
 ## 2. Do the work
 
@@ -72,7 +75,9 @@ there for the established granularity).
   suggested fix. A plausible-sounding diagnosis has pointed at the wrong
   function before. Ship only fixes verified against real code and, for
   behaviour-touching bugs, a real run — no mocks, no fabricated data, no
-  invented findings.
+  invented findings. If evidence is needed to justify a fix, find it in the
+  code or a real run (`hse selftest`, `hse audit`, or the command itself —
+  `docs/CONVENTIONS.md` §9).
 - Hold the architecture doctrine: layering (`cli`/`api` → `core` → `util`;
   `core` never imports `modules` or `storage` directly — see
   `docs/CONVENTIONS.md` §1), one module per file (§2), single-sourced
@@ -109,7 +114,7 @@ Per `docs/SOLUTION_TREE.md` §0's same-commit rule:
 
 ## 4. Gate it
 
-Run the full verification gate from `CLAUDE.md` — all four, not a subset:
+Run the full verification gate — all four, not a subset:
 
 ```
 cargo fmt --all -- --check
@@ -122,8 +127,9 @@ cargo test
 If anything fails, fix it before proceeding — never commit red, never
 `--no-verify`, never silence a lint by broadening an `#[allow]` beyond the
 one site that needs it. For a behaviour-touching change, also run the real
-surface — `hse diagnostics`, the changed command, or `hse audit` where
-relevant — matching `docs/CONVENTIONS.md` §9's real-over-mocked rule.
+surface — `hse selftest`, `hse diagnostics`, the changed command, or `hse
+audit` where relevant — matching `docs/CONVENTIONS.md` §9's real-over-mocked
+rule.
 
 If the only apparent fix would itself violate a Hard Constraint (loosen a
 lint, touch `tests/architecture.rs`, add `unsafe`) — or the gate can't run at
@@ -190,8 +196,9 @@ is a correct outcome of this command, not a failure to find more work.
   as real evidence — this is an evidentiary OSINT tool; false positives are
   worse than missing coverage (the doctrine's repeated theme throughout both
   trees).
-- Never touch the identity/PII handling rules in `CLAUDE.md` casually — they
-  already govern how the user is represented in fixtures and code.
+- Never fabricate or invent a real third party's PII in fixtures/tests — use
+  only an established consented test seed (e.g. `Kylo4kylo`) or genuinely
+  synthetic data; never handle a real third party's PII casually.
 - Never expand scope mid-cycle. If step 1's chosen node turns out to be
   bigger than one focused commit, split it into the next node explicitly
   (mark `[~]`, log what's left) rather than sprawling the current commit.

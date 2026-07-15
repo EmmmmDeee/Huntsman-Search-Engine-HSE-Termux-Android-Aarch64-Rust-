@@ -33,6 +33,9 @@ pub(super) async fn cmd_audit(
     let mut entities: Vec<AuditEntity> = Vec::new();
     let mut source_label = String::new();
     if let Some(path) = &csv {
+        if scan_id.is_some() {
+            eprintln!("{}", csv_scan_id_conflict_note(path));
+        }
         let text =
             std::fs::read_to_string(path).map_err(|e| Error::Other(format!("read {path}: {e}")))?;
         entities = parse_csv(&text)?;
@@ -82,6 +85,13 @@ pub(super) async fn cmd_audit(
     Ok(())
 }
 
+/// The stderr note printed when both `--csv` and `--scan-id` are given —
+/// `--csv` wins (this module's doc comment has always promised "with a note",
+/// but no such note was ever actually printed until now).
+fn csv_scan_id_conflict_note(csv_path: &str) -> String {
+    format!("note: both --csv and --scan-id given — using --csv \"{csv_path}\", ignoring --scan-id")
+}
+
 // ── CSV export parser (header-driven, tolerant of every export version) ───────
 
 /// Parse an `hse` CSV export. Keys off the header row by NAME, so it works across
@@ -126,7 +136,6 @@ fn parse_csv(text: &str) -> Result<Vec<AuditEntity>> {
         out.push(AuditEntity {
             kind,
             value,
-            confidence: conf,
             c_effective: ceff,
             corroboration: get(ci_corr).parse().unwrap_or(0),
             sources: split_pipe(get(ci_src)),

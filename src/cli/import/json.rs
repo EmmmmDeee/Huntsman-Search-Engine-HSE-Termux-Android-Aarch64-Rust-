@@ -74,7 +74,7 @@ pub(super) async fn parse_oathnet_json(
             let log_id = victim.get("log_id").and_then(|v| v.as_str()).unwrap_or("");
 
             if let Some(ips) = victim.get("device_ips").and_then(|v| v.as_array()) {
-                for ip_val in ips.iter().take(10) {
+                for ip_val in ips {
                     if let Some(ip) = ip_val.as_str()
                         && ip.contains('.')
                         && !ip.contains("UPGRADE")
@@ -99,7 +99,7 @@ pub(super) async fn parse_oathnet_json(
                 }
             }
             if let Some(emails) = victim.get("device_emails").and_then(|v| v.as_array()) {
-                for email_val in emails.iter().take(20) {
+                for email_val in emails {
                     if let Some(email) = email_val.as_str()
                         && email.contains('@')
                         && !email.contains("UPGRADE")
@@ -114,7 +114,7 @@ pub(super) async fn parse_oathnet_json(
             }
             // HWIDs — hardware identifiers for machine tracking
             if let Some(hwids) = victim.get("hwids").and_then(|v| v.as_array()) {
-                for h in hwids.iter().take(5) {
+                for h in hwids {
                     if let Some(hwid) = h.as_str()
                         && !hwid.is_empty()
                         && seen_hwids.insert(hwid.to_string())
@@ -136,7 +136,7 @@ pub(super) async fn parse_oathnet_json(
             }
             // Discord IDs — identity pivots
             if let Some(dids) = victim.get("discord_ids").and_then(|v| v.as_array()) {
-                for d in dids.iter().take(5) {
+                for d in dids {
                     if let Some(did) = d.as_str()
                         && !did.is_empty()
                         && seen_discord.insert(did.to_string())
@@ -311,7 +311,7 @@ pub(super) async fn parse_oathnet_json(
             std::collections::HashSet::new();
         for victim in victims {
             if let Some(users) = victim.get("device_users").and_then(|v| v.as_array()) {
-                for u in users.iter().take(5) {
+                for u in users {
                     if let Some(name) = u.as_str()
                         && !name.is_empty()
                         && seen_device_users.insert(name.to_lowercase())

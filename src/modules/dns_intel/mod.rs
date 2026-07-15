@@ -70,8 +70,14 @@ impl Module for DnsIntel {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // Live DNS records — ATT&CK Gather Victim Network Information: DNS (T1590.002).
-        &["T1590.002"]
+        // Two techniques, because this module does two things. Resolving the live
+        // A/AAAA/MX/NS/SOA/TXT records (and reverse PTR / DNSBL) is Gather Victim
+        // Network Information: DNS (T1590.002). But it ALSO actively brute-forces
+        // subdomains against a 146-label common-name dictionary
+        // (`brute::brute_subdomains` over `SUBDOMAINS`) — iteratively probing
+        // infrastructure from a wordlist, which is Active Scanning: Wordlist
+        // Scanning (T1595.003), not a passive database lookup.
+        &["T1590.002", "T1595.003"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {

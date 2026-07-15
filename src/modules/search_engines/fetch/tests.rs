@@ -196,3 +196,474 @@ use super::*;
             }
         }
     }
+
+    /// Regression (real-execution derived): the EXACT 332-byte body Mojeek
+    /// returned with HTTP 403 in a live 8/8-run sweep. It is < 500 bytes, so the
+    /// old ordering returned `Unreachable` ("down") before `is_captcha_page` ran
+    /// — mislabelling an anti-bot *block* as a network failure. `is_captcha_page`
+    /// must now recognise it so `try_fetch` returns `Blocked`.
+    #[test]
+    fn mojeek_403_automated_queries_detected_as_block() {
+        let body = "<!DOCTYPE html><html><head><title>403 - Forbidden</title></head>\
+            <body><h1>403 - Forbidden</h1><h2>Sorry your network appears to be \
+            sending automated queries so we can't process your search at this \
+            time.</h2><h3>If you are seeing this in error please \
+            <a href=\"/about/contact?refr=403&q=example.com\">contact us</a>.</h3>\
+            </body></html>";
+        assert!(body.len() < 500, "fixture must exercise the short-body path");
+        assert!(
+            is_captcha_page(body),
+            "Mojeek 403 'sending automated queries' page must be detected as a block"
+        );
+    }
+
+    /// The other side of the reorder: a genuinely tiny/empty response that
+    /// matches no block signature must NOT be misread as a block (it stays
+    /// `Unreachable` in `try_fetch`).
+    #[test]
+    fn short_non_block_body_is_not_flagged() {
+        assert!(!is_captcha_page("<html><body>ok</body></html>"));
+        assert!(!is_captcha_page(""));
+    }
+
+    // ── Golden fixture (T2.7 "scraper resilience" — the corpus leg) ─────────
+    //
+    // `testdata/brave_kylo4kylo.html` is a REAL Brave SERP response, fetched
+    // live (2026-07-12) for the project's own canonical test seed `Kylo4kylo`
+    // and checked in verbatim — not a hand-written fragment. Real SERP HTML is
+    // where this parser actually breaks: engines ship SvelteKit/React shells,
+    // footer chrome, and result markup that drifts without notice, and the
+    // existing inline-literal tests above (small, hand-crafted `href=`/`<cite>`
+    // fragments) can't catch that because they're never wrong in the way a real
+    // page is. This is the first slice of the corpus this node calls for — one
+    // real engine, proving the pattern — not all 17 at once.
+    const GOLDEN_BRAVE_KYLO4KYLO: &str = include_str!("testdata/brave_kylo4kylo.html");
+
+    /// If Brave's markup drifts enough to break `href=` extraction, this fails
+    /// deterministically instead of the silent-empty-results failure mode T2.7
+    /// exists to catch (a scan that just quietly returns nothing from Brave).
+    #[test]
+    fn parse_results_extracts_from_a_real_brave_serp_capture() {
+        let results = parse_results(GOLDEN_BRAVE_KYLO4KYLO, "brave", "Kylo4kylo");
+        assert!(
+            !results.is_empty(),
+            "a layout change silently broke extraction from this real, \
+             previously-working Brave capture"
+        );
+
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        // Pin specific, known-present organic hits from this exact capture — a
+        // drift narrow enough to keep SOME results (so the emptiness check above
+        // stays green) but that silently drops a class of card (e.g. the
+        // Instagram-embed layout, or `<cite>`-based hosts) still fails here.
+        assert!(
+            urls.iter().any(|u| u.contains("instagram.com/kylo4k")),
+            "expected the Instagram profile hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("wikipedia.org/wiki/Kylo_Ren")),
+            "expected the Wikipedia hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("youtube.com")),
+            "expected a YouTube hit, got: {urls:?}"
+        );
+        // Every extracted URL is a genuine organic result, never the engine's
+        // own account/CDN/branding chrome — `is_engine_domain` must still be
+        // doing its job against this real page's footer links.
+        for u in &urls {
+            assert!(
+                !u.contains("brave.com") && !u.contains("cdn.search.brave"),
+                "engine chrome link leaked into results: {u}"
+            );
+        }
+        // Deterministic count: pins the exact yield so a change that silently
+        // drops (or duplicates) even one real result is caught, not just a
+        // change that empties the page entirely.
+        assert_eq!(
+            results.len(),
+            26,
+            "expected exactly 26 organic results from this fixture, got {}: {urls:?}",
+            results.len()
+        );
+    }
+
+    // `testdata/bing_kylo4kylo.html` is a REAL Bing SERP response, fetched live
+    // (2026-07-13) for the project's own canonical test seed `Kylo4kylo` and
+    // checked in verbatim. Bing is the second slice of the golden-fixture
+    // corpus (Brave was the first, T2.75-1) and specifically the highest-risk
+    // engine for a `<cite>`-format drift: `parse_results`' secondary extraction
+    // path reads Bing's `<cite>` tags for the display URL, a markup shape none
+    // of the other 16 engines use. This real capture happens to return zero
+    // results actually about `Kylo4kylo` — Bing's own answer for this exact
+    // query, on this exact page, was five unrelated ESPN links — which is
+    // itself a genuine, honestly-observed result: this test is not about
+    // recall or relevance (that's the correlator/audit's job), only that the
+    // parser extracts every real result block a live page contains without
+    // silently dropping some or leaking engine chrome, exactly the failure
+    // mode T2.7 exists to catch.
+    const GOLDEN_BING_KYLO4KYLO: &str = include_str!("testdata/bing_kylo4kylo.html");
+
+    /// If Bing's `<cite>`-based markup drifts enough to break extraction, this
+    /// fails deterministically instead of the silent-empty-results failure mode
+    /// T2.7 exists to catch.
+    #[test]
+    fn parse_results_extracts_from_a_real_bing_serp_capture() {
+        let results = parse_results(GOLDEN_BING_KYLO4KYLO, "bing", "Kylo4kylo");
+        assert!(
+            !results.is_empty(),
+            "a layout change silently broke extraction from this real, \
+             previously-working Bing capture"
+        );
+
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        // Pin the specific real hosts present in this exact capture.
+        assert!(
+            urls.iter().any(|u| u.contains("espn.com")),
+            "expected the espn.com hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("facebook.com/ESPN")),
+            "expected the Facebook hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("espn.co.uk")),
+            "expected the espn.co.uk hit, got: {urls:?}"
+        );
+        // Every extracted URL is a genuine organic result, never the engine's
+        // own account/CDN/branding chrome — `is_engine_domain` must still be
+        // doing its job against this real page's `bing.com`-hosted assets
+        // (this capture's own `<link>`/`<script>` CDN paths).
+        for u in &urls {
+            assert!(
+                !u.contains("bing.com"),
+                "engine chrome link leaked into results: {u}"
+            );
+        }
+        // Deterministic count: pins the exact yield so a change that silently
+        // drops (or duplicates) even one real result is caught, not just a
+        // change that empties the page entirely.
+        assert_eq!(
+            results.len(),
+            5,
+            "expected exactly 5 organic results from this fixture, got {}: {urls:?}",
+            results.len()
+        );
+    }
+
+    // `testdata/duckduckgo_kylo4kylo.html` is a REAL DuckDuckGo HTML-endpoint
+    // (`html.duckduckgo.com/html/`) response, fetched live (2026-07-13) for the
+    // project's own canonical test seed `Kylo4kylo` and checked in verbatim.
+    // DuckDuckGo is the third slice of the golden-fixture corpus (Brave then
+    // Bing) and specifically exercises the primary `href=` extraction path's
+    // `resolve_href` redirect-unwrap step against DDG's own
+    // `//duckduckgo.com/l/?uddg=...` wrapper links (already unit-tested with
+    // hand-written fragments elsewhere in this module, but never against a
+    // real, full DDG results page with its actual chrome/nav/footer links
+    // alongside the wrapped organic hits). This real capture happens to
+    // return four results unrelated to `Kylo4kylo` specifically — an
+    // honestly-observed real result, not a fabricated one: this test is about
+    // extraction completeness, never relevance (that's the correlator/audit's
+    // job).
+    const GOLDEN_DUCKDUCKGO_KYLO4KYLO: &str = include_str!("testdata/duckduckgo_kylo4kylo.html");
+
+    /// If DDG's `uddg=`-wrapped href markup drifts enough to break the redirect
+    /// unwrap, this fails deterministically instead of the silent-empty-results
+    /// failure mode T2.7 exists to catch.
+    #[test]
+    fn parse_results_extracts_from_a_real_duckduckgo_serp_capture() {
+        let results = parse_results(GOLDEN_DUCKDUCKGO_KYLO4KYLO, "duckduckgo", "Kylo4kylo");
+        assert!(
+            !results.is_empty(),
+            "a layout change silently broke extraction from this real, \
+             previously-working DuckDuckGo capture"
+        );
+
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        // Pin the specific real hosts present in this exact capture.
+        assert!(
+            urls.iter().any(|u| u.contains("teamk4l.com")),
+            "expected the teamk4l.com hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("tiktok.com")),
+            "expected the TikTok hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("youtube.com")),
+            "expected the YouTube hit, got: {urls:?}"
+        );
+        assert!(
+            urls.iter().any(|u| u.contains("watch.plex.tv")),
+            "expected the plex.tv hit, got: {urls:?}"
+        );
+        // Every extracted URL is a genuine organic result, never DDG's own
+        // account/CDN/branding chrome or an un-unwrapped redirect wrapper —
+        // `is_engine_domain` + `resolve_href`'s `uddg=` unwrap must both still
+        // be doing their job against this real page's nav/footer links.
+        for u in &urls {
+            assert!(
+                !u.contains("duckduckgo.com"),
+                "engine chrome or un-unwrapped redirect link leaked into results: {u}"
+            );
+        }
+        // Deterministic count: pins the exact yield so a change that silently
+        // drops (or duplicates) even one real result is caught, not just a
+        // change that empties the page entirely.
+        assert_eq!(
+            results.len(),
+            4,
+            "expected exactly 4 organic results from this fixture, got {}: {urls:?}",
+            results.len()
+        );
+    }
+
+    /// Golden-fixture corpus, fourth slice: MetaGer, one of only THREE engines
+    /// in [`super::super::engines::RELIABLE_ENGINE_NAMES`] — the guaranteed
+    /// floor `pivot_engine_set` falls back to when nothing else has proven
+    /// live yet, so a silent defect here degrades the core cross-platform
+    /// pivot/recycle pass on every scan, not just one engine's coverage.
+    ///
+    /// A REAL live capture of this exact fixture (`eingabe=Kylo4kylo`,
+    /// followed through its redirect) surfaced a genuine, previously-unknown
+    /// defect rather than merely proving the happy path: MetaGer's own
+    /// homepage/language-switcher/footer chrome (`metager.org`, the separate
+    /// `maps.metager.de` subdomain, and `suma-ev.de` — MetaGer's own
+    /// nonprofit operator, self-disclosed in this exact page's "MetaGer is
+    /// developed and run by our nonprofit organization, SUMA-EV" text) was
+    /// **not** in [`super::super::helpers::ENGINE_DOMAINS`], so all 30 of
+    /// those self-referential links were extracted as fake organic
+    /// "results" — false positives, the defect class this project's own
+    /// evidentiary doctrine treats as worse than missing coverage. Fixed by
+    /// adding the three domains to `ENGINE_DOMAINS`.
+    const GOLDEN_METAGER_KYLO4KYLO: &str = include_str!("testdata/metager_kylo4kylo.html");
+
+    /// Pins the fix: every one of this real capture's 30 raw hits is
+    /// MetaGer's own chrome, so post-fix extraction is correctly EMPTY, not a
+    /// specific non-empty count like the Brave/Bing/DuckDuckGo slices. A
+    /// regression that drops any of the three `ENGINE_DOMAINS` entries this
+    /// fix added would silently reopen the false-positive leak on every
+    /// MetaGer query. Git-stash-proven: reverting the `ENGINE_DOMAINS`
+    /// addition makes this fail (30 leaked results); restored, it passes.
+    #[test]
+    fn parse_results_excludes_metagers_own_chrome_from_a_real_serp_capture() {
+        let results = parse_results(GOLDEN_METAGER_KYLO4KYLO, "metager", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        assert!(
+            urls.is_empty(),
+            "every hit in this real capture is MetaGer's own homepage/footer/nonprofit-\
+             operator chrome, none of it a genuine organic result — a fix that leaves any \
+             leaking through is a false-positive regression: {urls:?}"
+        );
+    }
+
+    /// Golden-fixture corpus, fifth slice: Dogpile and Swisscows — now the
+    /// ENTIRE `RELIABLE_ENGINE_NAMES` core after `metager`'s demotion (the
+    /// prior slice), so a defect on either is now twice as consequential to
+    /// the pivot/recycle pass's guaranteed floor as before.
+    ///
+    /// Real live captures of both (`eingabe`/`query=Kylo4kylo`, followed
+    /// through redirects exactly as the production `curl -L` fetch path
+    /// does) surfaced the SAME defect class as the MetaGer slice: each
+    /// engine's own official social-media account bled through as a fake
+    /// organic result — Dogpile's own mascot's Facebook page, and all four
+    /// of Swisscows' branded social handles (Facebook/Instagram/LinkedIn/
+    /// Twitter). Unlike MetaGer's own-domain chrome, these sit on GENERIC
+    /// third-party platforms a real target could also have a genuine
+    /// profile on, so the fix is a specific full-path `is_tracking_url`
+    /// entry per known handle (`helpers/urls.rs`), not a blanket domain
+    /// exclusion that would also hide a real target's own social presence.
+    const GOLDEN_DOGPILE_KYLO4KYLO: &str = include_str!("testdata/dogpile_kylo4kylo.html");
+    const GOLDEN_SWISSCOWS_KYLO4KYLO: &str = include_str!("testdata/swisscows_kylo4kylo.html");
+
+    /// Pins the fix: Dogpile's own mascot Facebook page is excluded from this
+    /// real capture, not emitted as a fake organic hit. Git-stash-proven:
+    /// reverting the `is_tracking_url` addition leaks it back through.
+    #[test]
+    fn parse_results_excludes_dogpiles_own_mascot_facebook_page() {
+        let results = parse_results(GOLDEN_DOGPILE_KYLO4KYLO, "dogpile", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        assert!(
+            !urls
+                .iter()
+                .any(|u| u.to_lowercase().contains("arfiefromdogpile")),
+            "Dogpile's own mascot Facebook page must not leak through as a \
+             fake organic result: {urls:?}"
+        );
+    }
+
+    /// Pins the fix: every one of Swisscows' 4 branded social-media handles
+    /// this real capture surfaces is excluded, not emitted as fake organic
+    /// hits. Git-stash-proven: reverting the `is_tracking_url` additions
+    /// leaks all 4 back through.
+    #[test]
+    fn parse_results_excludes_swisscows_own_social_handles() {
+        let results = parse_results(GOLDEN_SWISSCOWS_KYLO4KYLO, "swisscows", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        for leak in [
+            "facebook.com/swisscows",
+            "instagram.com/swisscows.official",
+            "linkedin.com/company/swisscows",
+            "twitter.com/swisscows_ch",
+        ] {
+            assert!(
+                !urls.iter().any(|u| u.to_lowercase().contains(leak)),
+                "Swisscows' own {leak} handle must not leak through as a fake \
+                 organic result: {urls:?}"
+            );
+        }
+    }
+
+    /// Golden-fixture corpus, sixth slice: Startpage — reachable from this
+    /// sandbox and, unlike the prior five slices, exercises the `build_post`
+    /// path (Startpage is one of the few engines queried via POST rather than
+    /// GET; see `engines::EngineSpec::build_post`), previously covered only
+    /// by the hand-written `startpage_uses_post` unit test, never a full real
+    /// response body.
+    ///
+    /// A REAL Startpage response for `query=Kylo4kylo` (POST, following the
+    /// module's exact request shape) surfaced the SAME false-positive defect
+    /// class as the MetaGer/Dogpile/Swisscows slices: Startpage's own
+    /// official social-media accounts (`x.com/startpage`,
+    /// `instagram.com/startpage/`, `facebook.com/startpagesearch/`,
+    /// `reddit.com/r/StartpageSearch/`) leaked through as fake organic hits
+    /// for an unrelated query. Fixed the same way as Dogpile/Swisscows (full
+    /// path entries in `is_tracking_url`, not a blanket domain exclusion,
+    /// since these sit on generic third-party platforms a real target could
+    /// also have a genuine profile on).
+    const GOLDEN_STARTPAGE_KYLO4KYLO: &str = include_str!("testdata/startpage_kylo4kylo.html");
+
+    /// Pins the fix: none of Startpage's 4 own social-media handles leak
+    /// through, but the genuine `instagram.com/kylo4k/` hit (a real match for
+    /// the canonical seed) is still correctly extracted — proving the fix
+    /// excludes chrome without over-excluding a real result on the same
+    /// platform. Git-stash-proven: reverting the `is_tracking_url` additions
+    /// leaks all 4 handles back through.
+    #[test]
+    fn parse_results_excludes_startpages_own_social_handles() {
+        let results = parse_results(GOLDEN_STARTPAGE_KYLO4KYLO, "startpage", "Kylo4kylo");
+        let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+        for leak in [
+            "x.com/startpage",
+            "instagram.com/startpage/",
+            "facebook.com/startpagesearch",
+            "reddit.com/r/startpagesearch",
+        ] {
+            assert!(
+                !urls.iter().any(|u| u.to_lowercase().contains(leak)),
+                "Startpage's own {leak} handle must not leak through as a \
+                 fake organic result: {urls:?}"
+            );
+        }
+        assert!(
+            urls.iter().any(|u| u.contains("instagram.com/kylo4k")),
+            "the genuine instagram.com/kylo4k hit (a real match for the seed, \
+             on the SAME platform as an excluded handle) must still survive: \
+             {urls:?}"
+        );
+    }
+
+    /// The same real capture repeats each genuine result's own URL across 4
+    /// `<a href="…">` occurrences per card (a textless icon wrapper, a short
+    /// site-name anchor, a display-URL anchor, then the actual titled link
+    /// last). `extract_anchor_text` used to stop at the FIRST occurrence —
+    /// the textless icon wrapper — return empty, and fall back to a
+    /// fixed-width surrounding-text window. Confirmed against the unfixed
+    /// code (`git stash` on `helpers/text.rs` alone): that produced an
+    /// empty title for the Instagram result and, for the other 3, bled in
+    /// the PRECEDING card's own "Visit in Anonymous View" proxy-link label
+    /// instead of the real title — a genuine evidentiary defect, not a
+    /// cosmetic one. Pins the fix: every genuine result's real title (from
+    /// its own `<h2>`) is recovered, and none carry the unrelated
+    /// "Anonymous View" chrome text.
+    #[test]
+    fn parse_results_recovers_real_titles_not_the_preceding_cards_anonymous_view_label() {
+        let results = parse_results(GOLDEN_STARTPAGE_KYLO4KYLO, "startpage", "Kylo4kylo");
+        let by_url = |needle: &str| {
+            results.iter().find(|r| r.url.contains(needle)).unwrap_or_else(|| {
+                let urls: Vec<&str> = results.iter().map(|r| r.url.as_str()).collect();
+                panic!("expected a result containing {needle:?}: {urls:?}")
+            })
+        };
+        assert_eq!(
+            by_url("instagram.com/kylo4k").title,
+            "(@kylo4k) • Instagram photos and videos"
+        );
+        assert_eq!(
+            by_url("youtube.com/watch?v=56pNU92SpcE").title,
+            "The Macau Exclusive - YouTube"
+        );
+        assert_eq!(
+            by_url("nexusmods.com/starwarsbattlefront22017").title,
+            "PM IA Baylan Skoll Kit for Vader at Star Wars - Nexus Mods"
+        );
+        assert_eq!(
+            by_url("utoronto.scholaris.ca").title,
+            "Collaborative Reflection Within An Online Environment"
+        );
+        for r in &results {
+            assert!(
+                !r.title.contains("Anonymous View"),
+                "no result's title should carry Startpage's own proxy-link \
+                 label bled in from a neighbouring card: {:?} -> {:?}",
+                r.url,
+                r.title
+            );
+        }
+    }
+
+    // `testdata/you_kylo4kylo.html` is a REAL you.com response, fetched live
+    // (2026-07-14) for `GET https://you.com/search?q=Kylo4kylo&tbm=youchat` —
+    // exactly `engines::EngineSpec::build_url` for `"you"` — and checked in
+    // verbatim (55 KB, unmodified). The seventh slice of the golden-fixture
+    // corpus. This capture disproves the module's own prior doc comment,
+    // which claimed you.com "exposes a classic /search HTML view with
+    // referrer-style result anchors": the real page is a Cloudflare-gated
+    // Next.js SPA (`__NEXT_DATA__` JSON payload only) with ZERO `<a
+    // href="…">` result anchors anywhere in the body — every genuine result
+    // is hydrated client-side by JS this engine never executes. The
+    // Cloudflare challenge loader (`/cdn-cgi/challenge-platform/…`) is
+    // present verbatim, matching an existing `BLOCK_VENDOR_SIGNATURES`
+    // fingerprint, so `is_captcha_page` correctly classifies this specimen
+    // as `Blocked` rather than a fabricated "empty" success. It ALSO
+    // surfaced a real, separate chrome-leak defect: the generic
+    // href-extraction pass reads ANY `href=` attribute, not just `<a>`
+    // result anchors, and this capture's `<link rel="dns-prefetch"
+    // href="https://cdn.you.com"/>` tag leaked through as a single fake
+    // organic hit because `you.com` was never in `ENGINE_DOMAINS` — the same
+    // false-positive defect class already fixed for MetaGer/Dogpile/
+    // Swisscows/Startpage. Fixed by adding `you.com` to `ENGINE_DOMAINS`.
+    // No PII: a public engine-chrome/challenge page for the project's own
+    // canonical test seed, containing no third-party personal data.
+    const GOLDEN_YOU_KYLO4KYLO: &str = include_str!("testdata/you_kylo4kylo.html");
+
+    /// Pins the block classification against the real capture: if
+    /// `BLOCK_VENDOR_SIGNATURES` ever regresses to no longer recognise this
+    /// exact Cloudflare challenge shape, this fails instead of silently
+    /// letting `fetch_and_parse` treat a real block as an honest "empty"
+    /// result (0 organic hits from `parse_results`, which would otherwise
+    /// look identical to a genuine no-match query).
+    #[test]
+    fn is_captcha_page_detects_a_real_youcom_cloudflare_challenge_capture() {
+        assert!(
+            is_captcha_page(GOLDEN_YOU_KYLO4KYLO),
+            "the real you.com capture's Cloudflare challenge loader must be \
+             detected as a block, not silently parsed as zero genuine results"
+        );
+    }
+
+    /// Pins the `ENGINE_DOMAINS` fix: the capture's own `dns-prefetch` link
+    /// to `cdn.you.com` must never leak through `parse_results` as a fake
+    /// organic hit. Git-stash-proven: reverting the `you.com` addition to
+    /// `ENGINE_DOMAINS` makes this fail (`https://cdn.you.com` reappears as
+    /// the sole "result"); restored, it passes.
+    #[test]
+    fn parse_results_excludes_youcoms_own_cdn_chrome() {
+        let results = parse_results(GOLDEN_YOU_KYLO4KYLO, "you", "Kylo4kylo");
+        assert!(
+            results.is_empty(),
+            "you.com's own cdn.you.com dns-prefetch link must not leak \
+             through as a fake organic result: {:?}",
+            results.iter().map(|r| &r.url).collect::<Vec<_>>()
+        );
+    }

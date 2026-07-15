@@ -33,6 +33,7 @@ use async_trait::async_trait;
 use url::Url;
 
 use crate::core::{
+    classifier::Classified,
     entity::{Entity, EntityKind, Evidence},
     error::{Error, Result},
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
@@ -74,6 +75,10 @@ pub(super) struct CrawlState {
     pub(super) phones: HashSet<String>,
     /// `(canonical_id, provider)` web-analytics IDs seen across crawled pages.
     pub(super) tracking_ids: HashSet<(String, String)>,
+    /// Entities mined from embedded SPA hydration JSON (Next.js/Nuxt), one
+    /// batch per page; deduplicated once against the whole crawl in
+    /// `build_entities` (mirroring `classifier::extract`'s own dedup key).
+    pub(super) hydration_findings: Vec<Classified>,
     pub(super) frameworks: HashSet<&'static str>,
     pub(super) page_types: HashSet<&'static str>,
     pub(super) security_headers: Vec<(&'static str, bool)>,
@@ -112,6 +117,14 @@ impl Module for WebCrawler {
             EntityKind::Phone,
             EntityKind::ApiKey,
             EntityKind::TrackingId,
+            // Additional kinds `core::classifier::extract` can return when run
+            // over embedded SPA hydration JSON (see `hydration.rs`): a locator
+            // match can resolve to a validated IP, an ABN/ACN (digit-run +
+            // checksum), or a `@handle` username, none of which the crawler's
+            // other extractors ever produced before.
+            EntityKind::IpAddress,
+            EntityKind::AbnAcn,
+            EntityKind::Username,
         ];
         KINDS
     }
@@ -170,6 +183,7 @@ impl Module for WebCrawler {
             emails: HashSet::new(),
             phones: HashSet::new(),
             tracking_ids: HashSet::new(),
+            hydration_findings: Vec::new(),
             frameworks: HashSet::new(),
             page_types: HashSet::new(),
             security_headers: Vec::new(),
@@ -308,6 +322,9 @@ impl Module for WebCrawler {
             extract_phones(&body, &mut state.phones);
             extract_tracking_ids(&body, &mut state.tracking_ids);
             extract_api_keys_from_body(&body, &domain);
+            state
+                .hydration_findings
+                .extend(extract_hydration_entities(&body));
 
             if depth < max_depth {
                 extract_links(&body, &url, &base_host, &domain, &mut state);
@@ -333,6 +350,9 @@ impl Module for WebCrawler {
 
 mod crawl_util;
 use crawl_util::*;
+
+mod hydration;
+use hydration::extract_hydration_entities;
 
 fn build_entities(
     domain: &str,
@@ -434,9 +454,13 @@ fn build_entities(
     entity.add_evidence(ev);
     state.result.push(entity);
 
-    // Subdomain entities — feed back into expansion
-    state.result.extend(state.subdomains.iter().map(|sub| {
-        let mut e = Entity::new(EntityKind::Domain, sub.as_str(), 0.82, scan_id);
+    // Subdomain entities — feed back into expansion. Sorted before emission so
+    // the HashSet's randomised iteration order never leaks into entity order
+    // (the same determinism-leak class fixed for `reddit_user`/`hacker_news`).
+    let mut subs: Vec<&str> = state.subdomains.iter().map(String::as_str).collect();
+    subs.sort_unstable();
+    state.result.extend(subs.into_iter().map(|sub| {
+        let mut e = Entity::new(EntityKind::Domain, sub, 0.82, scan_id);
         e.tag(tags::WEB);
         e.tag(tags::SUBDOMAIN);
         e.add_evidence(
@@ -446,18 +470,18 @@ fn build_entities(
         e
     }));
 
-    // External domain entities
-    state
-        .result
-        .extend(state.external_domains.iter().map(|ext| {
-            let mut e = Entity::new(EntityKind::Domain, ext.as_str(), 0.50, scan_id);
-            e.tag(tags::EXTERNAL);
-            e.add_evidence(
-                Evidence::new(SRC, format!("External domain linked from {domain}"))
-                    .with_attr("source_domain", domain),
-            );
-            e
-        }));
+    // External domain entities — sorted for the same reason.
+    let mut exts: Vec<&str> = state.external_domains.iter().map(String::as_str).collect();
+    exts.sort_unstable();
+    state.result.extend(exts.into_iter().map(|ext| {
+        let mut e = Entity::new(EntityKind::Domain, ext, 0.50, scan_id);
+        e.tag(tags::EXTERNAL);
+        e.add_evidence(
+            Evidence::new(SRC, format!("External domain linked from {domain}"))
+                .with_attr("source_domain", domain),
+        );
+        e
+    }));
 
     // Email entities. A crawl that scrapes an implausible number of distinct
     // addresses has hit a directory / forum / comment-thread dump, not the
@@ -467,8 +491,10 @@ fn build_entities(
     // contact/about page (a handful of addresses) passes through.
     const CONTACT_DUMP_LIMIT: usize = 20;
     if state.emails.len() <= CONTACT_DUMP_LIMIT {
-        state.result.extend(state.emails.iter().map(|email| {
-            let mut e = Entity::new(EntityKind::Email, email.as_str(), 0.75, scan_id);
+        let mut emails: Vec<&str> = state.emails.iter().map(String::as_str).collect();
+        emails.sort_unstable();
+        state.result.extend(emails.into_iter().map(|email| {
+            let mut e = Entity::new(EntityKind::Email, email, 0.75, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Email found on {domain}"))
@@ -483,9 +509,11 @@ fn build_entities(
     // correlator count how many distinct sites carry the same id (shared id ⇒
     // common ownership). When two crawled domains share an id, both emit the same
     // TrackingId value → it merges to one entity, raising corroboration.
+    let mut tracking_ids: Vec<&(String, String)> = state.tracking_ids.iter().collect();
+    tracking_ids.sort_unstable();
     state
         .result
-        .extend(state.tracking_ids.iter().map(|(id, provider)| {
+        .extend(tracking_ids.into_iter().map(|(id, provider)| {
             let mut e = Entity::new(EntityKind::TrackingId, id.as_str(), 0.80, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.tag("web-analytics");
@@ -500,12 +528,55 @@ fn build_entities(
     // Phone entities — same dump guard (a page with dozens of numbers is a
     // directory, not the subject's).
     if state.phones.len() <= CONTACT_DUMP_LIMIT {
-        state.result.extend(state.phones.iter().map(|phone| {
-            let mut e = Entity::new(EntityKind::Phone, phone.as_str(), 0.75, scan_id);
+        let mut phones: Vec<&str> = state.phones.iter().map(String::as_str).collect();
+        phones.sort_unstable();
+        state.result.extend(phones.into_iter().map(|phone| {
+            let mut e = Entity::new(EntityKind::Phone, phone, 0.75, scan_id);
             e.tag(tags::WEB_SCRAPED);
             e.add_evidence(
                 Evidence::new(SRC, format!("Phone found on {domain}"))
                     .with_attr("source_domain", domain),
+            );
+            e
+        }));
+    }
+
+    // Hydration-JSON-derived entities (Next.js/Nuxt embedded SPA data; see
+    // hydration.rs). Deduplicated across the whole crawl on the same
+    // (kind, ascii-lowercased value) key `classifier::extract` uses internally
+    // per call — a batch is collected per page, so the same nav/footer value
+    // repeated across pages would otherwise duplicate. Same dump guard as
+    // emails/phones: a heavily-labelled page (e.g. a product catalogue) could
+    // otherwise flood the graph with unrelated structured values.
+    const HYDRATION_DUMP_LIMIT: usize = 20;
+    let mut seen_hydration: HashSet<String> = HashSet::new();
+    let mut hydration: Vec<&Classified> = Vec::new();
+    for c in &state.hydration_findings {
+        let key = format!("{}\u{1}{}", c.kind, c.value.to_ascii_lowercase());
+        if seen_hydration.insert(key) {
+            hydration.push(c);
+        }
+    }
+    if hydration.len() <= HYDRATION_DUMP_LIMIT {
+        // `EntityKind` has no `Ord` impl, so sort on the value alone — after the
+        // dedup pass above, (kind, value) pairs are already unique, so this is
+        // still a total, deterministic order (a `HashSet`'s iteration order
+        // never leaks into emission order).
+        hydration.sort_unstable_by(|a, b| a.value.cmp(&b.value));
+        state.result.extend(hydration.into_iter().map(|c| {
+            let mut e = Entity::new(c.kind.clone(), &c.value, c.confidence, scan_id);
+            e.tag(tags::WEB_SCRAPED);
+            e.tag("hydration-json");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!(
+                        "Found in {domain}'s embedded SPA hydration data ({} signal)",
+                        c.signal
+                    ),
+                )
+                .with_attr("source_domain", domain)
+                .with_attr("signal", c.signal),
             );
             e
         }));

@@ -26,6 +26,20 @@ const KEY_ENV: &str = "HUNTSMAN_NETLAS_KEY";
 
 pub struct Netlas;
 
+// No top-level `count`/total field: investigated (2026-07-14, T2.100) after a
+// systematic sweep for the T2.97-99 "parsed but never read" class flagged one
+// here too. Unlike those three, this one does NOT reproduce as a real dropped-
+// evidence bug — Netlas's `GET /api/responses/` (the exact endpoint this
+// module calls) never returns a match-total field; the total lives only on
+// the separate `GET /api/responses_count/` endpoint this module doesn't call.
+// A `count` field was previously declared and deserialized here regardless
+// (always `None` against the real API — `#[serde(default)]` silently no-ops
+// on the ever-absent key), which is worse than harmless: it invited exactly
+// the false "surface it like psbdmp's total_matches" fix this investigation
+// almost made. Deliberately not calling `responses_count/` to manufacture a
+// real value either — that's a second network round-trip against the
+// operator's key quota, a real behaviour/cost change, not a mechanical
+// evidence-disclosure fix.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct NetlasResp {
@@ -222,7 +236,13 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     let mut all_cert_domains: Vec<String> = Vec::new();
     let mut cert_orgs: Vec<String> = Vec::new();
     let mut port_list: Vec<String> = Vec::new();
-    let mut jarm_seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    // BTreeSet, not HashSet: a host can expose several JARM fingerprints (one per
+    // TLS service), but only ONE is emitted as `jarm_fingerprint`. `HashSet`
+    // iteration order is randomised per process, so `.iter().next()` picked a
+    // different fingerprint between otherwise-identical runs — breaking the
+    // byte-identical-output guarantee. Ordered set → the lexicographically
+    // smallest fingerprint, deterministically.
+    let mut jarm_seen: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut cve_list: Vec<String> = Vec::new();
     let mut tech_list: Vec<String> = Vec::new();
     let mut isp_val: Option<String> = None;
@@ -360,6 +380,7 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
                 .join(","),
         );
     }
+    // Deterministic: the smallest fingerprint of the ordered set (see `jarm_seen`).
     if let Some(j) = jarm_seen.iter().next() {
         ev = ev.with_attr("jarm_fingerprint", j);
     }
@@ -429,10 +450,14 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
     }
 
     // SSL Subject O field → Organisation entity (OV/EV certs only).
-    // Deduplicate and skip values that match the ISP already emitted.
+    // Deduplicate and skip values that match the ISP already emitted. Emit EVERY
+    // unique cert Subject O: each is a confirmed legal-entity attribution pivot,
+    // and a shared-hosting IP can present certs from several distinct
+    // organisations — a silent `.take(3)` dropped real ones, inconsistent with
+    // the uncapped SAN-domain / extracted-email loops below.
     cert_orgs.sort();
     cert_orgs.dedup();
-    for cert_org in cert_orgs.iter().take(3) {
+    for cert_org in &cert_orgs {
         let org_lc = cert_org.trim().to_ascii_lowercase();
         if org_lc.len() < 3 || isp_lc.as_deref() == Some(&org_lc) {
             continue;
@@ -481,10 +506,14 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         }
     }
 
-    // SSL/TLS SAN domains → Domain entities for BFS.
+    // SSL/TLS SAN domains → Domain entities for BFS. Emit EVERY unique SAN domain:
+    // a multi-SAN / wildcard / shared-hosting certificate lists 50-100+ domains, and
+    // the BFS frontier budget is owned by the engine/scan orchestrator (max depth /
+    // frontier cap), not this leaf module — so a silent `.take(20)` here would drop
+    // real expansion pivots the host's certificate genuinely exposes.
     all_cert_domains.sort();
     all_cert_domains.dedup();
-    for dom in all_cert_domains.iter().take(20) {
+    for dom in &all_cert_domains {
         let dom = dom.trim().trim_start_matches('*').trim_start_matches('.');
         if dom.len() >= 4 && dom.contains('.') && !dom.contains(char::is_whitespace) {
             let mut de = Entity::new(EntityKind::Domain, dom, 0.70, scan_id);
@@ -498,10 +527,13 @@ fn build_entities(body: &NetlasResp, target_value: &str, scan_id: &str) -> Modul
         }
     }
 
-    // Extracted emails → Email entities for BFS.
+    // Extracted emails → Email entities for BFS. Emit EVERY unique email: per the
+    // module docstring these are its "key differentiator … direct BFS pivot to breach
+    // stack", so a silent `.take(10)` drops real breach-stack pivots a cert/WHOIS
+    // record exposes (registrant/admin/tech/abuse contacts on a busy host).
     all_emails.sort();
     all_emails.dedup();
-    for email in all_emails.iter().take(10) {
+    for email in &all_emails {
         let email = email.to_lowercase();
         if crate::util::extract::looks_like_email(&email) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.65, scan_id);

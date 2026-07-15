@@ -180,10 +180,13 @@ impl Group {
         let mut person_uids: Vec<String> = self.persons.values().cloned().collect();
         person_uids.sort_unstable();
         uids.extend(person_uids);
-        // `handle_set` already holds the handle uids in sorted order, so reuse it
-        // directly rather than cloning `handles` and re-sorting — the emitted
-        // (sorted, bounded-to-8) order is identical to the old clone+sort path.
-        uids.extend(self.handle_set.iter().take(8).cloned());
+        // Emit EVERY reachable email/phone handle uid, not a bounded subset: these
+        // are the correlation's `entity_uids` (the actual linkage the finding
+        // asserts, not a display string), so a silent `.take(8)` dropped handles 9+
+        // of a large household / shared-line cluster from the finding with no count
+        // surfaced. `handle_set` is a BTreeSet, so the uids are already sorted (the
+        // sibling AU-051 applies no handle cap either).
+        uids.extend(self.handle_set.iter().cloned());
         uids
     }
 }
@@ -316,6 +319,19 @@ pub(in crate::core::correlator) fn rule_au_050_shared_phone_association(
     let mut out = Vec::new();
     for (phone, g) in groups {
         if g.persons.len() < 2 {
+            continue;
+        }
+        // A shared business/service line — freephone (`1800`), local-rate
+        // (`13`/`1300`) or premium (`190x`) — is an organisational desk that many
+        // unrelated people legitimately reach (a company's booking/support/office
+        // number). Two persons sharing one is NOT evidence they are associates, so
+        // it must not fire an "associate cluster; a direct pivot to reach the
+        // subject" link. Only a personal line (a mobile or a geographic fixed line)
+        // ties specific people together. Non-AU numbers stay grouped (the AU
+        // classifier returns `None`), unchanged from before.
+        if crate::util::address_au::au_phone_line_type(&phone)
+            .is_some_and(|(t, _)| t.is_business_service())
+        {
             continue;
         }
         let mut names: Vec<&str> = g.persons.keys().map(String::as_str).collect();

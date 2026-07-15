@@ -1,7 +1,7 @@
 use super::client::{build_client, build_client_with_trace};
 use super::fetch::{
-    JSON_BODY_CAP, fetch_json_probe, is_keyed_error_status, key_tail, keyed_ok_or_404,
-    retry_after_secs,
+    JSON_BODY_CAP, fetch_json_or_404, fetch_json_or_absent, fetch_json_probe,
+    is_keyed_error_status, key_tail, keyed_ok_or_404, parse_retry_after_secs, retry_after_secs,
 };
 use super::redact::{redact_credentials, redact_literal_secrets};
 use super::ssrf::{filter_public, redirect_to_private_ip};
@@ -126,7 +126,6 @@ async fn keyed_ok_or_404_classifies_miss_success_and_error() {
         http: reqwest::Client::new(),
         keys: HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let resp = |code: u16| {
         reqwest::Response::from(
@@ -188,6 +187,54 @@ async fn traced_client_sends_x_huntsman_trace_header() {
     assert!(
         req.contains("x-huntsman-trace: scan-abc123"),
         "trace header missing; raw request was:\n{req}"
+    );
+}
+
+#[tokio::test]
+async fn fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // A one-shot local server that answers with HTTP 400 + a Bluesky-shaped body.
+    async fn serve_one_400() -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = br#"{"error":"InvalidRequest","message":"Profile not found"}"#;
+            let head = format!(
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    let client = build_client();
+
+    // fetch_json_or_absent: a 400 "not found" is a clean negative (Ok(None)) — a
+    // non-existent Bluesky handle no longer trips the module breaker.
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
+    let addr = serve_one_400().await;
+    let absent: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_absent(&client, "test_absent", &format!("http://{addr}/")).await;
+    assert!(
+        matches!(absent, Ok(None)),
+        "400 must map to Ok(None) for fetch_json_or_absent, got {absent:?}"
+    );
+
+    // fetch_json_or_404: a 400 is NOT a 404, so it stays a visible module error.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let addr = serve_one_400().await;
+    let errored: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&client, "test_404", &format!("http://{addr}/")).await;
+    assert!(
+        errored.is_err(),
+        "400 must remain an error for the 404-only helper, got {errored:?}"
     );
 }
 
@@ -363,6 +410,24 @@ fn retry_after_ignores_unparseable_header() {
 }
 
 #[test]
+fn parse_retry_after_secs_matches_the_header_map_variant_it_was_extracted_from() {
+    // parse_retry_after_secs exists so a non-reqwest HTTP client (a raw curl
+    // subprocess) can honour a real Retry-After too — pin that it behaves
+    // identically to retry_after_secs given the equivalent extracted value,
+    // so the two never silently drift apart.
+    assert_eq!(parse_retry_after_secs(None, 5, 10), 5);
+    assert_eq!(parse_retry_after_secs(Some("3"), 5, 10), 3);
+    assert_eq!(parse_retry_after_secs(Some("600"), 5, 10), 10);
+    assert_eq!(parse_retry_after_secs(None, 99, 6), 6);
+    assert_eq!(parse_retry_after_secs(Some("soon"), 7, 30), 7);
+    assert_eq!(
+        parse_retry_after_secs(Some(" 12 "), 5, 30),
+        12,
+        "trims whitespace"
+    );
+}
+
+#[test]
 fn redact_strips_api_key_query_param() {
     let s = "HTTP 400: Invalid request: domain=&api_key=SECRET_KEY_123";
     let r = redact_credentials(s);
@@ -445,7 +510,7 @@ fn key_scan_tokeniser_bounds_query_string_keys_cleanly() {
             .any(|t: &&str| t.contains('&') || t.contains('?')),
         "no token may carry query separators: {tokens:?}"
     );
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
     let (svc, val) = identify_api_key("AKIAJK28SLQQV61MNG9X").expect("real-shape AWS key");
     assert_eq!(svc, "aws");
     assert_eq!(val, "AKIAJK28SLQQV61MNG9X");

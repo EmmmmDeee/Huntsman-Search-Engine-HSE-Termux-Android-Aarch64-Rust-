@@ -8,7 +8,8 @@
 //! ```json
 //! {"user":{"id":1,"login":"alice","name":"Alice Smith",
 //!          "avatar":"https://avatars.githubusercontent.com/u/1",
-//!          "url":"https://github.com/alice"}}
+//!          "url":"https://github.com/alice",
+//!          "created_at":"2012-07-09T03:55:40Z"}}
 //! ```
 //!
 //! Why it earns a place in the keyless-API set: it confirms the handle on a
@@ -52,6 +53,14 @@ struct CrateUser {
     /// pivot the response carried but the module previously discarded.
     #[serde(default)]
     avatar: Option<String>,
+    /// Account-creation timestamp (ISO-8601, e.g. `2012-07-09T03:55:40Z`). The
+    /// live `/api/v1/users/{login}` response carries this on every real account
+    /// (confirmed against `dtolnay`/`alexcrichton`), but the module previously
+    /// dropped it — surfaced as the `created_at` evidence attr, matching the
+    /// account-age signal the sibling `code`-registry modules (`gitea_user`,
+    /// `codeberg_user`, `hexpm_user`) already record.
+    #[serde(default)]
+    created_at: Option<String>,
 }
 
 /// Map a decoded crates.io user record to its entities. **Pure** (no network),
@@ -92,6 +101,9 @@ fn build_entities(body: &UserResp, scan_id: &str) -> Vec<Entity> {
         .filter(|a| a.starts_with("http://") || a.starts_with("https://"))
     {
         ev = ev.with_attr("avatar_url", av);
+    }
+    if let Some(ts) = user.created_at.as_deref().filter(|t| !t.is_empty()) {
+        ev = ev.with_attr("created_at", ts);
     }
     u.add_evidence(ev);
     result.push(u);

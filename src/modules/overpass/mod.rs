@@ -126,14 +126,28 @@ fn build_entities(coord: &str, elements: &[OsmElement], scan_id: &str) -> Vec<En
     );
     out.push(summary);
 
+    // Category breakdown over EVERY discovered node, not just the emitted subset:
+    // the summary's `node_count` reports the true total, so the breakdown must
+    // agree with it. Counting inside the `take(MAX_NODES)` loop below would report
+    // a distribution over only the first MAX_NODES while `node_count` showed the
+    // full total — a self-contradictory aggregate for a dense (>MAX_NODES) query.
     let mut categories: std::collections::BTreeMap<&str, u32> = std::collections::BTreeMap::new();
+    for elem in elements {
+        if let Some(tags) = &elem.tags {
+            *categories.entry(classify_element(tags)).or_default() += 1;
+        }
+    }
+
+    // Emit one Coordinates entity per LOCATED node, bounded at MAX_NODES to avoid
+    // flooding the graph near a dense coordinate. The full node count and the
+    // complete category breakdown are already surfaced on the summary above, so
+    // this bound loses no aggregate information — only the individual far-node
+    // points beyond the cap.
     for elem in elements.iter().take(MAX_NODES) {
         let Some(tags) = &elem.tags else {
             continue;
         };
         let category = classify_element(tags);
-        *categories.entry(category).or_default() += 1;
-
         if let Some((nlat, nlon)) = elem.coords()
             && crate::util::geo::is_valid_coords(nlat, nlon)
         {
@@ -195,7 +209,12 @@ impl Module for Overpass {
         matches!(t.kind, TargetKind::Coordinates)
     }
     fn max_timeout_ms(&self) -> u64 {
-        30_000
+        // The query itself is server-documented [timeout:25] (up to 25s of
+        // Overpass-side execution). A 429 retry (see `process`) can now
+        // mean a second full query execution after a short bounded sleep —
+        // budget for two worst-case query executions plus the sleep and
+        // headroom, not just one.
+        58_000
     }
 
     fn category(&self) -> ModuleCategory {
@@ -227,7 +246,7 @@ impl Module for Overpass {
 out center;"#
         );
 
-        let resp = ctx
+        let mut resp = ctx
             .http
             .post("https://overpass-api.de/api/interpreter")
             .header("Content-Type", "application/x-www-form-urlencoded")
@@ -235,10 +254,28 @@ out center;"#
             .send_tagged(SRC)
             .await?;
 
-        let status = resp.status();
-        if status.as_u16() == 429 {
-            return Ok(ModuleResult::new());
+        // A 429 here used to degrade straight to Ok(empty) — indistinguishable
+        // from "nothing found nearby" — with no retry, no backoff, and no
+        // circuit-breaker engagement (this module calls send_tagged directly
+        // rather than the shared fetch_json_inner/fetch_keyed_json helpers
+        // every rate-limit-aware module routes through). Honour a real
+        // server Retry-After (kept short — Overpass is a shared public
+        // resource and this query is server-documented as expensive, so this
+        // retries once, not aggressively) before giving up; a second 429 is
+        // now a real, surfaced error instead of a silent empty success.
+        if resp.status().as_u16() == 429 {
+            let delay = crate::util::http::retry_after_secs(resp.headers(), 2, 4);
+            tokio::time::sleep(std::time::Duration::from_secs(delay)).await;
+            resp = ctx
+                .http
+                .post("https://overpass-api.de/api/interpreter")
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .body(format!("data={}", crate::util::http::urlencode(&query)))
+                .send_tagged(SRC)
+                .await?;
         }
+
+        let status = resp.status();
         if !status.is_success() {
             return Err(Error::module(SRC, format!("HTTP {status}")));
         }

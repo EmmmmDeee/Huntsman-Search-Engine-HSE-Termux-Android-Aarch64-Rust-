@@ -74,6 +74,11 @@ pub async fn scan_timeline(
     let recency = tenure
         .as_ref()
         .map(|t| crate::core::timeline::footprint_recency(t.latest_ts, now));
+    // Movement path: chronologically walks the timeline's own `LocationVisited`
+    // fixes (currently `exif_geo`'s dated GPS extractions) into a "was at A,
+    // then B, C km apart" reconstruction — `None` when fewer than 2 dated
+    // fixes exist, so a single photo never fabricates a "path".
+    let movement = crate::core::timeline::movement_path(&events);
     let count = events.len();
     (
         StatusCode::OK,
@@ -82,6 +87,7 @@ pub async fn scan_timeline(
             "count": count,
             "tenure": tenure,
             "recency": recency,
+            "movement": movement,
         })),
     )
         .into_response()

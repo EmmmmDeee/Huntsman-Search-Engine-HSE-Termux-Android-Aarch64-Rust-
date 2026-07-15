@@ -1,8 +1,10 @@
 use super::account::{
     ProfileUserResp, WigleAccountStatus, account_status, account_status_cache, is_unverified,
-    status_from_profile,
+    mark_unverified, mark_verified, status_from_profile,
 };
-use super::emit::{emit_bssid_entities, extract_bluetooth_intel, extract_cell_intel};
+use super::emit::{
+    emit_bssid_entities, emit_ssid_entities, extract_bluetooth_intel, extract_cell_intel,
+};
 use super::*;
 use crate::core::{
     entity::EntityKind,
@@ -387,6 +389,15 @@ fn extract_cell_intel_emits_coordinates_for_towers_with_position() {
         coords[0].value.starts_with("-27.4766"),
         "proximity sort: closest tower first"
     );
+    // The total distinct tower positions is surfaced on the coordinates evidence
+    // (so the top-3 bound is visible even when the carrier Org is suppressed).
+    assert!(
+        coords[0].evidence.iter().any(|ev| ev
+            .attributes
+            .get("tower_positions_observed")
+            .is_some_and(|n| n == "3")),
+        "coordinates surface the total observed tower-position count"
+    );
 }
 
 #[test]
@@ -418,7 +429,47 @@ fn extract_bluetooth_intel_emits_at_most_three_mac_entities() {
     for e in &r.entities {
         assert_eq!(e.kind, EntityKind::MacAddress);
         assert!(e.has_tag("bluetooth-beacon"));
+        // The total beacons observed (5) is surfaced so the 3-beacon bound is
+        // visible, not a silent drop.
+        assert!(
+            e.evidence.iter().any(|ev| ev
+                .attributes
+                .get("beacons_observed")
+                .is_some_and(|n| n == "5")),
+            "each beacon entity surfaces the total observed count"
+        );
     }
+}
+
+#[test]
+fn emit_ssid_entities_surfaces_all_admitted_location_fixes() {
+    // An SSID admitted as unique can have up to SSID_UNIQUE_MAX (20) global
+    // observations; every one is a subject-location fix that must be emitted. A
+    // former SSID_RESULT_CAP of 10 (below the admission gate) dropped up to half.
+    let results: Vec<Network> = (0..15)
+        .map(|i| Network {
+            ssid: Some("HaigenHomeWiFi".to_string()),
+            netid: Some(format!("AA:BB:CC:DD:EE:{i:02X}")),
+            encryption: None,
+            lastupdt: None,
+            trilat: Some(-27.4766 - f64::from(i) * 0.001),
+            trilong: Some(153.0166 + f64::from(i) * 0.001),
+            city: None,
+            region: None,
+            country: None,
+            postalcode: None,
+        })
+        .collect();
+    let r = emit_ssid_entities("HaigenHomeWiFi", &results, "test-scan");
+    let coords = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Coordinates)
+        .count();
+    assert_eq!(
+        coords, 15,
+        "every admitted SSID location fix is emitted, not capped below the admission gate"
+    );
 }
 
 #[test]
@@ -546,6 +597,42 @@ fn account_status_state_transitions_and_unverified_detection() {
     assert!(json.contains("\"user\":\"MattDieg\""));
 }
 
+/// A stale `unverified` latch from an earlier 412 must self-correct the
+/// moment a later query succeeds — `mark_verified` is the symmetric
+/// counterpart of `mark_unverified`, both learned from live traffic in
+/// `fetch.rs::classify_and_decode`, never a dedicated poll.
+#[test]
+fn mark_verified_clears_a_stale_unverified_latch() {
+    struct CacheGuard;
+    impl Drop for CacheGuard {
+        fn drop(&mut self) {
+            if let Ok(mut g) = account_status_cache().lock() {
+                *g = WigleAccountStatus::default();
+            }
+        }
+    }
+    let _guard = CacheGuard;
+
+    // Simulate an earlier 412: the account looks unverified.
+    mark_unverified(1_000);
+    assert!(is_unverified(), "a 412 must latch unverified");
+
+    // A later query succeeds — e.g. the operator completed WiGLE's
+    // email-verify step mid-process — and must un-latch the stale flag.
+    mark_verified(2_000);
+    assert!(
+        !is_unverified(),
+        "a successful query must clear the stale unverified latch"
+    );
+    let s = account_status();
+    assert_eq!(s.verified, Some(true));
+    assert_eq!(
+        s.last_polled_ts,
+        Some(2_000),
+        "last_polled_ts tracks the most recent signal, not the first"
+    );
+}
+
 #[test]
 fn profile_user_resp_parses_real_wigle_person_shape() {
     let json = r#"{
@@ -670,4 +757,119 @@ fn is_generic_ssid_rejects_custom_names() {
     assert!(!is_generic_ssid("Smith-Family"));
     assert!(!is_generic_ssid("Bamford-Residence"));
     assert!(!is_generic_ssid(""));
+}
+
+/// A one-shot local server: first connection answers 429 with a real
+/// `Retry-After` header, second answers 200. Returns the address plus a
+/// counter the caller can read after the exchange to confirm a retry
+/// actually happened (not just a single request).
+async fn serve_429_then_200(
+    retry_after_secs: u64,
+) -> (
+    std::net::SocketAddr,
+    std::sync::Arc<std::sync::atomic::AtomicU32>,
+) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let hits = Arc::new(AtomicU32::new(0));
+    let hits_srv = hits.clone();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let n = hits_srv.fetch_add(1, Ordering::SeqCst);
+            if n == 0 {
+                let body = b"{}";
+                let head = format!(
+                    "HTTP/1.1 429 Too Many Requests\r\nRetry-After: {retry_after_secs}\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            } else {
+                let body = br#"{"success":true,"resultCount":0,"results":[]}"#;
+                let head = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+                    body.len()
+                );
+                let _ = sock.write_all(head.as_bytes()).await;
+                let _ = sock.write_all(body).await;
+            }
+            let _ = sock.flush().await;
+        }
+    });
+    (addr, hits)
+}
+
+#[tokio::test]
+async fn get_with_retry_recovers_from_a_429_using_the_servers_real_retry_after() {
+    // Regression: `retry_secs` used to be computed from the response purely to
+    // log it, then thrown away — the module failed on the FIRST 429 with no
+    // retry at all, discarding a real, server-specified cooldown. Now a 429
+    // retries once, honouring the server's own (bounded) Retry-After.
+    let (addr, hits) = serve_429_then_200(1).await;
+    let client = reqwest::Client::new();
+    let started = std::time::Instant::now();
+    let resp = get_with_retry(&client, "user", "token", &format!("http://{addr}/"))
+        .await
+        .expect("must recover on the retried request");
+    let elapsed = started.elapsed();
+
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_eq!(
+        hits.load(std::sync::atomic::Ordering::SeqCst),
+        2,
+        "must have retried exactly once, not given up after the first 429"
+    );
+    assert!(
+        elapsed >= std::time::Duration::from_millis(900),
+        "must actually wait for the server's real 1s Retry-After, not skip the sleep: {elapsed:?}"
+    );
+    assert!(
+        elapsed < std::time::Duration::from_secs(3),
+        "must use the server's short real hint, not the old up-to-120s ceiling: {elapsed:?}"
+    );
+}
+
+#[tokio::test]
+async fn get_with_retry_gives_up_after_one_retry_on_a_persistent_429() {
+    // A second consecutive 429 must still surface as an error (no infinite
+    // retrying) — the module-level circuit breaker's soft/hard classification
+    // takes over from there, exactly as before this fix.
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        for _ in 0..2 {
+            let Ok((mut sock, _)) = listener.accept().await else {
+                return;
+            };
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = b"{}";
+            let head = format!(
+                "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 1\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        }
+    });
+
+    let client = reqwest::Client::new();
+    let err = get_with_retry(&client, "user", "token", &format!("http://{addr}/"))
+        .await
+        .expect_err("a persistent 429 must still fail after the one retry");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "must classify as RateLimited so the shared circuit breaker paces it correctly: {err:?}"
+    );
 }

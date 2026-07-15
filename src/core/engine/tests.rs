@@ -466,6 +466,44 @@ async fn module_panic_is_contained_as_error_not_process_abort() {
     }
 }
 
+#[test]
+fn finalise_correlation_pass_survives_a_panicking_rule() {
+    use crate::core::correlator::Correlation;
+
+    // Error-tree ECS-2: the finalise-time correlation pass must not be able to
+    // abort `finalise_scan`. A rule panicking on adversarial persisted data (a
+    // slice-index bug over a crafted entity) previously unwound the whole finalise
+    // block — losing the terminal `ScanComplete` event and the API-key pool the
+    // scan harvested. The guard degrades a caught panic to `None` (no finalise
+    // correlations), exactly as the live incremental pass does, so the scan still
+    // finalises.
+    let panicked = guarded_finalise_correlation("s", || panic!("kaboom in a correlation rule"));
+    assert!(
+        panicked.is_none(),
+        "a panicking finalise pass must be caught and degrade to no firings, not unwind"
+    );
+
+    // A returned error is likewise swallowed to `None` (unchanged behaviour).
+    let errored = guarded_finalise_correlation("s", || Err(Error::module("correlator", "boom")));
+    assert!(errored.is_none(), "a returned error yields no firings");
+
+    // The happy path passes the firings straight through for emission.
+    let ok = guarded_finalise_correlation("s", || {
+        Ok(vec![Correlation::new(
+            "AU-000",
+            "test correlation",
+            crate::core::correlator::Severity::Low,
+            "synthetic".to_string(),
+            vec!["uid-a".into(), "uid-b".into()],
+            "s",
+            0,
+        )])
+    })
+    .expect("a successful pass returns Some(firings)");
+    assert_eq!(ok.len(), 1);
+    assert_eq!(ok[0].rule_id, "AU-000");
+}
+
 #[tokio::test]
 async fn run_module_guarded_passes_success_and_error_through() {
     use crate::core::module::ModuleResult;
@@ -831,6 +869,83 @@ fn circuit_breaker_trip_skips_the_module_at_the_dispatch_gate() {
     assert!(
         module_skip_reason(&m, &pub_target(), &opts, false, 0).is_none(),
         "a recovered module must dispatch again"
+    );
+}
+
+#[tokio::test]
+async fn cache_replay_does_not_feed_the_circuit_breaker_success_path() {
+    use crate::core::module::ModuleResult;
+    use crate::core::test_support::InMemoryStore;
+
+    // A cache REPLAY makes no provider call, so it must be invisible to the
+    // breaker: recording a success on it would clear a failure streak the live
+    // calls legitimately earned this scan, masking a degrading provider. Drive
+    // the real `finalise_module_result` with from_cache=true and prove the streak
+    // survives; contrast with a real dispatch (from_cache=false) that clears it.
+    // Unique module names keep this independent of the process-global breaker
+    // state the other tests touch.
+    let store: Arc<dyn StoragePort> = Arc::new(InMemoryStore::new());
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store, bus);
+
+    let target = Target::new(TargetKind::Email, "seed@gmail.com");
+    let opts = ScanOptions::default();
+    let cx = DispatchCx {
+        scan_id: "replay-scan",
+        target: &target,
+        opts: &opts,
+        is_expansion: false,
+        seed_kind: TargetKind::Email,
+    };
+    let mut entity_map: HashMap<String, Entity> = HashMap::new();
+    let mut stats = ModuleStats::default();
+    let mut dispatched: DispatchLog = DispatchLog::new();
+    let mut newly_inserted: Vec<String> = Vec::new();
+    let mut state = DispatchState {
+        entity_map: &mut entity_map,
+        stats: &mut stats,
+        dispatched: &mut dispatched,
+        newly_inserted: &mut newly_inserted,
+    };
+
+    // ── Replay path: the streak MUST survive ────────────────────────────────
+    let replayed = "test_replay_breaker_cached";
+    super::circuit::record_soft_failure(replayed);
+    super::circuit::record_soft_failure(replayed); // streak = 2 (threshold 3)
+    assert!(
+        !super::circuit::is_open(replayed),
+        "a streak of 2 must not have tripped yet"
+    );
+    engine.finalise_module_result(
+        &cx,
+        replayed,
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        true, // from_cache
+    );
+    super::circuit::record_soft_failure(replayed); // streak → 3 iff the replay left it
+    assert!(
+        super::circuit::is_open(replayed),
+        "a cache replay must NOT reset the streak — the 3rd real failure must trip the breaker"
+    );
+
+    // ── Real-dispatch path: the streak IS cleared (regression contrast) ──────
+    let dispatched_name = "test_replay_breaker_real";
+    super::circuit::record_soft_failure(dispatched_name);
+    super::circuit::record_soft_failure(dispatched_name); // streak = 2
+    engine.finalise_module_result(
+        &cx,
+        dispatched_name,
+        Ok(Ok(ModuleResult::new())),
+        &mut state,
+        &[],
+        false, // real dispatch → record_success clears the streak
+    );
+    super::circuit::record_soft_failure(dispatched_name); // streak → 1 after a clear
+    assert!(
+        !super::circuit::is_open(dispatched_name),
+        "a real dispatch clears the streak, so a single later failure must not trip it"
     );
 }
 
@@ -1466,7 +1581,6 @@ async fn run_bench_scan(max_entities: usize) -> (usize, std::time::Duration) {
         http: crate::util::http::build_client(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
     let start = std::time::Instant::now();
     let _ = engine.run(scan, target, ctx).await;
@@ -1629,6 +1743,78 @@ fn rank_recalled_and_cap_truncation_is_order_independent_on_ties() {
     assert_eq!(
         a_uids, b_uids,
         "the surviving 300 entities must be identical regardless of incoming order"
+    );
+}
+
+/// Recall's confidence-DESC sort must carry a total, deterministic tie-break so
+/// equal-confidence nodes come back in a fixed order — otherwise WHICH of them
+/// survive the internal `truncate(MAX_ENTITIES)` boundary cut is decided by
+/// `HashMap` iteration order (`merged.into_values()`), leaking non-determinism
+/// into the persisted working set. The tie-break is `uid` ascending, so a run of
+/// same-confidence recalled entities must emerge uid-sorted, identically on every
+/// call even though each call rebuilds the `merged` map (fresh random seed).
+/// Complements [`rank_recalled_and_cap_truncation_is_order_independent_on_ties`]
+/// above (pure-function unit test) with the same property proven end-to-end
+/// through the real `ScanEngine`/store recall path.
+#[tokio::test]
+async fn recall_prior_entities_tie_breaks_equal_confidence_by_uid() {
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    use crate::core::test_support::InMemoryStore;
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+
+    // A prior scan whose seed Username anchors the recall, plus 24 discovered
+    // emails ALL at the same confidence. Their uids (hex(SHA-256("email:...")))
+    // scatter relative to insertion order, so only an explicit uid tie-break can
+    // make the recalled run monotonic — a stable sort alone preserves the
+    // randomised HashMap order.
+    let seed = Entity::new(EntityKind::Username, "tiebreaksubject", 0.95, "prior-scan");
+    store.upsert_entity(&seed).unwrap();
+    for i in 0..24u32 {
+        let mut email = Entity::new(
+            EntityKind::Email,
+            format!("tiebreak{i:02}@example.com"),
+            0.8,
+            "prior-scan",
+        );
+        email.add_evidence(Evidence::new("plant", "found in an earlier scan"));
+        store.upsert_entity(&email).unwrap();
+    }
+
+    let (bus, _rx) = tokio::sync::broadcast::channel(8);
+    let engine = ScanEngine::new(vec![], store_port, bus);
+    let target = Target::new(TargetKind::Username, "tiebreaksubject");
+
+    // The uid sequence of the equal-confidence emails, in recalled order.
+    let email_uids = |recalled: &[Entity]| -> Vec<String> {
+        recalled
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| e.uid.clone())
+            .collect::<Vec<_>>()
+    };
+
+    let first = engine.recall_prior_entities(&target, "current-scan", true);
+    let first_uids = email_uids(&first);
+    assert_eq!(
+        first_uids.len(),
+        24,
+        "every planted email is recalled — no cap loses any at this size"
+    );
+    let mut sorted = first_uids.clone();
+    sorted.sort();
+    assert_eq!(
+        first_uids, sorted,
+        "equal-confidence recalled entities emerge uid-ascending, not in HashMap order"
+    );
+
+    // Rebuild-independence: a second recall constructs a fresh `merged` HashMap
+    // (new random seed) yet must yield the identical order.
+    let second = email_uids(&engine.recall_prior_entities(&target, "current-scan", true));
+    assert_eq!(
+        first_uids, second,
+        "recall order is deterministic across calls despite the internal HashMap"
     );
 }
 
@@ -1826,7 +2012,6 @@ async fn admitted_entities_are_stamped_with_their_modules_attack_techniques() {
             http: crate::util::http::build_client(),
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
         let cx = DispatchCx {
@@ -1964,7 +2149,6 @@ async fn concurrent_dispatch_stops_near_max_entities_not_after_the_full_module_s
         http: crate::util::http::build_client(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     };
     let cx = DispatchCx {
         scan_id: "overdispatch-scan",
@@ -2167,65 +2351,6 @@ fn enrich_offline_geo_is_a_noop_without_geocodable_addresses() {
         before,
         "non-geo entities must not spawn coordinates"
     );
-}
-
-/// Autonomous-operation seed selection: with no operator input, the platform
-/// picks the highest cross-investigation-leverage identifier that maps to a scan
-/// target — skipping any non-pivotable kind, and `None` only on an empty base.
-#[test]
-fn autonomous_seed_picks_the_highest_leverage_pivotable_identifier() {
-    use super::{LeverageRanked, autonomous_seed};
-    use crate::core::entity::EntityKind;
-    use crate::core::scan::TargetKind;
-    // Strongest-first, as rank_enrichment_leverage returns: the top pivotable wins.
-    let ranked = vec![
-        LeverageRanked {
-            entity_uid: "u1".into(),
-            kind: EntityKind::Email,
-            value: "a@b.com".into(),
-            cross_scan_degree: 5,
-        },
-        LeverageRanked {
-            entity_uid: "u2".into(),
-            kind: EntityKind::Phone,
-            value: "+61400000000".into(),
-            cross_scan_degree: 3,
-        },
-    ];
-    assert_eq!(
-        autonomous_seed(&ranked),
-        Some((TargetKind::Email, "a@b.com".to_string()))
-    );
-}
-
-#[test]
-fn autonomous_seed_skips_non_pivotable_kinds() {
-    use super::{LeverageRanked, autonomous_seed};
-    use crate::core::entity::EntityKind;
-    use crate::core::scan::TargetKind;
-    let ranked = vec![
-        LeverageRanked {
-            entity_uid: "u0".into(),
-            kind: EntityKind::Credential, // not a scan target
-            value: "secret".into(),
-            cross_scan_degree: 9,
-        },
-        LeverageRanked {
-            entity_uid: "u1".into(),
-            kind: EntityKind::Username,
-            value: "alice".into(),
-            cross_scan_degree: 2,
-        },
-    ];
-    assert_eq!(
-        autonomous_seed(&ranked),
-        Some((TargetKind::Username, "alice".to_string()))
-    );
-}
-
-#[test]
-fn autonomous_seed_is_none_on_an_empty_base() {
-    assert_eq!(super::autonomous_seed(&[]), None);
 }
 
 /// The composite autonomous priority must reward all three axes: stronger pivot
@@ -2546,5 +2671,173 @@ fn identity_aware_ranking_honours_exclude_per_member() {
     assert!(
         rank_identity_aware_targets(&ents, &rels, degree_of, &ex, 10).is_empty(),
         "an all-excluded identity is gone, so the loop converges"
+    );
+}
+
+/// Direct coverage of the entity-admission drop-filter policy, extracted from
+/// `finalise_module_result` into the pure `admission_rejection` so it is testable
+/// in isolation (previously every filter was exercised only end-to-end). One case
+/// per filter proves the reason string, plus the load-bearing ordering.
+#[test]
+fn admission_rejection_covers_every_drop_filter_and_order() {
+    use crate::core::entity::{Entity, EntityKind};
+    use crate::core::scan::TargetKind;
+
+    let ent = |k: EntityKind, v: &str, c: f64| Entity::new(k, v, c, "adm-test");
+    // Identity seed so the incidental-infra gate is active (infrastructure-seeded
+    // scans are exempt from it — there the infra IS the subject).
+    let seed = TargetKind::FullName;
+
+    // A clean, confident identity finding is admitted (no gate trips).
+    assert_eq!(
+        admission_rejection(seed, Some(0.3), &ent(EntityKind::Person, "Jane Smith", 0.9)),
+        None,
+        "a clean identity finding must be admitted",
+    );
+
+    // One representative per drop-filter, each yielding its reason string.
+    assert_eq!(
+        admission_rejection(seed, Some(0.5), &ent(EntityKind::Email, "jane@ok.com", 0.1)),
+        Some("below_min_confidence"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::IpAddress, "198.18.0.1", 0.9)),
+        Some("bogus_ip"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Domain, "example.com", 0.9)),
+        Some("placeholder_artifact"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Email, "@gmail", 0.9)),
+        Some("fragment_value"),
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Phone, "+1240893", 0.9)),
+        Some("implausible_phone"),
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Email, "admin@bendigobank.com.au", 0.9)
+        ),
+        Some("incidental_infra"),
+        "a role mailbox on an identity scan is incidental infrastructure",
+    );
+    assert_eq!(
+        admission_rejection(
+            seed,
+            None,
+            &ent(EntityKind::Organisation, "p\u{0430}ypal.com", 0.9)
+        ),
+        Some("confusable_homoglyph"),
+        "a Cyrillic-spoofed value is a homoglyph",
+    );
+    assert_eq!(
+        admission_rejection(seed, None, &ent(EntityKind::Person, "ZonJZRJHHWD", 0.9)),
+        Some("gibberish_value"),
+    );
+
+    // ORDER is load-bearing: an entity that trips MULTIPLE gates reports the
+    // FIRST (cheapest / most-decisive) — a below-confidence bogus IP is rejected
+    // as below_min_confidence, not bogus_ip.
+    assert_eq!(
+        admission_rejection(
+            seed,
+            Some(0.5),
+            &ent(EntityKind::IpAddress, "198.18.0.1", 0.1)
+        ),
+        Some("below_min_confidence"),
+        "the earliest gate in the chain wins",
+    );
+}
+
+/// A completed scan with a `webhook_url` configured must POST the `scan_complete`
+/// payload to it. This is the wiring `finalise_scan` was missing: the CLI/live
+/// paths thread `HUNTSMAN_WEBHOOK_URL` into `ScanOptions.webhook_url`, but the
+/// engine never fired the POST, so a configured webhook silently never arrived.
+/// Git-stash-proven: against the unfixed engine no connection is made and the
+/// `recv_timeout` below elapses, failing the test.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn scan_completion_fires_the_configured_webhook() {
+    use crate::core::test_support::InMemoryStore;
+    use std::io::{Read, Write};
+    use std::sync::mpsc;
+
+    // One-shot local HTTP sink on an ephemeral port: accept a single connection,
+    // read the request, reply 200, and hand the raw request back over a channel.
+    // Blocking IO on a std thread, off the async runtime.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let (tx, rx) = mpsc::channel::<String>();
+    let sink = std::thread::spawn(move || {
+        if let Ok((mut sock, _)) = listener.accept() {
+            sock.set_read_timeout(Some(std::time::Duration::from_secs(2)))
+                .ok();
+            let mut acc = Vec::new();
+            let mut buf = [0u8; 2048];
+            // reqwest may flush headers and body separately — accumulate until the
+            // JSON body is present (or the peer stops / times out).
+            for _ in 0..10 {
+                match sock.read(&mut buf) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        acc.extend_from_slice(&buf[..n]);
+                        if String::from_utf8_lossy(&acc).contains("scan_complete") {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            let _ = sock.write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 2\r\n\r\nok");
+            let _ = tx.send(String::from_utf8_lossy(&acc).to_string());
+        }
+    });
+
+    let store = Arc::new(InMemoryStore::new());
+    let store_port: Arc<dyn StoragePort> = store.clone();
+    let (bus, _rx) = tokio::sync::broadcast::channel(64);
+    let engine = ScanEngine::new(vec![], store_port, bus.clone());
+    let opts = ScanOptions {
+        webhook_url: Some(format!("http://127.0.0.1:{port}/hook/secret")),
+        // Pin regional OFF so this test doesn't flip the process-global regional
+        // search flag (`set_regional`, driven from `regional_search`) that the
+        // `search_engines::build_queries` unit tests read — otherwise running a
+        // real scan here races those tests in the concurrent runner.
+        regional_search: false,
+        ..Default::default()
+    };
+    let target = Target::new(TargetKind::Username, "seed");
+    let scan = Scan::new(
+        crate::core::entity::scan_id("username", "seed"),
+        target.clone(),
+    )
+    .with_options(opts);
+    let ctx = ModuleContext {
+        scan_id: scan.id.clone(),
+        bus,
+        http: crate::util::http::build_client(),
+        keys: std::collections::HashMap::new(),
+        cancel: crate::core::cancel::CancelHandle::new(),
+    };
+    let _ = engine.run(scan, target, ctx).await;
+
+    let req = rx
+        .recv_timeout(std::time::Duration::from_secs(5))
+        .expect("a scan_complete webhook POST must arrive after the scan finalises");
+    sink.join().ok();
+    assert!(
+        req.starts_with("POST "),
+        "expected an HTTP POST, got:\n{req}"
+    );
+    assert!(
+        req.contains("\"event\":\"scan_complete\""),
+        "webhook body must be the scan_complete event:\n{req}"
+    );
+    assert!(
+        req.contains("\"target_value\":\"seed\""),
+        "webhook body must carry the seed target:\n{req}"
     );
 }

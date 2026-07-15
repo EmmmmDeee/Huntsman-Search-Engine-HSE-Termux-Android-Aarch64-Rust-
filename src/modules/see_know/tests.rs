@@ -56,6 +56,47 @@ use crate::core::entity::Entity;
     }
 
     #[test]
+    fn search_subject_present_gates_on_a_real_match() {
+        use serde_json::json;
+        // T2.36-pattern regression: a broad `full_name` `/search` page of pure
+        // term-sharing strangers must not read as "subject present" — the
+        // caller would otherwise mint a 0.85 BREACH parent that merges (via
+        // `absorb`, GREATEST semantics) straight onto the pre-seeded subject
+        // anchor regardless of whether any row actually concerns them.
+        let strangers: Vec<serde_json::Value> = (0..5)
+            .map(|i| {
+                json!({
+                    "full_name": format!("Stranger {i}"),
+                    "country": "ZZ",
+                })
+            })
+            .collect();
+        assert!(
+            !search_subject_present("Ali Kareem", &strangers),
+            "a page of strangers must not read as subject-present"
+        );
+
+        // When the subject's own row is present, the gate opens.
+        let mut page = strangers.clone();
+        page.push(json!({"full_name": "Ali Kareem", "country": "AU"}));
+        assert!(
+            search_subject_present("Ali Kareem", &page),
+            "the subject's own row must open the gate"
+        );
+
+        // Exact-selector kinds (email/phone/domain/IP) trivially match their
+        // own record — the parent must still fire for those.
+        let email_hit = vec![json!({"email": "jordan.meyer@wartburg.edu"})];
+        assert!(search_subject_present(
+            "jordan.meyer@wartburg.edu",
+            &email_hit
+        ));
+
+        // Empty results never read as subject-present.
+        assert!(!search_subject_present("Ali Kareem", &[]));
+    }
+
+    #[test]
     fn extract_entities_characterization() {
         use serde_json::json;
         let item = json!({
@@ -274,6 +315,62 @@ use crate::core::entity::Entity;
         );
     }
 
+    /// Same real failure mode as `oathnet_pro` (they share this breach schema):
+    /// a breach DB stores `full_name = "{username} {username}"` when no real
+    /// name is available. Minting `Person("rhino-ryno23 rhino-ryno23")` maps to
+    /// `TargetKind::FullName` and spawns a spurious, noise-dominated child scan.
+    #[test]
+    fn doubled_username_full_name_is_rejected_not_minted_as_person() {
+        use serde_json::json;
+        let item = json!({
+            "full_name": "rhino-ryno23 rhino-ryno23",
+            "username": "rhino-ryno23",
+            "source": "snusbase"
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "rhino-ryno23",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Person),
+            "a username doubled into the full_name field must never mint a Person: {:?}",
+            result
+                .entities
+                .iter()
+                .map(|e| (e.kind.to_string(), e.value.clone()))
+                .collect::<Vec<_>>()
+        );
+
+        // A real name must still be admitted (no false positive from the guard).
+        let item2 = json!({ "full_name": "Jordan Avery", "source": "snusbase" });
+        let mut seen2 = HashSet::new();
+        let mut result2 = ModuleResult::new();
+        extract_entities(
+            &item2,
+            "Jordan Avery",
+            "scan",
+            "search",
+            "see-know.eu:test",
+            &mut seen2,
+            &mut result2,
+        );
+        assert!(
+            result2
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::Person && e.value == "Jordan Avery"),
+            "a real name must still be admitted: {:?}",
+            result2.entities
+        );
+    }
+
     #[test]
     fn non_matching_record_is_quarantined_as_candidate() {
         use crate::core::entity::CANDIDATE_CONF;
@@ -390,6 +487,41 @@ use crate::core::entity::Entity;
             })
             .is_some(),
             "login↔surface must surface as a Credential entity"
+        );
+    }
+
+    #[test]
+    fn extract_entities_rejects_non_web_stealer_url_but_keeps_the_credential() {
+        use serde_json::json;
+        // A stealer row whose `url` is a native-app URI, not a web login surface.
+        // It must NOT mint a `Url` entity (the sibling oathnet_pro parser rejects
+        // the same value with its scheme+dot gate) — but the login↔surface
+        // Credential is still captured (a login for a native surface is real).
+        let item = json!({
+            "dbname": "RedlineStealer",
+            "username": "victim_login",
+            "password": "hunter2",
+            "url": "android://com.example.app",
+        });
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_entities(
+            &item,
+            "victim_login",
+            "scan",
+            "stealer",
+            "see-know.eu:test",
+            &mut seen,
+            &mut result,
+        );
+        assert!(
+            !result.entities.iter().any(|e| e.kind == EntityKind::Url),
+            "a non-web (scheme-less/native-app) stealer URL must not mint a Url entity"
+        );
+        assert!(
+            result.entities.iter().any(|e| e.kind == EntityKind::Credential
+                && e.value == "victim_login@android://com.example.app"),
+            "the login↔surface Credential is still captured for a native-app surface"
         );
     }
 
@@ -875,5 +1007,37 @@ use crate::core::entity::Entity;
             result.entities.len(),
             before,
             "no pivot IDs ⇒ no dispatch, no growth, clean halt"
+        );
+    }
+
+    #[test]
+    fn extract_pivot_entities_also_harvests_a_leaked_key_from_a_pivot_response() {
+        // The identity-pivot responses (discord/user, discord/to-roblox,
+        // gaming/steam) were the one SeekNow data-ingestion point that skipped
+        // the key-harvest pass every other endpoint already runs every item
+        // through. A linked account's own response can carry a `token`/
+        // `password`/`note` field exactly like a breach/search row does —
+        // this proves `extract_pivot_entities` now reaches it too, not just
+        // identity/geo/message extraction.
+        let items = vec![(
+            "discord_user",
+            vec![serde_json::json!({
+                "id": "123456789012345678",
+                // AWS access-key shape — the same synthetic fixture
+                // `util::key_harvest`'s own orchestrator tests use.
+                "token": "AKIAJK28SLQQV61MNG9X",
+            })],
+        )];
+        let mut seen = HashSet::new();
+        let mut result = ModuleResult::new();
+        extract_pivot_entities(&items, "seed", "t", "see-know.eu:test", &mut seen, &mut result);
+        assert!(
+            result
+                .entities
+                .iter()
+                .any(|e| e.kind == EntityKind::ApiKey && e.has_tag("service:aws")),
+            "expected an AWS ApiKey entity harvested from the pivot response's \
+             `token` field, got: {:?}",
+            result.entities.iter().map(|e| &e.kind).collect::<Vec<_>>()
         );
     }

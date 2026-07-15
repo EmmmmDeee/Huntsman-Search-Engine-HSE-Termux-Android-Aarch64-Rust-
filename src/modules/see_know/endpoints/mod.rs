@@ -28,11 +28,15 @@ use super::pivots::{looks_like_discord_id, looks_like_steam_id};
 /// accounts) and breach/stealer context tied to THAT platform account.
 ///
 /// These are NOT filtered out. The operator's standing directive is to use
-/// see-know.eu MAXIMALLY — SeekNow's 5,000-daily quota vastly exceeds what
+/// see-know.eu MAXIMALLY — SeekNow's 15,000-daily quota vastly exceeds what
 /// HSE can realistically spend, so every endpoint that returns richer data
-/// than the free stack should fire. The budget cap (300/scan, 4,500/session)
-/// is the only rate limiter. Kept as a named constant for documentation and
-/// in case a future env-flag wants to restore conservative mode.
+/// than the free stack should fire. The budget cap (default 300/scan,
+/// dynamically scaled up to 750; 100,000/session — see
+/// `util::see_know::enterprise_config::ENTERPRISE`, the single source of
+/// truth) and per-call exponential backoff on a transient rate-limit
+/// (`util::see_know::endpoints::RATE_LIMIT_BACKOFF`) are the rate limiters.
+/// Kept as a named constant for documentation and in case a future env-flag
+/// wants to restore conservative mode.
 const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
     EndpointCall::GithubProfile,
     EndpointCall::TwitterProfile,
@@ -47,7 +51,7 @@ const FREE_COVERED_SINGLE_ORIGIN: &[EndpointCall] = &[
 ///
 /// Previously this filtered out [`FREE_COVERED_SINGLE_ORIGIN`] to conserve
 /// quota. The operator's maximisation directive (SeekNow is the highest-
-/// priority paid source; its 5,000-daily pool is effectively unlimited for
+/// priority paid source; its 15,000-daily pool is effectively unlimited for
 /// a single-operator deployment) means every endpoint that adds platform-
 /// specific profile depth or breach context should fire. Budget caps bound
 /// total spend; platform-presence filtering no longer does.
@@ -66,9 +70,10 @@ fn is_free_covered_single_origin(call: EndpointCall) -> bool {
 /// Per-target endpoint plan — names that will be dispatched concurrently
 /// by `dispatch_plan`. Order is meaningful only for tiebreakers when
 /// the per-scan budget cuts the plan short; high-yield endpoints come
-/// first. The single-origin members are filtered out by [`effective_plan`]
-/// before dispatch — they remain here so the matrix stays self-documenting
-/// and the capability is one policy-flip away.
+/// first. [`effective_plan`] dispatches this matrix UNFILTERED (the
+/// single-origin members are no longer stripped — see its doc for why);
+/// [`is_free_covered_single_origin`] and [`FREE_COVERED_SINGLE_ORIGIN`]
+/// stay retained so that filtering policy is one flip away, not deleted.
 fn plan_endpoints(kind: TargetKind, value: &str) -> Vec<EndpointCall> {
     match kind {
         // Breach + stealer + external records all come back from the universal

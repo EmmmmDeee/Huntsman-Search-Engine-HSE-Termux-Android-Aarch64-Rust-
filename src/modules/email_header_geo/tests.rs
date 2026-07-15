@@ -108,7 +108,6 @@ async fn skips_consumer_providers() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
     let r = m.process(&target, &ctx).await.unwrap();
     assert!(
@@ -128,7 +127,6 @@ async fn au_email_produces_address() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
     let r = m.process(&target, &ctx).await.unwrap();
     assert_eq!(r.len(), 1);
@@ -147,7 +145,6 @@ async fn bigpond_email_produces_two_entities() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
     let r = m.process(&target, &ctx).await.unwrap();
     assert!(!r.is_empty(), "bigpond.com (AU ISP) must geolocate");
@@ -190,7 +187,6 @@ async fn mixed_case_domain_is_detected() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
     let r = m.process(&target, &ctx).await.unwrap();
     assert!(r.entities.iter().any(|e| e.value == "Australia"));

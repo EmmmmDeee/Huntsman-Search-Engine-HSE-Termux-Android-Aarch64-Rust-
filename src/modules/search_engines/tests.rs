@@ -9,8 +9,8 @@ use super::*;
 #[test]
 fn primary_engine_order_floats_reliable_and_proven_engines_first() {
     use std::collections::BTreeSet;
-    // The reliable core (dogpile/swisscows/metager) is declared LATE in ENGINES,
-    // so in raw order it never makes the first ENGINE_CONCURRENCY batch and is the
+    // The reliable core (dogpile/swisscows) is declared LATE in ENGINES, so in
+    // raw order it never makes the first ENGINE_CONCURRENCY batch and is the
     // first cut under a deadline. order_engines_for_primary must float it — plus
     // any engine proven productive this run — to the front.
     let live: Vec<&'static EngineSpec> = ENGINES.iter().collect();
@@ -38,14 +38,13 @@ fn primary_engine_order_floats_reliable_and_proven_engines_first() {
         }
     }
     let pos = |name: &str| ordered.iter().position(|e| e.name == name).unwrap();
-    // The key win: a reliable engine declared late (metager) now precedes an
+    // The key win: a reliable engine declared late (swisscows) now precedes an
     // unproven engine declared early (bing).
-    assert!(pos("metager") < pos("bing"));
+    assert!(pos("swisscows") < pos("bing"));
     // Declaration order is preserved WITHIN the front group (stable sort):
-    // yahoo(30) < dogpile(241) < swisscows(255) < metager(306).
+    // yahoo(30) < dogpile(241) < swisscows(255).
     assert!(pos("yahoo") < pos("dogpile"));
     assert!(pos("dogpile") < pos("swisscows"));
-    assert!(pos("swisscows") < pos("metager"));
 
     // With nothing proven and an empty reliable set, order is unchanged
     // (declaration order) — qi==0 first-target behaviour degrades gracefully.
@@ -777,6 +776,28 @@ fn extract_anchor_text_missing_href() {
     assert!(title.is_empty());
 }
 
+/// A real Startpage capture repeats a result's own URL across 4 `<a href="…">`
+/// occurrences per card: a textless icon wrapper, a short site-name anchor, a
+/// display-URL anchor, then the actual titled link last. The former
+/// first-occurrence-only scan hit the textless icon wrapper and returned
+/// empty, forcing the caller to fall back to a fixed-width surrounding-text
+/// window that (for this exact markup shape) bled in the PRECEDING result's
+/// own "Visit in Anonymous View" label instead of this result's real title.
+/// Regression: the real title, the last non-empty occurrence, must be
+/// returned directly.
+#[test]
+fn extract_anchor_text_skips_textless_occurrences_to_find_the_real_title() {
+    let html = concat!(
+        r#"<a href="https://example.com/x" class="favicon-link"></a>"#,
+        r#"<a href="https://example.com/x" class="wgl-site-title">Example</a>"#,
+        r#"<a href="https://example.com/x" class="wgl-display-url">https://example.com/x</a>"#,
+        r#"<a class="result-title" href="https://example.com/x">"#,
+        r#"<h2>The Real Result Title</h2></a>"#,
+    );
+    let title = extract_anchor_text(html, "https://example.com/x", 200);
+    assert_eq!(title, "The Real Result Title");
+}
+
 #[test]
 fn captcha_detection_datadome() {
     let body = "<html><body>Please enable JS \
@@ -1354,6 +1375,25 @@ fn abn_extraction() {
 }
 
 #[test]
+fn abn_acn_extraction_is_not_capped_at_ten() {
+    // Twelve context-prefixed valid ABNs (Qantas's real ABN, repeated) — the
+    // former silent break at 10 dropped the last two; every checksum-validated,
+    // context-prefixed identifier must now be extracted.
+    let text = "ABN 53 004 085 616 ".repeat(12);
+    let results = extract_abn_acn_from_text(&text);
+    assert_eq!(
+        results.len(),
+        12,
+        "every context-prefixed valid ABN is extracted, not capped at 10"
+    );
+    assert!(
+        results
+            .iter()
+            .all(|(v, k)| v.as_str() == "53004085616" && *k == "ABN")
+    );
+}
+
+#[test]
 fn abn_validation_checksum() {
     assert!(is_valid_abn("53004085616")); // real ABN: Qantas
     assert!(!is_valid_abn("12345678901"));
@@ -1806,6 +1846,174 @@ fn url_from_a_location_seed_is_quarantined_as_generic_location() {
 }
 
 #[test]
+fn email_and_phone_extraction_requires_the_surname_in_the_result() {
+    // Regression from a live "Riley Morley" scan: Bing returned
+    // instagram.com/rileyj/ (an unrelated account — first name "Riley" only, no
+    // "Morley" anywhere in the bio) whose snippet happened to contain
+    // "pr@rileyjorja.com", and the unfixed code minted that as a PROBABLE
+    // (0.60+) email attributed to the subject with zero check that the result
+    // actually names them — the same first-name-collision shape the address
+    // extractor was already gated against (`result_names_the_subject`, née
+    // `location_on_subject`), just never extended to email/phone.
+    let target = Target::new(TargetKind::FullName, "Riley Morley");
+    let off_target = SearchResult {
+        url: "https://www.instagram.com/rileyj/".to_string(),
+        title: "instagram.com".to_string(),
+        snippet: "Riley (@rileyj) • Instagram photos and videos \"AU/ @remmiebyriley \
+                  pr@rileyjorja.com\" call +61 400 111 222"
+            .to_string(),
+        engine: "bing",
+        query: "\"Riley Morley\"".to_string(),
+    };
+    let results = vec![off_target];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Email),
+        "an off-target result (no surname match) must not mint an email: {:?}",
+        res.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| &e.value)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "an off-target result (no surname match) must not mint a phone either"
+    );
+
+    // The genuine case must still work: the surname present in the snippet.
+    let on_target = SearchResult {
+        url: "https://www.uml.edu/research/osp/staff/morley-riley.aspx".to_string(),
+        title: "Riley Morley | Office of Sponsored Programs | UMass Lowell".to_string(),
+        snippet: "Contact Riley Morley at riley.morley@uml.edu or +61 400 111 222".to_string(),
+        engine: "brave",
+        query: "\"Riley Morley\"".to_string(),
+    };
+    let results2 = vec![on_target];
+    let res2 = build_entities(&target, "s", &results2, &url_engine_counts(&results2));
+    assert!(
+        res2.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "riley.morley@uml.edu"),
+        "a genuine on-target result (surname present) must still mint the email: {:?}",
+        res2.entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| &e.value)
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        res2.entities.iter().any(|e| e.kind == EntityKind::Phone),
+        "a genuine on-target result must still mint the phone"
+    );
+}
+
+#[test]
+fn email_extraction_unaffected_for_single_token_targets() {
+    // Single-token targets (email/username) are not prone to first-name
+    // collision, so the gate must stay a no-op for them — mirrors the existing
+    // guarantee already proven for address extraction.
+    let target = Target::new(TargetKind::Username, "kylo4kylo");
+    let results = vec![SearchResult {
+        url: "https://example.com/unrelated".to_string(),
+        title: "totally unrelated page".to_string(),
+        snippet: "contact someone at other@example.com".to_string(),
+        engine: "duckduckgo",
+        query: "kylo4kylo".to_string(),
+    }];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+    assert!(
+        res.entities
+            .iter()
+            .any(|e| e.kind == EntityKind::Email && e.value == "other@example.com"),
+        "single-token targets must still extract emails regardless of surname presence"
+    );
+}
+
+#[test]
+fn location_seed_pivot_does_not_reaffirm_the_seed_at_0_82() {
+    // T2.36 regression: the engine re-queues every discovered entity as a pivot,
+    // so a breach-derived street address comes back as an Address seed. Real-estate
+    // / aggregator sites index virtually every US address, so the re-query always
+    // returned SOME result and the unconditional parent stamp flat-marked the seed
+    // at 0.82 "search-enriched" — read downstream as independent corroboration and
+    // pushing the address to VERIFIED regardless of subject relevance. A live scan
+    // showed ~19 mutually-exclusive addresses (many different US states) all at an
+    // identical 0.82 from this. A location seed must earn no self re-affirmation.
+    let target = Target::new(TargetKind::Address, "1218 E Grumling Rd, Hodges, SC 29653");
+    let mk = |url: &str| SearchResult {
+        url: url.to_string(),
+        title: "1218 E Grumling Rd, Hodges, SC 29653 | Zillow".to_string(),
+        snippet: "1218 E Grumling Rd, Hodges, SC 29653 is a house listed for sale.".to_string(),
+        engine: "duckduckgo",
+        query: "\"1218 E Grumling Rd, Hodges, SC 29653\"".to_string(),
+    };
+    let results = vec![
+        mk("https://www.zillow.com/homedetails/1218-E-Grumling-Rd-Hodges-SC-29653/"),
+        mk("https://www.realtor.com/realestateandhomes-detail/1218-E-Grumling-Rd-Hodges-SC-29653"),
+    ];
+    let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+
+    // No self-referencing parent re-affirmation was stamped.
+    assert!(
+        !res.entities.iter().any(|e| e.has_tag("search-enriched")),
+        "a location seed must not mint a search-enriched parent"
+    );
+    // Nothing is left at the flat 0.82 identity-confirmed tier.
+    assert!(
+        !res.entities
+            .iter()
+            .any(|e| (e.confidence - 0.82).abs() < 1e-9),
+        "no entity from a location-seed pivot reaches 0.82, got {:?}",
+        res.entities
+            .iter()
+            .map(|e| (e.kind.clone(), e.confidence))
+            .collect::<Vec<_>>()
+    );
+    // The seed address is not re-extracted from the aggregator snippets either
+    // (mechanism 2): a page about the address mentioning the address is not
+    // subject corroboration, so no inflated Address self-entity survives.
+    assert!(
+        !res.entities.iter().any(|e| e.kind == EntityKind::Address),
+        "the seed address must not be re-affirmed via snippet extraction"
+    );
+}
+
+#[test]
+fn identity_seed_still_gets_flat_parent_reaffirmation() {
+    // The fix must not regress the legitimate case: for a genuine identity seed
+    // (email / username / domain) "this identifier has real web presence" IS
+    // corroboration, so the parent still re-affirms it at the flat 0.82
+    // search-enriched tier — the demotion is location-seed-specific.
+    for kind in [TargetKind::Email, TargetKind::Username, TargetKind::Domain] {
+        let value = match kind {
+            TargetKind::Email => "jerome.despal@example.com",
+            TargetKind::Username => "kylo4kylo",
+            _ => "acme.com",
+        };
+        let target = Target::new(kind, value);
+        let results = vec![SearchResult {
+            url: "https://example.org/about".to_string(),
+            title: "profile".to_string(),
+            snippet: "some page".to_string(),
+            engine: "duckduckgo",
+            query: "q".to_string(),
+        }];
+        let res = build_entities(&target, "s", &results, &url_engine_counts(&results));
+        let parent = res
+            .entities
+            .iter()
+            .find(|e| e.has_tag("search-enriched"))
+            .unwrap_or_else(|| panic!("identity seed {kind:?} keeps its search-enriched parent"));
+        assert!(
+            (parent.confidence - 0.82).abs() < 1e-9,
+            "{kind:?} parent stays at 0.82, got {}",
+            parent.confidence
+        );
+    }
+}
+
+#[test]
 fn domain_queries_include_abn() {
     let t = Target::new(TargetKind::Domain, "acme.com");
     let q = build_queries(&t);
@@ -1966,13 +2174,16 @@ fn canonicalize_url_strips_trailing_slash() {
 fn reliable_engines_resolve_by_name() {
     // The secondary pivot + recycler passes select these engines by NAME,
     // not by `ENGINES[..]` index, so reordering/inserting into `ENGINES`
-    // can't silently repoint them. Assert all three resolve, in order —
-    // a rename/removal fails CI instead of degrading silently at runtime.
+    // can't silently repoint them. Assert both resolve, in order — a
+    // rename/removal fails CI instead of degrading silently at runtime.
     let names: Vec<&str> = reliable_engines().iter().map(|e| e.name).collect();
-    // Live scan data: metager/swisscows/dogpile are 97-100% hit / 0% blocked
-    // from DC IPs; yahoo/bing/brave get killed by SESSION_DEAD within ~400
-    // dispatches. Reliable pass now uses the DC-stable engines.
-    assert_eq!(names, vec!["metager", "swisscows", "dogpile"]);
+    // Live scan data: swisscows/dogpile are 97-100% hit / 0% blocked from DC
+    // IPs; yahoo/bing/brave get killed by SESSION_DEAD within ~400 dispatches.
+    // `metager` was demoted (T2.7 golden-fixture corpus, fourth slice): its
+    // legacy search endpoint is confirmed permanently dead (redirects to its
+    // own marketing homepage regardless of query/cookies/method), so it no
+    // longer earns a place in the guaranteed-floor set.
+    assert_eq!(names, vec!["swisscows", "dogpile"]);
 }
 
 #[test]
@@ -2128,6 +2339,45 @@ fn proven_engine_tolerates_long_block_streaks() {
 }
 
 #[test]
+fn reset_session_liveness_clears_silenced_and_proven_state_across_scans() {
+    // Regression: SESSION_EMPTY_COUNTS is process-global (shared across every
+    // scan in one `hse serve`/`hse live` process), so a fresh scan against a
+    // DIFFERENT target must not inherit a prior scan's block-streak silencing
+    // or "proven live" exemptions. Before `reset_session_liveness` was wired
+    // into `modules::install_core_hooks`'s `reset_per_scan`, an engine
+    // silenced (or proven) in scan A stayed that way for every later scan in
+    // the same process, even though a fresh scan has no basis to assume the
+    // same engine will behave the same way against a new target.
+    const FAKE: &str = "__test_reset_session_liveness__";
+    SESSION_EMPTY_COUNTS
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .remove(FAKE);
+
+    // Silence it via the unproven threshold (as scan A's block streak would).
+    for _ in 0..SESSION_DEAD_THRESHOLD {
+        record_empty(FAKE);
+    }
+    assert!(is_session_dead(FAKE), "setup: engine must be silenced");
+
+    reset_session_liveness();
+
+    assert!(
+        !is_session_dead(FAKE),
+        "a per-scan reset must clear a prior scan's silencing"
+    );
+    assert!(
+        SESSION_EMPTY_COUNTS
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_empty(),
+        "reset must clear the ENTIRE map, not just the one test engine \
+         (a real scan boundary has no way to enumerate every engine name \
+         some earlier scan may have touched)"
+    );
+}
+
+#[test]
 fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
     use std::collections::BTreeSet;
 
@@ -2146,7 +2396,7 @@ fn pivot_engine_set_unions_reliable_core_with_proven_and_is_deterministic() {
     // Proven engines union in alongside the reliable core.
     let proven: BTreeSet<&'static str> = ["yahoo", "bing", "ecosia"].into_iter().collect();
     let names: Vec<&str> = pivot_engine_set(&proven).iter().map(|e| e.name).collect();
-    for r in ["metager", "swisscows", "dogpile"] {
+    for r in ["swisscows", "dogpile"] {
         assert!(names.contains(&r), "reliable core engine {r} must remain");
     }
     for p in ["yahoo", "bing", "ecosia"] {

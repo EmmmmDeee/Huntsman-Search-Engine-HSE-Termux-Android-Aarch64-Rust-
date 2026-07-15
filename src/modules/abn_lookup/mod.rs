@@ -2,8 +2,9 @@
 //!
 //! Consumes `Organisation` and `AbnAcn` target kinds (enabled by
 //! Phase 0.3). Searches the Australian Business Register for matching
-//! entities and emits `Person`, `Address`, `Domain`, `Organisation`
-//! entities from the results.
+//! entities and emits `AbnAcn`, `Person`, `Address`, `Coordinates`, and
+//! `Organisation` entities from the results — never `Domain` (the ABR
+//! register carries no website field).
 //!
 //! Free API — requires a GUID from <https://abr.business.gov.au/Tools/WebServicesRegister>
 //! (instant, free registration). Set `HUNTSMAN_ABR_GUID` in the env file.
@@ -106,12 +107,14 @@ impl Module for AbnLookup {
 
     fn max_timeout_ms(&self) -> u64 {
         // fetch_jsonp does a curl with a 10s --max-time (wrapped in a 12s
-        // tokio timeout) and, on a 429, sleeps 5s before a second identical
-        // curl — a ~29s worst case. The default 3s MODULE_TIMEOUT_MS killed
-        // process() before even the first fetch could complete, so this
-        // module returned nothing on any real-latency network. Budget for
-        // the full retry path with headroom.
-        30_000
+        // tokio timeout) and, on a 429, honours a real server `Retry-After`
+        // (clamped to 8s max, 5s default when absent) before a second
+        // identical curl — a ~32s worst case. The default 3s
+        // MODULE_TIMEOUT_MS killed process() before even the first fetch
+        // could complete, so this module returned nothing on any
+        // real-latency network. Budget for the full retry path with
+        // headroom.
+        35_000
     }
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
@@ -130,11 +133,11 @@ impl Module for AbnLookup {
             TargetKind::AbnAcn => {
                 let digits = crate::util::str_util::ascii_digits(value);
                 if digits.len() == 11 {
-                    if let Some(data) = fetch::fetch_abn(guid, &digits).await? {
+                    if let Some(data) = fetch::fetch_abn(ctx, guid, &digits).await? {
                         parse::parse_abn_result(&data, &ctx.scan_id, &mut result);
                     }
                 } else if digits.len() == 9 {
-                    if let Some(data) = fetch::fetch_acn(guid, &digits).await? {
+                    if let Some(data) = fetch::fetch_acn(ctx, guid, &digits).await? {
                         parse::parse_abn_result(&data, &ctx.scan_id, &mut result);
                     }
                 } else {
@@ -145,7 +148,7 @@ impl Module for AbnLookup {
                 }
             }
             TargetKind::Organisation | TargetKind::FullName => {
-                if let Some(data) = fetch::fetch_name(guid, value).await? {
+                if let Some(data) = fetch::fetch_name(ctx, guid, value).await? {
                     parse::parse_name_results(&data, value, &ctx.scan_id, &mut result);
                 }
             }

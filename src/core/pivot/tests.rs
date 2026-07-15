@@ -215,3 +215,30 @@ fn detection_is_deterministic_under_input_shuffling() {
     let p2 = detect(&e2, &r2);
     assert_eq!(p1, p2, "pivots are independent of input order");
 }
+
+#[test]
+fn cut_vertex_count_counts_all_articulation_points_past_the_pivot_cap() {
+    // In a path a0-a1-…-a29 every INTERNAL node is a cut vertex (removing it splits
+    // the path), so a 30-node path has 28 articulation points — more than the
+    // PIVOT_CAP (25) that `detect` truncates to. cut_vertex_count must report all
+    // 28, whereas counting cut vertices off `detect`'s capped output tops out at 25
+    // (the very undercount the benchmark scorecard used to report).
+    let nodes: Vec<Entity> = (0..30).map(|i| ent(&format!("a{i:02}"))).collect();
+    let relations: Vec<Relation> = nodes.windows(2).map(|w| rel(&w[0], &w[1])).collect();
+
+    assert_eq!(
+        cut_vertex_count(&nodes, &relations),
+        28,
+        "every one of the 28 internal path nodes is an articulation point"
+    );
+    // The capped path counting `detect`'s output can never exceed PIVOT_CAP, so it
+    // undercounts — the bug this function exists to avoid.
+    let capped = detect(&nodes, &relations)
+        .iter()
+        .filter(|p| p.is_cut_vertex)
+        .count();
+    assert!(
+        capped < cut_vertex_count(&nodes, &relations),
+        "detect() truncates to {PIVOT_CAP}, so its cut-vertex count ({capped}) undercounts the true 28"
+    );
+}

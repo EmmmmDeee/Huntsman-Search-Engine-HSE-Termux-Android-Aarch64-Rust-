@@ -2,12 +2,19 @@ use super::*;
 
 #[test]
 fn relation_kind_as_str_matches_serde() {
-    // CONVENTIONS.md §3: the type owns its canonical string and a test
-    // pins it to the serde wire form so the two can't drift. as_str is the
-    // stored `relations.kind` column and the API edge label; the serde
-    // derive is what crosses the wire — a rename that touched only one
-    // would silently split the DB form from the JSON form.
-    for k in [
+    // CONVENTIONS.md §3 / no-silent-drift: the type owns its canonical string and
+    // this pins it to the serde wire form so the two can't split. as_str is the
+    // stored `relations.kind` column AND the API/SPA edge label; the serde derive
+    // is what crosses the wire — a rename touching only one would silently fork
+    // the DB form from the JSON form.
+    //
+    // `EVERY` is walked by an arm-less `match` (no `_`): adding a RelationKind
+    // variant fails to compile here until it is listed — the compile-forced guard
+    // the previous HARDCODED array lacked, which silently omitted `SharesSecretWith`
+    // (14 of 15 variants), leaving its tag unpinned. The loop proves, for every
+    // variant, that as_str == the serde tag == Display, and that the tag
+    // deserialises back to the same variant (the DB/API read path).
+    const EVERY: &[RelationKind] = &[
         RelationKind::SubdomainOf,
         RelationKind::BelongsToDomain,
         RelationKind::HostedOn,
@@ -15,17 +22,42 @@ fn relation_kind_as_str_matches_serde() {
         RelationKind::RegisteredBy,
         RelationKind::CoLocatedWith,
         RelationKind::DerivedFrom,
-        RelationKind::SameOperator,
-        RelationKind::SameIdentity,
         RelationKind::IdentifiedBy,
         RelationKind::AliasOf,
         RelationKind::LocatedAt,
         RelationKind::AssociatedWith,
         RelationKind::SameAs,
-    ] {
+        RelationKind::SameOperator,
+        RelationKind::SameIdentity,
+        RelationKind::SharesSecretWith,
+    ];
+    for &k in EVERY {
+        // Compile-time tripwire: NO `_` arm.
+        match k {
+            RelationKind::SubdomainOf
+            | RelationKind::BelongsToDomain
+            | RelationKind::HostedOn
+            | RelationKind::ResolvesTo
+            | RelationKind::RegisteredBy
+            | RelationKind::CoLocatedWith
+            | RelationKind::DerivedFrom
+            | RelationKind::IdentifiedBy
+            | RelationKind::AliasOf
+            | RelationKind::LocatedAt
+            | RelationKind::AssociatedWith
+            | RelationKind::SameAs
+            | RelationKind::SameOperator
+            | RelationKind::SameIdentity
+            | RelationKind::SharesSecretWith => {}
+        }
         let json = serde_json::to_string(&k).unwrap();
-        assert_eq!(json.trim_matches('"'), k.as_str(), "{k:?}");
+        let tag = json.trim_matches('"');
+        assert_eq!(tag, k.as_str(), "as_str vs serde: {k:?}");
+        assert_eq!(k.to_string(), k.as_str(), "Display vs as_str: {k:?}");
+        let back: RelationKind = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, k, "serde round-trip: {k:?}");
     }
+    assert_eq!(EVERY.len(), 15, "one entry per RelationKind variant");
 }
 use crate::core::entity::{Entity, EntityKind};
 
@@ -401,6 +433,96 @@ fn derive_all_aggregates_every_structural_derivation() {
 
     // No entities → no edges, no panic.
     assert!(derive_all(&[], "s").is_empty());
+}
+
+#[test]
+fn derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash() {
+    use crate::core::entity::Evidence;
+    // The graph-native counterpart of AU-047: a salted hash carried against two
+    // distinct emails must produce a walkable SharesSecretWith edge between
+    // them, mirroring the correlator's own fixture exactly (delegates to the
+    // same `Secret::classify`).
+    let mut cred = Entity::new(
+        EntityKind::Credential,
+        "$2a$10$id3HAw6TcOjKvPH/RK7MS.abcdef",
+        0.6,
+        "s",
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "burner1@proton.me"),
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "real.name@gmail.com"),
+    );
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "s");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "s");
+
+    let rels = derive_reused_secret_link(&[cred, a.clone(), b.clone()], "s");
+    assert_eq!(
+        rels.len(),
+        1,
+        "a shared salted hash must tie the two accounts"
+    );
+    assert_eq!(rels[0].kind, RelationKind::SharesSecretWith);
+    let (lo, hi) = if a.uid <= b.uid {
+        (&a.uid, &b.uid)
+    } else {
+        (&b.uid, &a.uid)
+    };
+    assert_eq!(&rels[0].from_uid, lo);
+    assert_eq!(&rels[0].to_uid, hi);
+}
+
+#[test]
+fn derive_reused_secret_link_precision_gate_matches_au047_exactly() {
+    use crate::core::entity::Evidence;
+    // An UNSALTED digest must NOT link — it could be a common password shared
+    // by unrelated people. Same `Secret::classify` admission gate AU-047
+    // fires on, so the two must never disagree.
+    let mut cred = Entity::new(
+        EntityKind::Credential,
+        "00346d91dd87c74089f3bfa88e13de8101000000dcb6",
+        0.6,
+        "s",
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "burner1@proton.me"),
+    );
+    cred.add_evidence(
+        Evidence::new("import:dossier", "breach entry").with_attr("email", "real.name@gmail.com"),
+    );
+    let a = Entity::new(EntityKind::Email, "burner1@proton.me", 0.6, "s");
+    let b = Entity::new(EntityKind::Email, "real.name@gmail.com", 0.6, "s");
+    assert!(
+        derive_reused_secret_link(&[cred, a, b], "s").is_empty(),
+        "an unsalted digest must not manufacture a shared-secret edge"
+    );
+}
+
+#[test]
+fn derive_reused_secret_link_emits_the_full_pairwise_clique() {
+    use crate::core::entity::Evidence;
+    // Three accounts sharing ONE secret must produce a full 3-clique (every
+    // pair directly linked), so identity_paths' BFS finds the direct edge
+    // between ANY two of them, not just a chain through one hub.
+    let mut cred = Entity::new(EntityKind::ApiKey, "sk-live-abcdef0123456789", 0.6, "s");
+    for em in ["a@x.com", "b@x.com", "c@x.com"] {
+        cred.add_evidence(Evidence::new("import:dossier", "breach entry").with_attr("email", em));
+    }
+    let a = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+    let b = Entity::new(EntityKind::Email, "b@x.com", 0.6, "s");
+    let c = Entity::new(EntityKind::Email, "c@x.com", 0.6, "s");
+
+    let rels = derive_reused_secret_link(&[cred, a, b, c], "s");
+    assert_eq!(
+        rels.len(),
+        3,
+        "3 accounts must yield a full 3-clique (3 pairs)"
+    );
+    assert!(
+        rels.iter()
+            .all(|r| r.kind == RelationKind::SharesSecretWith)
+    );
 }
 
 #[test]
@@ -1612,4 +1734,37 @@ fn regional_kinship_needs_a_postcode_anchor() {
         derive_regional_kinship(&[a, b], "s").is_empty(),
         "without a shared town the common-surname pair stays unlinked"
     );
+}
+
+#[test]
+fn collapse_to_max_confidence_keeps_the_strongest_of_duplicate_edges() {
+    use super::builders::collapse_to_max_confidence;
+    // Same (from, kind, to, scan) → same Relation id (the id EXCLUDES confidence),
+    // so the builders' weakest-first emission (surname kinship 0.5 before a declared
+    // 0.9 on one pair) must collapse to the STRONGEST edge. Otherwise persistence's
+    // ON CONFLICT(id) DO NOTHING keeps the weakest and flips downstream confidence
+    // gating — the exact inverse of the "higher-trust wins" intent.
+    let weak = Relation::new("a", "b", RelationKind::AssociatedWith, 0.5, "s1");
+    let strong = Relation::new("a", "b", RelationKind::AssociatedWith, 0.9, "s1");
+    assert_eq!(weak.id, strong.id, "confidence is not part of the id");
+    let other = Relation::new("a", "c", RelationKind::AssociatedWith, 0.6, "s1");
+
+    let collapsed = collapse_to_max_confidence(vec![weak, strong, other]);
+    assert_eq!(
+        collapsed.len(),
+        2,
+        "the a→b duplicate collapses to one edge"
+    );
+    let ab = collapsed
+        .iter()
+        .find(|r| r.to_uid == "b")
+        .expect("a→b kept");
+    assert!(
+        (ab.confidence - 0.9).abs() < 1e-9,
+        "the strongest (0.9) edge survives, got {}",
+        ab.confidence
+    );
+    // Deterministic first-occurrence order; the distinct a→c edge is untouched.
+    assert_eq!(collapsed[0].to_uid, "b");
+    assert_eq!(collapsed[1].to_uid, "c");
 }

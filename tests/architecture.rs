@@ -86,8 +86,7 @@ fn core_does_not_import_util_directly() {
     let allowed: Vec<String> = v
         .into_iter()
         .filter(|line| {
-            !line.contains("util::proxy::ProxyPool")
-                && !line.contains("util::key_pool")
+            !line.contains("util::key_pool")
                 && !line.contains("util::key_roi")
                 && !line.contains("util::geohash")
                 // Pure, offline computational geometry (convex hull, geometric
@@ -98,6 +97,10 @@ fn core_does_not_import_util_directly() {
                 // std `Ipv4Addr`/`Ipv6Addr`; no I/O, no deps) — same leaf
                 // category as `util::geometry`. AU-112 uses it to test whether a
                 // discovered IP falls inside a discovered announced network block.
+                // Scoped to the two CIDR types actually used (confirmed: `core`
+                // imports nothing else from `util::spf` on either branch) rather
+                // than the whole module, so the guard stays precise if
+                // `util::spf` ever grows a non-pure item.
                 && !line.contains("util::spf::Ipv4Cidr")
                 && !line.contains("util::spf::Ipv6Cidr")
                 && !line.contains("util::preflight")
@@ -269,7 +272,7 @@ fn core_does_not_import_util_directly() {
         .collect();
     assert!(
         allowed.is_empty(),
-        "core/ must not import util/ (except proxy::ProxyPool on ModuleContext).\nViolations:\n{}",
+        "core/ must not import util/ (except the allow-listed pure/leaf helpers above).\nViolations:\n{}",
         allowed.join("\n")
     );
 }
@@ -438,8 +441,11 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             .unwrap_or_default()
     };
 
-    // Code repositories — NOT social media (T1593.001).
-    for name in ["github_user", "crates_io", "npm_author"] {
+    // Code repositories — NOT social media (T1593.001). `crates_io` and
+    // `npm_author` are pure package-registry lookups with no Person/
+    // Organisation/Address collection, so Code Repositories alone is precise
+    // for them.
+    for name in ["crates_io", "npm_author"] {
         assert_eq!(
             techniques(name),
             vec!["T1593.003"],
@@ -450,15 +456,63 @@ fn attack_overrides_attribute_collection_modules_precisely() {
             "{name} must no longer claim Social Media"
         );
     }
+    // `github_user` is also Code Repositories rather than Social Media for its
+    // Username discovery, but — unlike its two package-registry siblings
+    // above — it additionally collects a real name (Person), published/gist/
+    // commit emails, company/org membership (Organisation), a location
+    // (Address/Coordinates), and published SSH keys (Credential), so its
+    // precise set is a superset of the bare Code Repositories technique.
+    assert_eq!(
+        techniques("github_user"),
+        vec![
+            "T1589.001",
+            "T1589.002",
+            "T1589.003",
+            "T1591.001",
+            "T1591.002",
+            "T1593.003",
+        ],
+        "github_user → Code Repositories plus every technique its Person/Email/\
+         Organisation/Address/Coordinates/Credential collection actually performs"
+    );
+    assert!(
+        !techniques("github_user").contains(&"T1593.001"),
+        "github_user must no longer claim Social Media"
+    );
     // DnsRecon family — each its specific technique, not the whole bundle.
     assert_eq!(techniques("crtsh"), vec!["T1596.003"]); // Digital Certificates
     assert_eq!(techniques("cert_intel"), vec!["T1596.003"]);
     assert_eq!(techniques("whois"), vec!["T1596.002"]); // WHOIS
     assert_eq!(techniques("rdap_domain"), vec!["T1596.002"]);
-    assert_eq!(techniques("dns_intel"), vec!["T1590.002"]); // DNS
+    // dns_intel resolves live records (DNS, T1590.002) AND brute-forces
+    // subdomains from a common-name wordlist (Active Scanning: Wordlist Scanning,
+    // T1595.003) — two techniques for its two behaviours, not just passive DNS.
+    assert_eq!(techniques("dns_intel"), vec!["T1590.002", "T1595.003"]);
+    assert!(
+        techniques("dns_intel").contains(&"T1595.003"),
+        "dns_intel's dictionary subdomain brute-force is Wordlist Scanning"
+    );
     assert_eq!(techniques("securitytrails"), vec!["T1596.001"]); // Passive DNS
     assert_eq!(techniques("hackertarget"), vec!["T1590.002", "T1596.001"]);
-    assert_eq!(techniques("subdomain_takeover"), vec!["T1590.001"]); // Domain Properties
+    // opencellid searches a cell-tower geolocation DATABASE (Search Open Technical
+    // Databases → Physical Locations); it makes no DNS query, so it must NOT claim
+    // DNS/Passive DNS (T1596.001) — there is no cell-database sub-technique, so the
+    // honest mapping stops at the T1596 parent.
+    assert_eq!(techniques("opencellid"), vec!["T1591.001", "T1596"]);
+    assert!(
+        !techniques("opencellid").contains(&"T1596.001"),
+        "opencellid queries a cell-tower database, not DNS"
+    );
+    // Active vulnerability probe (dangling-CNAME takeover) → Active Scanning:
+    // Vulnerability Scanning (T1595.002), NOT the passive Domain Properties the
+    // DnsRecon default would inherit. It touches the target to prove an
+    // exploitable misconfiguration, exactly the case the override exists for.
+    assert_eq!(techniques("subdomain_takeover"), vec!["T1595.002"]);
+    assert!(
+        !techniques("subdomain_takeover").contains(&"T1590.001"),
+        "subdomain_takeover actively scans for a takeover vulnerability, it does \
+         not passively gather domain properties"
+    );
     // WAF/CDN fingerprinting → Network Security Appliances + CDNs (not the Web default).
     assert_eq!(techniques("waf_detect"), vec!["T1590.006", "T1596.004"]);
 
@@ -752,6 +806,61 @@ fn attack_overrides_attribute_collection_modules_precisely() {
     assert!(
         !techniques("reddit_user").contains(&"T1589.003"),
         "reddit_user emits no Person entity; must not claim Employee Names"
+    );
+
+    // username_search: enumerates handle PRESENCE across 300+ sites, emitting a
+    // profile Url + the confirmed Username and never a real-name Person — so the
+    // Social default's T1589.003 (Employee Names) is over-claimed, the same fix
+    // as hacker_news / reddit_user. It has no bio-email path, so T1593.001
+    // (Social Media search) is its single precise technique.
+    assert_eq!(
+        techniques("username_search"),
+        vec!["T1593.001"],
+        "username_search → Social Media search only (handle presence, no Person)"
+    );
+    assert!(
+        !techniques("username_search").contains(&"T1589.003"),
+        "username_search resolves no name; must not claim Employee Names"
+    );
+
+    // Name-less Social-category modules: they search a platform for a handle (or,
+    // for the offline decoders, derive account metadata from an ID) and emit only
+    // Username/Url/Email — never a real-name Person — so the Social default's
+    // T1589.003 (Employee Names) is over-claimed, the same fix as
+    // hacker_news / reddit_user / nostr / username_search.
+    for name in ["streaming_probe", "gaming_profile", "discord_snowflake"] {
+        assert_eq!(
+            techniques(name),
+            vec!["T1593.001"],
+            "{name} → Social Media only (no Person emitted)"
+        );
+        assert!(
+            !techniques(name).contains(&"T1589.003"),
+            "{name} emits no Person; must not claim Employee Names"
+        );
+    }
+    // fediverse also emits profile emails → T1589.002 (like nostr).
+    assert_eq!(
+        techniques("fediverse"),
+        vec!["T1589.002", "T1593.001"],
+        "fediverse → Email Addresses + Social Media (no Person)"
+    );
+    assert!(
+        !techniques("fediverse").contains(&"T1589.003"),
+        "fediverse emits no Person; must not claim Employee Names"
+    );
+    // structured_id is an OFFLINE structured-ID decoder, not a social search: its
+    // signal is the generating machine's MAC embedded in a UUIDv1 → host hardware
+    // (T1592.001), so it drops BOTH the inherited social-presence techniques.
+    assert_eq!(
+        techniques("structured_id"),
+        vec!["T1592.001"],
+        "structured_id → Host Hardware (UUIDv1 node MAC), not social media"
+    );
+    assert!(
+        !techniques("structured_id").contains(&"T1589.003")
+            && !techniques("structured_id").contains(&"T1593.001"),
+        "structured_id neither resolves a name nor searches social media"
     );
 
     // epieos: People default drops over-claimed T1591.004 (no roles); adds
@@ -1102,7 +1211,16 @@ fn every_declared_module_is_registered() {
         })
         .collect();
 
-    let body = src.split_once("fn registry(").map_or("", |(_, b)| b);
+    // The `Arc::new(...)` instantiations live in the `MODULE_REGISTRY` static
+    // (built once, then cloned by `registry()` on every call — see its doc
+    // comment), so anchor on whichever of the two appears first in the file
+    // rather than only `fn registry(`.
+    let anchor = ["static MODULE_REGISTRY", "fn registry("]
+        .iter()
+        .filter_map(|marker| src.find(marker))
+        .min()
+        .unwrap_or(0);
+    let body = &src[anchor..];
 
     let missing: Vec<&String> = declared
         .iter()
@@ -1571,6 +1689,29 @@ fn readme_module_overview_count_matches_registry() {
     assert!(
         stale.is_empty(),
         "README cites a stale module total (registry holds {n}): {stale:?}"
+    );
+}
+
+/// The README's "Deterministic correlator: N rules (E entity + R graph-aware
+/// relation)" line is hand-maintained prose and had already drifted once
+/// (stated 108 while the registry held 109, immediately after a rule was
+/// added and only `docs/ARCHITECTURE_AUDIT.md` was reconciled). Tie it to
+/// [`huntsman_search_engine::core::correlator::rule_counts`] so it can't
+/// silently rot again — the same no-silent-drift guard as
+/// `readme_module_overview_count_matches_registry`.
+#[test]
+fn readme_correlator_rule_count_matches_registry() {
+    let readme = fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/README.md"))
+        .expect("README.md must exist");
+    let (entity, relation) = huntsman_search_engine::core::correlator::rule_counts();
+    let total = entity + relation;
+    let needle = format!(
+        "Deterministic correlator: {total} rules ({entity} entity + {relation} graph-aware relation)"
+    );
+    assert!(
+        readme.contains(&needle),
+        "README must cite the live correlator rule split ({needle:?}); update \
+         README.md (and docs/ARCHITECTURE_AUDIT.md) after adding/removing a rule"
     );
 }
 

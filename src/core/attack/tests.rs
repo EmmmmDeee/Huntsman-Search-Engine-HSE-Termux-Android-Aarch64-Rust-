@@ -47,6 +47,30 @@ use super::*;
     }
 
     #[test]
+    fn active_scanning_family_is_catalogued() {
+        // The Active Scanning (T1595) family HSE actually performs: portscan maps
+        // to the parent + Scanning IP Blocks, and subdomain_takeover — an active
+        // dangling-CNAME vulnerability probe — maps to Vulnerability Scanning.
+        // Vulnerability Scanning was previously missing from the catalogue, so a
+        // module that performs it could only be mis-labelled with a passive
+        // technique; this pins that the precise technique now exists to map to.
+        assert_eq!(technique("T1595").map(|t| t.name), Some("Active Scanning"));
+        assert_eq!(
+            technique("T1595.001").map(|t| t.name),
+            Some("Scanning IP Blocks")
+        );
+        assert_eq!(
+            technique("T1595.002").map(|t| t.name),
+            Some("Vulnerability Scanning")
+        );
+        // Wordlist Scanning — dictionary subdomain brute-force (dns_intel).
+        assert_eq!(
+            technique("T1595.003").map(|t| t.name),
+            Some("Wordlist Scanning")
+        );
+    }
+
+    #[test]
     fn every_category_maps_only_to_catalogued_ids() {
         // Drift guard at the source: every ID the category map yields must be a
         // real catalogue entry, for every category (so a typo'd or removed

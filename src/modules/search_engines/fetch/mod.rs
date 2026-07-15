@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use super::helpers::*;
 use super::{EngineSpec, MAX_RESULTS_PER_ENGINE, SearchResult};
-use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+use crate::util::key_harvest::identify_api_key;
 
 /// Per-request fetch ceiling (ms): the most any single SERP request may take.
 pub(in crate::modules::search_engines) const MAX_FETCH_MS: u64 = 8_000;
@@ -122,8 +122,8 @@ pub(super) async fn try_fetch(
         crate::util::curl::fetch_with_ua(url, timeout_ms, ua).await
     };
 
-    // If direct fetch failed, try through the HUNTSMAN_SEARCH_PROXY env
-    // or fall back to the proxy pool (populated by util::proxy::harvest)
+    // If direct fetch failed, retry once through the operator-configured
+    // HUNTSMAN_SEARCH_PROXY (a single upstream proxy), when set.
     let body = match body {
         Some(b) if b.len() >= 500 => Some(b),
         _ => {
@@ -144,11 +144,20 @@ pub(super) async fn try_fetch(
         Some(b) => b,
         None => return FetchOutcome::Unreachable,
     };
-    if body.len() < 500 {
-        return FetchOutcome::Unreachable;
-    }
+    // Detect a recognised anti-bot / block page BEFORE the short-body guard.
+    // Some engines (Mojeek) answer with a small `403 … sending automated
+    // queries` page well under 500 bytes; checking length first mislabels that
+    // genuine *block* as `Unreachable` ("down"), telling the operator the
+    // engine is network-dead when it's actually serving an anti-bot wall.
+    // A short body matching NO block signature still falls through to
+    // `Unreachable` below, so genuinely truncated/empty responses are unchanged.
+    // Validated by a live 8-run sweep: mojeek returned HTTP 403 (332 bytes) in
+    // 8/8 runs — reclassified down→blocked here.
     if is_captcha_page(&body) {
         return FetchOutcome::Blocked;
+    }
+    if body.len() < 500 {
+        return FetchOutcome::Unreachable;
     }
     FetchOutcome::Body(body)
 }
@@ -209,6 +218,11 @@ pub(super) const BLOCK_PHRASE_SETS: &[&[&str]] = &[
     &["request unsuccessful", "incapsula"], // Imperva / Incapsula
     &["are not a robot"],
     &["verify you are human"],
+    // Mojeek 403 anti-bot page ("your network appears to be sending automated
+    // queries so we can't process your search"); also a historical Google block
+    // phrasing. Specific enough to stand alone — a real SERP does not announce
+    // that it is refusing automated queries.
+    &["sending automated queries"],
     &["enable javascript and cookies to continue"],
     &["access to this page has been denied"], // PerimeterX classic block page
 ];
@@ -220,21 +234,28 @@ pub(super) const BLOCK_PHRASE_SETS: &[&[&str]] = &[
 /// [`BLOCK_PHRASE_SETS`] must match. This is a strict superset of the old
 /// detector's coverage while cutting its false-positive surface.
 pub(super) fn is_captcha_page(body: &str) -> bool {
-    let lower = body.to_lowercase();
-    // First tier: any single high-confidence vendor signature. One cached
-    // aho-corasick pass over the lowercased body (the first `util::scan`/SOL-F1
-    // consumer) — byte-for-byte equivalent to the old
-    // `BLOCK_VENDOR_SIGNATURES.iter().any(|s| lower.contains(s))` (the signatures
-    // are already lowercase, so we match against `lower`), but a single
-    // Teddy/SIMD pass instead of N substring scans.
+    // First tier: any single high-confidence vendor signature, matched
+    // ASCII-case-insensitively against the RAW body in one cached aho-corasick
+    // (Teddy/SIMD) pass. Every signature is lowercase ASCII, so this is equivalent
+    // to the old `body.to_lowercase()` + case-sensitive match — but WITHOUT
+    // allocating a full Unicode-lowercased copy of every fetched body, the hottest
+    // allocation on the fetch path (this runs on every response, including the
+    // proxy path at :134 and the direct path at :156).
     static VENDOR_AC: std::sync::LazyLock<crate::util::scan::MatchSet> =
-        std::sync::LazyLock::new(|| crate::util::scan::MatchSet::new(BLOCK_VENDOR_SIGNATURES));
-    if VENDOR_AC.is_match(&lower) {
+        std::sync::LazyLock::new(|| {
+            crate::util::scan::MatchSet::new_ascii_ci(BLOCK_VENDOR_SIGNATURES)
+        });
+    if VENDOR_AC.is_match(body) {
         return true;
     }
-    BLOCK_PHRASE_SETS
-        .iter()
-        .any(|set| set.iter().all(|tok| lower.contains(tok)))
+    // Second tier: an entire AND-set of lowercase-ASCII phrase tokens must be
+    // present. `find_ascii_ci` (memchr/NEON, PR #220) matches each token
+    // case-insensitively over the raw body — equivalent to `lower.contains(tok)`
+    // with no allocation.
+    BLOCK_PHRASE_SETS.iter().any(|set| {
+        set.iter()
+            .all(|tok| crate::util::str_util::find_ascii_ci(body, tok).is_some())
+    })
 }
 
 pub(super) fn parse_results(html: &str, engine: &'static str, query: &str) -> Vec<SearchResult> {

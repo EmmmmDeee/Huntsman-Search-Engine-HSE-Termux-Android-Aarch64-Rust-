@@ -92,6 +92,9 @@ use super::*;
             assert!(seed.has_tag("breach"), "seed must be breach-tagged");
             let ev = &seed.evidence[0];
             assert_eq!(ev.attributes.get("paste_count").map(String::as_str), Some("2"));
+            // Server-reported count equals what was actually shown — no
+            // `total_matches` disclosure needed (nothing was left out).
+            assert!(!ev.attributes.contains_key("total_matches"));
             // Earliest of the two dates, independent of input order.
             assert_eq!(
                 ev.attributes.get("earliest_paste").map(String::as_str),
@@ -109,73 +112,67 @@ use super::*;
     }
 
     #[test]
-    fn extract_surfaces_provider_total_only_when_it_exceeds_distinct_pastes() {
-        // psbdmp's own `count` tally is surfaced as `provider_result_count` ONLY
-        // when it exceeds the deduplicated distinct-paste count — i.e. when the
-        // provider returned duplicate ids or a capped page, so the real exposure
-        // scale is larger than the distinct pastes shown. In the common case the
-        // two agree and no redundant attribute is added.
-        let two_pastes = || {
-            vec![
+    fn extract_surfaces_total_matches_when_server_count_exceeds_shown_pastes() {
+        // The API's `count` field is the server's own authoritative match total,
+        // parsed but previously silently discarded — only the locally deduped
+        // `data.len()` ever reached evidence, understating the subject's real
+        // exposure whenever the server reports more matches than this response
+        // actually carried (e.g. upstream pagination/truncation).
+        let resp = SearchResp {
+            count: 5,
+            data: vec![
                 Paste {
                     id: "p1".into(),
-                    date: "2023-01-01 00:00:00".into(),
+                    date: "2021-01-01 00:00:00".into(),
                     tags: String::new(),
                 },
                 Paste {
                     id: "p2".into(),
-                    date: "2023-01-02 00:00:00".into(),
+                    date: "2021-02-02 00:00:00".into(),
                     tags: String::new(),
                 },
-            ]
-        };
-
-        // Provider reports 5 total but only 2 distinct pastes came back → surface 5.
-        let capped = SearchResp {
-            count: 5,
-            data: two_pastes(),
+            ],
         };
         let mut r = ModuleResult::new();
-        extract(&capped, "subject", TargetKind::Email, "scan", &mut r);
+        extract(&resp, "subject@example.com", TargetKind::Email, "scan", &mut r);
         let seed = r
             .entities
             .iter()
-            .find(|e| e.kind == EntityKind::Email && e.value == "subject")
-            .expect("seed identity entity");
-        assert_eq!(
-            seed.evidence[0]
-                .attributes
-                .get("paste_count")
-                .map(String::as_str),
-            Some("2")
+            .find(|e| e.kind == EntityKind::Email && e.value == "subject@example.com")
+            .expect("seed entity must be emitted");
+        let ev = &seed.evidence[0];
+        assert_eq!(ev.attributes.get("paste_count").map(String::as_str), Some("2"));
+        assert_eq!(ev.attributes.get("total_matches").map(String::as_str), Some("5"));
+        assert!(
+            ev.summary.contains("5 reported by source"),
+            "summary must honestly disclose the server's larger total: {}",
+            ev.summary
         );
-        assert_eq!(
-            seed.evidence[0]
-                .attributes
-                .get("provider_result_count")
-                .map(String::as_str),
-            Some("5"),
-            "a provider total above the distinct-paste count must surface as scale"
-        );
+    }
 
-        // Provider total equals the distinct count → no redundant attribute.
-        let exact = SearchResp {
-            count: 2,
-            data: two_pastes(),
+    #[test]
+    fn extract_never_understates_total_matches_below_pastes_actually_shown() {
+        // A server `count` smaller than (or equal to) the number of distinct
+        // pastes actually shown must never suppress or shrink `paste_count` —
+        // only ADD a disclosure when the server claims MORE than was shown.
+        let resp = SearchResp {
+            count: 0, // e.g. a stale/inconsistent count field from the API.
+            data: vec![Paste {
+                id: "p1".into(),
+                date: String::new(),
+                tags: String::new(),
+            }],
         };
-        let mut r2 = ModuleResult::new();
-        extract(&exact, "subject", TargetKind::Email, "scan", &mut r2);
-        let seed2 = r2
+        let mut r = ModuleResult::new();
+        extract(&resp, "subject@example.com", TargetKind::Email, "scan", &mut r);
+        let seed = r
             .entities
             .iter()
-            .find(|e| e.kind == EntityKind::Email && e.value == "subject")
-            .expect("seed identity entity");
-        assert!(
-            !seed2.evidence[0]
-                .attributes
-                .contains_key("provider_result_count"),
-            "when the provider total equals the distinct count, no redundant attr is added"
-        );
+            .find(|e| e.kind == EntityKind::Email && e.value == "subject@example.com")
+            .expect("seed entity must be emitted");
+        let ev = &seed.evidence[0];
+        assert_eq!(ev.attributes.get("paste_count").map(String::as_str), Some("1"));
+        assert!(!ev.attributes.contains_key("total_matches"));
     }
 
     #[test]

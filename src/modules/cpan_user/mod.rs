@@ -140,7 +140,7 @@ pub(super) fn build_entities(author: CpanAuthor, scan_id: &str) -> Vec<Entity> {
 
     // Biography — extract email addresses.
     if let Some(bio) = author.biography.as_deref() {
-        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id, 3) {
+        for mut em in profile_kit::bio_emails(bio, 0.68, scan_id) {
             em.tag("cpan");
             em.tag("public-profile");
             em.add_evidence(

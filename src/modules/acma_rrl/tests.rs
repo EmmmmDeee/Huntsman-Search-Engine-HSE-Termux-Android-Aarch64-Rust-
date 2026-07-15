@@ -1,8 +1,34 @@
-use super::{AcmaRrl, extract_abn_from_html, parse_acma_html};
+use super::{AcmaRrl, build_licensee_entities, extract_abn_from_html, parse_acma_html};
 use crate::core::{
+    entity::EntityKind,
     module::{Module, ModuleCost},
     scan::{Target, TargetKind},
 };
+
+#[test]
+fn build_licensee_entities_emits_every_parsed_row_not_just_20() {
+    // Full-fidelity: a large multi-licence org / coordinate-radius search can match
+    // more than 20 licensees; every parsed row must become an Organisation entity
+    // (the HTML body is already size-bounded upstream). Fail-before: capped at 20.
+    let rows: Vec<(String, String, String)> = (0..25)
+        .map(|i| {
+            (
+                format!("Licensee {i:02} Pty Ltd"),
+                format!("LIC{i:04}"),
+                "Fixed Receive".to_string(),
+            )
+        })
+        .collect();
+    let out = build_licensee_entities(&rows, "s");
+    assert_eq!(
+        out.len(),
+        25,
+        "every parsed licensee must be emitted, not capped at 20"
+    );
+    assert!(out.iter().all(|e| e.kind == EntityKind::Organisation));
+    // The 25th row (index 24) — past the old cap — is present.
+    assert!(out.iter().any(|e| e.value == "Licensee 24 Pty Ltd"));
+}
 
 #[test]
 fn metadata() {

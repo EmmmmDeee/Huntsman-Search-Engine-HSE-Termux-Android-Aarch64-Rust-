@@ -69,7 +69,6 @@ async fn asic_banned_orgs_live_finds_a_banned_org() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = AsicBannedOrgs
         .process(

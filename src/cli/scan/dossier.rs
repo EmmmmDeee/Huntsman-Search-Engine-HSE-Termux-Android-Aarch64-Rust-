@@ -19,6 +19,106 @@ pub(super) struct DossierArgs<'a> {
     pub(super) store: &'a dyn crate::core::port::StoragePort,
 }
 
+/// Curated display order for the dossier's entity-kind sections. Kinds not listed
+/// here are still rendered — appended after, in deterministic key order, by
+/// [`order_dossier_kinds`] — so no finding is ever dropped from the dossier.
+const DOSSIER_KIND_ORDER: &[&str] = &[
+    "person",
+    "email",
+    "phone",
+    "username",
+    "credential",
+    "api_key",
+    "password",
+    "address",
+    "coordinates",
+    "organisation",
+    "abn_acn",
+    "asn",
+    "domain",
+    "ip_address",
+    "url",
+    "mac_address",
+    "device_id",
+    "cidr",
+    "ssid",
+    "tracking_id",
+    "crypto_address",
+];
+
+/// The order to render the dossier's entity-kind sections in: the curated
+/// [`DOSSIER_KIND_ORDER`] (those present) first, then EVERY other present kind —
+/// a rarer `EntityKind` or an `other:<custom>` — in deterministic (sorted-key)
+/// order. The dossier previously iterated a fixed allowlist and silently dropped
+/// any unlisted kind (`cidr`, `ssid`, `tracking_id`, `crypto_address`, every
+/// `other:*`); this guarantees it is a COMPLETE view of the working set. Pure.
+fn order_dossier_kinds<'a>(
+    by_kind: &'a std::collections::BTreeMap<String, Vec<&Entity>>,
+) -> Vec<&'a str> {
+    let mut ordered: Vec<&str> = DOSSIER_KIND_ORDER
+        .iter()
+        .copied()
+        .filter(|k| by_kind.contains_key(*k))
+        .collect();
+    // Catch-all: every present kind not in the curated list, in BTreeMap key
+    // order (deterministic), so nothing is dropped and the output is stable.
+    for k in by_kind.keys() {
+        if !DOSSIER_KIND_ORDER.contains(&k.as_str()) {
+            ordered.push(k.as_str());
+        }
+    }
+    ordered
+}
+
+/// The dossier header's "Entities:" line: the count actually rendered by the
+/// kind sections below (`shown` — the caller's already infra-filtered
+/// entities), with a disclosure when the scan's raw persisted total
+/// (`raw_total`, `Scan::entity_count`, set before any display-layer filter
+/// runs) exceeds it. Previously this line always printed the RAW total even
+/// though every section below renders the filtered list — a scan with
+/// platform-infra entities showed a header count higher than anything
+/// actually listed, with no explanation of the gap (`--include-infra` shows
+/// them and closes it).
+fn entities_header_line(shown: usize, raw_total: usize) -> String {
+    if raw_total > shown {
+        format!(
+            "  Entities:  {shown} ({} platform-infra excluded of {raw_total} total — pass \
+             --include-infra to show)",
+            raw_total - shown
+        )
+    } else {
+        format!("  Entities:  {shown}")
+    }
+}
+
+/// The trailing "… N more" disclosure for a ranked list truncated to `shown`
+/// of `total` — `None` when the full list already fits. The SAME wording
+/// TIMELINE/CONNECTIONS already print; applied to the sections that
+/// previously truncated with no indication at all (cross-scan leverage,
+/// module yield, source confidence, enrichment lineage).
+fn truncation_note(shown: usize, total: usize) -> Option<String> {
+    (total > shown).then(|| format!("  … {} more", total - shown))
+}
+
+/// The subset of `relations` whose BOTH endpoints are present in `entities` —
+/// the same confinement [`crate::core::relation::sorted_confined_adjacency`]
+/// applies for CONNECTIONS/RESOLVED IDENTITIES/CONNECTION BROKERS below.
+/// Previously the raw RELATIONS section printed every relation regardless, so
+/// an edge to/from a platform-infra (or otherwise excluded) entity rendered as
+/// a bare hex UID stub with no explanation for why that node appears nowhere
+/// else in the dossier.
+fn confine_relations_to_visible<'a>(
+    entities: &[Entity],
+    relations: &'a [Relation],
+) -> Vec<&'a Relation> {
+    let visible: std::collections::HashSet<&str> =
+        entities.iter().map(|e| e.uid.as_str()).collect();
+    relations
+        .iter()
+        .filter(|r| visible.contains(r.from_uid.as_str()) && visible.contains(r.to_uid.as_str()))
+        .collect()
+}
+
 pub(super) fn print_dossier(args: DossierArgs<'_>) {
     let DossierArgs {
         scan,
@@ -39,7 +139,10 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
     println!("  Target:    {kind} = {value}");
     println!("  Scan ID:   {}", &scan.id[..16]);
     println!("  Status:    {}", scan.status.as_str());
-    println!("  Entities:  {}", scan.entity_count);
+    println!(
+        "{}",
+        entities_header_line(entities.len(), scan.entity_count)
+    );
     println!(
         "  Modules:   {} run, {} errored, {} deduped",
         scan.modules_run, scan.modules_errored, scan.modules_deduped
@@ -68,12 +171,19 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         .filter(|l| l.cross_scan_degree >= 2)
         .collect();
     if !bridges.is_empty() {
-        println!("  Cross-scan leverage (identifiers bridging prior investigations):");
-        for l in bridges.iter().take(8) {
+        const SHOWN: usize = 8;
+        println!(
+            "  Cross-scan leverage ({} identifiers bridging prior investigations):",
+            bridges.len()
+        );
+        for l in bridges.iter().take(SHOWN) {
             println!(
                 "    · {} {} — bridges {} investigations",
                 l.kind, l.value, l.cross_scan_degree
             );
+        }
+        if let Some(note) = truncation_note(SHOWN, bridges.len()) {
+            println!("{note}");
         }
         println!();
     }
@@ -83,31 +193,13 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
         by_kind.entry(e.kind.to_string()).or_default().push(e);
     }
 
-    let kind_order = [
-        "person",
-        "email",
-        "phone",
-        "username",
-        "credential",
-        "api_key",
-        "password",
-        "address",
-        "coordinates",
-        "organisation",
-        "abn_acn",
-        "asn",
-        "domain",
-        "ip_address",
-        "url",
-        "mac_address",
-        "device_id",
-    ];
-
-    for kind_name in &kind_order {
-        let Some(group) = by_kind.get(*kind_name) else {
-            continue;
-        };
-        let header = match *kind_name {
+    // Render the curated kinds first, then EVERY remaining present kind (a rarer
+    // `EntityKind` or an `other:<custom>`) — see [`order_dossier_kinds`]. The
+    // previous fixed allowlist silently DROPPED any kind not listed, hiding real,
+    // collected intel from the operator's dossier.
+    for kind_name in order_dossier_kinds(&by_kind) {
+        let group = &by_kind[kind_name];
+        let header = match kind_name {
             "person" => "PERSONS",
             "email" => "EMAIL ADDRESSES",
             "phone" => "PHONE NUMBERS",
@@ -124,6 +216,11 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
             "url" => "URLS / PROFILES",
             "mac_address" => "MAC ADDRESSES (network devices)",
             "device_id" => "DEVICE IDENTIFIERS",
+            "asn" => "ASN (autonomous systems)",
+            "cidr" => "CIDR RANGES (network blocks)",
+            "ssid" => "WIFI NETWORKS (SSIDs)",
+            "tracking_id" => "TRACKING IDENTIFIERS",
+            "crypto_address" => "CRYPTOCURRENCY ADDRESSES",
             other => other,
         };
 
@@ -208,9 +305,19 @@ pub(super) fn print_dossier(args: DossierArgs<'_>) {
                 |e| super::super::truncate(&e.value, 40),
             )
         };
-        println!("━━━ RELATIONS ({}) ━━━", relations.len());
+        let confined = confine_relations_to_visible(entities, relations);
+        let hidden = relations.len() - confined.len();
+        if hidden > 0 {
+            println!(
+                "━━━ RELATIONS ({} of {} — {hidden} hidden, endpoint excluded from view) ━━━",
+                confined.len(),
+                relations.len()
+            );
+        } else {
+            println!("━━━ RELATIONS ({}) ━━━", relations.len());
+        }
         println!();
-        for r in relations {
+        for r in &confined {
             println!(
                 "  {}  ──{}──▶  {}   (conf={:.2})",
                 label(&r.from_uid),
@@ -425,41 +532,6 @@ fn print_connection_brokers(entities: &[Entity], relations: &[Relation]) {
     }
 }
 
-/// Names of `KeyGated`/`Paid` modules that ran and finished with **zero**
-/// entities this scan — the set the "ROI" hint warns about spending a
-/// budgeted API call for nothing. Sourced from the scan's own `ModuleDone`
-/// events (`found == 0`), NOT [`crate::util::diagnostics::analyse`]'s
-/// `modules_by_yield`: that list is built purely from emitted entities'
-/// evidence, so a module that ran and yielded nothing never appears in it at
-/// all — a hint that filtered `modules_by_yield` for `entities_emitted == 0`
-/// could therefore never fire. Pure and deterministic (sorted, deduped), so
-/// it's testable without a live module run.
-fn zero_yield_keyed_or_paid_modules(
-    events: &[crate::core::event::Event],
-    cost_by_module: &std::collections::HashMap<String, crate::core::module::ModuleCost>,
-) -> Vec<String> {
-    use crate::core::event::EventKind;
-    use crate::core::module::ModuleCost;
-
-    let mut names: Vec<String> = events
-        .iter()
-        .filter_map(|ev| match &ev.kind {
-            EventKind::ModuleDone { module, found: 0 }
-                if matches!(
-                    cost_by_module.get(module.as_str()),
-                    Some(ModuleCost::KeyGated | ModuleCost::Paid)
-                ) =>
-            {
-                Some(module.clone())
-            }
-            _ => None,
-        })
-        .collect();
-    names.sort();
-    names.dedup();
-    names
-}
-
 /// A near-certain misconfiguration/dead-target signal (PROBLEM_TREE T2.14):
 /// every dispatched module ran and the scan still yielded ZERO entities.
 /// Distinct from the per-module "many modules found nothing for this target
@@ -476,28 +548,6 @@ fn total_dead_scan_hint(entities: &[Entity], modules_run: usize) -> Option<Strin
         format!(
             "{modules_run} module(s) ran and found nothing scan-wide — check the target is \
              reachable/valid, or this seed kind may be unsupported"
-        )
-    })
-}
-
-/// Closes PROBLEM_TREE T2.14 / `SOLUTION_TREE` SOL-HINT-NOISE's per-module
-/// noise decision, left open since 2026-07-01: a `KeyGated`/`Paid` module
-/// that ran and yielded zero entities is real, actionable signal (a wasted
-/// paid/key-gated API call), unlike the dozens of `Free` modules that
-/// legitimately find nothing for a given target kind — surfacing one line
-/// per THOSE would flood the hints list, exactly the noise problem the node
-/// left unresolved. Adopts the same cost-gate the dossier's own `--exclude`
-/// suggesting ROI line already uses (`zero_yield_keyed_or_paid_modules`),
-/// formatted as a single [`crate::util::diagnostics::analyse`]-style
-/// `optimization_hints` entry rather than a per-module enumeration. Pure
-/// over the already-computed, already cost-gated set, so it's testable
-/// without a live scan.
-fn keyed_or_paid_zero_yield_hint(wasted: &[String]) -> Option<String> {
-    (!wasted.is_empty()).then(|| {
-        format!(
-            "{} keyed/paid module(s) yielded zero entities this scan: {}",
-            wasted.len(),
-            wasted.join(", ")
         )
     })
 }
@@ -554,8 +604,12 @@ fn print_diagnostics(
         None => "·",
     };
 
-    println!("  Modules ranked by yield (cost tier shown for ROI tuning):");
-    for m in diag.modules_by_yield.iter().take(15) {
+    const MODULES_SHOWN: usize = 15;
+    println!(
+        "  Modules ranked by yield ({}, cost tier shown for ROI tuning):",
+        diag.modules_by_yield.len()
+    );
+    for m in diag.modules_by_yield.iter().take(MODULES_SHOWN) {
         let kinds = m.unique_kinds.join(",");
         println!(
             "    {:4}  {:<5} {:<22} conf={:.2}  novelty={:5.1}%  kinds={}",
@@ -567,8 +621,12 @@ fn print_diagnostics(
             kinds
         );
     }
+    if let Some(note) = truncation_note(MODULES_SHOWN, diag.modules_by_yield.len()) {
+        println!("{note}");
+    }
     let events = store.events_for_scan(sid).unwrap_or_default();
-    let wasted = zero_yield_keyed_or_paid_modules(&events, &cost_by_module);
+    let wasted =
+        crate::util::diagnostics::keyed_or_paid_zero_yield_modules(&events, &cost_by_module);
     if !wasted.is_empty() {
         println!(
             "  ROI: {} keyed/paid module(s) yielded nothing — consider --exclude {}",
@@ -576,19 +634,28 @@ fn print_diagnostics(
             wasted.join(",")
         );
     }
-    if let Some(hint) = keyed_or_paid_zero_yield_hint(&wasted) {
-        diag.optimization_hints.push(hint);
-    }
+    // T2.14: event-sourced hints analyse() cannot compute itself (no
+    // StoragePort access) — a scan-level time+budget signal and a
+    // noise-bounded per-module summary, appended here where `events` and the
+    // cost map are already in scope.
+    crate::util::diagnostics::append_event_sourced_hints(&mut diag, &events, &cost_by_module);
     println!();
 
-    println!("  Source confidence (n / mean / p50 / p90):");
+    const SOURCES_SHOWN: usize = 15;
     let mut srcs: Vec<_> = diag.source_confidence.iter().collect();
+    println!(
+        "  Source confidence ({}, n / mean / p50 / p90):",
+        srcs.len()
+    );
     srcs.sort_by_key(|(_, s)| std::cmp::Reverse(s.n));
-    for (src, s) in srcs.iter().take(15) {
+    for (src, s) in srcs.iter().take(SOURCES_SHOWN) {
         println!(
             "    {:<22} n={:<4} mean={:.2}  p50={:.2}  p90={:.2}",
             src, s.n, s.mean, s.p50, s.p90
         );
+    }
+    if let Some(note) = truncation_note(SOURCES_SHOWN, srcs.len()) {
+        println!("{note}");
     }
     println!();
 
@@ -718,16 +785,35 @@ fn print_diagnostics(
     }
     println!();
 
-    println!("━━━ ENRICHMENT LINEAGE ━━━");
-    println!();
+    if let Some(movement) = crate::core::timeline::movement_path(&timeline) {
+        println!(
+            "━━━ MOVEMENT ({} fixes, {:.1} km) ━━━",
+            movement.locations_visited, movement.total_km
+        );
+        println!();
+        for leg in &movement.legs {
+            println!(
+                "  {}  {}  →  {}  {}   ({:.1} km)",
+                leg.from_iso, leg.from_coords, leg.to_iso, leg.to_coords, leg.distance_km
+            );
+        }
+        println!();
+    }
+
+    const LINEAGE_SHOWN: usize = 20;
     let mut lineage_sorted = diag.enrichment_lineage.clone();
+    println!("━━━ ENRICHMENT LINEAGE ({}) ━━━", lineage_sorted.len());
+    println!();
     lineage_sorted.sort_by_key(|n| std::cmp::Reverse(n.source_chain.len()));
-    for node in lineage_sorted.iter().take(20) {
+    for node in lineage_sorted.iter().take(LINEAGE_SHOWN) {
         println!(
             "  [{}] {} (conf={:.2}, corr={})",
             node.kind, node.value_preview, node.confidence, node.corroboration
         );
         println!("    sources: {}", node.source_chain.join(" → "));
+    }
+    if let Some(note) = truncation_note(LINEAGE_SHOWN, lineage_sorted.len()) {
+        println!("{note}");
     }
     println!();
 
@@ -743,10 +829,76 @@ fn print_diagnostics(
 
 #[cfg(test)]
 mod tests {
-    use super::zero_yield_keyed_or_paid_modules;
+    use super::{
+        DOSSIER_KIND_ORDER, confine_relations_to_visible, entities_header_line,
+        order_dossier_kinds, truncation_note,
+    };
+    use crate::core::entity::{Entity, EntityKind};
     use crate::core::event::{Event, EventKind};
     use crate::core::module::ModuleCost;
-    use std::collections::HashMap;
+    use crate::core::relation::{Relation, RelationKind};
+    use crate::util::diagnostics::keyed_or_paid_zero_yield_modules;
+    use std::collections::{BTreeMap, HashMap};
+
+    #[test]
+    fn dossier_renders_every_present_kind_never_dropping_one() {
+        // Regression: the dossier used to iterate a fixed allowlist and silently
+        // drop any kind not in it — `cidr`, `ssid`, `tracking_id`,
+        // `crypto_address`, and every `other:<custom>` vanished from the operator's
+        // output. `order_dossier_kinds` must surface EVERY present kind.
+        let mk = |k: EntityKind, v: &str| Entity::new(k, v, 0.9, "s");
+        let ents = [
+            mk(EntityKind::Email, "a@b.com"),
+            mk(EntityKind::CryptoAddress, "bc1qexample"),
+            mk(EntityKind::Ssid, "HOME-WIFI"),
+            mk(EntityKind::TrackingId, "UA-12345-6"),
+            mk(EntityKind::Cidr, "10.0.0.0/8"),
+            mk(EntityKind::Other("passport".to_string()), "X1234567"),
+            mk(EntityKind::Person, "Jane Doe"),
+        ];
+        let mut by_kind: BTreeMap<String, Vec<&Entity>> = BTreeMap::new();
+        for e in &ents {
+            by_kind.entry(e.kind.to_string()).or_default().push(e);
+        }
+
+        let ordered = order_dossier_kinds(&by_kind);
+
+        // Every present kind appears exactly once — none dropped.
+        assert_eq!(
+            ordered.len(),
+            by_kind.len(),
+            "the ordering must cover every present kind, ordered was {ordered:?}"
+        );
+        for k in by_kind.keys() {
+            assert!(
+                ordered.contains(&k.as_str()),
+                "kind {k:?} was dropped from the dossier ordering {ordered:?}"
+            );
+        }
+        // The previously-dropped kinds are specifically present.
+        for dropped in [
+            "crypto_address",
+            "ssid",
+            "tracking_id",
+            "cidr",
+            "other:passport",
+        ] {
+            assert!(
+                ordered.contains(&dropped),
+                "the formerly-dropped kind {dropped} must now render"
+            );
+        }
+
+        // Curated kinds keep their relative order (person before email), and the
+        // uncurated `other:*` kind is appended AFTER all curated ones.
+        let pos = |k: &str| ordered.iter().position(|x| *x == k).unwrap();
+        assert!(pos("person") < pos("email"));
+        assert!(pos("crypto_address") < pos("other:passport"));
+        assert!(
+            DOSSIER_KIND_ORDER.contains(&"crypto_address"),
+            "crypto_address must be in the curated order, not just the catch-all"
+        );
+    }
 
     fn costs() -> HashMap<String, ModuleCost> {
         [
@@ -771,7 +923,7 @@ mod tests {
             },
         )];
         assert_eq!(
-            zero_yield_keyed_or_paid_modules(&events, &costs()),
+            keyed_or_paid_zero_yield_modules(&events, &costs()),
             vec!["shodan".to_string()]
         );
     }
@@ -786,7 +938,7 @@ mod tests {
                 found: 3,
             },
         )];
-        assert!(zero_yield_keyed_or_paid_modules(&events, &costs()).is_empty());
+        assert!(keyed_or_paid_zero_yield_modules(&events, &costs()).is_empty());
     }
 
     /// A free module that yields nothing is not a wasted spend — nothing to
@@ -800,7 +952,7 @@ mod tests {
                 found: 0,
             },
         )];
-        assert!(zero_yield_keyed_or_paid_modules(&events, &costs()).is_empty());
+        assert!(keyed_or_paid_zero_yield_modules(&events, &costs()).is_empty());
     }
 
     /// Output is sorted and deduped — deterministic regardless of event order
@@ -818,7 +970,7 @@ mod tests {
         };
         let events = vec![mk("shodan"), mk("hunter_io"), mk("shodan")];
         assert_eq!(
-            zero_yield_keyed_or_paid_modules(&events, &costs()),
+            keyed_or_paid_zero_yield_modules(&events, &costs()),
             vec!["hunter_io".to_string(), "shodan".to_string()]
         );
     }
@@ -885,30 +1037,66 @@ mod tests {
     /// A normal successful scan — must never fire regardless of module count.
     #[test]
     fn total_dead_scan_hint_is_silent_when_entities_were_found() {
-        use crate::core::entity::{Entity, EntityKind};
         let entities = vec![Entity::new(EntityKind::Email, "a@b.com", 0.5, "s")];
         assert_eq!(total_dead_scan_hint(&entities, 12), None);
     }
 
-    use super::keyed_or_paid_zero_yield_hint;
-
-    /// Closes T2.14 / SOL-HINT-NOISE's per-module noise decision: a wasted
-    /// keyed/paid module call is real signal and must reach
-    /// `optimization_hints`, not just the dossier's separate ROI println.
     #[test]
-    fn keyed_or_paid_zero_yield_hint_fires_when_a_keyed_or_paid_module_wasted_its_call() {
-        let wasted = vec!["hunter_io".to_string(), "shodan".to_string()];
-        let hint = keyed_or_paid_zero_yield_hint(&wasted).expect("must fire");
-        assert!(hint.contains("hunter_io"));
-        assert!(hint.contains("shodan"));
-        assert!(hint.contains('2'));
+    fn entities_header_line_discloses_infra_excluded_gap() {
+        // The bug: the header always printed the RAW `scan.entity_count`, even
+        // though every section below renders the caller's infra-filtered list —
+        // a scan with platform-infra entities showed a header count higher than
+        // anything actually listed, with no explanation of the gap.
+        assert_eq!(
+            entities_header_line(42, 50),
+            "  Entities:  42 (8 platform-infra excluded of 50 total — pass --include-infra to show)"
+        );
     }
 
-    /// No wasted keyed/paid module — must not fire (this is the common case:
-    /// `Free` modules finding nothing for a given target kind is normal and
-    /// must never appear here, which is exactly what stayed undecided).
     #[test]
-    fn keyed_or_paid_zero_yield_hint_is_silent_when_nothing_wasted() {
-        assert_eq!(keyed_or_paid_zero_yield_hint(&[]), None);
+    fn entities_header_line_is_plain_when_nothing_was_excluded() {
+        assert_eq!(entities_header_line(50, 50), "  Entities:  50");
+    }
+
+    #[test]
+    fn truncation_note_discloses_the_hidden_count() {
+        assert_eq!(truncation_note(8, 20), Some("  … 12 more".to_string()));
+        assert_eq!(truncation_note(20, 20), None);
+        assert_eq!(
+            truncation_note(20, 5),
+            None,
+            "fewer than the cap: nothing hidden"
+        );
+    }
+
+    #[test]
+    fn confine_relations_to_visible_drops_edges_with_an_excluded_endpoint() {
+        // Mirrors `core::relation::sorted_confined_adjacency`'s own confinement:
+        // an edge is only traversable/renderable when BOTH endpoints are in the
+        // visible entity set. Previously the raw RELATIONS section ignored this
+        // entirely and printed every relation regardless.
+        let a = Entity::new(EntityKind::Domain, "a.example", 0.9, "s");
+        let b = Entity::new(EntityKind::Domain, "b.example", 0.9, "s");
+        let hidden_uid = "deadbeef00000000000000000000000000000000000000000000000000000";
+        let entities = [a.clone(), b.clone()];
+        let relations = [
+            Relation::new(
+                a.uid.clone(),
+                b.uid.clone(),
+                RelationKind::CoLocatedWith,
+                0.8,
+                "s",
+            ),
+            Relation::new(
+                a.uid.clone(),
+                hidden_uid,
+                RelationKind::CoLocatedWith,
+                0.8,
+                "s",
+            ),
+        ];
+        let confined = confine_relations_to_visible(&entities, &relations);
+        assert_eq!(confined.len(), 1, "only the fully-visible edge survives");
+        assert_eq!(confined[0].to_uid, b.uid);
     }
 }

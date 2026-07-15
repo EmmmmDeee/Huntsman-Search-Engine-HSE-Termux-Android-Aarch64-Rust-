@@ -202,9 +202,7 @@ pub(super) async fn probe_config_leaks(
             let mut found = Vec::new();
             for t in crate::util::found_keys::key_tokens(&body, crate::util::found_keys::MAX_TOKEN)
             {
-                if let Some((service, key_val)) =
-                    crate::modules::oathnet_pro::key_harvest::identify_api_key(t)
-                {
+                if let Some((service, key_val)) = crate::util::key_harvest::identify_api_key(t) {
                     found.push((service, key_val.to_string()));
                 }
             }
@@ -503,11 +501,16 @@ pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
             domain_end -= 1;
         }
         let domain = &body[i + 1..domain_end];
-        // `domain.len() > 3` cheaply rejects a too-short TLD (`x@y.z`); the
-        // `<= 254` cap is the RFC 5321 address-length ceiling (the validator caps
-        // the local part but not the whole address). All chars here are ASCII, so
+        // Require the same alphabetic-TLD validity the canonical `EMAIL_RE` and its
+        // sibling byte-scanner `util::extract::page_emails` enforce, single-sourced
+        // through `host_has_alpha_tld`, so this third page byte-scanner cannot be more
+        // permissive than they are: it rejects an IP-literal host (`admin@10.0.0.1`),
+        // a numeric pseudo-TLD (`user@host.123`) and a 1-char TLD (`user@host.c`) that
+        // the old `contains('.') && len > 3` gate admitted as bogus `Email` entities.
+        // The `<= 254` cap is the RFC 5321 address-length ceiling (the syntax validator
+        // caps the local part but not the whole address). All chars here are ASCII, so
         // the lowercased length equals `domain_end - local_start`.
-        if domain.contains('.') && domain.len() > 3 && domain_end - local_start <= 254 {
+        if crate::util::extract::host_has_alpha_tld(domain) && domain_end - local_start <= 254 {
             let lower = body[local_start..domain_end].to_lowercase();
             // Share the canonical email-syntax definition (one '@', sane local,
             // no edge/consecutive dots) instead of the old ad-hoc local-non-empty
@@ -524,7 +527,10 @@ pub(super) fn extract_emails(body: &str, emails: &mut HashSet<String>) {
 }
 
 pub(super) fn is_email_char(b: u8) -> bool {
-    b.is_ascii_alphanumeric() || b == b'.' || b == b'-' || b == b'_' || b == b'+'
+    // Match the canonical `EMAIL_RE` local class `[A-Za-z0-9._%+-]` (includes `%`) so
+    // this byte-scanner doesn't truncate a `%`-containing mailbox at the `%` — the
+    // same class its `util::extract::page_emails` twin uses.
+    b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+' | b'%')
 }
 
 pub(super) fn is_domain_char(b: u8) -> bool {
@@ -538,14 +544,11 @@ pub(super) fn extract_phones(body: &str, phones: &mut HashSet<String>) {
 }
 
 pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
 
     let pool = crate::util::key_pool::global_pool();
-    for word in body.split(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`') {
-        let trimmed = word.trim();
-        if trimmed.len() < 16 || trimmed.len() > 200 {
-            continue;
-        }
+    for trimmed in key_tokens(body, MAX_TOKEN) {
         if let Some((service, key_val)) = identify_api_key(trimmed) {
             let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
             entry.notes = Some(format!("Web-scraped from {domain}"));
@@ -564,7 +567,10 @@ pub(super) fn extract_api_keys_from_body(body: &str, domain: &str) {
 }
 
 pub(super) fn detect_frameworks(body: &str, found: &mut HashSet<&'static str>) {
-    let lower = body.to_lowercase();
+    // All search patterns below are lowercase ASCII, so `find_ascii_ci` against the
+    // RAW body (memchr/NEON, PR #220) is equivalent to the old `lower.contains(p)`
+    // — but without allocating a Unicode-lowercased copy of up to a 64 KB crawled
+    // body on every fetched page.
     let checks: &[(&str, &'static str)] = &[
         ("wp-content/", "WordPress"),
         ("wp-includes/", "WordPress"),
@@ -617,35 +623,36 @@ pub(super) fn detect_frameworks(body: &str, found: &mut HashSet<&'static str>) {
     ];
 
     for (pattern, name) in checks {
-        if lower.contains(pattern) {
+        if crate::util::str_util::find_ascii_ci(body, pattern).is_some() {
             found.insert(name);
         }
     }
 }
 
 pub(super) fn detect_page_types(body: &str, types: &mut HashSet<&'static str>) {
-    let lower = body.to_lowercase();
+    use crate::util::str_util::find_ascii_ci;
+    let has = |pat: &str| find_ascii_ci(body, pat).is_some();
 
-    if lower.contains("<form") {
+    if has("<form") {
         types.insert("has_forms");
 
-        if lower.contains("type=\"password\"") || lower.contains("type='password'") {
+        if has("type=\"password\"") || has("type='password'") {
             types.insert("login_form");
         }
-        if lower.contains("type=\"file\"") || lower.contains("type='file'") {
+        if has("type=\"file\"") || has("type='file'") {
             types.insert("file_upload");
         }
     }
 
-    if lower.contains("/admin") || lower.contains("administrator") || lower.contains("dashboard") {
+    if has("/admin") || has("administrator") || has("dashboard") {
         types.insert("admin_panel");
     }
 
-    if lower.contains("<script") {
+    if has("<script") {
         types.insert("javascript");
     }
 
-    if lower.contains("api-key") || lower.contains("apikey") || lower.contains("api_key") {
+    if has("api-key") || has("apikey") || has("api_key") {
         types.insert("api_reference");
     }
 }

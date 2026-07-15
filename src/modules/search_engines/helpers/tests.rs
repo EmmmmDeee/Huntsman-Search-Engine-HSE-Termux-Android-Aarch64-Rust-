@@ -734,6 +734,57 @@ fn extract_surrounding_text_returns_empty_when_anchor_absent() {
     );
 }
 
+#[test]
+fn extract_surrounding_text_does_not_leak_a_straddling_svg_paths_raw_data() {
+    // Regression, found investigating a real Swisscows SERP capture: an
+    // icon-only social link (no visible anchor text) falls back to this
+    // ±300-char window. When the window's start (`pos - 300`) lands strictly
+    // INSIDE a preceding <svg> block — the block's own opening tag is further
+    // back, outside the window, so the local `strip_inline_blocks` scan never
+    // sees the pair as a whole — the raw `d="…"` path coordinates between the
+    // window's start and the next recognised tag leak straight through as if
+    // they were visible text.
+    //
+    // The path data is padded long enough (well over 300 chars) that the
+    // block's OPENING tag sits more than 300 bytes before the anchor while its
+    // CLOSING tag sits within the last 300 — reproducing the exact straddle,
+    // not just a short fragment that a ±300 window would swallow whole.
+    let long_path = "A".repeat(400);
+    let html = format!(
+        r#"<svg><path d="{long_path}" clip-rule="evenodd"></path></svg><p>Real Co</p><a href="ANCHOR"><svg><path d="M5 6L7 8Z"></path></svg></a>"#
+    );
+    let pos = html.find("ANCHOR").unwrap();
+    assert!(
+        pos.saturating_sub(300) < html.find("<svg").unwrap() + 400,
+        "test setup sanity: the naive window start must land inside the first \
+         svg block, or this test doesn't reproduce the bug"
+    );
+    let out = extract_surrounding_text(&html, "ANCHOR", 200);
+    assert!(
+        !out.contains("clip-rule") && !out.contains("AAAA"),
+        "the preceding icon's raw SVG path/attribute data must not leak into \
+         the extracted text: {out:?}"
+    );
+    assert!(
+        out.contains("Real Co"),
+        "genuine visible text near the anchor must still be kept: {out:?}"
+    );
+}
+
+#[test]
+fn extract_surrounding_text_excludes_swisscows_own_icon_svg_path_from_a_real_capture() {
+    // Same regression, proven against the real capture that surfaced it
+    // rather than only a synthetic fragment.
+    let html = include_str!("../fetch/testdata/swisscows_kylo4kylo.html");
+    let anchor = "https://www.facebook.com/swisscows/";
+    let out = extract_surrounding_text(html, anchor, 300);
+    assert!(
+        !out.contains("clip-rule") && !out.contains("d=\"M"),
+        "raw SVG path/attribute data from a real capture leaked into the \
+         extracted text: {out:?}"
+    );
+}
+
 // ── extract_snippet_near ─────────────────────────────────────────────────────
 
 #[test]

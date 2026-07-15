@@ -100,7 +100,6 @@ pub fn analyse(
                     name: s.clone(),
                     ..Default::default()
                 });
-            perf.entities_emitted = perf.entities_emitted.saturating_add(1);
             perf.evidence_count = perf.evidence_count.saturating_add(1);
             if !perf.unique_kinds.contains(&e.kind.to_string()) {
                 perf.unique_kinds.push(e.kind.to_string());
@@ -109,6 +108,17 @@ pub fn analyse(
         }
         sources_for_entity.sort();
         sources_for_entity.dedup();
+        // Count this entity ONCE per DISTINCT source that emitted it. Doing it in
+        // the evidence loop above tracked evidence_count in lockstep, so an entity
+        // carrying several evidence records from one source (e.g. overpass attaches
+        // two SRC records to one Coordinates node) was counted as several entities —
+        // inflating the persisted total_entities / mean_entities_per_scan that drive
+        // --adaptive routing. entities_emitted is an entity count, not an evidence count.
+        for s in &sources_for_entity {
+            if let Some(perf) = by_source.get_mut(s) {
+                perf.entities_emitted = perf.entities_emitted.saturating_add(1);
+            }
+        }
 
         // Overlap (cross-source corroboration)
         let key = (e.kind.to_string(), e.value.clone());

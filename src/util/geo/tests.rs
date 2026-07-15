@@ -73,6 +73,72 @@ use super::*;
     }
 
     #[test]
+    fn au_state_for_coords_is_border_accurate_across_states() {
+        // A real multi-town fixture, weighted toward the border bands the old
+        // overlapping-box scan misattributed. Coordinates are town centroids;
+        // states are the true jurisdiction. This both fixes the gross bugs
+        // (Lismore/Goondiwindi/Shepparton were on the wrong side of a first-match
+        // box) and holds the exact meridian/parallel borders. The commented pairs
+        // are river-twin towns a few km apart across the Murray — the fit splits
+        // them correctly, which is the strongest evidence the border is real, not
+        // a bounding box.
+        let cases: &[(f64, f64, &str, &str)] = &[
+            // QLD
+            (-27.5606, 151.9539, "QLD", "Toowoomba"),
+            (-16.9203, 145.7710, "QLD", "Cairns"),
+            (-20.7256, 139.4927, "QLD", "Mount Isa"),
+            (-25.8974, 139.3517, "QLD", "Birdsville"), // just N of 26°S in 138–141°E
+            (-28.5450, 150.3097, "QLD", "Goondiwindi"), // just N of the 29°S line
+            (-27.9707, 153.4088, "QLD", "Southport"),
+            // NSW — the gross-bug fixes plus interior + coastal
+            (-28.8103, 153.2830, "NSW", "Lismore"), // was QLD (N of 29°S, coastal border dips)
+            (-28.6474, 153.6020, "NSW", "Byron Bay"),
+            (-35.1082, 147.3598, "NSW", "Wagga Wagga"),
+            (-31.9560, 141.4670, "NSW", "Broken Hill"), // just E of 141°E
+            (-32.2569, 148.6011, "NSW", "Dubbo"),
+            (-34.2891, 146.0378, "NSW", "Griffith"),
+            (-35.5333, 144.9667, "NSW", "Deniliquin"), // N side of the Murray
+            (-34.1050, 141.9186, "NSW", "Wentworth"),  // river-twin with Mildura (VIC)
+            (-36.0737, 146.9135, "NSW", "Albury"),     // river-twin with Wodonga (VIC)
+            // VIC — the gross-bug fix plus interior
+            (-36.3805, 145.3980, "VIC", "Shepparton"), // was NSW (N Victoria)
+            (-36.7570, 144.2794, "VIC", "Bendigo"),
+            (-38.1499, 144.3617, "VIC", "Geelong"),
+            (-36.3580, 146.3145, "VIC", "Wangaratta"),
+            (-38.3810, 142.4870, "VIC", "Warrnambool"),
+            (-34.1855, 142.1625, "VIC", "Mildura"), // river-twin with Wentworth (NSW)
+            (-36.1214, 146.8881, "VIC", "Wodonga"), // river-twin with Albury (NSW)
+            (-39.1300, 146.3700, "VIC", "Wilsons Promontory"), // S of −39, but not TAS
+            // SA — both sides of 141°E and the 26°S parallel
+            (-37.8284, 140.7807, "SA", "Mount Gambier"), // W of 141°E, S of VIC
+            (-34.1745, 140.7458, "SA", "Renmark"),       // W of 141°E, Murray region
+            (-32.4922, 137.7645, "SA", "Port Augusta"),
+            (-29.0135, 134.7544, "SA", "Coober Pedy"), // S of 26°S in 129–138°E
+            (-32.1264, 133.6772, "SA", "Ceduna"),
+            // WA — the 129°E meridian
+            (-30.7490, 121.4660, "WA", "Kalgoorlie"),
+            (-17.9614, 122.2359, "WA", "Broome"),
+            (-31.6774, 128.8853, "WA", "Eucla"), // just W of 129°E
+            (-35.0270, 117.8837, "WA", "Albany"),
+            // NT — N of 26°S in 129–138°E
+            (-23.6980, 133.8807, "NT", "Alice Springs"),
+            (-14.4650, 132.2635, "NT", "Katherine"),
+            (-19.6480, 134.1870, "NT", "Tennant Creek"),
+            // TAS — the island
+            (-41.4332, 147.1441, "TAS", "Launceston"),
+            (-41.1789, 146.3510, "TAS", "Devonport"),
+            (-39.8700, 143.8700, "TAS", "King Island"),
+        ];
+        for &(lat, lon, want, name) in cases {
+            assert_eq!(
+                au_state_for_coords(lat, lon),
+                Some(want),
+                "{name} ({lat}, {lon}) should be {want}"
+            );
+        }
+    }
+
+    #[test]
     fn nearest_au_locality_labels_capitals_and_rejects_foreign() {
         let (name, state, km) = nearest_au_locality(-27.47, 153.02).unwrap();
         assert_eq!((name, state), ("Brisbane", "QLD"));

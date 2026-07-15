@@ -102,14 +102,20 @@ fn address_rejected_for_empty_or_overlong() {
 // ── bio_emails ───────────────────────────────────────────────────────────────
 
 #[test]
-fn bio_emails_extracts_and_respects_limit() {
-    let bio = "primary a@x.com, secondary b@y.com, tertiary c@z.com";
-    let two = bio_emails(bio, 0.68, SCAN, 2);
-    assert_eq!(two.len(), 2);
-    assert!(two.iter().all(|e| e.kind == EntityKind::Email));
+fn bio_emails_extracts_every_address_uncapped() {
+    // A bio listing six contact emails — all must surface. A prior take(limit)
+    // (callers passed 3–5) silently dropped the extra contact-email pivots.
+    let bio = "a@x.com b@x.com c@x.com d@x.com e@x.com f@x.com";
+    let all = bio_emails(bio, 0.68, SCAN);
+    assert_eq!(
+        all.len(),
+        6,
+        "every distinct bio email is emitted, not capped"
+    );
+    assert!(all.iter().all(|e| e.kind == EntityKind::Email));
 }
 
 #[test]
 fn bio_emails_empty_when_none_present() {
-    assert!(bio_emails("no contact details here", 0.68, SCAN, 5).is_empty());
+    assert!(bio_emails("no contact details here", 0.68, SCAN).is_empty());
 }

@@ -36,11 +36,6 @@ use crate::core::{
 use crate::util::http::{RequestBuilderExt, read_text};
 
 const SRC: &str = "app_links";
-/// Max delegated sibling domains surfaced (localised credential delegations can
-/// run to dozens of near-identical locale hosts — cap the pivot fan-out).
-const SITE_CAP: usize = 12;
-/// Max distinct apps / fingerprints surfaced per platform.
-const APP_CAP: usize = 24;
 
 pub struct AppLinks;
 
@@ -202,7 +197,16 @@ fn parse_assetlinks(body: &str, domain: &str, scan_id: &str, result: &mut Module
         }
     }
 
-    for pkg in packages.iter().take(APP_CAP) {
+    // Every distinct app / fingerprint / delegated domain is emitted — no cap.
+    // These come from the well-known file the DOMAIN OWNER publishes, so each is
+    // an authoritative, owner-asserted attribution: the packages, signing certs,
+    // and Apple IDs are terminal `Other` identity records (never re-dispatched),
+    // and the delegated `web` domains are siblings the owner PROVES control of
+    // (Digital Asset Links), i.e. genuinely-owned pivots — not co-tenant noise.
+    // The sets are `BTreeSet`s, so output stays sorted, deduplicated, and
+    // deterministic; the expansion frontier for the domains is the engine's ROI
+    // gate, not this leaf.
+    for pkg in &packages {
         let mut e = Entity::new(
             EntityKind::Other("android-app-id".into()),
             pkg,
@@ -219,7 +223,7 @@ fn parse_assetlinks(body: &str, domain: &str, scan_id: &str, result: &mut Module
         );
         result.push(e);
     }
-    for fp in fingerprints.iter().take(APP_CAP) {
+    for fp in &fingerprints {
         let mut e = Entity::new(EntityKind::Other("cert-sha256".into()), fp, 0.78, scan_id);
         e.tag("app-links");
         e.tag("signing-cert");
@@ -233,7 +237,7 @@ fn parse_assetlinks(body: &str, domain: &str, scan_id: &str, result: &mut Module
         );
         result.push(e);
     }
-    for site in sites.iter().take(SITE_CAP) {
+    for site in &sites {
         let mut e = Entity::new(EntityKind::Domain, site, 0.65, scan_id);
         e.tag("app-links");
         e.tag("delegated-domain");
@@ -267,8 +271,12 @@ fn parse_aasa(body: &str, domain: &str, scan_id: &str, result: &mut ModuleResult
     app_ids.extend(doc.webcredentials.apps.iter().cloned());
     app_ids.extend(doc.appclips.apps.iter().cloned());
 
+    // Every appID (and its derived bundle ID + Team ID) is emitted — no cap.
+    // Each is an owner-published, terminal `Other` identity record from the AASA
+    // file; `app_ids`/`teams` are `BTreeSet`s so the output stays sorted, deduped,
+    // and deterministic.
     let mut teams = BTreeSet::new();
-    for app_id in app_ids.iter().take(APP_CAP) {
+    for app_id in &app_ids {
         let Some((team, bundle)) = split_app_id(app_id) else {
             continue;
         };

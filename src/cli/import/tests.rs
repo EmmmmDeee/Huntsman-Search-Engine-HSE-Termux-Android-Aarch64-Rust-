@@ -47,6 +47,26 @@ fn detect_import_format_is_content_based_not_extension_gated() {
     );
 }
 
+#[test]
+fn detect_import_format_ignores_a_leading_utf8_bom() {
+    // Regression: a UTF-8 BOM (U+FEFF) is not whitespace, so `trim_start` left it in
+    // place and a BOM-prefixed export (common from Excel / Windows exporters) was
+    // misrouted to the wrong parser and silently dropped every entity. It must now
+    // detect by its real first token.
+    assert_eq!(
+        detect_import_format("", "\u{feff}{\"exportInfo\":{}}"),
+        ImportFormat::OathnetJson
+    );
+    assert_eq!(
+        detect_import_format("", "\u{feff}<!doctype html><html></html>"),
+        ImportFormat::OathnetHtml
+    );
+    assert_eq!(
+        detect_import_format("table.csv", "\u{feff}a,b,c\n1,2,3"),
+        ImportFormat::DehashedCsv
+    );
+}
+
 /// The upload dispatcher parses UNTRUSTED text from the web endpoint, so it
 /// must never panic — not on truncation, not on a multibyte codepoint landing
 /// next to a structural marker (`@`, `->`, `•`, `:`, a section header), not on
@@ -178,6 +198,65 @@ async fn upload_dispatcher_routes_every_format_to_its_parser() {
 }
 
 #[tokio::test]
+async fn oathnet_json_stealer_victim_emits_every_distinct_field_uncapped() {
+    use crate::core::entity::EntityKind;
+    // A single stealer victim record carrying MORE than the old, arbitrary
+    // per-field caps (device_ips: 10, device_emails: 20, hwids: 5,
+    // discord_ids: 5, device_users: 5) — every one of these array fields is
+    // whatever the upstream OathNet API returned, with no dedup/validation
+    // reason to cap any of them (unlike e.g. push_crypto's checksum gate).
+    let device_ips: Vec<String> = (0..15).map(|i| format!("10.0.0.{i}")).collect();
+    let device_emails: Vec<String> = (0..25).map(|i| format!("user{i}@victim-host.io")).collect();
+    let hwids: Vec<String> = (0..8).map(|i| format!("HWID-{i}")).collect();
+    let discord_ids: Vec<String> = (0..8).map(|i| format!("discord#{i}")).collect();
+    let device_users: Vec<String> = (0..8).map(|i| format!("winuser{i}")).collect();
+    let body = serde_json::json!({
+        "stealerData": {
+            "victims": [{
+                "device_ips": device_ips,
+                "device_emails": device_emails,
+                "hwids": hwids,
+                "discord_ids": discord_ids,
+                "device_users": device_users,
+            }]
+        }
+    })
+    .to_string();
+    let (ents, label) = entities_from_upload(&body, "s").await.unwrap();
+    assert_eq!(label, "oathnet-json");
+    let count = |k: EntityKind, tag: &str| {
+        ents.iter()
+            .filter(|e| e.kind == k && e.has_tag(tag))
+            .count()
+    };
+    assert_eq!(
+        count(EntityKind::IpAddress, "stealer-victim"),
+        15,
+        "every distinct device IP must be emitted, not capped at the old 10"
+    );
+    assert_eq!(
+        count(EntityKind::Email, "stealer-victim"),
+        25,
+        "every distinct device email must be emitted, not capped at the old 20"
+    );
+    assert_eq!(
+        count(EntityKind::DeviceId, "hwid"),
+        8,
+        "every distinct HWID must be emitted, not capped at the old 5"
+    );
+    assert_eq!(
+        count(EntityKind::Username, "discord-id"),
+        8,
+        "every distinct Discord ID must be emitted, not capped at the old 5"
+    );
+    assert_eq!(
+        count(EntityKind::Username, "device-user"),
+        8,
+        "every distinct device user must be emitted, not capped at the old 5"
+    );
+}
+
+#[tokio::test]
 async fn import_extracts_wifi_bssid_as_geolocation_seed() {
     use crate::core::entity::EntityKind;
     // A stealer-log-shaped body carrying the victim's router BSSID.
@@ -193,6 +272,28 @@ async fn import_extracts_wifi_bssid_as_geolocation_seed() {
             && e.value == "a4:b1:c2:00:11:22"
             && e.has_tag("bssid")),
         "the BSSID must become a MacAddress geolocation seed"
+    );
+}
+
+#[tokio::test]
+async fn import_extracts_every_distinct_mac_address_uncapped() {
+    use crate::core::entity::EntityKind;
+    // 60 distinct BSSIDs — more than the old, arbitrary 50-per-import cap this
+    // guards against reintroducing. `push_macs` must emit every one:
+    // `crate::util::extract::macs` already dedupes, so the cap protected
+    // nothing real.
+    let mut body = String::from("URL: https://x.com/login\nUsername: victim\n");
+    for i in 0..60u32 {
+        body.push_str(&format!("Router BSSID: A4:B1:C2:00:11:{i:02X}\n"));
+    }
+    let (ents, _label) = entities_from_upload(&body, "s").await.unwrap();
+    let mac_count = ents
+        .iter()
+        .filter(|e| e.kind == EntityKind::MacAddress)
+        .count();
+    assert_eq!(
+        mac_count, 60,
+        "every distinct BSSID must be emitted, not capped at the old arbitrary 50"
     );
 }
 
@@ -1188,7 +1289,7 @@ fn stealerlogs_is_detected_and_others_are_not() {
 
 #[test]
 fn stealerlogs_parses_victims_creds_and_domains() {
-    let (mut ents, stats) = parse_stealerlogs(STEALER, "s");
+    let (mut ents, stats, _rows) = parse_stealerlogs(STEALER, "s");
     deduplicate_by_uid(&mut ents);
     let has = |k: EntityKind, v: &str| ents.iter().any(|e| e.kind == k && e.value == v);
 
@@ -1235,6 +1336,32 @@ fn stealerlogs_parses_victims_creds_and_domains() {
         ents.iter()
             .filter(|e| e.kind == EntityKind::Username)
             .all(|e| e.has_tag("stealer-victim"))
+    );
+}
+
+#[test]
+fn stealerlogs_credential_pwned_at_survives_onto_its_own_entities() {
+    // Regression: `Cred::pwned_at` was parsed from the real `Pwned At:` field
+    // (documented in `stealer.rs`'s own module header as part of the format)
+    // but then silently dropped — never read again anywhere in the codebase,
+    // never surfaced as evidence, violating the full-fidelity evidentiary
+    // policy (`Evidence`'s own doc: "the FULL source record, preserved
+    // verbatim... nothing redacted or omitted"). This pins that the second
+    // victim's single, unambiguous credential ("bob") carries its own
+    // `pwned_at` evidence attribute with the exact real capture instant.
+    let (ents, _stats, _rows) = parse_stealerlogs(STEALER, "s");
+    let bob = ents
+        .iter()
+        .find(|e| e.kind == EntityKind::Username && e.value == "bob")
+        .expect("the bob credential must become a Username entity");
+    let pwned_at = bob
+        .evidence
+        .iter()
+        .find_map(|ev| ev.attributes.get("pwned_at"));
+    assert_eq!(
+        pwned_at.map(String::as_str),
+        Some("2026-05-20T21:00:00Z"),
+        "the credential's own Pwned At date must ride on its entity's evidence, not be dropped"
     );
 }
 
@@ -1426,7 +1553,7 @@ mod prop {
         /// emit non-empty entity values.
         #[test]
         fn parse_stealerlogs_never_panics(s in ".{0,512}") {
-            let (ents, _) = parse_stealerlogs(&s, "s");
+            let (ents, _, _) = parse_stealerlogs(&s, "s");
             for e in &ents {
                 prop_assert!(!e.value.is_empty(), "empty value in entity: {e:?}");
             }

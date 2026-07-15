@@ -92,7 +92,16 @@ pub async fn scan_entities_filter(
     })
     .await
     {
-        Ok(Ok(entities)) => ok_list("entities", entities),
+        Ok(Ok(mut entities)) => {
+            // Quarantine by default (opt in with `?include_candidates=1`) — matches
+            // `scan_entities`, `scan_entities_csv`, and `report.json` so this filtered
+            // view can't be used to route around the candidate quarantine the other
+            // entity-listing endpoints already enforce.
+            if !super::wants_candidates(&params) {
+                entities.retain(|e| !e.has_tag(crate::core::tags::CANDIDATE));
+            }
+            ok_list("entities", entities)
+        }
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("query task failed: {e}")),
     }
@@ -115,6 +124,29 @@ pub async fn scan_entities_facets(
                 .collect();
             Json(json!({ "facets": items, "count": items.len() })).into_response()
         }
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
+    }
+}
+
+/// `GET /api/v1/scans/{id}/stealer-rows` — paired stealer-log credential
+/// rows (login + password + domain + capture date + source machine, kept
+/// together) for the Stealer Logs Viewer. The generic `entities` endpoint
+/// above already carries the same credentials, but flattened into
+/// independent Email/Username/Credential entities that lose this pairing —
+/// this is the dedicated read for getting it back. Empty for a scan with no
+/// stealer-log import (never an error).
+pub async fn scan_stealer_rows(
+    State(s): State<Arc<AppState>>,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Some(resp) = super::scan_missing(&s, &id) {
+        return resp;
+    }
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.stealer_rows_for_scan(&id2)).await {
+        Ok(Ok(rows)) => ok_list("rows", rows),
         Ok(Err(e)) => internal_error(&e),
         Err(e) => internal_error(&format!("query task failed: {e}")),
     }
@@ -292,15 +324,25 @@ pub async fn scan_identities(
         .unwrap_or(200)
         .clamp(1, 1000);
 
+    // Both the entity READ and the coreference COMPUTE run on the blocking pool.
+    // `resolve_coreferences` is an all-pairs O(n²) pass and `n` is unbounded: an
+    // imported breach/stealer dossier can seat 10^5+ identity entities, so running
+    // the compute inline on an async reactor worker would freeze one of Termux's
+    // two workers for minutes (health/SSE/cancel all stall) with real OOM risk.
+    // `limit` only truncates the OUTPUT, not the pairwise work, so it is no bound.
     let store = std::sync::Arc::clone(&s.store);
     let id2 = id.clone();
-    let loaded = tokio::task::spawn_blocking(move || store.entities_for_scan(&id2)).await;
-    let entities = match loaded {
-        Ok(Ok(ents)) => ents,
+    let computed = tokio::task::spawn_blocking(move || {
+        store
+            .entities_for_scan(&id2)
+            .map(|entities| crate::core::coref::resolve_coreferences(&entities, min_score, limit))
+    })
+    .await;
+    let corefs = match computed {
+        Ok(Ok(corefs)) => corefs,
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("query task failed: {e}")),
     };
-    let corefs = crate::core::coref::resolve_coreferences(&entities, min_score, limit);
     (
         StatusCode::OK,
         Json(json!({

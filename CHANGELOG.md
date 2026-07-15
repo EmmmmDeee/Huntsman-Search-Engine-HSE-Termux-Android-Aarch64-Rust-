@@ -11,6 +11,25 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
+- **Live radar now has a historical-review surface: `GET /api/v1/radar/history`
+  plus a "Radar history" panel on the Live page.** Previously every radar
+  sweep (`hse radar` / the web "Activate Live Radar" button / continuous
+  `POST /api/v1/radar/live` sessions) was a real, persisted scan, but there
+  was no way to browse past sweeps afterwards — the in-memory `LiveSession`
+  bookkeeping the "Active sessions" table reads is cleared on every `hse
+  serve` restart, and every radar sweep shares an identical sentinel target
+  value, so the generic Scans list couldn't distinguish one sweep from
+  another either. The new endpoint queries the persisted `scans` table
+  directly (a `json_extract`-filtered SQL query, `Store::radar_history`) for
+  the two sentinel target shapes `radar_scan_spec` produces, ordered
+  newest-first — so an operator reviewing what was around them earlier can
+  do so even after a restart, with only "a radar sweep ran at some point" to
+  go on. Also restored a real gap surfaced during this cycle: the Dashboard's
+  "Module Health" panel (`moduleHealthPanel`) and the Footprint Timeline's
+  online-tenure/recency headline were both still live, tested backend
+  features that the SPA's monolithic-script → ES-module refactor had
+  silently stopped rendering; both are wired back into their new module
+  homes (`views/dash.js`, `scan_info/timeline.js`).
 - **New module: `opensanctions` — sanctions, politically-exposed-person
   (PEP), and watchlist screening for a full name.** Screens against OFAC's
   SDN list, the UN Security Council list, the EU consolidated list, UK
@@ -116,6 +135,1080 @@ versions can include breaking changes; patch versions are bug-fix-only.
   bare per-event list. Both now open with the headline: "Online since
   `<date>` — `<N>`y span, `<M>` breach exposure(s), footprint
   active/recent/aging/dormant."
+- **New "Stealer Logs" tab: a file-explorer-style, paired credential
+  browser for imported stealer-log data.** Previously an imported stealer
+  log's credentials only showed up in the generic Browse tab, with a
+  login and its password appearing as two separate, unlinked entities —
+  no way to see which one went with the other, which machine they came
+  from, or when they were captured. The new tab keeps login+password+
+  domain+capture-date together per row in a real expand/collapse tree
+  (machine ▸ Passwords.txt/Combos.txt, or group by domain instead), with:
+  search with live match highlighting; sortable columns; reveal-all plus
+  per-row reveal/copy on passwords; click-to-copy domains; cross-machine
+  duplicate-password detection with a one-click filter; a raw text view;
+  full keyboard navigation (↑/↓, Enter to copy); and one-click exports
+  (copy all logins, copy all passwords, copy url:login:pass, or download
+  the file). Literal per-file (System.txt/Credentials.txt/ClientAt/
+  EmployeeAt) splitting isn't available — the imported format this
+  importer reads doesn't carry that per-credential file provenance.
+- **Internal: the correlation pass now has a proper `criterion` benchmark,
+  closing the last open item in the standing proof-and-measurement foundation
+  (PROBLEM_TREE F.3 / SOLUTION_TREE SOL-F3).** `correlate_entities` — the
+  cross-module rule pass the engine re-runs after every expansion round — was
+  only measurable via `core::correlator::perf`'s zero-dependency `#[ignore]`d
+  `cargo test -- --ignored` guard, because criterion benches are separate
+  compilation units that link only against this crate's public API, and the
+  pass itself is deliberately `pub(crate)`. New `#[doc(hidden)] pub fn
+  bench_correlate_entities`/`bench_synthetic_entities` on
+  `core::correlator` (the same narrow, documented widening the `cargo-fuzz`
+  work used for `cert_intel::fuzz_entry_parse_der`) give `benches/
+  correlation_pass.rs` a real entry point, benching the pass across 100–2000
+  entity scales; `core::correlator::perf`'s in-crate guard now delegates to
+  the same shared generator instead of duplicating it. No behaviour change —
+  additive bench-only surface, 2 new regression tests.
+- **The footprint timeline now reconstructs a "movement path" from a
+  subject's dated location fixes** (currently geotagged photos'
+  `exif_geo`-decoded capture instants), walking them in chronological order
+  and reporting the straight-line distance between each consecutive pair —
+  "was at A on this date, then B a week later, C km away". Appears in the
+  CLI dossier as a new `MOVEMENT` section, and as a `movement` field on the
+  `GET /api/v1/scans/{id}/timeline` response and its SPA panel, whenever a
+  scan has 2 or more dated location fixes; silently absent otherwise (no
+  fabricated single-point "path"). Closes the movement/timeline-geo
+  path-reconstruction increment PROBLEM_TREE C5 has named as remaining since
+  the `LocationVisited` event kind first shipped.
+- **Internal: the certificate-intelligence DER scanner is now coverage-guided
+  fuzz-tested, closing the last unstarted item in the standing proof-and-
+  measurement foundation (PROBLEM_TREE F.3).** `cert_intel`'s hand-rolled DER
+  parser — already the source of two real bugs found by fixture testing alone
+  (a SAN wrapper-unwrap miss, a serial/version mix-up) — takes a live TLS
+  peer's fully attacker-controlled bytes directly, making it the project's
+  highest-value target for `cargo-fuzz`. A new `fuzz/` crate (kept outside
+  the main package so it never touches the stable-toolchain gate) and a new
+  weekly/on-demand `fuzz.yml` CI lane exercise it, seeded from the existing
+  real-certificate test fixture. No user-visible behaviour change; verified
+  locally with a real 60-second run — 1.24 million executions, zero crashes.
+- **The New Scan wizard can now pick a named scan profile** — the same
+  presets the CLI's `--profile` flag offers (`recommended`, `passive`,
+  `footprint`, `investigate`, `fast`, and `skiptrace`), previously only
+  reachable from the command line. `skiptrace` is worth calling out
+  specifically: it's the debtor/person-location profile, tuned to converge
+  on someone's current address, phone, employer and associates — and it had
+  no web path at all before now. Pick one from the new "Scan Profile"
+  dropdown above the advanced options; your module selection, tags, and
+  notes still apply on top of it.
+- **You can now include infrastructure entities (cloud buckets, CDN IPs,
+  tracking IDs) in a downloaded JSON report.** These are hidden by default
+  to keep the report focused on the subject, matching the CLI's own
+  `--include-infra` flag — but the web JSON download had no way to opt back
+  in before now. A new checkbox on the scan page toggles it. Browse, CSV,
+  GEXF, and the debug bundle already showed these entities regardless — only
+  the JSON report ever hid them.
+- **The cell-tower database (used for cell-based geolocation) can now be
+  managed entirely from the Settings page — no more dropping to a shell.**
+  Previously, populating, refreshing, or clearing this database was only
+  possible via the command line, even though the web console already lets
+  you trigger the features that depend on it (Live Signal Radar, location
+  lookups during a scan). The new "Cell Tower Database" panel shows how
+  many towers you have and when they were last updated, lets you download
+  and import a country's towers by entering its code (e.g. "AU"), and lets
+  you clear the database with a confirmation prompt. Importing a raw file
+  you already have on-device is still a command-line-only option for now.
+- **SeekNow's Discord/Steam/Roblox account-linking lookups now also recover
+  leaked API keys, not just linked-account identities.** This was the one
+  remaining SeekNow data source that skipped the key-recovery pass every
+  other SeekNow query already goes through, despite being the source
+  SeekNow itself highlights as its standout feature (turning a Discord ID
+  found in breach data into every account it's linked to). A leaked key
+  pasted into one of those linked accounts is now caught too.
+- **New "Key Harvest" page in the web console** — a dedicated dashboard for
+  the API-key-harvesting pipeline, its own nav entry and route (`#/harvest`),
+  not a panel tucked into an existing page. Shows the permanent cross-scan
+  key vault (every foreign API key ever harvested, masked, with discovery
+  counts and first/last-seen timestamps), the key pool with each service's
+  ROI tier (which services are worth prioritising because finding their
+  keys unlocks more keys downstream), and live account health for SeekNow
+  and WiGLE — the same checks `hse doctor` runs, now visible in the browser
+  without a CLI hop. Loopback-only, like the rest of the key-management
+  surface.
+- **The Reddit module now also recovers leaked API keys from a user's bio
+  and their post history, not just emails and links.** It already fetches
+  both for identity extraction; that same already-downloaded text is now
+  also checked for a leaked API key or credential someone accidentally
+  pasted in a self-text post or their profile bio — recovered at no extra
+  network cost.
+- **The Hacker News module now also recovers leaked API keys from a user's
+  bio and their comment/post history, not just emails and links.** It
+  already fetches both for identity extraction; that same already-downloaded
+  text is now also checked for a leaked API key or credential someone
+  accidentally pasted in a comment or their profile bio — recovered at no
+  extra network cost.
+- **`hse doctor` now checks whether your SeekNow API key actually works.**
+  Previously a dead or rejected SeekNow key failed completely silently —
+  every scan just reported finding nothing from it, indistinguishable from
+  a legitimate empty result. `hse doctor` now probes the account and prints
+  either your remaining daily credits or a clear `INVALID` notice with
+  instructions to set a working key, before you discover the problem the
+  hard way.
+- **The Wayback Machine module now also recovers leaked API keys from
+  archived pages, not just old contact emails/phone numbers.** It already
+  downloads historical snapshots of a site's contact/about/team pages to
+  mine contacts that have since been removed; those same downloaded pages
+  are now also checked for a leaked API key or credential the live site has
+  since scrubbed but an old archived snapshot still preserves — recovered
+  at no extra network cost since the page was already being fetched.
+- **New correlator rule AU-112 surfaces shared CIDR-block hosting
+  infrastructure.** An IP address discovered one way (e.g. DNS resolution)
+  that falls within a network block discovered another way (e.g. an ASN/BGP
+  lookup) in the same scan is now flagged as likely shared hosting
+  infrastructure — framed as shared infra, not personal ownership. Scoped to
+  narrow blocks only (`/22` or smaller for IPv4, `/48` or smaller for IPv6)
+  so a broad ISP/cloud-provider allocation spanning thousands of unrelated
+  customers doesn't manufacture noise, and skips any pair the netblock
+  expansion module already links explicitly. Reuses the CIDR-containment
+  maths already built for SPF record parsing rather than duplicating it.
+- **`hse doctor` and the web UI now flag scrapers that silently stop finding
+  anything.** The existing scraper-health signal already caught a source that
+  errors repeatedly; it's now joined by a signal for a source that runs to
+  completion without erroring but has quietly returned zero results several
+  times in a row, despite having found something before — the signature of a
+  page layout change silently breaking extraction. A source that has never
+  found anything for this scan history is never flagged (that's a
+  legitimately empty target, not drift). Surfaced in `hse doctor`'s "Scraper
+  health" section, `GET /api/v1/health/scrapers`, and the Engines page's
+  Scraper health panel.
+- **A spoofed-domain seed now tells you what it's spoofing.** Scanning a
+  domain, email, or similar value that mixes real letters with foreign
+  lookalike characters (e.g. a Cyrillic letter standing in for a Latin one,
+  the classic `paypal.com` phishing trick) was already rejected as a possible
+  spoof — the rejection message now also names the real-looking form the
+  value normalizes to, so it's immediately clear what's actually being
+  impersonated. Applies to `hse scan`, `hse live`, and the web API.
+- **`hse doctor` now has a "Weak findings" section.** Every stored finding
+  below the confidence review threshold, observed recently, is now listed
+  (weakest first, capped at 20 rows with a remainder count) so an operator can
+  see what should not yet be trusted as evidence before relying on it. This
+  spans the whole local database (not one scan), matching the section's
+  neighbor, the existing per-source scraper-health signal.
+- **The search-engine result parser now has a real-world regression test.**
+  Previously every test for the SERP-parsing logic used small, hand-written
+  HTML snippets. A real search results page — with its actual footer
+  navigation, script-injected app shell, and result markup — is now checked in
+  and used to verify the parser still extracts the expected results from it.
+  This catches a real layout change silently breaking result extraction, which
+  the hand-written snippets could never do. No behavior change; test-only.
+- **Added a second real-world regression fixture for the search-engine result
+  parser: a genuine Bing results page.** Bing uses a different display-URL
+  markup shape than the first fixture (Brave) covered, so this exercises a
+  distinct extraction path the existing tests didn't reach. No behavior
+  change; test-only.
+- **Scan-completion webhooks now actually fire.** Setting `HUNTSMAN_WEBHOOK_URL`
+  (or a per-scan webhook URL) was already accepted and stored, but the engine
+  never sent the notification — so a configured webhook silently did nothing. On
+  every terminal scan state (complete / aborted / failed) the engine now POSTs a
+  `scan_complete` JSON payload — scan id, target, entity count, correlation
+  count, and status — to the configured URL. It is fire-and-forget: bounded to a
+  10-second timeout and never fails the scan, and only the webhook host (never
+  the full URL, which may carry a secret in its path) is logged on error.
+- **New correlator rule AU-111 surfaces a CDN-fronted domain's likely origin
+  IP.** When `waf_detect` fingerprints a domain behind a well-known global
+  anycast CDN (Cloudflare, Akamai, Fastly, CloudFront, Sucuri, Incapsula,
+  StackPath, or KeyCDN) and `dns_intel` finds that domain's SPF record
+  authorising a mail-sender IP, that IP is surfaced as a Medium-severity
+  origin/hosting-network candidate — SMTP isn't proxied by a CDN edge the
+  way HTTP/HTTPS is. Built entirely from data both modules already collect;
+  no new external dependency. Deliberately does not fire for on-premise WAF
+  appliances (F5 BIG-IP, Citrix NetScaler, Barracuda, ModSecurity) the same
+  detector also fingerprints, where the unmasking assumption doesn't hold.
+- **`hse doctor` now flags a stale local cell-tower database.** New "Cell
+  tower database" section reports tower count and import age, and a
+  `STALE` line once the last `hse cells import` is more than 180 days old,
+  naming the command to refresh it. `hse cells import` has no
+  auto-scheduled re-sync (and none is planned — this codebase has no
+  cron/daemon infrastructure, and Termux/Android has no reliable
+  persistent-process story to hang one on), so this at least surfaces when
+  GEOINT cell-tower correlation is working from an aging dataset instead of
+  leaving it silent.
+- **Per-source scraper health is now visible in the web UI** — new `GET
+  /api/v1/health/scrapers` endpoint and a "Scraper health" panel on the
+  Engines page surface the same cross-scan failure-streak signal `hse
+  doctor` already printed (`au_people`/`au_electoral`/`username_search`/
+  `search_engines`/… — any module with 3+ consecutive failures across
+  recent scans, with its last-success date and last error).
+
+### Removed
+- **Removed 12 more confirmed-dead internal items from the PRIORITY-4 sweep's
+  banked backlog** — a redundant homograph-report wrapper, an unused
+  autonomous-seed picker, a superseded path-finder, a superseded validator
+  dispatcher, two unused MITRE ATT&CK constants, an unused entity tag, a
+  redundant API-key-storage wrapper, a redundant Australian-address
+  first-match wrapper, an unused phone-line-type predicate, a redundant BSB
+  shape-check wrapper, a redundant file-permission tightener (the database is
+  already created owner-only), and a write-only audit-entity confidence
+  field. None had any production caller; each superseded function's real
+  capability is unaffected. Re-verifying the batch before deleting also
+  caught 7 other banked items that looked dead by the same reference count
+  but were not — they either back real test assertions of other still-live
+  functions' behavior, or represent a genuinely unwired (not dead) capability
+  mirroring an already-active sibling elsewhere — those are left unchanged
+  and banked separately rather than deleted. No user-facing behavior change.
+- **Removed the inert proxy-rotation subsystem.** An automatic proxy
+  harvest-and-rotate pool was plumbed through the scan engine's module context
+  (and constructed by every entry point) but was never actually used: nothing
+  filled the pool and nothing read from it — no module, CLI flag, or route ever
+  routed a request through it. It was dead scaffolding that made the code look
+  like it had a live proxy-rotation feature when it did not. The whole subsystem
+  is deleted; the real, working proxy option — the `HUNTSMAN_SEARCH_PROXY`
+  environment variable for a single upstream proxy on search fetches — is
+  unchanged. No user-facing behavior change.
+- **Removed two unused internal helper functions** — `util::curl::fetch_post`
+  (a redundant POST variant; the user-agent-specific `fetch_post_with_ua` is
+  still used) and `util::key_pool::pool::set_environment` (post-hoc key
+  environment reassignment, which was never called; the label is set when a key
+  is added). Neither had any caller. No user-facing behavior change.
+- **Trimmed dead scaffolding tables from `see_know::enterprise_config`.** The
+  file is kept for the live `ENTERPRISE` plan config the SeekNow budget reads,
+  but it also carried seven speculative hardcoded tables (workflow budgets,
+  daily-usage recommendations, API-key patterns, entity extractors, monitoring
+  thresholds, an SLA, and workflow recommendations, ~406 lines) that nothing
+  referenced and that duplicated capability the engine already has natively.
+  Only the live plan configuration remains.
+- **Deleted the dead `util::autonomous_validation` module.** A self-contained
+  file whose stated purpose was to "prove multi-API orchestration works
+  end-to-end" — i.e. it validated the `multi_api_*` orchestration removed
+  above, so it was left validating a subsystem that no longer exists. Nothing
+  referenced any of its symbols. This closes out the earlier autonomous-
+  validation experiment (three unwired islands — the see_know scaffolding, the
+  multi_api orchestration, and this validation harness — now all removed).
+- **Deleted the dead `util::multi_api_*` "enterprise orchestration"
+  subsystem.** Four modules — `multi_api_config`, `multi_api_workflows`,
+  `multi_api_orchestrator`, and `multi_api_integration_tests` (~2,443 lines) —
+  formed a self-contained parallel reimplementation of multi-source
+  orchestration, budgeting, chaining, and entity-dedup, driven by a hardcoded
+  "12 paid APIs" table. Nothing in production called any of it (its only
+  consumer was its own `#[cfg(test)]` integration tests), while the real scan
+  engine already provides all of that natively against the live module
+  registry. The obsolete `docs/MULTI_API_ENTERPRISE_ORCHESTRATION.md` was
+  removed with it.
+- **Deleted the unwired `util::see_know` "enterprise optimization"
+  scaffolding.** Four public submodules — `force_multiplier`, `monitoring`,
+  `orchestration`, and `endpoint_matrix` (~1,529 lines) — were built but never
+  wired to any live call site (a `pub` item inside a `pub mod` never trips the
+  dead-code lint, so they compiled clean while reaching no consumer). Each
+  re-implemented capability the live SeekNow client and the scan engine already
+  provide, and the one genuinely useful piece (its retry-backoff numbers) was
+  already folded into `util::backoff`. The live `enterprise_config` submodule
+  (used by the SeekNow budget) is unaffected. The obsolete
+  `docs/HARDCODED_ENTERPRISE_OPTIMIZATION.md` was removed with it.
+- **The `mls` module (Mozilla Location Service) was deleted** — Mozilla
+  permanently decommissioned the service (its geolocate endpoint now 404s),
+  so the module always returned nothing. BSSID geolocation is unaffected:
+  `mylnikov` (free) and `wigle` already cover the same lookup. The module
+  total is now 161.
+
+### Changed
+- **Internal: `netlas`'s response parser no longer declares a `count` field
+  that could never hold real data.** A sweep for the same "parsed but never
+  read" pattern behind three recent evidentiary-disclosure fixes (paste
+  totals, timeline dates) flagged this field too, but investigation of
+  Netlas's own API docs showed the endpoint this module calls never returns
+  a match-total in the first place (it's only on a separate, uncalled
+  endpoint) — so, unlike those three, there was no real data being dropped.
+  Removed the always-`None` field. No visible behavior change.
+- **Internal: the username/social/streaming enumeration modules now share one
+  confidence-scoring rule instead of each hardcoding its own copy.** All three
+  independently defined the same "body-verified detections outrank
+  status-code-only ones" confidence tiering; it now lives in one place so
+  they can't silently drift apart. No visible behavior change.
+- **`hse scan`'s unknown-`--profile` error now lists every scan profile with
+  its description.** Previously it printed a hand-maintained list of profile
+  names only (which could drift from the actual set as profiles are added);
+  it now renders the single-sourced `core::profiles::list_profiles()` catalogue,
+  so a mistyped profile gets the authoritative, self-updating list of choices
+  and a one-line description of what each does (recommended, passive, footprint,
+  investigate, fast, skiptrace).
+- **`domainsdb` moved from the free tier to key-gated** (its provider
+  disabled anonymous access — see Fixed) — it now appears in the Settings
+  key grid and `hse doctor`'s key recommendations, and is skipped by
+  `--free-only`.
+- **`opencorporates` moved from the free tier to key-gated** — OpenCorporates
+  withdrew its keyless public tier in 2023, so a keyless scan only ever got a
+  401. An unconfigured scan now cleanly reports that it needs
+  `HUNTSMAN_OPENCORP_KEY` (with a signup hint) instead of silently returning
+  nothing, and `--free-only` skips it up front.
+- **The SPA's UI now runs on a from-scratch dark-console design system —
+  Bootstrap 3, jQuery, tablesorter, and alertify (SpiderFoot's original
+  vendor stack) are gone entirely.** New `src/web/css/app.css`: dark-first
+  CSS custom-property tokens (`.light-theme` is the opt-out override), the
+  same class vocabulary the view files' markup already used (`.row`,
+  `.btn-primary`, `.panel`, `.table`, `.modal`, `.glyphicon-*`, …)
+  redefined from scratch, and 47 inline-SVG-mask icons replacing the
+  glyphicon icon font — which, it turns out, had never actually rendered
+  (the vendored `@font-face` pointed at a font path the server never
+  served). New `src/web/js/ui.js`: vanilla navbar-collapse, modal handling,
+  a sortable-table click-to-sort replacement, and `window.jQuery`/
+  `window.alertify` shims matching every existing call site exactly, so no
+  view file's markup or JS needed to change. D3 v3 is the one library
+  still vendored (a rendering engine, not a look dependency). Dark mode is
+  now the default with a light-mode opt-out toggle (previously the
+  reverse framing of the same default). Live-verified across every view
+  and all 22 ScanInfo sub-tabs in headless Chromium with zero console
+  errors.
+- **The SPA's monolithic 3999-line `spa.html` (inline CSS + one giant inline
+  `<script>` holding every helper, the API client, the router, and ~100
+  page/view render functions) is split into `src/web/css/app.css` plus 37
+  native ES modules under `src/web/js/` — one file per concern
+  (`state.js`, `helpers.js`, `api.js`, `router.js`, `main.js`, `timers.js`,
+  `theme.js`, one per top-level view, one per ScanInfo sub-tab), loaded via
+  a single `<script type="module">` tag. `spa.html` itself is now a
+  111-line shell. No new dependency (no bundler, no Node toolchain — plain
+  browser-native `import`/`export`); every module is still embedded at
+  compile time (`APP_FILES`, alongside the existing `VENDOR_FILES`) so the
+  release binary is still one self-contained file. Purely structural: same
+  look, same behaviour, verified via a byte-identical reconstruction diff,
+  an automated import/export wiring scan, and a live headless-Chromium
+  pass over every view and all 22 ScanInfo sub-tabs against a real running
+  scan (zero console/page errors). `/static/{file}` became the wildcard
+  route `/static/{*file}` to serve the new nested module paths.
+
+### Fixed
+- **OathNet's automatic pagination — added in the previous release — never
+  actually worked against the real API.** A page of search results beyond
+  the first was supposed to be fetched automatically, but a mismatch
+  between the documented response format and the real one meant the
+  signal telling HSE "there's more data" was never read correctly, so
+  every search silently stopped after page one regardless of how many
+  real matches existed. This mattered most for stealer-log searches,
+  where a popular target could have far more than the ~100 records a
+  single page holds — anything past that was quietly dropped. Also added:
+  the account's real remaining daily quota is now shown on the Key
+  Harvest page (previously only an internal, self-imposed spending
+  estimate was shown, never the provider's own number); a search-session
+  bug that could cause two searches running at the same time to
+  interfere with each other's quota-saving optimization is fixed; the
+  `oathnet-batch` command-line tool now uses that same optimization
+  (previously it never did, even though it was already generating query
+  pairs specifically designed to benefit from it); and a server error
+  from OathNet is now retried automatically instead of failing
+  immediately.
+- **SeekNow's own setup documentation overstated what's actually
+  connected — it claimed all 24 of the provider's published endpoints
+  were wired up and all internal tests passing, when only 18 endpoints
+  are actually used and the "tests" it pointed to didn't test anything
+  real.** No functionality was silently broken by this — it's a
+  documentation-accuracy fix, not a behavior change — but the setup
+  guide and integration summary now describe HSE's real SeekNow coverage
+  honestly (which endpoints are wired, which were tried and abandoned
+  after the provider's own API rejected them, and which were simply
+  never built) instead of a number that didn't match reality. A handful
+  of related internal cleanups landed alongside this: some hardcoded
+  configuration values are now correctly read from the single settings
+  file they were supposed to come from instead of being silently
+  duplicated by hand in multiple places, and some no-longer-reachable
+  code was removed.
+- **Internal: two test-suite checks that verify the correlation engine's
+  output is reproducible could themselves fail intermittently, with no
+  effect on the correlation engine itself.** Both checks compared two runs
+  of the same analysis for an exact match, but the comparison included a
+  timestamp of when each run happened, rather than only the actual
+  findings — so a run that happened to land a fraction of a second later
+  than its comparison run could show a false mismatch, purely because the
+  clock had ticked over, not because anything about the analysis itself
+  changed. This is what caused a build check to fail shortly after the fix
+  above was published, even though nothing was actually wrong. Both checks
+  now compare only the substance of the analysis, matching what they were
+  always meant to verify.
+- **A single (non-comma) API key configured for a service never actually
+  registered with the key-rotation system at all — the root cause
+  underneath the "nine providers had no key rotation" fix below.** Only
+  the multi-key (`KEY=key1,key2,key3`) path ever added a key to the
+  rotation pool's tracked state; a plain single `KEY=value` — the normal
+  configuration for almost every operator, since most people configure
+  exactly one key per service — was silently invisible to it. In
+  practice this meant a rejected or rate-limited key was never actually
+  recorded anywhere: not on the health dashboard, not for automatic
+  rotation, nothing — for any operator running the default one-key-per-
+  service setup, regardless of which provider or how correct that
+  provider's own error handling was. Every key is now registered with
+  the rotation system the same way, whether it's alone or one of
+  several. Two providers also had their own separate issue found and
+  fixed during the same pass: the Australian Business Register and
+  OpenCelliD lookups both signal a bad/expired key by returning a normal
+  "success" response with the error described inside it, rather than the
+  usual rejected-request signal every other provider uses — both are now
+  checked for that case too, so a bad key is finally recognised rather
+  than silently retried forever.
+- **Nine of HSE's API-key-gated providers (GitHub, abuse.ch/URLhaus,
+  hlrlookups.com, OpenCNAM, Trove, FullContact, domainsdb.info, NiamonX,
+  OsintCat) had no key rotation, no health-dashboard visibility, and the
+  documented `KEY=key1,key2,key3` multi-key convention silently sent a
+  broken literal string instead of splitting it.** These services were
+  simply never registered with the key-rotation system, so none of its
+  benefits applied even though the affected modules' own key-handling
+  code was otherwise correct. All nine are now fully registered — the
+  multi-key convention, rotation, and dashboard visibility all work for
+  them as they already did for every other keyed provider. Four modules
+  (GitHub profile/code-search/commit-search, URLhaus) additionally now
+  correctly report a rejected or rate-limited key back to the pool
+  instead of silently degrading with no operator-visible signal.
+- **`ip_reputation` could not tell a real source outage apart from a clean
+  "nothing found."** Both `run_otx` (AlienVault OTX threat-pulse lookup)
+  and `run_tor_check` (Tor exit-relay check) discarded every transport or
+  parse failure and the module always returned success either way — a
+  total OTX+Tor outage rendered identically to "checked, no threat intel,
+  not a Tor exit." A genuine failure (unreachable host, non-2xx status,
+  a timed-out or unreadable response, a garbled body) now surfaces as a
+  real module error the operator and the automatic per-source circuit
+  breaker can see, while any evidence a sub-check DID find is still kept
+  even if the other sub-check failed — a partial outage never discards
+  real findings.
+- **OathNet batch/search queries now fetch the entire result set, not just
+  the first page.** The per-request page size was hardcoded well below
+  what the API itself allows for free (its own docs say the max is 1000;
+  the code used 100, or 50 for infrastructure targets), and there was no
+  pagination at all — a query with more matches than one page held was
+  silently capped there. Search now pages through to the end of the
+  result set automatically, bounded only by your own scan/session quota
+  (never a new invented limit), so a query with a large result set no
+  longer silently returns a small, arbitrary slice of it.
+- **Four modules (`abn_lookup`, `qld_cadastre`, `overpass`,
+  `opencorporates`) silently swallowed rate-limit responses instead of
+  retrying or backing off.** A `429 Too Many Requests` from any of these
+  four used to produce the same result as a genuine "nothing found" —
+  no retry, no wait, no signal anywhere that the source throttled the
+  request. All four now honour a real `Retry-After` from the source with
+  a short, bounded sleep-and-retry-once before giving up, and a
+  configured key that's actually just rate-limited (rather than bad or
+  expired) is now recognised as such so it recovers on its own instead of
+  quietly degrading indefinitely.
+- **SeekNow embedded default key rotated** to the operator-supplied
+  `seek-0b493c7c…` key, with the prior default (confirmed dead against
+  `see-know.icu`, `.eu` status never re-verified) demoted into the
+  superseded-key chain so any env file carrying it upgrades in place on
+  next run — no operator action needed. Not live-verified from this build
+  environment; its own outbound network policy rejects both SeekNow
+  domains independent of the key — verify with `hse doctor` on the
+  operator's own device.
+- **Gravatar profile lookups silently missed almost every real hit.** A
+  linked social account (Twitter, GitHub, LinkedIn, …) on a Gravatar
+  profile carries a "verified" flag that the live API sends as a genuine
+  JSON boolean; this module expected that flag as text ("true"/"false"),
+  so any profile with at least one linked account — the common, most
+  useful case — failed to parse and was reported as "no Gravatar profile
+  found," identical to a real miss. Now accepts either shape, so a real
+  profile's name, location, avatar, and verified account links show up
+  again. (Confirmed against a real public profile: a scan that previously
+  found nothing now surfaces a name, two username pivots, an address, and
+  four verified social-account links.)
+- **`zoomeye` detected a service's app/product name and captured its raw
+  banner but never surfaced either.** Both fields are present in the live
+  API response — the module's own doc comment already promised "port /
+  service / banner" — but only the port and service made it into evidence.
+  Exposed-service evidence now carries a `service_details` attribute (port
+  label paired with its app/banner, only when at least one is present) full
+  fidelity and unclipped, alongside the existing port tags.
+- **`onyphe` never surfaced a threat-list hit.** The module's own doc
+  comment already promised "threatlist classification is surfaced," and
+  ONYPHE's threat-list name and descriptive tags were already parsed into
+  the module's raw per-result JSON — but no code path ever read either
+  field back out, so every ONYPHE threat-list hit was silently dropped.
+  Now a threat-list category result tags the scan's own IP/domain target
+  `threat-intel`/`malicious` (matching how `ip_reputation`/`urlhaus`/
+  `virustotal`/`threatfox`/`abuseipdb`/`greynoise` already report
+  third-party threat-list hits) with evidence carrying the list name and
+  tags.
+- **A forward geocode (street address → coordinates) discarded the full
+  address breakdown Nominatim sends back, even though the request already
+  asked for it.** The reverse direction (coordinates → address) already
+  surfaced city/state/postcode/country/street/suburb/county; the forward
+  direction requested the same `addressdetails=1` data but had no field to
+  receive it, so it was silently dropped on every hit. Forward geocodes now
+  report the same structured address breakdown as evidence, using the same
+  shared parsing logic as the reverse path.
+- **`launchpad_user` read a bio field the live Launchpad API has effectively
+  retired, so real profile bios went silently unparsed.** Confirmed live
+  against 8 real accounts: `homepage_content` — the field this module
+  read — was `null` on all but one, while `description` carried the
+  account's real, current bio text everywhere a bio existed. Bio-email
+  extraction now reads `description`.
+- **`steam_profile` never read the account's own free-text bio or its
+  chosen persona (display) name.** Confirmed against a real public profile
+  whose persona name differs from both its real name and its vanity handle.
+  The bio is now mined for embedded emails/links (matching every other
+  Social module's bio policy); the persona name now surfaces as a Person
+  (when it reads as a real name) or a Username pivot, whichever it
+  genuinely is — skipped when it would just duplicate a field already
+  reported.
+- **`sanctions_ofac` never surfaced a sanctioned individual's title/role.**
+  The OFAC SDN list carries a `Title` column (e.g. "Director of ...") that
+  the parser's own documented column mapping already named, but no code
+  path read it — role/position identity data, directly relevant to
+  verifying a match isn't a name collision, was silently dropped on every
+  hit. A sanctions hit's evidence now carries the subject's title/role when
+  the source provides one.
+- **`signal_radar` wasted a real ~3s on-device round-trip every scan on a
+  cell-signal reading it then threw away.** `scan_cell` fetched
+  `termux-telephony-signalstrength` a second time alongside
+  `termux-telephony-cellinfo` and never read the second call's result — the
+  per-cell signal strength `cellinfo` already returns covers the same data.
+  The redundant call is now gone, so a cell-tower survey no longer pays for
+  a subprocess round-trip it never used.
+- **`chain_intel` never surfaced a wallet's scam flag, reputation, known
+  name, or public tags.** Blockscout's own address API returns a curated
+  `is_scam`/`reputation`/`name`/`public_tags` verdict for EVM addresses —
+  confirmed live against real addresses (a plain wallet, Uniswap's router,
+  the Tornado Cash proxy) — but the response struct never declared these
+  fields, so they were silently dropped at deserialization on every ETH
+  lookup. Wallet evidence now carries a scam flag, reputation verdict,
+  known contract/entity name, and any public tags when the source reports
+  them; a confirmed-scam address is now also tagged `malicious`/
+  `threat-intel`, matching how every other threat-intel source in this
+  project reports a corroborated hit.
+- **A paste-search result that only showed part of what the source actually
+  found now says so.** `psbdmp`'s own match-count field was parsed but
+  silently discarded — only the pastes that made it into this response were
+  ever reported. When the source reports more matches exist than were shown,
+  that's now disclosed instead of silently understating the subject's real
+  paste exposure.
+- **Three of the four ID formats `structured_id` decodes never showed their
+  creation date on the footprint timeline.** A previous fix taught the
+  timeline to recognise a decoded UUIDv1's embedded creation time, but missed
+  the module's three sibling decoders (MongoDB ObjectID, ULID, KSUID), which
+  stamp the exact same kind of date under a different attribute name. All
+  four now surface an "account created" timeline event when a leaked ID of
+  any of these shapes is scanned.
+- **Importing a stealer log discarded each credential's own compromise date.**
+  The Stealerlogs import format documents a `Pwned At:` line per credential,
+  and the parser read it — but then never used it anywhere, so the specific
+  date a given email/username/password was compromised was silently lost on
+  every import, even though the log's overall date range (`Newest`/`Oldest`)
+  was already kept. That per-credential date now rides on the exact entities
+  it belongs to (the email/username and, when present, the plaintext
+  password), so it's visible in the entity evidence again.
+- **A geotagged photo's capture date never showed up on the scan's footprint
+  timeline, even though the location itself did.** `exif_geo` has always read
+  a photo's EXIF capture timestamp alongside its GPS coordinates, but the
+  timeline engine had no rule for recognising that particular date field, so
+  it was silently dropped — the coordinates appeared in the entity list and
+  on the map, just never dated on the timeline. A second bug compounded it:
+  EXIF stores its timestamp in its own format (`2019:03:15 08:30:00`, colons
+  instead of dashes), which the timeline's date parser didn't recognise
+  either, so even fixing the first issue alone wouldn't have surfaced
+  anything. Both are fixed — a geotagged photo's capture date now appears on
+  the timeline as its own "Location" event, distinct from an unclassified
+  date.
+- **The `search_engines` module's you.com engine leaked its own CDN link as a
+  fake search result, and its doc comment claimed a scraping method the live
+  site no longer supports.** A real live capture showed you.com's `/search`
+  endpoint is now a Cloudflare-gated, JavaScript-only page with no classic
+  HTML result links — contrary to the module's own (now corrected) comment —
+  and that the page's `dns-prefetch` link to its own CDN domain
+  (`cdn.you.com`) was being misread as a genuine search result because that
+  domain was never in the engine-chrome exclusion list. Fixed by adding it;
+  the request is also now correctly recognised as blocked rather than a
+  fabricated empty success.
+- **`au_property` silently returned an empty result on every scan instead of
+  reporting that its three government portal sources are down.** Live
+  requests confirmed all three legs it queries (NSW ELVIS, VIC MapShare WFS,
+  QLD titles search) now return `404` — the endpoints have moved or been
+  retired — but the module swallowed every failure and reported "no
+  property record" indistinguishable from a genuine empty result. It now
+  distinguishes "every source failed" (a real, surfaced error) from "a
+  source responded but had no match for this name" (the honest empty
+  result, unchanged).
+- **`install.sh` couldn't actually install a tag or a commit SHA despite
+  documenting `HSE_REF` as accepting "branch / tag / SHA," and re-running the
+  installer to switch an existing clone to any ref other than its original
+  branch died outright.** Root cause: the update path checked out
+  `origin/$HSE_REF` after `git fetch --depth 1 origin "$HSE_REF"`, but that
+  remote-tracking ref only ever exists for the exact branch the clone's
+  fetch refspec was narrowed to at clone time (`git clone --depth 1
+  --branch` implies `--single-branch`) — a fetched tag or SHA lands in
+  `FETCH_HEAD` only, so `git checkout -B "$HSE_REF" "origin/$HSE_REF"` failed
+  with "not a commit and a branch ... cannot be created from it" for any
+  `HSE_REF` other than the branch already checked out. Separately, the fresh-
+  install path used `git clone --branch "$HSE_REF"`, which flatly rejects a
+  bare commit SHA (`--branch` only resolves branches/tags), so `HSE_REF=<sha>`
+  never worked even on a first install. Fixed by unifying both paths onto
+  `git init` + `remote add`/`set-url` + `git fetch --depth 1 origin
+  "$HSE_REF"` + `git checkout -B "$HSE_REF" FETCH_HEAD` — `FETCH_HEAD` is set
+  correctly by `git fetch` for a branch, tag, or SHA alike, and checking it
+  out directly removes the asymmetry instead of patching one branch of it.
+  Reproduced the original failure against a real local clone (an update
+  switching to a tag: `fatal: 'origin/v1.13.0' is not a commit...`) and
+  verified the fix resolves it, plus fresh installs by branch/tag/SHA and an
+  update switching to a raw SHA — all four now check out the correct commit.
+  A full end-to-end run (real `fast`-profile build through `hse doctor`)
+  against an isolated `$HOME`/bin dir completed cleanly.
+- **Two `termux-api` presence checks in `install.sh` disagreed with each
+  other and could both go silent.** An early check (right after the main
+  `pkg install`) only ever printed a warning and never installed anything; a
+  later, more complete check (in the Termux-native setup section) actually
+  attempts the install. Both were gated behind `HSE_NO_PKG`, so setting
+  `HSE_NO_PKG=1` on a system without `termux-api` silently dropped the
+  sensor-modules-will-no-op warning entirely — no message from either copy.
+  Removed the redundant early copy; the remaining, authoritative check now
+  warns unconditionally when `termux-api` is absent, whether or not it also
+  attempts an install.
+- **A failed `apt-get install` on the generic-Linux (non-Termux) path
+  continued silently instead of stopping with a clear diagnosis**, letting
+  the installer reach a much more confusing failure later (a `cargo build`
+  erroring on a missing C compiler/pkg-config) instead of naming the real
+  cause up front. Now `die`s immediately with the actual missing packages
+  named.
+- **Repaired GitHub Actions CI, which had been red on every push since
+  2026-07-12.** `cargo clippy --all-targets --locked -- -D warnings` was
+  failing on a newer clippy than was in use when the flagged lines were
+  written: a redundant `&` in three `format!`/`Some(format!(...))` arguments
+  (`src/cli/import/mod.rs`, `src/util/key_harvest/emit.rs` x2) and a
+  `.map(...).unwrap_or(0)` on a `Result` that clippy now prefers as
+  `.map_or(0, ...)` (`src/core/engine/mod.rs`). No behavior changed — purely
+  style-lint cleanups.
+- **Repaired the Security audit workflow, which had also been red.**
+  `cargo audit` was failing on RUSTSEC-2026-0204, a pointer-formatting
+  vulnerability in the transitive dependency `crossbeam-epoch` 0.9.18
+  (pulled in via `moka`); bumped to the fixed 0.9.20 via `cargo update -p
+  crossbeam-epoch`, no manifest change needed. That failure was masking a
+  second, independent breakage one step later in the same job: `cargo deny
+  check`'s license gate was flagging this crate itself (`huntsman-search-
+  engine`, `publish = false`) as `unlicensed`, because its bespoke
+  proprietary `LICENSE` text can't reach cargo-deny's 0.9 SPDX-match
+  confidence threshold — a threshold that exists to police *third-party*
+  dependency licensing, not our own unpublished crate. Added
+  `[licenses.private] ignore = true` to `deny.toml`, the idiomatic cargo-deny
+  mechanism for excluding unpublished crates from the license scan; verified
+  `cargo deny check` now passes (`advisories ok, bans ok, licenses ok,
+  sources ok`).
+- **Corrected two places where the web UI overstated how closely it matches
+  a command-line equivalent.** The "Complete (All)" scan preset said it was
+  equivalent to `hse scan --full`, but it was missing one behavior
+  (expanding every discovered alias, not just corroborated ones) — now
+  fixed to match. The Audit tab said it was the same as running
+  `hse audit --scan-id <id>` from the terminal, but the web version always
+  includes extra signals (this scan's own event history and live engine
+  status) that the bare command-line version doesn't unless you also pass
+  `--log`; the wording now says so, so re-running the CLI to double-check a
+  score won't surprise you with a different result.
+- **Closed a gap where one settings page could be read without the
+  loopback-only protection every similar page already has.** Which API-key
+  services you've configured (and where your keys file lives on disk) could
+  be read by anyone who could reach the server, if you'd chosen to expose it
+  beyond your own device — every other page showing this kind of
+  information already required a same-device connection; this one now does
+  too. No effect on the normal, default setup (loopback-only), which is
+  already unaffected.
+- **Removed a Bluetooth-scan fallback that could never actually work.** The
+  signal-radar module tried an extra classic-Bluetooth scan tool as a
+  backup when the primary one came up empty — but that backup tool isn't
+  available on Termux and couldn't work without root even if it were, so it
+  never did anything on a real device. Removed it; the working scan path is
+  unchanged.
+- **SeekNow lookups no longer default to a domain that fails to resolve on
+  some real-world networks.** The built-in default endpoint pointed at
+  `see-know.icu`; a real operator's own device couldn't resolve that
+  hostname at all (a DNS failure), while every other paid lookup on the
+  same scan worked fine — the SeekNow default now correctly points at
+  `see-know.eu`, the vendor's own stated domain, matching every other
+  mention of SeekNow already in this project's docs and code. If you had
+  set `HUNTSMAN_SEEKNOW_BASE` yourself, this doesn't affect you.
+- **Startpage results no longer include Startpage's own official social-media
+  pages disguised as genuine hits about your search subject.** Startpage's
+  own X/Twitter, Instagram, Facebook, and Reddit accounts were showing up as
+  if they were real results about whoever you searched for. Fixed
+  precisely — by recognizing those specific known pages, not by blocking
+  the platforms outright, so a real target's own genuine social media
+  profiles on those same sites are unaffected.
+- **A search result's title can no longer come out as raw icon graphics data
+  instead of readable text.** When a result's link had no visible text of
+  its own (just an icon) and the page packed those icons close together, the
+  fallback used to guess a title could accidentally grab a neighboring
+  icon's internal drawing instructions instead of real text. Now it always
+  skips past that icon data first.
+- **Some Startpage results could show an unrelated caption ("Visit in
+  Anonymous View") as their title instead of the result's real title.**
+  Startpage's page markup links a result's own URL more than once — first
+  in an icon with no visible text, then later in the real titled link — and
+  title extraction was stopping at that first, empty link instead of
+  continuing on to the real one. Fixed to keep looking until it finds the
+  actual title; results now show their genuine title (e.g. a real Instagram
+  or YouTube page title) instead of borrowed caption text from a
+  neighboring result.
+- **Dogpile and Swisscows results no longer include those engines' own
+  official social-media pages disguised as genuine hits about your search
+  subject.** Dogpile's own mascot's Facebook page, and all four of
+  Swisscows' own branded Facebook/Instagram/LinkedIn/Twitter accounts,
+  were showing up as if they were real results about whoever you searched
+  for. Fixed precisely — by recognizing those specific known pages, not by
+  blocking the platforms outright, so a real target's own genuine social
+  media profiles on those same sites are unaffected.
+- **MetaGer is no longer treated as one of the three "always-reliable"
+  fallback search engines.** Its search feature turned out to have stopped
+  working entirely (see below) — it was still one of the guaranteed
+  fallback engines every scan's deeper cross-platform discovery pass
+  depends on, wasting one of only three guaranteed slots on an engine that
+  currently contributes nothing. It's still queried normally like every
+  other engine, just no longer counted on as a guaranteed source.
+- **MetaGer search results no longer include MetaGer's own homepage, footer,
+  and nonprofit-operator links disguised as genuine hits about your search
+  subject.** MetaGer is one of only three engines this tool always queries
+  as a reliable fallback, so this was a false positive on effectively every
+  scan — every single one of a real capture's 30 extracted "results" turned
+  out to be MetaGer's own chrome, not a real hit. Fixed by recognizing that
+  chrome for what it is. Also discovered along the way: MetaGer's legacy
+  search endpoint no longer works at all (it now just redirects to their
+  marketing homepage), so it currently contributes nothing either way —
+  that's disclosed honestly rather than papered over.
+- **A long API key/token scraped from a crawled web page or a username-search
+  profile page no longer gets silently dropped.** Both the web crawler's and
+  the username-search module's key-scanning passes hardcoded a 200-character
+  cap and a narrower set of word-boundary characters than the shared key
+  scanner they should have been using; a real API key/personal-access-token/
+  JWT longer than 200 characters, or one immediately adjacent to characters
+  like `=`, `<`, `>`, or `{`/`}`, was invisible to both. They now reuse the
+  same scanner already used elsewhere, matching its higher length limit and
+  full character set.
+- **Discovered API keys for SecurityTrails, VirusTotal, and GreyNoise are now
+  tested against the correct endpoint.** Two internal tables for checking
+  whether a discovered key actually works had drifted apart over time; each
+  of these three services was tested against a different URL in each
+  table, and one of the two was wrong. Both tables now read from a single,
+  shared source, so this can't happen again. A leftover reference to a
+  Censys environment variable name that didn't match any real setting is
+  also fixed.
+- **A key discovered in SeekNow breach data no longer gets credited to the
+  wrong source.** Every leaked API key/credential found in either paid
+  breach pool's results goes through the same shared detector; its origin
+  label was hardcoded to name only one of the two pools, so a key found via
+  SeekNow was incorrectly evidence-tagged as coming from OathNet. Both
+  pools now correctly label the entities and evidence they each produce.
+  (Also relocated that shared detector out of one specific module into the
+  general utility layer, matching where every other part of the codebase
+  that already reaches into it expects to find it — an internal
+  reorganization with no behavior change beyond the label fix above.)
+- **The AU residential people-finder (`au_people`) no longer wastes a
+  request on the retired White Pages AU search page.** That legacy search
+  URL now returns a not-found page for every name (the site moved to a
+  client-rendered app with no equivalent server-rendered search left,
+  confirmed against real live traffic). True People Search AU is
+  unaffected and still runs. A leftover evidence label that always claimed
+  White Pages AU as a source, even when it found nothing, is also fixed to
+  correctly name only the source that actually contributed.
+- **The electoral-roll lookup (`au_electoral`) no longer wastes a request on
+  the retired national AEC name-search endpoint.** That endpoint stopped
+  supporting name-based lookups (confirmed against real live traffic — a
+  test name and a real enrolled public figure both got the same generic
+  error page); the AEC's real "Check your enrolment" tool now works by
+  address instead of name. The state electoral commission checks (NSW, VIC,
+  QLD) are unaffected and still run.
+- **A WiGLE account no longer stays flagged "unverified" after you fix it.**
+  WiGLE's account-verification status is learned from ordinary query
+  traffic (a specific error response means the account's email isn't
+  verified). Once seen, that status previously stuck for the life of the
+  running server or live session — even after you completed WiGLE's
+  email-verify step and every later query started succeeding. A successful
+  query now also clears the flag, so `hse doctor` and the Settings/stats
+  view reflect the account's current state rather than the first thing it
+  ever saw.
+- **`hse audit`'s search-coverage finding no longer attributes CURRENT
+  engine status to a past scan.** The audit's "N search engine(s) down or
+  blocked" finding was drawn from live, continuously-refreshed engine
+  liveness data with no check on when that data was captured versus when
+  the audited scan actually ran. A scan that had full coverage, audited
+  weeks after engines later broke, could get a spurious coverage-gap
+  finding it never had; a scan that ran during a real outage, audited after
+  those engines recovered, could get no coverage-gap finding at all. The
+  signal is now only applied when it's recent enough (relative to the
+  scan) to plausibly describe that scan's own conditions; otherwise it's
+  honestly omitted rather than misattributed.
+- **Breach lookups (`oathnet_pro`, `see_know`) no longer mint a fake person
+  from a doubled username.** Some breach databases store a record's full name
+  as the username repeated twice (e.g. `"someuser someuser"`) when no real
+  name was ever collected. This was previously treated as a real name,
+  triggering a wasteful follow-up investigation into that fake name that
+  produced mostly irrelevant results. Both providers now recognize and skip
+  this pattern (and a similar "slug-style" username-as-name pattern), the
+  same protection they briefly had before an earlier change accidentally
+  dropped it.
+- **The Gephi graph export (`graph.gexf`) no longer wires a username's
+  platform-presence results into a false cluster.** Co-occurrence edges — the
+  "these two entities were named by the same source" links — were keyed on the
+  source *name*, so a fan-out probe like the cross-platform username search,
+  which checks one handle across dozens of sites and records each hit
+  separately, connected all of its results into a fully-connected clique. On a
+  real username scan that single clique was ~80% of every edge in the export,
+  drowning out the genuine structure a Gephi analyst needs to see. Edges are now
+  keyed on the specific evidence *record* (source **and** finding), so two
+  entities link only when a source named them in the *same* record — a shared
+  breach dump or a shared crawled page still links, but a handle merely found on
+  many separate platforms no longer does. The typed relationship edges
+  (same-identity, hosted-on, derived-from, …) are unchanged.
+- **A DNS zone's admin mailbox no longer leaks into a scan as the subject's
+  email.** The infrastructure-email filter matched role mailboxes only when the
+  whole local-part was a role word, so a provider-prefixed system address like
+  `awsdns-hostmaster@amazon.com` (the standard AWS Route53 SOA contact) slipped
+  through and was treated as the subject's email — then breach-checked and
+  identity-clustered, polluting the graph with the DNS provider's desk. The
+  filter now also recognises an unambiguous system-role word
+  (`hostmaster`/`postmaster`/`abuse`/`dns`/…) as a hyphen/dot-separated segment,
+  while leaving ordinary words (`info`/`contact`/`sales`) alone so a real
+  subject email is never suppressed. Found by a live scan of a real domain.
+- **The shared-key finding (AU-048) no longer over-states how many accounts one
+  person controls.** It proves a reused public key ties multiple accounts to one
+  person, but it counted distinct identifier *spellings* — so if a key's evidence
+  named someone by both their login and their email, that single person was
+  counted as two accounts. It now reports the number of distinct account owners,
+  matching the definition its own firing test already used.
+- **Credential-reuse detection (AU-105) now counts SeekNow breaches correctly.**
+  The rule fires when one password/hash recurs across two or more distinct
+  breaches, but it read the breach name only from the `dbname`/`breach`
+  attributes — while SeekNow records carry it under `source_db`. Every SeekNow
+  breach therefore collapsed to the bare provider name, so a password genuinely
+  reused across two SeekNow breaches counted as one and the finding stayed
+  silent. It now reads `source_db` too, recovering the reuse signal on a primary
+  paid breach source.
+- **Correlator rules AU-056/AU-085 no longer let a datacentre address decide the
+  subject's jurisdiction.** The jurisdiction cross-checks reconcile a
+  coordinate's state against an address's state (or a phone's region), but the
+  address side didn't exclude infrastructure geo the way the coordinate side
+  and the sibling address rules already did. A hosting/registrant datacentre
+  address (e.g. a WHOIS "Sydney NSW" host location) could therefore manufacture
+  a false jurisdiction "agreement" — or a false "conflict" against the subject's
+  real interstate home. Both rules now skip infrastructure addresses.
+- **Randomized/private MAC addresses are no longer attributed as real devices.**
+  The OUI classifier (used by the WiGLE module to label Bluetooth/WiFi
+  observations) now recognises locally-administered addresses — the randomized,
+  rotating addresses modern phones, AirTags/SmartTags, and privacy-hardened
+  devices use — and flags them `device:randomized` instead of guessing a vendor.
+  Such an address is ephemeral (it changes ~every 15 minutes) and its bytes are
+  random, so it can no longer masquerade as a stable device or anchor a
+  colocation/tracking finding. Validated against a real 1,643-device Bluetooth
+  scan, of which 42% were randomized addresses.
+- **Correlator rule AU-081 no longer manufactures corroboration from the
+  tool's own name derivation.** The "canonical person-name match" rule fires a
+  "same individual" identity bridge when two person records normalise to one
+  name from independent sources, but it computed source independence over the
+  raw evidence list without excluding the non-corroborating enrichment passes.
+  Because `name_intel` derives a person from the seed name (and maps to a real
+  source family), a genuine record plus a same-name `name_intel`-only entity
+  could fire a High "independently-sourced records for the same individual" —
+  the tool corroborating its own guess. Both independence checks now run over
+  `corroborating_sources()` (the same honest set the rest of the engine uses)
+  and a match is rejected when either side has no genuine source, so a
+  tool-derived name can no longer stand in for an independent record.
+- **`crates_io` now records the account-creation date it used to drop.** The
+  live crates.io user API returns a top-level `created_at` on every account,
+  but the module never decoded it — so the account-age signal every sibling
+  code-registry module (`gitea_user`/`codeberg_user`, `hexpm_user`) already
+  records was silently discarded. It now surfaces `created_at` as evidence on
+  the confirmed-username entity, so account age is available for downstream
+  cross-source corroboration.
+- **Both Forgejo modules now handle the profile email correctly — `codeberg_user`
+  recovers a real published address it used to drop, and `gitea_user` no longer
+  emits the forge's privacy-masking placeholder as a contact.** The Forgejo API
+  (Codeberg and Gitea) returns a top-level `email` that is either a real address
+  or a platform-minted masking address (`user@noreply.codeberg.org`,
+  `user@users.noreply.gitea.io`) when the user hides their email. `codeberg_user`
+  never decoded the field at all — a real published address was silently lost —
+  while `gitea_user` surfaced the masking placeholder verbatim as a false-positive
+  Email finding. A new shared `util::domains::is_noreply_email_domain` helper
+  detects the domain-level masking (which the existing local-part role checks
+  miss); both modules now emit an Email only for a genuine address and skip the
+  placeholder, so the two identical-API siblings agree.
+- **`hexpm_user` now recovers the published email and GitHub/X cross-platform
+  handles again.** The hex.pm profile API returns a real personal email plus a
+  `handles` map keyed by display names (`GitHub`, `X.com`) with profile-URL
+  values; the module never parsed the email and matched handles on the wrong
+  key format, so it silently emitted neither on every scan. It now surfaces
+  the email as an Email entity and the GitHub/X links as cross-platform
+  username pivots (plus the account-creation date).
+- **Two `see_know` cache tests no longer flake under the parallel test suite**
+  (internal/CI reliability). Their read-after-write on the process-global
+  SeekNow response cache could be cleared by an unrelated concurrent
+  scan-running test; the assertions are now robust to that, so the full test
+  suite is stable across runs.
+- **`opencorporates` no longer silently returns nothing on a keyless scan.**
+  OpenCorporates withdrew its keyless public tier in 2023, so every
+  unauthenticated request 401s; the module was still classified as free and
+  swallowed that 401. It is now key-gated (`HUNTSMAN_OPENCORP_KEY`): an
+  unconfigured scan gives a clean "needs key" skip, and a bad configured key
+  is reported to the key pool for rotation.
+- **`sourceforge_user` works again — and returns more — after SourceForge
+  removed its legacy user API.** The old `/api/user/username={h}/json`
+  endpoint now 404s for every real user, so the module had been silently
+  emitting nothing. It now uses the Allura REST endpoint `/rest/u/{handle}`,
+  which additionally provides the account-creation date, personal homepage,
+  and linked social accounts. A live scan of a real SourceForge handle now
+  recovers the confirmed username, profile URL, and the developer's real
+  name again.
+- **`huggingface_user` works again after Hugging Face migrated its profile
+  API.** The old `GET /api/users/{handle}` endpoint now returns 404 for every
+  real user, so the module had been silently emitting nothing on every
+  username scan. It now queries `…/{handle}/overview` (the live endpoint),
+  parses the new response shape, and additionally surfaces the account's
+  creation date. A live scan of a real Hugging Face handle now returns the
+  confirmed username, profile URL, full name, and org memberships again. (The
+  overview endpoint no longer exposes public email/website/Twitter fields, so
+  those are no longer extracted — they weren't in the response.)
+- **`domainsdb` no longer silently returns nothing after its provider
+  disabled anonymous access.** A live probe found `api.domainsdb.info` now
+  answers keyless requests with `401 "Anonymous access is disabled"`; the
+  module was registered as a free source and swallowed that 401 on every
+  scan, emitting nothing with no error or skip notice. It is now key-gated
+  (`HUNTSMAN_DOMAINSDB_KEY`): an unconfigured key gives a clean "needs key"
+  skip with a signup hint, a configured key is sent as a Bearer token, and a
+  401/403 on a configured key is reported to the key pool for rotation
+  instead of being silently dropped. First repair in a broader overhaul of
+  the external provider-integration layer.
+- **WiGLE now acts on its own server-computed `Retry-After` on a 429 instead
+  of discarding it.** A single burst rate-limit previously threw away the
+  server's real cooldown hint, hard-failed, and let the shared per-module
+  circuit breaker latch its fixed 600s cooldown regardless of what WiGLE
+  actually asked for. A 429 now retries once, sleeping the server's real
+  value (bounded to fit the module's own timeout budget) before giving up —
+  the same "act on the real hint instead of a fixed worst case" pattern
+  already applied to SeekNow/OathNet earlier this cycle.
+- **Search-engine liveness state no longer leaks across scans in a
+  long-lived `hse serve`/`hse live` process.** `search_engines`' per-engine
+  block-streak silencing and "proven live" tolerant-threshold exemption are
+  correct within one scan but were never reset at the start of the next —
+  an engine silenced against one target stayed silenced for every later
+  scan against a different target, indefinitely. New
+  `search_engines::reset_session_liveness()` clears this state, called from
+  the same per-scan reset hook that already resets the paid API clients'
+  state.
+- **`core::engine::circuit`'s rate-limit classifier no longer false-positives
+  on coincidental substrings.** Its vocabulary previously included the bare
+  words `exceeded`/`credit` and unanchored `429`/`402` digit matching, any of
+  which could hard-trip a healthy module for the full 600s cooldown on text
+  unrelated to a rate limit — a transport timeout's "deadline exceeded", a
+  breach record mentioning "credit card", or an echoed subject phone number
+  merely containing the digits 429/402. A curated `QUOTA_PROSE` list of
+  distinctive multi-word phrases replaces the bare tokens, and `429`/`402`
+  now match only as a standalone token. Anything else still falls through to
+  the existing 3-strike soft-failure path.
+- **SeekNow and OathNet no longer silently serve stale cross-scan breach
+  data.** Both providers' response cache dedups identical queries within
+  one scan, but the per-scan reset never cleared it — a long-lived `hse
+  serve`/`hse live` process would silently keep returning the FIRST scan's
+  cached breach/stealer records for every later re-scan of the same
+  email/username/phone/domain, indefinitely, with no live re-check.
+- **SeekNow and OathNet now back off and retry on a transient rate-limit
+  instead of abandoning the provider for the rest of the scan.** A
+  burst-throttle response (SeekNow's `rate_limit`, OathNet's HTTP 429) was
+  previously classified identically to true daily-quota exhaustion,
+  permanently latching the shared budget with zero retry. New generic
+  `util::backoff::BackoffPolicy` (exponential backoff with jitter, no new
+  dependency) gives both clients real retry pacing (3 attempts, 2s→4s→8s)
+  before falling back to the same graceful degradation as before.
+- **README's "Deterministic correlator: N rules" count was stale (108,
+  should be 109) and is now guarded against recurring.** New `core::
+  correlator::rule_counts()` accessor plus an architecture test
+  (`readme_correlator_rule_count_matches_registry`) tie the README line to
+  the live rule registry, the same way the module count is already guarded.
+- **The full dossier's embedded raw-archive body is now redacted before
+  rendering, closing a key-exfiltration path via `hse export -o <path>`.**
+  `render_full`'s "RAW SOURCE RECORDS" section previously embedded each
+  archived API response verbatim; since an explicit export is left to the
+  user's umask (unlike the auto-written 0600 dossier), an upstream provider
+  echoing our request's `api_key=…` back in its response could ride a
+  shared/exported dossier out to a world-readable file. New
+  `render_raw_response_body` runs the existing `redact_credentials` pass
+  over the pretty-printed body first. The on-disk raw archive itself
+  (`raw/*.json`) is untouched — its own documented policy is to retain paid
+  provider data verbatim, never redacted.
+- **`core::exposure`'s Financial disclosure flag no longer scores from a
+  drifted, narrower copy of the bank-account-number evidence-attribute-key
+  vocabulary.** `FINANCIAL_KEYS` only recognised the bare `bank_account`
+  spelling; AU-104's own `BANK_ACCOUNT_KEYS` in
+  `core::correlator::rules::breach_pii` carries 4 more
+  (`account_number`/`account_no`/`acct_number`/`acct_no`) that were never
+  mirrored, silently undercounting the score for a breach record using one
+  of them. `BANK_ACCOUNT_KEYS` is now `pub(crate)` and `exposure` checks it
+  directly, keeping only its own `iban`/`card_number` literals (AU-104 has
+  no card/IBAN concept, so those correctly stay separate).
+- **`core::exposure`'s Sensitive-PII component no longer scores from a
+  drifted, narrower copy of the DOB/government-ID evidence-attribute-key
+  vocabularies.** `DOB_KEYS`/`GOV_ID_KEYS` had silently narrowed to 3 of 9 DOB
+  spellings and 5 of 22 government-ID spellings versus AU-073/AU-074's
+  canonical lists in `core::correlator::rules::breach_pii` — despite
+  `exposure`'s own doc comment claiming they matched — undercounting the
+  score for a breach record naming e.g. `tax_file_number` or `date_birth`
+  (OathNet/SeekNow's own DOB field spelling) instead of the one spelling
+  each local copy still recognised. `breach_pii` is now `pub(crate)` and
+  `exposure` references it directly instead of keeping a second, driftable
+  copy; `timeline::classify`'s own list stays separate on purpose (scoped to
+  first-party module spellings, not third-party breach-dump spellings).
+- **Correlator rules `AU-003`/`AU-038`/`AU-045`/`AU-055` no longer report a
+  bare status-only username-existence guess as a "confirmed"/"verified"
+  account, found via a real scan that produced a `CRITICAL` "primary-source
+  accounts... the subject controls" finding across 64+ platforms almost
+  entirely backed by unverified HTTP-status checks (a soft-404/SPA-shell
+  can return 200 for nearly any handle).** Three root causes: (1)
+  `webserver_banner` was re-emitting a `Url` target verbatim even though its
+  probe only ever checks the domain root, so its evidence falsely
+  corroborated a specific, never-checked path — now rebased to the actually-
+  probed `Domain`; (2) the four correlator rules checked only the
+  `social-profile`/`confirmed-profile` tag and never the `weak-detection`
+  one those probing modules already attach — now excluded; (3) `social_probe`
+  had no weak/verified distinction at all across most of its platforms and
+  now carries the same split its sibling modules use. A genuinely confirmed
+  (body-marker-verified) hit still fires every rule unchanged.
+
+### Added
+- **Two new regression tests pin the geo-corroboration logic against a
+  real-scan-derived US breach address / Australian subject pairing, and the
+  `au_unclaimed` per-record exact-match classifier against real QLD register
+  records** — investigating an apparent false "0 km" cross-border
+  geo-corroboration surfaced by an operator-supplied real scan confirmed the
+  underlying logic already handles it correctly; no behaviour changed, but
+  the verified-sound result is now permanently guarded against regression.
+- **`hse doctor` reports a per-source scraper health signal: which sources
+  have been failing across recent scans, not just whatever the last verbose
+  log happened to show.** New "Scraper health (recent window)" section
+  flags any module with 3+ consecutive failures since its last success
+  (derived from the existing cross-scan event log, no new tracking table),
+  showing the streak, last-success date, and last error message. A rolling
+  window — sources that broke and haven't been scanned again age out rather
+  than staying flagged forever.
+- **CSV export and the debug bundle / full dossier now show `source_count` —
+  the count of distinct, independent corroborating sources that actually
+  drives `c_effective()` — alongside the existing `corroboration` field,
+  which is a separate raw per-module magnitude that does not by itself
+  determine confidence.** The CSV gained `source_count` and
+  `corroborating_sources` columns; the debug bundle/full dossier print
+  `source_count`, an explanatory note when the two diverge, and marks each
+  non-corroborating evidence line (enrichment/recall/cross-scan sources).
+  Previously a reader had no way to tell from either export whether a
+  `corroboration` number meant anything.
+- **`optimization_hints` regains two event-sourced signals a pure entity-only
+  scan analysis structurally cannot see: a cost-gated "scan exceeded 60s with
+  a zero-yield keyed/paid module" hint, and a bounded per-scan summary line
+  ("N of M dispatched modules found nothing for this target kind").** Both
+  read `Event`/`ModuleCost` directly rather than the derived entity set, so a
+  dispatched module that found nothing is now visible in the dossier and JSON
+  output instead of silently vanishing. Available in both `hse scan --output
+  dossier` and `--output json`.
+- **`hse update --check`'s git plumbing (`commits_behind`, `changelog_lines`)
+  is now proven against a real `git` subprocess, not just pure-logic tests.**
+  A local origin+clone fixture pair (no network) exercises the actual
+  `git fetch`/`rev-list`/`log` calls behind the ahead/behind count and the
+  one-line changelog, including the no-upstream-configured case. Dev-only,
+  zero shipped cost. Regression tests
+  `commits_behind_and_changelog_lines_reflect_real_git_state`,
+  `commits_behind_returns_none_without_a_configured_upstream`.
+- **A proven "reused secret" tie between two accounts is now a walkable graph
+  edge, not just a standalone correlation finding.** When the correlator
+  proves two accounts share a controller via a reused, individuating secret
+  (a salted hash, session token, wallet address, API key, or a
+  cross-source-corroborated password), that tie is now also emitted as a
+  first-class relation between the two identities — so the dossier's
+  CONNECTIONS section and the graph export can walk it like any other
+  relationship, not just read it off a separate finding. A secret tying
+  three or more accounts links every pair directly, not just a chain through
+  one of them. Regression tests
+  `derive_reused_secret_link_ties_two_accounts_sharing_a_salted_hash`,
+  `derive_reused_secret_link_precision_gate_matches_au047_exactly`,
+  `derive_reused_secret_link_emits_the_full_pairwise_clique`.
 - **AU data depth — two registries/sources now surface data they fetched and dropped
   (verified by a partitioned dropped-field/un-modelled sweep; the strict
   deserialized-but-dropped class was confirmed exhausted across infra and
@@ -784,6 +1877,692 @@ versions can include breaking changes; patch versions are bug-fix-only.
   the previous fix applied to the empty-table recovery path; a scan
   interrupted after checkpointing now produces the same byte-stable
   evidence order as a finalised scan too.
+- **`search_engines` no longer attributes a completely unrelated third
+  party's email or phone number to the scan subject.** Its email/phone
+  snippet extraction had no subject-relevance check at all — any match found
+  in a search result's title/snippet was minted regardless of whether that
+  specific result actually named the subject — while its own address
+  extractor two blocks below already carried exactly this check (built for
+  an earlier "trusting a same-first-name stranger's address" regression). A
+  real scan surfaced this concretely: an email belonging to an unrelated
+  Instagram account reached `PROBABLE` confidence attributed to a different
+  person of the same first name. The existing, already-proven relevance
+  check now gates email and phone extraction the same way it already gated
+  addresses. Regression tests
+  `email_and_phone_extraction_requires_the_surname_in_the_result` and
+  `email_extraction_unaffected_for_single_token_targets`.
+- **The AU-039 correlation ("cryptocurrency wallet linked to identity") no
+  longer attributes a wallet to an unrelated person by alphabetical accident.**
+  It previously anchored EVERY wallet in a scan to the single
+  lexicographically-smallest `Person` (or `Email`) UID across the whole
+  confirmed set, with no check that the wallet and that identity shared any
+  evidence — so a scan carrying several people (a spouse, next-of-kin, or
+  stealer-log owner, all routinely minted by AU-075) reported one person's
+  wallet as belonging to whichever name sorted first. Attribution now requires
+  a real co-location tie: the wallet and the identity must share a corroborating
+  evidence source (some single collection module surfaced both — e.g. a stealer
+  log that names an owner and their wallet in one record). Every genuinely tied
+  identity is reported (`Person` preferred over `Email`); when no identity
+  shares a source with the wallet, no attribution is emitted. The result is a
+  pure function of the entity set, so it no longer depended on HashMap
+  iteration order. Regression tests
+  `au_039_links_wallet_to_source_related_identity`,
+  `au_039_does_not_attribute_wallet_to_source_unrelated_identity`, and
+  `au_039_prefers_tied_person_over_email_and_reports_each_tie`.
+- **`search_engines` and `see_know` no longer manufacture apparent
+  independent corroboration for a re-pivoted, non-identity target (an
+  address, coordinate, or same-name-stranger page) by stamping a flat
+  high-confidence self-referencing entity regardless of whether any result
+  actually concerns that target.** For `search_engines`, a re-pivoted
+  Address/Coordinates value previously always received a `confidence=0.82`
+  "search-enriched" re-affirmation merged onto the entity, since virtually
+  every real street address has some web presence via aggregator sites
+  regardless of subject relevance; a live scan showed ~19 mutually-exclusive
+  addresses spanning many US states all reaching an identical inflated
+  confidence this way. For `see_know`, a broad name/domain/IP re-pivot
+  hitting same-name strangers previously stamped a flat `confidence=0.85`
+  breach-tagged parent on the raw hit count rather than an actual subject
+  match — the same bug shape this codebase had already fixed once in
+  `oathnet_pro`, recurring unfixed in a sibling module. Both now require a
+  genuine relevance/subject-match signal before re-affirming the target,
+  with regression tests proving genuine identity seeds (email/username/
+  domain) are unaffected.
+- **The live web dashboard's client-side confidence/tier calculation could
+  render an entity higher than the server's own authoritative
+  classification.** Its `ENRICHMENT_SOURCES` mirror of the backend's
+  non-corroborating-source exclusion list carried only 2 of the real 5
+  entries (missing `name_intel`, `payid`, `cross_scan_history`), so an entity
+  corroborated only by one of those three sources counted toward the
+  client-side C_eff boost when it should not have. Now matches the backend
+  exactly, with a test that fails automatically if the two ever diverge
+  again.
+- **`wigle` geo/SSID search no longer reports a known, already-documented
+  WiGLE account-throttle (unverified email) as a module error.** WiGLE
+  answers those two endpoints with HTTP 412 rather than a 200 with a
+  thinner result set when the configured account's email isn't verified —
+  now handled the same way every other "WiGLE said no" outcome already is:
+  a clean zero-yield result, with the account's unverified state recorded
+  for `hse doctor` / `/api/v1/stats` as a side effect. The BSSID/detail
+  lookup path was unaffected and needed no change.
+- **The self-update mechanism can no longer wedge itself into a permanent
+  "applying" state.** Two sites that record the outcome of a triggered
+  update (success → restarting, failure → error) silently did nothing if
+  the shared status mutex was ever poisoned, unlike the check-and-claim
+  gate which already recovers from poisoning — a poisoned mutex would have
+  left every future update trigger permanently rejected with no
+  diagnosable error. Both sites now use the same poison-recovery policy.
+  Regression test `set_phase_recovers_from_a_poisoned_mutex`.
+- **`name_intel`'s ATT&CK mapping no longer silently inherits an incorrect
+  category default.** The module never overrode `attack_techniques()`,
+  so it inherited the full People-category pair — over-claiming "Identify
+  Roles" (this module has no role/organisational logic anywhere) while
+  never crediting "Email Addresses" for the speculative emails it derives
+  from a name. Now declares the same precise pair already used by `pgp`
+  for an identical Person+Email shape. Regression test
+  `attack_techniques_matches_produced_entity_kinds`.
+- **`sourceforge_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The fifth instance of the same
+  under-declared-coverage gap: its override already correctly credited the
+  Username lookup and bio-extracted emails, but silently dropped the
+  technique for the Person and Address/Coordinates entities it also builds
+  from a profile's display name and self-reported location. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`mastodon_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** Unlike the sibling fixes above, its override
+  had the correct base technique ("Social Media," since Mastodon genuinely
+  is social media) but was still missing coverage for the Person and
+  Address/Coordinates entities it also builds from a display name and a
+  self-reported location field. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`codewars_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The third instance of the same
+  replace-instead-of-extend gap: its override declared only "Code
+  Repositories," silently dropping the technique for the Person,
+  Organisation, and Address/Coordinates entities it also builds from a
+  Codewars profile's real name, clan, and city. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`dockerhub_user`'s ATT&CK mapping now covers every entity kind the
+  module actually produces.** The same replace-instead-of-extend gap just
+  fixed in `github_user`: its override declared only "Code Repositories,"
+  silently dropping the technique for the Person, Organisation, Address/
+  Coordinates, and Email entities it also builds from a Docker Hub profile's
+  real name, company, location, and Gravatar email. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`github_user`'s ATT&CK mapping now covers every entity kind the module
+  actually produces.** Its override correctly swapped the Social category's
+  default "Social Media" technique for the more precise "Code Repositories"
+  one, but replaced the entire default array in doing so — silently dropping
+  the technique for the Person, Email, Organisation, Address/Coordinates,
+  and Credential entities it also builds. Every admitted entity is stamped
+  with the technique(s) that collected it, so this was a real per-finding
+  MITRE-provenance gap, not just documentation. Regression test
+  `attack_techniques_covers_every_entity_kind_this_module_produces`.
+- **`email_parse`'s derived `Username` entities are now emitted in a
+  deterministic order.** The set of candidate username spelling variants
+  (detagged, digit-stripped, collapsed, split, plus initial-blend forms for
+  a two-token local part) was deduplicated via a `HashSet` and iterated
+  straight into the emitted entity list with no sort step — the same
+  determinism-leak class already fixed for `reddit_user`, `hacker_news`, and
+  `web_crawler`. A project-wide sweep confirms this was the last remaining
+  instance. Regression test
+  `username_candidates_emerge_in_deterministic_sorted_order`.
+- **`web_crawler`'s Domain, Email, Tracking-ID, and Phone entities are now
+  emitted in a deterministic order.** Five separate `HashSet`-backed
+  aggregations (subdomains, external domains, emails, web-analytics tracking
+  IDs, phone numbers) from a page crawl were each iterated straight into the
+  emitted entity list with no sort step — the same determinism-leak class
+  just fixed for `hacker_news`, but at five sites in one function instead of
+  one. All five now emerge sorted, matching the pattern the same function
+  already used for its framework/page-type attributes. Regression test
+  `build_entities_emits_domains_emails_tracking_ids_and_phones_sorted`.
+- **`hacker_news`'s Algolia-submissions domain lookup now emits `Domain`
+  entities in a deterministic order.** The distinct domains linked from a
+  user's Hacker News submissions were deduplicated via a `HashSet` and then
+  walked straight into the emitted entity list with no ordering step, so
+  identical submissions could legally produce differently-ordered entities
+  (and a differently-ordered live event stream) across separate runs of the
+  same scan, purely from the process's randomised hash-iteration order — the
+  same determinism-leak class already fixed for `reddit_user`. Domains now
+  emerge sorted. Regression tests
+  `algolia_domain_entities_emits_all_distinct_domains_deterministically`,
+  `algolia_domain_entities_no_urls_yields_nothing`.
+- **A search-derived username matching only a subject's surname substring no
+  longer reaches PROBABLE confidence and gets recycled into a further
+  search.** A real self-test scan showed an unrelated business's Facebook
+  slug (named after the same-spelled suburb as the subject's surname)
+  reaching the correlator's highest-confidence identity cluster, because a
+  compound candidate's other, unrelated parts were never checked against
+  the subject's actual name before the match was treated as strong evidence
+  and used to launch further searches. A genuine `firstname_lastname`-style
+  handle is unaffected. Regression tests
+  `score_username_business_slug_containing_the_surname_stays_candidate`,
+  `score_username_genuine_firstname_lastname_handle_still_reaches_probable`.
+- **The `greynoise` module now uses a configured `HUNTSMAN_GREYNOISE_KEY`
+  instead of silently ignoring it.** The module always called GreyNoise's
+  free Community endpoint, even when a key was configured — an operator
+  who registered for one got no additional capability. It now upgrades to
+  GreyNoise's keyed `v3/ip` lookup when a key is present, matching the
+  Shodan module's existing free/paid pattern. Regression tests
+  `paid_response_deserialization`,
+  `paid_path_tags_seen_in_addition_to_the_shared_signal`,
+  `paid_path_surfaces_a_seen_but_otherwise_unclassified_ip`,
+  `paid_path_no_signal_at_all_yields_nothing`,
+  `paid_path_still_yields_the_operator_organisation_pivot`.
+- **`GET /scans/{id}/entities/filter` no longer leaks quarantined `candidate`
+  entities.** Every other entity-listing surface (`/entities`, the CSV
+  export, `report.json`, and the GEXF graph export) hides non-subject breach
+  co-occurrence rows by default and only returns them with
+  `?include_candidates=1` — but the filtered-view endpoint never applied
+  that quarantine, so a caller could see a foreign breach victim's data
+  simply by adding a `kind`/`min_confidence`/`q` query parameter. It now
+  applies the same default-hide/opt-in behaviour as the other endpoints.
+  Regression test
+  `scan_entities_filter_quarantines_candidate_entities_by_default`.
+- **The Exposure Index now recognises Wikidata's own date-of-birth spelling.**
+  The Sensitive PII component scores a date-of-birth disclosure only for a
+  fixed set of evidence-attribute spellings, which omitted the spelling the
+  Wikidata module actually uses — so a subject's Wikidata-sourced date of
+  birth silently contributed nothing to their exposure score. Regression
+  test `sensitive_pii_recognises_wikidata_birth_date_spelling`.
+- **The reconstructed timeline no longer silently drops account-creation,
+  birth/death, profile-verification, and threat-intel first-seen dates that
+  several modules already collect.** Eight evidence-attribute keys —
+  including the account-creation family that left the documented
+  `AccountCreated` timeline event kind completely unreachable — were never
+  recognised by the timeline's date classifier, so an OathNet/StackOverflow
+  account-creation date, a Discord-snowflake- or UUID-decoded creation
+  timestamp, a Wikidata birth/death date, a Mastodon profile verification
+  date, and an OTX pulse's earliest-report date all vanished from the
+  chronology with no signal. All eight now appear. Regression tests
+  `classify_maps_every_live_account_created_key_not_leaving_it_dead_code`,
+  `classify_recognises_wikidata_and_mastodon_date_keys`,
+  `reconstruct_surfaces_an_account_created_event_end_to_end`.
+- **Resolving the "latest" scan no longer reports an empty store when the most
+  recent completed scan is actually corrupted.** `hse export`/`diff`/`audit
+  latest` and the SPA's "open latest scan" all resolve through a lookup that
+  silently treated a database read error or a corrupted scan record the same
+  as "no completed scans exist," so a genuinely corrupted latest scan
+  produced a misleading "nothing to export" instead of a diagnosable error.
+  It now surfaces the underlying failure, matching how looking up a scan by
+  ID already behaves. Regression test
+  `latest_completed_scan_errors_loudly_on_a_corrupt_row_instead_of_reporting_none`.
+- **The store's owner-only permission lockdown now logs, rather than silently
+  swallows, a failure.** `Store::open` restricts the database file (and its
+  WAL/SHM siblings) to owner-only (0600) since it holds PII and harvested
+  API keys, but discarded the result of that chmod with no diagnostic —
+  unlike a nearby best-effort step in the same function, which already logs
+  its failures. A failed chmod could silently leave the store at the
+  process umask, often world-readable, with no signal. It now logs a
+  warning naming the file. Regression test
+  `restrict_to_owner_only_logs_when_a_chmod_fails`.
+- **Storage reads now log a corrupted or schema-drifted row instead of silently
+  dropping it.** Eight multi-row readers (`list_scans`, `correlations_for_scan`,
+  `relations_for_scan`, `events_for_scan`, `entities_for_scan`,
+  `entities_filtered`, and both `search_entities` code paths) discarded any row
+  that failed SQL extraction or JSON deserialization with zero trace — unlike
+  the single-row getters, which already surface the same failure as an error.
+  Two shared helpers now log a warning naming the caller before dropping the
+  row; the well-formed rows still come back exactly as before. Regression
+  tests `deserialize_rows_drops_corrupt_json_but_logs_the_failure`,
+  `collect_rows_drops_sql_errors_but_logs_the_failure`, and
+  `list_scans_drops_a_corrupt_row_end_to_end_without_erroring`.
+- **Curl-subprocess failures (see_know, oathnet) now report WHY, not just an exit code.**
+  `CurlClient::exec` ran curl with `-s` (silent) but not `-S`/`--show-error`, so curl
+  suppressed its own diagnostic text on failure alongside the progress meter — every
+  `[seek_now] curl exited N` / `[oathnet] curl exited N` log line carried a bare numeric
+  code with no indication of which host failed to resolve, connect, or verify. Added `-S`
+  so curl's one-line diagnostic (`curl: (6) Could not resolve host: …`) is restored into
+  `stderr`, which the existing failure branch already captures and reports — output shape
+  is unchanged on success. Regression-tested against a network-unreachable target.
+- **SeekNow embedded default key rotated** to the operator-supplied `seek-fd18f1db…` key,
+  with the prior default demoted into the superseded-key chain so any env file carrying it
+  upgrades in place on next run (no operator action needed). Not live-verified from this
+  build environment — its own outbound network policy rejects `see-know.eu` independent of
+  the key; verify with `hse doctor` on the operator's own device.
+- **Bluesky, Reddit, Mastodon, Lobsters and Dev.to profile scans now surface every email
+  and link in a subject's bio, not just the first five of each.** All five modules ran the
+  same copy-pasted extraction that capped bio emails and URLs at five apiece — even though a
+  link-tree-style bio routinely lists more, and the same engine already extracts emails from
+  gist bodies and crawled pages without any cap. A shared, deduplicated URL extractor
+  (`extract::urls`, mirroring the existing email extractor) now backs all five, and every
+  distinct address and link is emitted (duplicates still collapse; ordering is
+  deterministic). Regression test `urls_extracts_all_distinct_trimmed_in_order_uncapped`.
+- **GitHub user lookups now emit every distinct commit-author email from the subject's
+  public push events, not just the first 10.** Each address published in the subject's own
+  commit author fields is a high-value real-email pivot, but the module deduplicated them
+  and then kept only the first 10 — a cap the code comment admitted was merely "to keep a
+  busy account bounded," even though the events endpoint is already limited to 30 events.
+  Every distinct usable address is now emitted (GitHub's privacy/noreply placeholders are
+  still dropped, never replaced with a placeholder; duplicates still collapse to one).
+  Regression test `commit_email_entities_emits_every_distinct_email_not_a_capped_ten`.
+- **GitHub user lookups now emit every one of the subject's published SSH public keys as a
+  correlatable artifact, not just the first 10.** Each key was fingerprinted into a
+  `Credential` entity so that the same public key found on two accounts merges into one
+  artifact carrying both logins — the strongest cross-account link there is — but the emit
+  loop stopped at 10, silently dropping the keys of anyone who has registered more. Every
+  published key is now emitted (malformed key bodies are still skipped, never replaced with
+  a placeholder); the human-readable evidence's true key count and sample are unchanged.
+  Regression test `ssh_key_entities_emits_every_key_not_a_capped_ten`.
+- **Shared-address and shared-phone associations (AU-049/AU-050) now reference every
+  reachable email/phone handle, not just the first 8.** The correlation's linked-entity
+  list capped the reachable handles at 8, so a large household or share-house with more
+  than 8 associated email/phone identifiers at one residence or line dropped the rest from
+  the finding with no indication. Every reachable handle is now referenced. Regression test
+  `au049_references_every_reachable_handle_not_a_capped_eight`.
+- **SEON now surfaces every distinct self-reported name, not just the first platform's.**
+  When SEON reports a person's display name across several identity platforms (e.g. a
+  nickname on one, a fuller legal name on another), the module emitted only the first and
+  silently dropped the rest. It now emits one Person entity per distinct name, tagged with
+  every platform that reported it (identical names dedup to one). Regression test
+  `email_emits_a_person_for_each_distinct_reported_name`.
+- **The entity filter/browse query now returns every matching entity, not a silent cap of
+  500.** `GET /scans/{id}/entities/filter` applied a hardcoded `LIMIT 500` with no
+  pagination, total, or truncation flag, so a scan whose filtered result exceeded 500
+  entities silently hid the lowest-confidence matches — even though the facet counts beside
+  the list reported the true larger number, and the unfiltered entity endpoint returns the
+  complete set unbounded. The cap is removed; the result is fully ordered and complete.
+  Regression test `entities_filtered_returns_the_complete_result_not_a_capped_500`.
+- **Infostealer (ULP) logins are now recovered on username and IP-address scans, not only
+  email/domain scans.** A stealer-log record's captured login (the compromised account for
+  a URL) was promoted to a pivot entity only when the scan target was an email or domain —
+  so a username scan (whose login is the email the handle maps to) or an IP scan (whose
+  logins are the accounts compromised on that victim host) silently discarded it, storing
+  not even an evidence trace. The login is now always stamped on the record evidence and
+  promoted to a pivot on every target kind when it differs from the query. Regression test
+  `ulp_recovers_the_login_on_username_and_ip_scans`.
+- **Netlas now surfaces every SSL SAN domain and extracted contact email, not just the
+  first 20/10.** The module aggregated and de-duplicated all certificate SAN domains and
+  all cert/HTTP/WHOIS emails, then silently emitted only the first 20 domains and first 10
+  emails — dropping the module's headline expansion pivots for a multi-SAN certificate or a
+  host with many contacts. Both caps are removed; every unique record is emitted (BFS
+  breadth is bounded by the engine, not this module). Regression test
+  `build_entities_emits_every_unique_san_domain_and_email`.
+- **The ACMA Radiocommunications Register and AHPRA practitioner-register scrapers now
+  return every matching record, not just the first 20.** Both parsed the full result
+  table but then emitted only the first 20 rows — a silent client-side cap with no
+  server-side page limit and no operator signal — so a large multi-licence organisation,
+  a coordinate-radius licence search, or a common-surname health-practitioner search
+  silently dropped every result beyond the 20th. They now emit every parsed row (the
+  response body is already size-bounded upstream). Regression tests
+  `build_licensee_entities_emits_every_parsed_row_not_just_20` and
+  `build_practitioner_entities_emits_every_parsed_row_not_just_20`.
+- **DeHashed now recovers an email mis-stored in the password field instead of dropping it.**
+  When a breach record puts an email in the `password` slot (a common quirk), DeHashed
+  previously minted nothing — while the oathnet_pro and see_know breach parsers both recover
+  it as an email lead. DeHashed now does the same (emitting it as an `Email` tagged
+  `recovered-from-password` rather than as a password, which would forge a reused-secret
+  link). Regression test `email_in_the_password_slot_is_recovered_as_an_email_lead`.
+- **`to_e164_au` no longer fabricates an Australian number from a foreign one written in
+  the `61…` international form.** The AU-local branch already rejected a leading-zero number
+  whose trunk digit isn't a real ACMA lead (2/3/4/5/7/8), but the equivalent `61`+9-digit
+  branch only checked for a leading zero — so a foreign national number with an invalid AU
+  lead (e.g. a French mobile written `61612345678`) was re-typed as `+61612345678`. Both
+  branches now apply the same trunk-digit gate. Regression test
+  `bare_61_prefix_requires_a_real_au_trunk_digit`.
+- **Email addresses with a `%` in the local part are no longer truncated.** The two
+  non-regex email byte-scanners (`page_emails` and the web crawler's) stopped scanning the
+  local part at a `%`, even though the canonical email regex includes it — so
+  `with%percent@example.com` was carved down to `percent@example.com`. Both now accept `%`,
+  matching the canonical local-part class. Regression tests
+  `page_emails_keeps_a_percent_in_the_local_part` and
+  `email_extraction_keeps_a_percent_in_the_local_part`.
+- **Cross-scan history links are no longer dropped when one partner's value is a substring
+  of another's.** The idempotency probes that decide whether an entity already carries a
+  co-occurrence or relation-recall link matched the partner (and relation kind) as a bare
+  substring of the stored summary, so an entity already linked to `alice2` was treated as
+  already linked to a new partner `alice`, and the genuine `alice` link was never attached.
+  The probes now match the delimited token the summary actually writes (the backtick-wrapped
+  partner and paren-wrapped kind), so only the exact partner/kind counts. Regression test
+  `idempotency_probes_match_the_delimited_partner_token_not_a_substring`.
+- **The SeekNow stealer parser no longer mints non-web URIs as URL entities.** It accepted
+  any stealer `url` field of length ≥ 4 as a `Url`, while the equivalent oathnet_pro stealer
+  parser requires an `http(s)` scheme and a dotted host — so a native-app URI or scheme-less
+  fragment became a bogus URL node that then misdirected crawl/DNS/certificate expansion. It
+  now applies the same scheme+host gate as its sibling; the paired `username@url` credential
+  is still captured (a login for a native surface remains a real credential). Regression test
+  `extract_entities_rejects_non_web_stealer_url_but_keeps_the_credential`.
+- **Five more modules no longer over-claim MITRE ATT&CK T1589.003 (Employee Names).**
+  `streaming_probe`, `gaming_profile`, `discord_snowflake`, `structured_id`, and
+  `fediverse` inherited the Social category's default technique set including Employee
+  Names, but none emits a real-name Person entity, so every finding falsely claimed a
+  gathered name. Each now declares its real collection: the three handle/platform modules
+  map to `T1593.001` (Social Media); `fediverse` adds `T1589.002` (it emits profile
+  emails); and `structured_id` — an offline structured-ID decoder whose signal is the
+  generating machine's MAC address in a UUIDv1 — maps to `T1592.001` (Host Hardware),
+  dropping the social-search techniques entirely. Pinned by the
+  `attack_overrides_attribute_collection_modules_precisely` guard.
+- **PGP-key identity linkage (AU-042) no longer fuses two distinct keys' emails into one
+  owner, and no longer fires on a single address.** The rule collected every `pgp-linked`
+  email in the scan and asserted, at High severity, that all of them belong to one owner —
+  even when they were bound to different PGP keys (i.e. potentially different people) — and
+  fired even for a single email ("links 1 email address to one owner"). It now partitions
+  the emails by the key fingerprint each carries and emits one finding per key that binds
+  two or more addresses, so each finding reflects exactly what one key proves. Regression
+  tests `au042_does_not_fuse_emails_from_two_distinct_keys` and
+  `au042_does_not_fire_for_a_single_pgp_linked_email`.
+- **Cross-platform identity resolution (AU-046) no longer fuses unrelated strangers into
+  an alias's identity.** The rule collected every platform-sourced email/name in the whole
+  scan and attributed all of them, at High severity, to every alias — so a co-author's
+  email from a different platform account, a second alias's identifiers, or a `noreply@`
+  role mailbox were mis-merged into a person's resolved identity. It now resolves an alias
+  only to identifiers its own account(s) published (those sharing a corroborating source
+  with the alias) and excludes role mailboxes, matching the linkage the rule's
+  documentation already described. Regression test
+  `au046_resolves_only_the_alias_own_account_identifiers`.
+- **`streaming_probe` no longer fabricates a high-confidence cam/adult identity from an
+  unverified HTTP 200.** The webcam / fan-subscription / adult-video prober stamped a
+  flat 0.92 confidence on every hit and asserted a sensitive identity (`cam-identity-exposed`,
+  `subscription-platform-found`, `adult-profile-found`) on the subject even when the
+  detection was a bare status-200 — which a soft-404, CloudFlare interstitial, or catch-all
+  route returns for any handle. It now tiers confidence by detection rigour (0.92 for a
+  body-verified hit, 0.74 for a status-only lead), tags each URL `verified-detection` or
+  `weak-detection`, and only asserts the sensitive category-exposure tags when a
+  body-verified hit backs them — mirroring the confidence tiering the sibling
+  `username_search` already applies. Regression tests
+  `detection_strength_tiers_status_only_below_body_verified` and
+  `build_entities_tiers_confidence_and_gates_exposure_on_verified`.
+- **The GEXF graph export no longer leaks quarantined candidate breach-victims, and no
+  GEXF export can emit dangling edges.** The `/graph.gexf` API endpoint passed every
+  entity — including quarantined `candidate` breach co-occurrence "strangers" — to the
+  serializer, leaking a foreign breach-victim list under the subject's scan, while the
+  CSV, `report.json`, and CLI GEXF exports all strip candidates by default. The API
+  export now filters them by default (opt in with `?include_candidates=1`, matching the
+  CSV endpoint). Separately, the GEXF serializer now emits a relation edge only when both
+  of its endpoints are present as nodes, so a caller that passes a filtered entity subset
+  (which the candidate-stripping exports do) can no longer produce an `<edge>` that
+  references an undeclared node — previously the CLI GEXF export did exactly that,
+  yielding structurally-invalid GEXF. Regression tests
+  `gexf_drops_relation_edges_referencing_a_filtered_out_node` and
+  `scan_gexf_quarantines_candidate_nodes_by_default`.
+- **Infrastructure coordinates can no longer vote the subject's location or jurisdiction
+  (`coord_state`, AU-099).** The subject's AU-state resolver `coord_state` (which feeds the
+  AU-056/085/092/098 jurisdiction and residency rules) and the AU-099 reverse-geocoder
+  admitted *any* confirmed coordinate, including bare IP-geo/hosting fixes that locate a
+  datacentre or domain owner rather than the person — while every sibling location rule
+  (AU-018/026/030, AU-052/053/059) already excludes them via `is_infrastructure_geo`, and
+  the module's own doctrine section requires it. So a Sydney-datacentre server IP behind the
+  subject's domain would assert NSW and manufacture a false "jurisdiction conflict" against
+  the subject's real interstate address, and AU-099 would announce the datacentre as the
+  subject's own GPS fix. Both rules now apply the `is_infrastructure_geo` guard. Regression
+  tests `coord_state_excludes_bare_ip_geo_infrastructure_coordinate` and
+  `au099_reverse_geocode_excludes_infrastructure_coordinates`.
+- **The "best AU location" estimate now weights a coordinate by its own cross-class
+  corroboration (AU-059).** The cross-seed geo-synergy fix — the source of the
+  dossier's headline location estimate and the API's `best_location` fields — boosted
+  each point's weight by a class-diversity bonus computed from the scan-wide distinct
+  class count, applied identically to every point. A weighted geometric median is
+  invariant to scaling all weights by one constant, so the bonus was a silent no-op:
+  a coordinate corroborated by three independent collection methods was weighted
+  exactly like a lone single-source point, contrary to the rule's stated intent. The
+  bonus is now derived per point from that entity's own distinct orthogonal geo source
+  classes, so better-corroborated coordinates genuinely pull the estimate toward them.
+  Regression test `au059_class_diversity_bonus_is_per_point_not_a_global_no_op`.
+- **`username_search` no longer over-claims MITRE ATT&CK T1589.003 (Employee Names)
+  on its findings.** Every admitted entity is stamped with its producing module's
+  ATT&CK Reconnaissance techniques as inline `attack:<ID>` tags, so the map's
+  precision is the product's ATT&CK fidelity. The established convention is that a
+  module claims T1589.003 (Employee Names) only if it emits a real-name `Person`
+  entity — github_user, hacker_news, lobsters, nostr and reddit_user were all
+  overridden to drop it for exactly this reason. `username_search` enumerates handle
+  presence across 300+ sites and emits only `Url` and `Username`, never a `Person`,
+  but was missed in that pass and inherited the raw `Social` default
+  `["T1593.001", "T1589.003"]` — so every finding falsely claimed a name had been
+  gathered. It now declares the precise `["T1593.001"]` (Social Media search only),
+  pinned by the `attack_overrides_attribute_collection_modules_precisely` guard.
+- **The web crawler no longer mines IP-literal / numeric-TLD / 1-char-TLD hosts as
+  bogus email addresses.** `util::extract::host_has_alpha_tld` is the single-sourced
+  definition of a valid email domain (≥1 dot, no empty label, a final label of ≥2
+  ASCII letters), shared by the provider-field gate `looks_like_email` and the HTML
+  byte-scanner `page_emails` so neither can admit an address the canonical `EMAIL_RE`
+  would reject. A third copy of the byte-scan logic — `web_crawler`'s page email
+  extractor — was overlooked and still used a weak `contains('.') && len > 3` gate
+  (with a syntax check that validates dot placement but not the TLD), so
+  `admin@10.0.0.1`, `user@host.123` and `user@host.c` each minted a bogus `Email`
+  entity that then poisoned correlation (name/handle permutations, co-location and
+  credential-reuse rules, the exposure index). `host_has_alpha_tld` is now public and
+  the crawler routes through it, so all three admission paths share one gate.
+  Regression test `email_extraction_rejects_ip_literal_and_numeric_or_short_tld_hosts`.
+- **A common full name is no longer asserted as a confirmed identity merge (AU-081).**
+  The free offline identity-bridge rule `AU-081` links two independently-sourced
+  `Person` records that normalise to the same canonical name — but emitted
+  `Severity::High` "records for the same individual" *unconditionally*, the one
+  identity rule with no common-name discount. So two unrelated "John Smith"s (say
+  a breach dump and a proxycurl profile — different source families, so the
+  independence gate is satisfied) fused into a single asserted person,
+  cross-attributing each stranger's evidence to the other: the highest-volume
+  false-merge vector in person OSINT and the worst outcome for an evidentiary
+  tool. It now applies the same `is_common` discount the kin rules already use
+  (AU-051/AU-061/`derive_kinship`): a canonical name containing a common family
+  token drops to `Severity::Medium` "a COMMON name many unrelated people share —
+  a lead to VERIFY, not a confirmed merge", while a distinctive name keeps its
+  High "same individual" bridge. The rule's docstring, which had falsely claimed
+  the token-count floor excluded common first names, was corrected. Regression
+  test `au081_common_name_is_a_medium_lead_not_a_high_assert`.
+- **Three modules restored — two broken outright by upstream API drift, one
+  spuriously tripping its breaker — all found by real live testing.** Driving a
+  real seed of every target kind end-to-end surfaced three live faults no unit
+  test could catch: **(1) HudsonRock** stealer-login lookup — Cavalier renamed its
+  query parameter from `username` to `email`, so every login request returned
+  HTTP 400 `"Email is required"`; the module (a free, keyless stealer source) was
+  completely dead. Now uses `email=` (verified live: a known-infected address
+  returns its stealer records). **(2) StackOverflow user search** — the hard-coded
+  `filter=!9Z(-x.hbL` is now rejected with HTTP 400 `"Invalid filter specified"`,
+  breaking every lookup; dropped it, since the API's default filter already returns
+  every field the module reads (verified live). **(3) Bluesky user** — a
+  non-existent handle answers with HTTP 400 `"Profile not found"` (not 404), which
+  propagated as a module error and, after a few misses in a name scan's handle
+  fan-out, tripped the engine's per-module breaker and suppressed Bluesky for the
+  *real* handles too. Added `util::http::fetch_json_or_absent` (treats 400 **and**
+  404 as the clean "no such resource" negative; 429/5xx still surface) and routed
+  Bluesky through it. Each fix has a regression test (a testable URL/​fetch seam),
+  and all three were re-verified live against the real endpoints.
+- **Finalise no longer stalls on a rich name scan — the two `O(identities²)`
+  pairwise-pathway sweeps are now bounded.** Live end-to-end testing (a real
+  `full_name` seed) surfaced a scan taking 135–185 s and, on a cold/richer run,
+  exceeding a 150 s external timeout. Phase timing pinned it to two finalise
+  passes that each iterate every identity pair calling `disjoint_pathways_in`
+  (depth-5, 4-path search): **AU-062** multipath corroboration
+  (`multipath_corroborated_links`) and **AU-063** single-route gap detection
+  (`single_route_identity_links`). A broad name scan derives HUNDREDS of
+  name-permutation identity entities (~400 → ~80 000 pairs), so the sweeps ran
+  ~45 s **each**. Both now share one deterministic `IDENTITY_PAIR_PROBE_CAP`
+  (6 000 pairs): because `identity_uids` is sorted, the cap yields a deterministic
+  prefix (byte-identical output preserved, unlike a wall-clock budget), and the
+  signals are best-effort enhancement (corroboration boosts / the gap lead) whose
+  output was already capped, so a bounded subset degrades gracefully. Measured:
+  the combined pathway phase dropped **48 s → 8 s**, and it is now bounded
+  regardless of identity count. A typical multi-source scan (≲110 identities) is
+  still examined in full.
+- **HTTP response-snippet buffers now bound peak memory against a single
+  oversized chunk.** `error_snippet` and `read_body_capped` extended their buffer
+  by the WHOLE streamed chunk and truncated *afterwards*, so a hostile upstream
+  sending one multi-GB chunk was fully copied into RAM before the cap ever applied
+  — a memory-exhaustion risk on a low-RAM Termux device, worst under the
+  `username_search` 32-way probe fan-out. A shared `append_capped` helper now
+  copies at most `cap - buf.len()` bytes, so the buffer is a real ceiling
+  regardless of any one chunk's size.
+- **Determinism + concurrency correctness — Netlas emits a stable JARM, and the
+  per-host circuit breaker admits exactly one recovery probe.** (1) Netlas
+  accumulated a host's JARM fingerprints in a `HashSet` but surfaced only one via
+  `jarm_seen.iter().next()` — and `HashSet` iteration order is randomised per
+  process, so a multi-JARM host emitted a *different* `jarm_fingerprint` between
+  otherwise-identical runs, breaking the byte-identical-output guarantee. Switched
+  to a `BTreeSet` so the lexicographically smallest fingerprint is chosen
+  deterministically. (2) `util::circuit_breaker`'s `HalfOpen` state returned `true`
+  for **every** caller, so once a host's cooldown elapsed, all concurrent requests
+  were admitted at once — a thundering herd on a host that is very likely still
+  down, instead of the single trial probe the design intends. `HalfOpen` now denies
+  concurrent callers (exactly one probe in flight); `retry_at` doubles as a probe
+  deadline so a probe whose outcome is never recorded self-heals into a fresh probe
+  one cooldown later rather than wedging the breaker.
+- **Export completeness — the dossier no longer silently drops entire entity
+  kinds, and GEXF escapes two more injection points.** (1) The `--output dossier`
+  renderer iterated a FIXED kind allowlist, so any entity whose kind wasn't listed
+  — `cidr`, `ssid`, `tracking_id`, `crypto_address`, and every `other:<custom>` —
+  never appeared in the operator's dossier, hiding real collected intel (a leaked
+  crypto wallet, a captured SSID, a tracking pixel id). A pure `order_dossier_kinds`
+  now renders the curated kinds first and then **every** remaining present kind in
+  deterministic order, so the dossier is a complete view of the working set;
+  headers were added for the four newly-surfaced kinds. (2) GEXF wrote the node
+  `kind` attvalue and the `<description>` scan id UNESCAPED — an `Other(<custom>)`
+  kind carrying `<`/`&`/`"` (data-derived) would break the whole `.gexf` in Gephi;
+  both now pass through `xml_escape` (the node label, tags, and edge labels already
+  did). The golden byte-stable test confirms no change for metachar-free output.
+- **Engine finalise/dispatch robustness — a panicking correlation rule can no
+  longer abort a scan, and a cache replay no longer feeds the circuit breaker.**
+  (1) The authoritative finalise-time correlation pass ran `Correlator::run`
+  *unguarded*, so a rule panicking on adversarial persisted data (a slice-index
+  bug over a crafted entity) would unwind the whole finalise block — losing the
+  terminal `ScanComplete` event **and** the API-key pool the scan harvested. It
+  is now wrapped in `catch_unwind` (via `guarded_finalise_correlation`),
+  degrading a caught panic to "no finalise correlations," exactly as the live
+  incremental pass already does. (2) `finalise_module_result` recorded a
+  circuit-breaker success on every `Ok(Ok(_))` — including inter-scan cache
+  REPLAYS, which make no provider call. A replay spuriously clearing a failure
+  streak the live calls earned this scan would mask a degrading provider (or
+  reset a soft-trip countdown); replays now pass `from_cache = true` and skip the
+  breaker's success path — a replay is neither success nor failure to the breaker.
+- **No-fabrication gates on three breach/stealer pools — no more phantom
+  subject-exposure claims.** Three paid/free intelligence sources minted
+  subject-attributed findings without proving the record identified the subject:
+  (1) **DeHashed** pushed a 0.88 `breach` "breach-presence headline" onto the
+  engine's pre-seeded subject anchor from *any* non-empty response, so a broad
+  `name:` query — which returns same-name STRANGERS — merged a false breach hit;
+  the headline is now gated (mirroring `oathnet_pro::breach_parent_entity`): the
+  loose `name` selector requires ≥1 row that actually matches the subject and
+  counts only those rows, while the identity-exact selectors
+  (`email`/`username`/`phone`/`ip`/`domain`) keep the server total. (2) **IntelX**
+  runs `username`/`full_name` as an *unscoped text search* (a hit means a document
+  merely contains the term), yet tagged the subject `breach` + `password-at-risk`
+  whenever a `leaks` bucket appeared — fabricating a credential-exposure claim
+  from a stranger's paste; text searches now withhold the strong exposure tags
+  (emitting neutral `intelx-source:*` provenance instead), ride at lead confidence
+  (0.55 vs 0.86), and carry an `intelx-text-match` marker. (3) **HudsonRock**
+  admitted any dotted string as a victim-device IP (`!ip.contains('.')`), so a
+  stealer log's LAN address (RFC1918/loopback/CGNAT) became a `geolocation-lead`
+  fed to GEOINT; each candidate is now gated on `is_public_ip` (parses v4 **and**
+  v6, rejects private/reserved), matching the gate `dehashed` already applies.
+- **Serve-layer hardening — CSRF on every mutating endpoint, loopback-only debug
+  logs, and a real autonomous-sweep de-dup.** (1) **CSRF:** every bodyless
+  state-changing `POST` (`/update/trigger` — a binary self-update + `exec()` —
+  `/scan/auto`, `/scan/auto/sweep`, `/scans/{id}/cancel|rerun`, `/radar`,
+  `/radar/live`) was a CORS *simple request* with no preflight and no CSRF guard,
+  so a page open in the same browser could drive them cross-site (`scans/import`
+  already required the header, but nothing else did). A middleware now requires
+  `X-HSE-CSRF` on every mutating method across `/api`; the SPA injects it
+  transparently via a global `fetch` wrapper, and CLI/API clients send
+  `-H 'X-HSE-CSRF: 1'`. (2) **Debug logs:** `GET /api/v1/logs` streams the
+  TRACE-level ring buffer (scan targets + discovered PII) and lacked the
+  `is_loopback()` gate the key-pool/settings endpoints carry — added, so a LAN
+  bind no longer exposes it. (3) `scan_auto_sweep`'s target de-dup keyed on the
+  per-call-unique `scan_id` (a silent no-op) — now de-dups on the `(kind, value)`
+  target identity.
+- **`raw_archive` inter-scan cache grew without bound — added pruning.** The
+  cache ignored expired rows on lookup but never *deleted* them, and had no row
+  cap, so scanning many distinct `(module, target)` pairs over time grew the
+  table (and the DB/WAL) unbounded on a low-disk device — the very failure the
+  `events` table already prevents via `prune_events`. A new `prune_raw_archive`
+  deletes past-TTL rows and caps the newest `RAW_ARCHIVE_MAX_ROWS` (20 000),
+  called at startup and each scan boundary alongside the events prune. The cache
+  is best-effort, so evicting a still-fresh row only costs a re-query. (Also
+  corrected the `low_confidence_evidence` doc, which claimed a `confidence`/
+  `observed_at` index that deliberately does not exist.)
+- **MITRE ATT&CK mapping precision — two modules' inline technique tags
+  sharpened.** `dns_intel` resolves live DNS records (T1590.002) but *also*
+  actively brute-forces subdomains against a 146-label dictionary, which is
+  Active Scanning: **Wordlist Scanning (T1595.003)** — a technique the module
+  performed but never declared, now added to the catalogue and mapped.
+  `opencellid` queries a cell-tower geolocation database and makes no DNS query,
+  yet claimed **DNS/Passive DNS (T1596.001)**; that mis-attribution is dropped,
+  leaving the honest Search Open Technical Databases (T1596) → Physical Locations
+  (T1591.001). Sharpens the per-finding `attack:` provenance both modules stamp.
+- **Durable, concurrency-safe writes for the API-key vault; the shared atomic
+  writer now commits the rename to disk.** Two robustness gaps: (1)
+  `atomic_file::write` fsynced the temp file's data but never the parent
+  directory, so on a power-cut/OOM-kill right after the rename returned, ext4/f2fs
+  (the Termux targets) could lose the rename and leave the old file — now the
+  parent directory is fsynced (best-effort) after every rename, committing it. (2)
+  The `~/.huntsman.env` API-key vault was written by a hand-rolled copy of the
+  atomic-write dance with a **fixed** temp name (`env.tmp`), so two concurrent
+  writers (overlapping scans harvesting keys, a `PUT` toggling a key mid-scan)
+  could truncate and interleave into the one temp and rename a corrupt file over
+  the vault — read by the loader as empty, silently dropping every key. The vault
+  now writes through the shared `atomic_file::write` (unique temp + 0600 + double
+  fsync + rename), fixing the corruption and single-sourcing the logic. A
+  concurrency property test hammers the vault from eight threads and asserts it is
+  never emptied/torn and leaves no straggler. `extract::ibans` and the duplicated
+  `oathnet_pro::validate::iban_is_valid` both accepted any mod-97-valid string of
+  length 15–34, regardless of the fixed per-country IBAN length ISO 13616 defines
+  (`GB` 22, `DE` 22, `FR` 27, …) — so a right-checksum but wrong-length string
+  (≈1 in 97 of any wrong-length run with a real country prefix) was minted as a
+  leaked bank account. A single `util::extract::iban_is_valid` now pins the
+  `CCkk` layout, the registered length (unregistered country codes fall back to
+  the 15–34 spec range, never a false negative), and the mod-97 checksum;
+  `oathnet_pro` delegates to it, removing the drifting duplicate. Financial-intel
+  findings are now genuine accounts, not checksum-lucky noise.
+- **AU state attribution misclassified border towns via overlapping first-match
+  bounding boxes.** `au_state_for_coords` tested overlapping rectangular state
+  boxes in a fixed order and returned the first hit, so every town in the QLD∩NSW
+  and NSW∩VIC overlap bands read as the box tested first — e.g. Lismore (a NSW
+  town north of 29°S) and Goondiwindi read as QLD, and northern-Victorian towns
+  (Shepparton, Wodonga) read as NSW. It now partitions the mainland by
+  Australia's **actual borders**: the exact meridians 129°E (WA│NT/SA), 138°E
+  (NT/SA│QLD) and 141°E (SA│NSW/VIC) and the 26°S parallel, with the two
+  non-straight borders — QLD│NSW (29°S rising to Point Danger) and NSW│VIC (the
+  Murray River + the Cape Howe segment) — fit piecewise to their real course.
+  Validated by a 40-town fixture spanning all states, including river-twin pairs
+  a few km apart (Mildura/Wentworth, Albury/Wodonga) that the fit now splits
+  correctly. Every caller (`au_location_corroboration`, `best_au_location_estimate`,
+  the `qld_cadastre` gate, IP/cell/WiFi geo tags) gets a sharper, more honest
+  jurisdiction. This is a hint, not proof; sub-km river-twin points may still flip.
+- **`extract::macs` carved a spurious 48-bit MAC out of a longer EUI-64 / hex
+  run.** The MAC regex is word-boundary-anchored, but the separator after the
+  6th octet satisfies the boundary, so an 8-octet identifier like
+  `aa:bb:cc:dd:ee:ff:00:11` (or the hyphen form) yielded a bogus
+  `aa:bb:cc:dd:ee:ff` — a fabricated MAC entity that would then be geolocated
+  as if it were a real router BSSID. `macs` now rejects a match flanked by
+  `<sep><hex>` on either side (another octet before or after), so a genuine
+  standalone MAC still extracts (including when wrapped in non-separator
+  punctuation) while a fragment of a longer identifier does not.
+- **Two non-regex email-admission paths admitted addresses the canonical
+  free-text matcher rejects — false positives at the source.** `EMAIL_RE`
+  requires a real TLD (`…\.[A-Za-z]{2,}`), but the provider-field gate
+  `looks_like_email` only checked `host.contains('.')` and the HTML byte-scanner
+  `page_emails` only checked `contains('.') && len > 3`, so `admin@10.0.0.1`
+  (IP literal), `user@host.123` (numeric pseudo-TLD), `user@host.c` (one-char
+  TLD) and `x@sub..example.com` (double-dot host) each minted a bogus `Email`
+  entity that then poisoned correlation. Both paths now share a single
+  `host_has_alpha_tld` helper enforcing exactly the regex's domain validity
+  (≥1 dot, no empty label, a final label of ≥2 ASCII letters), so a gate can
+  never be more permissive than the scanner. No valid address is newly rejected
+  (every real address has an alphabetic TLD). Both admitted a non-personal selector into a rule
+  that treats its members as tied to the subject, manufacturing false positives
+  — the class of error this evidentiary engine ranks above missing coverage.
+  - **AU-018 (email ↔ physical-location linkage) admitted role mailboxes.** A
+    role/provider mailbox (`abuse@`, `noreply@`, `registrar@`, …) is a shared
+    organisational desk surfaced through WHOIS/RDAP, never the subject — yet
+    AU-018 co-located it with the subject's address as an "identity-location
+    linkage," the same false positive AU-001/AU-045 were already patched for
+    (`abuse@godaddy.com`). It now applies the existing
+    `core::validation::is_role_mailbox` gate, exactly as AU-001/AU-045/AU-002 do.
+  - **AU-050 (shared-phone associate cluster) fired on business/service lines.**
+    A shared freephone/local-rate/premium line (`1800`/`13`/`1300`/`190x`) is a
+    company desk many unrelated people legitimately reach — grouping two of them
+    as "associates; a direct pivot to reach the subject" is a false link. It now
+    skips a group whose number classifies as `AuLineType::is_business_service`
+    (reusing the existing `au_phone_line_type`); a personal mobile/geographic
+    line still links people, and non-AU numbers are unaffected. The module actively resolves a subdomain's dangling CNAME and
+  HTTP-probes the target to prove a cloud resource is unclaimed/claimable — an
+  exploitable misconfiguration it reports as a `vulnerable` Domain — yet it
+  mapped to the passive `T1590.001` *Domain Properties* the DnsRecon category
+  default inherits, mis-describing every finding's inline `attack:` provenance
+  tag. It now maps to a new catalogue entry **`T1595.002` Active Scanning:
+  Vulnerability Scanning** (the technique it actually performs), mirroring
+  `portscan`, the other active scanner that overrides its passive category
+  default. Sharpens the per-finding ATT&CK labelling that is the engine's only
+  MITRE surface; the `attack_overrides_attribute_collection_modules_precisely`
+  architecture guard now pins the corrected mapping, and a catalogue test pins
+  the new technique. No scan/engine behaviour changed.
 - **The dossier's "ROI" wasted-spend hint could never fire, on any scan
   (`PROBLEM_TREE` T2.13).** `hse scan --output dossier` is supposed to warn
   "N keyed/paid module(s) yielded nothing — consider --exclude …" when a

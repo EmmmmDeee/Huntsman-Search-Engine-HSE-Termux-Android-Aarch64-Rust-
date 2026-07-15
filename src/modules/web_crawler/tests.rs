@@ -160,3 +160,96 @@ use super::*;
         );
         assert_eq!(extract_registrable_domain("localhost"), None);
     }
+
+    // ── build_entities determinism ──────────────────────────────────────────
+
+    fn set(items: &[&str]) -> HashSet<String> {
+        items.iter().map(ToString::to_string).collect()
+    }
+
+    #[test]
+    fn build_entities_emits_domains_emails_tracking_ids_and_phones_sorted() {
+        // Insertion order deliberately non-alphabetical so a HashSet's randomised
+        // iteration order can never coincidentally pass this test.
+        let mut state = CrawlState {
+            visited: HashSet::new(),
+            queue: VecDeque::new(),
+            pages_fetched: 3,
+            disallow_rules: Vec::new(),
+            result: ModuleResult::new(),
+            external_domains: set(&["zeta.example", "alpha.example", "mid.example"]),
+            subdomains: set(&["zsub.example.com", "asub.example.com"]),
+            emails: set(&["zoe@example.com", "amy@example.com", "mike@example.com"]),
+            phones: set(&["+61499999999", "+61411111111"]),
+            tracking_ids: [("UA-999", "Google Analytics"), ("UA-111", "Google Analytics")]
+                .into_iter()
+                .map(|(id, provider)| (id.to_string(), provider.to_string()))
+                .collect(),
+            hydration_findings: Vec::new(),
+            frameworks: HashSet::new(),
+            page_types: HashSet::new(),
+            security_headers: Vec::new(),
+            internal_links: 0,
+            external_links: 0,
+            notable_pages: Vec::new(),
+        };
+
+        build_entities(
+            "example.com",
+            "example.com",
+            "scan-1",
+            MAX_DEPTH,
+            false,
+            "https://example.com",
+            &mut state,
+        );
+
+        let domains: Vec<&str> = state
+            .result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Domain && e.value != "example.com")
+            .map(|e| e.value.as_str())
+            .collect();
+        // Subdomains are emitted (sorted) before external domains (sorted).
+        assert_eq!(
+            domains,
+            vec![
+                "asub.example.com",
+                "zsub.example.com",
+                "alpha.example",
+                "mid.example",
+                "zeta.example",
+            ]
+        );
+
+        let emails: Vec<&str> = state
+            .result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Email)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(
+            emails,
+            vec!["amy@example.com", "mike@example.com", "zoe@example.com"]
+        );
+
+        let phones: Vec<&str> = state
+            .result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::Phone)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(phones, vec!["+61411111111", "+61499999999"]);
+
+        let tracking_ids: Vec<&str> = state
+            .result
+            .entities
+            .iter()
+            .filter(|e| e.kind == EntityKind::TrackingId)
+            .map(|e| e.value.as_str())
+            .collect();
+        assert_eq!(tracking_ids, vec!["UA-111", "UA-999"]);
+    }

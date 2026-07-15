@@ -32,6 +32,46 @@ use super::*;
     }
 
     #[test]
+    fn decodes_breadcrumb_separator_from_a_real_scraped_title() {
+        // Reproduces a real gap found in a live scan's debug log: au.zenbu.org's
+        // page title used the NAMED `&rsaquo;` breadcrumb separator (no numeric
+        // fallback applied, since the source used the named form), which leaked
+        // as literal "&rsaquo;" into decoded search-result titles before this
+        // entity was added to the table.
+        assert_eq!(
+            decode_entities("au.zenbu.org &rsaquo; entry &rsaquo; example-listing"),
+            "au.zenbu.org › entry › example-listing"
+        );
+        assert_eq!(decode_entities("Home &raquo; Products &raquo; Widget"), "Home » Products » Widget");
+    }
+
+    #[test]
+    fn decodes_named_smart_typography_entities() {
+        assert_eq!(
+            decode_entities("&ldquo;Hello&rdquo; &mdash; &lsquo;world&rsquo;&hellip;"),
+            "“Hello” — ‘world’…"
+        );
+    }
+
+    #[test]
+    fn decodes_named_common_symbols() {
+        assert_eq!(
+            decode_entities("&copy; 2026 &trade; &reg; 20&deg;C &euro;5 &pound;3 &bull; item"),
+            "© 2026 ™ ® 20°C €5 £3 • item"
+        );
+    }
+
+    #[test]
+    fn named_entity_case_sensitivity_matches_html5_spec() {
+        // `&dagger;`/`&Dagger;` are DIFFERENT characters per the HTML5 named
+        // character reference table — case must not be folded.
+        assert_eq!(decode_entities("&dagger;"), "†");
+        assert_eq!(decode_entities("&Dagger;"), "‡");
+        // An unrecognised case variant (not a real HTML5 name) stays verbatim.
+        assert_eq!(decode_entities("&RSAQUO;"), "&RSAQUO;");
+    }
+
+    #[test]
     fn decodes_numeric_refs_and_is_double_decode_safe() {
         // Numeric refs (decimal + hex): the pervasive curly-quote/dash/nbsp cases.
         assert_eq!(

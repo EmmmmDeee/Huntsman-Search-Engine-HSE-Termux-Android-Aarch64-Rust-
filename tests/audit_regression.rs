@@ -17,7 +17,6 @@ fn ent(kind: &str, value: &str, c_eff: f64, corroboration: u32, tags: &[&str]) -
     AuditEntity {
         kind: kind.into(),
         value: value.into(),
-        confidence: c_eff,
         c_effective: c_eff,
         corroboration,
         sources: vec!["fixture".into()],

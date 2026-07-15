@@ -21,7 +21,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 use tracing::{debug, warn};
 
-use crate::core::entity::Entity;
+use crate::core::entity::{Entity, EntityKind, Evidence};
 use crate::core::error::Result;
 use crate::core::port::StoragePort;
 use crate::core::relation::Relation;
@@ -203,7 +203,7 @@ impl Correlator {
 
 type RuleFn = fn(&[Entity], &str, u64) -> Vec<Correlation>;
 
-mod rules;
+pub(crate) mod rules;
 pub(crate) use rules::location::{
     au_location_corroboration, au059_synergy_fix, best_au_location_estimate,
     is_anchoring_geo_source,
@@ -223,6 +223,12 @@ pub(in crate::core) use rules::gap::single_route_identity_links;
 // with — so what AU-063 names, the engine actually pursues.
 pub(in crate::core) use rules::gap::gap_fill_probes;
 pub(in crate::core) use rules::source_family;
+// The reused-secret classifier + handle-canonicaliser: `core::relation::builders`'
+// `derive_reused_secret_link` calls both directly so the `SharesSecretWith` graph
+// edge and the AU-047/AU-048/AU-106 correlations can never disagree on which
+// secrets/handles qualify.
+pub(in crate::core) use rules::Secret;
+pub(in crate::core) use rules::canonical_handle;
 use rules::*;
 
 const RULES: &[RuleFn] = &[
@@ -250,10 +256,6 @@ const RULES: &[RuleFn] = &[
     // AU-097: subject's IP/ASN belongs to an Australian ISP (Telstra/Optus/TPG/…)
     // or AARNet — a network-layer AU residency/affiliation signal.
     rule_au_097_au_isp_network,
-    // AU-112: a discovered IP falls inside a discovered announced network block
-    // (Cidr from bgpview/ripestat/netblock) — attributes the address to that
-    // block's owner. The one rule that reads EntityKind::Cidr.
-    rule_au_112_ip_in_announced_prefix,
     // AU-095: ranked exposure-intelligence portfolio over all harvested ApiKey
     // entities (provider × criticality × detection) — a revoke-first priority
     // order, complementing AU-021's flat per-key findings. Catalogue-only.
@@ -396,6 +398,13 @@ const RULES: &[RuleFn] = &[
     // AU-108: the subject's breach-listed accounts across >=2 platforms — a stated
     // cross-platform footprint from the `platform:handle` breach Usernames.
     rule_au_108_breach_social_footprint,
+    // AU-111: a CDN-fronted domain's SPF-authorised mail-sender IP is a likely
+    // origin/hosting-network candidate — mail isn't proxied by the CDN edge.
+    rule_au_111_cdn_origin_candidate,
+    // AU-112: an independently-discovered IP address falling within a narrow
+    // network block also discovered this scan — shared hosting infrastructure,
+    // reusing util::spf's CIDR-containment maths rather than duplicating it.
+    rule_au_112_shared_cidr_infrastructure,
 ];
 
 fn evaluate_rules(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
@@ -481,6 +490,115 @@ pub(crate) fn correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Corr
     evaluate_rules(entities, scan_id)
 }
 
+// ─── Bench-only entry points (F.3 / SOL-F3: "widen criterion to the
+// correlation pass") ────────────────────────────────────────────────────────
+//
+// `benches/*.rs` are separate compilation units that link against this
+// crate's PUBLIC API only — unlike `#[cfg(test)]` code (see `perf`, below),
+// they never see `pub(crate)` items and don't run under `cargo bench`'s
+// release-profile build, so `correlate_entities` — deliberately `pub(crate)`,
+// an internal fast path, not published API — was unreachable from a
+// criterion bench. This is the same narrow, documented `#[doc(hidden)] pub
+// fn` widening `cert_intel::fuzz_entry_parse_der` established for
+// `cargo-fuzz` (SOL-F3's other leg): additive, harness-only, no new
+// production surface.
+//
+// `bench_synthetic_entities` is also the single generator `perf`'s in-crate
+// `#[ignore]`d guard (`scaling_baseline`/`pass_is_subquadratic`) delegates
+// to, so the two harnesses can never silently diverge on what "representative
+// load" means (`docs/CONVENTIONS.md` §3, single-sourced vocabularies).
+
+/// Build a representative confirmed-entity set of `n` entities that exercises
+/// the heavier correlation rules with *real* work (not early-outs):
+///
+/// * ~¼ `Username` + ~¼ `Email` drawn from a shared, overlapping handle space,
+///   so AU-034 (handle reuse) actually matches across the two sets — the path
+///   that was once quadratic. Username and email of a shared handle carry
+///   *different* evidence sources, so the rule's ≥2-distinct-source gate is
+///   satisfied and the match work is performed rather than skipped.
+/// * the remaining half spread across the other kinds, a fraction tagged
+///   `breach`/`stealer-log` with multi-source evidence, to give the breach /
+///   identity / corroboration rules realistic input.
+///
+/// Pure and deterministic (no RNG) so runs are comparable across `cargo
+/// bench`/`cargo test -- --ignored` invocations.
+#[doc(hidden)]
+#[must_use]
+pub fn bench_synthetic_entities(n: usize) -> Vec<Entity> {
+    let mut out = Vec::with_capacity(n);
+    let quarter = n / 4;
+    // Shared handle space: handles repeat every `handle_space` indices so a
+    // username and an email can land on the same canonical handle.
+    let handle_space = (quarter / 2).max(1);
+
+    for i in 0..n {
+        let bucket = i % 4;
+        let mut e = match bucket {
+            0 => {
+                // Username on a shared handle, observed on a platform.
+                let mut e = Entity::new(
+                    EntityKind::Username,
+                    format!("handle{:04}", i % handle_space),
+                    0.8,
+                    "scan",
+                );
+                e.add_evidence(Evidence::new("username_search", "observed"));
+                e
+            }
+            1 => {
+                // Email whose local-part is the same shared handle, from a
+                // *different* source so AU-034's ≥2-source gate passes.
+                let mut e = Entity::new(
+                    EntityKind::Email,
+                    format!("handle{:04}@example{}.com", i % handle_space, i % 7),
+                    0.8,
+                    "scan",
+                );
+                e.add_evidence(Evidence::new("hunter_io", "observed"));
+                if i % 5 == 0 {
+                    e.tag(crate::core::tags::BREACH);
+                    e.add_evidence(Evidence::new("oathnet_pro", "breach row"));
+                }
+                e
+            }
+            2 => {
+                let kind = match (i / 4) % 4 {
+                    0 => EntityKind::IpAddress,
+                    1 => EntityKind::Domain,
+                    2 => EntityKind::Person,
+                    _ => EntityKind::Address,
+                };
+                let mut e = Entity::new(kind, format!("v{i}"), 0.7, "scan");
+                e.add_evidence(Evidence::new("name_intel", "derived"));
+                if i % 11 == 0 {
+                    e.tag(crate::core::tags::STEALER_LOG);
+                }
+                e
+            }
+            _ => {
+                let kind = match (i / 4) % 3 {
+                    0 => EntityKind::Url,
+                    1 => EntityKind::CryptoAddress,
+                    _ => EntityKind::Organisation,
+                };
+                let mut e = Entity::new(kind, format!("w{i}"), 0.6, "scan");
+                e.add_evidence(Evidence::new("exa_search", "hit"));
+                e
+            }
+        };
+        e.tag("src");
+        out.push(e);
+    }
+    out
+}
+
+/// Bench-visible entry point for the correlation pass itself — see
+/// [`bench_synthetic_entities`] for the generator that feeds it.
+#[doc(hidden)]
+pub fn bench_correlate_entities(entities: &[Entity], scan_id: &str) -> Vec<Correlation> {
+    correlate_entities(entities, scan_id)
+}
+
 // ─── Graph-aware rules ───────────────────────────────────────────────────────
 // Rules that consume the typed `Relation` edge set in addition to entities.
 // Kept separate from `RULES` so the 30 entity-only rules need no signature
@@ -501,8 +619,21 @@ const RELATION_RULES: &[RelationRuleFn] = &[
     rule_au_071_robust_identity_cluster,
     rule_au_109_shared_registrant,
     rule_au_110_shared_hosting_ip,
-    rule_au_111_cdn_origin_candidate,
+    rule_au_113_direct_connect_origin_candidate,
 ];
+
+/// `(entity-only rule count, graph-aware relation rule count)` — the live,
+/// authoritative split behind every "N rules (E entity + R graph-aware
+/// relation)" prose mention (`README.md`, `docs/ARCHITECTURE_AUDIT.md`). A
+/// hand-maintained copy of this pair drifted silently every time a rule was
+/// added in this same session (four cycles' worth of manual reconciliation
+/// across the docs) — this accessor lets an architecture test tie the prose
+/// to the registry directly, the same guard `modules::registry().len()`
+/// already gives the module count.
+#[must_use]
+pub fn rule_counts() -> (usize, usize) {
+    (RULES.len(), RELATION_RULES.len())
+}
 
 /// Run every relation-aware rule over an already quarantine-filtered, confirmed
 /// entity slice (see [`evaluate_rules_on`]). Lets `Correlator::run` reuse the

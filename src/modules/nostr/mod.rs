@@ -42,8 +42,6 @@ use crate::util::http::{fetch_json_probe, urlencode};
 const SRC: &str = "nostr";
 /// bech32 data charset (BIP-173).
 const BECH32: &[u8; 32] = b"qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-/// Max relay endpoints surfaced as infrastructure pivots per identity.
-const RELAY_CAP: usize = 8;
 
 pub struct Nostr;
 
@@ -250,12 +248,19 @@ fn emit_nip05(
 
     // Relay endpoints the account publishes to — infrastructure pivots. Emitted
     // as `Other("nostr-relay")` (not `Url`) so a `wss://` endpoint is never fed
-    // to an HTTP crawler.
+    // to an HTTP crawler. Every DISTINCT ws/wss relay is surfaced (deduped by
+    // `seen_relay`): the NIP-05 `relays` array is the identity's OWN, self-
+    // published set served from its `.well-known/nostr.json`, so each entry is a
+    // genuine infrastructure pivot for this exact pubkey — not co-tenant noise.
+    // Dropping the tail would hide relays the subject actually uses; the list is
+    // fetched once and yields terminal (non-crawled) entities, so there is no
+    // frontier to bound.
     if let Some(relays) = doc.relays.get(hex) {
+        let mut seen_relay: std::collections::HashSet<String> = std::collections::HashSet::new();
         for relay in relays
             .iter()
             .filter(|r| r.starts_with("wss://") || r.starts_with("ws://"))
-            .take(RELAY_CAP)
+            .filter(|r| seen_relay.insert(r.to_ascii_lowercase()))
         {
             let mut r = Entity::new(
                 EntityKind::Other("nostr-relay".into()),

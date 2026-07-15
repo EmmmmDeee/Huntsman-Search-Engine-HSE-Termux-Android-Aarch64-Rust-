@@ -1,14 +1,26 @@
 //! Hugging Face user profile lookup. Free, no API key required.
 //!
-//! Endpoint: `GET https://huggingface.co/api/users/{username}`
+//! Endpoint: `GET https://huggingface.co/api/users/{handle}/overview`
 //!
 //! Hugging Face is the leading platform for sharing ML models, datasets,
 //! and Spaces — tens of millions of practitioners, researchers, and teams.
-//! The public profile exposes full name, optional email (if made public),
-//! website, Twitter handle, and org memberships, all via an unauthenticated
-//! JSON API. As an independent `code`-family source it provides a distinct
+//! The public profile confirms the handle and exposes the full name, the
+//! account-creation date, and org memberships via an unauthenticated JSON
+//! API. As an independent `code`-family source it provides a distinct
 //! corroboration pathway from GitHub/GitLab (models/datasets vs source code)
 //! and from social-media platforms.
+//!
+//! **Endpoint migration (2026):** the pre-2026 `GET /api/users/{handle}`
+//! endpoint now returns `404 {"error":"Sorry, we can't find the page you are
+//! looking for."}` for *every* real user (live-confirmed against
+//! `julien-c`/`osanseviero`/`clem`), so the module was silently emitting
+//! nothing on every scan — `fetch_json_or_404` mapped the 404 to `Ok(None)`
+//! and `process` returned empty, indistinguishable from "no such user." The
+//! live endpoint is `…/{handle}/overview`, whose JSON carries the handle in a
+//! top-level `user` string (the old shape called it `username`), plus
+//! `fullname`, `createdAt`, and `orgs[]`. That endpoint no longer exposes the
+//! public email / website / Twitter fields the pre-2026 API did, so those are
+//! no longer extracted here (they simply aren't in the response).
 
 #[cfg(test)]
 mod tests;
@@ -29,16 +41,17 @@ const SRC: &str = "huggingface_user";
 
 #[derive(Deserialize)]
 pub(super) struct HfUser {
+    /// The account handle. In the `/overview` response this is the top-level
+    /// `user` string. (The pre-2026 `/api/users/{h}` endpoint called this
+    /// field `username`; that endpoint now 404s for every real user.)
     #[serde(default)]
-    pub(super) username: String,
+    pub(super) user: String,
     #[serde(default)]
     pub(super) fullname: Option<String>,
-    #[serde(default)]
-    pub(super) email: Option<String>,
-    #[serde(default)]
-    pub(super) website: Option<String>,
-    #[serde(default)]
-    pub(super) twitter: Option<String>,
+    /// ISO-8601 account-creation timestamp (`createdAt` in the overview
+    /// response) — a first-seen date for the handle, surfaced as evidence.
+    #[serde(default, rename = "createdAt")]
+    pub(super) created_at: Option<String>,
     #[serde(default)]
     pub(super) orgs: Vec<HfOrg>,
 }
@@ -53,14 +66,25 @@ pub(super) struct HfOrg {
 
 pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
     let mut out = Vec::new();
-    let handle = user.username.trim();
+    let handle = user.user.trim();
     if handle.is_empty() {
         return out;
     }
     let profile_url = format!("https://huggingface.co/{handle}");
+    let created = user
+        .created_at
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
     let ev = || {
-        Evidence::new(SRC, format!("Hugging Face profile of '{handle}'"))
-            .with_attr("profile_url", &profile_url)
+        let mut e = Evidence::new(SRC, format!("Hugging Face profile of '{handle}'"))
+            .with_attr("profile_url", &profile_url);
+        // `createdAt` is a genuine first-seen date for the handle — attach it
+        // to every derived record so the account age travels with the finding.
+        if let Some(c) = created {
+            e = e.with_attr("account_created", c);
+        }
+        e
     };
 
     // Confirmed username entity.
@@ -83,39 +107,6 @@ pub(super) fn build_entities(user: HfUser, scan_id: &str) -> Vec<Entity> {
         p.tag("huggingface");
         p.add_evidence(ev().with_attr("source_field", "fullname"));
         out.push(p);
-    }
-
-    // Email — present only when the user has it set to public.
-    if let Some(email) = user.email.as_deref()
-        && email.contains('@')
-    {
-        let mut em = Entity::new(EntityKind::Email, email.trim(), 0.82, scan_id);
-        em.tag("huggingface");
-        em.add_evidence(ev().with_attr("source_field", "email"));
-        out.push(em);
-    }
-
-    // Website URL and derived domain.
-    if let Some(site) = user.website.as_deref() {
-        for mut e in profile_kit::website_url_and_domain(site, 0.72, 0.65, scan_id) {
-            e.tag("huggingface");
-            if e.kind == EntityKind::Domain {
-                e.tag("derived");
-            }
-            e.add_evidence(ev().with_attr("source_field", "website"));
-            out.push(e);
-        }
-    }
-
-    // Twitter / X handle.
-    if let Some(tw_raw) = user.twitter.as_deref() {
-        let tw = tw_raw.trim().trim_start_matches('@');
-        if !tw.is_empty() {
-            let mut t = Entity::new(EntityKind::Username, tw, 0.62, scan_id);
-            t.tag("twitter");
-            t.add_evidence(ev().with_attr("source_field", "twitter_handle"));
-            out.push(t);
-        }
     }
 
     // Organisation memberships.
@@ -142,7 +133,7 @@ impl Module for HuggingfaceUser {
         SRC
     }
     fn description(&self) -> &'static str {
-        "Hugging Face profile: fullname, email, website, Twitter handle, orgs (free)"
+        "Hugging Face profile: handle, fullname, account-created date, orgs (free)"
     }
     fn priority(&self) -> u8 {
         52
@@ -164,9 +155,7 @@ impl Module for HuggingfaceUser {
         const K: &[EntityKind] = &[
             EntityKind::Username,
             EntityKind::Person,
-            EntityKind::Email,
             EntityKind::Url,
-            EntityKind::Domain,
             EntityKind::Organisation,
         ];
         K
@@ -174,12 +163,18 @@ impl Module for HuggingfaceUser {
 
     async fn process(&self, target: &Target, ctx: &ModuleContext) -> Result<ModuleResult> {
         let handle = target.value.trim();
-        let url = format!("https://huggingface.co/api/users/{}", urlencode(handle));
+        let url = format!(
+            "https://huggingface.co/api/users/{}/overview",
+            urlencode(handle)
+        );
         let user: HfUser = match fetch_json_or_404(&ctx.http, SRC, &url).await {
             Ok(Some(u)) => u,
             Ok(None) | Err(_) => return Ok(ModuleResult::new()),
         };
-        if !user.username.eq_ignore_ascii_case(handle) {
+        // Identity guard: the overview response echoes the requested handle in
+        // its top-level `user` field; confirm it matches so a redirect or a
+        // fuzzy match can't attribute someone else's profile to this handle.
+        if !user.user.eq_ignore_ascii_case(handle) {
             return Ok(ModuleResult::new());
         }
         let mut result = ModuleResult::new();

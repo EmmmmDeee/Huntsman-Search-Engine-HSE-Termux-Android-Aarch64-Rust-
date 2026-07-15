@@ -1,13 +1,16 @@
 use serde_json::json;
 
 use super::budget::{
-    budget_increment, budget_snapshot, reset_budget, scan_budget_remaining, set_scan_cap_override,
+    budget_increment, budget_snapshot, is_quota_exhausted, reset_budget, scan_budget_remaining,
+    set_scan_cap_override,
 };
 use super::client::{
     CLIENT, HARDCODED_KEY_FOR_TESTS, cache_get, cache_key, cache_put, is_auth_error,
     key_fingerprint, parse_response, resolve_key, typed_cache_key,
 };
-use super::endpoints::{SEARCH_LIMIT, build_search_body, extract_items};
+use super::endpoints::{
+    CreditsOutcome, SEARCH_LIMIT, build_search_body, extract_items, parse_credits_body,
+};
 use crate::util::curl_client::AuthScheme;
 
 #[test]
@@ -35,6 +38,45 @@ fn client_timeout_budget_exceeds_name_search_server_cap() {
 #[test]
 fn resolve_key_uses_provided_when_non_empty() {
     assert_eq!(resolve_key(Some("my-key")), "my-key");
+}
+
+#[test]
+fn reset_budget_clears_the_cross_module_response_cache() {
+    // Regression: RESPONSE_CACHE dedups identical endpoint queries WITHIN one
+    // scan (its own doc comment), but reset_budget() previously only reset
+    // the quota counters and the key-invalid/quota-probed latches -- a
+    // long-lived `hse serve`/`hse live` process would silently keep serving
+    // the FIRST scan's cached SeekNow records for every later re-scan of the
+    // same email/username/phone, forever, with no live re-check.
+    // reset_budget() must also clear the cache.
+    //
+    // Isolation note: RESPONSE_CACHE is a process-global `static` that ANY
+    // concurrent scan-running test clears via `reset_per_scan` →
+    // `see_know::reset_budget` — a lock inside this file cannot serialise
+    // against those. So the "value present" sanity below can be cleared out
+    // from under us by an unrelated test (an observed CI flake). Retry the put
+    // until we observe our own UNIQUE entry (tolerating a rare external clear
+    // landing in the window); the real contract — that reset_budget() then
+    // clears it — is the final assertion, which no external test can spuriously
+    // satisfy for this unique key (nothing else ever puts it).
+    let key = "reset_budget_clears_cache_test_key";
+    let mut observed_present = false;
+    for _ in 0..200 {
+        cache_put(key.to_string(), vec![json!({"stale": true})]);
+        if cache_get(key).is_some() {
+            observed_present = true;
+            break;
+        }
+    }
+    assert!(
+        observed_present,
+        "sanity: a non-empty put must be observable at least once in 200 tries"
+    );
+    reset_budget();
+    assert!(
+        cache_get(key).is_none(),
+        "reset_budget() must clear RESPONSE_CACHE so a new scan re-queries live"
+    );
 }
 
 #[test]
@@ -196,6 +238,26 @@ fn escape_json_handles_quotes_and_backslashes() {
 }
 
 #[test]
+fn escape_json_escapes_control_chars_into_valid_json() {
+    use super::endpoints::escape_json;
+    // Regression: the hand-rolled version escaped only `\` and `"`, so a query
+    // with a literal newline/tab produced INVALID JSON. Every value must now
+    // embed inside a `"…"` string that parses back to the exact original.
+    for raw in [
+        "line1\nline2",
+        "tab\there",
+        "carriage\rreturn",
+        "quote\"and\\back",
+        "null\u{0}byte",
+    ] {
+        let body = format!(r#"{{"query":"{}"}}"#, escape_json(raw));
+        let parsed: serde_json::Value =
+            serde_json::from_str(&body).expect("escaped body must be valid JSON");
+        assert_eq!(parsed["query"], raw, "round-trips exactly for {raw:?}");
+    }
+}
+
+#[test]
 fn typed_cache_key_disambiguates_query_type_from_auto_detect() {
     let auto = typed_cache_key("search", "alice", "");
     let typed = typed_cache_key("search", "alice", "email");
@@ -214,6 +276,12 @@ fn empty_results_are_never_cached_but_non_empty_are() {
     // Regression for the transient-empty poisoning bug: cache_put() must
     // refuse an empty result so a transient `total:0` cannot poison later
     // lookups of the same query, while a real hit is memoised.
+    //
+    // Isolation note (see `reset_budget_clears_the_cross_module_response_cache`):
+    // RESPONSE_CACHE is a process-global cleared by any concurrent scan-running
+    // test, so the `hit_key` read-after-write below is retried until observed;
+    // the empty-key assertion is robust either way (an empty result is never
+    // cached, and no external test ever puts these unique keys).
     let empty_key = typed_cache_key("search", "transient-empty-probe", "name");
     cache_put(empty_key.clone(), Vec::new());
     assert!(
@@ -222,12 +290,19 @@ fn empty_results_are_never_cached_but_non_empty_are() {
     );
 
     let hit_key = typed_cache_key("search", "real-hit-probe", "name");
-    cache_put(
-        hit_key.clone(),
-        vec![serde_json::json!({"email": "x@y.com"})],
-    );
+    let mut hit_len = None;
+    for _ in 0..200 {
+        cache_put(
+            hit_key.clone(),
+            vec![serde_json::json!({"email": "x@y.com"})],
+        );
+        hit_len = cache_get(&hit_key).map(|v| v.len());
+        if hit_len.is_some() {
+            break;
+        }
+    }
     assert_eq!(
-        cache_get(&hit_key).map(|v| v.len()),
+        hit_len,
         Some(1),
         "a non-empty result must be cached and retrievable"
     );
@@ -374,4 +449,187 @@ fn parse_response_parses_valid_json_and_surfaces_malformed_json() {
         parse_response(r#"{"total":1,"results":["#).is_err(),
         "malformed JSON-shaped body must still error (schema-drift signal)"
     );
+}
+
+#[test]
+fn parse_response_ignores_auth_marker_inside_data_payload() {
+    // Regression: a stealer/breach record whose captured content contains the
+    // literal "invalid_api_key" (routine in leaked config blobs and error dumps)
+    // must NOT be mistaken for an auth rejection — which previously latched
+    // KEY_INVALID, silently disabling SeekNow for the rest of the scan AND dropping
+    // this page of real results. The marker is only meaningful in the top-level
+    // error envelope, never in the data payload.
+    let body = r#"{"total":1,"results":[{"email":"a@x.com","note":"leaked config: invalid_api_key=xyz"}]}"#;
+    let v = parse_response(body).expect("a data payload must parse, not error");
+    assert!(
+        !v.is_null(),
+        "a record containing 'invalid_api_key' must survive, not be read as auth failure"
+    );
+    assert_eq!(v["total"], 1);
+}
+
+#[test]
+fn parse_response_treats_rate_limit_as_retryable_not_quota_exhausted() {
+    // Regression: a transient burst rate-limit (`{"error":"rate_limit"}`) used
+    // to be classified identically to true daily-quota exhaustion, latching
+    // `mark_quota_exhausted()` and silently abandoning SeekNow for every
+    // remaining endpoint call in the scan (with no backoff at all). It must
+    // now surface as a distinguishable `Error::RateLimited` and must NOT
+    // latch the quota-exhausted flag — a burst throttle is recoverable
+    // within the same scan via backoff, unlike real exhaustion.
+    reset_budget();
+    let err = parse_response(r#"{"error":"rate_limit","message":"slow down"}"#)
+        .expect_err("a rate-limit body must surface as an Err, not Ok(Null)");
+    assert!(
+        matches!(err, crate::core::error::Error::RateLimited(_)),
+        "must classify as RateLimited, not a generic error: {err:?}"
+    );
+    assert!(
+        !is_quota_exhausted(),
+        "a transient rate-limit must NOT latch true quota exhaustion"
+    );
+    reset_budget();
+}
+
+#[test]
+fn parse_response_still_treats_true_exhaustion_as_quota_not_rate_limited() {
+    // Sibling regression: real exhaustion signals must keep latching
+    // mark_quota_exhausted() exactly as before — only bare "rate_limit" is
+    // the new, distinct, retryable case.
+    reset_budget();
+    let v = parse_response(r#"{"error":"quota_exceeded"}"#).expect("quota exhaustion is Ok(Null)");
+    assert!(v.is_null());
+    assert!(
+        is_quota_exhausted(),
+        "true exhaustion must still latch the quota-exhausted flag"
+    );
+    reset_budget();
+}
+
+#[test]
+fn client_base_url_uses_endpoint_override_or_default() {
+    // The base URL is resolved from HUNTSMAN_SEEKNOW_BASE environment variable
+    // (with security checks) or the canonical default. Tests that the resolution
+    // returns an HTTPS URL in both cases.
+    let url = super::client::base_url();
+    assert!(
+        url.starts_with("https://"),
+        "SeekNow base URL must be HTTPS — got {url}"
+    );
+    // Must be a well-known domain (see-know.eu) or an override matching HTTPS + non-local rules
+    assert!(
+        url.contains("see-know."),
+        "SeekNow base URL must reference the canonical domain — got {url}"
+    );
+    // Regression guard for T2.89: the default host is `.eu` (the vendor's own
+    // stated domain — see `SEEKNOW_DEFAULT_KEY`'s doc comment for the evidence
+    // that demoted `.icu`), unless the operator's own shell has
+    // HUNTSMAN_SEEKNOW_BASE set, in which case that override legitimately wins.
+    if std::env::var("HUNTSMAN_SEEKNOW_BASE")
+        .ok()
+        .filter(|v| !v.trim().is_empty())
+        .is_none()
+    {
+        assert_eq!(
+            url, "https://see-know.eu/api/v1",
+            "SeekNow default base URL must be the vendor's own `.eu` domain, not `.icu` — got {url}"
+        );
+    }
+}
+
+#[test]
+fn client_auth_scheme_is_x_api_key_header() {
+    // SeekNow API requires X-API-Key header, NOT Authorization: Bearer.
+    // Regression: earlier implementations used Bearer auth, which the server
+    // rejects with "Missing API key. Use X-API-Key".
+    assert_eq!(
+        CLIENT.auth_scheme(),
+        crate::util::curl_client::AuthScheme::XApiKey,
+        "SeekNow MUST use X-API-Key header per spec"
+    );
+}
+
+// ── `/credits` response classification (hse doctor's SeekNow diagnostic) ──
+//
+// `query_credits` is also the probe `hse doctor`'s "SeekNow account" section
+// uses to catch a dead/rejected key from a FRESH process — before this fix,
+// only a data-bearing `search`/`get_path` call ever classified+latched an
+// auth rejection, so a process that only ever called `query_credits` (like
+// `hse doctor`) could never detect a dead key. These tests pin the pure
+// classification `parse_credits_body` performs, live-verified against this
+// operator's actual embedded SeekNow key: a real `hse scan --modules
+// see_know` run against `see-know.icu` confirmed it currently returns
+// exactly the `{"error":"invalid_api_key",...}` shape the AuthError case
+// below models.
+
+#[test]
+fn credits_body_classifies_an_auth_rejection_as_auth_error() {
+    let body = r#"{"error":"invalid_api_key","message":"Invalid API key"}"#;
+    assert!(matches!(
+        parse_credits_body(body),
+        CreditsOutcome::AuthError
+    ));
+}
+
+#[test]
+fn credits_body_classifies_plan_required_as_auth_error_too() {
+    // A recognised key whose account lacks a paid plan is terminal for the
+    // held key in the exact same way an outright-invalid key is (see
+    // `client::is_auth_error`'s own doc comment) — the fix isn't a header
+    // change, the account needs a plan, so both classify identically here.
+    let body = r#"{"error":"plan_required","message":"Upgrade your plan"}"#;
+    assert!(matches!(
+        parse_credits_body(body),
+        CreditsOutcome::AuthError
+    ));
+}
+
+#[test]
+fn credits_body_extracts_remaining_and_daily_limit_from_every_known_shape() {
+    let shapes = [
+        r#"{"credits_remaining": 4200, "daily_limit": 5000, "plan": "enterprise"}"#,
+        r#"{"data": {"credits_remaining": 4200, "daily_limit": 5000}}"#,
+        r#"{"remaining": 4200, "total": 5000}"#,
+        r#"{"credits": {"remaining": 4200, "daily": 5000}}"#,
+    ];
+    for body in shapes {
+        match parse_credits_body(body) {
+            CreditsOutcome::Data {
+                remaining,
+                daily_limit,
+            } => {
+                assert_eq!(remaining, 4200, "shape: {body}");
+                assert_eq!(daily_limit, Some(5000), "shape: {body}");
+            }
+            _ => panic!("expected Data outcome for shape: {body}"),
+        }
+    }
+}
+
+#[test]
+fn credits_body_missing_daily_limit_still_returns_remaining() {
+    let body = r#"{"credits_remaining": 100}"#;
+    match parse_credits_body(body) {
+        CreditsOutcome::Data {
+            remaining,
+            daily_limit,
+        } => {
+            assert_eq!(remaining, 100);
+            assert_eq!(daily_limit, None);
+        }
+        _ => panic!("expected Data outcome"),
+    }
+}
+
+#[test]
+fn credits_body_garbage_is_unparseable_not_auth_error() {
+    // A network blip / HTML error page / truncated body must NEVER be
+    // mistaken for a confirmed dead key — only a genuine, classified auth
+    // rejection may latch `mark_key_invalid`.
+    for body in ["", "not json", "<html>502 Bad Gateway</html>", "{}"] {
+        assert!(
+            matches!(parse_credits_body(body), CreditsOutcome::Unparseable),
+            "body {body:?} must classify as Unparseable, not AuthError"
+        );
+    }
 }

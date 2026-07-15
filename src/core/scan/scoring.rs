@@ -285,6 +285,13 @@ fn geo_proximity_boost(kind: TargetKind) -> f64 {
         TargetKind::Address => 2.2,
         // MAC → wigle/mylnikov → Coordinates. Single hop.
         TargetKind::MacAddress => 2.0,
+        // SSID → wigle (ssid_search) → Coordinates. Single hop, the WiGLE peer of
+        // MacAddress (the `wigle` module accepts both and emits a Coordinates
+        // node for each). Without an explicit arm an Ssid fell through to the
+        // non-geo 1.0 default — the same inversion the Cidr arm fixed — despite
+        // geo_npv (14.0, identical to MacAddress) and seed_marginal_yield already
+        // treating it as single-hop geo-rich. Matched to MacAddress at 2.0.
+        TargetKind::Ssid => 2.0,
         // IP → ip_geo/ipinfo → Coordinates. Single hop, highly reliable.
         TargetKind::IpAddress => 1.8,
         // CIDR → enumerated host IPs → ip_geo → Coordinates. Two hops — one

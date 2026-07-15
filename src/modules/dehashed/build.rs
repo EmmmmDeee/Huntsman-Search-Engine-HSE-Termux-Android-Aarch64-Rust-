@@ -114,12 +114,26 @@ fn flatten_record(item: &Value) -> Value {
     Value::Object(flat)
 }
 
-/// Build the aggregate breach entity from a v2 response. **Pure** (no network/IO):
-/// folds the returned records into aggregate evidence — total hit count, rows
-/// returned, the top source databases by frequency, and the remaining credit
-/// balance. `total` is the server's full count (which can exceed `entries.len()`).
+/// Build the subject's breach-presence **headline** entity from a v2 response, or
+/// `None` when nothing in the response is attributable to the subject. **Pure**
+/// (no network/IO).
+///
+/// No-fabrication gate. The engine pre-seeds a subject anchor, so minting a 0.88
+/// `breach`-tagged headline that doesn't reflect the subject would merge a false
+/// "breach hit" straight onto that anchor — the exact failure `oathnet_pro`'s
+/// `breach_parent_entity` guards against by returning `None` on a zero-match
+/// page. DeHashed's selectors split cleanly:
+/// - **identity-exact** (`email`/`username`/`phone`/`ip_address`/`domain`) match
+///   the queried value EXACTLY, so every returned row is that value and the
+///   server's `total` (which can exceed `entries.len()`) is a true count for it —
+///   a count-only response is still a genuine signal.
+/// - **`name`** is the sole loose selector: a `name:` query returns same-name
+///   STRANGERS, so only the rows that actually match the subject count, aggregates
+///   fold over those rows only, and a bare count with no rows to verify is not
+///   attributable to the subject at all (→ `None`).
+///
 /// The per-record identity/credential detail is surfaced separately by
-/// [`extract_records`]; this entity is the subject's breach-presence headline.
+/// [`extract_records`], which quarantines strangers independently.
 pub(super) fn build_breach_entity(
     kind: EntityKind,
     value: &str,
@@ -128,25 +142,42 @@ pub(super) fn build_breach_entity(
     total: u64,
     balance: Option<&str>,
     scan_id: &str,
-) -> Entity {
+) -> Option<Entity> {
+    // `name` is DeHashed's only selector that can return strangers; every other
+    // selector matches `value` exactly, so its `total` needs no per-row proof.
+    let is_exact = selector != "name";
+    let (hits, rows): (u64, Vec<&Value>) = if is_exact {
+        (total, entries.iter().collect())
+    } else {
+        let matcher = TargetMatch::new(value);
+        let matching: Vec<&Value> = entries
+            .iter()
+            .filter(|item| matcher.matches(&flatten_record(item)))
+            .collect();
+        (matching.len() as u64, matching)
+    };
+    // Gate: never mint the 0.88 breach headline off a subject-less response.
+    if hits == 0 {
+        return None;
+    }
+
     let mut entity = Entity::new(kind, value, 0.88, scan_id);
     entity.tag(tags::BREACH);
     entity.tag("dehashed");
 
     // Top databases by frequency. v2 lists a record's source(s) in
-    // `database_name` (an array), so flatten across all entries.
+    // `database_name` (an array), so flatten across the counted rows.
     let top = crate::util::freq::top_n(
-        entries
-            .iter()
+        rows.iter()
             .flat_map(|e| e.get("database_name").map(db_names).unwrap_or_default()),
         MAX_DATABASES,
     );
 
     let mut ev = Evidence::new(
         SRC,
-        format!("DeHashed: {total} breach record(s) for {selector}={value}"),
+        format!("DeHashed: {hits} breach record(s) for {selector}={value}"),
     )
-    .with_attr("hits", total.to_string())
+    .with_attr("hits", hits.to_string())
     .with_attr("returned", entries.len().to_string())
     .with_attr("selector", selector);
     if !top.is_empty() {
@@ -156,7 +187,7 @@ pub(super) fn build_breach_entity(
         ev = ev.with_attr("credit_balance", b);
     }
     entity.add_evidence(ev);
-    entity
+    Some(entity)
 }
 
 /// Build the full-fidelity evidence for a single record: EVERY scalar field of
@@ -369,18 +400,35 @@ pub(super) fn extract_records(
         }
         for pw in field_strings(item, "password") {
             let p = pw.trim();
-            if matches!(
-                crate::util::extract::classify_credential_field(p),
-                crate::util::extract::CredentialField::Secret
-            ) && p.chars().count() >= 4
-                && seen.insert(format!("@pw:{}", p.to_lowercase()))
-            {
-                push_breach_entity(
-                    result,
-                    Entity::new(EntityKind::Password, p, 0.60, scan_id),
-                    &ev,
-                    &["plaintext-password"],
-                );
+            match crate::util::extract::classify_credential_field(p) {
+                // A capture sentinel ([fail], UPGRADE_TO_SEE…) is not a secret — drop it.
+                crate::util::extract::CredentialField::Sentinel => {}
+                // An email mis-stored in the password slot is a lead, not a secret:
+                // minting it as a Password would forge a reused-secret link across every
+                // row with the same quirk. Recover it into the email pipeline at modest
+                // confidence — the same recovery oathnet_pro / see_know already do, so
+                // the three breach parsers don't drift on this quirk.
+                crate::util::extract::CredentialField::Email => {
+                    let lower = p.to_lowercase();
+                    if seen.insert(format!("@pw-email:{lower}")) {
+                        push_breach_entity(
+                            result,
+                            Entity::new(EntityKind::Email, p, 0.45, scan_id),
+                            &ev,
+                            &["recovered-from-password"],
+                        );
+                    }
+                }
+                crate::util::extract::CredentialField::Secret => {
+                    if p.chars().count() >= 4 && seen.insert(format!("@pw:{}", p.to_lowercase())) {
+                        push_breach_entity(
+                            result,
+                            Entity::new(EntityKind::Password, p, 0.60, scan_id),
+                            &ev,
+                            &["plaintext-password"],
+                        );
+                    }
+                }
             }
         }
 

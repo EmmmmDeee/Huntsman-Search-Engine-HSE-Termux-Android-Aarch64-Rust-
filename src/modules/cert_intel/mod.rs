@@ -90,46 +90,12 @@ impl Module for CertIntel {
         if target.kind == TargetKind::Domain {
             let ct_url = format!("https://crt.sh/?q=%.{domain}&output=json");
             if let Ok(entries) = fetch_json::<Vec<CrtEntry>>(&ctx.http, SRC, &ct_url).await {
-                result.extend(
-                    entries
-                        .iter()
-                        .flat_map(|entry| {
-                            entry.name_value.split('\n').map(move |name| (entry, name))
-                        })
-                        .filter_map(|(entry, name)| {
-                            let name = name.trim().trim_start_matches("*.").to_lowercase();
-                            if name.is_empty()
-                                || !name.contains('.')
-                                || name == parent
-                                || !seen_subs.insert(name.clone())
-                            {
-                                return None;
-                            }
-                            let mut e = Entity::new(EntityKind::Domain, &name, 0.88, &ctx.scan_id);
-                            e.tag(tags::CT_LOG);
-                            e.add_evidence(
-                                Evidence::new(SRC, format!("Certificate transparency: {name}"))
-                                    .with_attr(
-                                        "issuer",
-                                        entry.issuer_name.as_deref().unwrap_or("-"),
-                                    )
-                                    .with_attr(
-                                        "not_before",
-                                        entry.not_before.as_deref().unwrap_or("-"),
-                                    )
-                                    .with_attr(
-                                        "not_after",
-                                        entry.not_after.as_deref().unwrap_or("-"),
-                                    )
-                                    .with_attr(
-                                        "serial_number",
-                                        entry.serial_number.as_deref().unwrap_or("-"),
-                                    )
-                                    .with_attr("parent_domain", domain),
-                            );
-                            Some(e)
-                        }),
-                );
+                result.extend(ct_log_entities(
+                    &entries,
+                    &parent,
+                    &ctx.scan_id,
+                    &mut seen_subs,
+                ));
             }
         } // end CT-log search (domain-only)
 
@@ -179,6 +145,58 @@ impl Module for CertIntel {
 
         Ok(result)
     }
+}
+
+/// Map crt.sh CT-log entries to Domain entities, discriminating confidence by the
+/// subdomain relationship. A `%.domain` CT query returns the WHOLE matched
+/// certificate's SAN list, which on a shared-hosting cert includes unrelated
+/// co-tenant domains — so a proper subdomain of `parent` is a confirmed asset
+/// (0.88, tagged [`tags::SUBDOMAIN`]) while a co-listed non-subdomain is only a
+/// weak co-hosting lead (0.45, tagged `co-hosted`): they must NOT carry identical
+/// high confidence, or an unrelated co-tenant is over-attributed to the subject.
+/// Matches the discrimination the TLS-SAN path and the sibling `crtsh` module
+/// already apply. Dedups across both cert paths via `seen_subs`.
+fn ct_log_entities(
+    entries: &[CrtEntry],
+    parent: &str,
+    scan_id: &str,
+    seen_subs: &mut HashSet<String>,
+) -> Vec<Entity> {
+    entries
+        .iter()
+        .flat_map(|entry| entry.name_value.split('\n').map(move |name| (entry, name)))
+        .filter_map(|(entry, name)| {
+            let name = name.trim().trim_start_matches("*.").to_lowercase();
+            if name.is_empty()
+                || !name.contains('.')
+                || name == parent
+                || !seen_subs.insert(name.clone())
+            {
+                return None;
+            }
+            let is_sub = crate::util::domains::is_proper_subdomain_of(&name, parent);
+            let conf = if is_sub { 0.88 } else { 0.45 };
+            let mut e = Entity::new(EntityKind::Domain, &name, conf, scan_id);
+            e.tag(tags::CT_LOG);
+            if is_sub {
+                e.tag(tags::SUBDOMAIN);
+            } else {
+                e.tag("co-hosted");
+            }
+            e.add_evidence(
+                Evidence::new(SRC, format!("Certificate transparency: {name}"))
+                    .with_attr("issuer", entry.issuer_name.as_deref().unwrap_or("-"))
+                    .with_attr("not_before", entry.not_before.as_deref().unwrap_or("-"))
+                    .with_attr("not_after", entry.not_after.as_deref().unwrap_or("-"))
+                    .with_attr(
+                        "serial_number",
+                        entry.serial_number.as_deref().unwrap_or("-"),
+                    )
+                    .with_attr("parent_domain", parent),
+            );
+            Some(e)
+        })
+        .collect()
 }
 
 // ── DER parsing helpers ───────────────────────────
@@ -405,6 +423,33 @@ fn extract_serial_hex(der: &[u8]) -> String {
         .map(|b| format!("{b:02x}"))
         .collect::<Vec<_>>()
         .join(":")
+}
+
+/// `cargo-fuzz` harness entry point (F.3, the standing "proof & measurement
+/// infrastructure" foundation — `docs/PROBLEM_TREE.md` §3.F). `der` is a
+/// leaf certificate's raw DER bytes read straight off a live TLS socket
+/// (`process()`'s live-probe path) — fully attacker-controlled, arbitrary
+/// bytes that need not even be valid X.509. This hand-rolled scanner already
+/// had two real no-fixture bugs (T2.3: a SAN `OCTET STRING → SEQUENCE`
+/// unwrap miss, and a serial/version INTEGER mix-up) found by *fixture*
+/// testing alone; coverage-guided fuzzing exercises the same untrusted-byte
+/// surface far more exhaustively than any hand-written or property-test
+/// corpus can. Exists solely so `fuzz/fuzz_targets/cert_der.rs` (a separate,
+/// intentionally-not-a-workspace-member crate — see `fuzz/README.md`) can
+/// reach these otherwise-private extractors: this crate is `publish = false`
+/// and its lib is never consumed as a published API (see the crate-root doc
+/// comment), so widening visibility here costs nothing. `#[doc(hidden)]`
+/// keeps it out of `cargo doc`'s rendered output; the three calls discard
+/// their results deliberately — the only property under test is "never
+/// panics, never hangs, never reads out of bounds" on arbitrary input, not
+/// any particular decoded value.
+#[doc(hidden)]
+pub fn fuzz_entry_parse_der(der: &[u8]) {
+    let _ = extract_sans_from_der(der);
+    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x03], true);
+    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x03], false);
+    let _ = extract_field_from_der(der, &[0x55, 0x04, 0x0A], true);
+    let _ = extract_serial_hex(der);
 }
 
 #[cfg(test)]

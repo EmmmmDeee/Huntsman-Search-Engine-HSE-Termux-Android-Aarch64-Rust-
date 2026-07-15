@@ -88,7 +88,7 @@ fn cmd_status() -> Result<()> {
 
     let by_mcc = cell_db::count_by_mcc(&conn).map_err(|e| Error::Other(e.to_string()))?;
     if !by_mcc.is_empty() {
-        println!("\nBy MCC (top 10):");
+        println!("\n{}", mcc_header_line(by_mcc.len()));
         for (mcc, count) in by_mcc.iter().take(10) {
             println!("  MCC {mcc}: {count} towers");
         }
@@ -128,7 +128,41 @@ fn format_age(secs: u64) -> String {
     }
 }
 
+/// The "By MCC" header line for `hse cells status`. States the true total MCC
+/// count whenever the printed breakdown is truncated to the top 10 by tower
+/// count, so "(top 10)" can never read as "there are only 10" when there are
+/// more — a plain "By MCC:" when the full list already fits.
+fn mcc_header_line(total_mcc_count: usize) -> String {
+    if total_mcc_count > 10 {
+        format!("By MCC (top 10 of {total_mcc_count}):")
+    } else {
+        "By MCC:".to_string()
+    }
+}
+
 // ── import ───────────────────────────────────────────────────────────────────
+
+/// The OpenCelliD filename for a `--country`/API `country` value: the
+/// special "world" dataset, or `OCID_cells_mcc<N>.csv.gz` for a resolved or
+/// raw MCC. Pure so both the CLI and the API import handler build the exact
+/// same filename from the exact same input, and so it's unit-testable
+/// without a network call.
+pub(crate) fn opencellid_filename(country: &str, mcc: Option<i64>) -> String {
+    if country.eq_ignore_ascii_case("world") {
+        "cell_towers.csv.gz".to_string()
+    } else {
+        let m = mcc.map_or_else(|| country.to_string(), |m| m.to_string());
+        format!("OCID_cells_mcc{m}.csv.gz")
+    }
+}
+
+/// The OpenCelliD download URL for a resolved `filename` + API key. Pure —
+/// shared by the CLI and the API import handler.
+pub(crate) fn opencellid_download_url(filename: &str, api_key: &str) -> String {
+    format!(
+        "https://opencellid.org/downloads/?token={api_key}&sourceFilter=ocid&type=full&file={filename}"
+    )
+}
 
 async fn cmd_import(
     file: Option<String>,
@@ -154,16 +188,8 @@ async fn cmd_import(
                     )
                 })?;
 
-            let filename = if country.eq_ignore_ascii_case("world") {
-                "cell_towers.csv.gz".to_string()
-            } else {
-                let m = mcc.map_or_else(|| country.clone(), |m| m.to_string());
-                format!("OCID_cells_mcc{m}.csv.gz")
-            };
-
-            let url = format!(
-                "https://opencellid.org/downloads/?token={api_key}&sourceFilter=ocid&type=full&file={filename}"
-            );
+            let filename = opencellid_filename(country, mcc);
+            let url = opencellid_download_url(&filename, &api_key);
 
             println!("Attempting to download: {filename}");
             match download_and_import(&url, &filename, mcc).await {
@@ -185,7 +211,10 @@ async fn cmd_import(
     }
 }
 
-async fn download_and_import(url: &str, filename: &str, mcc: Option<i64>) -> Result<()> {
+/// Download an OpenCelliD extract and import it. Shared by `hse cells import
+/// --country` and `POST /api/v1/cells/import` (`api::cells_handlers`) — the
+/// one place this network+import sequence is implemented.
+pub(crate) async fn download_and_import(url: &str, filename: &str, mcc: Option<i64>) -> Result<()> {
     let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(300))
         .build()
@@ -354,6 +383,19 @@ fn import_reader<R: std::io::Read>(
 
 // ── clear ────────────────────────────────────────────────────────────────────
 
+/// Truncate the `cells`/`cell_imports` tables. Shared by `hse cells clear`
+/// (after its own interactive confirmation) and `POST /api/v1/cells/clear`
+/// (which requires an explicit `{"confirm": true}` body instead — there is
+/// no stdin to prompt over HTTP).
+pub(crate) fn clear_cells_db() -> Result<()> {
+    let conn = cell_db::open_rw().map_err(|e| Error::Other(e.to_string()))?;
+    conn.execute("DELETE FROM cells", [])
+        .map_err(|e| Error::Other(e.to_string()))?;
+    conn.execute("DELETE FROM cell_imports", [])
+        .map_err(|e| Error::Other(e.to_string()))?;
+    Ok(())
+}
+
 fn cmd_clear(yes: bool) -> Result<()> {
     if !yes {
         print!("This will delete all tower data. Type 'yes' to confirm: ");
@@ -367,11 +409,7 @@ fn cmd_clear(yes: bool) -> Result<()> {
         }
     }
 
-    let conn = cell_db::open_rw().map_err(|e| Error::Other(e.to_string()))?;
-    conn.execute("DELETE FROM cells", [])
-        .map_err(|e| Error::Other(e.to_string()))?;
-    conn.execute("DELETE FROM cell_imports", [])
-        .map_err(|e| Error::Other(e.to_string()))?;
+    clear_cells_db()?;
     println!("Cell tower database cleared.");
     Ok(())
 }

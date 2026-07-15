@@ -63,7 +63,7 @@ pub(super) async fn cmd_live(cmd: LiveCmd) -> Result<()> {
     let target = Target::new(target_kind, cmd.value.clone());
     // Reject junk/placeholder seeds at the CLI boundary (mirrors `cmd_scan`
     // and the HTTP API's `validated_target`).
-    if let Err(msg) = target.validate() {
+    if let Err(msg) = target.validate_verbose() {
         return Err(crate::core::error::Error::Other(format!(
             "invalid target '{}': {msg}",
             target.value
@@ -191,8 +191,11 @@ fn build_live_scan_options(cmd: &LiveCmd) -> Result<ScanOptions> {
 /// block for a professional interpreter. The transparency contract: every
 /// retrieved value is shown verbatim — passwords, hashes, raw stealer-record
 /// fields, API keys, full bios — nothing is masked, hashed, truncated, or
-/// omitted. This mirrors the post-scan dossier (`cli::scan`) so the live view
-/// and the final report show identical, complete data.
+/// omitted. Same no-omission contract as the post-scan dossier
+/// (`cli::scan::dossier`) — but NOT identical output: `hse live` has no
+/// platform-infra filtering equivalent, so it shows every entity as it
+/// arrives, including ones the dossier excludes by default (and discloses
+/// when it does). The live view is a strict superset, not a mirror.
 ///
 /// Returns `""` for events that carry no operator-facing payload in this view
 /// (the caller suppresses blank lines).

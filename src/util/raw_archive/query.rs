@@ -43,17 +43,13 @@ pub(super) fn records_filtered_dir(
     let utc_lo = format_utc(start_unix);
     let utc_hi = (end_unix != u64::MAX).then(|| format_utc(end_unix));
     // Pre-slug the wanted queries once so the per-file check is a set lookup.
-    // Lower-cased: `slug` preserves case (deliberately, for a human-readable
-    // filename), but the caller's query set is already lower-cased (see
-    // `cli::export::renderers`'s `scan.target.value.to_lowercase()`) while an
-    // archived file's own slug keeps the ORIGINAL case it was written with
-    // (`raw_archive::record`'s `query` argument is never case-folded). A
-    // case-sensitive comparison between the two would silently drop every
-    // file for a target with any uppercase letter (a `FullName` seed like
-    // "Brett Lawnton" always has one) — exactly the class the authoritative
-    // `_meta.query` check two steps below already guards against by
-    // lower-casing both sides; this makes the cheap pre-filter agree with it
-    // instead of rejecting the file before that check is ever reached.
+    // Lower-cased because the authoritative `_meta.query` check below is
+    // case-insensitive (`query.to_lowercase()`) while `slug()` PRESERVES case: a
+    // wanted query carrying any uppercase (a name/username like `MattDieg`) would
+    // otherwise never match its own archived filename slug, so the matching file
+    // would be skipped before it was ever opened — silently dropping a real paid
+    // response from the dossier. Both sides are lowered so the pre-filter can
+    // never skip a file the authoritative check would keep.
     let want_slugs: Option<std::collections::HashSet<String>> =
         queries.map(|set| set.iter().map(|q| slug(q, 80).to_lowercase()).collect());
 

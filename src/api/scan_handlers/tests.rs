@@ -108,6 +108,41 @@ use super::*;
     }
 
     #[test]
+    fn build_scan_from_request_profile_overlay_preserves_client_options() {
+        // The bug this guards: a full `opts = profile_opts` replace silently
+        // discarded every option the client set alongside `"profile"` — here,
+        // `modules` and `min_confidence` have no profile equivalent at all, so
+        // a request combining a profile with an explicit module allowlist used
+        // to have that allowlist vanish without any error or warning.
+        let req = ScanRequest {
+            kind: Some(TargetKind::Domain),
+            value: "cloudflare.com".to_string(),
+            options: crate::core::scan::ScanOptions {
+                profile: Some("investigate".to_string()),
+                modules: Some(vec!["hunter_io".to_string()]),
+                min_confidence: Some(0.7),
+                ..Default::default()
+            },
+        };
+        let (scan, _) = build_scan_from_request(req).expect("valid request should build");
+        assert_eq!(
+            scan.options.modules,
+            Some(vec!["hunter_io".to_string()]),
+            "client-supplied modules must survive a profile overlay"
+        );
+        assert_eq!(
+            scan.options.min_confidence,
+            Some(0.7),
+            "client-supplied min_confidence must survive a profile overlay"
+        );
+        // The named profile's own tuning still takes effect (depth is clamped
+        // to MAX_DEPTH by `clamp_depth`, same as any other scan).
+        let investigate = crate::core::profiles::resolve_profile("investigate").unwrap();
+        assert_eq!(scan.options.depth, crate::core::scan::MAX_DEPTH);
+        assert_eq!(scan.options.max_entities, investigate.max_entities);
+    }
+
+    #[test]
     fn build_scan_from_request_rejects_invalid_target() {
         let req = ScanRequest {
             kind: Some(TargetKind::Domain),
@@ -167,4 +202,48 @@ use super::*;
             radar_scan_spec(Some("example.com")).0.kind,
             TargetKind::Coordinates
         );
+    }
+
+    // ── `snapshot_still_relevant_to` (stale engine-health-cache attribution) ──
+
+    #[test]
+    fn a_snapshot_taken_shortly_after_the_scan_is_relevant() {
+        // Audit run moments after the scan finished — the ordinary case.
+        assert!(snapshot_still_relevant_to(1_000, 1_000));
+        assert!(snapshot_still_relevant_to(1_500, 1_000));
+    }
+
+    #[test]
+    fn a_snapshot_from_well_before_the_relevance_window_expires_is_relevant() {
+        use crate::modules::search_engines::health::DEFAULT_REFRESH_SECS;
+        let scan_ts = 1_000;
+        let checked_at = scan_ts + DEFAULT_REFRESH_SECS * 2;
+        assert!(
+            snapshot_still_relevant_to(checked_at, scan_ts),
+            "exactly at the 2x-refresh-interval boundary is still relevant"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_from_long_after_the_scan_is_not_relevant() {
+        // The exact false-positive scenario the bug named: a scan that ran with
+        // full coverage, audited weeks later after engines broke — today's
+        // snapshot must NOT be attributed to that old scan's report.
+        use crate::modules::search_engines::health::DEFAULT_REFRESH_SECS;
+        let scan_ts = 1_000;
+        let two_weeks_later = scan_ts + 14 * 24 * 60 * 60;
+        assert!(two_weeks_later - scan_ts > DEFAULT_REFRESH_SECS * 2);
+        assert!(
+            !snapshot_still_relevant_to(two_weeks_later, scan_ts),
+            "a snapshot two weeks newer than the scan describes a different era"
+        );
+    }
+
+    #[test]
+    fn a_snapshot_older_than_the_scan_is_never_rejected_here() {
+        // The cache hasn't caught up to a just-finished scan yet — that's the
+        // cache being incomplete (handled separately by `health::cached()`
+        // returning `None`), not a misattribution, so this helper must not
+        // reject it.
+        assert!(snapshot_still_relevant_to(500, 1_000));
     }

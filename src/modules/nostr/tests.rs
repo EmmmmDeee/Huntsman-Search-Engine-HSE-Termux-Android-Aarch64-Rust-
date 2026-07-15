@@ -89,6 +89,52 @@ fn nip05_extraction_builds_full_identity() {
 }
 
 #[test]
+fn nip05_emits_every_distinct_relay_deduped() {
+    // A NIP-05 doc listing 10 distinct ws/wss relays (> the old RELAY_CAP = 8)
+    // plus a case-variant duplicate of the first. The relays are the identity's
+    // own self-published infrastructure — every distinct one must surface, and
+    // the duplicate must fold, not double.
+    let mut names = BTreeMap::new();
+    names.insert("bob".to_string(), HEX.to_string());
+    let mut relays = BTreeMap::new();
+    let mut list: Vec<String> = (0..10).map(|i| format!("wss://relay{i}.example.com")).collect();
+    // A case-variant duplicate of relay0 — must dedup to one entity.
+    list.push("WSS://RELAY0.EXAMPLE.COM".to_string());
+    // A non-ws endpoint that must still be filtered regardless of cap removal.
+    list.push("https://not-a-relay.example".to_string());
+    relays.insert(HEX.to_string(), list);
+    let doc = Nip05 { names, relays };
+
+    let mut result = ModuleResult::new();
+    emit_nip05("bob", "example.com", "bob@example.com", HEX, &doc, "scan", &mut result);
+
+    let relay_entities: Vec<&str> = result
+        .entities
+        .iter()
+        .filter(|x| x.kind == EntityKind::Other("nostr-relay".into()))
+        .map(|x| x.value.as_str())
+        .collect();
+    // All 10 distinct relays, not the first 8 — the duplicate folded, the
+    // non-ws endpoint was filtered.
+    assert_eq!(
+        relay_entities.len(),
+        10,
+        "every distinct relay emitted, not capped at 8: {relay_entities:?}"
+    );
+    for i in 0..10 {
+        let want = format!("wss://relay{i}.example.com");
+        assert!(
+            relay_entities.contains(&want.as_str()),
+            "missing relay {want}: {relay_entities:?}"
+        );
+    }
+    assert!(
+        relay_entities.iter().all(|r| !r.contains("not-a-relay")),
+        "a non-ws endpoint must not be emitted as a relay"
+    );
+}
+
+#[test]
 fn nip05_root_underscore_emits_no_username() {
     let mut names = BTreeMap::new();
     names.insert("_".to_string(), HEX.to_string());
@@ -136,7 +182,6 @@ async fn process_decodes_npub_offline() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let r = Nostr
         .process(&Target::new(TargetKind::Username, NPUB), &ctx)
@@ -178,7 +223,6 @@ async fn nostr_live_resolves_nip05() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Email, "_@fiatjaf.com");
     let r = Nostr

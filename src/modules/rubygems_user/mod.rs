@@ -32,8 +32,6 @@ use crate::core::{
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "rubygems_user";
-/// Cap gems scanned per query — bounds entity fan-out on a phone.
-const MAX_GEMS: usize = 30;
 
 pub struct RubygemsUser;
 
@@ -91,11 +89,14 @@ pub(super) fn build_entities(gems: Vec<RgGem>, handle: &str, scan_id: &str) -> V
     pu.add_evidence(ev_base());
     result.push(pu);
 
-    // The true gem count, taken BEFORE the `MAX_GEMS` cap below consumes `gems`
-    // — a prolific gem owner with more gems than the cap must not have their
-    // real total silently understated by the capped `gem_names`'s own length.
+    // Scan EVERY owned gem: each can carry a distinct author (Person), homepage
+    // (Url/Domain) and source-code host (GitHub Username) pivot, and the three
+    // `seen_*` dedup sets already bound the DISTINCT entity fan-out — so a prior
+    // `.take(30)` cap dropped real, un-recovered identity pivots (an author's
+    // real name, a personal domain) from a prolific maintainer's later gems for
+    // no fan-out benefit.
     let total_gems = gems.len();
-    for gem in gems.into_iter().take(MAX_GEMS) {
+    for gem in gems {
         let gem_name = gem.name.as_deref().unwrap_or("").to_string();
         if !gem_name.is_empty() {
             gem_names.push(gem_name.clone());

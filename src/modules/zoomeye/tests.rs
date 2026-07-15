@@ -116,6 +116,41 @@ fn port_label_combines_port_and_service() {
 }
 
 #[test]
+fn port_app_and_banner_read_nested_portinfo_fields() {
+    assert_eq!(port_app(&sample_match()).as_deref(), Some("nginx"));
+    assert_eq!(port_banner(&sample_match()).as_deref(), Some("..."));
+    // Absent → None (no fabricated app/banner).
+    let bare = serde_json::json!({"portinfo": {"port": 22}});
+    assert_eq!(port_app(&bare), None);
+    assert_eq!(port_banner(&bare), None);
+}
+
+#[test]
+fn port_detail_annotates_label_with_app_and_banner_when_present() {
+    assert_eq!(
+        port_detail(&sample_match(), "443/https").as_deref(),
+        Some("443/https (nginx) — banner: ...")
+    );
+    // App only.
+    let app_only = serde_json::json!({"portinfo": {"app": "OpenSSH"}});
+    assert_eq!(
+        port_detail(&app_only, "22").as_deref(),
+        Some("22 (OpenSSH)")
+    );
+    // Banner only.
+    let banner_only = serde_json::json!({"portinfo": {"banner": "SSH-2.0-OpenSSH_7.4"}});
+    assert_eq!(
+        port_detail(&banner_only, "22").as_deref(),
+        Some("22 — banner: SSH-2.0-OpenSSH_7.4")
+    );
+    // Neither → None, not a bare duplicate of the label.
+    assert_eq!(
+        port_detail(&serde_json::json!({"portinfo": {}}), "80"),
+        None
+    );
+}
+
+#[test]
 fn pstr_reads_nested_string_at_pointer_path() {
     let v = serde_json::json!({"a": {"b": "hi"}});
     assert_eq!(pstr(&v, "/a/b").as_deref(), Some("hi"));

@@ -103,23 +103,48 @@ impl Breaker {
     /// Decide whether a request may proceed at epoch second `now`, mutating the
     /// breaker as the state machine requires:
     ///
-    /// * `Closed` / `HalfOpen` ⇒ `true` (let it through; `HalfOpen` already
-    ///   represents the one in-flight probe).
+    /// * `Closed` ⇒ `true` (healthy; let it through).
     /// * `Open` ⇒ `true` **only** once `now` has reached `retry_at`, and in that
     ///   case the breaker transitions to `HalfOpen` so exactly one probe is
     ///   admitted; otherwise `false` (short-circuit, still cooling down).
+    /// * `HalfOpen` ⇒ `false` — a probe is already in flight, so concurrent
+    ///   callers are denied and the recovering host gets exactly ONE trial
+    ///   request, not a thundering herd. (Previously every concurrent caller was
+    ///   admitted, defeating the single-probe design and hammering a host that is
+    ///   very likely still down.) `retry_at` doubles as the probe *deadline*: if
+    ///   the probe's outcome is never recorded — a dropped/cancelled request would
+    ///   otherwise wedge the breaker `HalfOpen` forever — a fresh probe is
+    ///   admitted one [`COOLDOWN_SECS`] later.
     pub fn allow(&mut self, now: u64) -> bool {
         match self.state {
-            BreakerState::Closed | BreakerState::HalfOpen => true,
+            BreakerState::Closed => true,
             BreakerState::Open => {
                 if now >= self.retry_at {
-                    self.state = BreakerState::HalfOpen;
+                    self.enter_half_open(now);
+                    true
+                } else {
+                    false
+                }
+            }
+            BreakerState::HalfOpen => {
+                // A probe is in flight → deny others. If its outcome was never
+                // recorded and the deadline has passed, admit one fresh probe.
+                if now >= self.retry_at {
+                    self.enter_half_open(now);
                     true
                 } else {
                     false
                 }
             }
         }
+    }
+
+    /// Admit a single probe: enter `HalfOpen` and arm the probe deadline one
+    /// cooldown out, so a probe whose outcome is never recorded self-heals into a
+    /// fresh probe rather than wedging the breaker.
+    fn enter_half_open(&mut self, now: u64) {
+        self.state = BreakerState::HalfOpen;
+        self.retry_at = now.saturating_add(COOLDOWN_SECS);
     }
 
     /// Record a successful request: the host is healthy, so reset to `Closed`

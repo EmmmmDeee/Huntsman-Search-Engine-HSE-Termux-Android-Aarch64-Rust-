@@ -83,7 +83,11 @@ fn scan_evidence<'a>(entities: &'a [Entity], keys: &[&str]) -> Vec<(String, &'a 
 
 // ── AU-073 — Subject date of birth ───────────────────────────────────────────
 
-const DOB_KEYS: &[&str] = &[
+/// The canonical DOB evidence-attribute-key vocabulary — also the single
+/// source `core::exposure`'s sensitive-disclosure scan uses (see that
+/// module's doc comment), so a spelling added here is instantly visible to
+/// both consumers instead of silently undercounting one of them.
+pub(crate) const DOB_KEYS: &[&str] = &[
     "date_of_birth",
     "dob",
     "birthdate",
@@ -255,13 +259,20 @@ fn mask_tail(value: &str) -> String {
 
 /// One Australian government-ID class: the evidence keys it appears under, a
 /// human label, and an optional structural validator.
-struct GovId {
-    keys: &'static [&'static str],
+pub(crate) struct GovId {
+    pub(crate) keys: &'static [&'static str],
     label: &'static str,
     validate: Option<fn(&str) -> bool>,
 }
 
-const GOV_IDS: &[GovId] = &[
+/// The canonical AU government-ID evidence-attribute-key vocabulary, grouped
+/// by ID class (needed here for AU-074's per-class masking/labelling).
+/// `core::exposure`'s sensitive-disclosure scan flattens this to a plain
+/// "was any gov-ID key present" check (see that module's doc comment) rather
+/// than keeping its own separate, narrower copy — the drift that left it
+/// silently undercounting breach records naming e.g. `tax_file_number`
+/// instead of the bare `tfn` this list's first entry alone used to cover.
+pub(crate) const GOV_IDS: &[GovId] = &[
     GovId {
         keys: &["tfn", "tax_file_number", "taxfilenumber", "tax_file_no"],
         label: "Tax File Number",
@@ -1195,8 +1206,12 @@ pub(in crate::core::correlator) fn rule_au_101_identity_resolution(
 const BSB_KEYS: &[&str] = &["bsb", "bank_state_branch", "bsb_number", "bank_bsb"];
 
 /// Breach field keys that carry a bank account number (co-occurrence escalates a
-/// BSB exposure to a full, directly-abusable account credential).
-const BANK_ACCOUNT_KEYS: &[&str] = &[
+/// BSB exposure to a full, directly-abusable account credential). Also the
+/// canonical bank-account-number vocabulary `core::exposure`'s Financial
+/// component single-sources for its "bank_account" concept (see that module's
+/// doc comment) — `card_number`/`iban` have no equivalent here and stay as
+/// `exposure`'s own literals; only the bank-account-number spellings overlap.
+pub(crate) const BANK_ACCOUNT_KEYS: &[&str] = &[
     "account_number",
     "bank_account",
     "account_no",
@@ -1311,11 +1326,20 @@ pub(in crate::core::correlator) fn rule_au_105_credential_reuse(
     let mut digest_bridge: std::collections::HashMap<String, String> =
         std::collections::HashMap::new();
 
-    // The breach a record came from — the unit reuse is measured across.
+    // The breach a record came from — the unit reuse is measured across. Read
+    // the breach-name attr across the spellings the providers actually stamp:
+    // `dbname` (OathNet/stealer), `breach`, and `source_db` — the key the
+    // `see_know` extractor renames a record's raw `source` breach-name field to
+    // (so it can't clobber the provenance `source` attr). Without `source_db`,
+    // every SeekNow breach collapsed to the bare module name `see_know`, so a
+    // genuine password reused across two SeekNow breaches counted as ONE and
+    // AU-105 stayed silent — an under-count that suppressed the most actionable
+    // people-centric finding on a primary paid breach source.
     let breach_of = |ev: &crate::core::entity::Evidence| -> String {
         ev.attributes
             .get("dbname")
             .or_else(|| ev.attributes.get("breach"))
+            .or_else(|| ev.attributes.get("source_db"))
             .map_or(ev.source.as_str(), String::as_str)
             .to_string()
     };

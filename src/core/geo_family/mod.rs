@@ -62,14 +62,24 @@ pub fn au_postcode(e: &Entity) -> Option<String> {
             .filter(|n| (800..=7999).contains(n))
             .map(|_| t.to_string())
     };
+    // Only an Address carries a postcode IN ITS VALUE. Scanning any other kind's
+    // value for a trailing 4-digit run misreads an arbitrary number — an email
+    // local-part digit, a username suffix, a URL id, a person-record number — as an
+    // AU postcode and geolocates it (a confident FALSE location that drags a
+    // non-address entity into the subject's geo footprint). Every other kind may
+    // still contribute a postcode, but only via a STRUCTURED `postcode` evidence
+    // attribute (reliable — the `qld_unclaimed` owner Persons carry it), handled
+    // below.
+    //
     // An AU address names its postcode LAST, so only the FINAL run of digits is a
     // candidate — this stops a LEADING 4-digit street number (from a foreign
     // address whose real postcode is a 5-digit ZIP) being read as an AU postcode,
     // e.g. "1019 Winston Dr, Jefferson City, MO, 65101" → not "1019".
-    if let Some(last) = e
-        .value
-        .split(|c: char| !c.is_ascii_digit())
-        .rfind(|t| !t.is_empty())
+    if e.kind == EntityKind::Address
+        && let Some(last) = e
+            .value
+            .split(|c: char| !c.is_ascii_digit())
+            .rfind(|t| !t.is_empty())
         && let Some(pc) = valid(last)
     {
         return Some(pc);

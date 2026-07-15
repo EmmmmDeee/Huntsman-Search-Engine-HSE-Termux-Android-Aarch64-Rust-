@@ -53,6 +53,14 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
     // breach/dossier export saved under any other name (or none) was mis-routed
     // to the JSON parser and rejected as "invalid JSON" — silently dropping a
     // legitimate import the UI accepted fine.
+    // A UTF-8 BOM (U+FEFF) is NOT whitespace, so the detector's `trim_start` leaves
+    // it in place and a BOM-prefixed CSV/JSON export (common from Excel / Windows
+    // tools) misroutes to the wrong parser → every entity silently dropped. Strip it
+    // once so BOTH detection and the parser below see clean text.
+    let body = body
+        .strip_prefix('\u{feff}')
+        .map(str::to_string)
+        .unwrap_or(body);
     match detect_import_format(path, &body) {
         ImportFormat::OathnetHtml => cmd_import_html(&body, output).await,
         ImportFormat::OathnetJson => {
@@ -71,7 +79,7 @@ pub(super) async fn cmd_import(path: &str, output: &str) -> Result<()> {
                 output,
                 format!("Importing OathNet JSON export: query=\"{query}\", date={date}"),
             );
-            let sid = format!("import-{}", &crate::core::entity::unix_now().to_string());
+            let sid = format!("import-{}", crate::core::entity::unix_now());
             let (mut entities, stats) = parse_oathnet_json(&doc, &sid).await;
             deduplicate_by_uid(&mut entities);
             print_import_stats(&stats, entities.len(), output);
@@ -111,7 +119,11 @@ pub(crate) enum ImportFormat {
 /// there is no file (the web upload). Pure — no I/O — so the whole detection
 /// matrix is unit-tested directly.
 pub(crate) fn detect_import_format(path: &str, body: &str) -> ImportFormat {
-    let head = body.trim_start();
+    // A UTF-8 BOM (U+FEFF) is NOT whitespace, so `trim_start` won't drop it; strip
+    // it first so a BOM-prefixed export is classified by its real first token rather
+    // than misrouted. (The cmd_import / entities_from_upload callers also strip it
+    // from the body they hand the PARSER, since serde_json etc. reject a leading BOM.)
+    let head = body.trim_start_matches('\u{feff}').trim_start();
     // HTML first (by content or the `.html` hint).
     if path.ends_with(".html") || head.starts_with("<!") || head.starts_with("<html") {
         return ImportFormat::OathnetHtml;
@@ -191,6 +203,10 @@ pub(crate) async fn entities_from_upload(
 ) -> Result<(Vec<crate::core::entity::Entity>, &'static str)> {
     // Same content-based detector the CLI dispatches on (no path → content only),
     // so the browser upload and `hse import` can never disagree on a file's format.
+    // Strip a leading UTF-8 BOM (U+FEFF) — not whitespace, so the detector's
+    // trim_start misses it — before both detection and parsing, or a BOM-prefixed
+    // upload misroutes and silently drops every entity.
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
     let (mut entities, label) = match detect_import_format("", body) {
         ImportFormat::OathnetHtml => (parse_oathnet_html(body, sid), "oathnet-html"),
         ImportFormat::OathnetJson => {
@@ -392,13 +408,64 @@ async fn persist_and_report(sid: &str, entities: &[crate::core::entity::Entity],
     }
 }
 
+/// Persist paired stealer-log credential rows for `sid`, best-effort — a
+/// failure here must never affect the entities `persist_and_report` already
+/// persisted. Called only by the Stealerlogs importer; a no-op when there's
+/// nothing to store.
+async fn persist_stealer_rows_best_effort(
+    sid: &str,
+    rows: &[crate::core::stealer_row::StealerRow],
+    output: &str,
+) {
+    if rows.is_empty() {
+        return;
+    }
+    use crate::core::StoragePort;
+    let store: std::sync::Arc<dyn StoragePort> =
+        match crate::storage::Store::open(&crate::default_db_path()) {
+            Ok(s) => std::sync::Arc::new(s),
+            Err(e) => {
+                note(
+                    output,
+                    format!("  Warning:   could not persist stealer rows: {e}"),
+                );
+                return;
+            }
+        };
+    match store.insert_stealer_rows_batch(sid, rows) {
+        Ok(n) => note(
+            output,
+            format!("  Stored:    {n} stealer credential row(s) for the Stealer Logs Viewer"),
+        ),
+        Err(e) => note(
+            output,
+            format!("  Warning:   could not persist stealer rows: {e}"),
+        ),
+    }
+}
+
+/// Web-upload counterpart to `entities_from_upload`, scoped to the paired
+/// stealer-log credential rows `entities_from_upload` itself discards (its
+/// signature returns `(entities, format_label)` and is destructured at many
+/// non-web call sites — CLI, tests — so it is deliberately not widened for
+/// this web-only need). Returns empty for any non-stealer body from a cheap
+/// format check alone; re-parses the body a second time only in the stealer
+/// case, an accepted, bounded, one-time-per-upload cost.
+pub(crate) fn stealer_rows_from_upload(body: &str) -> Vec<crate::core::stealer_row::StealerRow> {
+    let body = body.strip_prefix('\u{feff}').unwrap_or(body);
+    if !looks_like_stealerlogs(body) {
+        return Vec::new();
+    }
+    parse_stealerlogs(body, "").2
+}
+
 fn detect_and_create_api_key_entity(
     pw: &str,
     sid: &str,
     source_label: &str,
 ) -> Option<(&'static str, crate::core::entity::Entity)> {
     use crate::core::entity::{Entity, EntityKind, Evidence};
-    use crate::modules::oathnet_pro::key_harvest::identify_api_key;
+    use crate::util::key_harvest::identify_api_key;
 
     let (service, _key_val) = identify_api_key(pw)?;
 
@@ -424,8 +491,9 @@ fn detect_and_create_api_key_entity(
 /// Extract WiFi BSSIDs / MAC addresses from `text` and push them as
 /// `MacAddress` entities — a victim's router BSSID lifted from a stealer log or
 /// breach record becomes a geolocation seed that `mylnikov` / `wigle` can turn
-/// into coordinates. Capped so a hostile blob can't flood the graph. Returns the
-/// number emitted.
+/// into coordinates. [`crate::util::extract::macs`] already dedupes, so every
+/// distinct BSSID found is emitted — no arbitrary cap. Returns the number
+/// emitted.
 fn push_macs(
     text: &str,
     sid: &str,
@@ -434,7 +502,7 @@ fn push_macs(
 ) -> usize {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
-    for mac in crate::util::extract::macs(text).into_iter().take(50) {
+    for mac in crate::util::extract::macs(text) {
         let mut e = Entity::new(EntityKind::MacAddress, &mac, 0.55, sid);
         e.tag("import");
         e.tag(source_tag);
@@ -457,7 +525,8 @@ fn push_macs(
 /// victim's BTC/ETH/… wallets, and a recovered address is a chain-analysis seed
 /// (`chain_intel`). Every candidate token is checksum-validated by
 /// [`crate::core::crypto::classify_crypto_address`], so noise (hashes, API keys)
-/// is rejected. Capped at 50/import. Returns the number emitted.
+/// is rejected; every distinct validated address is emitted — no arbitrary cap.
+/// Returns the number emitted.
 fn push_crypto(
     text: &str,
     sid: &str,
@@ -496,9 +565,6 @@ fn push_crypto(
         );
         entities.push(e);
         n += 1;
-        if n >= 50 {
-            break;
-        }
     }
     n
 }
@@ -510,6 +576,15 @@ fn push_crypto(
 /// `identify_api_key`, so only real vendor-key shapes (AWS `AKIA…`, GitHub
 /// `ghp_…`, Slack `xox…`, Stripe `sk_live_…`, Google `AIza…`, …) are kept.
 /// Capped at 50/import. Returns the number emitted.
+///
+/// Persists the pool to disk itself (once, only if it actually added a key)
+/// rather than leaving that to the caller: the in-memory `pool.add` inside
+/// `store_key_in_pool` is invisible on disk until `save_pool`/
+/// `save_pool_best_effort` runs, and most of this function's 7 callers never
+/// called it at all — every key this scanner found (its whole point: keys
+/// outside a recognised `service: key` field) was silently lost on process
+/// exit. A single choke point here fixes every caller at once and can't
+/// drift back out of sync the way 7 separate call-site edits could.
 fn push_api_keys(
     text: &str,
     sid: &str,
@@ -538,12 +613,16 @@ fn push_api_keys(
             }
         }
     }
+    if n > 0 {
+        crate::util::key_pool::save_pool_best_effort(&crate::util::key_pool::global_pool());
+    }
     n
 }
 
 /// Extract checksum-valid IBANs (international bank accounts) from `text` and
 /// push them as `Other("iban")` financial-intel entities — a victim's bank
-/// account recovered from a breach/stealer dump. Capped at 50/import.
+/// account recovered from a breach/stealer dump. [`crate::util::extract::ibans`]
+/// already dedupes, so every distinct IBAN found is emitted — no arbitrary cap.
 fn push_ibans(
     text: &str,
     sid: &str,
@@ -552,7 +631,7 @@ fn push_ibans(
 ) -> usize {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
-    for iban in crate::util::extract::ibans(text).into_iter().take(50) {
+    for iban in crate::util::extract::ibans(text) {
         let mut e = Entity::new(EntityKind::Other("iban".into()), &iban, 0.62, sid);
         e.tag("import");
         e.tag(source_tag);
@@ -574,7 +653,8 @@ fn push_ibans(
 /// Extract labelled WiFi SSIDs from `text` and push them as `Ssid` entities —
 /// a victim's network names from a stealer log. A *unique* SSID then dispatches
 /// to `wigle`'s SSID search, which returns where the network was observed,
-/// placing the owner. Capped at 50/import.
+/// placing the owner. [`crate::util::extract::labeled_ssids`] already dedupes,
+/// so every distinct SSID found is emitted — no arbitrary cap.
 fn push_ssids(
     text: &str,
     sid: &str,
@@ -583,10 +663,7 @@ fn push_ssids(
 ) -> usize {
     use crate::core::entity::{Entity, EntityKind, Evidence};
     let mut n = 0;
-    for ssid in crate::util::extract::labeled_ssids(text)
-        .into_iter()
-        .take(50)
-    {
+    for ssid in crate::util::extract::labeled_ssids(text) {
         let mut e = Entity::new(EntityKind::Ssid, &ssid, 0.60, sid);
         e.tag("import");
         e.tag(source_tag);

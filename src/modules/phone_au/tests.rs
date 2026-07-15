@@ -116,7 +116,6 @@ fn test_ctx() -> ModuleContext {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     }
 }
 

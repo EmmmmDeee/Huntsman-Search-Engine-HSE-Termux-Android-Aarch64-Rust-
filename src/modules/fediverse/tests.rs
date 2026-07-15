@@ -77,7 +77,6 @@ async fn fediverse_live_resolves_a_known_handle() {
         http: reqwest::Client::new(),
         keys: std::collections::HashMap::new(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: Default::default(),
     };
     let target = Target::new(TargetKind::Email, "Gargron@mastodon.social");
     let r = Fediverse

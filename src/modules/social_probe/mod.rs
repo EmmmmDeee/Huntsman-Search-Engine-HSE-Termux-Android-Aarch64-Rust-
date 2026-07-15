@@ -1,9 +1,15 @@
 //! Direct social profile probing — free, zero API keys.
 //!
 //! For a Username target, sends HEAD/GET requests to known profile URL
-//! patterns on 20+ platforms. A 200 response confirms the profile exists;
-//! 404 confirms it doesn't. Each confirmed profile becomes a Url entity
-//! with the platform tagged.
+//! patterns on 20+ platforms. A matching status code is a hit; for the
+//! handful of platforms known to return that status for any handle
+//! (soft-404/SPA-shell), a `negative_patterns` body check must also pass —
+//! see `Platform::negative_patterns`. Each confirmed profile becomes a Url
+//! entity with the platform tagged, plus `verified-detection` (body-marker
+//! confirmed) or `weak-detection` (status code alone — the correlator
+//! discounts these, see `core::correlator::rules::identity::account`'s
+//! AU-055 and `cluster`'s AU-003) so a bare status-only guess is never
+//! presented as a confirmed, subject-controlled account.
 //!
 //! For a FullName target, probes people-search directories that use
 //! name-in-URL patterns (PeeKYou, Facebook public directory, etc.).
@@ -35,6 +41,21 @@ pub(super) struct Platform {
     /// whether a user exists. Leave empty (`&[]`) for platforms where the
     /// status code is reliable.
     pub(super) negative_patterns: &'static [&'static str],
+}
+
+/// Confidence + verified-flag a hit earns, tiered by rigour — mirrors
+/// `streaming_probe`/`username_search`'s `detection_strength`. A platform
+/// with a `negative_patterns` check just had its body inspected for a
+/// "doesn't exist" marker and passed — a real confirmation (0.92, verified).
+/// A platform with no negative pattern rests entirely on the HTTP status
+/// code, which a soft-404/SPA-shell can return for almost any handle — an
+/// unconfirmed status-only lead (0.74, unverified). Tagging the weak case
+/// `weak-detection` lets the correlator (AU-003/AU-038/AU-045/AU-055)
+/// discount it instead of counting a guess as a confirmed, subject-controlled
+/// account — the exact false signal a real scan against a guessed handle
+/// produced across 30+ status-only platforms.
+fn detection_strength(platform: &Platform) -> (f64, bool) {
+    crate::util::probe_confidence::detection_strength(!platform.negative_patterns.is_empty())
 }
 
 pub(super) const USERNAME_PLATFORMS: &[Platform] = &[
@@ -326,7 +347,12 @@ impl Module for SocialProbe {
                 break;
             }
 
-            let url = platform.url_pattern.replace("{}", &slug);
+            // Percent-encode the substituted value so a handle with URL-significant
+            // characters can't break out of the path/query (matches the other
+            // presence probes); a plain alphanumeric handle is unchanged.
+            let url = platform
+                .url_pattern
+                .replace("{}", &crate::util::http::urlencode(&slug));
             checked_count += 1;
 
             let (code, body) = crate::util::curl::fetch_with_status(
@@ -343,14 +369,29 @@ impl Module for SocialProbe {
                 found_count += 1;
                 found_platforms.push(platform.name);
 
-                let mut entity = Entity::new(EntityKind::Url, &url, 0.80, &ctx.scan_id);
+                let (confidence, verified) = detection_strength(platform);
+
+                let mut entity = Entity::new(EntityKind::Url, &url, confidence, &ctx.scan_id);
                 entity.tag("social-profile");
                 entity.tag(format!("platform:{}", platform.name));
+                entity.tag(if verified {
+                    "verified-detection"
+                } else {
+                    "weak-detection"
+                });
                 entity.add_evidence(
                     Evidence::new(SRC, format!("Profile found on {}", platform.name))
                         .with_attr("platform", platform.name)
                         .with_attr("http_status", code.to_string())
-                        .with_attr("profile_url", &url),
+                        .with_attr("profile_url", &url)
+                        .with_attr(
+                            "detection",
+                            if verified {
+                                "body-marker"
+                            } else {
+                                "status-only"
+                            },
+                        ),
                 );
                 result.push(entity);
 

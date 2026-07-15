@@ -3,7 +3,10 @@
 //! # Architecture invariants
 //! - SHA-256 deterministic UIDs
 //! - GREATEST-semantics merge (confidence, corroboration only ever increase)
-//! - `C_eff = clamp(C × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+//! - `C_eff = clamp(max(C × (1 + 0.15·ln n), 1 − (1−C)·0.65^(n−1)), 0.0, 1.0)`,
+//!   where `n = source_count()` (distinct corroborating sources) — NOT the raw
+//!   `corroboration` field, a separate per-module observation magnitude. See
+//!   [`Entity::c_effective`] and [`Entity::source_count`].
 //! - `Classify()` is derived-only from `C_eff`
 //! - No unsafe, no std::sync::Mutex (use tokio::sync)
 //! - Zero CGO / native deps
@@ -357,7 +360,11 @@ impl Evidence {
 /// `uid = hex(SHA-256(kind_str + ":" + value_normalised))`
 ///
 /// # Confidence formula
-/// `C_eff = clamp(confidence × (1 + 0.15 × ln(corroboration)), 0.0, 1.0)`
+/// `C_eff = clamp(max(confidence × (1 + 0.15·ln n), 1 − (1−confidence)·0.65^(n−1)), 0, 1)`,
+/// where `n = source_count()` — the count of DISTINCT corroborating sources,
+/// floored at 1. **Not** the raw `corroboration` field below, which is a
+/// separate summed observation magnitude that never drives `C_eff` directly.
+/// See [`Entity::c_effective`] and [`Entity::source_count`].
 ///
 /// # GREATEST-semantics merge
 /// `confidence` and `corroboration` only ever increase during merge.
@@ -373,7 +380,12 @@ pub struct Entity {
     pub raw_value: String,
     /// Base confidence ∈ [0, 1].
     pub confidence: f64,
-    /// Number of independent corroborating sources (≥ 1).
+    /// Raw observation-magnitude counter (≥ 1): seeded per-module (e.g. a
+    /// breach-count, an engine-agreement count) and summed on every
+    /// GREATEST-semantics merge via [`Self::absorb`] — never deduplicated by
+    /// source. **This is not a count of independent sources** and does not
+    /// drive [`Self::c_effective`]; that uses [`Self::source_count`] instead.
+    /// Retained as a ranking/diagnostics signal (see its doc comment for why).
     pub corroboration: u32,
     /// Decay timestamp (Unix seconds). Used to compute time-decay.
     pub observed_at: u64,
@@ -528,7 +540,15 @@ impl Entity {
     /// is single-sourced and the two can never drift apart.
     #[inline]
     pub fn c_effective_with_source_count(&self, n: u32) -> f64 {
-        let n = f64::from(n);
+        // Floor the source count at 1: a lone observation IS one source, and
+        // [`Self::source_count`] already never yields 0. Guarding here makes this
+        // public method TOTAL — without it, `n = 0` drives `ln(0) = -inf` (and
+        // `γ^(n-1) = γ^-1`) and returns a value BELOW the base `confidence` (or a
+        // NaN when `confidence == 0`), violating the model's `C_eff ≥ confidence`,
+        // bounded-`[0,1]` invariant. At the floored `n = 1` both terms equal
+        // `confidence`, so corroboration can only ever ADD confidence, never
+        // subtract it.
+        let n = f64::from(n.max(1));
         let multiplicative = self.confidence * CORROBORATION_COEFF.mul_add(n.ln(), 1.0);
         let residual_doubt = (1.0 - self.confidence) * CORROBORATION_DOUBT_DECAY.powf(n - 1.0);
         let agreement = 1.0 - residual_doubt;
@@ -683,6 +703,34 @@ impl Entity {
             .iter()
             .map(|ev| ev.source.as_str())
             .filter(|&s| !is_non_corroborating_source(s))
+            .collect()
+    }
+
+    /// The set of DISTINCT corroborating evidence *records* — `(source, summary)`
+    /// pairs whose source counts toward corroboration (see
+    /// [`is_non_corroborating_source`]). Unlike [`Self::corroborating_sources`],
+    /// which collapses every record to the bare source NAME, this keeps
+    /// per-record granularity: two entities share a record only when the same
+    /// source produced the *same finding* for both.
+    ///
+    /// This is the correct key for **co-occurrence** (does an independent source
+    /// name entities A and B *together*?). Keying co-occurrence on the source
+    /// name alone conflates genuine joint sightings with one-to-many *fan-out
+    /// enumeration*: a module like `username_search` probes a single handle
+    /// across dozens of platforms and attaches a distinct per-platform summary
+    /// (`"@h has a profile on Threads"`, `"… on OnlyFans"`, …) to a separate
+    /// entity each — independent existence-proofs of one selector, not a shared
+    /// sighting. Under the name-level key those N entities collapse to one shared
+    /// `username_search` source and wire into a false N-clique; under the
+    /// record-level key their summaries differ, so no spurious edge is drawn. A
+    /// genuine joint record (both selectors in the *same* breach — identical
+    /// `("hibp", "Breach 'Apollo'")` — or on the same crawled page) is shared
+    /// verbatim, so the real co-occurrence edge survives.
+    pub fn corroborating_records(&self) -> std::collections::HashSet<(&str, &str)> {
+        self.evidence
+            .iter()
+            .filter(|ev| !is_non_corroborating_source(&ev.source))
+            .map(|ev| (ev.source.as_str(), ev.summary.as_str()))
             .collect()
     }
 
@@ -915,12 +963,29 @@ impl From<&Entity> for EntityRef {
 ///
 /// Format: `hex(SHA-256("<kind_str>:<normalised_value>"))`
 pub(crate) fn derive_uid(kind: &EntityKind, normalised_value: &str) -> String {
-    // digest 0.11 dropped the `io::Write` impl for hashers; feed the same bytes
-    // (`"<kind>:"`) via `update` so existing UIDs stay byte-identical.
+    // digest 0.11 dropped the `io::Write` impl for hashers. Stream the `Display`
+    // of `<kind>` straight into the hasher through [`HashWrite`] so the
+    // per-entity hot path (every `Entity::new`) allocates NO intermediate
+    // `String` — the previous `format!("{kind}:")` heap-allocated on every UID.
+    // The bytes hashed are byte-identical to that `format!`, so existing UIDs are
+    // unchanged.
+    use fmt::Write as _;
     let mut h = Sha256::new();
-    h.update(format!("{kind}:").as_bytes());
+    let _ = write!(HashWrite(&mut h), "{kind}:");
     h.update(normalised_value.as_bytes());
     hex::encode(h.finalize())
+}
+
+/// A [`fmt::Write`] shim that streams formatted text straight into a SHA-256
+/// hasher, so a value's `Display` can be hashed with no intermediate `String`
+/// allocation. `write_str` is infallible here (updating a hasher never fails).
+struct HashWrite<'a>(&'a mut Sha256);
+
+impl fmt::Write for HashWrite<'_> {
+    fn write_str(&mut self, s: &str) -> fmt::Result {
+        self.0.update(s.as_bytes());
+        Ok(())
+    }
 }
 
 /// Pure-tracking URL query-parameter keys that are safe to drop during

@@ -75,9 +75,10 @@ impl Module for WebserverBanner {
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        // Re-emits the target (Domain / IpAddress / Url) enriched with banner
-        // evidence via `to_entity`.
-        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress, EntityKind::Url];
+        // Domain / IpAddress targets are re-emitted as-is via `to_entity`; a
+        // Url target is rebased to its host `Domain` (see `banner_entity`) —
+        // the probe only ever HEADs the domain root, never the URL's path.
+        const KINDS: &[EntityKind] = &[EntityKind::Domain, EntityKind::IpAddress];
         KINDS
     }
 
@@ -106,7 +107,7 @@ impl Module for WebserverBanner {
                 continue;
             }
 
-            let mut entity = target.to_entity(0.85, &ctx.scan_id);
+            let mut entity = banner_entity(target, &host, 0.85, &ctx.scan_id);
             entity.tag(crate::core::tags::WEB);
             apply_stack_tags(&mut entity, &captured);
 
@@ -129,6 +130,31 @@ impl Module for WebserverBanner {
             return Ok(result);
         }
         Ok(ModuleResult::new())
+    }
+}
+
+/// Build the entity this module's banner evidence attaches to. **Pure**.
+///
+/// For a `Domain`/`IpAddress` target this is just `target.to_entity()` — the
+/// probe HEADs exactly that value. For a `Url` target, `extract_host_port`
+/// already discards the path (the probe always HEADs the domain *root*,
+/// never the URL's path — see `process`), so re-emitting the full URL via
+/// `to_entity()` would falsely claim THIS SPECIFIC PATH was verified: every
+/// guessed profile URL on the same host (real or not) produces byte-identical
+/// banner evidence, so it corroborates nothing about the path and must not be
+/// attached to the path-specific `Url` entity. A live scan against a guessed
+/// username handle showed exactly this: `webserver_banner` counted as one of
+/// several "independent sources" corroborating a specific
+/// `https://<platform>/<guessed-handle>` entity, when all it had actually
+/// confirmed was that `<platform>`'s webserver responds to `/` — true for
+/// every handle guessed against that platform, corroborating nothing
+/// path-specific. Emit a `Domain` entity keyed on the host instead, the only
+/// thing this module actually confirms.
+fn banner_entity(target: &Target, host: &str, confidence: f64, scan_id: &str) -> Entity {
+    if target.kind == TargetKind::Url {
+        Entity::new(EntityKind::Domain, host, confidence, scan_id)
+    } else {
+        target.to_entity(confidence, scan_id)
     }
 }
 

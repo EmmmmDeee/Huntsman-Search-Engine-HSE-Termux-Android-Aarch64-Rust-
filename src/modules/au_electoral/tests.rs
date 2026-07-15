@@ -113,6 +113,38 @@ fn build_electoral_entities_unknown_division_emits_address_only() {
 }
 
 #[test]
+fn address_confidence_reflects_whether_a_suburb_was_resolved() {
+    // A confirmed division WITH a resolvable suburb (from the offline
+    // centroid table) gets the higher, module-doc-promised 0.72 tier —
+    // electoral roll enrolment is compulsory and address-verified.
+    let with_suburb = build_electoral_entities("Sydney", None, "Test", "s");
+    let addr = with_suburb
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .unwrap();
+    assert!(
+        (addr.confidence - 0.72).abs() < 1e-9,
+        "suburb-level match must score 0.72, got {}",
+        addr.confidence
+    );
+
+    // A division with NO suburb resolved (no centroid, no hint) is a
+    // materially weaker locate — a division can span many suburbs — so it
+    // must score the documented lower 0.58 tier, not the flat 0.72 a
+    // suburb-level match gets.
+    let division_only = build_electoral_entities("Xyzzy", None, "Test", "s");
+    let addr2 = division_only
+        .iter()
+        .find(|e| e.kind == EntityKind::Address)
+        .unwrap();
+    assert!(
+        (addr2.confidence - 0.58).abs() < 1e-9,
+        "division-only match must score 0.58, not the suburb-level 0.72: got {}",
+        addr2.confidence
+    );
+}
+
+#[test]
 fn build_electoral_entities_suburb_hint_overrides_centroid_suburb() {
     let ents = build_electoral_entities("Sydney", Some("Newtown"), "Test", "s");
     let addr = ents.iter().find(|e| e.kind == EntityKind::Address).unwrap();
@@ -137,11 +169,31 @@ fn strip_electoral_html_separates_adjacent_tags() {
 }
 
 #[test]
-fn split_name_handles_edge_cases() {
-    assert_eq!(super::split_name("Haigen Bamford"), ("Haigen", "Bamford"));
-    assert_eq!(super::split_name("Mary Ann Jones"), ("Mary", "Ann Jones"));
-    assert_eq!(super::split_name("Cher"), ("Cher", ""));
-    assert_eq!(super::split_name("  Anna  Smith  "), ("Anna", "Smith"));
+fn extract_division_returns_none_for_the_real_retired_aec_namesearch_response() {
+    // Golden fixture (T2.7 corpus): a REAL response captured live
+    // (2026-07-13) from `electorate.aec.gov.au/NameSearch.aspx`, the
+    // endpoint this module's now-removed AEC leg used to query. Both a
+    // nonsense name and a real enrolled public figure got the identical
+    // generic "Temporarily Unavailable" error page rather than a
+    // query-specific result, confirming the name-search capability is
+    // permanently retired (see the module doc comment) — this pins that
+    // real observed shape so `extract_division` never mistakes the error
+    // page's boilerplate for an enrolment result if anything is ever
+    // repointed at this endpoint again.
+    let html = include_str!("testdata/aec_namesearch_retired.html");
+    assert!(
+        extract_division(html).is_none(),
+        "the retired AEC error page must not parse as an enrolment result"
+    );
+}
+
+#[test]
+fn module_no_longer_dispatches_the_retired_aec_leg() {
+    // Regression for the AEC-leg removal: three sequential state EC lookups
+    // (NSW -> VIC -> ECQ), not four (the retired AEC national leg no longer
+    // budgeted for).
+    let m = AuElectoral;
+    assert_eq!(m.max_timeout_ms(), 15_000);
 }
 
 #[test]

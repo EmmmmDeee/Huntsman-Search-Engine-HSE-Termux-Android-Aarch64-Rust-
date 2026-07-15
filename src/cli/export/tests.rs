@@ -73,6 +73,51 @@ fn render_full_dumps_every_field_and_provenance() {
 }
 
 #[test]
+fn render_full_explains_the_gap_between_corroboration_and_source_count() {
+    // Regression: `corroboration` (a raw per-module magnitude) and
+    // `source_count` (the distinct-source count that actually drives c_eff)
+    // can diverge, and a reader of the debug bundle / full dossier had no way
+    // to tell from the text alone — the two numbers look interchangeable
+    // sitting next to each other. When they diverge, an explanatory note and
+    // per-evidence markers must make the real driver of c_eff explicit.
+    use crate::core::entity::{Entity, EntityKind, Evidence};
+    let dir = tempfile::tempdir().unwrap();
+    let db = dir.path().join("source_count_test.db");
+    let store = Store::open(db.to_str().unwrap()).unwrap();
+
+    let target = Target::new(TargetKind::Address, "1 Example St");
+    let scan = Scan::new("scan-sc", target);
+    store.upsert_scan(&scan).unwrap();
+
+    let mut e = Entity::new(EntityKind::Address, "1 Example St", 0.82, "scan-sc");
+    e.corroboration = 8;
+    e.add_evidence(Evidence::new("oathnet_pro", "Breach on ebay.com"));
+    e.add_evidence(Evidence::new(
+        "geo_normalize",
+        "Address parse + normalization",
+    ));
+    store.upsert_entities_batch(&[e]).unwrap();
+
+    let out = render_full(&store, "scan-sc").unwrap();
+    assert!(
+        out.contains("corroboration=8") && out.contains("source_count=1"),
+        "both counters must be visible and distinct: {out}"
+    );
+    assert!(
+        out.contains("note: c_eff is driven by source_count="),
+        "the divergence must be explained inline, not left for the reader to guess: {out}"
+    );
+    assert!(
+        out.contains("[geo_normalize] Address parse + normalization  (non-corroborating"),
+        "the non-corroborating evidence source must be marked as such: {out}"
+    );
+    assert!(
+        !out.contains("[oathnet_pro] Breach on ebay.com  (non-corroborating"),
+        "a genuinely corroborating source must NOT be marked non-corroborating: {out}"
+    );
+}
+
+#[test]
 fn structured_exports_quarantine_candidates_but_full_retains_them() {
     // H1: the CSV/JSON/GEXF exports used to ship the quarantined `candidate`
     // rows (non-subject breach co-occurrence strangers) even though the

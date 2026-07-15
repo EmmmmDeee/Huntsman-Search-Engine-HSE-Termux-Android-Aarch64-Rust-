@@ -369,6 +369,27 @@ pub fn truncate_display(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Mask a secret (API key, token, password) for display: a 4+4 head/tail hint
+/// for a value long enough that 8 exposed characters are a small fraction,
+/// full masking otherwise. The single-sourced policy for every UI that shows a
+/// stored secret (the CLI's `hse keys` bank and the web dashboard's key-pool
+/// view) — the two independently reimplemented this at one point and drifted:
+/// one used an `> 8` threshold (revealing 8 of an unmasked 9-char key, or ALL
+/// of one ≤ 8 chars), the other correctly used `< 16`. Below 16 chars, `head +
+/// tail` would leave less than half the value hidden, so the value is fully
+/// masked instead — the hint is only a recognition aid, never enough to help
+/// reconstruct the secret.
+#[must_use]
+pub fn mask_secret(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() < 16 {
+        return "•".repeat(chars.len().max(1));
+    }
+    let head: String = chars.iter().take(4).collect();
+    let tail: String = chars[chars.len() - 4..].iter().collect();
+    format!("{head}…{tail}")
+}
+
 /// Byte offset of the first ASCII-case-insensitive occurrence of `needle` in
 /// `haystack`, or `None`. The offset indexes the **original** `haystack`, so
 /// `haystack[off..]` and `haystack[..off]` are always on a `char` boundary (a
@@ -387,7 +408,25 @@ pub fn find_ascii_ci(haystack: &str, needle: &str) -> Option<usize> {
     if hb.len() < nb.len() {
         return None;
     }
-    (0..=hb.len() - nb.len()).find(|&i| hb[i..i + nb.len()].eq_ignore_ascii_case(nb))
+    // Only an offset whose byte equals the needle's first byte (in either ASCII
+    // case) can begin a match, so jump straight to those candidates with a SIMD
+    // byte search (NEON on Termux aarch64) instead of running `eq_ignore_ascii_case`
+    // at every offset — the naive scan's cost. `memchr` yields candidates in
+    // ascending order, so `.find` still returns the lowest matching offset,
+    // preserving the exact contract. `search` is bounded so a candidate always has
+    // room for the whole needle; `hb[i..i + nb.len()]` therefore never overruns.
+    let last = hb.len() - nb.len();
+    let search = &hb[..=last];
+    let n0 = nb[0];
+    let verify = |i: usize| hb[i..i + nb.len()].eq_ignore_ascii_case(nb);
+    let (lo, hi) = (n0.to_ascii_lowercase(), n0.to_ascii_uppercase());
+    if lo == hi {
+        // Caseless first byte (digit, punctuation, or non-ASCII): one byte class.
+        memchr::memchr_iter(n0, search).find(|&i| verify(i))
+    } else {
+        // ASCII letter: match either case of the first byte in a single pass.
+        memchr::memchr2_iter(lo, hi, search).find(|&i| verify(i))
+    }
 }
 
 #[cfg(test)]

@@ -2,11 +2,15 @@
 //!
 //! Reaches the other helper groups and shared imports through `use super::*`.
 
+use std::borrow::Cow;
+
 use super::*;
 // Canonical char-boundary primitives live in the shared util layer so every
 // module that slices scraped HTML at an arithmetic offset reaches for the same
 // total helper instead of re-rolling (or partially guarding) its own.
-use crate::util::str_util::{ceil_char_boundary, floor_char_boundary};
+// `find_ascii_ci` is the zero-alloc, NEON-accelerated ASCII-case-insensitive
+// substring scanner used to guard the inline-block strip without a lowercased copy.
+use crate::util::str_util::{ceil_char_boundary, find_ascii_ci, floor_char_boundary};
 
 pub(in crate::modules::search_engines) fn extract_anchor_text(
     html: &str,
@@ -15,22 +19,59 @@ pub(in crate::modules::search_engines) fn extract_anchor_text(
 ) -> String {
     let search_dq = format!("href=\"{href}\"");
     let search_sq = format!("href='{href}'");
-    let pos = match html.find(&search_dq).or_else(|| html.find(&search_sq)) {
-        Some(p) => p,
-        None => return String::new(),
-    };
-    let after_href = &html[pos..];
-    let gt = match after_href.find('>') {
-        Some(g) => pos + g + 1,
-        None => return String::new(),
-    };
-    let rest = &html[gt..];
-    let end_tag = rest.find("</a>").or_else(|| rest.find("</A>"));
-    let end = match end_tag {
-        Some(e) => gt + e,
-        None => return String::new(),
-    };
-    strip_tags(&html[gt..end], max_len)
+    // A result's own URL commonly appears in MULTIPLE `<a href="…">` occurrences
+    // within the same result card — an icon-only "favicon-link" wrapper first
+    // (no visible text at all), then a short site-name/display-URL anchor, then
+    // the actual titled link last (a real Startpage capture,
+    // `fetch/testdata/startpage_kylo4kylo.html`, has exactly this 4-deep shape
+    // for every result). Stopping at the FIRST occurrence — as this function
+    // used to — hits the textless icon wrapper and returns empty, forcing the
+    // caller to fall back to `extract_surrounding_text`'s fixed-width window,
+    // which grabs whatever visible text happens to sit nearby instead: on the
+    // real capture that was either nothing (an empty title) or, for 3 of the
+    // 4 results, the PRECEDING card's own "Visit in Anonymous View" proxy-link
+    // label — silently corrupting the title with unrelated chrome text either
+    // way. Walking every occurrence and keeping the LAST one with actual
+    // visible text recovers the real title: the observed document order
+    // across engines is chrome-first, full-title-last, so a later non-empty
+    // occurrence is always at least as trustworthy as an earlier one, and the
+    // overwhelmingly common single-occurrence case (href appears exactly
+    // once) is unaffected — the loop still finds and returns that one match.
+    let mut best = String::new();
+    let mut search_from = 0usize;
+    while search_from < html.len() {
+        let pos_dq = html[search_from..]
+            .find(&search_dq)
+            .map(|p| p + search_from);
+        let pos_sq = html[search_from..]
+            .find(&search_sq)
+            .map(|p| p + search_from);
+        let Some(pos) = (match (pos_dq, pos_sq) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            (None, None) => None,
+        }) else {
+            break;
+        };
+        let after_href = &html[pos..];
+        let Some(g) = after_href.find('>') else {
+            break;
+        };
+        let gt = pos + g + 1;
+        let rest = &html[gt..];
+        let Some(e) = rest.find("</a>").or_else(|| rest.find("</A>")) else {
+            break;
+        };
+        let end = gt + e;
+        let text = strip_tags(&html[gt..end], max_len);
+        if !text.trim().is_empty() {
+            best = text;
+        }
+        // `gt > pos` always (`find('>')` returns `g >= 0`), so this guarantees
+        // forward progress and the loop terminates.
+        search_from = gt;
+    }
+    best
 }
 
 pub(in crate::modules::search_engines) fn extract_surrounding_text(
@@ -42,9 +83,76 @@ pub(in crate::modules::search_engines) fn extract_surrounding_text(
         Some(p) => p,
         None => return String::new(),
     };
-    let start = floor_char_boundary(html, pos.saturating_sub(300));
     let end = ceil_char_boundary(html, (pos + anchor.len() + 300).min(html.len()));
+    let start = floor_char_boundary(html, pos.saturating_sub(300));
+    let start = floor_char_boundary(html, skip_straddling_inline_block(html, start).min(end));
     strip_tags(&html[start..end], max_len)
+}
+
+/// Bounded backward lookback (bytes) when checking whether a text-extraction
+/// window's start falls inside an inline `<svg>`/`<style>`/`<script>` block
+/// opened earlier in the page — generous for any realistic single icon/style/
+/// script block, without scanning the whole document backward.
+const STRADDLE_LOOKBACK: usize = 4096;
+
+/// If `pos` sits inside an inline `<svg>`/`<style>`/`<script>` block that opens
+/// within [`STRADDLE_LOOKBACK`] bytes before `pos` and has no matching close tag
+/// before `pos`, returns the byte offset just past that block's close tag (or
+/// `html.len()` if it is never closed) — the safe boundary a text-extraction
+/// window must start at instead. Returns `pos` unchanged when nothing straddles
+/// it.
+///
+/// [`strip_inline_blocks`] only recognises a complete `<tag>…</tag>` pair fully
+/// contained in the slice it is given. A fixed-size ±300-char window (like
+/// [`extract_surrounding_text`]'s) whose start lands strictly inside such a
+/// block — the block's own opening tag sits behind the window's left edge, so
+/// the local scan never sees it — lets the block's raw attribute/path data
+/// (`d="M20.376 0H3.624…"`, `clip-rule="evenodd"`) leak straight through
+/// `strip_tags` as if it were visible text. A real Swisscows SERP capture
+/// (`fetch/testdata/swisscows_kylo4kylo.html`) demonstrated exactly this: an
+/// icon-only social link's title fell back to this window, which began mid-way
+/// through the PRECEDING icon's `<svg><path d="…">` block, and that block's raw
+/// path coordinates leaked into the extracted text as if they were a title.
+///
+/// Walks `[lookback, pos)` once, left to right, alternating between "outside a
+/// block" (looking for the next `<svg`/`<style`/`<script`, whichever comes
+/// first) and "inside a block" (looking for that specific tag's own close) —
+/// a single linear pass threads correctly through any sequence of complete,
+/// back-to-back blocks before `pos` (exactly what the real capture has: one
+/// icon's closed `</svg>` immediately followed by the next icon's `<svg>`),
+/// rather than a per-tag-type scan that could mis-pick a closed block over an
+/// still-open earlier one.
+fn skip_straddling_inline_block(html: &str, pos: usize) -> usize {
+    let lookback = floor_char_boundary(html, pos.saturating_sub(STRADDLE_LOOKBACK));
+    let mut cursor = lookback;
+    loop {
+        let mut next_open: Option<(usize, &'static str)> = None;
+        for (open, close) in [
+            ("<svg", "</svg>"),
+            ("<style", "</style>"),
+            ("<script", "</script>"),
+        ] {
+            if let Some(rel) = find_ascii_ci(&html[cursor..pos], open) {
+                let abs = cursor + rel;
+                if next_open.is_none_or(|(p, _)| abs < p) {
+                    next_open = Some((abs, close));
+                }
+            }
+        }
+        let Some((open_pos, close_tag)) = next_open else {
+            return pos; // no more open tags before `pos` — not inside a block
+        };
+        match find_ascii_ci(&html[open_pos..pos], close_tag) {
+            Some(rel) => cursor = open_pos + rel + close_tag.len(), // closed before pos, keep scanning
+            None => {
+                // Unclosed before `pos` — `pos` is inside THIS block.
+                return match find_ascii_ci(&html[open_pos..], close_tag) {
+                    Some(rel2) => open_pos + rel2 + close_tag.len(),
+                    None => html.len(),
+                };
+            }
+        }
+    }
 }
 
 pub(in crate::modules::search_engines) fn extract_snippet_near(
@@ -75,13 +183,32 @@ pub(in crate::modules::search_engines) fn extract_snippet_near(
 }
 
 pub(in crate::modules::search_engines) fn clean_snippet(s: &str) -> String {
-    let mut out = s
+    let out = s
         .replace("\\\"", "")
         .replace("\\n", " ")
         .replace("\\t", " ");
-    while out.contains("  ") {
-        out = out.replace("  ", " ");
-    }
+    // Collapse every run of ASCII spaces to one in a SINGLE pass. The former
+    // `while out.contains("  ") { out = out.replace("  ", " ") }` reallocated the
+    // whole string and re-scanned it on each pass — O(k·len) work and O(k)
+    // throwaway allocations for a run of k spaces. This is O(len) with one
+    // allocation and yields the identical fixpoint (no two adjacent spaces), and
+    // like the original touches only `' '`, leaving other whitespace intact.
+    let mut out = {
+        let mut collapsed = String::with_capacity(out.len());
+        let mut prev_space = false;
+        for c in out.chars() {
+            if c == ' ' {
+                if !prev_space {
+                    collapsed.push(' ');
+                }
+                prev_space = true;
+            } else {
+                collapsed.push(c);
+                prev_space = false;
+            }
+        }
+        collapsed
+    };
     // Remove Bing-style SERP ID artifacts: h="ID=SERP,1234.5"
     if let Some(start) = out.find("h=\"ID=SERP")
         && let Some(end) = out[start..].find('"').and_then(|first_q| {
@@ -147,28 +274,50 @@ pub(in crate::modules::search_engines) fn strip_tags(html: &str, max_len: usize)
 /// never the visible result text a title/snippet wants, so dropping them before
 /// the tag scanner runs is both correct and what stops their stray `>`
 /// characters from corrupting the output.
-fn strip_inline_blocks(html: &str) -> String {
-    let lower0 = html.to_ascii_lowercase();
-    if !(lower0.contains("<svg") || lower0.contains("<style") || lower0.contains("<script")) {
-        return html.to_string();
+fn strip_inline_blocks(html: &str) -> Cow<'_, str> {
+    // Common case (no inline block): borrow the input untouched. The former guard
+    // allocated a full lowercased copy of `html` solely for three `contains`
+    // checks, then — on the no-block path — allocated the buffer AGAIN via
+    // `to_string()`. `find_ascii_ci` is a zero-alloc, NEON substring scan and
+    // `to_ascii_lowercase().contains(ascii_needle)` is exactly ASCII-CI matching,
+    // so this is byte-for-byte equivalent while turning two per-call full-buffer
+    // allocations into zero on the overwhelmingly common no-block path.
+    if find_ascii_ci(html, "<svg").is_none()
+        && find_ascii_ci(html, "<style").is_none()
+        && find_ascii_ci(html, "<script").is_none()
+    {
+        return Cow::Borrowed(html);
     }
     let mut s = html.to_string();
     for tag in ["svg", "style", "script"] {
         let open = format!("<{tag}");
         let close = format!("</{tag}>");
-        loop {
-            let lower = s.to_ascii_lowercase();
-            let Some(start) = lower.find(&open) else {
-                break;
-            };
+        // Lowercase ONCE per tag, not once per occurrence: collect every block's
+        // byte range in a single left-to-right scan of the lowercased copy, then
+        // splice them out in REVERSE so earlier offsets stay valid. The previous
+        // code recomputed `s.to_ascii_lowercase()` inside the loop for EVERY match,
+        // giving O(k·n) work — a crafted result body with k inline blocks could
+        // burn quadratic CPU on the async reactor. This is O(n) per tag.
+        let lower = s.to_ascii_lowercase();
+        let mut ranges: Vec<(usize, usize)> = Vec::new();
+        let mut from = 0;
+        while let Some(rel) = lower[from..].find(&open) {
+            let start = from + rel;
             let end = match lower[start..].find(&close) {
-                Some(rel) => start + rel + close.len(),
-                None => s.len(),
+                Some(r) => start + r + close.len(),
+                None => s.len(), // unclosed block → drop to end-of-string
             };
+            ranges.push((start, end));
+            if end >= s.len() {
+                break;
+            }
+            from = end;
+        }
+        for (start, end) in ranges.into_iter().rev() {
             s.replace_range(start..end, " ");
         }
     }
-    s
+    Cow::Owned(s)
 }
 
 /// Extract the most relevant sentence fragment from a snippet by

@@ -175,133 +175,30 @@ fn state_tag_from_text_recognises_au_states() {
 }
 
 #[test]
-fn whitepages_phone_converts_local_mobile_to_e164() {
-    // A local AU mobile 04XX XXX XXX → E.164 +61 with the leading 0 dropped.
-    let html = "<div>Contact: 0412 345 678</div>";
-    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
-    let phone = ents
-        .iter()
-        .find(|e| e.kind == EntityKind::Phone)
-        .expect("a mobile number should be parsed");
-    assert_eq!(phone.value, "+61412345678");
-    assert!(phone.has_tag("whitepages"));
-    assert!(phone.has_tag("country:AU"));
-    assert_eq!(
-        phone.evidence[0].attributes.get("raw").map(String::as_str),
-        Some("0412345678")
-    );
+fn module_no_longer_dispatches_the_retired_whitepages_leg() {
+    // Regression for the White Pages AU leg removal: one remaining lookup
+    // (TPS AU), not two.
+    let m = AuPeople;
+    assert_eq!(m.max_timeout_ms(), 6_000);
 }
 
-#[test]
-fn whitepages_dedups_repeated_phone() {
-    let html = "<p>0412 345 678</p><p>0412 345 678</p>";
-    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
-    assert_eq!(
-        ents.iter().filter(|e| e.kind == EntityKind::Phone).count(),
-        1,
-        "the same number must be emitted once"
-    );
-}
-
-#[test]
-fn whitepages_address_confidence_boosted_when_name_present() {
-    // The seed name appears in the window around the postcode → 0.55, else 0.42.
-    let html = "<p>Haigen Bamford lives at Bondi Beach NSW 2026</p>";
-    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
-    let addr = ents
-        .iter()
-        .find(|e| e.kind == EntityKind::Address)
-        .expect("an address should be built around the postcode");
-    assert!((addr.confidence - 0.55).abs() < 1e-9, "name-matched → 0.55");
-    assert!(addr.has_tag("whitepages"));
-    assert!(addr.has_tag("au-state:NSW"));
-
-    // A page that does not name the subject near the postcode → demoted 0.42.
-    let other = "<p>Someone Else at Bondi Beach NSW 2026</p>";
-    let ents2 = parse_whitepages_html(other, "Haigen Bamford", "s");
-    let addr2 = ents2
-        .iter()
-        .find(|e| e.kind == EntityKind::Address)
-        .expect("address still built without the name");
-    assert!((addr2.confidence - 0.42).abs() < 1e-9, "name absent → 0.42");
-}
-
-#[test]
-fn whitepages_ignores_out_of_range_postcode() {
-    // 1234 < 2000 and 8500 > 7999 are out of the accepted AU range.
-    let html = "<p>Nowhere Town XX 1234</p><p>Elsewhere YY 8500</p>";
-    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
-    assert!(
-        ents.iter().all(|e| e.kind != EntityKind::Address),
-        "out-of-range postcodes build no address"
-    );
-}
-
-#[test]
-fn clean_au_locality_strips_directory_chrome() {
-    // Live-scan artifact: a breadcrumb heading bled into the suburb because the
-    // raw ±60-char window was emitted verbatim. The cleaner must keep only the
-    // real `Suburb, STATE POSTCODE` tail.
-    assert_eq!(
-        clean_au_locality("Australian Suburbs Woronora, NSW 2232"),
-        Some("Woronora, NSW 2232".to_string())
-    );
-    // Genuine multi-word suburbs survive (no chrome word to strip).
-    assert_eq!(
-        clean_au_locality("results Gold Coast QLD 4217 profile"),
-        Some("Gold Coast, QLD 4217".to_string())
-    );
-    // A window that is only chrome around the postcode yields nothing.
-    assert_eq!(clean_au_locality("Search Results Profile NSW 2000"), None);
-    // No recognisable locality shape → None.
-    assert_eq!(clean_au_locality("just some text 99"), None);
-}
-
-#[test]
-fn whitepages_address_value_excludes_chrome_prefix() {
-    // End-to-end: the malformed "Australian SuburbsWoronora" must never reach
-    // the Address value. White Pages renders the breadcrumb + result together.
-    let html = "<nav>Australian Suburbs</nav><div>Woronora, NSW 2232</div>";
-    let ents = parse_whitepages_html(html, "Onur Ada", "s");
-    let addr = ents
-        .iter()
-        .find(|e| e.kind == EntityKind::Address)
-        .expect("a clean address should be built");
-    assert_eq!(addr.value, "Woronora, NSW 2232");
-    assert!(!addr.value.contains("Suburbs"), "chrome must be stripped");
-}
-
-#[test]
-fn whitepages_mines_contact_emails() {
-    let html = "<p>Email: haigen@example.com.au for enquiries</p>";
-    let ents = parse_whitepages_html(html, "Haigen Bamford", "s");
-    let email = ents
-        .iter()
-        .find(|e| e.kind == EntityKind::Email)
-        .expect("a visible email should be mined");
-    assert_eq!(email.value, "haigen@example.com.au");
-    assert!(email.has_tag("whitepages"));
-}
-
-/// Adversarial-input coverage (PROBLEM_TREE T2.7-adjacent): none of this
-/// module's three HTML parsers previously had a property test proving they
-/// never panic on arbitrary bytes, unlike the shared primitives they
-/// delegate to (`util::html::strip_html`, `util::str_util::find_ascii_ci`),
-/// which already carry this exact `mod prop` pattern. `html` is the
-/// untrusted, scraped input; `full_name`/`scan_id` are held to the
-/// project's synthetic placeholder (see CLAUDE.md) since they originate
-/// from the operator's own typed scan target, not third-party bytes.
+/// Adversarial-input coverage (PROBLEM_TREE T2.7-adjacent): neither of this
+/// module's two remaining HTML parsers previously had a property test
+/// proving they never panic on arbitrary bytes, unlike the shared
+/// primitives they delegate to (`util::html::strip_html`,
+/// `util::str_util::find_ascii_ci`), which already carry this exact
+/// `mod prop` pattern. `html` is the untrusted, scraped input;
+/// `full_name`/`scan_id` are held to the project's synthetic placeholder
+/// since they originate from the operator's own typed scan target, not
+/// third-party bytes. A third parser, `parse_whitepages_html`,
+/// was removed along with the retired White Pages AU dispatch (see
+/// `mod.rs`'s header doc comment) — no test for it here.
 mod prop {
     use proptest::prelude::*;
 
-    use super::{parse_relatives, parse_tps_html, parse_whitepages_html};
+    use super::{parse_relatives, parse_tps_html};
 
     proptest! {
-        #[test]
-        fn parse_whitepages_html_never_panics(s in ".{0,256}") {
-            let _ = parse_whitepages_html(&s, "Jordan Avery", "s");
-        }
-
         #[test]
         fn parse_tps_html_never_panics(s in ".{0,256}") {
             let _ = parse_tps_html(&s, "Jordan Avery", "s");

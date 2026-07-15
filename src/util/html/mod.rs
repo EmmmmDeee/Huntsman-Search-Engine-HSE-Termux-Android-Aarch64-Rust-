@@ -29,7 +29,8 @@ pub fn strip_html(html: &str) -> String {
 }
 
 /// Decode HTML entities in a single left-to-right pass: the named entities real
-/// markup uses (`&amp; &lt; &gt; &quot; &apos; &nbsp;`) and ANY numeric character
+/// markup uses (`&amp; &lt; &gt; &quot; &apos; &nbsp;`, plus the common
+/// typography/symbol set — see [`decode_one_entity`]) and ANY numeric character
 /// reference — decimal `&#8217;` or hex `&#x2019;` (curly quotes, en/em dashes,
 /// nbsp). Each `&…;` is consumed exactly once, so the escaped text `&amp;lt;`
 /// round-trips to the literal `&lt;` (never double-decodes to `<`), and a
@@ -62,8 +63,17 @@ pub fn decode_entities(s: &str) -> String {
 }
 
 /// Decode a single entity body (text between `&` and `;`) to its character, or
-/// `None` if unrecognised/malformed. Named set covers real markup; numeric
-/// references (`#8217`, `#x2019`) are decoded generically.
+/// `None` if unrecognised/malformed. Named set covers real markup — the base
+/// XML five plus the "smart typography" and common-symbol entities real sites
+/// use in page titles/breadcrumbs (`&rsaquo;`/`&raquo;` breadcrumb separators,
+/// curly quotes, dashes, `&hellip;`, `&copy;`/`&reg;`/`&trade;`, currency
+/// signs) — a real scraped title (`au.zenbu.org &rsaquo; entry &rsaquo; …`)
+/// leaked the raw `&rsaquo;` into decoded output before this was added, since
+/// it has no numeric fallback (real markup used the named form, not
+/// `&#8250;`). Named entity names ARE case-sensitive per the HTML5 spec
+/// (`&Dagger;` and `&dagger;` are different characters), matched as such here.
+/// Numeric references (`#8217`, `#x2019`) are decoded generically for anything
+/// not in this table.
 fn decode_one_entity(body: &str) -> Option<char> {
     match body {
         "amp" => Some('&'),
@@ -73,6 +83,40 @@ fn decode_one_entity(body: &str) -> Option<char> {
         "apos" => Some('\''),
         // Normalise NBSP to a regular space so decoded text stays word-splittable.
         "nbsp" => Some(' '),
+        // Smart-quote / dash / ellipsis typography — pervasive in real page
+        // titles and body text (news sites, blogs, breadcrumbs).
+        "ldquo" => Some('\u{201C}'),  // “
+        "rdquo" => Some('\u{201D}'),  // ”
+        "lsquo" => Some('\u{2018}'),  // ‘
+        "rsquo" => Some('\u{2019}'),  // ’
+        "mdash" => Some('\u{2014}'),  // —
+        "ndash" => Some('\u{2013}'),  // –
+        "hellip" => Some('\u{2026}'), // …
+        // Angle-quote breadcrumb separators (`Home &raquo; Products …`) and
+        // guillemets — the exact gap a real scraped title hit (see doc above).
+        "laquo" => Some('\u{00AB}'),  // «
+        "raquo" => Some('\u{00BB}'),  // »
+        "lsaquo" => Some('\u{2039}'), // ‹
+        "rsaquo" => Some('\u{203A}'), // ›
+        // Common symbols that turn up in titles/footers (copyright notices,
+        // measurements, bullet lists).
+        "copy" => Some('\u{00A9}'),   // ©
+        "reg" => Some('\u{00AE}'),    // ®
+        "trade" => Some('\u{2122}'),  // ™
+        "deg" => Some('\u{00B0}'),    // °
+        "plusmn" => Some('\u{00B1}'), // ±
+        "times" => Some('\u{00D7}'),  // ×
+        "divide" => Some('\u{00F7}'), // ÷
+        "middot" => Some('\u{00B7}'), // ·
+        "bull" => Some('\u{2022}'),   // •
+        "sect" => Some('\u{00A7}'),   // §
+        "para" => Some('\u{00B6}'),   // ¶
+        "dagger" => Some('\u{2020}'), // †
+        "Dagger" => Some('\u{2021}'), // ‡
+        "euro" => Some('\u{20AC}'),   // €
+        "pound" => Some('\u{00A3}'),  // £
+        "cent" => Some('\u{00A2}'),   // ¢
+        "yen" => Some('\u{00A5}'),    // ¥
         _ => {
             let num = body.strip_prefix('#')?;
             let cp = match num.strip_prefix(['x', 'X']) {

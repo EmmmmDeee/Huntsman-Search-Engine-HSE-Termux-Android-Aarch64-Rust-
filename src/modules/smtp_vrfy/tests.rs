@@ -30,7 +30,6 @@ async fn no_mx_produces_unreachable() {
         http: reqwest::Client::new(),
         keys: Default::default(),
         cancel: Default::default(),
-        proxy_pool: Default::default(),
     };
     let r = m.process(&target, &ctx).await.unwrap();
     assert_eq!(r.len(), 1);

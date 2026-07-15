@@ -4,10 +4,27 @@
 use super::*;
 
 /// AU-039 — a cryptocurrency wallet co-occurring with a real identity (Person or
-/// Email) in the same confirmed scan: an attribution lead linking on-chain funds
-/// to a person. Co-presence, not proof, so `High` (warrants attention) rather
-/// than `Critical`. One firing per wallet, anchored to the most specific
-/// identity present (Person preferred over Email).
+/// Email) **in a shared collection source**: an attribution lead linking on-chain
+/// funds to a person. Co-presence, not proof, so `High` (warrants attention)
+/// rather than `Critical`.
+///
+/// Attribution requires a real co-location tie, not mere co-existence in the same
+/// scan. The pre-fix rule anchored EVERY wallet to the single lexicographically-
+/// smallest Person UID (else Email) across the whole confirmed set, with no check
+/// that the wallet and that identity shared any evidence — so a scan carrying
+/// several unrelated people (spouse / next-of-kin / stealer-log owner, all minted
+/// by AU-075) reported one wallet as belonging to whichever name sorted first,
+/// fabricating attribution to a bystander purely by UID order (T2.39). Instead,
+/// each wallet is anchored only to identities that share a *corroborating*
+/// evidence source with it (some single module surfaced both — a stealer log /
+/// breach record stamps the same `source` on the owner and their wallet). Person
+/// is preferred over Email as the more specific identity; when several identities
+/// of the preferred kind are genuinely tied, each is reported (every pair is an
+/// independent, real lead — none is arbitrarily singled out); when no identity
+/// shares a source with the wallet, no attribution is emitted. The selection is a
+/// pure function of the entity set (source membership + UID order), so the live
+/// (HashMap-ordered) and finalise passes agree — the disjoint-set double-persist
+/// the UID tie-break was added to prevent stays fixed.
 pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
     entities: &[Entity],
     scan_id: &str,
@@ -17,42 +34,43 @@ pub(in crate::core::correlator) fn rule_au_039_wallet_identity(
     if wallets.is_empty() {
         return Vec::new();
     }
-    // Deterministic anchor: the lexicographically-smallest Person UID, else the
-    // smallest Email UID. The live correlation pass iterates the entity map in
-    // randomized HashMap order, so a first-seen pick named a different identity
-    // per run — and because the live and finalise rows carry disjoint
-    // `[wallet, identity]` sets, containment-dedup kept BOTH, persisting two
-    // conflicting attributions for one wallet. The UID tie-break pins one answer.
-    let anchor = entities
-        .iter()
-        .filter(|e| e.kind == EntityKind::Person)
-        .min_by(|a, b| a.uid.cmp(&b.uid))
-        .or_else(|| {
-            entities
+    let persons = entities_of_kind(entities, EntityKind::Person);
+    let emails = entities_of_kind(entities, EntityKind::Email);
+
+    let mut out = Vec::new();
+    for w in wallets {
+        // Person preferred over Email: only fall back to email anchors when no
+        // person is tied to this wallet by a shared source.
+        let mut tied: Vec<&Entity> = persons
+            .iter()
+            .copied()
+            .filter(|p| shares_corroborating_source(w, p))
+            .collect();
+        if tied.is_empty() {
+            tied = emails
                 .iter()
-                .filter(|e| e.kind == EntityKind::Email)
-                .min_by(|a, b| a.uid.cmp(&b.uid))
-        });
-    let Some(anchor) = anchor else {
-        return Vec::new();
-    };
-    wallets
-        .into_iter()
-        .map(|w| {
-            Correlation::new(
+                .copied()
+                .filter(|e| shares_corroborating_source(w, e))
+                .collect();
+        }
+        // Deterministic order for the (same-rule_id) tie-break downstream.
+        tied.sort_by(|a, b| a.uid.cmp(&b.uid));
+        for anchor in tied {
+            out.push(Correlation::new(
                 "AU-039",
                 "Cryptocurrency wallet linked to identity",
                 Severity::High,
                 format!(
-                    "Wallet {} co-occurs with identity {} — possible attribution",
+                    "Wallet {} co-occurs with identity {} in a shared source — possible attribution",
                     w.value, anchor.value
                 ),
                 vec![w.uid.clone(), anchor.uid.clone()],
                 scan_id,
                 ts,
-            )
-        })
-        .collect()
+            ));
+        }
+    }
+    out
 }
 
 /// AU-040 — a cryptocurrency wallet recovered from breach / stealer data

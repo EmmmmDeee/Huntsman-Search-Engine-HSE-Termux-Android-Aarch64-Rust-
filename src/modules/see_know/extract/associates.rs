@@ -6,13 +6,15 @@
 use super::*;
 
 /// People-search relationship arrays SeekNow returns on a name / identity
-/// record, mapped to the relationship label stamped on each emitted Person. These
-/// are the relatives / associates / household members that turn a single subject
-/// into their human network — the single highest-value field family for a
-/// person-centric scan, and (until now) silently dropped because the rich-detail
-/// pass skips arrays. Each becomes a `Person` carrying `related_to = <subject>`
-/// so the relation layer (`derive_declared_associations`) binds it to the subject
-/// — and a `family-candidate` tag so the surname kinship builder corroborates it
+/// record, mapped to the relationship label stamped on each emitted Person.
+/// These are the relatives / associates / household members that turn a
+/// single subject into their human network — the single highest-value field
+/// family for a person-centric scan; the shared rich-detail pass skips
+/// arrays, so this dedicated extractor is what recovers them instead of
+/// silently dropping them. Each becomes a `Person` carrying
+/// `related_to = <subject>` so the relation layer
+/// (`derive_declared_associations`) binds it to the subject — and a
+/// `family-candidate` tag so the surname kinship builder corroborates it
 /// independently. Order is widest-first so a name appearing under two labels
 /// keeps the closest (relative > household > associate).
 const RELATIONSHIP_FIELDS: &[(&str, &str)] = &[

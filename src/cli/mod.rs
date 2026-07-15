@@ -9,7 +9,7 @@
 
 mod audit;
 mod benchmark;
-mod cells;
+pub(crate) mod cells;
 mod config;
 mod diagnostics;
 mod diff;
@@ -479,6 +479,7 @@ pub(super) fn build_runtime(
         crate::core::port::EVENTS_RETENTION_SECS,
         crate::core::port::EVENTS_MAX_ROWS,
     );
+    let _ = db.prune_raw_archive(crate::core::port::RAW_ARCHIVE_MAX_ROWS);
     let store: Arc<dyn crate::core::port::StoragePort> = Arc::new(db);
     let (bus, _rx) = tokio::sync::broadcast::channel(bus_capacity);
     let engine = Arc::new(ScanEngine::new(registry(), Arc::clone(&store), bus.clone()));

@@ -11,7 +11,10 @@ use crate::core::{
 
 mod archive; // `impl Store`: inter-scan entity cache (`raw_archive`)
 mod entities; // `impl Store`: entity persistence + FTS query
+mod stealer_rows; // `impl Store`: paired stealer-log credential row persistence
 mod templates; // `impl Store`: cross-scan pathway-template learning
+
+pub use entities::EvidenceAnomaly;
 
 pub struct Store {
     conn: Mutex<Connection>,
@@ -96,7 +99,27 @@ const SCHEMA_DDL: &str = "
             CREATE INDEX IF NOT EXISTS idx_obs_scan      ON entity_observations(scan_id);
             CREATE INDEX IF NOT EXISTS idx_obs_entity    ON entity_observations(entity_uid);
             CREATE INDEX IF NOT EXISTS idx_events_scan   ON events(scan_id, id);
+            CREATE INDEX IF NOT EXISTS idx_events_type   ON events(event_type, id);
             CREATE INDEX IF NOT EXISTS idx_relations_scan ON relations(scan_id);
+
+            -- Paired stealer-log credential rows (Stealer Logs Viewer,
+            -- `core::stealer_row::StealerRow`). Persisted ALONGSIDE the
+            -- generic entity graph, not instead of it: `entities` flattens a
+            -- credential into independent Email/Username/Credential rows for
+            -- correlation, which loses the login/password/domain pairing an
+            -- operator browsing a stolen-credential dump actually wants back.
+            CREATE TABLE IF NOT EXISTS stealer_rows (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                scan_id  TEXT NOT NULL,
+                log_id   TEXT,
+                domain   TEXT,
+                login    TEXT,
+                password TEXT,
+                pwned_at TEXT,
+                row_kind TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_scan ON stealer_rows(scan_id);
+            CREATE INDEX IF NOT EXISTS idx_stealer_rows_log  ON stealer_rows(scan_id, log_id);
 
             -- Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN). Keyed by
             -- `module:target_kind:normalised_target` so a repeat scan of the
@@ -164,6 +187,75 @@ fn escape_like(s: &str) -> String {
     s.replace('\\', "\\\\")
         .replace('%', "\\%")
         .replace('_', "\\_")
+}
+
+/// Best-effort `chmod 0600` on each of the store's on-disk files. Failure must
+/// not block [`Store::open`] — a transient or permission-denied chmod is not
+/// fatal — but, mirroring the FTS-rebuild best-effort/never-silent pattern in
+/// `open`, must not be silent either: the store holds PII + harvested
+/// third-party keys, so a failed chmod left at the process umask (often
+/// 0644, world-readable) is a real, if lower-severity, exposure worth a
+/// trace to debug from.
+#[cfg(unix)]
+fn restrict_to_owner_only(paths: &[String]) {
+    use std::os::unix::fs::PermissionsExt;
+    let owner_only = std::fs::Permissions::from_mode(0o600);
+    for p in paths {
+        if let Err(e) = std::fs::set_permissions(p, owner_only.clone()) {
+            tracing::warn!(
+                path = %p,
+                error = %e,
+                "failed to restrict a store file to owner-only (0600) — it may be left world-readable at the process umask"
+            );
+        }
+    }
+}
+
+/// Collect a `query_map` iterator, logging (not silently dropping) any row
+/// that fails SQL-level extraction. In practice this means genuine DB
+/// corruption (a `NOT NULL TEXT` column somehow unreadable as a `String`) —
+/// rare next to a JSON-deserialize failure (see [`deserialize_rows`]), but
+/// every multi-row reader used to swallow it identically via `filter_map(...
+/// .ok())` with zero trace, the same "search is broken with no diagnostic"
+/// failure mode the FTS-rebuild path above already treats as unacceptable.
+fn collect_rows<T>(rows: impl Iterator<Item = rusqlite::Result<T>>, context: &str) -> Vec<T> {
+    rows.filter_map(|r| match r {
+        Ok(v) => Some(v),
+        Err(e) => {
+            tracing::warn!(
+                context,
+                error = %e,
+                "failed to read a stored row — dropped from result set"
+            );
+            None
+        }
+    })
+    .collect()
+}
+
+/// Deserialize a batch of raw `data_json` rows, logging (not silently
+/// dropping) any row that fails to parse — a corrupted value, or a struct
+/// field added/removed since the row was written. Every multi-row reader
+/// (`list_scans`, `*_for_scan`, `entities_filtered`, `search_entities`) used
+/// to chain `.filter_map(|s| serde_json::from_str(&s).ok())` and vanish a bad
+/// row with no trace, unlike the single-row getters (`get_scan`, `get_entity`)
+/// which already propagate a deserialize error via `?` — this brings every
+/// multi-row reader to the same standard without failing the whole page over
+/// one bad row.
+fn deserialize_rows<T: serde::de::DeserializeOwned>(raw: Vec<String>, context: &str) -> Vec<T> {
+    raw.into_iter()
+        .filter_map(|s| match serde_json::from_str(&s) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!(
+                    context,
+                    error = %e,
+                    "failed to deserialize a stored row — dropped from result set"
+                );
+                None
+            }
+        })
+        .collect()
 }
 
 impl Store {
@@ -254,17 +346,11 @@ impl Store {
         // (no `storage → util` edge) (PROBLEM_TREE §7 S3). The `-wal`/`-shm` exist
         // by now (WAL mode + the schema write above created them).
         #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let owner_only = std::fs::Permissions::from_mode(0o600);
-            for p in [
-                path.to_string(),
-                format!("{path}-wal"),
-                format!("{path}-shm"),
-            ] {
-                let _ = std::fs::set_permissions(&p, owner_only.clone());
-            }
-        }
+        restrict_to_owner_only(&[
+            path.to_string(),
+            format!("{path}-wal"),
+            format!("{path}-shm"),
+        ]);
 
         Ok(Self {
             conn: Mutex::new(conn),
@@ -356,12 +442,46 @@ impl Store {
                 "SELECT data_json FROM scans ORDER BY started_at DESC, id DESC LIMIT ?1",
             )?;
             let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "list_scans")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "list_scans"))
+    }
+
+    /// Chronological (newest-first) list of past **radar sweeps** — scans
+    /// whose target is one of `radar_scan_spec`'s two sentinel anchors
+    /// (`Coordinates "0,0"` or `MacAddress "00:00:00:00:00:00"`; the sensors
+    /// ignore the value, so it is never a real target). Filters at the SQL
+    /// layer with the same `json_extract` technique as
+    /// [`Store::latest_completed_scan`], so a deployment with thousands of
+    /// ordinary scans doesn't pay to deserialise every one just to find the
+    /// radar-tagged handful.
+    ///
+    /// Sourced entirely from the persisted `scans` table — unlike the
+    /// in-memory `LiveSession` bookkeeping (cleared on every restart), this
+    /// survives a `hse serve` restart, so an operator reviewing what was
+    /// around them earlier can do so without remembering a session id. This
+    /// is the query behind `GET /api/v1/radar/history`.
+    pub fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                // The literal "0,0"/"00:00:00:00:00:00" `radar_scan_spec` passes
+                // to `Target::new` is NOT what ends up persisted: coordinate
+                // normalisation (`core::entity::normalise`) rounds to 6 decimal
+                // places, so the stored value is "0.000000,0.000000" — the MAC
+                // sentinel is already normalised-form (lowercase, colon-sep,
+                // all-zero) and passes through unchanged.
+                "SELECT data_json FROM scans
+                 WHERE (json_extract(data_json, '$.target.kind') = 'coordinates'
+                        AND json_extract(data_json, '$.target.value') = '0.000000,0.000000')
+                    OR (json_extract(data_json, '$.target.kind') = 'mac_address'
+                        AND json_extract(data_json, '$.target.value') = '00:00:00:00:00:00')
+                 ORDER BY started_at DESC, id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            collect_rows(rows, "radar_history")
+        };
+        Ok(deserialize_rows(raw, "radar_history"))
     }
 
     /// Return the most recent scan whose serialised status matches
@@ -370,8 +490,14 @@ impl Store {
     /// so we don't deserialise dozens of non-Complete rows just to
     /// find one Complete record. Used by `hse export latest …` and
     /// the SPA's "open latest scan" affordance.
+    ///
+    /// Returns `Ok(None)` only when no complete scan exists — a genuine SQL
+    /// failure or a corrupted `data_json` on the matched row propagates as
+    /// `Err`, exactly like [`Store::get_scan`], so a corrupt row is never
+    /// misreported as "no completed scans" to `resolve_scan_id`'s callers
+    /// (`export`/`diff`/`audit latest`).
     pub fn latest_completed_scan(&self) -> Result<Option<Scan>> {
-        let raw: Option<String> = {
+        let json: Option<String> = {
             let conn = self.conn.lock();
             let mut stmt = conn.prepare_cached(
                 // Deterministic tie-break on `id` (PRIMARY KEY): `started_at` is
@@ -382,9 +508,12 @@ impl Store {
                  WHERE json_extract(data_json, '$.status') = 'complete'
                  ORDER BY started_at DESC, id DESC LIMIT 1",
             )?;
-            stmt.query_row(params![], |r| r.get::<_, String>(0)).ok()
+            let mut rows = stmt.query(params![])?;
+            rows.next()?.map(|r| r.get(0)).transpose()?
         };
-        Ok(raw.and_then(|s| serde_json::from_str(&s).ok()))
+        json.map(|j| serde_json::from_str(&j))
+            .transpose()
+            .map_err(Into::into)
     }
 
     // ── Correlations ───────────────────────────────────────────────────────
@@ -490,12 +619,9 @@ impl Store {
                  END, id",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "correlations_for_scan")
         };
-        let mut corrs: Vec<Correlation> = raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect();
+        let mut corrs: Vec<Correlation> = deserialize_rows(raw, "correlations_for_scan");
         // Rank desc: severity × max child C_eff (computed at correlator-run
         // time). Stable tie-break on severity then rule_id, matching the
         // correlator's own ordering so CLI and API agree.
@@ -542,12 +668,9 @@ impl Store {
                 "SELECT data_json FROM relations WHERE scan_id = ?1 ORDER BY kind, id",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "relations_for_scan")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "relations_for_scan"))
     }
 
     // ── Delete (cascade) ───────────────────────────────────────────────────
@@ -659,12 +782,35 @@ impl Store {
                 "SELECT data_json FROM events WHERE scan_id = ?1 ORDER BY id ASC",
             )?;
             let rows = stmt.query_map(params![scan_id], |r| r.get::<_, String>(0))?;
-            rows.filter_map(std::result::Result::ok).collect()
+            collect_rows(rows, "events_for_scan")
         };
-        Ok(raw
-            .into_iter()
-            .filter_map(|s| serde_json::from_str(&s).ok())
-            .collect())
+        Ok(deserialize_rows(raw, "events_for_scan"))
+    }
+
+    /// The most recent `ModuleDone`/`ModuleError` events **across all scans**,
+    /// newest first, bounded by `limit` — the raw substrate for the per-source
+    /// health signal (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL,
+    /// see [`crate::util::scraper_health`]). Filtered at the SQL layer (not by
+    /// the caller) so a health check never has to wade through
+    /// `ModuleStart`/`ModuleSkipped`/entity/correlation rows to find the two
+    /// kinds it cares about. Naturally a ROLLING window: `events` is already
+    /// pruned to [`crate::core::port::EVENTS_RETENTION_SECS`] /
+    /// [`crate::core::port::EVENTS_MAX_ROWS`] (see [`Self::prune_events`]), so
+    /// this reflects recent scans only, not full history — a source that
+    /// broke and was never scanned again ages out rather than staying flagged
+    /// forever.
+    pub fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
+        let raw: Vec<String> = {
+            let conn = self.conn.lock();
+            let mut stmt = conn.prepare_cached(
+                "SELECT data_json FROM events
+                 WHERE event_type IN ('module_done', 'module_error')
+                 ORDER BY id DESC LIMIT ?1",
+            )?;
+            let rows = stmt.query_map(params![limit as i64], |r| r.get::<_, String>(0))?;
+            collect_rows(rows, "recent_module_outcome_events")
+        };
+        Ok(deserialize_rows(raw, "recent_module_outcome_events"))
     }
 }
 
@@ -677,6 +823,10 @@ impl crate::core::port::StoragePort for Store {
         Store::prune_events(self, max_age_secs, max_rows)
     }
 
+    fn prune_raw_archive(&self, max_rows: usize) -> Result<usize> {
+        Store::prune_raw_archive(self, max_rows)
+    }
+
     fn upsert_scan(&self, scan: &Scan) -> Result<()> {
         Store::upsert_scan(self, scan)
     }
@@ -687,6 +837,10 @@ impl crate::core::port::StoragePort for Store {
 
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>> {
         Store::list_scans(self, limit)
+    }
+
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>> {
+        Store::radar_history(self, limit)
     }
 
     fn delete_scan(&self, scan_id: &str) -> Result<bool> {
@@ -759,6 +913,10 @@ impl crate::core::port::StoragePort for Store {
         Store::events_for_scan(self, scan_id)
     }
 
+    fn recent_module_outcome_events(&self, limit: usize) -> Result<Vec<Event>> {
+        Store::recent_module_outcome_events(self, limit)
+    }
+
     fn archive_module_result(&self, key: &str, ttl_secs: u64, entities: &[Entity]) -> Result<()> {
         Store::archive_module_result(self, key, ttl_secs, entities)
     }
@@ -773,6 +931,21 @@ impl crate::core::port::StoragePort for Store {
 
     fn pathway_template_count(&self, template: &str) -> Result<u32> {
         Store::pathway_template_count(self, template)
+    }
+
+    fn insert_stealer_rows_batch(
+        &self,
+        scan_id: &str,
+        rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Store::insert_stealer_rows_batch(self, scan_id, rows)
+    }
+
+    fn stealer_rows_for_scan(
+        &self,
+        scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Store::stealer_rows_for_scan(self, scan_id)
     }
 }
 

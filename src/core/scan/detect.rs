@@ -2,11 +2,6 @@
 //! `TargetKind::detect` to recognise CIDR / MAC / phone / domain / company /
 //! address inputs before the structured-kind fall-through. No scan state.
 
-/// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`), or the
-/// Cisco dotted form of three 4-hex-digit groups (`aabb.ccdd.eeff`) — the same
-/// separator set `Target::validate` accepts for MacAddress. A 6-group colon
-/// form is not a valid IPv6 address (which needs 8 groups or `::`), so the
-/// IP check ahead of this in [`super::TargetKind::detect`] never steals a real MAC.
 /// A CIDR network block: `IP/prefix` where `IP` parses and `prefix` is within
 /// the address family's width (≤32 for v4, ≤128 for v6). Pure.
 pub(super) fn is_cidr_shaped(v: &str) -> bool {
@@ -20,6 +15,11 @@ pub(super) fn is_cidr_shaped(v: &str) -> bool {
     matches!(prefix.trim().parse::<u8>(), Ok(p) if p <= max)
 }
 
+/// Six 2-hex-digit octets joined by ':' or '-' (`aa:bb:cc:dd:ee:ff`), or the
+/// Cisco dotted form of three 4-hex-digit groups (`aabb.ccdd.eeff`) — the same
+/// separator set `Target::validate` accepts for MacAddress. A 6-group colon
+/// form is not a valid IPv6 address (which needs 8 groups or `::`), so the
+/// IP check ahead of this in [`super::TargetKind::detect`] never steals a real MAC.
 pub(super) fn is_mac_shaped(v: &str) -> bool {
     let sep = if v.contains(':') {
         ':'
@@ -91,8 +91,14 @@ pub(super) fn is_domain_shaped(v: &str) -> bool {
     }
 }
 
-/// `value` (already lowercased) ends with a recognised company-form suffix.
-pub(super) fn has_company_suffix(lower: &str) -> bool {
+/// `value` ends with a recognised company-form suffix, matched
+/// ASCII-case-insensitively directly against the raw (not pre-lowercased)
+/// value: every suffix here is ASCII, so comparing the tail bytes with
+/// `eq_ignore_ascii_case` is exactly equivalent to lowercasing the whole value
+/// first and calling `ends_with`, but without that allocation — this is the
+/// last check in `TargetKind::detect`'s cascade, so it runs on every
+/// classified candidate across the whole scan.
+pub(super) fn has_company_suffix(value: &str) -> bool {
     const SUFFIXES: &[&str] = &[
         " pty ltd",
         " pty. ltd.",
@@ -113,7 +119,11 @@ pub(super) fn has_company_suffix(lower: &str) -> bool {
         " s.a.",
         " b.v.",
     ];
-    SUFFIXES.iter().any(|s| lower.ends_with(s))
+    let vb = value.as_bytes();
+    SUFFIXES.iter().any(|s| {
+        let sb = s.as_bytes();
+        vb.len() >= sb.len() && vb[vb.len() - sb.len()..].eq_ignore_ascii_case(sb)
+    })
 }
 
 /// Street-address shape: a leading house number, then a space and an alphabetic

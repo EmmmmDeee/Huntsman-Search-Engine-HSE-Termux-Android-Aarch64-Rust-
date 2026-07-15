@@ -12,12 +12,15 @@
 //!    `limit=500`) — finds archived pages whose paths contain a
 //!    contact-adjacent keyword (contact, about, team, staff, imprint…),
 //!    fetches each raw snapshot HTML (capped at 32 KB), and extracts
-//!    email addresses and phone numbers. This recovers contacts that
-//!    have since been removed from the live site — the same technique
+//!    email addresses, phone numbers, **and any leaked API key/credential**
+//!    (via the universal `found_keys`/`key_harvest` classifier — the same
+//!    one `web_crawler`/`username_search` run over their own fetched
+//!    bodies). This recovers secrets that have since been scrubbed from the
+//!    live site but persist in an archived snapshot — the same technique
 //!    that drives many authoritative OSINT investigations (Theranos,
 //!    Wirecard, OCCRP shell companies) where the current site shows
 //!    different or no contacts but earlier versions are preserved in
-//!    the archive.
+//!    the archive, applied here to credentials instead of just contacts.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -140,8 +143,46 @@ fn archive_url(timestamp: &str, original: &str) -> String {
     format!("https://web.archive.org/web/{timestamp}id_/{original}")
 }
 
+/// Scan an already-fetched archived-page body for a leaked API key via the
+/// universal `found_keys`/`key_harvest` classifier — the same one
+/// `web_crawler`/`username_search` run over their own fetched bodies — and
+/// pool any poolable hit. No network I/O of its own (the body is already in
+/// memory), so this is exercised directly by tests without mocking HTTP.
+fn mine_keys_from_body(
+    pool: &crate::util::key_pool::KeyPool,
+    body: &str,
+    domain: &str,
+    ts_iso: &str,
+    original_url: &str,
+) {
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
+
+    for token in key_tokens(body, MAX_TOKEN) {
+        if let Some((service, key_val)) = identify_api_key(token) {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!("Wayback archive ({ts_iso}) — {original_url}"));
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(crate::core::entity::unix_now());
+            entry.discovered_by = Some(format!("wayback:{domain}"));
+            if pool.add(service, entry) {
+                tracing::info!(
+                    service,
+                    domain,
+                    snapshot = %ts_iso,
+                    "API key discovered in archived page (wayback)"
+                );
+            }
+        }
+    }
+}
+
 /// Fetch archived contact-adjacent pages for `domain` and extract
 /// historical email addresses and phone numbers with temporal metadata.
+/// Also runs every fetched body through the universal key-harvest
+/// classifier — any poolable API key it finds goes straight into
+/// `key_pool` (no separate entity/fetch; matches the `web_crawler`/
+/// `username_search` treatment of their own fetched bodies).
 ///
 /// Returns an empty vec when the CDX query fails or no contact pages
 /// are archived — failures here must not abort the main snapshot query.
@@ -181,6 +222,7 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
     let mut entities: Vec<Entity> = Vec::new();
     let mut seen_emails: std::collections::HashSet<String> = std::collections::HashSet::new();
     let mut seen_phones: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let key_pool = crate::util::key_pool::global_pool();
 
     for (timestamp, original_url) in &contact_snapshots {
         if ctx.cancel.is_cancelled() {
@@ -242,6 +284,12 @@ async fn mine_contacts(domain: &str, scan_id: &str, ctx: &ModuleContext) -> Vec<
                 entities.push(e);
             }
         }
+
+        // An archived page can carry an API key/credential the LIVE site has
+        // since removed — the same "secrets outlive the fix" pattern this
+        // module already mines contacts for, applied to bytes already in
+        // memory (no extra fetch).
+        mine_keys_from_body(&key_pool, &body, domain, &ts_iso, original_url);
 
         tokio::time::sleep(std::time::Duration::from_millis(INTER_SNAPSHOT_MS)).await;
     }

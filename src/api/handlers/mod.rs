@@ -37,7 +37,7 @@ use crate::util::keys;
 pub(crate) fn validated_target(kind: TargetKind, value: String) -> Result<Target, String> {
     let target = Target::new(kind, value);
     target
-        .validate()
+        .validate_verbose()
         .map_err(|msg| format!("invalid target: {msg}"))?;
     Ok(target)
 }
@@ -97,8 +97,8 @@ pub(crate) fn ok_list<T: Serialize>(key: &str, items: Vec<T>) -> axum::response:
 /// Wires up everything the background run needs: a [`crate::core::cancel::CancelHandle`]
 /// registered so `POST /scans/{id}/cancel` can stop it, a per-scan HTTP client
 /// stamped with the scan id (`x-huntsman-trace`) so outbound calls correlate in
-/// upstream logs, the shared proxy pool, and the scan-concurrency semaphore that
-/// bounds how many scans run at once on a low-RAM device.
+/// upstream logs, and the scan-concurrency semaphore that bounds how many scans
+/// run at once on a low-RAM device.
 pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, target: Target) {
     let sid = scan.id.clone();
     let cancel = crate::core::cancel::CancelHandle::new();
@@ -111,7 +111,6 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
     // Per-scan client stamped with the scan id (x-huntsman-trace) so outbound
     // calls correlate to this scan in a proxy/upstream log, mirroring the CLI.
     let http_clone = crate::util::http::build_client_with_trace(&sid);
-    let proxy_clone = std::sync::Arc::clone(&state.proxy_pool);
     let engine = Arc::clone(&state.engine);
     let sem = Arc::clone(&state.scan_semaphore);
     let store_clone = Arc::clone(&state.store);
@@ -124,7 +123,6 @@ pub(crate) fn spawn_scan(state: &Arc<AppState>, scan: crate::core::scan::Scan, t
             http: http_clone,
             keys: api_keys,
             cancel,
-            proxy_pool: proxy_clone,
         };
         let Ok(_permit) = sem.acquire().await else {
             tracing::warn!(scan_id = %sid, "scan semaphore closed");
@@ -330,6 +328,65 @@ pub async fn modules_health() -> Json<Value> {
     ))
 }
 
+/// `GET /api/v1/health/scrapers` — per-source scraper health (`PROBLEM_TREE`
+/// T2.7 / `SOLUTION_TREE` SOL-HEALTH-SIGNAL), the SPA counterpart of `hse
+/// doctor`'s "Scraper health" section: derived from the persisted
+/// `ModuleDone`/`ModuleError` event log across ALL scans (a rolling window,
+/// not just the current one — see [`crate::util::scraper_health`]'s doc), so
+/// a source that has errored on every one of its last N dispatches is
+/// visible even if those scans ran days ago in unrelated invocations. Powers
+/// the Engines page's "Scraper health" panel.
+pub async fn scraper_health(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+    use crate::util::scraper_health::{RECENT_EVENTS_WINDOW, aggregate_source_health};
+
+    let store = Arc::clone(&s.store);
+    let events = match tokio::task::spawn_blocking(move || {
+        store.recent_module_outcome_events(RECENT_EVENTS_WINDOW)
+    })
+    .await
+    {
+        Ok(Ok(events)) => events,
+        Ok(Err(e)) => return internal_error(&e),
+        Err(e) => return internal_error(&format!("scraper health query failed: {e}")),
+    };
+    let health = aggregate_source_health(&events);
+    let drifted: Vec<Value> = health
+        .iter()
+        .filter(|h| h.is_drifted())
+        .map(|h| {
+            json!({
+                "module": h.module,
+                "consecutive_failures": h.consecutive_failures,
+                "last_success_at": h.last_success_at,
+                "last_error": h.last_error,
+            })
+        })
+        .collect();
+    // Silent zero-yield ("parse-rate") drift: a module that completes
+    // without erroring but has quietly stopped finding anything, on a
+    // source proven capable of yielding — distinct from `drifted` above.
+    let yield_drifted: Vec<Value> = health
+        .iter()
+        .filter(|h| h.is_yield_drifted())
+        .map(|h| {
+            json!({
+                "module": h.module,
+                "consecutive_zero_yield": h.consecutive_zero_yield,
+                "last_success_at": h.last_success_at,
+            })
+        })
+        .collect();
+    Json(json!({
+        "tracked": health.len(),
+        "events_checked": events.len(),
+        "drifted_threshold": crate::util::scraper_health::DRIFTED_THRESHOLD,
+        "drifted": drifted,
+        "yield_drift_threshold": crate::util::scraper_health::YIELD_DRIFT_THRESHOLD,
+        "yield_drifted": yield_drifted,
+    }))
+    .into_response()
+}
+
 /// `GET /api/v1/selftest` — run the full module + feature self-validation suite
 /// on demand and return the structured report. Powers the Settings page's
 /// "Run self-test" button. Offline + side-effect-free (a throwaway temp DB).
@@ -340,7 +397,21 @@ pub async fn selftest_run() -> impl IntoResponse {
 /// `GET /api/v1/logs` — download the in-memory verbose debug-log ring buffer as
 /// a text attachment. The buffer captures the project's default TRACE-level
 /// logs for the life of the process (bounded; see `util::log_capture`).
-pub async fn logs_download() -> impl IntoResponse {
+///
+/// **Loopback-only.** The ring buffer holds TRACE-level logs — scan targets and
+/// discovered PII — the same operator-data class the key-pool and settings
+/// endpoints already restrict. Under a LAN bind it must not stream to arbitrary
+/// peers, so it carries the identical `peer.ip().is_loopback()` gate they do.
+pub async fn logs_download(
+    axum::extract::ConnectInfo(peer): axum::extract::ConnectInfo<std::net::SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "debug logs are loopback-only" })),
+        )
+            .into_response();
+    }
     let body = crate::util::log_capture::dump();
     let filename = format!("hse-debug-{}.log", crate::core::entity::unix_now());
     (
@@ -356,6 +427,7 @@ pub async fn logs_download() -> impl IntoResponse {
         ],
         body,
     )
+        .into_response()
 }
 
 pub async fn modules_list(State(s): State<Arc<AppState>>) -> Json<Value> {

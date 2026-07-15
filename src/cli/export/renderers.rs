@@ -182,12 +182,33 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
         );
         let _ = writeln!(
             s,
-            "    confidence={:.2}  c_eff={:.2}  corroboration={}  class={}",
+            "    confidence={:.2}  c_eff={:.2}  corroboration={}  source_count={}  class={}",
             e.confidence,
             e.c_effective(),
             e.corroboration,
+            e.source_count(),
             e.classify()
         );
+        // `corroboration` is a raw per-module observation magnitude (seeded by
+        // the emitting module, summed on every merge, never deduplicated) — it
+        // is NOT the count `c_eff` is actually computed from. The two often
+        // read as the same kind of number side by side, which is exactly what
+        // makes a merged multi-source entity's confidence look unexplained
+        // without reading the source. Spell out the divergence here instead of
+        // leaving the reader to reconcile it by hand — see the per-evidence
+        // `(non-corroborating)` markers below for which sources counted.
+        if e.corroboration != e.source_count() {
+            let _ = writeln!(
+                s,
+                "    note: c_eff is driven by source_count={} (distinct \
+                 corroborating sources), not corroboration={} (a separate raw \
+                 per-module magnitude — does not by itself mean {} independent \
+                 confirmations)",
+                e.source_count(),
+                e.corroboration,
+                e.corroboration,
+            );
+        }
         if !e.tags.is_empty() {
             let _ = writeln!(s, "    tags: {}", e.tags.join(", "));
         }
@@ -207,7 +228,12 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             let _ = writeln!(s, "    MITRE ATT&CK: {}", mitre.join("; "));
         }
         for ev in &e.evidence {
-            let _ = writeln!(s, "    ├─ [{}] {}", ev.source, ev.summary);
+            let marker = if crate::core::entity::is_non_corroborating_source(&ev.source) {
+                "  (non-corroborating: enrichment/recall/cross-scan — doesn't count toward source_count)"
+            } else {
+                ""
+            };
+            let _ = writeln!(s, "    ├─ [{}] {}{marker}", ev.source, ev.summary);
             for (k, v) in &ev.attributes {
                 if !v.is_empty() {
                     let _ = writeln!(s, "    │    {k} = {v}");
@@ -266,16 +292,29 @@ pub(crate) fn render_full(store: &dyn crate::core::port::StoragePort, sid: &str)
             "\n  ▼ {} · endpoint={} · query={} · file={}",
             resp.provider, resp.endpoint, resp.query, resp.filename
         );
-        // Pretty-print the verbatim body, indented, so the whole response —
-        // every record, every field — is in the dossier with nothing elided.
-        let pretty =
-            serde_json::to_string_pretty(&resp.raw).unwrap_or_else(|_| resp.raw.to_string());
-        for line in pretty.lines() {
+        for line in render_raw_response_body(&resp.raw).lines() {
             let _ = writeln!(s, "    {line}");
         }
     }
 
     Ok(s)
+}
+
+/// Pretty-print one archived raw response for embedding in the dossier, with
+/// any of the operator's OWN configured secret values masked (the same
+/// `redact_credentials` pass module errors already run upstream echoes
+/// through). The on-disk archive file itself (`raw/*.json`) is never touched —
+/// per that module's own doc comment, retention there is a deliberate,
+/// verbatim, never-redacted operator policy — this only guards the COPY
+/// embedded here. That distinction matters because the auto-written dossier
+/// is 0600, but an explicit `hse export -o <path>` is deliberately left to the
+/// user's umask (see `PROBLEM_TREE` S3's own note), so an upstream provider
+/// that happens to echo our request's `api_key=…` back in its response body
+/// could otherwise ride an exported/shared dossier out to a world-readable
+/// file.
+fn render_raw_response_body(raw: &serde_json::Value) -> String {
+    let pretty = serde_json::to_string_pretty(raw).unwrap_or_else(|_| raw.to_string());
+    crate::util::http::redact_credentials(&pretty)
 }
 
 /// The **one-file debug bundle** — everything needed to understand and improve a
@@ -549,4 +588,36 @@ pub(super) fn render_report(store: &Store, sid: &str, include_infra: bool) -> Re
         .ok_or_else(|| Error::Other(format!("scan {sid} not found")))?;
     serde_json::to_string_pretty(&report)
         .map_err(|e| Error::Other(format!("report serialise: {e}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::render_raw_response_body;
+
+    #[test]
+    fn raw_response_body_masks_an_echoed_api_key_but_keeps_the_rest() {
+        // Regression: a raw archived response embedded verbatim in the
+        // dossier could carry an upstream echo of our own request URL
+        // (`api_key=…`) straight into an exported/shared file — the
+        // auto-written dossier is 0600, but an explicit `hse export -o` is
+        // deliberately left to the user's umask (PROBLEM_TREE S3), so this
+        // was a real path for an operator's key to leave the device.
+        let raw = serde_json::json!({
+            "echo_request_url": "https://api.example.org/v1/x?api_key=SECRET123456&q=1",
+            "result": "ok",
+        });
+        let rendered = render_raw_response_body(&raw);
+        assert!(
+            !rendered.contains("SECRET123456"),
+            "the echoed key must be masked: {rendered}"
+        );
+        assert!(
+            rendered.contains("api_key=***"),
+            "masking must preserve the surrounding shape: {rendered}"
+        );
+        assert!(
+            rendered.contains("\"result\": \"ok\""),
+            "unrelated fields must survive untouched: {rendered}"
+        );
+    }
 }

@@ -26,7 +26,6 @@ use super::*;
             http: reqwest::Client::new(),
             keys: std::collections::HashMap::new(),
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Default::default(),
         };
         let past = std::time::Instant::now() - std::time::Duration::from_secs(1);
 

@@ -33,11 +33,23 @@ use crate::core::{
 pub const EVENTS_RETENTION_SECS: u64 = 7 * 86_400; // 7 days
 pub const EVENTS_MAX_ROWS: usize = 100_000;
 
+/// Row cap for the `raw_archive` inter-scan cache, pruned at the same lifecycle
+/// points as [`EVENTS_MAX_ROWS`]. Expired rows (past their per-entry TTL) are
+/// always deleted; this additionally caps the newest retained rows so scanning
+/// many distinct `(module, target)` pairs can't grow the table (and the DB/WAL)
+/// without bound on a low-disk device. The cache is best-effort, so evicting a
+/// still-fresh row only costs a re-query, never correctness.
+pub const RAW_ARCHIVE_MAX_ROWS: usize = 20_000;
+
 pub trait StoragePort: Send + Sync {
     // ── Scans ──────────────────────────────────────────────────────────────
     fn upsert_scan(&self, scan: &Scan) -> Result<()>;
     fn get_scan(&self, id: &str) -> Result<Option<Scan>>;
     fn list_scans(&self, limit: usize) -> Result<Vec<Scan>>;
+    /// Chronological (newest-first) list of past radar sweeps — scans whose
+    /// target is one of the radar endpoints' sentinel anchors. See
+    /// `crate::storage::Store::radar_history` for the full rationale.
+    fn radar_history(&self, limit: usize) -> Result<Vec<Scan>>;
     fn delete_scan(&self, scan_id: &str) -> Result<bool>;
 
     // ── Entities ───────────────────────────────────────────────────────────
@@ -71,6 +83,15 @@ pub trait StoragePort: Send + Sync {
     // ── Events ─────────────────────────────────────────────────────────────
     fn insert_event(&self, event: &Event) -> Result<()>;
     fn events_for_scan(&self, scan_id: &str) -> Result<Vec<Event>>;
+
+    /// Recent `ModuleDone`/`ModuleError` outcome events across ALL scans,
+    /// newest-first, bounded to `limit` — the substrate for
+    /// `util::scraper_health`'s per-source health signal (`hse doctor`'s
+    /// "Scraper health" section and the SPA's Engines-page panel). Default
+    /// empty for test doubles; the real impl lives on `Store`.
+    fn recent_module_outcome_events(&self, _limit: usize) -> Result<Vec<Event>> {
+        Ok(Vec::new())
+    }
 
     // ── Inter-scan entity cache (C9 / SOL-CACHE-INTERSCAN) ────────────────
     /// Persist a module result under `key` with a TTL. Called after a
@@ -115,6 +136,28 @@ pub trait StoragePort: Send + Sync {
         Ok(0)
     }
 
+    // ── Stealer-log credential rows (Stealer Logs Viewer) ───────────────────
+    /// Persist paired stealer-log credential rows for one scan/import.
+    /// Best-effort, called only from the stealer-log importer. Default no-op
+    /// for test doubles; the SQLite `Store` persists to `stealer_rows`.
+    fn insert_stealer_rows_batch(
+        &self,
+        _scan_id: &str,
+        _rows: &[crate::core::stealer_row::StealerRow],
+    ) -> Result<usize> {
+        Ok(0)
+    }
+
+    /// Every persisted stealer-log credential row for a scan, insertion
+    /// order. Default empty for test doubles; the SQLite `Store` reads
+    /// `stealer_rows`.
+    fn stealer_rows_for_scan(
+        &self,
+        _scan_id: &str,
+    ) -> Result<Vec<crate::core::stealer_row::StealerRow>> {
+        Ok(Vec::new())
+    }
+
     // ── Maintenance ─────────────────────────────────────────────────────────
     /// Bound the backing store's write-ahead footprint at a safe boundary
     /// (e.g. a completed scan). Default is a no-op for backends without a
@@ -132,7 +175,33 @@ pub trait StoragePort: Send + Sync {
     fn prune_events(&self, _max_age_secs: u64, _max_rows: usize) -> Result<usize> {
         Ok(0)
     }
+
+    /// Bound the `raw_archive` inter-scan cache: delete rows past their per-entry
+    /// TTL, then cap the table to the newest `max_rows`. Returns the number
+    /// pruned. Default no-op for non-`Store` ports; the real impl lives on
+    /// `Store`. Called at the same lifecycle points as [`Self::prune_events`] so a
+    /// long-lived `serve`/`live`/`radar` process scanning many distinct targets
+    /// can't grow the cache (and the DB/WAL) without bound.
+    fn prune_raw_archive(&self, _max_rows: usize) -> Result<usize> {
+        Ok(0)
+    }
 }
+
+/// Compile-time proof that `StoragePort` stays usable as `Arc<dyn StoragePort>`.
+///
+/// The entire boundary design (and ~11 call sites: `AppState.store` shared across
+/// `tokio` tasks, the engine, the correlator, the CLI composition roots) depends
+/// on `StoragePort` being **dyn-compatible** (object-safe) AND
+/// `dyn StoragePort: Send + Sync + 'static`. A method that broke dyn-compatibility
+/// — a generic type parameter, a `-> Self` return, an `impl Trait` argument, a
+/// `const` fn — or a supertrait change that dropped `Send`/`Sync` would otherwise
+/// fail far away at a `Arc<dyn StoragePort>` use site with an opaque error. This
+/// assertion localises that guarantee to the trait definition: adding such a
+/// method fails to compile right here, next to the doc that explains why.
+const _: fn() = || {
+    fn assert_dyn_send_sync_static<T: ?Sized + Send + Sync + 'static>() {}
+    assert_dyn_send_sync_static::<dyn StoragePort>();
+};
 
 #[cfg(test)]
 mod tests {

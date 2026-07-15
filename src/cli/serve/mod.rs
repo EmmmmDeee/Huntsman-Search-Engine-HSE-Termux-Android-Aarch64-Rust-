@@ -53,11 +53,13 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         http,
         allow_key_write,
         cancellations: Arc::new(parking_lot::Mutex::new(std::collections::HashMap::new())),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
         scan_semaphore: Arc::new(tokio::sync::Semaphore::new(
             crate::api::MAX_CONCURRENT_SCANS,
         )),
         update_info: Arc::clone(&update_info),
+        cells_import: Arc::new(std::sync::Mutex::new(
+            crate::api::CellsImportPhase::default(),
+        )),
     });
 
     // A separate clone for the shutdown path — `router` consumes `state` by
@@ -80,7 +82,7 @@ pub(super) async fn cmd_serve(bind: String, allow_key_write: bool) -> Result<()>
         .ok()
         .and_then(|v| v.parse::<u64>().ok())
         .filter(|&n| n >= 60)
-        .unwrap_or(900);
+        .unwrap_or(crate::modules::search_engines::health::DEFAULT_REFRESH_SECS);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(health_secs));
         loop {

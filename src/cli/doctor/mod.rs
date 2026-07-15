@@ -1,12 +1,27 @@
 //! `hse doctor` — health-check subcommand.
 //!
 //! Reports Termux detection, DB path, key path, module/cost counts,
-//! HUNTSMAN_* keys loaded, and a live WiGLE account introspection
-//! that surfaces the email-unverified throttling warning before it
-//! starts silently truncating result sets.
+//! HUNTSMAN_* keys loaded, a per-source scraper health signal derived from
+//! the persisted event log (`PROBLEM_TREE` T2.7 / `SOLUTION_TREE`
+//! SOL-HEALTH-SIGNAL — see [`crate::util::scraper_health`]), a cross-scan
+//! **weak findings** review list (every stored entity below the confidence
+//! review threshold — see [`crate::storage::Store::low_confidence_evidence`]),
+//! the local cell-tower database's freshness (no auto-resync exists yet, so a
+//! months-stale import is a real "check for a refresh" signal — see
+//! [`crate::util::cell_db::is_stale`]), a live WiGLE account introspection
+//! that surfaces the email-unverified throttling warning before it starts
+//! silently truncating result sets, and a live SeekNow account probe that
+//! catches a dead/plan-lacking key before it silently zeroes out HSE's
+//! highest-priority paid source (and its proactive API-key-harvesting
+//! reach — see [`crate::util::key_harvest`]) on every scan.
 
 use crate::core::error::Result;
-use crate::{default_db_path, is_termux, modules::registry, storage::Store, util::keys};
+use crate::{
+    default_db_path, is_termux,
+    modules::registry,
+    storage::{EvidenceAnomaly, Store},
+    util::{cell_db, keys, scraper_health, timefmt},
+};
 
 use super::cost_label;
 
@@ -26,7 +41,11 @@ pub(super) async fn cmd_doctor() -> Result<()> {
 
     println!("\nStorage:");
     let db_path = default_db_path();
-    match Store::open(&db_path) {
+    // Kept as a `Result` (not unwrapped into the match arm) so the same open
+    // handle can back the scraper-health section further down without a
+    // second `Store::open` — the DB is opened once per `doctor` run either way.
+    let store_result = Store::open(&db_path);
+    match &store_result {
         Ok(store) => {
             println!("  ok — database opens cleanly");
             // Explicit corruption check (T5): a healthy DB reports a single "ok".
@@ -68,11 +87,7 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     if curl_ok {
         println!("  curl:      present");
     } else {
-        println!(
-            "  curl:      MISSING — search_engines + social_probe (default modules), plus\n             \
-             see_know, oathnet_pro, api_key_probe and abn_lookup, shell out to curl and\n             \
-             will silently return nothing. Install it: pkg install curl"
-        );
+        println!("{}", curl_missing_message());
     }
 
     println!("\nModules ({} registered):", mods.len());
@@ -132,6 +147,134 @@ pub(super) async fn cmd_doctor() -> Result<()> {
         }
     }
 
+    // ── Per-source scraper health (T2.7 / SOL-HEALTH-SIGNAL) ──────────
+    // Derived from the persisted event log across ALL scans (a rolling
+    // window — see `recent_module_outcome_events`'s doc), not just this
+    // process: a source that has errored on every one of its last N runs is
+    // real drift an operator should know about even if the failing scans
+    // happened days ago in unrelated invocations.
+    println!("\nScraper health (recent window):");
+    match &store_result {
+        Ok(store) => match store.recent_module_outcome_events(scraper_health::RECENT_EVENTS_WINDOW)
+        {
+            Ok(events) => {
+                let health = scraper_health::aggregate_source_health(&events);
+                let drifted: Vec<_> = health.iter().filter(|h| h.is_drifted()).collect();
+                println!(
+                    "  {} source(s) tracked over {} recent outcome event(s)",
+                    health.len(),
+                    events.len()
+                );
+                if drifted.is_empty() {
+                    println!("  no drifted sources");
+                } else {
+                    println!(
+                        "  {} DRIFTED (>= {} consecutive failures with no success in between):",
+                        drifted.len(),
+                        scraper_health::DRIFTED_THRESHOLD
+                    );
+                    for h in &drifted {
+                        let last_ok = h
+                            .last_success_at
+                            .and_then(|ts| timefmt::ymd_utc(ts as i64))
+                            .unwrap_or_else(|| "no success in this window".to_string());
+                        println!(
+                            "    - {:<20} {} consecutive failures, last success: {}",
+                            h.module, h.consecutive_failures, last_ok
+                        );
+                        if let Some(err) = &h.last_error {
+                            println!("      last error: {err}");
+                        }
+                    }
+                }
+
+                // ── Silent zero-yield ("parse-rate") drift ──────────────
+                // Distinct from a hard failure: the module completes
+                // without erroring but has quietly stopped finding
+                // anything, on a source proven capable of yielding —
+                // consistent with a layout change breaking extraction
+                // rather than the target genuinely having nothing.
+                let yield_drifted: Vec<_> =
+                    health.iter().filter(|h| h.is_yield_drifted()).collect();
+                if yield_drifted.is_empty() {
+                    println!("  no silent zero-yield (parse-rate) drift");
+                } else {
+                    println!(
+                        "  {} YIELD-DRIFTED (>= {} trailing zero-result runs on a source that has \
+                         previously found something):",
+                        yield_drifted.len(),
+                        scraper_health::YIELD_DRIFT_THRESHOLD
+                    );
+                    for h in &yield_drifted {
+                        println!(
+                            "    - {:<20} {} trailing zero-result runs",
+                            h.module, h.consecutive_zero_yield
+                        );
+                    }
+                }
+            }
+            Err(e) => println!("  could not read event log — {e}"),
+        },
+        Err(_) => println!("  skipped — database did not open (see Storage above)"),
+    }
+
+    // ── Weak findings review (cross-scan) ───────────────────────────────
+    // `Store::low_confidence_evidence` has no `scan_id` filter by design — it
+    // queries the WHOLE local intelligence DB, not one investigation. That is
+    // exactly why this lives here, in the cross-scan operator dashboard
+    // (alongside the scraper-health signal just above), and NOT as an `hse
+    // audit` report section: `hse audit` scores one scan/source's evidentiary
+    // quality, and silently blending in weak entities from OTHER, unrelated
+    // scans would itself be the wrong-scope evidentiary contamination this
+    // project's correlator audits (AU-056/AU-085, AU-105, the GEXF
+    // co-occurrence fix) have repeatedly closed elsewhere.
+    println!(
+        "\nWeak findings (last 7 days, confidence < {:.2}):",
+        Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD
+    );
+    match &store_result {
+        Ok(store) => match store.low_confidence_evidence(
+            Store::DEFAULT_LOW_CONFIDENCE_THRESHOLD,
+            crate::core::port::EVENTS_RETENTION_SECS as i64,
+        ) {
+            Ok(anomalies) => print!("{}", format_weak_findings(&anomalies)),
+            Err(e) => println!("  could not query weak findings — {e}"),
+        },
+        Err(_) => println!("  skipped — database did not open (see Storage above)"),
+    }
+
+    // ── Cell tower database freshness ──────────────────────────────────
+    // `hse cells import` is a manual trigger with no auto-resync (a named,
+    // unbuilt gap in SOLUTION_TREE §4a) — surfacing staleness here at least
+    // makes an operator relying on GEOINT cell-tower correlation (AU-084,
+    // `cell_intel`/`cell_local`) aware their local dataset may no longer
+    // reflect current tower deployments, rather than trusting it silently.
+    println!("\nCell tower database:");
+    match cell_db::open_ro() {
+        Ok(conn) => match cell_db::last_import(&conn) {
+            Ok(Some(rec)) => {
+                let total = cell_db::total_count(&conn).unwrap_or(0);
+                let now = crate::core::entity::unix_now() as i64;
+                let age_days = now.saturating_sub(rec.imported_at).max(0) / 86_400;
+                println!("  {total} towers, last import {age_days}d ago");
+                if cell_db::is_stale(rec.imported_at, now) {
+                    println!(
+                        "  STALE (>= {}d since last import) — GEOINT cell-tower correlation \
+                         is working from data that old; consider `hse cells import --country \
+                         <CODE>` to refresh.",
+                        cell_db::STALE_THRESHOLD_DAYS
+                    );
+                }
+            }
+            Ok(None) => println!("  populated but no import history recorded"),
+            Err(e) => println!("  could not read import history — {e}"),
+        },
+        Err(_) => println!(
+            "  not populated — run `hse cells import --country AU` (or --file PATH) to enable \
+             local cell-tower lookups"
+        ),
+    }
+
     // ── WiGLE account health (network call, best-effort) ──────────────
     // Poll /api/v2/profile/user. Surfaces the "email unverified →
     // throttled" warning that the WiGLE account page calls out but which
@@ -158,6 +301,34 @@ pub(super) async fn cmd_doctor() -> Result<()> {
     }
     if let Some(user) = status.user.as_deref() {
         println!("  user:           {user}");
+    }
+
+    // ── SeekNow account health (network call, best-effort) ──────────────
+    // Probes /credits — a free meta-query, no scan budget spent — so a dead
+    // or plan-lacking key is caught HERE, before an operator discovers it
+    // only via SeekNow (HSE's highest-priority paid source, and its
+    // proactive API-key-harvesting engine — see `util::key_harvest`)
+    // silently returning nothing on every scan. `query_credits` now also
+    // latches `is_key_invalid()` on an auth rejection — previously only the
+    // data-bearing `search`/`get_path` calls did that classification, so a
+    // fresh process (like this one) that only ever calls `query_credits`
+    // could never detect a dead key at all.
+    println!("\nSeekNow account:");
+    let seeknow_key = crate::util::see_know::resolve_key(
+        loaded
+            .get(crate::util::see_know::KEY_ENV)
+            .map(String::as_str),
+    );
+    match crate::util::see_know::query_credits(seeknow_key).await {
+        Some((remaining, Some(limit))) => println!("  credits remaining: {remaining}/{limit}"),
+        Some((remaining, None)) => {
+            println!("  credits remaining: {remaining} (daily limit not reported by this plan)");
+        }
+        None if crate::util::see_know::is_key_invalid() => println!(
+            "  INVALID — the configured key was rejected. Set a valid, plan-enabled key \
+             via HUNTSMAN_SEEKNOW_KEY or the UI Settings panel."
+        ),
+        None => println!("  could not reach SeekNow (network error or unexpected response)"),
     }
 
     Ok(())
@@ -204,6 +375,33 @@ fn format_module_health(h: &crate::core::engine::ModuleHealth) -> String {
     }
 }
 
+/// The `curl:      MISSING` diagnostic body — every module/command that shells
+/// out to the `curl` binary with NO reqwest fallback, so it silently fails
+/// rather than erroring when curl is absent. Verified against the current
+/// codebase (not every module that mentions curl qualifies — e.g. `geocode`
+/// tries reqwest first and only falls back to curl, so curl's absence there
+/// just loses a fallback, not the whole feature):
+/// - `search_engines`, `social_probe` (default modules), `see_know`,
+///   `oathnet_pro`, `api_key_probe`, `abn_lookup` — each calls a curl
+///   subprocess directly (or via `util::see_know`/`util::oathnet`'s
+///   `CurlClient`) with no other transport, so the module returns nothing.
+/// - `hse keys validate` / `hse keys import-tsv --validate`
+///   (`util::key_pool::validation::validate_against_endpoint`) — a failed
+///   `curl` spawn is swallowed into `false`, the SAME return value as a
+///   genuinely dead key, so every key in the pool reports INVALID rather
+///   than the command erroring — a materially worse failure mode than
+///   "returns nothing", since it looks like the key pool died, not that a
+///   tool is missing.
+fn curl_missing_message() -> String {
+    "  curl:      MISSING — search_engines + social_probe (default modules), plus\n             \
+     see_know, oathnet_pro, api_key_probe and abn_lookup, shell out to curl and\n             \
+     will silently return nothing. `hse keys validate` / `hse keys import-tsv\n             \
+     --validate` also shell out to curl — without it they report every key as\n             \
+     INVALID rather than erroring, which reads as a dead key pool, not a missing\n             \
+     tool. Install it: pkg install curl"
+        .to_string()
+}
+
 /// Rank every unset `KNOWN_KEYS` env var by acquisition ROI, highest first.
 ///
 /// `key_roi` tiers a service by how far a key cascades into more collection:
@@ -239,6 +437,37 @@ fn rank_unset_keys(
     // Highest ROI first (Terminal < Expansion < Multiplier), ties broken by name.
     missing.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(b.0)));
     missing
+}
+
+/// Render the "Weak findings" doctor section body. `anomalies` is expected
+/// already weakest-first ([`crate::storage::Store::low_confidence_evidence`]'s
+/// own `ORDER BY confidence ASC`); this only formats, so it is unit-testable
+/// without a store — mirroring [`scraper_health::aggregate_source_health`]'s
+/// separation of query (impure) from presentation (pure).
+fn format_weak_findings(anomalies: &[EvidenceAnomaly]) -> String {
+    if anomalies.is_empty() {
+        return "  no weak findings in the tracked window\n".to_string();
+    }
+    const SHOWN: usize = 20;
+    let mut out = format!(
+        "  {} weak finding(s) — review before trusting as evidence:\n",
+        anomalies.len()
+    );
+    for a in anomalies.iter().take(SHOWN) {
+        let observed = timefmt::ymd_utc(a.created_at).unwrap_or_else(|| "unknown date".to_string());
+        // uid is a SHA-256 hex digest; the first 12 chars are enough to
+        // cross-reference against `hse export`/`--output json` without
+        // flooding the terminal with the full 64-char hash per row.
+        let short_uid = &a.entity_uid[..a.entity_uid.len().min(12)];
+        out.push_str(&format!(
+            "    - conf={:.2}  {:<24} {}…  observed {}\n",
+            a.confidence, a.module_name, short_uid, observed
+        ));
+    }
+    if anomalies.len() > SHOWN {
+        out.push_str(&format!("    … and {} more\n", anomalies.len() - SHOWN));
+    }
+    out
 }
 
 #[cfg(test)]

@@ -7,7 +7,7 @@
 
 Pure-Rust OSINT / GEOINT platform with **162 modules** that runs entirely
 inside **Termux on Android aarch64** with no root. Single binary, embedded
-SpiderFoot-style Web UI, zero native dependencies.
+dark-console Web UI, zero native dependencies.
 
 ---
 
@@ -61,7 +61,7 @@ hse serve   # binds 127.0.0.1:8080 (loopback only)
 ```
 
 Open **Chrome** (or Firefox) on the phone and go to `http://127.0.0.1:8080`.
-You'll get a SpiderFoot-style dark-navbar UI — **Dashboard · New Scan · Scans ·
+You'll get a dark-console UI — **Dashboard · New Scan · Scans ·
 Live · Engines · Settings** — where **New Scan** drives the engine and each
 scan's results page tabs through a sortable entity browser, a D3 force graph,
 severity-tagged correlations, and a real-time (SSE) event log. The **Settings
@@ -207,11 +207,18 @@ corroborated by several modules carries all of their techniques (merges union
 the tags).
 
 
-## Web UI (SpiderFoot-style)
+## Web UI (dark-console, zero vendored UI framework)
 
-`hse serve` launches a localhost-only HTTP server with an embedded
-single-file SPA using SpiderFoot's exact vendor stack (Bootstrap 3,
-jQuery, D3 v3, tablesorter, alertify):
+`hse serve` launches a localhost-only HTTP server with an embedded SPA split
+into native ES modules (`src/web/js/`) on a from-scratch dark-console design
+system (`src/web/css/app.css`). D3 v3 is the one remaining vendored library
+(the force-directed graph rendering engine); Bootstrap, jQuery, tablesorter,
+and alertify — SpiderFoot's original UI-framework stack — have been dropped
+in favour of our own CSS and a small vanilla-JS compatibility layer
+(`src/web/js/ui.js`) for navbar collapse, the About modal, sortable tables,
+and toast/confirm/prompt dialogs. The navigation structure and scan workflow
+still follow SpiderFoot's mental model for operator familiarity; the visual
+design and every dependency underneath it are HSE's own:
 
 - **Dashboard** — stats cards, scan status breakdown, quick actions
 - **New Scan** — target input + module grid with tooltips + depth/throttle
@@ -221,7 +228,7 @@ jQuery, D3 v3, tablesorter, alertify):
   typed relation edges — subdomain/lineage/co-location — dashed, kind on hover),
   Correlations (severity-tagged), Event Log (real-time SSE), Info
 - **Settings** — API key management with validation
-- **Dark mode** toggle
+- **Dark mode** by default, light mode opt-out toggle
 
 Binds to `127.0.0.1:8080` by default — no LAN exposure. This is the
 operator-followed default, not an enforced restriction: `--bind`/`HSE_BIND`
@@ -335,9 +342,16 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 - rustls + bundled-sqlite only — no OpenSSL, no native TLS, no C deps
 - `StoragePort` trait — engine/API decoupled from SQLite via Strangler Fig
 - 4,300+ tests (unit + API integration + architecture boundary enforcement)
-- 110 correlator rules (AU-001 through AU-112, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules
+- Deterministic correlator: 111 rules (98 entity + 13 graph-aware relation), no LLM/fuzzy matching
+- 111 correlator rules (AU-001 through AU-113, with some IDs reserved for engine-emitted cross-scan findings such as AU-065/AU-066), incl. graph-aware edge, transitive, multi-pathway corroboration, gap-analysis, jurisdiction cross-check (coordinate / address / phone-region), prediction-confirmed identity bridges (name-derived username AU-077 / email AU-086), pathway-template, resolved-identity-cluster, anonymous-SIM, high-integrity-connection (max-bottleneck route), connection-broker (identity articulation-point), and robustly-corroborated-identity-cluster (no-single-point-of-failure k-redundant cluster) rules — deterministic, no LLM/fuzzy matching
 - 2 tokio worker threads (tuned for Termux low-power devices)
 - Release binary ~5 MB stripped (opt-level="s", LTO, codegen-units=1)
+
+Full facts table (verified module/rule/test counts, dependency-pin rationale,
+subsystem breakdown, dependency-direction diagram) live in
+[`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md) — kept current
+rather than restated here, so there is exactly one place these numbers can
+drift.
 
 ---
 
@@ -345,6 +359,7 @@ hse scan --kind name --value "Jordan Leigh Meyers" --depth 1 --min-expand-confid
 
 | Document | Content |
 |----------|---------|
+| [`docs/ARCHITECTURE_AUDIT.md`](docs/ARCHITECTURE_AUDIT.md) | Full architecture reference: facts table, dependency direction, core subsystems, determinism doctrine, CI/supply chain |
 | [`docs/INSTALL.md`](docs/INSTALL.md) | All install paths + Termux quirks |
 | [`docs/USAGE.md`](docs/USAGE.md) | Full CLI reference + HTTP API |
 | [`docs/MODULES.md`](docs/MODULES.md) | Module catalogue + synergy map |

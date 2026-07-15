@@ -8,6 +8,53 @@ use super::helpers::{ssh_fingerprint, top_event_types, usable_commit_email};
 
 const SRC: &str = "github_user";
 
+/// One row of GitHub's `/users/{login}/keys` response — the subject's own
+/// published SSH public keys. Kept at module scope (not nested inside the
+/// fetch fn) so the entity-building logic can be unit-tested without a live
+/// HTTP round-trip.
+#[derive(serde::Deserialize)]
+pub(super) struct SshKey {
+    #[serde(default)]
+    pub(super) id: Option<u64>,
+    #[serde(default)]
+    pub(super) key: Option<String>,
+}
+
+/// Turn every one of the subject's published SSH public keys into a
+/// fingerprinted, CORRELATABLE `Credential` artifact. A public key published
+/// on two accounts proves the same person holds the private key — the
+/// strongest cross-account link there is. The artifact value is `ssh:<fp>` (a
+/// hash of algo+base64, comment dropped), so two accounts sharing a key
+/// produce the SAME uid and the engine merges them into one artifact carrying
+/// both logins — which AU-048 then links.
+///
+/// Every parsed key is emitted, with no cap: these are all the *subject's own*
+/// keys (no false-attribution risk), a developer commonly registers more than
+/// a handful, and each key is an independent cryptographic pivot, so silently
+/// dropping keys 11+ would discard real cross-account evidence.
+pub(super) fn ssh_key_entities(keys: &[SshKey], scan_id: &str, login: &str) -> Vec<Entity> {
+    keys.iter()
+        .filter_map(|key| {
+            let fp = key.key.as_deref().and_then(ssh_fingerprint)?;
+            let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, scan_id);
+            e.tag("ssh-key");
+            e.tag("public-key");
+            e.tag("github");
+            let algo = key
+                .key
+                .as_deref()
+                .and_then(|k| k.split_whitespace().next())
+                .unwrap_or("ssh");
+            e.add_evidence(
+                Evidence::new(SRC, format!("SSH public key published by @{login}"))
+                    .with_attr("github_login", login)
+                    .with_attr("key_type", algo),
+            );
+            Some(e)
+        })
+        .collect()
+}
+
 pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
     let url = format!("https://api.github.com/users/{login}/keys");
     let resp = match ctx
@@ -23,14 +70,6 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
     };
     if !resp.status().is_success() {
         return;
-    }
-
-    #[derive(serde::Deserialize)]
-    struct SshKey {
-        #[serde(default)]
-        id: Option<u64>,
-        #[serde(default)]
-        key: Option<String>,
     }
 
     let keys: Vec<SshKey> = match crate::util::http::json_scanned(resp, SRC).await {
@@ -62,34 +101,13 @@ pub(super) async fn fetch_ssh_keys(login: &str, ctx: &ModuleContext, result: &mu
         );
     }
 
-    // Emit each SSH public key as a fingerprinted, CORRELATABLE artifact. A
-    // public key published on two accounts proves the same person holds the
-    // private key — the strongest cross-account link there is. The artifact
-    // value is `ssh:<fp>` (a hash of algo+base64, comment dropped), so two
-    // accounts sharing a key produce the SAME uid and the engine merges them
-    // into one artifact carrying both logins — which AU-048 then links.
-    result.extend(keys.iter().take(10).filter_map(|key| {
-        let fp = key.key.as_deref().and_then(ssh_fingerprint)?;
-        let mut e = Entity::new(EntityKind::Credential, &fp, 0.85, &ctx.scan_id);
-        e.tag("ssh-key");
-        e.tag("public-key");
-        e.tag("github");
-        let algo = key
-            .key
-            .as_deref()
-            .and_then(|k| k.split_whitespace().next())
-            .unwrap_or("ssh");
-        e.add_evidence(
-            Evidence::new(SRC, format!("SSH public key published by @{login}"))
-                .with_attr("github_login", login)
-                .with_attr("key_type", algo),
-        );
-        Some(e)
-    }));
+    // Emit EVERY published key as a correlatable Credential artifact (see
+    // `ssh_key_entities` — no cap; all keys are the subject's own).
+    result.extend(ssh_key_entities(&keys, &ctx.scan_id, login));
 }
 
 pub(super) async fn fetch_orgs(
-    http: &reqwest::Client,
+    ctx: &ModuleContext,
     username: &str,
     token: Option<&str>,
 ) -> Vec<String> {
@@ -97,7 +115,8 @@ pub(super) async fn fetch_orgs(
         "https://api.github.com/users/{}/orgs",
         crate::util::http::urlencode(username)
     );
-    let mut req = http
+    let mut req = ctx
+        .http
         .get(&url)
         .header("User-Agent", crate::util::http::UA_OSINT)
         .header("Accept", "application/vnd.github+json");
@@ -107,7 +126,14 @@ pub(super) async fn fetch_orgs(
     let Ok(resp) = req.send().await else {
         return Vec::new();
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // A present token that gets rejected/throttled must be reported to the
+        // pool, or a dead/throttled token silently degrades every future scan
+        // with no operator-visible signal and no chance to rotate.
+        if let Some(t) = token {
+            crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
+        }
         return Vec::new();
     }
     // Capped read (32 MiB) for the needle scan below — an uncapped `text()`
@@ -122,7 +148,7 @@ pub(super) async fn fetch_orgs(
 }
 
 pub(super) async fn fetch_gists(
-    http: &reqwest::Client,
+    ctx: &ModuleContext,
     username: &str,
     token: Option<&str>,
 ) -> Vec<String> {
@@ -130,7 +156,8 @@ pub(super) async fn fetch_gists(
         "https://api.github.com/users/{}/gists?per_page=30",
         crate::util::http::urlencode(username)
     );
-    let mut req = http
+    let mut req = ctx
+        .http
         .get(&url)
         .header("User-Agent", crate::util::http::UA_OSINT)
         .header("Accept", "application/vnd.github+json");
@@ -140,7 +167,12 @@ pub(super) async fn fetch_gists(
     let Ok(resp) = req.send().await else {
         return Vec::new();
     };
-    if !resp.status().is_success() {
+    let status = resp.status();
+    if !status.is_success() {
+        // Same reporting rationale as `fetch_orgs` above.
+        if let Some(t) = token {
+            crate::util::http::note_keyed_error(status.as_u16(), "github", t, ctx);
+        }
         return Vec::new();
     }
     // Capped read (32 MiB) for the needle scan below — an uncapped `text()`
@@ -159,8 +191,8 @@ pub(super) async fn fetch_gists(
         .collect()
 }
 
-/// Fetch up to `max_gists` gist details and scan their file content for emails
-/// and domains.  Each gist detail call goes through `send_tagged` so the
+/// Fetch up to `MAX_GISTS` gist details and scan their file content for emails.
+/// Each gist detail call goes through `send_tagged` so the
 /// `found_keys` scanner automatically processes every response body for leaked
 /// API keys — satisfying the "preserve every API key" vault policy with no
 /// extra code.
@@ -230,6 +262,77 @@ pub(super) async fn fetch_gist_content(
     }
 }
 
+/// One entry of GitHub's `/users/{login}/events/public` feed. Kept at module
+/// scope (not nested inside `fetch_events`) so the commit-author-email
+/// extraction can be unit-tested without a live HTTP round-trip.
+#[derive(serde::Deserialize)]
+pub(super) struct GhEvent {
+    #[serde(default)]
+    pub(super) created_at: Option<String>,
+    #[serde(default, rename = "type")]
+    pub(super) event_type: Option<String>,
+    #[serde(default)]
+    pub(super) payload: Option<GhPayload>,
+}
+#[derive(serde::Deserialize)]
+pub(super) struct GhPayload {
+    #[serde(default)]
+    pub(super) commits: Vec<GhCommit>,
+}
+#[derive(serde::Deserialize)]
+pub(super) struct GhCommit {
+    #[serde(default)]
+    pub(super) author: Option<GhCommitAuthor>,
+}
+#[derive(serde::Deserialize)]
+pub(super) struct GhCommitAuthor {
+    #[serde(default)]
+    pub(super) email: Option<String>,
+}
+
+/// Every DISTINCT usable commit-author email the subject's public push events
+/// published, each emitted as a `commit-email` `Email` pivot. A user's own
+/// public push events embed the `git` author email of each commit — one of the
+/// most reliable real-email → handle links in OSINT. GitHub's privacy
+/// `…@users.noreply.github.com` / `noreply@github.com` placeholders carry no
+/// identity and are dropped by `usable_commit_email`.
+///
+/// Dedup is by normalised value; output order is first-seen over the event
+/// stream (GitHub returns it newest-first, so the ordering is deterministic for
+/// a given response). No cap: the events endpoint is already bounded to 30
+/// events, so the distinct-email set is naturally small, and every distinct
+/// real address is an independent pivot — silently dropping addresses 11+ (the
+/// old `.take(10)`, a bound "to keep a busy account bounded") would discard
+/// real handle→email evidence with no signal any were lost. The evidence label
+/// states the address came from the subject's commit *author field* — honest
+/// provenance, not a claim the address IS the subject.
+pub(super) fn commit_email_entities(events: &[GhEvent], scan_id: &str, login: &str) -> Vec<Entity> {
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+    events
+        .iter()
+        .filter_map(|event| event.payload.as_ref())
+        .flat_map(|payload| payload.commits.iter())
+        .filter_map(|commit| commit.author.as_ref()?.email.as_deref())
+        .filter_map(usable_commit_email)
+        .filter(|email| seen.insert(email.clone()))
+        .map(|email| {
+            let mut e = Entity::new(EntityKind::Email, &email, 0.82, scan_id);
+            e.tag("github");
+            e.tag("commit-email");
+            e.tag("public-profile");
+            e.add_evidence(
+                Evidence::new(
+                    SRC,
+                    format!("Email from @{login}'s public commit author field"),
+                )
+                .with_attr("github_login", login)
+                .with_attr("source", "commit_author"),
+            );
+            e
+        })
+        .collect()
+}
+
 pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut ModuleResult) {
     let url = format!("https://api.github.com/users/{login}/events/public?per_page=30");
     let resp = match ctx
@@ -245,31 +348,6 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
     };
     if !resp.status().is_success() {
         return;
-    }
-
-    #[derive(serde::Deserialize)]
-    struct GhEvent {
-        #[serde(default)]
-        created_at: Option<String>,
-        #[serde(default, rename = "type")]
-        event_type: Option<String>,
-        #[serde(default)]
-        payload: Option<GhPayload>,
-    }
-    #[derive(serde::Deserialize)]
-    struct GhPayload {
-        #[serde(default)]
-        commits: Vec<GhCommit>,
-    }
-    #[derive(serde::Deserialize)]
-    struct GhCommit {
-        #[serde(default)]
-        author: Option<GhCommitAuthor>,
-    }
-    #[derive(serde::Deserialize)]
-    struct GhCommitAuthor {
-        #[serde(default)]
-        email: Option<String>,
     }
 
     let events: Vec<GhEvent> = match crate::util::http::json_scanned(resp, SRC).await {
@@ -327,36 +405,7 @@ pub(super) async fn fetch_events(login: &str, ctx: &ModuleContext, result: &mut 
         first.add_evidence(ev);
     }
 
-    // Commit-author email leak: a user's PUBLIC push events embed the email
-    // configured in `git`'s author field for each commit. This is a
-    // high-value, operator-published handle→email link — one of the most
-    // reliable real-email discoveries in OSINT. GitHub's own privacy
-    // `…@users.noreply.github.com` placeholders carry no identity, so they're
-    // excluded. Dedup by value; cap to keep a busy account bounded.
-    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-    result.extend(
-        events
-            .iter()
-            .filter_map(|event| event.payload.as_ref())
-            .flat_map(|payload| payload.commits.iter())
-            .filter_map(|commit| commit.author.as_ref()?.email.as_deref())
-            .filter_map(usable_commit_email)
-            .filter(|email| seen.insert(email.clone()))
-            .take(10)
-            .map(|email| {
-                let mut e = Entity::new(EntityKind::Email, &email, 0.82, &ctx.scan_id);
-                e.tag("github");
-                e.tag("commit-email");
-                e.tag("public-profile");
-                e.add_evidence(
-                    Evidence::new(
-                        SRC,
-                        format!("Email from @{login}'s public commit author field"),
-                    )
-                    .with_attr("github_login", login)
-                    .with_attr("source", "commit_author"),
-                );
-                e
-            }),
-    );
+    // Emit EVERY distinct usable commit-author email (see `commit_email_entities`
+    // — no cap; deduped, placeholder-filtered).
+    result.extend(commit_email_entities(&events, &ctx.scan_id, login));
 }

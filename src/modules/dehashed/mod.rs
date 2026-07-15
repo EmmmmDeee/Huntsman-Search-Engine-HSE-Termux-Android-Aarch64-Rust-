@@ -196,7 +196,11 @@ impl Module for DeHashed {
         let key_fp = crate::util::oathnet::key_fingerprint(key);
         let balance = balance_str(&body.balance);
         let mut result = ModuleResult::new();
-        result.push(build_breach_entity(
+        // The breach-presence headline is emitted ONLY when the response is
+        // attributable to the subject — a bare `name:` count, or a page of
+        // same-name strangers, yields `None` rather than a false 0.88 hit on the
+        // engine's pre-seeded subject anchor (see `build_breach_entity`).
+        if let Some(headline) = build_breach_entity(
             target.kind.to_entity_kind(),
             value,
             selector,
@@ -204,7 +208,9 @@ impl Module for DeHashed {
             total,
             balance.as_deref(),
             &ctx.scan_id,
-        ));
+        ) {
+            result.push(headline);
+        }
         // Surface every record's identity, credential (incl. the hash digest),
         // and full long tail — non-target strangers demoted to quarantined
         // candidates. This is what makes DeHashed hashes reverse-searchable and

@@ -184,6 +184,23 @@ fn placeholder_entity_filters_artifacts_but_keeps_secrets() {
 }
 
 #[test]
+fn username_derived_name_catches_doubled_and_slug_tokens_not_real_names() {
+    // The exact previously-observed live case: a breach DB storing
+    // `full_name = "{username} {username}"` when no real name is available.
+    assert!(is_username_derived_name("rhino-ryno23 rhino-ryno23"));
+    // Case-insensitive doubled-token match.
+    assert!(is_username_derived_name("Rhino-Ryno23 rhino-ryno23"));
+    // A lone hyphen+digit slug token (no second token needed).
+    assert!(is_username_derived_name("rhino-ryno23"));
+    // Real names must never trip this: a hyphenated surname carries NO digit,
+    // and two different real given+family names are neither doubled nor slugs.
+    assert!(!is_username_derived_name("Smith-Jones"));
+    assert!(!is_username_derived_name("Jordan Avery"));
+    assert!(!is_username_derived_name("Mary Smith-Jones"));
+    assert!(!is_username_derived_name("John Doe")); // caught by is_placeholder_person instead
+}
+
+#[test]
 fn phone_e164_accepts_valid() {
     assert!(validate_phone_e164("+61410959140").valid);
     assert!(validate_phone_e164("+14155552671").valid);
@@ -473,21 +490,9 @@ fn domain_shape_rejects_invalid() {
     assert_eq!(validate_domain_shape("192.168.1.1").reason, "domain.is_ip");
 }
 
-#[test]
-fn validate_for_kind_dispatches() {
-    assert!(validate_for_kind("phone", "+61410959140").valid);
-    assert!(validate_for_kind("email", "x@y.com").valid);
-    assert!(validate_for_kind("domain", "goatlegal.com.au").valid);
-    assert!(validate_for_kind("coordinates", "-27.47,153.03").valid);
-    assert!(!validate_for_kind("coordinates", "junk").valid);
-    // Unknown kind passes through OK (validators are opt-in)
-    assert!(validate_for_kind("anything-else", "value").valid);
-}
-
 mod confusable_tests {
     use super::super::{
-        confusable_report, is_confusable_mixed_script, looks_like_gibberish_name, skeleton,
-        strip_invisible,
+        is_confusable_mixed_script, looks_like_gibberish_name, skeleton, strip_invisible,
     };
     use std::borrow::Cow;
 
@@ -525,15 +530,6 @@ mod confusable_tests {
         assert!(!is_confusable_mixed_script(
             "\u{043F}\u{0440}\u{0438}\u{0432}\u{0435}\u{0442}"
         ));
-    }
-
-    #[test]
-    fn confusable_report_fails_homograph_and_passes_clean() {
-        let bad = confusable_report("p\u{0430}ypal.com");
-        assert!(!bad.valid);
-        assert_eq!(bad.reason, "seed.confusable");
-        assert!(bad.detail.contains("paypal.com"));
-        assert!(confusable_report("paypal.com").valid);
     }
 
     #[test]

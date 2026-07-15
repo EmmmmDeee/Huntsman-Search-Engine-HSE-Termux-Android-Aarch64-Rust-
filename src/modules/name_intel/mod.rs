@@ -58,6 +58,19 @@ impl Module for NameIntel {
     fn accepts(&self, t: &Target) -> bool {
         matches!(t.kind, TargetKind::FullName)
     }
+    fn attack_techniques(&self) -> &'static [&'static str] {
+        // This module never overrode the default, so it silently inherited the
+        // full People-category pair (T1589.003 Employee Names + T1591.004
+        // Identify Roles) — the exact over/under-claim shape already fixed for
+        // `pgp`: the subject Person anchor and the derived username/email
+        // permutations surface a name (T1589.003) and speculative email
+        // addresses (T1589.002), but this module carries no role/organisational
+        // information anywhere, so T1591.004 is over-claimed. The search-query
+        // pivot URLs are unexecuted links (this module makes no network calls,
+        // per its own doc comment), not a confirmed collection, so — mirroring
+        // `employer_pivot`'s Url entities — they earn no separate technique.
+        &["T1589.002", "T1589.003"]
+    }
     fn produces(&self) -> &'static [EntityKind] {
         &[
             EntityKind::Person,

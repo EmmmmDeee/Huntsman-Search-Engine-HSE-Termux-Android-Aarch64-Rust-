@@ -8,7 +8,9 @@
 //! Binds to `127.0.0.1` by default (architecture invariant — no LAN exposure).
 //! The router is wired in `cli::serve::cmd_serve` (a private `pub(super)` fn).
 
+pub mod cells_handlers;
 pub mod handlers;
+pub mod key_harvest_handlers;
 pub mod routes;
 pub mod scan_export;
 pub mod scan_handlers;
@@ -91,6 +93,22 @@ impl Default for UpdateInfo {
             phase: UpdatePhase::Idle,
         }
     }
+}
+
+/// Progress of the `hse cells import --country`-equivalent web action
+/// (`POST /api/v1/cells/import`), mirroring [`UpdatePhase`]'s shape so
+/// `GET /api/v1/cells/status` can report it and the SPA can poll the same
+/// way it already polls update status. The DB's own `cell_db::last_import`
+/// record (written by the underlying `download_and_import` on success)
+/// remains the source of truth for *completed* imports — this only tracks
+/// whether one is *currently* running, and the error from the last attempt
+/// if it failed, since neither of those live in the DB.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum CellsImportPhase {
+    #[default]
+    Idle,
+    Running,
+    Error(String),
 }
 
 /// Maximum number of scans that can run concurrently via the HTTP API.
@@ -189,7 +207,6 @@ pub struct AppState {
     pub http: reqwest::Client,
     pub allow_key_write: bool,
     pub cancellations: CancelRegistry,
-    pub proxy_pool: Arc<crate::util::proxy::ProxyPool>,
     /// Bounds the number of scans running concurrently via the API.
     /// Prevents resource exhaustion from rapid `POST /scans` calls.
     pub scan_semaphore: Arc<tokio::sync::Semaphore>,
@@ -198,6 +215,10 @@ pub struct AppState {
     /// `parking_lot`) so it can be held across `.await` points in the
     /// background task without requiring `parking_lot`'s `async`-aware lock.
     pub update_info: Arc<std::sync::Mutex<UpdateInfo>>,
+    /// Progress of an in-flight `POST /api/v1/cells/import`. Same
+    /// `std::sync::Mutex` rationale as `update_info` — held across `.await`
+    /// points in the detached download+import task.
+    pub cells_import: Arc<std::sync::Mutex<CellsImportPhase>>,
 }
 
 #[cfg(test)]

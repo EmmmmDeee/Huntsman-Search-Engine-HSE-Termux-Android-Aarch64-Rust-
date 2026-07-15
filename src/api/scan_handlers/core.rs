@@ -11,7 +11,7 @@ use tracing::info;
 use super::super::handlers::{bad_request, internal_error, not_found, ok_list, spawn_scan};
 use crate::api::AppState;
 use crate::core::entity::scan_id;
-use crate::core::scan::{Scan, ScanRequest, Target};
+use crate::core::scan::{Scan, ScanRequest, Target, TargetKind};
 
 pub async fn scan_create(
     State(s): State<Arc<AppState>>,
@@ -35,6 +35,34 @@ pub async fn scan_create(
     )
         .into_response()
 }
+
+/// `GET /api/v1/scan/profiles` — the named scan-profile catalogue
+/// ([`crate::core::profiles::list_profiles`]) as JSON, so the web SPA's New
+/// Scan wizard can render a profile picker without hardcoding the name/
+/// description list — the single source `resolve_profile`/`--profile`'s own
+/// unknown-name error already use, now also reachable from the browser.
+/// Previously `profile` was already accepted in `ScanRequest.options` (the
+/// CLI's `--profile` and a raw `"profile":"…"` POST both worked), but there
+/// was no way for a browser-only operator to discover which names exist —
+/// this closes that gap, including for `skiptrace` (the debtor-location
+/// profile), which had no web UI path at all before this.
+pub async fn scan_profiles() -> impl IntoResponse {
+    let profiles: Vec<_> = crate::core::profiles::list_profiles()
+        .into_iter()
+        .map(|(name, description)| json!({ "name": name, "description": description }))
+        .collect();
+    Json(json!({ "profiles": profiles }))
+}
+
+/// The scan-history bound for [`scan_auto`]/[`scan_auto_plan`]/[`scan_auto_sweep`]'s
+/// candidate pool. Each handler's own doc promises it ranks "everything the
+/// platform has discovered" — a hardcoded `list_scans(50)` silently broke that
+/// promise on any device with more than 50 scans in its history, quietly
+/// excluding older (but potentially higher-leverage) entities from ever being
+/// selected. `10_000` mirrors the same "effectively all, but SQL-bounded for
+/// device safety" convention [`crate::api::handlers::stats`] already uses for
+/// its own full-history aggregation, so the two full-history reads agree.
+const AUTONOMOUS_POOL_MAX_SCANS: usize = 10_000;
 
 /// The operator-local default seed (`HUNTSMAN_DEFAULT_SEED`), with its kind
 /// auto-detected from the value — the autonomous scan's fallback when the local
@@ -70,7 +98,7 @@ pub async fn scan_auto(State(s): State<Arc<AppState>>) -> impl IntoResponse {
     let store = Arc::clone(&s.store);
     let selected = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<Option<crate::core::engine::ClusteredTarget>> {
-            let scans = store.list_scans(50)?;
+            let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut rels: Vec<crate::core::relation::Relation> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
@@ -197,7 +225,7 @@ pub async fn scan_auto_plan(
     let store = Arc::clone(&s.store);
     let planned = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
-            let scans = store.list_scans(50)?;
+            let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
@@ -272,7 +300,7 @@ pub async fn scan_auto_sweep(
     let store = Arc::clone(&s.store);
     let planned = tokio::task::spawn_blocking(
         move || -> crate::core::error::Result<crate::core::engine::AutonomousPlan> {
-            let scans = store.list_scans(50)?;
+            let scans = store.list_scans(AUTONOMOUS_POOL_MAX_SCANS)?;
             let mut pool: Vec<crate::core::entity::Entity> = Vec::new();
             let mut seen: HashSet<String> = HashSet::new();
             for sc in &scans {
@@ -313,17 +341,21 @@ pub async fn scan_auto_sweep(
             .into_response();
     }
 
-    // Dispatch each planned target as an ordinary comprehensive scan, de-duplicating
-    // by derived scan id so two queue entries that resolve to the same scan don't
-    // double-spawn (idempotent like rerun).
+    // Dispatch each planned target as an ordinary comprehensive scan,
+    // de-duplicating by TARGET IDENTITY so two queue entries for the same
+    // `(kind, value)` don't double-spawn (idempotent like rerun). NOTE: dedup must
+    // key on the target, NOT the derived `scan_id` — `scan_id` mixes a monotonic
+    // counter + sub-second nanos and is unique per call, so keying on it made the
+    // de-dup a silent no-op (two identical queue entries would both dispatch).
     let mut dispatched = Vec::with_capacity(plan.queue.len());
-    let mut spawned: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut spawned: std::collections::HashSet<(TargetKind, String)> =
+        std::collections::HashSet::new();
     for t in &plan.queue {
-        let target = Target::new(t.kind, t.value.clone());
-        let sid = scan_id(t.kind.canonical_str(), &t.value);
-        if !spawned.insert(sid.clone()) {
+        if !spawned.insert((t.kind, t.value.clone())) {
             continue;
         }
+        let target = Target::new(t.kind, t.value.clone());
+        let sid = scan_id(t.kind.canonical_str(), &t.value);
         let scan = Scan::new(sid.clone(), target.clone())
             .with_options(crate::core::scan::default_scan_options());
         if let Err(e) = s.store.upsert_scan(&scan) {
@@ -502,6 +534,11 @@ pub async fn scan_import(
     if entities.is_empty() {
         return bad_request("no verifiable entities were parsed from the upload");
     }
+    // Paired stealer-log credential rows (login+password+machine, kept
+    // together) for the Stealer Logs Viewer — empty for every non-stealer
+    // upload format. See `stealer_rows_from_upload`'s own doc for why this
+    // is a second, separate parse rather than a widened `entities_from_upload`.
+    let stealer_rows = crate::cli::import::stealer_rows_from_upload(&body);
 
     // A readable scan label: the strongest identity in the file, else a generic.
     let label = entities
@@ -531,14 +568,21 @@ pub async fn scan_import(
     // so SQLite commits don't stall the 2-worker async reactor.
     let store = Arc::clone(&s.store);
     let sid2 = sid.clone();
-    let (relation_count, correlation_count) =
+    // The third element is `false` when enrichment was skipped for size — the
+    // caller must be able to tell that apart from a genuinely relation-free
+    // dossier, both of which otherwise report `relation_count: 0`.
+    let (relation_count, correlation_count, enriched) =
         match tokio::task::spawn_blocking(move || -> crate::core::error::Result<_> {
             store.upsert_scan(&scan)?;
             store.upsert_entities_batch(&entities)?;
+            // Best-effort: a stealer-row persistence hiccup must not fail an
+            // otherwise-successful import — the entity graph above already
+            // carries the same credentials, just unpaired.
+            let _ = store.insert_stealer_rows_batch(&sid2, &stealer_rows);
             // Device-safety bound: skip the O(n²) enrichment on a pathologically
             // large import (entities are already persisted above; nothing lost).
             if entities.len() > IMPORT_ENRICH_MAX_ENTITIES {
-                return Ok((0usize, 0usize));
+                return Ok((0usize, 0usize, false));
             }
             let mut relations = 0usize;
             for r in &crate::core::relation::derive_all(&entities, &sid2) {
@@ -558,7 +602,7 @@ pub async fn scan_import(
                     }
                 }
             }
-            Ok((relations, correlations))
+            Ok((relations, correlations, true))
         })
         .await
         {
@@ -576,6 +620,12 @@ pub async fn scan_import(
             "entity_count": entity_count,
             "relation_count": relation_count,
             "correlation_count": correlation_count,
+            // `true` only when the upload exceeded `IMPORT_ENRICH_MAX_ENTITIES` —
+            // disambiguates a size-skipped enrichment pass from a dossier that
+            // genuinely yielded zero relations/correlations. Every entity is
+            // still persisted either way; the scan can be enriched on demand
+            // via `/scans/{id}/rerun`.
+            "enrichment_skipped": !enriched,
             "status": "complete",
         })),
     )
@@ -742,6 +792,33 @@ pub async fn radar_live(State(s): State<Arc<AppState>>) -> impl IntoResponse {
         .into_response()
 }
 
+/// `GET /api/v1/radar/history?limit=<n>` — chronological (newest-first) list
+/// of past radar sweeps for historical review.
+///
+/// Unlike `GET /api/v1/live` (which only shows sessions still held in the
+/// server's in-memory `LiveSession` map — cleared on every restart), this
+/// reads directly from the persisted `scans` table: every sweep a `radar`/
+/// `radar/live` call ever queued survives a restart here, so an operator
+/// reconstructing "what was around me" after the fact doesn't need to
+/// remember a session id — only that a radar sweep ran at some point. This
+/// is the sole purpose-built historical-review surface for the live radar
+/// feature (`docs/PROBLEM_TREE.md`/`docs/SOLUTION_TREE.md`: personal-safety
+/// / situational-awareness review under limited information).
+pub async fn radar_history(
+    State(s): State<Arc<AppState>>,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> impl IntoResponse {
+    let limit: usize = params
+        .get("limit")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(100)
+        .clamp(1, 1000);
+    match s.store.radar_history(limit) {
+        Ok(scans) => ok_list("sweeps", scans),
+        Err(e) => internal_error(&e),
+    }
+}
+
 /// `GET /api/v1/plan?value=<seed>` — forward-only scan-plan PREVIEW.
 pub async fn plan_preview(
     Query(params): Query<std::collections::HashMap<String, String>>,
@@ -806,8 +883,13 @@ pub async fn scan_events_history(
     if let Some(resp) = super::scan_missing(&s, &id) {
         return resp;
     }
-    match s.store.events_for_scan(&id) {
-        Ok(events) => ok_list("events", events),
-        Err(e) => internal_error(&e),
+    // Off-reactor: the per-scan event log can be large and the read is synchronous
+    // SQLite (matches the sibling entity/report handlers' spawn_blocking).
+    let store = std::sync::Arc::clone(&s.store);
+    let id2 = id.clone();
+    match tokio::task::spawn_blocking(move || store.events_for_scan(&id2)).await {
+        Ok(Ok(events)) => ok_list("events", events),
+        Ok(Err(e)) => internal_error(&e),
+        Err(e) => internal_error(&format!("query task failed: {e}")),
     }
 }

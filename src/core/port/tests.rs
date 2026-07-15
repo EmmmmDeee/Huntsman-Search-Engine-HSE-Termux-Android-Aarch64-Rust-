@@ -94,6 +94,38 @@ use super::*;
     }
 
     #[test]
+    fn default_optional_methods_are_documented_no_ops() {
+        // Seven methods carry no-op defaults "for test doubles". `InMemoryStore`
+        // overrides NONE of them, so it is the exact contract a non-SQLite backend
+        // (or mock) inherits, and the engine hits these defaults through it at
+        // every scan boundary (checkpoint/prune) and cache lookup. Exercise each
+        // through the trait object (the real dyn-dispatch path) and pin its
+        // documented return, so a future edit to a default body can't silently
+        // change what a non-overriding backend gets. Complements the round-trip
+        // tests above, which drive the concrete SQLite `Store` overrides.
+        let store: Arc<dyn StoragePort> = Arc::new(crate::core::test_support::InMemoryStore::new());
+
+        // Inter-scan entity cache: archive succeeds (best-effort), lookup misses.
+        assert!(store.archive_module_result("k", 3600, &[]).is_ok());
+        // `Entity` has no `PartialEq`, so assert the miss via `is_none`.
+        assert!(store.lookup_module_result_fresh("k").unwrap().is_none());
+
+        // Pathway-template learning: record succeeds, count never credits a route.
+        assert!(store.record_pathway_template("a>b").is_ok());
+        assert_eq!(store.pathway_template_count("a>b").unwrap(), 0);
+
+        // Maintenance: checkpoint is a no-op Ok; both prunes report zero removed.
+        assert!(store.checkpoint_truncate().is_ok());
+        assert_eq!(
+            store
+                .prune_events(EVENTS_RETENTION_SECS, EVENTS_MAX_ROWS)
+                .unwrap(),
+            0
+        );
+        assert_eq!(store.prune_raw_archive(RAW_ARCHIVE_MAX_ROWS).unwrap(), 0);
+    }
+
+    #[test]
     fn trait_object_search_and_facets() {
         let store = tmp_store();
         let t = Target::new(TargetKind::Email, "x@y.com");

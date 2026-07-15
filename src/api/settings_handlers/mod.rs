@@ -25,7 +25,7 @@ use crate::util::keys;
 /// see what shapes the scanner recognises — and so dashboards can
 /// surface per-service coverage stats.
 pub async fn keys_patterns() -> Json<Value> {
-    let patterns = crate::modules::oathnet_pro::key_harvest::pattern_catalogue();
+    let patterns = crate::util::key_harvest::pattern_catalogue();
     let by_service: std::collections::BTreeMap<&str, usize> =
         patterns
             .iter()
@@ -107,13 +107,40 @@ pub(crate) fn summarize_pool(data: &crate::util::key_pool::PoolData) -> Vec<Serv
 
 /// `GET /api/v1/keys/status` — per-service key-pool health (counts by status,
 /// aggregate use/error totals, and the mean per-key health score) for the
-/// operator quota view. Never exposes key values. Reads the process-global pool.
-pub async fn keys_status() -> Json<Value> {
+/// operator quota view. Never exposes key values, but per-service key-pool
+/// inventory is still sensitive infrastructure metadata, so — exactly like the
+/// sibling `keys_pool_get` — it is **loopback-only**: under an operator-chosen
+/// LAN bind a non-loopback peer gets 403 rather than a map of which services
+/// hold keys and how healthy they are. Reads the process-global pool.
+pub async fn keys_status(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key pool status is loopback-only" })),
+        )
+            .into_response();
+    }
     let services = summarize_pool(&crate::util::key_pool::global_pool().snapshot());
-    Json(json!({ "count": services.len(), "services": services }))
+    Json(json!({ "count": services.len(), "services": services })).into_response()
 }
 
-pub async fn settings_keys_get(State(s): State<Arc<AppState>>) -> impl IntoResponse {
+/// `GET /api/v1/settings/keys` — which key services are configured (name +
+/// `set` boolean per service) plus the on-disk env file path. The same class
+/// of "which services hold keys" infrastructure metadata `keys_status` /
+/// `keys_pool_get` / `keys_harvest` already treat as sensitive enough to
+/// gate loopback-only — this is that gate's missing sibling: the PUT on this
+/// SAME route already refuses a non-loopback peer, but the GET did not.
+pub async fn settings_keys_get(
+    State(s): State<Arc<AppState>>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
+) -> impl IntoResponse {
+    if !peer.ip().is_loopback() {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "error": "key configuration is loopback-only" })),
+        )
+            .into_response();
+    }
     use std::path::PathBuf;
     let path = keys::env_path();
     let loaded = keys::load_from_file_only(&PathBuf::from(&path));
@@ -234,7 +261,7 @@ pub async fn keys_pool_get(ConnectInfo(peer): ConnectInfo<SocketAddr>) -> impl I
                 .map(|e| {
                     json!({
                         "id": crate::util::key_pool::key_id(&e.value),
-                        "masked": mask_secret(&e.value),
+                        "masked": crate::util::str_util::mask_secret(&e.value),
                         "status": e.status.as_str(),
                         "environment": e.environment(),
                         "tier": e.tier.as_str(),
@@ -340,28 +367,6 @@ pub async fn keys_pool_rotate(
         )
             .into_response()
     }
-}
-
-/// Mask a secret to a non-reversible hint: first 4 + last 4 chars (char-safe).
-fn mask_secret(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    // Only reveal a 4+4 head/tail hint for secrets long enough that 8 exposed
-    // characters are a small fraction. Below 16, fully mask — a 9-12 char secret
-    // would otherwise leak almost all of itself (e.g. 8 of 9). The hint is only
-    // an operator recognition aid, never enough to reconstruct the value.
-    if chars.len() < 16 {
-        return "•".repeat(chars.len().max(1));
-    }
-    let head: String = chars.iter().take(4).collect();
-    let tail: String = chars
-        .iter()
-        .rev()
-        .take(4)
-        .collect::<Vec<_>>()
-        .into_iter()
-        .rev()
-        .collect();
-    format!("{head}…{tail}")
 }
 
 /// `GET /api/v1/settings/toggles` — the full capability-toggle catalogue

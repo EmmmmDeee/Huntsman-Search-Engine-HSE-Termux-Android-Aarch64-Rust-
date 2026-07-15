@@ -8,10 +8,11 @@
 
 use super::*;
 
-/// Extract "City, State" patterns from text for geolocation.
-/// Only matches when a comma-separated city name precedes a known
-/// state/territory name, and the city portion starts with an uppercase
-/// letter (filters out random sentence fragments).
+/// Extract AU location strings from free text for geolocation, in three passes:
+/// (1) a comma-separated "City, State" where the city starts with an uppercase
+/// letter (filters random sentence fragments); (2) a known AU place name with
+/// state context nearby (no comma required); (3) an AU postcode following a place
+/// name, appended as a more-specific variant of a matched "City, STATE".
 pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str) -> Vec<String> {
     const STATES: &[&str] = &[
         "Queensland",
@@ -79,6 +80,15 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
     ];
 
     let mut addrs = Vec::new();
+    // Lowercased dedup key for every address already pushed, by EITHER pass —
+    // a "City, State" mention frequently repeats within one page's combined
+    // title+snippet text (the same locality named in both the title and the
+    // body, or quoted in two adjacent sentence fragments), and without this
+    // the STATES pass below would push the identical string once per repeat.
+    // A real scan's evidence chain showed exactly this: the same search result
+    // recorded as its own "corroboration" of an address it had just emitted,
+    // because this pass alone provided two identical strings for one result.
+    let mut seen_addr_keys: std::collections::HashSet<String> = std::collections::HashSet::new();
     for state in STATES {
         let mut search_from = 0;
         while let Some(pos) = text[search_from..].find(state) {
@@ -169,7 +179,9 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
                 continue;
             }
             let addr = format!("{city}, {state}");
-            addrs.push(addr);
+            if seen_addr_keys.insert(addr.to_lowercase()) {
+                addrs.push(addr);
+            }
         }
     }
 
@@ -284,15 +296,17 @@ pub(in crate::modules::search_engines) fn extract_addresses_from_text(text: &str
 
     // Lowercase the text once; the AU-place scan below only reads it.
     let lower = text.to_lowercase();
-    // Track lowercased addresses already emitted so the dedup check below is an
-    // O(1) set lookup instead of a fresh `to_lowercase()` over every prior addr
-    // on each candidate. Seeded with the first-pass (STATES) results.
-    let mut seen_addr_keys: std::collections::HashSet<String> =
-        addrs.iter().map(|a| a.to_lowercase()).collect();
+    // `seen_addr_keys` already carries every address the first (STATES) pass
+    // pushed, so it needs no re-seeding here — it's the same dedup set, shared
+    // across both passes.
     for place in AU_PLACES {
-        let place_lower = place.to_lowercase();
-        if let Some(pos) = lower.find(&place_lower) {
-            let after = &lower[pos + place_lower.len()..];
+        // `lower` is already fully lowercased and every AU_PLACES entry is ASCII,
+        // so an ASCII-case-insensitive scan for `place` finds the identical
+        // leftmost offset that `lower.find(&place.to_lowercase())` did — but
+        // without allocating a fresh lowercased String for each of the 97 places
+        // on every call, and with a NEON-accelerated scan instead of a naive one.
+        if let Some(pos) = crate::util::str_util::find_ascii_ci(&lower, place) {
+            let after = &lower[pos + place.len()..];
             let context: String = after.chars().take(60).collect();
             // Walk back to a char boundary; UTF-8 multi-byte chars
             // (e.g. '>' substitutes spanning 3 bytes) must not be split.
@@ -485,9 +499,6 @@ pub(in crate::modules::search_engines) fn extract_abn_acn_from_text(
                     || trimmed.ends_with("business number:")
                 {
                     results.push((num, "ABN"));
-                    if results.len() >= 10 {
-                        break;
-                    }
                 }
             }
         } else if digits.len() == 9 {
@@ -503,11 +514,21 @@ pub(in crate::modules::search_engines) fn extract_abn_acn_from_text(
             // random 9-digit number next to the word "acn" is rejected.
             if has_context && crate::util::abn::is_valid_acn(&num) {
                 results.push((num, "ACN"));
-                if results.len() >= 10 {
-                    break;
-                }
             }
         }
+    }
+    // Checksum-validated, context-prefixed ABN/ACN are high-value business
+    // identifiers, so every one is kept rather than silently dropped past a low
+    // inline break. Bounded + WARNED (as the email/phone extractors are) only to
+    // guard against a pathological identifier-stuffed page.
+    const ABN_ACN_CAP: usize = 200;
+    if results.len() > ABN_ACN_CAP {
+        tracing::warn!(
+            found = results.len(),
+            cap = ABN_ACN_CAP,
+            "extract_abn_acn_from_text hit cap — additional ABN/ACN in this text were not extracted"
+        );
+        results.truncate(ABN_ACN_CAP);
     }
     results
 }
@@ -622,6 +643,37 @@ pub(in crate::modules::search_engines) fn extract_phones_from_text(text: &str) -
 /// relevance/username gates — this only finds the candidate URLs. De-duplicated,
 /// first-seen order, bounded to `MAX_SNIPPET_URLS` so a link-stuffed snippet
 /// can't balloon allocation. Pure.
+/// Trim trailing prose punctuation from a URL lifted out of free text, while
+/// keeping a trailing `)`/`]` that is BALANCED within the URL.
+///
+/// Sentence punctuation (`. , ! ? ; :`) and a DANGLING close bracket (a `)` with
+/// no matching `(` inside the candidate — the `(see https://x/y)` prose case) are
+/// stripped. A MATCHED close bracket is kept, so Wikipedia-style paths like
+/// `/wiki/Rust_(programming_language)` survive intact instead of being truncated
+/// to a broken `…_(programming_language` duplicate. Standard linkifier rule
+/// (GitHub/autolink use the same balance test). Pure.
+fn trim_trailing_url_punct(s: &str) -> &str {
+    let mut end = s.len();
+    loop {
+        let sub = &s[..end];
+        let Some(last) = sub.chars().next_back() else {
+            break;
+        };
+        let strip = match last {
+            '.' | ',' | '!' | '?' | ';' | ':' => true,
+            ')' => sub.matches(')').count() > sub.matches('(').count(),
+            ']' => sub.matches(']').count() > sub.matches('[').count(),
+            _ => false,
+        };
+        if strip {
+            end -= last.len_utf8();
+        } else {
+            break;
+        }
+    }
+    &s[..end]
+}
+
 pub(in crate::modules::search_engines) fn extract_urls_from_text(text: &str) -> Vec<String> {
     const MAX_SNIPPET_URLS: usize = 12;
     let mut out: Vec<String> = Vec::new();
@@ -639,10 +691,12 @@ pub(in crate::modules::search_engines) fn extract_urls_from_text(text: &str) -> 
                         )
                 })
                 .unwrap_or(cand.len());
-            // Trim trailing punctuation that commonly abuts a URL in prose.
-            let url = cand[..end].trim_end_matches(|c: char| {
-                matches!(c, '.' | ',' | ')' | ']' | '!' | '?' | ';' | ':')
-            });
+            // Trim trailing punctuation that commonly abuts a URL in prose,
+            // but keep a trailing `)`/`]` that is BALANCED inside the URL —
+            // Wikipedia-style paths (`/wiki/Rust_(programming_language)`,
+            // `_(disambiguation)`, `_(film)`) legitimately end in `)`. A blanket
+            // strip truncated those to a broken duplicate node.
+            let url = trim_trailing_url_punct(&cand[..end]);
             // Longer than the bare scheme, and not already collected.
             if url.len() > "https://".len() && !out.iter().any(|u| u == url) {
                 out.push(url.to_string());

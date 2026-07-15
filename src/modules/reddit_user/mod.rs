@@ -18,6 +18,12 @@
 //! here adds genuine cross-service agreement to the correlator's AU-045
 //! multi-service identity confirmation. Anonymous calls are rate-limited; the
 //! engine's circuit breaker trips on the 429 so a busy run stops re-hitting it.
+//!
+//! Both the bio and the user's `submitted.json` listing (post titles/self-text
+//! — real, unmoderated free text) are also run through the universal
+//! `found_keys`/`key_harvest` classifier: redditors occasionally paste a code
+//! snippet containing a live key/token in a self-text post. No extra fetch —
+//! both bodies are already in memory for the entity extraction above.
 
 use async_trait::async_trait;
 use serde::Deserialize;
@@ -28,7 +34,6 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
-use crate::util::extract::URL_RE;
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "reddit_user";
@@ -127,10 +132,11 @@ impl Module for RedditUser {
             return Ok(ModuleResult::new());
         };
 
+        let pool = crate::util::key_pool::global_pool();
         let mut result = ModuleResult::new();
-        result.entities = build_entities(data, &ctx.scan_id);
+        result.entities = build_entities(data, &ctx.scan_id, &pool);
 
-        let submitted = fetch_submitted(&ctx.http, handle, &ctx.scan_id).await;
+        let submitted = fetch_submitted(&ctx.http, handle, &ctx.scan_id, &pool).await;
         result.extend(submitted);
 
         Ok(result)
@@ -140,7 +146,11 @@ impl Module for RedditUser {
 /// Pure account→entity mapping. Separated from `process()` so every branch is
 /// unit-testable without I/O. Emits the confirmed Username with account metadata,
 /// the `verified` tag when set, and an Email and/or Url mined from the profile bio.
-pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
+pub(super) fn build_entities(
+    data: AboutData,
+    scan_id: &str,
+    pool: &crate::util::key_pool::KeyPool,
+) -> Vec<Entity> {
     let mut result = ModuleResult::new();
 
     let mut u = Entity::new(EntityKind::Username, &data.name, 0.90, scan_id);
@@ -178,8 +188,15 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             sr.public_description.as_deref().unwrap_or(""),
             sr.title.as_deref().unwrap_or("")
         );
+
+        // Also scan the bio for a leaked API key/credential via the universal
+        // `found_keys`/`key_harvest` classifier — the same one `web_crawler`/
+        // `username_search`/`wayback`/`hacker_news` run over their own
+        // fetched text. No extra fetch — `bio` is already in memory.
+        mine_keys_from_text(pool, &bio, &data.name, "bio");
+
         // Extract ALL emails from the bio (not just the first).
-        for email in crate::util::extract::emails(&bio).into_iter().take(5) {
+        for email in crate::util::extract::emails(&bio) {
             let mut e = Entity::new(EntityKind::Email, &email, 0.76, scan_id);
             e.tag("reddit");
             e.tag("public-profile");
@@ -190,12 +207,8 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
             result.push(e);
         }
         // Extract ALL URLs from the bio; also emit the host as a Domain entity.
-        let mut seen_urls: std::collections::HashSet<String> = std::collections::HashSet::new();
-        for m in URL_RE.find_iter(&bio).take(5) {
-            let link = m.as_str().trim_end_matches(['.', ',', ')']);
-            if !seen_urls.insert(link.to_string()) {
-                continue;
-            }
+        for link in crate::util::extract::urls(&bio) {
+            let link = link.as_str();
             let mut url_e = Entity::new(EntityKind::Url, link, 0.70, scan_id);
             url_e.tag("reddit");
             url_e.tag("personal-site");
@@ -226,7 +239,12 @@ pub(super) fn build_entities(data: AboutData, scan_id: &str) -> Vec<Entity> {
     result.entities
 }
 
-async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) -> Vec<Entity> {
+async fn fetch_submitted(
+    http: &reqwest::Client,
+    username: &str,
+    scan_id: &str,
+    pool: &crate::util::key_pool::KeyPool,
+) -> Vec<Entity> {
     let url = format!(
         "https://www.reddit.com/user/{}/submitted.json?limit=25",
         crate::util::http::urlencode(username)
@@ -250,17 +268,68 @@ async fn fetch_submitted(http: &reqwest::Client, username: &str, scan_id: &str) 
         return Vec::new();
     };
 
-    // Parse subreddit names from JSON without a full Deserialize struct; cap
-    // the length to skip pathological values, and dedup across the listing.
-    let subreddits: std::collections::HashSet<String> =
-        crate::util::json::scan_string_field(&body, "subreddit")
-            .into_iter()
-            .filter(|sub| sub.len() <= 50)
-            .collect();
+    // A user's post titles/self-text are real, unmoderated free text —
+    // redditors routinely paste code snippets in text posts, occasionally
+    // with a live key. Already-fetched bytes, no extra network cost.
+    mine_keys_from_text(pool, &body, username, "submitted");
+
+    submitted_entities(&body, username, scan_id)
+}
+
+/// Scan Reddit text (a bio or a `submitted.json` body) for a leaked API key
+/// via the universal `found_keys`/`key_harvest` classifier — the same one
+/// `web_crawler`/`username_search`/`wayback`/`hacker_news` run over their own
+/// fetched bodies — and pool any poolable hit. No network I/O of its own, so
+/// it's exercised directly by tests without mocking HTTP.
+fn mine_keys_from_text(
+    pool: &crate::util::key_pool::KeyPool,
+    text: &str,
+    username: &str,
+    source_label: &str,
+) {
+    use crate::util::found_keys::{MAX_TOKEN, key_tokens};
+    use crate::util::key_harvest::identify_api_key;
+
+    for token in key_tokens(text, MAX_TOKEN) {
+        if let Some((service, key_val)) = identify_api_key(token) {
+            let mut entry = crate::util::key_pool::KeyEntry::new(key_val);
+            entry.notes = Some(format!("Reddit {source_label} — user {username}"));
+            entry.status = crate::util::key_pool::KeyStatus::Untested;
+            entry.discovered_at = Some(crate::core::entity::unix_now());
+            entry.discovered_by = Some(format!("reddit_user:{username}"));
+            if pool.add(service, entry) {
+                tracing::info!(
+                    service,
+                    username,
+                    source_label,
+                    "API key discovered in Reddit content"
+                );
+            }
+        }
+    }
+}
+
+/// Emit one `Organisation` entity per distinct subreddit a user posts in, parsed
+/// from a `submitted.json` body. Pure and deterministic: the raw scan dedups
+/// through a `HashSet` (randomised iteration order), so the distinct set is
+/// sorted before emission — identical input always yields the identical entity
+/// set in the identical order. EVERY distinct subreddit is emitted: the caller's
+/// `limit=25` listing already bounds the set, so there is no flood to cap and a
+/// prior `.take(10)` was silently dropping (and non-deterministically selecting)
+/// real communities the handle participates in.
+fn submitted_entities(body: &str, username: &str, scan_id: &str) -> Vec<Entity> {
+    // Parse subreddit names from JSON without a full Deserialize struct; cap the
+    // length to skip pathological values, and dedup across the listing.
+    let mut subreddits: Vec<String> = crate::util::json::scan_string_field(body, "subreddit")
+        .into_iter()
+        .filter(|sub| sub.len() <= 50)
+        .collect::<std::collections::HashSet<String>>()
+        .into_iter()
+        .collect();
+    subreddits.sort_unstable();
 
     subreddits
         .into_iter()
-        .take(10)
         .map(|sub| {
             let mut org = Entity::new(EntityKind::Organisation, &sub, 0.40, scan_id);
             org.tag("subreddit");

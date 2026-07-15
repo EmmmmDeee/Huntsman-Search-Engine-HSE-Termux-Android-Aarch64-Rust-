@@ -126,6 +126,13 @@ fn seed_entity_kind(kind: TargetKind) -> Option<EntityKind> {
 /// and its temporal anchor and identity-level breach correlation can see it — not
 /// just the orphan paste URLs AU-043 counts. The module doc-comment's "marks the
 /// seed as paste-exposed" promise is now actually fulfilled.
+///
+/// The response's own `count` field (the server's authoritative match total) was
+/// previously parsed and silently discarded — only the locally deduped `data.len()`
+/// ever reached evidence. When the server reports more matches than this response
+/// actually carried, that gap is now surfaced as a `total_matches` attribute (and
+/// folded into the summary) rather than quietly understating the subject's real
+/// paste exposure.
 fn extract(
     resp: &SearchResp,
     term: &str,
@@ -177,29 +184,37 @@ fn extract(
     if paste_count == 0 {
         return;
     }
+    // The API's own `count` is the server's authoritative match total, distinct
+    // from `paste_count` (this response's `data` entries after id-dedup). They
+    // usually agree, but when the server reports MORE matches than this response
+    // actually carried (truncation/pagination upstream), silently keeping only
+    // `paste_count` would understate the subject's real exposure. Surface the
+    // disagreement honestly instead of either discarding `count` (data loss) or
+    // replacing `paste_count` with it (asserting URLs we never actually saw).
+    let total_matches = (resp.count as usize).max(paste_count);
     // The seed identity itself, re-emitted paste-exposed so the exposure attaches
     // to the subject (merges by value into the target entity), carrying the count
     // and the temporal anchor that the Url-only emission discarded.
     if let Some(seed_kind) = seed_entity_kind(kind) {
-        let summary = match earliest {
-            Some(d) => format!("{term} appears in {paste_count} public paste(s); earliest {d}"),
-            None => format!("{term} appears in {paste_count} public paste(s)"),
+        let summary = match (earliest, total_matches > paste_count) {
+            (Some(d), true) => format!(
+                "{term} appears in {paste_count} public paste(s) ({total_matches} reported by source); earliest {d}"
+            ),
+            (Some(d), false) => {
+                format!("{term} appears in {paste_count} public paste(s); earliest {d}")
+            }
+            (None, true) => {
+                format!(
+                    "{term} appears in {paste_count} public paste(s) ({total_matches} reported by source)"
+                )
+            }
+            (None, false) => format!("{term} appears in {paste_count} public paste(s)"),
         };
         let mut ev = Evidence::new(SRC, summary)
             .with_attr("search_term", term)
             .with_attr("paste_count", paste_count.to_string());
-        // psbdmp reports its own total-hit tally (`count`) in the response
-        // envelope. `paste_count` above is the DEDUPLICATED distinct-paste count
-        // we actually surface; when the provider's raw total EXCEEDS it, the
-        // search returned duplicate ids or a capped page, so the true exposure
-        // scale is larger than the distinct pastes shown. Surface that provider
-        // total only then — when it carries a genuine truncation/under-count
-        // signal — since an unconditional stamp would usually just echo
-        // `paste_count`. (Same "provider's own total" signal as netlas
-        // `result_count`, but gated because psbdmp normally returns all hits
-        // inline, so the two counts usually agree.)
-        if resp.count as usize > paste_count {
-            ev = ev.with_attr("provider_result_count", resp.count.to_string());
+        if total_matches > paste_count {
+            ev = ev.with_attr("total_matches", total_matches.to_string());
         }
         if let Some(d) = earliest {
             ev = ev.with_attr("earliest_paste", d);

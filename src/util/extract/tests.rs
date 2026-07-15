@@ -42,6 +42,30 @@ use super::*;
     }
 
     #[test]
+    fn urls_extracts_all_distinct_trimmed_in_order_uncapped() {
+        // Full fidelity: every distinct URL in a link-heavy bio surfaces — no
+        // silent first-N cap — with trailing sentence punctuation trimmed,
+        // deduped on the trimmed value, first-occurrence order preserved.
+        let bio = "sites: https://a.example/, https://b.example/p. \
+                   also https://c.example), https://d.example \
+                   mirror https://e.example/x https://f.example/y \
+                   dup https://a.example/ again";
+        assert_eq!(
+            urls(bio),
+            vec![
+                "https://a.example/".to_string(),
+                "https://b.example/p".to_string(),
+                "https://c.example".to_string(),
+                "https://d.example".to_string(),
+                "https://e.example/x".to_string(),
+                "https://f.example/y".to_string(),
+            ],
+            "all six distinct URLs, trimmed and deduped, not a capped five"
+        );
+        assert!(urls("no links here").is_empty());
+    }
+
+    #[test]
     fn phones_extracts_e164() {
         assert_eq!(phones("+61412345678"), ["+61412345678"]);
         assert_eq!(phones("call +1 (555) 123-4567"), ["+15551234567"]);
@@ -64,6 +88,17 @@ use super::*;
     fn page_emails_drops_asset_refs() {
         assert!(page_emails("logo@2x.png").is_empty());
         assert_eq!(page_emails("bob@example.com"), ["bob@example.com"]);
+    }
+
+    #[test]
+    fn page_emails_keeps_a_percent_in_the_local_part() {
+        // `%` is in the canonical EMAIL_RE local class; the byte-scanner must not
+        // truncate the mailbox at it (fail-before: yielded `percent@example.com`).
+        assert!(EMAIL_RE.is_match("with%percent@example.com"));
+        assert_eq!(
+            page_emails("mail with%percent@example.com now"),
+            ["with%percent@example.com"]
+        );
     }
 
     #[test]
@@ -98,9 +133,39 @@ use super::*;
             "user@localhost", // host has no dot
             "a b@c.com",      // embedded whitespace
             "",
+            // Domains the canonical EMAIL_RE (…\.[A-Za-z]{2,}) rejects but the
+            // field gate used to admit — an IP literal, a numeric pseudo-TLD, a
+            // one-char TLD, and a double-dot host — each of which minted a bogus
+            // Email entity that then poisoned correlation.
+            "admin@10.0.0.1",
+            "user@host.123",
+            "user@host.c",
+            "x@sub..example.com",
+            "user@.example.com",
         ] {
             assert!(!looks_like_email(junk), "{junk:?} must be rejected");
         }
+        // Consistency with the free-text scanner on the cases EMAIL_RE also
+        // rejects (no `\.[A-Za-z]{2,}` TLD): the field gate is never *more*
+        // permissive than the scanner. (The `..` case is one where the gate is
+        // deliberately *stricter* than the substring-matching EMAIL_RE, which is
+        // correct for an admission gate, so it is not asserted here.)
+        for e in ["admin@10.0.0.1", "user@host.123"] {
+            assert!(!EMAIL_RE.is_match(e), "EMAIL_RE agrees {e} is not an address");
+        }
+    }
+
+    #[test]
+    fn page_emails_rejects_ip_literal_and_numeric_tld_domains() {
+        // The HTML byte-scanner shared the field gate's blind spot: it carved a
+        // pseudo-address out of an IP literal or a numeric-TLD host. A valid
+        // address in the same text still extracts (no false negative).
+        assert!(page_emails("contact admin@10.0.0.1 now").is_empty());
+        assert!(page_emails("see user@host.123 here").is_empty());
+        assert_eq!(
+            page_emails("but real jane.doe@example.com posted"),
+            ["jane.doe@example.com"]
+        );
     }
 
     #[test]
@@ -136,6 +201,27 @@ use super::*;
         assert_eq!(macs("x aa:bb:cc:dd:ee:ff y aa:bb:cc:dd:ee:ff").len(), 1);
         // An IPv6 fragment (4-hex groups) is not a MAC.
         assert!(macs("2606:2800:220:1:248:1893:25c8:1946").is_empty());
+    }
+
+    #[test]
+    fn macs_does_not_carve_a_48bit_mac_out_of_a_longer_eui64_run() {
+        // The regex's word boundary treats the separator after the 6th octet as a
+        // boundary, so an 8-octet EUI-64 must NOT yield a spurious 48-bit MAC from
+        // its first (or middle) six octets — in either colon or hyphen form.
+        assert!(
+            macs("id aa:bb:cc:dd:ee:ff:00:11 end").is_empty(),
+            "no 48-bit MAC may be carved from an 8-octet colon run"
+        );
+        assert!(
+            macs("A4-B1-C2-00-11-22-33-44").is_empty(),
+            "no 48-bit MAC may be carved from an 8-octet hyphen run"
+        );
+        // A genuine standalone MAC flanked by non-separator punctuation still
+        // extracts — the fragment guard must not over-reject.
+        assert_eq!(
+            macs("(aa:bb:cc:dd:ee:ff)"),
+            vec!["aa:bb:cc:dd:ee:ff".to_string()]
+        );
     }
 
     #[test]
@@ -280,4 +366,53 @@ use super::*;
                 }
             }
         }
+    }
+
+    #[test]
+    fn iban_is_valid_enforces_registered_country_length() {
+        // Build an IBAN with correct mod-97 check digits for (country, bban) via
+        // the ISO 13616 "98 − mod97(bban+country+00)" construction, so we can
+        // isolate the LENGTH gate from the checksum gate.
+        fn make_iban(country: &str, bban: &str) -> String {
+            let rearranged = format!("{bban}{country}00");
+            let mut rem: u32 = 0;
+            for c in rearranged.chars() {
+                if let Some(d) = c.to_digit(10) {
+                    rem = (rem * 10 + d) % 97;
+                } else {
+                    rem = (rem * 100 + (c as u32 - 'A' as u32 + 10)) % 97;
+                }
+            }
+            let check = 98 - rem;
+            format!("{country}{check:02}{bban}")
+        }
+
+        // A correctly-sized GB IBAN (22 chars: GB + 2 check + 18 BBAN) is valid.
+        let good_gb = make_iban("GB", "WEST12345698765432");
+        assert_eq!(good_gb.len(), 22);
+        assert!(iban_is_valid(&good_gb));
+
+        // A GB-prefixed string with a SHORT (14-char) BBAN → 18 chars. It passes
+        // the mod-97 checksum by construction, so the old `len in 15..=34` gate
+        // accepted it — but GB IBANs are exactly 22, so it is not a real account
+        // and the registered-length gate now rejects it.
+        let short_gb = make_iban("GB", "WEST1234569876");
+        assert_eq!(short_gb.len(), 18);
+        assert!(
+            iban_mod97_valid(&short_gb),
+            "constructed to pass the checksum (the old gate would accept it)"
+        );
+        assert!(
+            !iban_is_valid(&short_gb),
+            "wrong length for GB (22) must be rejected: {short_gb}"
+        );
+        // …and end-to-end through the scanner.
+        assert!(ibans(&format!("pay {short_gb} now")).is_empty());
+
+        // An UNREGISTERED country code falls back to the 15..=34 spec range (never
+        // a false negative on a future registry addition): a 20-char ZZ IBAN with
+        // a valid checksum is still accepted.
+        let zz = make_iban("ZZ", "1234567890123456");
+        assert_eq!(zz.len(), 20);
+        assert!(iban_is_valid(&zz), "unknown CC falls back to the spec range");
     }

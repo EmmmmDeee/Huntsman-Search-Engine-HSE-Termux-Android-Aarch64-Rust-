@@ -19,6 +19,26 @@ fn is_breaker_failure_status(status: reqwest::StatusCode) -> bool {
     status.is_server_error() || status.as_u16() == 429
 }
 
+/// Append `chunk` to `buf` but never past `cap` total bytes, returning `true`
+/// once `buf` has reached `cap` (the caller should then stop reading).
+///
+/// The streaming body readers below must bound peak memory on a low-RAM Termux
+/// device against a hostile upstream. Extending `buf` by the WHOLE chunk and
+/// truncating afterwards (the previous shape) copies the entire chunk into RAM
+/// first — so a single multi-GB chunk blows the budget before the truncate ever
+/// runs. Copying only `cap - buf.len()` bytes makes the cap a real ceiling on
+/// `buf` regardless of any one chunk's size. Pure; unit-tested.
+fn append_capped(buf: &mut Vec<u8>, chunk: &[u8], cap: usize) -> bool {
+    let remaining = cap.saturating_sub(buf.len());
+    if chunk.len() >= remaining {
+        buf.extend_from_slice(&chunk[..remaining]);
+        true
+    } else {
+        buf.extend_from_slice(chunk);
+        false
+    }
+}
+
 /// Read up to 200 characters of a non-success response body, trim, and
 /// return a single-line string safe to embed in an error message.
 ///
@@ -47,9 +67,7 @@ pub async fn error_snippet(resp: reqwest::Response) -> String {
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => {
-                buf.extend_from_slice(&bytes);
-                if buf.len() >= SNIPPET_BYTES_CAP {
-                    buf.truncate(SNIPPET_BYTES_CAP);
+                if append_capped(&mut buf, &bytes, SNIPPET_BYTES_CAP) {
                     break;
                 }
             }
@@ -88,9 +106,7 @@ pub async fn read_body_capped(resp: reqwest::Response, cap: usize) -> Option<Str
     while let Some(chunk) = stream.next().await {
         match chunk {
             Ok(bytes) => {
-                buf.extend_from_slice(&bytes);
-                if buf.len() >= cap {
-                    buf.truncate(cap);
+                if append_capped(&mut buf, &bytes, cap) {
                     break;
                 }
             }
@@ -186,7 +202,7 @@ pub async fn fetch_json<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<T> {
-    match fetch_json_inner(client, module, url, false).await? {
+    match fetch_json_inner(client, module, url, &[]).await? {
         Some(data) => Ok(data),
         None => Err(Error::module(
             module,
@@ -208,7 +224,28 @@ pub async fn fetch_json_or_404<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Result<Option<T>> {
-    fetch_json_inner(client, module, url, true).await
+    fetch_json_inner(client, module, url, &[404]).await
+}
+
+/// Like [`fetch_json_or_404`] but treats **both** `400 Bad Request` and
+/// `404 Not Found` as the clean "no such resource" signal (`Ok(None)`).
+///
+/// Some APIs return `400` — not `404` — for a lookup whose subject simply does
+/// not exist: Bluesky's XRPC `getProfile` answers a non-existent handle with
+/// `400 {"error":"InvalidRequest","message":"Profile not found"}`. Under
+/// [`fetch_json_or_404`] that propagates as an `Error::module`, which the engine's
+/// per-module circuit breaker counts as a soft failure — so a name scan probing a
+/// handful of non-existent handles trips the breaker and suppresses the source for
+/// every REMAINING (possibly real) handle in the scan. Mapping `400` to a clean
+/// negative for these endpoints keeps a "not found" from masquerading as an
+/// outage. `429`/`5xx` still surface as errors (they must stay visible + trip the
+/// breaker). Live end-to-end testing (a username seed) caught this.
+pub async fn fetch_json_or_absent<T: DeserializeOwned>(
+    client: &reqwest::Client,
+    module: &'static str,
+    url: &str,
+) -> Result<Option<T>> {
+    fetch_json_inner(client, module, url, &[400, 404]).await
 }
 
 /// A *speculative well-known probe*: like [`fetch_json_or_404`], but ALSO treats
@@ -237,7 +274,7 @@ pub async fn fetch_json_probe<T: DeserializeOwned>(
     module: &'static str,
     url: &str,
 ) -> Option<T> {
-    match fetch_json_inner(client, module, url, true).await {
+    match fetch_json_inner(client, module, url, &[404]).await {
         Ok(opt) => opt,
         Err(e) => {
             tracing::debug!(
@@ -299,7 +336,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
     client: &reqwest::Client,
     module: &'static str,
     url: &str,
-    map_404_to_none: bool,
+    absent_statuses: &[u16],
 ) -> Result<Option<T>> {
     // Per-host circuit breaker (see `breaker_gate`): short-circuit a host that has failed
     // repeatedly so a dead/flaky endpoint stops burning budget on every fan-out target. A
@@ -310,7 +347,7 @@ async fn fetch_json_inner<T: DeserializeOwned>(
         Ok(resp) => {
             let status = resp.status();
             record_breaker_outcome(host.as_deref(), status);
-            if map_404_to_none && status.as_u16() == 404 {
+            if absent_statuses.contains(&status.as_u16()) {
                 return Ok(None);
             }
             if !status.is_success() {
@@ -350,6 +387,15 @@ async fn fetch_json_inner<T: DeserializeOwned>(
 /// of seconds to wait. Falls back to `default_secs` if absent or
 /// unparseable, and is clamped to `max_secs`.
 ///
+/// Only the RFC 9110 §10.2.3 *delay-seconds* form (`Retry-After: 120`) is
+/// honoured. The alternative *HTTP-date* form (`Retry-After: Wed, 21 Oct 2015
+/// 07:28:00 GMT`) is deliberately treated as unparseable → `default_secs`,
+/// rather than pull a date-parsing dependency into a `forbid(unsafe)`,
+/// pinned-dep crate for a marginal timing gain. This is safe: the result is a
+/// lower-bound hint, every caller clamps it to `max_secs`, and the worst case is
+/// one early retry that re-observes the 429 — never an over-long sleep that the
+/// engine would kill mid-`process()`.
+///
 /// `max_secs` is mandatory because the wait happens *inside* a module's
 /// `process()` call, which the engine kills at `max_timeout_ms`. A blanket
 /// 120s cap (the previous behaviour) let a server-supplied `Retry-After`
@@ -363,10 +409,24 @@ pub fn retry_after_secs(
     default_secs: u64,
     max_secs: u64,
 ) -> u64 {
-    headers
-        .get("retry-after")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|s| s.parse::<u64>().ok())
+    parse_retry_after_secs(
+        headers.get("retry-after").and_then(|v| v.to_str().ok()),
+        default_secs,
+        max_secs,
+    )
+}
+
+/// The delay-seconds parsing/clamping [`retry_after_secs`] does, extracted as
+/// a pure function over an already-extracted header VALUE string rather than
+/// a `reqwest::header::HeaderMap` — so a module whose HTTP client isn't
+/// reqwest (e.g. a raw `curl` subprocess with its own header-capture) can
+/// honour a real `Retry-After` too, instead of hand-rolling its own parse or
+/// ignoring the header entirely. See [`retry_after_secs`]'s own doc comment
+/// for why `max_secs` is mandatory (a module's own timeout budget, not a
+/// blanket ceiling).
+pub fn parse_retry_after_secs(value: Option<&str>, default_secs: u64, max_secs: u64) -> u64 {
+    value
+        .and_then(|s| s.trim().parse::<u64>().ok())
         .unwrap_or(default_secs)
         .min(max_secs)
 }
@@ -524,4 +584,108 @@ pub async fn fetch_keyed_json<T: DeserializeOwned>(
         return Ok(None);
     };
     Ok(Some(decode_json_body(resp, module).await?))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::append_capped;
+
+    #[test]
+    fn append_capped_bounds_a_single_oversized_chunk_to_the_cap() {
+        // The whole point of the fix: one hostile multi-MB chunk must NOT be fully
+        // copied into RAM before being truncated — only `cap` bytes are ever
+        // appended, and the caller is told to stop.
+        let mut buf: Vec<u8> = Vec::new();
+        let huge = vec![0xABu8; 1_000_000];
+        assert!(
+            append_capped(&mut buf, &huge, 8 * 1024),
+            "reaching the cap must signal the caller to stop"
+        );
+        assert_eq!(
+            buf.len(),
+            8 * 1024,
+            "buf must be bounded exactly to the cap"
+        );
+    }
+
+    #[test]
+    fn append_capped_accumulates_small_chunks_until_the_cap() {
+        let mut buf: Vec<u8> = Vec::new();
+        // Below the cap: fully appended, keep reading.
+        assert!(!append_capped(&mut buf, b"abc", 8));
+        assert_eq!(buf.len(), 3);
+        assert!(!append_capped(&mut buf, b"de", 8));
+        assert_eq!(buf.len(), 5);
+        // The chunk that reaches the cap is trimmed to the remaining space and
+        // signals stop; nothing past `cap` is retained.
+        assert!(append_capped(&mut buf, b"fghijkl", 8));
+        assert_eq!(buf, b"abcdefgh", "exactly `cap` bytes, in order");
+    }
+
+    #[test]
+    fn append_capped_is_a_noop_once_already_at_cap() {
+        // Defensive: `cap - buf.len()` must not underflow if buf is already full.
+        let mut buf: Vec<u8> = vec![1, 2, 3, 4];
+        assert!(append_capped(&mut buf, b"more", 4));
+        assert_eq!(buf, vec![1, 2, 3, 4], "nothing appended past a full buffer");
+    }
+
+    use proptest::prelude::*;
+
+    proptest! {
+        /// The hostile-upstream memory ceiling, machine-proved for ALL inputs.
+        ///
+        /// `append_capped` is the OOM guard the whole module rests on:
+        /// `read_body_capped` / `error_snippet` fold it over a byte stream from an
+        /// untrusted upstream, and its ONLY job is to keep peak RAM bounded on a
+        /// low-memory Termux device. The three example tests above cover single
+        /// calls; this drives it exactly as the readers do — an arbitrary sequence
+        /// of arbitrary chunks accumulated from an empty buffer, stopping the moment
+        /// a call signals "cap reached" — and asserts, for every input:
+        ///   1. `buf.len()` NEVER exceeds `cap` after any call (the ceiling);
+        ///   2. the stop signal is returned *exactly* when the buffer first fills to
+        ///      `cap` — never early, never late;
+        ///   3. the retained bytes are precisely the first `min(total, cap)` bytes of
+        ///      the concatenated stream, in order (no truncation off-by-one, no
+        ///      reordering, no corruption).
+        /// Includes the corner inputs the examples can't enumerate: `cap == 0`, empty
+        /// chunks, a chunk that lands exactly on the boundary, and many small chunks
+        /// followed by one oversized one.
+        #[test]
+        fn append_capped_upholds_the_memory_ceiling_over_any_chunk_stream(
+            chunks in proptest::collection::vec(
+                proptest::collection::vec(any::<u8>(), 0..64),
+                0..32,
+            ),
+            cap in 0usize..256,
+        ) {
+            let mut buf: Vec<u8> = Vec::new();
+            let mut consumed: Vec<u8> = Vec::new();
+            let mut stopped = false;
+            for chunk in &chunks {
+                let full = append_capped(&mut buf, chunk, cap);
+                consumed.extend_from_slice(chunk);
+                // (1) The ceiling holds after every call, whatever the chunk size.
+                prop_assert!(buf.len() <= cap, "buf {} exceeded cap {}", buf.len(), cap);
+                if full {
+                    // (2) A stop is signalled only when the buffer is exactly full;
+                    // the reader breaks here and offers no further chunk.
+                    prop_assert_eq!(buf.len(), cap);
+                    stopped = true;
+                    break;
+                }
+            }
+            // (3) Content == the in-order, cap-truncated prefix of what was consumed.
+            let kept = consumed.len().min(cap);
+            prop_assert_eq!(&buf[..], &consumed[..kept]);
+            // A stream that filled the buffer must have offered at least `cap` bytes;
+            // one that didn't stop must have fit entirely under the cap.
+            if stopped {
+                prop_assert_eq!(buf.len(), cap);
+            } else {
+                prop_assert_eq!(buf.len(), consumed.len());
+                prop_assert!(consumed.len() <= cap);
+            }
+        }
+    }
 }

@@ -1,11 +1,27 @@
-//! OpenCorporates — Australian company and officer/director lookup.
+//! OpenCorporates — global company and officer/director lookup (~140
+//! jurisdictions), with an Australia-only restriction applied solely to
+//! `AbnAcn` targets.
 //!
 //! Two endpoints sharing the same auth:
-//!   * Company search:  `GET /v0.4/companies/search?q={name}&jurisdiction_code=au`
-//!   * Officer search:  `GET /v0.4/officers/search?q={name}&jurisdiction_code=au`
+//!   * Company search:  `GET /v0.4/companies/search?q={name}`
+//!   * Officer search:  `GET /v0.4/officers/search?q={name}`
 //!
-//! Auth:     Optional API Token (`HUNTSMAN_OPENCORP_KEY`). Free tier requires
-//!           a key since late 2023; without one all requests return 401.
+//! `jurisdiction_code=au` is appended ONLY for an `AbnAcn` target — an
+//! Australian Business/Company Number is Australian by construction, so it
+//! could never appear in a non-AU registry, and restricting the search saves
+//! API quota. `Organisation`/`FullName` targets carry no jurisdiction signal,
+//! so they search OpenCorporates' full index rather than assuming AU — the
+//! entity-mapping ([`build_company_entities`]/[`build_officer_entities`]) is
+//! already jurisdiction-agnostic: it mints the AU-specific `AbnAcn`/
+//! `country:AU` tag only when the response itself reports
+//! `jurisdiction_code == "au"`, regardless of what was searched.
+//!
+//! Auth:     Required API Token (`HUNTSMAN_OPENCORP_KEY`, sent as
+//!           `&api_token=`). OpenCorporates withdrew its keyless public tier
+//!           in late 2023 — every unauthenticated request now returns
+//!           `401 {"error":{"message":"Invalid Api Token…"}}` — so the module
+//!           is [`ModuleCost::KeyGated`]: an unconfigured scan is a clean
+//!           "needs key" skip rather than a silent no-op.
 //!
 //! Company search is used for `Organisation`/`AbnAcn` targets; officer search
 //! is used for `FullName` targets to find companies where the person serves as
@@ -148,6 +164,38 @@ pub(super) fn build_company_entities(co: &OcCompany, total: u64, scan_id: &str) 
     }
 
     out
+}
+
+/// Build the OpenCorporates search URL for `target_kind`/`query` (the auth
+/// token, if any, is appended separately by the caller). **Pure** — see the
+/// module doc for why `jurisdiction_code=au` is appended only for an `AbnAcn`
+/// target and omitted (searching all ~140 jurisdictions) for `Organisation`/
+/// `FullName`.
+pub(super) fn build_search_url(target_kind: TargetKind, query: &str) -> String {
+    let endpoint = if target_kind == TargetKind::FullName {
+        "officers"
+    } else {
+        "companies"
+    };
+    let jurisdiction_param = if target_kind == TargetKind::AbnAcn {
+        "&jurisdiction_code=au"
+    } else {
+        ""
+    };
+    format!(
+        "https://api.opencorporates.com/v0.4/{endpoint}/search?q={}{jurisdiction_param}&per_page={PER_PAGE}",
+        urlencode(query),
+    )
+}
+
+/// Whether this HTTP status means the configured key itself should be
+/// reported to the pool: 401/403 (bad/expired key → `Invalid`) or 429
+/// (rate-limited → `RateLimited`, its own recoverable cooldown window) —
+/// `report_key_exhausted` tells the two apart from the status value itself.
+/// 404 is a genuine no-match and reports nothing. Pure so this three-way
+/// routing is unit-testable without a live HTTP call.
+pub(super) fn should_report_key_status(status: u16) -> bool {
+    matches!(status, 401 | 403 | 429)
 }
 
 /// Officer search response: `/v0.4/officers/search`.
@@ -330,15 +378,22 @@ impl Module for OpenCorporates {
         "opencorporates"
     }
     fn description(&self) -> &'static str {
-        "OpenCorporates company/director search with Australian jurisdiction focus"
+        "OpenCorporates global company/director search (AU-restricted for AbnAcn lookups)"
     }
     fn priority(&self) -> u8 {
         // Government / public-records band (110-118): company registry, dispatched
         // just below abn_lookup and above the generic free modules.
         116
     }
+    /// Key-gated: OpenCorporates withdrew its keyless public tier (late 2023) —
+    /// every unauthenticated request now returns `401 {"error":{"message":
+    /// "Invalid Api Token…"}}` (live-confirmed). While classified `Free` the
+    /// module fired a doomed keyless request on every scan and swallowed the
+    /// 401 into an empty result, so the operator was never told a key was
+    /// required. `KeyGated` makes an unconfigured scan a clean "needs key" skip
+    /// and lets `--free-only` skip it up front.
     fn cost(&self) -> ModuleCost {
-        ModuleCost::Free
+        ModuleCost::KeyGated
     }
     fn accepts(&self, t: &Target) -> bool {
         matches!(
@@ -384,22 +439,13 @@ impl Module for OpenCorporates {
         // organisation names and ABN/ACN numbers pivot through company search.
         let use_officer_search = target.kind == TargetKind::FullName;
 
-        let base = if use_officer_search {
-            format!(
-                "https://api.opencorporates.com/v0.4/officers/search?q={}&jurisdiction_code=au&per_page={PER_PAGE}",
-                urlencode(query),
-            )
-        } else {
-            format!(
-                "https://api.opencorporates.com/v0.4/companies/search?q={}&jurisdiction_code=au&per_page={PER_PAGE}",
-                urlencode(query),
-            )
-        };
-
-        let mut url = base;
-        if let Some(key) = ctx.key_opt(KEY_ENV) {
-            url.push_str(&format!("&api_token={}", urlencode(key)));
-        }
+        // Key-gated (the keyless tier was withdrawn): an unconfigured key
+        // returns `Error::MissingKey`, which the dispatch finaliser renders as
+        // a clean "needs key" skip with the signup hint — NOT the silent
+        // 401-swallow the pre-fix `key_opt` path produced on every scan.
+        let key = ctx.key(KEY_ENV)?;
+        let mut url = build_search_url(target.kind, query);
+        url.push_str(&format!("&api_token={}", urlencode(key)));
 
         let resp = ctx
             .http
@@ -409,15 +455,22 @@ impl Module for OpenCorporates {
             .await?;
 
         let status = resp.status();
-        // Graceful no-op statuses. OpenCorporates' v0.4 search now answers 401
-        // (sometimes 403) to unauthenticated callers — its keyless public tier
-        // was withdrawn — so on a no-key scan this means "nothing to do", not an
-        // error worth a WARN (observed live: a keyless FullName scan logged
-        // `module error … HTTP 401 Unauthorized`). 404 = no match, 429 = rate
-        // limited. All degrade to an empty result (the module is best-effort).
-        // A *configured* key that gets 401/403 is a bad key, also nothing to
-        // surface as a scan error — the key pool handles key health separately.
-        if matches!(status.as_u16(), 401 | 403 | 404 | 429) {
+        // A configured key that gets 401/403 is bad/expired, and a 429 means
+        // it's rate-limited — report all three to the key pool for rotation
+        // (401/403 were already reported; 429 was previously NOT, the one
+        // inconsistency in this three-way handling despite
+        // `is_keyed_error_status` grouping all three together — see
+        // `should_report_key_status`). `report_key_exhausted` itself tells a
+        // 429 (`RateLimited`, its own per-service cooldown window) apart from
+        // a genuine 401/403 (`Invalid`), so the key recovers automatically
+        // instead of this module silently degrading with no signal anywhere
+        // that the key is currently rate-limited. 404 = a genuine no-match,
+        // the only case that stays a plain empty result with no report.
+        if should_report_key_status(status.as_u16()) {
+            ctx.report_key_exhausted(SRC, key, status.as_u16());
+            return Ok(ModuleResult::new());
+        }
+        if status.as_u16() == 404 {
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {

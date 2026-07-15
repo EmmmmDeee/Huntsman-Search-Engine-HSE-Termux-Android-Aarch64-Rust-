@@ -162,8 +162,8 @@ async fn curl_exec(
         cmd.args(["-d", data]);
     }
 
-    // Override (from the proxy pool) wins; otherwise rotate through the
-    // HUNTSMAN_SEARCH_PROXY list (single value behaves as before).
+    // An explicit override (from `fetch_via_proxy`) wins; otherwise rotate
+    // through the HUNTSMAN_SEARCH_PROXY list (single value behaves as before).
     let proxy = proxy_override
         .map(str::to_string)
         .or_else(rotating_search_proxy);
@@ -212,12 +212,6 @@ pub async fn fetch(url: &str, timeout_ms: u64) -> Option<String> {
 /// Fetch with a specific User-Agent string.
 pub async fn fetch_with_ua(url: &str, timeout_ms: u64, ua: &str) -> Option<String> {
     curl_exec(url, timeout_ms, ua, None, None).await
-}
-
-/// POST form data to a URL via curl subprocess. Returns the response body
-/// on success, None on any error (timeout, non-zero exit, missing curl).
-pub async fn fetch_post(url: &str, data: &str, timeout_ms: u64) -> Option<String> {
-    curl_exec(url, timeout_ms, UA_MOBILE, Some(data), None).await
 }
 
 /// POST form data with a specific User-Agent string.

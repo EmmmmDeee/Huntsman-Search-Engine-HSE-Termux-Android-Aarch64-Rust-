@@ -101,7 +101,8 @@ pub(in crate::modules::search_engines) fn score_username(
         .trim_start_matches("www.")
         .trim_start_matches("m.")
         .trim_start_matches("mobile.");
-    if ql.contains(&format!("site:{host_base}")) {
+    let site_query_hit = ql.contains(&format!("site:{host_base}"));
+    if site_query_hit {
         score += 1;
     }
 
@@ -138,6 +139,40 @@ pub(in crate::modules::search_engines) fn score_username(
     let multi_part_name = terms.len() >= 2;
     let anchored = signal1 || people_search_hit;
     let score = if multi_part_name && !anchored {
+        score.min(2)
+    } else {
+        score
+    };
+
+    // Precision gate: a compound candidate (e.g. "tackle_world_lawnton") whose
+    // OTHER parts don't belong to the subject's own name at all is the shape of
+    // an unrelated business/place-name phrase that merely contains the surname
+    // as a substring — not a personal handle — even though Signal 1 (the bare
+    // surname-anchor match) fires on it exactly as a real "firstname_lastname"
+    // handle would. Live scan evidence: a real "Tackle World Lawnton"
+    // fishing-tackle retailer (named after the Lawnton suburb, unrelated to the
+    // subject "Brett Lawnton") reached PROBABLE via Signal 1 alone — and Signals
+    // 3/5 ALSO fired, since a business's own page about itself naturally
+    // contains its own name/slug too, the same surname-substring confound
+    // counted twice more — then got recycled into a further search purely
+    // because "lawnton" is a substring, pulling the business's web presence
+    // into the subject's identity graph. Only a signal genuinely INDEPENDENT of
+    // surname-substring text matching should be able to override this gate:
+    // people-search provenance (Signal 2, from the HOST, not text content) or
+    // an explicit platform-targeted query (Signal 4, from the QUERY structure).
+    // Signals 3/5 don't count — they're driven by the same surname text the
+    // business page legitimately contains about itself, not independent
+    // evidence the candidate is a personal handle. A genuine "brett_lawnton" is
+    // unaffected either way (no foreign part).
+    let has_foreign_part = signal1
+        && parts.iter().any(|p| {
+            !terms.iter().any(|t| {
+                let tl = t.to_lowercase();
+                p.contains(tl.as_str()) || tl.contains(*p)
+            })
+        });
+    let independently_corroborated = people_search_hit || site_query_hit;
+    let score = if has_foreign_part && !independently_corroborated {
         score.min(2)
     } else {
         score

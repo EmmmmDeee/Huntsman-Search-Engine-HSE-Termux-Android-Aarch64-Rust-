@@ -23,6 +23,26 @@ place · ⚒ shipped this cycle · ⚠ open/recommended).
 > is [`PROBLEM_TREE.md`](PROBLEM_TREE.md). The methodology and trees T1–T11 remain
 > valid; treat count/profile claims as historical unless corrected inline.
 
+> **Re-audit (2026-07-06).** A fresh top-down re-run of these trees against the
+> current tree (11-branch multi-agent fault-tree workflow, every finding
+> adversarially verified for reachability and checked against existing guards)
+> found **8 residual defects**, all fixed the same day — see the
+> [`PROBLEM_TREE.md`](PROBLEM_TREE.md) §8 log entry (nodes FT.1–FT.8). Note the
+> stale "only residual gaps are T2.8/T2.9" line in the 2026-06-17 note above is
+> **superseded**: T2.8 and T2.9 were both closed on 2026-06-17. The 2026-07-06
+> findings, by tree: **T2/E2.4** (path-embedded own-key leaked into the raw
+> archive → `own_api_keys()` exclusion in `describe_url`); **T5/E5.2** (cache-
+> replay observation mis-attribution → re-stamp replayed entities to the current
+> `scan_id`); **T6/B6.1.3** (typosquat session-dedup set never reset per scan →
+> `reset_per_scan` hook); **T5/E5.1** (`au_postcode` read a stray value digit-run
+> as a postcode on non-Address kinds → gate value-scan to Address); **T5** (CSV
+> formula-guard not reversed on re-import → strip on import); **T1** (cell-tower
+> ID mis-detected as Phone → detector reorder); **T3/E3.2** (`report.json`
+> handler blocked the reactor → `spawn_blocking`); **T6** (O(k·n) inline-block
+> stripping on untrusted SERP bytes → O(n)). The methodology stands: the trees
+> are a point-in-time analysis and must be **re-run, not assumed** — which is
+> exactly how each of these was caught.
+
 The system remains healthy: `clippy -D warnings` clean, `fmt --check` clean,
 `#![forbid(unsafe_code)]` crate-wide, MSRV 1.88, and an aarch64-Android
 cross-build in CI. The trees emphasise **residual** and **latent** risk and the

@@ -39,6 +39,7 @@ pub mod relation;
 pub mod resolve;
 pub mod roi;
 pub mod scan;
+pub mod stealer_row;
 pub mod tags;
 #[cfg(test)]
 pub mod test_support;

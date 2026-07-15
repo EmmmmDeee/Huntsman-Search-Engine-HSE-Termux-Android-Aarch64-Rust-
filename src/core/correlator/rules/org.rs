@@ -458,7 +458,7 @@ fn has_direct_connect_label(host: &str) -> bool {
         .is_some_and(|label| DIRECT_CONNECT_LABELS.contains(&label))
 }
 
-/// AU-111 — CDN origin-candidate unmasking via a non-proxied sibling.
+/// AU-113 — CDN origin-candidate unmasking via a non-proxied sibling.
 ///
 /// A site fronted by a CDN/anycast edge (Cloudflare, etc.) hides its true
 /// origin IP from a direct `A`/`AAAA` lookup of the apex — but an MX record or
@@ -484,7 +484,11 @@ fn has_direct_connect_label(host: &str) -> bool {
 /// IP. Severity Medium — a strong lead, not a confirmed unmasking (the
 /// sibling's IP may be a distinct backend, not the apex's own origin).
 /// Deterministic: registrable-domain groups and sibling/candidate lists sorted.
-pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
+/// Sibling signal: AU-111 (`rules::infra`) unmasks the same CDN-origin
+/// question from an SPF-authorised-mail-sender angle instead of a
+/// direct-connect subdomain — kept independent per the technique-diversity
+/// principle (TA0043), not merged; see AU-111's own doc comment.
+pub(in crate::core::correlator) fn rule_au_113_direct_connect_origin_candidate(
     entities: &[Entity],
     relations: &[Relation],
     scan_id: &str,
@@ -575,7 +579,7 @@ pub(in crate::core::correlator) fn rule_au_111_cdn_origin_candidate(
             uids.extend(candidate_ips.iter().map(|ip| ip.uid.clone()));
 
             out.push(Correlation::new(
-                "AU-111",
+                "AU-113",
                 "CDN origin-candidate — non-proxied sibling leaks the real IP",
                 Severity::Medium,
                 format!(

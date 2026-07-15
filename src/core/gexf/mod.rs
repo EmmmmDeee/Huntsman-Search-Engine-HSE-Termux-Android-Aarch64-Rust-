@@ -55,10 +55,24 @@ pub fn entities_to_gexf(entities: &[Entity], relations: &[Relation], scan_id: &s
     //   2. Shared-evidence co-occurrence edges, labelled by the shared sources.
     // Edge ids are assigned sequentially: relation edges first, then the
     // co-occurrence edges continue the same counter.
+    //
+    // A relation edge is emitted only when BOTH its endpoints are among the nodes
+    // written above. A caller that passes a filtered entity subset (e.g. the
+    // exports that drop quarantined `candidate` rows) but the full relation set
+    // would otherwise emit an `<edge>` referencing an undeclared node id —
+    // structurally-invalid GEXF that Gephi rejects. Enforcing it here makes
+    // "every edge references a declared node" an invariant of the serializer, so
+    // no caller can produce a dangling edge regardless of which subset it passes.
+    // (Co-occurrence edges are built only from `entities`, so they are always
+    // in-set by construction.)
+    let node_ids: std::collections::HashSet<&str> =
+        entities.iter().map(|e| short_uid(&e.uid)).collect();
     let _ = writeln!(xml, r#"    <edges>"#);
     let mut edge_id = 0u64;
     for r in relations {
-        write_relation_edge(&mut xml, r, &mut edge_id);
+        if node_ids.contains(short_uid(&r.from_uid)) && node_ids.contains(short_uid(&r.to_uid)) {
+            write_relation_edge(&mut xml, r, &mut edge_id);
+        }
     }
     write_shared_evidence_edges(&mut xml, entities, &mut edge_id);
     let _ = writeln!(xml, r#"    </edges>"#);
@@ -77,7 +91,13 @@ fn write_preamble(xml: &mut String, scan_id: &str) {
     let _ = writeln!(xml, r#"<gexf xmlns="http://gexf.net/1.3" version="1.3">"#);
     let _ = writeln!(xml, r#"  <meta>"#);
     let _ = writeln!(xml, r#"    <creator>Huntsman Search Engine</creator>"#);
-    let _ = writeln!(xml, r#"    <description>Scan {scan_id}</description>"#);
+    // `scan_id` is XML *text* content here: escape it so a metachar (`<`/`&`)
+    // can't break the whole document (defence-in-depth — scan ids are UUIDs today).
+    let _ = writeln!(
+        xml,
+        r#"    <description>Scan {}</description>"#,
+        xml_escape(scan_id)
+    );
     let _ = writeln!(xml, r#"  </meta>"#);
     let _ = writeln!(xml, r#"  <graph defaultedgetype="directed" mode="static">"#);
 
@@ -129,7 +149,14 @@ fn write_node(xml: &mut String, e: &Entity, coreness: usize) {
         short_uid(&e.uid)
     );
     let _ = writeln!(xml, r#"        <attvalues>"#);
-    let _ = writeln!(xml, r#"          <attvalue for="0" value="{}"/>"#, e.kind);
+    // The `kind` attvalue must be escaped: `EntityKind::Other(s)` renders as
+    // `other:<s>` where `s` is data-derived and can carry `<`/`&`/`"`, which
+    // would otherwise break this attribute (and the whole node) in Gephi.
+    let _ = writeln!(
+        xml,
+        r#"          <attvalue for="0" value="{}"/>"#,
+        xml_escape(&e.kind.to_string())
+    );
     let _ = writeln!(
         xml,
         r#"          <attvalue for="1" value="{:.3}"/>"#,
@@ -175,36 +202,58 @@ fn write_relation_edge(xml: &mut String, r: &Relation, edge_id: &mut u64) {
 }
 
 /// Shared-evidence co-occurrence edges: for every unordered entity pair that
-/// shares ≥1 **corroborating** evidence source, an edge weighted by the
-/// shared-source count and labelled by the joined source names. Advances
+/// shares ≥1 corroborating evidence **record**, an edge weighted by the
+/// shared-record count and labelled by the joined source names. Advances
 /// `edge_id` per emitted edge.
 ///
-/// Uses [`Entity::corroborating_sources`], not `evidence_sources`: the
-/// non-corroborating passes are not co-occurrence. `name_intel` is the seed's
-/// permutation engine and `recall` / `cross_scan_history` are replays of a prior
-/// observation — keying on them would wire every name-derived candidate (and every
-/// recalled entity) to every other into a dense web of false "related" clusters
-/// that swamps the genuine structure in Gephi. Two entities genuinely co-occur
-/// when an INDEPENDENT source named them both; their seed-derivation lineage is
-/// already carried, correctly, by the typed `DerivedFrom` relation edges.
+/// Keys on [`Entity::corroborating_records`] — the `(source, summary)` pair —
+/// NOT the bare source name ([`Entity::corroborating_sources`]) and NOT
+/// `evidence_sources`. Two entities genuinely co-occur only when an INDEPENDENT
+/// source named them both in the SAME finding:
+///
+/// * The non-corroborating passes are excluded already (record inherits the
+///   source filter): `name_intel` is the seed's permutation engine and
+///   `recall` / `cross_scan_history` are replays of a prior observation.
+/// * The record-level key additionally defeats one-to-many *fan-out
+///   enumeration*. A probe like `username_search` checks a single handle across
+///   dozens of platforms, emitting a distinct entity + distinct per-platform
+///   summary each; those are independent existence-proofs of one selector, not a
+///   joint sighting. Keyed on the source NAME they all shared `username_search`
+///   and wired into a false N-clique that swamped the genuine structure in Gephi
+///   (on a real username scan this was ~80% of all export edges — the exact
+///   "dense web of false clusters" this edge kind is meant to avoid); keyed on
+///   the record their differing summaries draw no edge.
+///
+/// A real joint record — both selectors in the same breach dump (identical
+/// `("hibp", "Breach 'Apollo'")`) or extracted from the same crawled page — is
+/// shared verbatim, so the true co-occurrence edge survives. Seed-derivation
+/// lineage remains carried, correctly, by the typed `DerivedFrom` relation edges.
 fn write_shared_evidence_edges(xml: &mut String, entities: &[Entity], edge_id: &mut u64) {
     for (i, src) in entities.iter().enumerate() {
-        let src_sources = src.corroborating_sources();
+        let src_records = src.corroborating_records();
         for tgt in entities.iter().skip(i + 1) {
-            let tgt_sources = tgt.corroborating_sources();
-            let mut shared: Vec<&str> = src_sources.intersection(&tgt_sources).copied().collect();
-            shared.sort_unstable(); // deterministic edge label (HashSet order is not stable)
-            if !shared.is_empty() {
-                let _ = writeln!(
-                    xml,
-                    r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{}.0" label="{}"/>"#,
-                    short_uid(&src.uid),
-                    short_uid(&tgt.uid),
-                    shared.len(),
-                    xml_escape(&shared.join(", "))
-                );
-                *edge_id += 1;
+            let tgt_records = tgt.corroborating_records();
+            let shared: Vec<(&str, &str)> =
+                src_records.intersection(&tgt_records).copied().collect();
+            if shared.is_empty() {
+                continue;
             }
+            // Weight = number of shared records (strength of the joint sighting).
+            // Label = the DISTINCT source names among those records, sorted for a
+            // deterministic, readable Gephi label (HashSet order is not stable;
+            // two entities can share several records from one source).
+            let mut labels: Vec<&str> = shared.iter().map(|&(s, _)| s).collect();
+            labels.sort_unstable();
+            labels.dedup();
+            let _ = writeln!(
+                xml,
+                r#"      <edge id="{edge_id}" source="{}" target="{}" weight="{}.0" label="{}"/>"#,
+                short_uid(&src.uid),
+                short_uid(&tgt.uid),
+                shared.len(),
+                xml_escape(&labels.join(", "))
+            );
+            *edge_id += 1;
         }
     }
 }

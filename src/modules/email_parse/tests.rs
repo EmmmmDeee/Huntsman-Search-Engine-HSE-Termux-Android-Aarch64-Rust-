@@ -9,7 +9,6 @@ fn ctx() -> ModuleContext {
         http: crate::util::http::build_client(),
         keys: HashMap::default(),
         cancel: crate::core::cancel::CancelHandle::new(),
-        proxy_pool: std::sync::Arc::new(crate::util::proxy::ProxyPool::new()),
     }
 }
 
@@ -98,6 +97,30 @@ async fn derives_multiple_username_candidates() {
         .collect();
     assert!(usernames.contains(&"john"));
     assert!(usernames.contains(&"doe"));
+}
+
+#[tokio::test]
+async fn username_candidates_emerge_in_deterministic_sorted_order() {
+    // A two-token corporate local part exercises every derivation branch
+    // (detag, strip, collapse, split, initial-blend) so the candidate
+    // HashSet holds several entries — enough that an unsorted iteration
+    // would very likely disagree with the sorted order across the HashSet's
+    // randomised per-process seed.
+    let t = Target::new(TargetKind::Email, "john.doe+work42@example.com");
+    let r = EmailParse.process(&t, &ctx()).await.unwrap();
+    let usernames: Vec<&str> = r
+        .entities
+        .iter()
+        .filter(|e| e.kind == EntityKind::Username)
+        .map(|e| e.value.as_str())
+        .collect();
+    let mut sorted = usernames.clone();
+    sorted.sort_unstable();
+    assert_eq!(
+        usernames, sorted,
+        "username candidates must emerge in sorted, deterministic order"
+    );
+    assert!(usernames.len() > 1, "expected multiple derived candidates");
 }
 
 // ── Shared / merged tests ──────────────────────────────────────────

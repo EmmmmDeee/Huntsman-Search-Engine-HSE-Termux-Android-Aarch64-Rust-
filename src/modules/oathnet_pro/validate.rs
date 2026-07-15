@@ -32,46 +32,22 @@ pub(super) fn is_redacted_sentinel(s: &str) -> bool {
     u.contains("UPGRADE_TO_SEE") || u.contains("REDACTED")
 }
 
-/// ISO 7064 mod-97-10 IBAN validation. Strip whitespace, confirm the `CCkk……`
-/// layout, move the first four characters to the end, map letters `A–Z → 10–35`,
-/// and check the running remainder mod 97 equals 1. Objective, offline
-/// validation of a leaked bank-account number: a wrong check digit — or a
-/// redacted sentinel in the `iban` field — fails, so only a genuine account is
-/// emitted.
+/// Objective, offline validation of a leaked bank-account number: normalise the
+/// raw `iban` field (drop whitespace, upper-case) and defer to the single-sourced
+/// [`crate::util::extract::iban_is_valid`], which pins the ISO 13616 `CCkk`
+/// layout, the country's **registered length**, and the mod-97 checksum. A wrong
+/// check digit, a wrong-length string for its country code, or a redacted
+/// sentinel in the field all fail, so only a genuine account is emitted. (Was a
+/// duplicated mod-97 implementation that — unlike the shared one — accepted any
+/// mod-97-valid string of length 15..=34 regardless of the country's real IBAN
+/// length.)
 pub(super) fn iban_is_valid(raw: &str) -> bool {
     let s: String = raw
         .chars()
         .filter(|c| !c.is_whitespace())
         .collect::<String>()
         .to_ascii_uppercase();
-    if !(15..=34).contains(&s.len()) {
-        return false;
-    }
-    let b = s.as_bytes();
-    if !(b[0].is_ascii_uppercase()
-        && b[1].is_ascii_uppercase()
-        && b[2].is_ascii_digit()
-        && b[3].is_ascii_digit())
-    {
-        return false;
-    }
-    // Rearranged string = s[4..] followed by s[..4]; fold its digit value mod 97.
-    let mut remainder: u32 = 0;
-    for c in s[4..].chars().chain(s[..4].chars()) {
-        let val = if c.is_ascii_digit() {
-            u32::from(c) - u32::from('0')
-        } else if c.is_ascii_uppercase() {
-            u32::from(c) - u32::from('A') + 10
-        } else {
-            return false;
-        };
-        remainder = if val >= 10 {
-            (remainder * 100 + val) % 97
-        } else {
-            (remainder * 10 + val) % 97
-        };
-    }
-    remainder == 1
+    crate::util::extract::iban_is_valid(&s)
 }
 
 /// Identify a leaked password hash's algorithm and whether it is a **fast**

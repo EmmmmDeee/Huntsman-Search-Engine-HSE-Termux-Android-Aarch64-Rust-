@@ -120,6 +120,10 @@ pub(super) async fn cmd_radar(
             // `hse radar` IS the dedicated, separate activation for the live
             // device sensors — the one place they are permitted to run.
             allow_live_sensors: true,
+            // Carry the same entity ceiling every other scan entry point has, so a
+            // long-running radar session can't accumulate entities unbounded → OOM
+            // on the device (radar was the sole path missing this cap).
+            max_entities: Some(crate::core::scan::DEFAULT_MAX_ENTITIES),
             ..Default::default()
         };
         let sweep_scan =
@@ -131,7 +135,6 @@ pub(super) async fn cmd_radar(
             http: build_client(),
             keys: sweep_keys,
             cancel: crate::core::cancel::CancelHandle::new(),
-            proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
         };
 
         let sweep_result =
@@ -203,8 +206,15 @@ pub(super) async fn cmd_radar(
                     exclude_modules: exclude,
                     max_concurrent: 4,
                     min_expand_confidence: 0.50,
+                    // The pivot runs the full expansion pipeline; without the entity
+                    // ceiling every one-shot `hse scan` carries, a fan-out pivot on
+                    // the long-running radar loop grows the frontier unbounded in RAM
+                    // and OOMs the phone. Match cli/scan's DEFAULT_MAX_ENTITIES and
+                    // clamp the depth like every other entry point.
+                    max_entities: Some(crate::core::scan::DEFAULT_MAX_ENTITIES),
                     ..Default::default()
-                };
+                }
+                .clamp_depth();
                 let pivot_scan =
                     Scan::new(pivot_sid.clone(), pivot_target.clone()).with_options(pivot_opts);
                 let pivot_keys = keys::load();
@@ -214,7 +224,6 @@ pub(super) async fn cmd_radar(
                     http: build_client(),
                     keys: pivot_keys,
                     cancel: crate::core::cancel::CancelHandle::new(),
-                    proxy_pool: Arc::new(crate::util::proxy::ProxyPool::new()),
                 };
 
                 let result =

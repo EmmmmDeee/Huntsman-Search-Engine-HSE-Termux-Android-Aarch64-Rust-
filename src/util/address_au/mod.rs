@@ -74,11 +74,6 @@ fn full_pattern() -> &'static Regex {
     })
 }
 
-/// Find the first plausible Australian address in a free-text blob.
-pub fn extract_first(text: &str) -> Option<AuAddress> {
-    extract_all(text).into_iter().next()
-}
-
 /// Find all plausible Australian addresses in a free-text blob.
 pub fn extract_all(text: &str) -> Vec<AuAddress> {
     let mut out = Vec::new();
@@ -300,6 +295,7 @@ pub fn normalise_phone(s: &str) -> Option<String> {
         && (digits.starts_with('2')
             || digits.starts_with('3')
             || digits.starts_with('4')
+            || digits.starts_with('5')
             || digits.starts_with('7')
             || digits.starts_with('8'))
     {
@@ -392,13 +388,6 @@ impl AuLineType {
             Self::LocalRate => "local-rate",
             Self::Premium => "premium-rate",
         }
-    }
-
-    /// True for a line that names a person's personal device or premises (mobile
-    /// or geographic fixed line), as opposed to a business/service number.
-    #[must_use]
-    pub fn is_personal(self) -> bool {
-        matches!(self, Self::Mobile | Self::GeographicFixed)
     }
 
     /// True for an inbound business/service line (`1300`/`1800`/`13`/`190x`) —

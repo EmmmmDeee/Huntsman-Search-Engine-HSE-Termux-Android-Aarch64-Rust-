@@ -38,6 +38,7 @@
 
 pub(crate) mod builders;
 pub mod graph;
+pub(crate) mod social_extract;
 pub(crate) mod types;
 
 #[cfg(test)]
@@ -47,14 +48,16 @@ pub use builders::{
     CO_LOCATION_KM, DERIVE_BUDGET, derive_all, derive_all_within, derive_canonical_identities,
     derive_co_mention, derive_co_ownership, derive_co_residence, derive_colocation,
     derive_coreferences, derive_declared_associations, derive_handles, derive_identity_ownership,
-    derive_kinship, derive_name_lineage, derive_profile_links, derive_regional_kinship,
-    derive_registration, derive_residency, derive_resolution, derive_shared_selector,
+    derive_kinship, derive_name_lineage, derive_regional_kinship, derive_registration,
+    derive_residency, derive_resolution, derive_reused_secret_link, derive_shared_selector,
     derive_structural,
 };
 pub use graph::{
-    Adjacency, ConnectionBroker, ConnectionTemplate, IdentityClusterResult, IdentityPath, PathStep,
-    connection_brokers, connection_templates, disjoint_pathways, disjoint_pathways_in,
-    identity_paths, identity_uids, is_identity_kind, reachable_count, resolve_identity_clusters,
-    sorted_confined_adjacency, strongest_path, strongest_path_in, undirected_adjacency,
+    Adjacency, ConnectionBroker, ConnectionTemplate, IDENTITY_PAIR_PROBE_CAP,
+    IdentityClusterResult, IdentityPath, PathStep, connection_brokers, connection_templates,
+    disjoint_pathways, disjoint_pathways_in, identity_paths, identity_uids, is_identity_kind,
+    reachable_count, resolve_identity_clusters, sorted_confined_adjacency, strongest_path,
+    strongest_path_in, undirected_adjacency,
 };
+pub use social_extract::derive_profile_links;
 pub use types::{Relation, RelationKind};

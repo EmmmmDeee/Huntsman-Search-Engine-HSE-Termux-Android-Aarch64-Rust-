@@ -54,6 +54,21 @@ const MAX_CANDIDATES: usize = 128;
 /// a mobile link while keeping the resolve phase a few seconds).
 const MAX_CONCURRENT: usize = 12;
 
+/// Clear the session dedup set at the start of each scan. Installed into the
+/// engine's per-scan reset hook ([`crate::core::hooks::reset_per_scan`]). Without
+/// it the process-global [`SEEN_REGISTRABLE`] set (a) grows without bound across a
+/// long-lived `serve` / `live` process and (b) silently suppresses ALL typosquat
+/// findings for any registrable domain scanned a SECOND time — a cross-scan
+/// data-loss. Resetting per scan preserves the intended WITHIN-scan dedup (a
+/// registrable domain dispatched once per discovered subdomain resolves its
+/// candidates only once) while bounding growth to a single scan's domains.
+pub fn reset_seen() {
+    let mut set = SEEN_REGISTRABLE
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    set.clear();
+}
+
 /// TLDs to swap the registered name into — common gTLDs plus the Australian
 /// second-levels (a `.com.au` brand's lookalikes frequently sit on `.net.au` /
 /// `.com` / `.co`).

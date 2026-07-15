@@ -1,6 +1,6 @@
 //! Offline electoral division → geographic centroid mapping.
 //!
-//! Carries a static table of the 48 most-populous AEC electoral divisions so
+//! Carries a static table of 67 AEC electoral divisions so
 //! that a confirmed division fires coordinates without an extra geocoding
 //! round-trip. Same offline-first, API-second strategy used by au_unclaimed.
 
@@ -11,7 +11,7 @@ pub(super) struct DivisionInfo {
     pub(super) lon: f64,
 }
 
-/// Offline centroid table for the 48 most-populous AEC electoral divisions.
+/// Offline centroid table for 67 AEC electoral divisions.
 /// Each entry is the geographic centroid of the division, tagged to its state.
 /// Division names are lowercase-normalised for matching. Pure.
 pub(super) fn division_centroid(division: &str) -> Option<DivisionInfo> {

@@ -14,10 +14,14 @@
 //! of the scan — and any concurrent scan sharing the same rate-limited endpoint —
 //! skips it cleanly until a cooldown elapses:
 //!
-//!   * **rate-limit / quota / payment** (HTTP 429/402, "rate limit", "quota",
-//!     "count exceeded", "credit") → trips immediately for [`RATE_LIMIT_COOLDOWN`].
-//!     These are deterministic: the next call cannot succeed until the window
-//!     resets, so one trip saves every remaining per-target retry.
+//!   * **rate-limit / quota / payment** (HTTP 429/402 as a standalone token,
+//!     "rate limit", "quota", "count exceeded", "out of credit", …) → trips
+//!     immediately for [`RATE_LIMIT_COOLDOWN`]. These are deterministic: the
+//!     next call cannot succeed until the window resets, so one trip saves
+//!     every remaining per-target retry. The vocabulary is deliberately
+//!     narrow (see [`is_rate_limited`]) — a bare "exceeded" or "credit" also
+//!     matches a transport timeout or an echoed breach record, which would
+//!     wrongly bench a healthy provider.
 //!   * **hard transport error / timeout** → a single occurrence can be transient
 //!     (a flaky DNS hop), so it trips only after [`SOFT_TRIP_THRESHOLD`]
 //!     consecutive failures, for the shorter [`SOFT_COOLDOWN`]; one success
@@ -61,28 +65,55 @@ fn state() -> &'static Mutex<HashMap<&'static str, Trip>> {
     STATE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Rate-limit/quota/payment prose distinctive enough to match as a plain
+/// case-insensitive substring — each is a multi-word or compound phrase that
+/// doesn't occur inside unrelated text. Deliberately excludes the bare, single
+/// words `exceeded` and `credit`: those alone match a transport timeout's
+/// "deadline exceeded" and a breach record's "credit card", so a healthy
+/// module doing perfectly normal work could trip the long
+/// [`RATE_LIMIT_COOLDOWN`] on a coincidental substring in its own error text
+/// or in scraped content it happened to echo back.
+const QUOTA_PROSE: &[&str] = &[
+    "too many requests",
+    "rate limit",
+    "rate-limit",
+    "ratelimit",
+    "quota",
+    "payment required",
+    "count exceeded",
+    "limit exceeded",
+    "requests exceeded",
+    "credit exhausted",
+    "out of credit",
+    "insufficient credit",
+    "credit exceeded",
+];
+
 /// Classify a module error message as a retry-futile rate-limit/quota signal.
-/// Case-insensitive substring match over the vocabulary providers actually use
-/// (HTTP status codes plus the prose variants seen across hackertarget/urlscan/
-/// shodan/etc.). A false negative just means the slower soft path eventually
-/// trips it; a false positive only costs one cooldown.
+///
+/// Two matchers, both hardened against false positives — a hard match trips
+/// the long [`RATE_LIMIT_COOLDOWN`] (600s), which silently drops every
+/// subsequent finding a healthy provider would otherwise have produced for the
+/// rest of the scan:
+/// 1. the distinctive [`QUOTA_PROSE`] compounds (case-insensitive substring);
+///    and
+/// 2. the HTTP status codes `429`/`402` matched ONLY as a standalone token —
+///    split on non-alphanumeric bytes — so a digit run that merely *contains*
+///    them (an echoed phone number like `+61429551402`, an ID, a breach
+///    record) can't trip the breaker.
+///
+/// Anything not caught here falls through to the [`SOFT_TRIP_THRESHOLD`]
+/// soft path: a genuinely persistent quota wall still trips, just after a
+/// couple of retries and with the shorter [`SOFT_COOLDOWN`] — a false
+/// negative here costs a retry or two, never a wrongly-benched healthy
+/// provider.
 fn is_rate_limited(msg: &str) -> bool {
     let m = msg.to_ascii_lowercase();
-    [
-        "429",
-        "too many requests",
-        "rate limit",
-        "rate-limit",
-        "ratelimit",
-        "quota",
-        "count exceeded",
-        "credit",
-        "payment required",
-        "402",
-        "exceeded",
-    ]
-    .iter()
-    .any(|needle| m.contains(needle))
+    if QUOTA_PROSE.iter().any(|needle| m.contains(needle)) {
+        return true;
+    }
+    m.split(|c: char| !c.is_ascii_alphanumeric())
+        .any(|tok| tok == "429" || tok == "402")
 }
 
 /// True if `name` is currently tripped (within its cooldown). Consulted by the

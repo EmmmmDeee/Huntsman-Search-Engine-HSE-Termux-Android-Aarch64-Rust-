@@ -16,7 +16,9 @@
 use std::collections::{BTreeSet, HashMap};
 
 use super::*;
-use crate::core::relation::{disjoint_pathways_in, identity_uids, sorted_confined_adjacency};
+use crate::core::relation::{
+    IDENTITY_PAIR_PROBE_CAP, disjoint_pathways_in, identity_uids, sorted_confined_adjacency,
+};
 
 /// One identity pair whose connection is corroborated by **≥2 edge-disjoint,
 /// source-orthogonal pathways** — the shared core of the AU-062 rule and the
@@ -50,10 +52,23 @@ pub(in crate::core) struct MultipathLink {
 /// The shared finder behind both the AU-062 correlation and the engine's
 /// multipath-corroboration boost, built on [`disjoint_pathways_in`] so it stays
 /// consistent with the transitive-closure rule and the dossier's CONNECTIONS
-/// view. The hop / path caps keep the pair-wise search bounded on a phone.
+/// view. The hop / path caps keep the per-pair search bounded, and the shared
+/// [`IDENTITY_PAIR_PROBE_CAP`] bounds the pair COUNT so the `O(identities²)` sweep
+/// can't dominate finalise (the identical bound AU-063's single-route sweep uses).
 pub(in crate::core) fn multipath_corroborated_links(
     entities: &[Entity],
     relations: &[Relation],
+) -> Vec<MultipathLink> {
+    multipath_corroborated_links_capped(entities, relations, IDENTITY_PAIR_PROBE_CAP)
+}
+
+/// [`multipath_corroborated_links`] with an explicit pair-probe ceiling — the
+/// public entry pins it to [`IDENTITY_PAIR_PROBE_CAP`]; the parameter exists so the
+/// cap is unit-testable without a 6 000-entity fixture.
+fn multipath_corroborated_links_capped(
+    entities: &[Entity],
+    relations: &[Relation],
+    max_pair_probes: usize,
 ) -> Vec<MultipathLink> {
     const MAX_HOPS: usize = 5;
     const MAX_PATHS: usize = 4;
@@ -75,8 +90,14 @@ pub(in crate::core) fn multipath_corroborated_links(
     };
 
     let mut out = Vec::new();
-    for (i, &a) in identity_uids.iter().enumerate() {
+    let mut probes = 0usize;
+    'outer: for (i, &a) in identity_uids.iter().enumerate() {
         for &b in &identity_uids[i + 1..] {
+            if probes >= max_pair_probes {
+                // Deterministic bound reached — see `IDENTITY_PAIR_PROBE_CAP`.
+                break 'outer;
+            }
+            probes += 1;
             let pathways = disjoint_pathways_in(&adj, a, b, MAX_HOPS, MAX_PATHS);
             if pathways.len() < 2 {
                 continue; // a single route is not multi-pathway corroboration
@@ -203,6 +224,57 @@ mod tests {
         assert_eq!(out[0].rule_id, "AU-062");
         assert!(out[0].entity_uids.contains(&a.uid));
         assert!(out[0].entity_uids.contains(&b.uid));
+    }
+
+    #[test]
+    fn multipath_links_are_pair_probe_capped_deterministically() {
+        // Two independent components, each an identity pair joined by two orthogonal
+        // routes → two multipath links. The O(n²) pair sweep must honour the cap,
+        // and the bound must be a deterministic prefix of sorted `identity_uids`.
+        let mk = |n: usize| {
+            let a = id(EntityKind::Email, &format!("a{n}@x.com"));
+            let b = id(EntityKind::Username, &format!("bob{n}"));
+            let d = sourced(EntityKind::Domain, &format!("x{n}.com"), "dns_intel");
+            let o = sourced(
+                EntityKind::Organisation,
+                &format!("Acme{n}"),
+                "opencorporates",
+            );
+            let rels = vec![
+                rel(&a, &d, RelationKind::BelongsToDomain),
+                rel(&d, &b, RelationKind::DerivedFrom),
+                rel(&a, &o, RelationKind::RegisteredBy),
+                rel(&o, &b, RelationKind::DerivedFrom),
+            ];
+            (vec![a, b, d, o], rels)
+        };
+        let (mut ents, mut rels) = mk(1);
+        let (e2, r2) = mk(2);
+        ents.extend(e2);
+        rels.extend(r2);
+
+        let full = multipath_corroborated_links_capped(&ents, &rels, usize::MAX);
+        assert_eq!(
+            full.len(),
+            2,
+            "two independent components → two multipath links"
+        );
+        assert_eq!(
+            multipath_corroborated_links(&ents, &rels).len(),
+            full.len(),
+            "the public entry runs at the production cap; this fixture is under it"
+        );
+        // The cap bounds the pair sweep: 0 probes → nothing; 1 probe → ≤1 link.
+        assert!(multipath_corroborated_links_capped(&ents, &rels, 0).is_empty());
+        assert!(multipath_corroborated_links_capped(&ents, &rels, 1).len() <= 1);
+        // Deterministic across runs.
+        let a = multipath_corroborated_links_capped(&ents, &rels, 3);
+        let b = multipath_corroborated_links_capped(&ents, &rels, 3);
+        assert_eq!(
+            a.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),
+            b.iter().map(|l| (&l.a_uid, &l.b_uid)).collect::<Vec<_>>(),
+            "the capped prefix is deterministic across runs"
+        );
     }
 
     #[test]

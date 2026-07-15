@@ -63,6 +63,29 @@ fn au_postcode_ignores_a_leading_us_street_number() {
 }
 
 #[test]
+fn au_postcode_ignores_value_digits_of_non_address_kinds() {
+    // Regression: a stray 4-digit run in an Email / Username / Url / Person VALUE
+    // must NOT be read as an AU postcode — previously it geolocated the entity to a
+    // confident FALSE location. Only an Address carries a postcode in its value.
+    for kind in [
+        EntityKind::Email,
+        EntityKind::Username,
+        EntityKind::Url,
+        EntityKind::Person,
+    ] {
+        let e = Entity::new(kind.clone(), "handle2000", 0.5, "s");
+        assert!(
+            au_postcode(&e).is_none(),
+            "{kind:?} value digits must not be read as a postcode"
+        );
+    }
+    // A STRUCTURED postcode evidence attribute still resolves for any kind.
+    let mut u = Entity::new(EntityKind::Username, "someone", 0.5, "s");
+    u.add_evidence(Evidence::new("src", "sum").with_attr("postcode", "4000"));
+    assert_eq!(au_postcode(&u).as_deref(), Some("4000"));
+}
+
+#[test]
 fn corroboration_needs_a_confirmed_subject_fix_and_proximity() {
     // Subject's confirmed GPS near Woodford, QLD; a coarse 0.4 guess must NOT
     // anchor (only ≥0.60 confirmed fixes do).
@@ -182,4 +205,59 @@ fn subject_anchors_on_own_address_when_no_gps() {
         e
     };
     assert!(is_geo_discordant_namesake(&perth, &subject));
+}
+
+#[test]
+fn real_scan_us_breach_address_reproduction() {
+    // Direct reproduction of a real "Riley Morley" scan's debug bundle: a US
+    // oathnet_pro breach-candidate Address entity
+    // "1218 E Grumling Rd., Hodges, Sc, 29653" (South Carolina, evidence
+    // `postal_code=29653`, `addr_postal=29653`) was tagged `geo_corroboration`
+    // "~0 km from the subject's confirmed location" against an Australian
+    // subject anchor (QLD 4124). Check what `au_postcode`/`distance_to_subject`
+    // actually return for this entity shape, so a genuine defect is root-caused
+    // against real data rather than assumed.
+    let mut us_breach = Entity::new(
+        EntityKind::Address,
+        "1218 E Grumling Rd., Hodges, Sc, 29653",
+        0.32,
+        "s",
+    );
+    us_breach.tag("breach");
+    us_breach.tag("oathnet-pro");
+    us_breach.tag(crate::core::tags::CANDIDATE);
+    us_breach.add_evidence(
+        Evidence::new("oathnet_pro", "Breach on ebay.com")
+            .with_attr("city", "Hodges")
+            .with_attr("country", "US")
+            .with_attr("postal_code", "29653")
+            .with_attr("state", "Sc"),
+    );
+    us_breach.add_evidence(
+        Evidence::new("geo_normalize", "Address parse + normalization")
+            .with_attr("addr_city", "Hodges")
+            .with_attr("addr_postal", "29653")
+            .with_attr("addr_street", "1218 E Grumling Rd."),
+    );
+
+    // The value's own trailing digit run ("29653") is 5 digits — rejected.
+    // Neither evidence record uses the literal key "postcode" (they use
+    // `postal_code` / `addr_postal`), so no AU postcode should resolve here.
+    assert!(
+        au_postcode(&us_breach).is_none(),
+        "a 5-digit US ZIP under postal_code/addr_postal keys must never resolve as an AU postcode"
+    );
+
+    let subject = subject_locations(&[{
+        let mut anchor = Entity::new(EntityKind::Address, "QLD 4124, Australia", 0.38, "s");
+        anchor.tag("exact-name-match");
+        anchor
+    }]);
+    assert!(!subject.is_empty(), "the QLD anchor itself must resolve");
+    assert_eq!(
+        distance_to_subject(&us_breach, &subject),
+        None,
+        "a US breach address with no resolvable AU postcode must not report ANY distance \
+         to the subject — it must never be corroborated as '~0 km' away"
+    );
 }

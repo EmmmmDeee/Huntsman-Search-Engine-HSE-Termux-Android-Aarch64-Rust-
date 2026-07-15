@@ -60,6 +60,26 @@ fn emits_public_email() {
 }
 
 #[test]
+fn skips_forge_noreply_masking_email() {
+    // A forge no-reply masking address is a privacy placeholder, not a real
+    // contact — it must not seed an Email finding (agreeing with codeberg_user
+    // on the identical Forgejo API).
+    let user = make_user(
+        "gdev",
+        None,
+        Some("gdev@users.noreply.gitea.io"),
+        None,
+        None,
+        None,
+    );
+    let ents = build_entities(user, "scan-gt-noreply");
+    assert!(
+        ents.iter().all(|e| e.kind != EntityKind::Email),
+        "a forge no-reply masking address must not seed an Email finding"
+    );
+}
+
+#[test]
 fn emits_website_url_and_domain() {
     let user = make_user("gdev", None, None, Some("https://gdev.io"), None, None);
     let ents = build_entities(user, "scan-gt-004");

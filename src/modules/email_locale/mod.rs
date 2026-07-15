@@ -239,9 +239,22 @@ fn cctld_country(tld: &str) -> Option<(&'static str, &'static str)> {
 }
 
 /// Map a locale code (as emitted by the pattern tables) to an approximate
-/// country/region centroid `(lat, lon)`. Returns `None` for ambiguous regions
-/// that span multiple countries with no single representative point (e.g. `pt`
-/// covers both Portugal and Latin America — a centroid would be misleading).
+/// country/region centroid `(lat, lon)`.
+///
+/// `es-mx`, `es-ar`, and `pt-br` are only ever produced by [`cctld_country`]
+/// from an UNAMBIGUOUS ccTLD (`.mx`/`.ar`/`.br`), so each gets its own correct
+/// national capital rather than being folded into the "parent language"
+/// country's centroid — Mexico City is not Madrid, and Brasília is not Lisbon.
+///
+/// Bare `pt` is genuinely overloaded: [`cctld_country`] emits it for the
+/// unambiguous `.pt` ccTLD (definitely Portugal), but [`GIVEN_NAME_PATTERNS`]
+/// also emits it for the coarser "Iberia/Latin America" given-name heuristic
+/// (`jose`/`carlos`/`pedro`/…), which could equally be a Latin-American
+/// country. Both paths resolve to the same locale string here, so `pt` always
+/// yields the Lisbon centroid; the given-name path's already-low 0.30
+/// confidence (see [`detect_locale_from_local_part`]) reflects that
+/// imprecision rather than this function silently dropping the coordinate.
+/// Returns `None` only for a locale with no country signal at all.
 fn locale_centroid(locale: &str) -> Option<(f64, f64)> {
     // Centroids are national capitals or geographic midpoints — clearly coarse.
     Some(match locale {
@@ -258,7 +271,9 @@ fn locale_centroid(locale: &str) -> Option<(f64, f64)> {
         "de" => (52.520_0, 13.404_9),        // Berlin, Germany
         "ja" => (35.689_5, 139.691_7),       // Tokyo, Japan
         "zh" => (39.904_2, 116.407_4),       // Beijing, China
-        "es" | "es-mx" | "es-ar" => (40.416_7, -3.703_5), // Madrid, Spain
+        "es" => (40.416_7, -3.703_5),        // Madrid, Spain
+        "es-mx" => (19.432_6, -99.133_2),    // Mexico City, Mexico
+        "es-ar" => (-34.603_7, -58.381_6),   // Buenos Aires, Argentina
         "nl" => (52.370_2, 4.895_2),         // Amsterdam, Netherlands
         "cz" => (50.075_5, 14.437_8),        // Prague, Czech Republic
         "sk" => (48.148_6, 17.107_5),        // Bratislava, Slovakia
@@ -268,7 +283,8 @@ fn locale_centroid(locale: &str) -> Option<(f64, f64)> {
         "ch" => (46.948_0, 7.447_4),         // Bern, Switzerland
         "no" => (59.913_9, 10.752_2),        // Oslo, Norway
         "dk" => (55.676_1, 12.568_4),        // Copenhagen, Denmark
-        "pt" | "pt-br" => (38.716_8, -9.142_1), // Lisbon, Portugal
+        "pt" => (38.716_8, -9.142_1),        // Lisbon, Portugal
+        "pt-br" => (-15.793_9, -47.882_7),   // Brasília, Brazil
         "ko" => (37.566_5, 126.978_0),       // Seoul, South Korea
         "hi" => (28.613_9, 77.209_0),        // New Delhi, India
         "en-au" => (-33.868_8, 151.209_3),   // Sydney, Australia

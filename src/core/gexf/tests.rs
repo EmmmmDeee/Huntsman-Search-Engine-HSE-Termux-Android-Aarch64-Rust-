@@ -18,14 +18,56 @@ use super::*;
     }
 
     #[test]
-    fn gexf_creates_edges_for_shared_sources() {
+    fn gexf_creates_edges_for_a_shared_evidence_record() {
+        // Two selectors that appear in the SAME breach record (identical source
+        // AND summary) genuinely co-occur → one edge, labelled by the source.
         let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.8, "s");
-        a.add_evidence(Evidence::new("hibp", "breach"));
+        a.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
         let mut b = Entity::new(EntityKind::Domain, "x.com", 0.7, "s");
-        b.add_evidence(Evidence::new("hibp", "domain breach"));
+        b.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
         let xml = entities_to_gexf(&[a, b], &[], "test-scan");
-        assert!(xml.contains("<edge"), "shared source should create edge");
-        assert!(xml.contains("hibp"));
+        assert!(
+            xml.contains("<edge"),
+            "a shared evidence record should create an edge"
+        );
+        assert!(xml.contains(r#"label="hibp""#));
+    }
+
+    #[test]
+    fn gexf_co_occurrence_is_record_level_not_source_level() {
+        // MUST-NOT-FIRE: a one-to-many fan-out enumeration (`username_search`
+        // probing one handle across platforms) attaches a DISTINCT per-platform
+        // summary to a separate entity each — independent existence-proofs of the
+        // same selector, not a joint sighting. They must NOT be wired together.
+        // Under the old source-NAME key both carried `username_search` and an edge
+        // was drawn; this is the regression guard for that false clique (which, on
+        // a real username scan, was ~80% of all export edges).
+        let mut insta = Entity::new(EntityKind::Url, "https://instagram.com/h", 0.6, "s");
+        insta.add_evidence(Evidence::new(
+            "username_search",
+            "@h has a profile on Instagram",
+        ));
+        let mut tiktok = Entity::new(EntityKind::Url, "https://tiktok.com/@h", 0.6, "s");
+        tiktok.add_evidence(Evidence::new("username_search", "@h has a profile on TikTok"));
+        let xml = entities_to_gexf(&[insta, tiktok], &[], "s");
+        assert!(
+            !xml.contains(r#"<edge "#),
+            "same source name but different per-platform records must NOT co-occur:\n{xml}"
+        );
+
+        // MUST-FIRE: the SAME source AND SAME summary is one shared record — a
+        // genuine joint sighting → exactly one edge, labelled by that source.
+        let mut a = Entity::new(EntityKind::Email, "a@x.com", 0.6, "s");
+        a.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+        let mut b = Entity::new(EntityKind::Username, "aaa", 0.6, "s");
+        b.add_evidence(Evidence::new("hibp", "Breach 'Apollo'"));
+        let xml = entities_to_gexf(&[a, b], &[], "s");
+        assert_eq!(
+            xml.matches(r#"<edge "#).count(),
+            1,
+            "one shared breach record → exactly one edge:\n{xml}"
+        );
+        assert!(xml.contains(r#"label="hibp""#));
     }
 
     #[test]
@@ -98,6 +140,71 @@ use super::*;
         assert!(
             xml.contains(&format!(r#"source="{src}" target="{tgt}""#)),
             "relation edge must reference existing (truncated) node ids"
+        );
+    }
+
+    #[test]
+    fn gexf_drops_relation_edges_referencing_a_filtered_out_node() {
+        use crate::core::relation::{Relation, RelationKind};
+        // A caller (the candidate-quarantining exports) passes a CONFIRMED entity
+        // subset as the node set but the FULL relation set. A relation whose
+        // endpoint is a filtered-out node must NOT produce an `<edge>` — that would
+        // reference an undeclared node id, which is structurally-invalid GEXF.
+        let subject = Entity::new(EntityKind::Domain, "example.com", 0.9, "s");
+        let child = Entity::new(EntityKind::Domain, "blog.example.com", 0.8, "s");
+        let candidate = Entity::new(EntityKind::Email, "stranger@breach.example", 0.5, "s");
+        let good = Relation::new(
+            child.uid.clone(),
+            subject.uid.clone(),
+            RelationKind::SubdomainOf,
+            0.8,
+            "s",
+        );
+        let dangling = Relation::new(
+            child.uid.clone(),
+            candidate.uid.clone(), // endpoint absent from the node set below
+            RelationKind::DerivedFrom,
+            0.7,
+            "s",
+        );
+        // Node set omits the candidate; relation set includes the dangling edge.
+        let xml = entities_to_gexf(&[subject, child.clone()], &[good, dangling], "s");
+
+        // The in-set relation edge is still emitted…
+        assert!(
+            xml.contains(r#"label="subdomain_of""#),
+            "the in-set relation edge must survive: {xml}"
+        );
+        // …but no edge references the filtered-out candidate node.
+        let cand_id = &candidate.uid[..12];
+        assert!(
+            !xml.contains(&format!(r#"target="{cand_id}""#)),
+            "an edge must not reference a node absent from <nodes>: {xml}"
+        );
+    }
+
+    #[test]
+    fn gexf_escapes_the_kind_attribute_and_the_scan_id() {
+        // An `Other(<custom>)` kind is data-derived and can carry XML metachars;
+        // unescaped, it would break the node's `kind` attvalue and thus the whole
+        // document in Gephi. The scan id likewise sits in `<description>` text.
+        // Both are now escaped (the node label, tags, and edge labels already were).
+        let e = Entity::new(EntityKind::Other("a<b>&\"c".to_string()), "v", 0.9, "s");
+        let xml = entities_to_gexf(&[e], &[], "sc<a>n&\"1");
+
+        assert!(
+            xml.contains(r#"<attvalue for="0" value="other:a&lt;b&gt;&amp;&quot;c"/>"#),
+            "the kind attvalue must be XML-escaped, got:\n{xml}"
+        );
+        assert!(
+            xml.contains(r#"<description>Scan sc&lt;a&gt;n&amp;&quot;1</description>"#),
+            "the scan id in <description> must be XML-escaped, got:\n{xml}"
+        );
+        // Defence-in-depth: no raw metachar from our injected data reaches an
+        // attribute or text node (which would make the .gexf unparseable).
+        assert!(
+            !xml.contains(r#"value="other:a<b>"#) && !xml.contains(r#"Scan sc<a>n"#),
+            "raw metachars must never leak into the kind attribute or description"
         );
     }
 

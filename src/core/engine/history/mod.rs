@@ -253,10 +253,15 @@ fn cooccurrence_summary(partner: &str, shared: usize) -> String {
 /// entity bridged to several partners isn't mistaken for already-linked to a new
 /// one, and ignores the plain-recurrence evidence (same source, no marker).
 fn endpoint_has_cooccurrence(e: &Entity, partner: &str) -> bool {
+    // Match the BACKTICK-DELIMITED partner token the summary writes (`` `{partner}` ``),
+    // not a bare substring: an unanchored `contains(partner)` treats an entity
+    // already bridged to `alice2` as already linked to a *new* partner `alice`
+    // (a substring of `alice2`), silently dropping the genuine distinct link.
+    let token = format!("`{partner}`");
     e.evidence.iter().any(|ev| {
         ev.source == CROSS_SCAN_SOURCE
             && ev.summary.starts_with(COOCCURRENCE_MARKER)
-            && ev.summary.contains(partner)
+            && ev.summary.contains(&token)
     })
 }
 
@@ -458,11 +463,17 @@ fn relation_recall_summary(kind: &str, partner: &str, shared: usize) -> String {
 /// new one, and ignores the recurrence / co-occurrence evidence (same source, no
 /// marker).
 fn endpoint_has_relation_recall(e: &Entity, kind: &str, partner: &str) -> bool {
+    // Match the DELIMITED tokens the summary writes — `({kind})` and `` `{partner}` `` —
+    // not bare substrings: an unanchored `contains` treats an entity already recalled
+    // to `alice2` (or via a kind that is a substring of another) as already carrying a
+    // *new* `(kind, partner)`, silently dropping the genuine distinct recalled link.
+    let kind_token = format!("({kind})");
+    let partner_token = format!("`{partner}`");
     e.evidence.iter().any(|ev| {
         ev.source == CROSS_SCAN_SOURCE
             && ev.summary.starts_with(RELATION_RECALL_MARKER)
-            && ev.summary.contains(kind)
-            && ev.summary.contains(partner)
+            && ev.summary.contains(&kind_token)
+            && ev.summary.contains(&partner_token)
     })
 }
 

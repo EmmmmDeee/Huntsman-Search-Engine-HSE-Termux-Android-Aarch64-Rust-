@@ -172,6 +172,26 @@ use super::*;
         hits
     }
 
+    /// Look up an embedded first-party SPA module's source by its served path
+    /// (e.g. `"js/api.js"`, `"js/scan_info/graph.js"`, `"css/app.css"`) — the
+    /// same keys [`APP_FILES`] serves at `/static/{path}`. The former
+    /// monolithic `spa.html` held every view in one string; now that the SPA
+    /// is split into per-concern modules (see `src/web/js/`), a test that
+    /// used to search `SPA_HTML` for one view's content instead searches
+    /// that view's own file directly — which also keeps each test's
+    /// boundary-slicing (`split_once`/`find`) scoped to the single file that
+    /// actually owns the content, exactly as it was scoped to that file's
+    /// region of the old monolith.
+    fn app_file(served_path: &str) -> &'static str {
+        APP_FILES
+            .iter()
+            .find(|(name, _, _)| *name == served_path)
+            .map_or_else(
+                || panic!("no APP_FILES entry named {served_path:?}"),
+                |(_, _, bytes)| std::str::from_utf8(bytes).expect("APP_FILES entry is valid UTF-8"),
+            )
+    }
+
     #[test]
     fn embedded_spa_auto_loads_nothing_external() {
         let hits = external_resource_refs(SPA_HTML);
@@ -188,12 +208,13 @@ use super::*;
         // are tested server-side; this guards that the SPA actually FETCHES them
         // (the Settings "Key diagnostics" panel) so they cannot silently revert to
         // dead-from-the-UI endpoints.
+        let api = app_file("js/api.js");
         assert!(
-            SPA_HTML.contains("/api/v1/keys/status"),
+            api.contains("/api/v1/keys/status"),
             "SPA must call /api/v1/keys/status (Key diagnostics panel)"
         );
         assert!(
-            SPA_HTML.contains("/api/v1/keys/patterns"),
+            api.contains("/api/v1/keys/patterns"),
             "SPA must call /api/v1/keys/patterns (detector-coverage telemetry)"
         );
     }
@@ -204,12 +225,14 @@ use super::*;
         // SOL-HEALTH-SIGNAL) was previously reachable only from `hse doctor`;
         // guard that the Dashboard's "Module Health" panel actually fetches
         // and renders it, so it can't silently regress to dead-from-the-UI.
+        let api = app_file("js/api.js");
         assert!(
-            SPA_HTML.contains("/api/v1/modules/health"),
+            api.contains("/api/v1/modules/health"),
             "SPA must call /api/v1/modules/health (Dashboard Module Health panel)"
         );
+        let dash = app_file("js/views/dash.js");
         assert!(
-            SPA_HTML.contains("moduleHealthPanel("),
+            dash.contains("moduleHealthPanel("),
             "the Dashboard must render the module-health panel"
         );
     }
@@ -219,18 +242,20 @@ use super::*;
         // Per-scan endpoints that were implemented + routed but the SPA never
         // surfaced. Each is now a section in the scan report; guard the wiring so
         // they cannot silently become dead-from-the-UI again.
+        let api = app_file("js/api.js");
         for path in ["/benchmark", "/identities", "/location"] {
             assert!(
-                SPA_HTML.contains(path),
+                api.contains(path),
                 "SPA report must fetch the {path} per-scan endpoint"
             );
         }
         // The render sections must be composed into the report.
-        assert!(SPA_HTML.contains("renderIdentities("));
-        assert!(SPA_HTML.contains("renderBenchmark("));
+        let report = app_file("js/scan_info/report.js");
+        assert!(report.contains("renderIdentities("));
+        assert!(report.contains("renderBenchmark("));
         // The AU-059 residency fix (the headline "where is the subject" finding)
         // must be surfaced, not just embedded in the heavy report.json export.
-        assert!(SPA_HTML.contains("renderLocation("));
+        assert!(report.contains("renderLocation("));
     }
 
     #[test]
@@ -240,19 +265,21 @@ use super::*;
         // were dead-from-the-UI: the API methods existed yet no control invoked
         // them. Both are now wired into the New-Scan "Autonomous investigation"
         // panel; guard that the call sites stay present.
+        let api = app_file("js/api.js");
         for path in ["/scan/auto/plan", "/scan/auto/sweep"] {
             assert!(
-                SPA_HTML.contains(path),
+                api.contains(path),
                 "SPA must fetch the {path} autonomous endpoint"
             );
         }
         // The handlers must be invoked from real UI controls, not merely defined.
+        let new_scan = app_file("js/views/new_scan.js");
         assert!(
-            SPA_HTML.contains("autoQueuePreview(") && SPA_HTML.contains("autoSweepGo("),
+            new_scan.contains("autoQueuePreview(") && new_scan.contains("autoSweepGo("),
             "SPA must wire the queue-preview + auto-sweep controls"
         );
         assert!(
-            SPA_HTML.contains("API.autoPlan(") && SPA_HTML.contains("API.autoSweep("),
+            new_scan.contains("API.autoPlan(") && new_scan.contains("API.autoSweep("),
             "the controls must call the autoPlan/autoSweep API methods"
         );
     }
@@ -289,20 +316,21 @@ use super::*;
             "username",
         ];
         // The Browse/report pill surface — a `.k-<kind>` CSS rule.
+        let css = app_file("css/app.css");
         for k in KIND_STYLES {
             assert!(
-                SPA_HTML.contains(&format!(".k-{k}{{")),
+                css.contains(&format!(".k-{k}{{")),
                 "SPA has no `.k-{k}` pill style — EntityKind `{k}` renders as a \
                  default/undifferentiated pill; add a colour"
             );
         }
         // The graph surface — a NODE_COLOR entry. A kind missing here renders as
         // the undifferentiated '#888' grey node, indistinguishable from `other`.
-        let node_colors = SPA_HTML
+        let node_colors = app_file("js/scan_info/graph.js")
             .split_once("const NODE_COLOR = {")
             .and_then(|(_, b)| b.split_once("};"))
             .map(|(b, _)| b)
-            .expect("NODE_COLOR map present in SPA");
+            .expect("NODE_COLOR map present in graph.js");
         for k in KIND_STYLES {
             assert!(
                 node_colors.contains(&format!("{k}:")),
@@ -358,11 +386,10 @@ use super::*;
         // resolves source/target to real node object references via a
         // nodesById map before `.links()` is called — this guard pins that
         // resolution step so it cannot silently regress.
-        let graph_fn = SPA_HTML
+        let graph_fn = app_file("js/scan_info/graph.js")
             .split_once("function buildD3Graph(")
-            .and_then(|(_, b)| b.split_once("\nfunction "))
-            .map(|(b, _)| b)
-            .expect("buildD3Graph() present in SPA");
+            .map(|(_, b)| b)
+            .expect("buildD3Graph() present in graph.js");
         assert!(
             graph_fn.contains("nodesById"),
             "buildD3Graph must build a nodesById map to resolve string-keyed \
@@ -392,16 +419,15 @@ use super::*;
         // anything at all. The Report view already renders both sections
         // (#rpt-network / #rpt-corr) inline, so the fix is to scroll to the
         // matching anchor rather than add a redundant sub-tab.
-        for path in [
-            "tab=network\">Network</a>",
-            "tab=corr\">Correlations</a>",
-        ] {
-            assert!(
-                SPA_HTML.contains(path),
-                "expected deep-link anchor text `{path}` in the SPA"
-            );
-        }
-        let dispatch = SPA_HTML
+        assert!(
+            app_file("js/scan_info/leads.js").contains("tab=network\">Network</a>"),
+            "expected deep-link anchor text `tab=network\">Network</a>` in leads.js"
+        );
+        assert!(
+            app_file("js/scan_info/status.js").contains("tab=corr\">Correlations</a>"),
+            "expected deep-link anchor text `tab=corr\">Correlations</a>` in status.js"
+        );
+        let dispatch = app_file("js/scan_info/index.js")
             .split_once("const body = $('#scan-body');")
             .and_then(|(_, b)| b.split_once("\n\n"))
             .map(|(b, _)| b)
@@ -444,9 +470,10 @@ use super::*;
             "live_tick",
             "live_stop",
         ];
+        let log_js = app_file("js/scan_info/log.js");
         for ty in EVENT_TYPES {
             assert!(
-                SPA_HTML.contains(&format!("t==='{ty}'")),
+                log_js.contains(&format!("t==='{ty}'")),
                 "SPA mapEvent has no case for EventKind `{ty}` — it would render \
                  as raw JSON in the live log; add a friendly row"
             );
@@ -483,23 +510,69 @@ use super::*;
     }
 
     #[test]
+    fn spa_enrichment_sources_matches_backend_is_non_corroborating_source() {
+        // Drift guard: the SPA's client-side C_eff mirror (`ENRICHMENT_SOURCES`,
+        // used by `sourceCount()`/`effC()` in spa.html to reproduce
+        // `Entity::c_effective()` for Browse) must exclude exactly the same
+        // evidence sources as the backend's authoritative
+        // `is_non_corroborating_source()`. It once carried only 2 of the 5 real
+        // exclusions (missing `name_intel`, `payid`, `cross_scan_history`), so
+        // an entity corroborated only by one of those rendered a higher
+        // C_eff/tier in Browse than the server's own classification —
+        // reintroducing, client-side, the exact over-credit bugs those
+        // exclusions were added to close.
+        use crate::core::entity::{CROSS_SCAN_SOURCE, ENRICHMENT_ONLY_SOURCES, RECALL_SOURCE};
+        let expected: Vec<&str> = ENRICHMENT_ONLY_SOURCES
+            .iter()
+            .copied()
+            .chain([RECALL_SOURCE, CROSS_SCAN_SOURCE])
+            .collect();
+        let js = app_file("js/helpers.js")
+            .split_once("const ENRICHMENT_SOURCES = new Set([")
+            .and_then(|(_, rest)| rest.split_once(']'))
+            .map(|(set, _)| set)
+            .expect("ENRICHMENT_SOURCES literal present in helpers.js");
+        for name in &expected {
+            assert!(
+                js.contains(&format!("'{name}'")),
+                "backend is_non_corroborating_source excludes `{name}` but the \
+                 SPA's ENRICHMENT_SOURCES set does not — Browse would over-credit \
+                 an entity corroborated only by this source"
+            );
+        }
+        // Symmetric: no UNEXPECTED member either — a source wrongly excluded
+        // client-side would under-credit an entity the backend treats as
+        // genuinely corroborating.
+        let js_count = js.matches('\'').count() / 2;
+        assert_eq!(
+            js_count,
+            expected.len(),
+            "SPA ENRICHMENT_SOURCES has a different member count than the \
+             backend's exclusion list ({expected:?}) — check for a stale or \
+             extra entry: {js}"
+        );
+    }
+
+    #[test]
     fn embedded_spa_tails_the_live_session_event_stream() {
         // The per-session live SSE endpoint (/live/{id}/events) streams a running
         // session's lifecycle + every per-iteration scan's events. It had no SPA
         // consumer — the Live Monitor only polled the session list every 8s. The
         // "Live activity" panel now opens an EventSource against it; guard the
         // wiring so the stream can't silently revert to dead-from-the-UI.
+        let log_js = app_file("js/scan_info/log.js");
+        let live_js = app_file("js/views/live.js");
         assert!(
-            SPA_HTML.contains("/live/'+encodeURIComponent(liveId)+'/events"),
+            log_js.contains("/live/'+encodeURIComponent(liveId)+'/events"),
             "SPA must open an EventSource against /live/{{id}}/events"
         );
         assert!(
-            SPA_HTML.contains("openLiveSse(") && SPA_HTML.contains("openLiveStream("),
+            log_js.contains("openLiveSse(") && live_js.contains("openLiveStream("),
             "SPA must define the live-session stream tail (openLiveSse/openLiveStream)"
         );
         // The tail must be invoked from a real per-session control.
         assert!(
-            SPA_HTML.contains("data-livestream") && SPA_HTML.contains("wireLiveStreams("),
+            live_js.contains("data-livestream") && live_js.contains("wireLiveStreams("),
             "each Active-sessions row must carry a Stream control wired to the tail"
         );
     }
@@ -545,14 +618,15 @@ use super::*;
         let registered: std::collections::BTreeSet<&str> =
             crate::modules::registry().iter().map(|m| m.name()).collect();
 
+        let state_js = app_file("js/state.js");
         let mut checked = 0usize;
         let mut idx = 0;
-        while let Some(rel) = SPA_HTML[idx..].find("pick:m=>[") {
+        while let Some(rel) = state_js[idx..].find("pick:m=>[") {
             let start = idx + rel + "pick:m=>[".len();
-            let end = SPA_HTML[start..]
+            let end = state_js[start..]
                 .find(']')
-                .map_or(SPA_HTML.len(), |e| start + e);
-            for raw in SPA_HTML[start..end].split(',') {
+                .map_or(state_js.len(), |e| start + e);
+            for raw in state_js[start..end].split(',') {
                 let name = raw.trim().trim_matches(['\'', '"']);
                 if name.is_empty() {
                     continue;

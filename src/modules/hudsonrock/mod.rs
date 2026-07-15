@@ -133,14 +133,7 @@ impl Module for HudsonRock {
                 if !target.value.contains('@') {
                     return Ok(ModuleResult::new());
                 }
-                // HudsonRock's search-by-login validates `@` presence in the
-                // raw query string BEFORE URL-decoding, so `dns%40cloudflare.com`
-                // fails its check with "Email is required". Preserve the literal
-                // `@` by reversing form-urlencoding's `%40` substitution.
-                let encoded = urlencode(&target.value).replace("%40", "@");
-                format!(
-                    "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?username={encoded}"
-                )
+                search_by_login_url(&target.value)
             }
             TargetKind::Domain => {
                 // A reverse-DNS Android/iOS app package (`com.facebook.katana`)
@@ -166,6 +159,61 @@ impl Module for HudsonRock {
 
         Ok(build_result(target, &data, &ctx.scan_id))
     }
+}
+
+/// Build the deduplicated victim-device IP pivots from a stealer list. **Pure**
+/// (no network/IO).
+///
+/// No-fabrication gate. Every emitted IP is tagged [`crate::core::tags::GEOLOCATION_LEAD`]
+/// and fed to the GEOINT fusion, so it MUST be a routable public address. A
+/// stealer log's `ip` field routinely carries the victim's LAN address (RFC1918
+/// `10.x`/`192.168.x`, loopback, link-local, CGNAT `100.64.x`) or a non-IP
+/// string — the prior `!ip.contains('.')` check admitted all of these (any
+/// dotted string passed, and every IPv6 address was wrongly rejected).
+/// Geolocating a private/reserved IP fabricates a position that maps nowhere, so
+/// [`crate::util::preflight::is_public_ip`] now gates each candidate: it parses
+/// the value as an `IpAddr` (v4 **and** v6) and rejects the private/reserved
+/// ranges, mirroring the same gate `dehashed` applies to breach-record IPs.
+fn victim_ip_entities(stealers: &[Stealer], scan_id: &str) -> Vec<Entity> {
+    let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
+    stealers
+        .iter()
+        .filter_map(|stealer| {
+            let ip = stealer.ip.as_deref()?.trim();
+            if !crate::util::preflight::is_public_ip(ip) || !seen_ips.insert(ip.to_string()) {
+                return None;
+            }
+            let mut e = Entity::new(
+                crate::core::entity::EntityKind::IpAddress,
+                ip,
+                0.70,
+                scan_id,
+            );
+            e.tag(tags::STEALER_LOG);
+            e.tag("hudsonrock");
+            e.tag(crate::core::tags::GEOLOCATION_LEAD);
+            e.add_evidence(Evidence::new(
+                "hudsonrock",
+                "Victim device IP from stealer log".to_string(),
+            ));
+            Some(e)
+        })
+        .collect()
+}
+
+/// Build the Cavalier `search-by-login` URL for `email`.
+///
+/// The endpoint is keyed by the **`email`** query parameter. It was previously
+/// `username`, and the upstream drift silently broke every login lookup: a
+/// `username=…` request now returns HTTP 400 `{"error":"Email is required"}`
+/// regardless of the value. Live end-to-end testing (a real email seed) caught
+/// this. The `email=` endpoint URL-decodes normally, so a standard form-encoded
+/// value works (no `%40`→`@` dance is needed, unlike the old `username=` path).
+fn search_by_login_url(email: &str) -> String {
+    format!(
+        "https://cavalier.hudsonrock.com/api/json/v2/osint-tools/search-by-login?email={}",
+        urlencode(email)
+    )
 }
 
 /// Build the module's entities from an already-fetched Cavalier response.
@@ -250,28 +298,7 @@ fn build_result(target: &Target, data: &CavalierResp, scan_id: &str) -> ModuleRe
 
     let mut result = ModuleResult::new();
     result.push(entity);
-
-    let mut seen_ips: std::collections::HashSet<String> = std::collections::HashSet::new();
-    result.extend(data.stealers.iter().filter_map(|stealer| {
-        let ip = stealer.ip.as_deref()?;
-        if ip.is_empty() || !ip.contains('.') || !seen_ips.insert(ip.to_string()) {
-            return None;
-        }
-        let mut e = Entity::new(
-            crate::core::entity::EntityKind::IpAddress,
-            ip,
-            0.70,
-            scan_id,
-        );
-        e.tag(tags::STEALER_LOG);
-        e.tag("hudsonrock");
-        e.tag(crate::core::tags::GEOLOCATION_LEAD);
-        e.add_evidence(Evidence::new(
-            "hudsonrock",
-            "Victim device IP from stealer log".to_string(),
-        ));
-        Some(e)
-    }));
+    result.extend(victim_ip_entities(&data.stealers, scan_id));
 
     result
 }
