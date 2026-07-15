@@ -16,8 +16,6 @@
 //! default from `max_timeout_ms` so a slow mobile network still completes.
 
 use async_trait::async_trait;
-use md5::{Digest, Md5};
-use serde::Deserialize;
 
 use crate::core::{
     entity::{Entity, EntityKind, Evidence},
@@ -25,112 +23,15 @@ use crate::core::{
     module::{Module, ModuleCategory, ModuleContext, ModuleResult},
     scan::{Target, TargetKind},
 };
+// The Gravatar request-hash + response schema are the shared Gravatar API
+// contract, single-sourced in `util::gravatar` (T2.124) — imported here under
+// this module's established local names so its body and tests are unchanged.
+use crate::util::gravatar::{Entry, Profile as GravatarResp, hash as gravatar_hash};
 use crate::util::http::fetch_json_or_404;
 
 const SRC: &str = "gravatar";
 
 pub struct Gravatar;
-
-/// Top-level Gravatar profile response: `{ "entry": [ { … } ] }`.
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct GravatarResp {
-    entry: Vec<Entry>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Entry {
-    hash: Option<String>,
-    #[serde(rename = "profileUrl")]
-    profile_url: Option<String>,
-    #[serde(rename = "preferredUsername")]
-    preferred_username: Option<String>,
-    #[serde(rename = "thumbnailUrl")]
-    thumbnail_url: Option<String>,
-    #[serde(rename = "displayName")]
-    display_name: Option<String>,
-    name: Option<Name>,
-    #[serde(rename = "aboutMe")]
-    about_me: Option<String>,
-    #[serde(rename = "currentLocation")]
-    current_location: Option<String>,
-    #[serde(default)]
-    accounts: Vec<Account>,
-    #[serde(default)]
-    urls: Vec<UrlEntry>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Name {
-    formatted: Option<String>,
-    #[serde(rename = "givenName")]
-    given_name: Option<String>,
-    #[serde(rename = "familyName")]
-    family_name: Option<String>,
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct Account {
-    /// Stable platform slug, e.g. `twitter`, `github`.
-    shortname: Option<String>,
-    domain: Option<String>,
-    username: Option<String>,
-    url: Option<String>,
-    /// Accepts either shape Gravatar has shipped this flag as: a genuine JSON
-    /// boolean (the live API, confirmed 2026-07-14 — see
-    /// `real_profile_response_with_boolean_verified_parses_and_yields_entities`)
-    /// or the string `"true"`/`"false"` this field was originally typed for.
-    /// Before this fix the field was a
-    /// bare `Option<String>`, so a real profile's genuine JSON `true` failed
-    /// `serde` deserialization outright — `GravatarResp` doesn't just lose the
-    /// `verified` flag, the WHOLE profile response fails to parse (`Entry` is
-    /// nested inside it), which `process()` then folds into the identical
-    /// "no Gravatar profile" empty result as a real 404. Every profile with
-    /// at least one linked account — the common, most valuable case — was
-    /// silently dropped as a false miss.
-    #[serde(deserialize_with = "deserialize_flexible_bool", default)]
-    verified: Option<bool>,
-}
-
-/// Deserialize a field that may arrive as a genuine JSON boolean or as the
-/// string `"true"`/`"false"`, normalising both to `Option<bool>`. See
-/// [`Account::verified`]'s doc comment for why this flexibility is load-bearing
-/// rather than defensive-programming excess: the real API sends a boolean and
-/// the old bare-`String` typing silently dropped every matching profile.
-fn deserialize_flexible_bool<'de, D>(deserializer: D) -> std::result::Result<Option<bool>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-{
-    #[derive(Deserialize)]
-    #[serde(untagged)]
-    enum BoolOrString {
-        Bool(bool),
-        Str(String),
-    }
-    Ok(match Option::<BoolOrString>::deserialize(deserializer)? {
-        Some(BoolOrString::Bool(b)) => Some(b),
-        Some(BoolOrString::Str(s)) => Some(s.eq_ignore_ascii_case("true")),
-        None => None,
-    })
-}
-
-#[derive(Deserialize, Default)]
-#[serde(default)]
-struct UrlEntry {
-    value: Option<String>,
-    title: Option<String>,
-}
-
-/// The Gravatar profile-request hash: MD5 of the email lowercased and trimmed
-/// (the documented Gravatar identifier). Pure, so it is unit-testable.
-fn gravatar_hash(email: &str) -> String {
-    let normalised = email.trim().to_ascii_lowercase();
-    let digest = Md5::digest(normalised.as_bytes());
-    hex::encode(digest)
-}
 
 #[async_trait]
 impl Module for Gravatar {

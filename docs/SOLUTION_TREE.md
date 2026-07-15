@@ -3695,9 +3695,21 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   the real curl subprocess (`127.0.0.1:1`→`TransportFailure`; a real local
   server→`Executed(Some)`) + a pure decision-table test. See `PROBLEM_TREE`
   T2.123 for the full finding.
-- **`[ ]` SOL-CONTACTENRICH-DEDUP · Call into `gravatar`'s shared
-  enrichment logic instead of maintaining a parallel copy** → **T2.124**.
-  Queued, not yet started — see `PROBLEM_TREE` T2.124 for the finding.
+- **`[x]` SOL-CONTACTENRICH-DEDUP · Single-source the shared Gravatar API
+  contract (request hash + response schema) in a new `util::gravatar`, both
+  modules import it** → **T2.124**. The audit's first-guess "call into
+  `gravatar`" would breach §1 layering (modules never import sibling
+  modules); the doctrine-correct dedup is to lift the *shared external
+  contract* into `util`, exactly as `util::ckan` does for CKAN. New
+  `util::gravatar` holds one superset
+  `Profile`/`Entry`/`Name`/`Account`/`UrlEntry`/`PhotoEntry` + `hash()`;
+  `gravatar` and `contact_enrich` both deserialise into it (importing under
+  their established local names) and keep their own entity-building.
+  `contact_enrich`'s drifted copy — which lacked the `accounts` array
+  `gravatar` parses — is eliminated by construction. +3 contract tests in
+  `util::gravatar`; all 15 gravatar + 14 contact_enrich pre-existing tests
+  pass unchanged (behaviour-preservation proof). See `PROBLEM_TREE` T2.124
+  for the full finding.
 - **`[ ]` SOL-DOHRESOLVER-SOA-DECODER · Replace the hand-rolled SOA-RNAME
   decoder with `dns_intel`'s, add the infrastructure-email filter** →
   **T2.125**. Queued, not yet started — see `PROBLEM_TREE` T2.125 for the
@@ -4670,7 +4682,11 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   distinguished from an unsupported-chain no-op / empty address) delivered
   2026-07-15. **T2.123** (`api_key_probe` surfaces a total transport failure
   — every probe unable to execute — instead of a clean "no keys found")
-  delivered 2026-07-15. 28 of 49 still queued (21 of
+  delivered 2026-07-15. **T2.124** (`contact_enrich`'s drifted duplicate of
+  `gravatar`'s Gravatar profile parsing — its copy lacked the `accounts`
+  array — unified into a new shared `util::gravatar` API-contract module,
+  both modules importing it, mirroring `util::ckan`) delivered 2026-07-15.
+  27 of 49 still queued (22 of
   T2.102–T2.150 now `[x]`, machine-counted against the tree).*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
@@ -12031,3 +12047,22 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   decision-table test. Gate green: fmt/clippy `--all-targets -D warnings`/
   strict-rustdoc `cargo doc`/`cargo test` — 4869 total pass (+3). **Paired:**
   `PROBLEM_TREE` T2.123 `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-CONTACTENRICH-DEDUP closed** (`contact_enrich`
+  hand-duplicated `gravatar`'s Gravatar profile parsing — its own MD5 hash +
+  response types — and the copy had drifted incomplete, lacking the linked-
+  social-`accounts` array `gravatar` parses and mis-modelling `photos` as
+  `Option<Vec<..>>`). Two copies of one external API contract meant a live
+  schema change or a bug fix (like T2.101's bool-or-string `verified`) had to
+  be made twice or silently regress one consumer. Rejected the audit stub's
+  "call into `gravatar`" framing (breaches §1 — modules never import sibling
+  modules) and lifted the shared **contract** into a new `util::gravatar`,
+  exactly as `util::ckan` single-sources CKAN: one superset
+  `Profile`/`Entry`/`Name`/`Account`/`UrlEntry`/`PhotoEntry` + `hash()`. Both
+  modules import it under their established local names and keep their own
+  entity-building; the drift is eliminated by construction. **Behaviour-
+  preservation proof:** all 15 gravatar + 14 contact_enrich pre-existing tests
+  pass unchanged against the rewired code; +3 new `util::gravatar` contract
+  tests (canonical hash `0bc83cb5…`, full-live-shape incl. `accounts`+`photos`,
+  bool-or-string `verified`). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4872 total pass (+3).
+  **Paired:** `PROBLEM_TREE` T2.124 `[ ]`→`[x]` — same commit.
