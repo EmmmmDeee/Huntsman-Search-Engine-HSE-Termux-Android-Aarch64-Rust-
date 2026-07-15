@@ -3607,9 +3607,9 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[ ]` SOL-AU-UNCLAIMED-SWALLOWED · Surface transport/parse failure as
   an error instead of a silent empty result** → **T2.119**. Queued, not
   yet started — see `PROBLEM_TREE` T2.119 for the finding.
-- **`[ ]` SOL-ASIC-DIRECTOR-SWALLOWED · Apply the same honest-failure fix
-  already landed for sibling `au_property`** → **T2.120**. Queued, not yet
-  started — see `PROBLEM_TREE` T2.120 for the finding.
+- **`[x]` SOL-ASIC-DIRECTOR-SWALLOWED · Apply the same honest-failure fix
+  already landed for sibling `au_property`** → **T2.120**. Delivered
+  2026-07-15 — see `PROBLEM_TREE` T2.120 and §5 below for the fix.
 - **`[ ]` SOL-URLHAUS-KEY-EXHAUSTED · Call `ctx.report_key_exhausted` on
   401/403 before returning the empty result** → **T2.121**. Queued, not
   yet started — see `PROBLEM_TREE` T2.121 for the finding.
@@ -11700,3 +11700,38 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test` —
   4849 total pass (+1). **Paired:** `PROBLEM_TREE` T2.162 (new) — same
   commit.
+- **2026-07-15 (cont'd)** — **SOL-ASIC-DIRECTOR-SWALLOWED closed**
+  (`asic_director::process()` collapsing every HTTP-level failure — transport
+  error, non-2xx, oversized/undecodable body — into the same silent
+  `Ok(ModuleResult::new())` a genuine "no director records" result also
+  produces). Orientation swept all 44 open/in-progress `PROBLEM_TREE` nodes
+  before selecting: the two long-`[~]` foundation nodes (F.1's remaining
+  `bstr` leg, F.2's Levenshtein-matching leg) and T2.7's remaining
+  golden-fixture leg are each blocked on a genuine external precondition, not
+  abandoned mid-cycle, so left undisturbed; T2.108 (earliest-numbered open
+  node) was re-confirmed still correctly blocked (live network access this
+  sandbox's proxy denies, plus an unresolved two-vendor ambiguity) from the
+  2026-07-14 investigation already logged, not re-investigated without new
+  evidence. T2.120 was the next viable, concretely-scoped candidate, with an
+  exact precedent to mirror: `au_property`'s `all_legs_unreachable` fix,
+  landed the same day for the identical defect class. Read `au_property`'s
+  real implementation (not assumed from the stub's one-line paraphrase)
+  before writing anything — confirmed `asic_director` has exactly one HTTP
+  leg where `au_property` has three independently-retried portals, so the
+  fix is the single-leg specialisation of the same idiom: a new pure
+  `request_failed(html_read_ok, found_any_entity)` (mirrors
+  `all_legs_unreachable`'s two-bool decision table exactly, renamed for one
+  request instead of an OR across several) decides whether `process()`
+  returns a real `Error::module` or its ordinary empty success. Also
+  confirmed directly against `core/engine/dispatch.rs` that `Error::module`
+  is handled safely — the `Ok(Err(e))` arm counts the module as `errored`,
+  feeds the circuit breaker and the T2.7 health-signal streak, and emits a
+  `ModuleError` event, without aborting the surrounding scan — before relying
+  on that behaviour. 3 new regression tests
+  (`request_failed_true_when_the_request_never_read_and_nothing_found` +
+  two false-case siblings), unit-tested without a live server (the module
+  hardcodes the real ASIC Connect Online URL; a local-mock rewrite would be
+  a larger, out-of-scope refactor — the same constraint `au_property`'s own
+  fix already documented). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4852 total pass (+3).
+  **Paired:** `PROBLEM_TREE` T2.120 `[ ]`→`[x]` — same commit.

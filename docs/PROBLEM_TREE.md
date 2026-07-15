@@ -1988,15 +1988,31 @@ direct.**
   silent empty result. **P2**. *Queued from the 2026-07-14 comprehensive
   audit, wave 1 (module categories) — not yet investigated or fixed.*
   **Paired:** `SOLUTION_TREE` SOL-AU-UNCLAIMED-SWALLOWED (new stub).
-- **`[ ]` T2.120 · `asic_director::process()` swallows every failure
+- **`[x]` T2.120 · `asic_director::process()` swallows every failure
   (transport error, non-2xx, oversized body) into a silent
   `Ok(ModuleResult::new())`.**
   Same defect class already fixed the same day for sibling `au_property` —
   `asic_director` was missed. → **Solution:** apply the same honest-failure
-  fix already landed for `au_property`. **P2**. *Queued from the 2026-07-14
-  comprehensive audit, wave 1 (module categories) — not yet investigated or
-  fixed.* **Paired:** `SOLUTION_TREE` SOL-ASIC-DIRECTOR-SWALLOWED (new
-  stub).
+  fix already landed for `au_property`. **P2**. **Fixed (2026-07-15):**
+  `asic_director` has exactly one HTTP leg (unlike `au_property`'s three
+  independently-retried portals), so the fix is the single-leg form of the
+  same idiom: track `html_read_ok` (transport succeeded, status was success,
+  AND the body read within the 1 MB cap), and a new pure
+  `request_failed(html_read_ok, found_any_entity)` decides the return path —
+  mirrors `au_property`'s `all_legs_unreachable` exactly, renamed for the
+  single-request case. When the request never produced a readable body and
+  nothing was found, `process()` now returns a real `Error::module`
+  (surfaced as a `ModuleError` event, feeding the T2.7 health-signal's
+  `consecutive_failures` streak) instead of a silent `Ok(ModuleResult::new())`;
+  a request that read successfully but simply had no director record for
+  this name still returns the ordinary honest empty success, unchanged. 3
+  new regression tests (`request_failed_true_when_the_request_never_read_
+  and_nothing_found` and its two false-case siblings) pin the exact decision
+  table, unit-tested without a live server since `process()` hardcodes the
+  real ASIC Connect Online URL (same testability constraint `au_property`'s
+  own fix documented). Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4852 total pass (+3). **Paired:**
+  `SOLUTION_TREE` SOL-ASIC-DIRECTOR-SWALLOWED `[ ]`→`[x]`, §5 — same commit.
 - **`[ ]` T2.121 · `urlhaus`'s 401/403 (rejected Auth-Key) handling degrades
   to a clean `Ok(ModuleResult::new())` without calling
   `ctx.report_key_exhausted`.**
@@ -16721,3 +16737,37 @@ way, so this specific drift class can't recur silently again.
   clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
   test` — 4849 total pass (+1). **Paired:** `SOLUTION_TREE` §5 — same
   commit.
+- **2026-07-15 (cont'd)** — **Executed T2.120** (`asic_director::process()`
+  swallowing every HTTP-level failure into a silent `Ok(ModuleResult::new())`).
+  Orientation for this cycle found 44 open/in-progress nodes; the two
+  perpetually-`[~]` foundation nodes (F.1's remaining `bstr` leg, F.2's
+  Levenshtein-matching leg) and T2.7's remaining leg are each legitimately
+  blocked on an external precondition (no natural `bstr` consumer yet; the
+  real tables are too small for `fst` to help; the golden-fixture corpus is
+  confirmed infeasible without a live fetch or fabricated data) rather than
+  abandoned mid-cycle, so none were force-continued. T2.108 (`hlr_cnam` field
+  names, the next-earliest open node) was checked and confirmed still
+  correctly blocked from the 2026-07-14 investigation logged just above
+  (needs live network access this sandbox's proxy blocks, plus an operator
+  steer on which of two candidate vendors is authoritative) — not
+  re-investigated without new evidence, per the deferred-item discipline.
+  T2.120 was the next viable candidate: read `asic_director/mod.rs` directly
+  and confirmed the real bug — `process()`'s single HTTP call collapsed a
+  transport `Err`, a non-2xx status, and a body-read-cap failure all into the
+  identical `Ok(ModuleResult::new())` a genuine "no director records for this
+  name" result also produces. Read the cited precedent (`au_property`'s
+  `all_legs_unreachable` fix, landed the same day for the identical defect
+  class) directly rather than assuming its shape, and confirmed
+  `asic_director` has exactly one leg where `au_property` has three — so the
+  fix is the single-leg specialisation of the same idiom, not a copy of the
+  three-leg combinator. Also confirmed `Error::module` is handled safely by
+  the dispatch layer (`core/engine/dispatch.rs`'s `Ok(Err(e))` arm: counts
+  toward `errored`, feeds the circuit breaker + T2.7 health-signal streak,
+  emits a `ModuleError` event) — it does not crash or abort the scan, only
+  marks this one module's dispatch as failed. New pure `request_failed`
+  function + 3 regression tests, unit-tested without a live server (same
+  constraint `au_property`'s fix already established: the module hardcodes a
+  real government/vendor URL, and redirecting it to a local mock would be a
+  larger, out-of-scope refactor). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4852 total pass (+3).
+  **Paired:** `SOLUTION_TREE` §5 — same commit.

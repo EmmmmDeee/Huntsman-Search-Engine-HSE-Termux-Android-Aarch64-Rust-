@@ -472,6 +472,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **`asic_director::process()` treated a total request failure (transport
+  error, non-2xx status, or an oversized/undecodable body) identically to a
+  genuine "no director records for this name" result.** Same defect class
+  already fixed for sibling `au_property` — `asic_director` was missed.
+  `process()` now tracks whether its single ASIC Connect Online request
+  actually produced a readable body, distinct from whether that body parsed
+  to any director record; when the request never read successfully and
+  nothing was found, it returns a real error (surfaced to the operator and
+  to the scraper-health signal) instead of a silent empty result. A request
+  that read successfully but simply matched no record still returns the
+  ordinary honest empty success, unchanged. New regression tests pin the
+  exact decision table.
 - **`search_engines`' address extraction could reach the highest confidence
   tier (Verified) on pure repetition of the same weak signal, when a
   subject's surname happens to also be a real place name.** Live-reproduced
