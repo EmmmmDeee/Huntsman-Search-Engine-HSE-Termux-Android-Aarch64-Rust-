@@ -1,19 +1,48 @@
-//! SEON email and phone enrichment — cross-platform presence detection.
+//! SEON email and phone enrichment — fraud/risk scoring, domain quality,
+//! breach exposure, and WHOIS-style registrant lookups.
 //!
 //! **Email path:**
 //! `POST https://api.seon.io/SeonRestService/email-api/v3`
-//! Resolves email domain registration and checks presence across 250+ platforms.
+//! Fraud score, email/domain quality signals, breach history, and
+//! WHOIS-style registrant PII for domains associated with the email.
 //!
 //! **Phone path:**
 //! `POST https://api.seon.io/SeonRestService/phone-api/v2`
-//! Resolves carrier details, HLR network lookup, and cross-platform presence.
+//! Resolves carrier details and HLR network lookup.
 //!
 //! Auth: `X-API-KEY` header. Key-gated (`HUNTSMAN_SEON_KEY`).
 //!
-//! Every registered platform that reports a profile URL becomes a `Url` entity
-//! (a direct lead), not just a name in a CSV. The two response → entity mappings
-//! live in the pure [`build_email_entities`] / [`build_phone_entities`] so they
-//! are unit-tested without a live API; the `*_lookup` methods own only transport.
+//! ## The v3/v2 schema migration this fix corrects
+//!
+//! SEON's own migration guide states the per-platform `account_details`
+//! object (`{facebook: {registered, name, url}, twitter: {...}, …}`) this
+//! module's response types previously modelled was **removed** from both
+//! endpoints and replaced with `account_aggregates` — CATEGORY-level
+//! registration counts only (e.g. `social_media: {registered: 8, checked:
+//! 21}`), never a per-platform name or profile URL. Because the top-level
+//! `success`/`data` keys still deserialize, the module never errored; it
+//! silently returned a near-empty result for every real call (every field
+//! the old structs expected was absent, so `#[serde(default)]` filled them
+//! all with `None`) while still spending the paid/keyed quota. This session
+//! fixed the **email** path against SEON's verified current schema (v3),
+//! adding real, previously-uncaptured signal: `breach_details` (an
+//! HIBP-style breach list, `Domain`-per-breach + `breach_date`-stamped so it
+//! date-clusters with the same breach surfaced by another module) and
+//! `associated_domain_registrations` (WHOIS-style registrant PII —
+//! `full_name`/`company_name`/`mailing_address`/`phone_number` for domains
+//! linked to the email — mirroring `whois`'s registrant extraction). The
+//! **phone** path (`build_phone_entities`, `PhoneAccountDetails`/
+//! `AccountPresence`) is confirmed to have the identical dead-extraction
+//! problem (`phone-api/v2` moved carrier/type data under
+//! `provider_carrier_details` and dropped per-platform messaging presence
+//! too) but is deliberately NOT rewritten in this change — one API surface
+//! per cycle — so `attack_techniques()`/`produces()` below reflect ONLY what
+//! the email path can currently deliver; see `PROBLEM_TREE`/`gap_register`
+//! for the tracked phone-path follow-up.
+//!
+//! The two response → entity mappings live in the pure [`build_email_entities`]
+//! / [`build_phone_entities`] so they are unit-tested without a live API; the
+//! `*_lookup` methods own only transport.
 
 mod entity_builders;
 mod types;
@@ -39,8 +68,6 @@ pub(crate) const SRC: &str = "seon";
 
 /// A fraud score at/above this (0–100) flags the identity high-risk.
 pub(super) const HIGH_RISK_SCORE: f64 = 80.0;
-/// Email platforms whose self-reported display name is worth a `Person` lead.
-pub(super) const PERSON_PLATFORMS: &[&str] = &["facebook", "twitter", "linkedin", "github"];
 
 pub struct Seon;
 
@@ -50,7 +77,7 @@ impl Module for Seon {
         "seon"
     }
     fn description(&self) -> &'static str {
-        "SEON email/phone enrichment — cross-platform presence across 250+ services"
+        "SEON email/phone enrichment — fraud score, breach exposure, WHOIS-style registrant PII"
     }
     fn priority(&self) -> u8 {
         95
@@ -70,21 +97,46 @@ impl Module for Seon {
     }
 
     fn attack_techniques(&self) -> &'static [&'static str] {
-        // SEON detects an identity's presence across 250+ social/messaging
-        // platforms (emitting profile Urls), so beyond the People default
-        // (T1589.003 Employee Names + T1591.004 Identify Roles) it is Search
-        // Open Websites/Domains: Social Media (T1593.001). Superset of the
-        // default — coverage cannot regress.
-        &["T1589.003", "T1591.004", "T1593.001"]
+        // The People-category default (T1589.003 Employee Names + T1591.004
+        // Identify Roles) fits neither path: no role/job-title field exists
+        // anywhere in SEON's real schema (T1591.004 was never earned — the
+        // same "over-claims a role mapping never performed" issue already
+        // corrected for oathnet_pro/dehashed this session), and the
+        // Social Media technique (T1593.001) this module previously claimed
+        // no longer reflects real extraction on EITHER path — SEON's v3/v2
+        // migration removed all per-platform presence data, so declaring it
+        // would misstate coverage the API can no longer deliver (see this
+        // file's top doc comment). What the FIXED email path genuinely
+        // extracts: breach exposure confirmation (T1589.002, mirroring
+        // `hibp`'s identical Breach-category-default precedent) and
+        // WHOIS-style registrant PII — name (T1589.003), address
+        // (T1591.001), company (T1591.002).
+        &["T1589.002", "T1589.003", "T1591.001", "T1591.002"]
     }
 
     fn produces(&self) -> &'static [EntityKind] {
-        // Always re-emits the seed (Email or Phone) enriched with SEON signal,
-        // plus Person (name from email path) and Url (social platform profiles).
+        // Always re-emits the seed (Email or Phone) enriched with SEON
+        // signal. The email path additionally mints: Domain (breach
+        // exposure + registrant domains), Person/Organisation/Address/Phone
+        // (WHOIS-style registrant PII from associated_domain_registrations).
+        // `Url` stays declared even though this fix confirmed it's
+        // practically dead against the live API on BOTH paths (see top doc
+        // comment): the deliberately-unchanged phone path's
+        // `profile_url_entity` call is still a real, literal
+        // `Entity::new(EntityKind::Url, …)` construction in this module's
+        // source, so `produces()` — a structural "can this code construct
+        // X" declaration, not a live-traffic claim — must still list it;
+        // dropping it caused `tests/architecture.rs`'s
+        // `every_literal_constructed_entity_kind_is_declared_in_produces`
+        // guard to fail. Removing it for real needs the phone-path rewrite
+        // itself (the tracked follow-up), not just this declaration.
         const KINDS: &[EntityKind] = &[
             EntityKind::Email,
             EntityKind::Phone,
             EntityKind::Person,
+            EntityKind::Organisation,
+            EntityKind::Address,
+            EntityKind::Domain,
             EntityKind::Url,
         ];
         KINDS

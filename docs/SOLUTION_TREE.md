@@ -995,6 +995,41 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   ambient global git config (this sandbox has `commit.gpgsign=true` + a
   signing key set globally — a config a CI runner won't share).
   **(cycle 22)**
+- **`[~]` SOL-SEON-SCHEMA · Rewrite response types against the real, verified
+  live schema** — `seon`'s `SeonEmailData` modelled a schema
+  (`score`/`deliverable`/`domain_details`/`account_details`) with ZERO field-
+  name overlap with SEON's actual current `email-api/v3` response (confirmed
+  by independently fetching SEON's own current API reference, not inferred),
+  so every field silently deserialized to `None` on every real call while
+  the paid/keyed quota was still spent. Rewrote to match the verified schema
+  (`risk_scores`/`email_details`/`email_domain_details`/`account_aggregates`/
+  `seon_fraud_history`/`breach_details`/`associated_domain_registrations`)
+  and extracted genuinely new signal per this codebase's full-fidelity
+  convention: a `Domain` per breach (`hibp`'s breach→Domain pattern,
+  `breach_date`-stamped for AU-019) and WHOIS-style registrant PII
+  (`Domain`/`Person`/`Organisation`/`Address`/`Phone`, mirroring `whois`'s
+  registrant-extraction conventions) from `associated_domain_registrations`
+  — richer than the module ever produced, since the old per-platform Url/
+  Person leads are structurally gone from the live API and unrecoverable.
+  Self-review caught a real bug before it shipped: a category name
+  (`technology`) can appear in BOTH `business` and `personal` aggregate
+  groups with different counts, and a naive name-keyed merge would have
+  silently dropped one — fixed with a group-qualified label, verified
+  against a fixture exercising the exact collision. `attack_techniques()`/
+  `produces()` re-derived from the new real extraction (dropped two
+  never-actually-earned claims — T1593.001 confirmed gone from the live API,
+  T1591.004 never justified by any real/no-longer-real field — added
+  T1589.002/T1591.001/T1591.002 for the new breach/registrant signal).
+  *Closes:* **T2.16** (email path only). ✅ 17 tests (13 new + 4 rewritten),
+  full 30/30 architecture-guard parity (including correctly satisfying, not
+  weakening, `every_literal_constructed_entity_kind_is_declared_in_produces`
+  — `produces()` keeps `Url` since the deferred phone path's
+  `profile_url_entity` call is still a real literal construction in source,
+  a structural claim distinct from the live-API-reachability claim
+  `attack_techniques()` makes). *Remaining:* the **phone** path
+  (`phone-api/v2`) has the confirmed-identical defect and is deliberately
+  not rewritten this cycle — one API surface per cycle — tracked as the
+  next unit.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -1039,6 +1074,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-ROI-HINT | T2.13 | `[x]` |
 | SOL-HINT-NOISE | T2.14 | `[x]` |
 | SOL-RECALL-ORDER | T2.15 | `[x]` |
+| SOL-SEON-SCHEMA | T2.16 (email path) | `[~]` |
 | SOL-RULE-METAGUARD | T1.3 (dispatch firing coverage) | `[x]` |
 | SOL-STREAMING | C8 | `[x]` |
 | SOL-AU-MOAT | C3 | `[~]` |
@@ -4589,3 +4625,34 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   confirmed clean. Logged as a dated entry, not a new tracked node — same
   precedent as the entries above: a contained, single-declaration fix.
   Paired: `PROBLEM_TREE` §8 — same commit.
+
+- **2026-07-15 (cont'd 5)** — **New node T2.16 / SOL-SEON-SCHEMA (email path
+  closed, phone path deliberately deferred): `seon`'s response types
+  modelled a schema SEON stopped returning, so the module's core
+  extraction was structurally dead against the real API while still
+  spending paid/keyed quota.** Independently verified against SEON's own
+  current API reference (fetched directly, not inferred) that the
+  pre-fix `SeonEmailData` struct's four fields
+  (`score`/`deliverable`/`domain_details`/`account_details`) have ZERO
+  name overlap with the real `email-api/v3` response schema — every field
+  silently deserialized to `None`. Rewrote against the verified real
+  schema and, per this codebase's full-fidelity convention, extracted
+  genuinely new signal the old code never modelled: breach exposure
+  (`Domain` per breach, `breach_date`-stamped for AU-019, mirroring
+  `hibp`) and WHOIS-style registrant PII (`Domain`/`Person`/
+  `Organisation`/`Address`/`Phone`, mirroring `whois`'s registrant
+  extraction). Self-review caught a genuine bug before shipping — a
+  category name can appear in both `business` and `personal` aggregate
+  groups with different counts; a naive merge would have silently
+  dropped one — fixed with a group-qualified label and a fixture proving
+  the exact collision. `attack_techniques()`/`produces()` re-derived from
+  real extraction; running the full architecture-guard suite correctly
+  caught that `produces()` must still list `Url` (a structural
+  source-construction claim the deferred phone path still satisfies)
+  even though it's confirmed practically dead against live traffic on
+  both paths — corrected, not weakened. 17 tests (13 new + 4 rewritten),
+  full 30/30 architecture-guard parity, gate green — 4383 total pass
+  (+13). Phone path (`phone-api/v2`) confirmed to have the identical
+  defect, deliberately not rewritten this cycle (one API surface per
+  cycle) — tracked as T2.16's remaining leg. Paired: `PROBLEM_TREE` T2.16
+  — same commit.

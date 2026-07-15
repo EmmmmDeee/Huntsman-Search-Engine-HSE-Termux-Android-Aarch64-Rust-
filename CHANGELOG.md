@@ -433,6 +433,20 @@ versions can include breaking changes; patch versions are bug-fix-only.
   (with `basis`, `radius_km`, `locality`) when AU-059 doesn't fire — not just Null.
 
 ### Fixed
+- **`seon`'s email enrichment was silently returning almost nothing on every
+  real call, despite successfully spending the operator's paid/keyed quota
+  each time.** SEON changed their email API's response format at some point
+  in the past — the per-platform social-account fields this module expected
+  were removed and replaced with a different structure — and this module's
+  parsing was never updated to match. The request still succeeded and
+  looked normal, but every field it tried to read came back empty. Rewrote
+  the parsing to match SEON's current, real response format, and while
+  doing so added extraction for data the module had never captured even
+  before the format changed: which known data breaches the email appears
+  in (with dates, so it lines up with other breach findings from other
+  sources), and registrant details (name, company, address, phone) for any
+  domains associated with the email. The equivalent phone-enrichment path
+  has the same underlying problem and is being addressed in a follow-up.
 - **`niamonx`'s MITRE ATT&CK coverage report was missing "Employee Names"
   (T1589.003), despite the module already extracting corroborating names
   into Person entities.** Like the `dehashed` fix above, this brings its

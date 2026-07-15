@@ -999,6 +999,90 @@ direct.**
   Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo
   doc`/`cargo test` — 4606 total pass (+1).
 
+- **`[~]` T2.16 · `seon`'s response-deserialisation types modelled a schema
+  SEON stopped returning — the module's core extraction was structurally
+  dead code against the real API on BOTH the email and phone paths, while
+  still spending the operator's paid/keyed quota on every call.** Found
+  2026-07-15 during a "seek/oathnet and other breach and analogous sources"
+  investigation, after independently verifying (fetching SEON's own current
+  API reference directly, not inferring) that `email-api/v3`'s migration
+  guide states verbatim: *"`account_details` — removed and replaced by
+  `account_aggregates`... Individual account registration details are no
+  longer returned by default."* `src/modules/seon/types.rs`'s
+  `SeonEmailData` (pre-fix) declared exactly `score`, `deliverable`,
+  `domain_details`, `account_details` — ZERO of these field names appear
+  anywhere in the real `email-api/v3` response (confirmed via a complete,
+  verbatim example response fetched from SEON's docs); every field
+  deserialized to `None` via `#[serde(default)]`, so `body.success`/`body.data`
+  still parsed successfully (no error path triggered) while
+  `build_email_entities` silently emitted only the bare re-enriched seed —
+  the module's own doc comment ("Every registered platform that reports a
+  profile URL becomes a `Url` entity") and its `attack_techniques()`
+  justification (T1593.001, "SEON detects presence across 250+ platforms")
+  were both false for every real call, a paid/keyed quota spend for
+  structurally-guaranteed near-zero yield. `phone-api/v2` independently
+  confirmed to have the identical defect (top-level `valid`/`carrier`/
+  `country`/`type`/`account_details` all moved under `provider_carrier_
+  details` or removed). Fixed for the **email** path only this cycle (one
+  API surface per cycle, per the standing "never expand scope mid-cycle"
+  discipline) against SEON's verified current schema: rewrote
+  `SeonEmailData` to match exactly (`risk_scores`, `email_details`,
+  `email_domain_details`, `account_aggregates`, `seon_fraud_history`,
+  `breach_details`, `associated_domain_registrations`), and — following
+  this codebase's "full-fidelity, maximum raw data" convention rather than
+  a bare survival patch — extracted genuinely new signal the old code never
+  modelled at all: a `Domain` entity per breach (mirroring `hibp`'s
+  breach→Domain pattern, `breach_date`-stamped for AU-019 clustering) and
+  WHOIS-style registrant PII (`Domain`/`Person`/`Organisation`/`Address`/
+  `Phone`, mirroring `whois`'s registrant-extraction confidence/redaction-
+  guard conventions) from `associated_domain_registrations` — a richer
+  signal than the module ever produced even before SEON's schema changed,
+  since per-platform Url/Person leads are structurally gone from the API
+  and cannot be recovered. Caught and fixed a genuine self-introduced bug
+  during self-review, not merely during testing: a category name
+  (`technology`) can legitimately appear in BOTH `business` and `personal`
+  aggregate groups with DIFFERENT counts (confirmed in SEON's own example
+  response), and an initial `BTreeMap`-keyed-on-name-alone merge would have
+  silently dropped one group's count — fixed by folding the group into the
+  label itself before sorting, verified against a fixture exercising the
+  exact collision. `attack_techniques()`/`produces()`/module doc comments
+  re-derived from the new real extraction (dropped T1593.001 "Social
+  Media" — confirmed gone from the live API on both paths — and T1591.004
+  "Identify Roles" — never earned, no role field exists anywhere in the
+  real schema, the same over-claim class already corrected for
+  `oathnet_pro`/`dehashed`; added T1589.002/T1591.001/T1591.002 for the new
+  breach/registrant extraction). Running the full architecture-guard suite
+  surfaced that `Url` must stay in `produces()` despite being confirmed
+  practically dead: `tests/architecture.rs`'s `every_literal_constructed_
+  entity_kind_is_declared_in_produces` guard checks literal source
+  construction, not live-API reachability, and the deliberately-untouched
+  phone path's `profile_url_entity` call is still a real `Entity::new(
+  EntityKind::Url, …)` construction in this module's source — corrected
+  rather than the guard being weakened. 17 tests (13 new + 4 rewritten to
+  the real schema; the phone-path tests are unchanged, since that code
+  wasn't touched), including a fixture built entirely from SEON's own
+  verbatim documented example response, a redaction/privacy-placeholder
+  guard test, and the business/personal category-collision test. Red/green
+  proof: confirmed zero field-name overlap between the pre-fix struct
+  (`score`/`deliverable`/`domain_details`/`account_details`) and the real
+  schema's field names, so every new test would have deserialized to
+  entirely empty/`None` values against the pre-fix code — a literal
+  single-line revert isn't a meaningful proof at this scale, so the
+  verification is the independently-fetched schema evidence plus the
+  demonstrated zero-overlap. Full parity: all 30 architecture guards pass
+  (including the two this fix's own self-review caught and correctly
+  satisfied, not weakened). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4383 total pass
+  (+13). No identity/PII impact (all fixture values synthetic, using this
+  codebase's established `Jordan Avery` placeholder). **P2** (severe
+  operator-value impact — silent paid-quota spend for near-zero yield —
+  but not a crash/corruption/architecture-guard violation, so P2 rather
+  than P0/P1). *Remaining:* the **phone** path (`build_phone_entities`,
+  `PhoneAccountDetails`/`AccountPresence`) has the confirmed-identical
+  defect against `phone-api/v2`'s real schema and is deliberately not
+  rewritten this cycle — tracked as the next unit for a future cycle, not
+  silently dropped. **Paired:** `SOLUTION_TREE` §5 — same commit.
+
 ---
 
 ## 4. Capability program — surpass SpiderFoot & Maltego (CAP)
