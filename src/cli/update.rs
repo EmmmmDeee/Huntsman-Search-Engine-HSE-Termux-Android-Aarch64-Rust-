@@ -469,6 +469,22 @@ mod tests {
         );
     }
 
+    /// True when a `git` binary is reachable on `PATH` — checked once so
+    /// [`commits_behind_and_changelog_lines_reflect_real_git_state`] can skip
+    /// cleanly on a machine without git installed instead of panicking the
+    /// whole test binary. `commits_behind`/`changelog_lines` themselves treat
+    /// "git absent" as a documented, supported runtime fallback (`None`/
+    /// empty), not an error — the test suite should be no less portable than
+    /// the production code it exercises.
+    fn git_available() -> bool {
+        std::process::Command::new("git")
+            .arg("--version")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .is_ok_and(|s| s.success())
+    }
+
     /// Run `git` with a fixed, isolated author/committer identity and gpg
     /// signing off, so the fixture is deterministic regardless of the host's
     /// ambient git config (this sandbox, for one, has `commit.gpgsign=true`
@@ -497,6 +513,12 @@ mod tests {
     /// so `git fetch`/`git clone` never leave the temp directory.
     #[test]
     fn commits_behind_and_changelog_lines_reflect_real_git_state() {
+        if !git_available() {
+            eprintln!(
+                "skipping commits_behind_and_changelog_lines_reflect_real_git_state: git not installed"
+            );
+            return;
+        }
         let tmp = tempfile::tempdir().unwrap();
         let remote = tmp.path().join("remote");
         let local = tmp.path().join("local");

@@ -35,14 +35,12 @@ pub(super) fn build_queries_exposure(target: &Target) -> Vec<String> {
 fn domain_exposure(v: &str) -> Vec<String> {
     vec![
         // Exposed environment files
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:.env.production OR inurl:.env.local"),
         format!(
-            "site:github.com \"{v}\" filename:.env OR filename:.env.production OR filename:.env.local"
-        ),
-        format!(
-            "site:github.com \"{v}\" filename:wp-config.php OR filename:config.php OR filename:settings.py"
+            "site:github.com \"{v}\" inurl:wp-config.php OR inurl:config.php OR inurl:settings.py"
         ),
         // AWS/cloud credentials
-        format!("site:github.com \"{v}\" filename:credentials OR filename:aws.config"),
+        format!("site:github.com \"{v}\" inurl:credentials OR inurl:aws.config"),
         format!("site:s3.amazonaws.com \"{v}\""),
         format!("site:storage.googleapis.com \"{v}\""),
         format!("site:blob.core.windows.net \"{v}\""),
@@ -65,7 +63,7 @@ fn domain_exposure(v: &str) -> Vec<String> {
         // Exposed admin panels
         format!("site:{v} inurl:phpmyadmin OR inurl:adminer OR inurl:\"/_cpanel\""),
         // Docker/K8s
-        format!("site:github.com \"{v}\" filename:docker-compose.yml OR filename:Dockerfile"),
+        format!("site:github.com \"{v}\" inurl:docker-compose.yml OR inurl:Dockerfile"),
     ]
 }
 
@@ -98,7 +96,7 @@ fn username_exposure(v: &str) -> Vec<String> {
         // Paste sites
         format!("\"{v}\" site:pastebin.com credentials OR email OR password"),
         // Credentials in code
-        format!("site:github.com \"{v}\" filename:.env OR filename:config.json"),
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:config.json"),
         // Exposed personal tokens
         format!("site:github.com \"{v}\" \"ghp_\" OR \"github_pat_\" OR \"token\""),
     ]
@@ -107,7 +105,7 @@ fn username_exposure(v: &str) -> Vec<String> {
 fn org_exposure(v: &str) -> Vec<String> {
     vec![
         // Code repo leaks
-        format!("site:github.com \"{v}\" filename:.env OR filename:credentials"),
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:credentials"),
         format!("site:github.com \"{v}\" \"aws_access_key\" OR \"PRIVATE_KEY\""),
         // Cloud storage
         format!("site:s3.amazonaws.com \"{v}\""),
@@ -125,7 +123,7 @@ fn phone_exposure(v: &str) -> Vec<String> {
         format!("\"{v}\" site:pastebin.com password OR leaked OR breach"),
         format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
         // Code repos accidentally committing an SMS/2FA config with the number
-        format!("site:github.com \"{v}\" filename:.env OR filename:config.json"),
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:config.json"),
         // Cloud storage exposure
         format!("site:s3.amazonaws.com \"{v}\""),
         // People-search aggregators
@@ -139,7 +137,7 @@ fn fullname_exposure(v: &str) -> Vec<String> {
         format!("\"{v}\" site:pastebin.com password OR email OR leaked"),
         format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
         // Code repos exposing personal documents (resumes, internal docs)
-        format!("site:github.com \"{v}\" resume OR cv OR filename:.env"),
+        format!("site:github.com \"{v}\" resume OR cv OR inurl:.env"),
         // Leaked/confidential documents naming the subject
         format!("\"{v}\" filetype:pdf confidential OR internal OR resume"),
         // People-search aggregators
@@ -155,7 +153,7 @@ fn address_exposure(v: &str) -> Vec<String> {
         format!("\"{v}\" site:dehashed.com OR site:leakcheck.io OR site:snusbase.com"),
         // Code repos/configs accidentally committing the address (shipping
         // labels, customer records, KYC data).
-        format!("site:github.com \"{v}\" filename:.env OR filename:config.json"),
+        format!("site:github.com \"{v}\" inurl:.env OR inurl:config.json"),
         // Cloud storage exposure
         format!("site:s3.amazonaws.com \"{v}\""),
         // People-search aggregators
@@ -188,7 +186,7 @@ mod tests {
     fn build_queries_exposure_domain_targets_env_files() {
         let q = build_queries_exposure(&Target::new(TargetKind::Domain, "example.com"));
         assert!(!q.is_empty());
-        assert!(q.iter().any(|s| s.contains("filename:.env")));
+        assert!(q.iter().any(|s| s.contains("inurl:.env")));
     }
 
     #[test]
@@ -277,7 +275,7 @@ mod tests {
             q.iter()
                 .any(|s| s == "inurl:\"/.git/config\" site:example.com")
         );
-        assert!(q.iter().any(|s| s.contains("filename:docker-compose.yml")));
+        assert!(q.iter().any(|s| s.contains("inurl:docker-compose.yml")));
     }
 
     #[test]

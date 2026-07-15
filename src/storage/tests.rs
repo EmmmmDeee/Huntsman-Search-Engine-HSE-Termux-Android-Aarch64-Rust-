@@ -694,19 +694,29 @@ fn entities_from_events_canonicalizes_evidence_order_regardless_of_arrival_order
     insert_scan(&store, "scan-order-a");
     insert_scan(&store, "scan-order-b");
 
-    let mut zzz = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
-    zzz.add_evidence(Evidence::new("zzz_module", "seen"));
-    let mut aaa = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
-    aaa.add_evidence(Evidence::new("aaa_module", "seen"));
+    let mut zzz_a = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    zzz_a.add_evidence(Evidence::new("zzz_module", "seen"));
+    let mut aaa_a = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-a");
+    aaa_a.add_evidence(Evidence::new("aaa_module", "seen"));
 
     // Scan A: zzz_module's EntityFound event arrives before aaa_module's.
-    for (i, entity) in [zzz.clone(), aaa.clone()].into_iter().enumerate() {
+    for (i, entity) in [zzz_a, aaa_a].into_iter().enumerate() {
         let mut ev = Event::new("scan-order-a", EventKind::EntityFound { entity });
         ev.ts = 3000 + i as u64;
         store.insert_event(&ev).unwrap();
     }
-    // Scan B: the same two sources, reversed — aaa_module arrives first.
-    for (i, entity) in [aaa, zzz].into_iter().enumerate() {
+
+    // Scan B: the same two sources, reversed (aaa_module arrives first) — its
+    // own entities, scan_id-tagged "scan-order-b", not clones of scan A's (
+    // Entity::merge never updates scan_id, so reusing scan A's entities here
+    // would recover an entity whose scan_id lies about which scan it came
+    // from, masking any future regression where scan_id becomes relevant to
+    // recovery/export behaviour).
+    let mut zzz_b = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-b");
+    zzz_b.add_evidence(Evidence::new("zzz_module", "seen"));
+    let mut aaa_b = Entity::new(EntityKind::Email, "shared@example.com", 0.5, "scan-order-b");
+    aaa_b.add_evidence(Evidence::new("aaa_module", "seen"));
+    for (i, entity) in [aaa_b, zzz_b].into_iter().enumerate() {
         let mut ev = Event::new("scan-order-b", EventKind::EntityFound { entity });
         ev.ts = 3000 + i as u64;
         store.insert_event(&ev).unwrap();
