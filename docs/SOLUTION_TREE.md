@@ -3589,10 +3589,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[ ]` SOL-NIAMONX-ALLFAIL · Surface an error when all 3 concurrent
   endpoint fetches fail instead of a silent empty result** → **T2.114**.
   Queued, not yet started — see `PROBLEM_TREE` T2.114 for the finding.
-- **`[ ]` SOL-PSBDMP-SWALLOWED-FAILURE · Distinguish fetch/parse failure
+- **`[x]` SOL-PSBDMP-SWALLOWED-FAILURE · Distinguish fetch/parse failure
   from a genuine zero-match result and surface the former as an error** →
-  **T2.115**. Queued, not yet started — see `PROBLEM_TREE` T2.115 for the
-  finding.
+  **T2.115**. Delivered 2026-07-15 — see `PROBLEM_TREE` T2.115 and §5 below
+  for the fix.
 - **`[ ]` SOL-PWNEDPW-NON2XX · Propagate non-2xx responses as an error,
   matching sibling Breach modules** → **T2.116**. Queued, not yet started
   — see `PROBLEM_TREE` T2.116 for the finding.
@@ -3610,9 +3610,13 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 - **`[x]` SOL-ASIC-DIRECTOR-SWALLOWED · Apply the same honest-failure fix
   already landed for sibling `au_property`** → **T2.120**. Delivered
   2026-07-15 — see `PROBLEM_TREE` T2.120 and §5 below for the fix.
-- **`[ ]` SOL-URLHAUS-KEY-EXHAUSTED · Call `ctx.report_key_exhausted` on
-  401/403 before returning the empty result** → **T2.121**. Queued, not
-  yet started — see `PROBLEM_TREE` T2.121 for the finding.
+- **`[x]` SOL-URLHAUS-KEY-EXHAUSTED · Call `ctx.report_key_exhausted` on
+  401/403 before returning the empty result** → **T2.121**. Doc-drift
+  correction 2026-07-15 — already delivered 2026-07-14 under
+  `SOL-KEYPOOL-REGISTRY-GAPS`/T2.153 (that fix's own text names `urlhaus`
+  explicitly); this node was queued from a separate audit wave the same
+  day and never cross-closed. No code change — see `PROBLEM_TREE` T2.121
+  and §5 below.
 - **`[ ]` SOL-CHAININTEL-SINGLE-SOURCE · Distinguish unsupported-chain from
   fetch-failure in the returned result/error** → **T2.122**. Queued, not
   yet started — see `PROBLEM_TREE` T2.122 for the finding.
@@ -11735,3 +11739,55 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fix already documented). Gate green: fmt/clippy `--all-targets -D
   warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4852 total pass (+3).
   **Paired:** `PROBLEM_TREE` T2.120 `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-PSBDMP-SWALLOWED-FAILURE closed** (T2.115:
+  `psbdmp`'s sole data fetch converting every failure mode into a clean empty
+  result). Selected via a parallel investigation workflow that read the real
+  current source of 11 open candidate nodes before picking one. Unlike
+  `au_property`/`asic_director` (hand-rolled multi-leg/scrape fetches needing
+  a bespoke pure predicate), `psbdmp` makes exactly one call through
+  `fetch_json`, which already returns a `Result<T>` correctly separating
+  transport/status/parse failure (`Err`) from a genuine successful
+  zero-match body (`Ok`) — confirmed ~9 sibling modules already propagate it
+  correctly via a bare `?`, so the fix is a one-line swap to match:
+  `match fetch_json(...).await { Ok(r) => r, Err(_) => return Ok(result) }`
+  → `fetch_json(...).await?`. A first regression-test attempt forced a
+  genuine transport failure via `reqwest::Client::builder().resolve(
+  "psbdmp.ws", "127.0.0.1:1")`; it red/green-verified correctly, but an
+  independent adversarial-review agent caught a real flaw before it shipped:
+  `fetch_json_inner`'s curl-subprocess fallback on transport failure does
+  its own independent OS DNS resolution of the literal URL, bypassing the
+  `reqwest::Client`'s `.resolve()` override entirely — since `psbdmp.ws` is
+  a real, resolvable domain, the test could fire a genuine live request to
+  the actual third-party API on any host with real internet, including this
+  project's own primary Termux/Android target. Verified the finding directly
+  before accepting it, confirmed no existing precedent in this codebase
+  hermetically tests a module's `process()` against its own hardcoded HTTPS
+  URL (every existing mock-server test targets a lower-level, URL-
+  parameterized helper instead), and removed the flawed test. Replaced with
+  a hermetic test at the primitive layer,
+  `util::http::tests::fetch_json_propagates_a_non_2xx_status_as_err_not_a_
+  silent_default`, mirroring the already-established
+  `fetch_json_or_absent_maps_400_to_none_while_or_404_still_errors`
+  `TcpListener`+`http://` pattern — proving the exact contract the fix
+  relies on, on loopback only. Logged honestly as a class-level guard
+  (CONVENTIONS.md §7), not an instance-level red/green regression, since the
+  shared primitive was already correct — the defect was only in how
+  `psbdmp` used it. Gate green: fmt/clippy `--all-targets -D warnings`/
+  strict-rustdoc `cargo doc`/`cargo test` — 4853 total pass (net unchanged).
+  **Paired:** `PROBLEM_TREE` T2.115 `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd 2)** — **SOL-URLHAUS-KEY-EXHAUSTED closed as a
+  doc-drift correction** (T2.121). Surfaced as a genuine false lead by the
+  same parallel investigation: the stub's literal fix (call
+  `ctx.report_key_exhausted` on urlhaus 401/403) was already delivered
+  2026-07-14 under a *different* tracking item, T2.153/
+  SOL-KEYPOOL-REGISTRY-GAPS (commit `c917251e`), whose own text explicitly
+  names `urlhaus` as one of "4 modules dropping 401/403/429 signals" it
+  fixed — but T2.121 was queued from a separate audit wave the same day and
+  never cross-closed. Verified directly against current source
+  (`urlhaus::process()`'s 401/403 branch already calls
+  `crate::util::http::note_keyed_error`, which internally calls
+  `ctx.report_key_exhausted`) before flipping the marker — implementing the
+  stub's literal wording today would have been a no-op at best, a duplicate
+  `report_key_exhausted` call at worst. No code change; doc-only correction
+  so a future cycle doesn't waste an investigation re-discovering this.
+  **Paired:** `PROBLEM_TREE` T2.121 `[ ]`→`[x]` — same commit.
