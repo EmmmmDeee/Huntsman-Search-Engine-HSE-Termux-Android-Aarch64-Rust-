@@ -569,7 +569,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   isolation preserved (cache is a read-only pre-dispatch gate, not a write-path
   bypass). Schema snapshot test updated. ✅ delivered cycle 18.
   *Closes:* **C9** (`[ ]`→`[x]`). Enables operator cost control + revenue model.
-- **`[~]` SOL-STEALER-LOGS-VIEWER · Paired stealer-log credential browser** →
+- **`[x]` SOL-STEALER-LOGS-VIEWER · Paired stealer-log credential browser** →
   **C10**: `core::stealer_row::StealerRow` (login/password/domain/pwned_at/
   log_id, `StealerRowKind::{Password,Combo}`) persisted alongside the entity
   graph in a new `stealer_rows` SQLite table; `StoragePort::{
@@ -591,6 +591,40 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   literal per-file splitting).
   *Closes:* **C10** (`[ ]`→`[~]`, partial — a real, scoped increment, not the
   full spec).
+  ✅ **Second increment (2026-07-14) — full file-explorer refactor per a
+  detailed operator spec, `[~]`→`[x]`.** Pure `stealer.js` rewrite, no
+  backend changes (the first increment's data model already carried every
+  field needed). Delivered: a real `<details>`-tree (Machine ▸
+  {Passwords.txt, Combos.txt} with per-file counts) plus a second
+  Group-by-domain mode; cross-machine duplicate-password detection (global
+  reuse count, not just the current filter) with a badge/tint/filter;
+  live search highlighting (`<mark>`, escaped-length-correct — a first
+  draft sliced on the raw query's length against the already-escaped
+  text, corrupting the span for any `&`/`<`/`>`/`"`/`'` in the query,
+  caught before shipping); sortable columns; a raw view sharing the exact
+  export formatter; full keyboard navigation (↑/↓ + Enter-to-copy via
+  native `tabIndex`); and the full export set (deduplicated Copy logins /
+  Copy passwords, non-deduplicated Copy url:login:pass, Download). Two
+  real bugs caught by live interactive testing, not code review: the
+  "All" link's handler was queried against the wrong DOM scope
+  (`$('#st-all', treeHost)` when `#st-all` lives outside `#st-tree`) so it
+  never attached and the raw `<a href="#">` hash-navigated the whole SPA
+  away from the scan on click; and the new dup/highlight/focus styles
+  were hardcoded light-mode hex colours, confirmed illegible against this
+  app's actual dark-first theme by a real screenshot, rewritten against
+  the app's own `--warning-dim`/`--accent`/`--accent-text`/`--bg-hover`
+  custom properties (mirroring the Browse tab's `#browse-rollup
+  tr.active-kind` pattern) and re-verified correct in both themes.
+  Literal per-file (System.txt/Credentials.txt/ClientAt/EmployeeAt)
+  splitting remains permanently undeliverable by this importer's input
+  format (a restructured victim/credential/domain summary, not a raw
+  archive) — a documented structural limit, not a remaining TODO, which
+  is why this closes `[x]` rather than staying `[~]` forever. Live-
+  verified end to end against the real compiled binary: a real `hse
+  import`, a real running `hse serve`, and a headless-Chromium pass
+  exercising every feature and reading back actual clipboard/download
+  content, zero console/page errors, both themes.
+  *Closes:* **C10** (`[~]`→`[x]`).
 - **`[~]` SOL-GEOINT · Confidence-weighted geo convergence** → **C5**: the Weiszfeld/
   Welzl fusion stack (verified correct, §6) widened with more sources + provenance +
   a confidence radius.
@@ -3045,6 +3079,52 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   `should_report_key_status()` so a 429 now reports to the key pool
   exactly like 401/403 — see `PROBLEM_TREE` T2.152 for the finding and
   fix detail.
+  *Extended (2026-07-14) — the 4-module fix's natural next audit pass,
+  scoped to "universal... all key types" per the operator's own
+  instruction:* `urlhaus`, `github_user::fetch::{fetch_orgs,fetch_gists}`,
+  `github_code_search`, `github_commits` all caught a 401/403/429 on an
+  optional/present key and degraded to a clean empty result WITHOUT
+  telling the key pool — the same "don't fail the module" vs. "don't
+  inform the pool" conflation T2.152 fixed for `opencorporates`, found in
+  four more modules. All four now call the shared `util::http::
+  note_keyed_error` when a token was actually in play. `urlhaus` gained a
+  new pure `resolve_key()` resolving both which key to use (dedicated vs.
+  the `threatfox` fallback) and which service a rejection should be
+  credited against. See `PROBLEM_TREE` T2.153 for the full finding
+  (including the larger companion gap this pass surfaced — see
+  SOL-KEYPOOL-REGISTRY-GAPS immediately below).
+- **`[x]` SOL-KEYPOOL-REGISTRY-GAPS · Register nine genuine per-service
+  API keys that had zero key-pool integration** → **T2.153**. Diagnosing
+  "the rotating API keys of all types" found the shared rotation/health/
+  circuit-breaker machinery itself sound (survived several prior
+  hardening passes — see T2.153's own citations), but nine real services
+  (`github`, `urlhaus`, `hlrlookups`, `opencnam`, `trove_au`,
+  `fullcontact`, `domainsdb`, `niamonx`, `osintcat`) were never added to
+  `util::service_defs`, the single registry every pool benefit — CSV
+  multi-key rotation, the operator's key-health dashboard, and a real
+  (non-no-op) `report_key_exhausted` — keys off. Delivered 2026-07-14:
+  nine new `ServiceDef` entries, each `test_url`/`key_header` verified
+  against the owning module's actual request-building code rather than
+  assumed — a discipline that caught two real mistakes before shipping:
+  a first-draft guess at `niamonx`/`osintcat`'s base domains was wrong
+  (real: `dash.niamonx.io/api/v2`, `www.osintcat.net/api`), and `urlhaus`'s
+  real path (`/v1/host/`) has no `/api/` segment despite sibling
+  `threatfox`'s registered path including one. A live probe against
+  `domainsdb.info`'s real search endpoint surfaced a genuine landmine —
+  it returns 200 for ANY non-empty bearer token, so a naive `domain=`-
+  bearing probe URL would have made the validator read a garbage key as
+  `Valid`, a false positive strictly worse than the safe `Indeterminate`
+  the pre-existing `dehashed` omission note already established as the
+  right trade-off for a POST-only API; fixed by omitting the required
+  `domain` param so a present token can never reach the unreliable path
+  (auth-presence is still checked: no header → 401). `fullcontact`/
+  `niamonx`/`urlhaus` are themselves POST-only, so they land the same
+  documented safe `Indeterminate`-only trade-off via a GET probe.
+  *Closes:* **T2.153** (`[ ]`→`[x]`). Five of the nine modules
+  (`trove_au`, `fullcontact`, `domainsdb`, `niamonx`, `osintcat`) already
+  called `report_key_exhausted` correctly — registration alone turns
+  their previously-no-op reports into real pool state, no module-code
+  change needed for those five.
 
 ### S.PROCESS — The methodology itself ⚑
 
@@ -3295,7 +3375,8 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
 | SOL-GEOINT | C5 | `[~]` |
 | SOL-OFFENSIVE | C6 | `[~]` |
 | SOL-FORENSIC | C7 | `[ ]` |
-| SOL-STEALER-LOGS-VIEWER | C10 | `[~]` |
+| SOL-STEALER-LOGS-VIEWER | C10 | `[x]` |
+| SOL-KEYPOOL-REGISTRY-GAPS | T2.153 | `[x]` |
 | SOL-HEALTH-SIGNAL | T2.7 (per-source health) | `[~]` |
 | SOL-UPDATE | UX self-upgrade + CLI consolidation | `[x]` |
 | SOL-UPDATE-GIT-FIXTURE | T2.21 | `[x]` |
@@ -3347,6 +3428,20 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   network-calling modules and a pure `should_report_key_status()` to
   `opencorporates` so 429 reports to the key pool exactly like 401/403.
   Off the open queue.
+- ~~**T2.153**~~ — **delivered** ✅ (`SOL-RATELIMIT-UNIVERSAL-PRIMITIVES`
+  extended + `SOL-KEYPOOL-REGISTRY-GAPS` new, 2026-07-14). "The rotating
+  API keys of all types" gap, diagnosed rather than assumed: the shared
+  machinery itself was sound; nine genuine per-service keys (`github`,
+  `urlhaus`, `hlrlookups`, `opencnam`, `trove_au`, `fullcontact`,
+  `domainsdb`, `niamonx`, `osintcat`) were simply never registered in
+  `service_defs`, so rotation/CSV-multi-key/the dashboard/
+  `report_key_exhausted` were silent no-ops for all nine regardless of
+  each module's own error handling. Registered all nine (test_url/
+  key_header verified against real module code, catching two wrong
+  guesses and one false-positive-validator landmine before shipping —
+  see the node itself for detail); fixed the 4 of the 9 that additionally
+  swallowed a 401/403/429 without reporting it (`urlhaus`, `github_user`,
+  `github_code_search`, `github_commits`). Off the open queue.
 - ~~**T2.98**~~ — **delivered** ✅ (`SOL-STRUCTURED-ID-TIMELINE`, 2026-07-14). A
   systematic sweep for the same dead-signal class as the 2026-07-05 C1(c)
   `AccountCreated` fix found it had only wired 1 of `structured_id`'s 4
@@ -3421,11 +3516,15 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   this queue. S2/SOL-SSRF-WHOIS + S3/SOL-SECRETS-EXTEND delivered 2026-06-17.)*
 - **C8** — **delivered** ✅ (`SOL-STREAMING`, 2026-06-17). Off the open queue.
 - **C9** — **delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18). Off the open queue.
-- **C10** — `[~]` (SOL-STEALER-LOGS-VIEWER, 2026-07-14). First increment
-  delivered (paired credential rows + dedicated viewer sub-tab); the
-  operator's full spec (dedup detection, group-by-domain, raw view, the
-  full export set, keyboard nav, literal per-file splitting) remains —
-  a new, explicit, non-silent open item, not off the queue.
+- **C10** — **delivered** ✅ (SOL-STEALER-LOGS-VIEWER, second increment,
+  2026-07-14). Full file-explorer refactor per the operator's detailed
+  spec: real expand/collapse tree + group-by-domain mode, cross-machine
+  duplicate-password detection, live search highlighting, sortable
+  columns, raw view, full keyboard nav, the complete export set. Only
+  literal per-file (System.txt/Credentials.txt/ClientAt/EmployeeAt)
+  splitting remains unimplemented, and that's now a documented structural
+  limit of this importer's input format, not a remaining TODO. Off the
+  open queue.
 - **C3** — `[~]` (SOL-AU-MOAT). `austlii` delivered cycle 20 (courts/AustLII closed).
   *Remaining:* GNAF/AusPost address validation; fuller ASIC/ABR graph; state
   cadastre/property.
@@ -3605,7 +3704,7 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   data.
 - **§7 (security):** XSS + S2 + S3 solved; S1 accepted; **S5 `[x]`** ✅
   (SOL-INSTALL-INTEGRITY, cycle 16); S4 residual open (LOW).
-- **§4 (capability C1–C10):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C10 `[~]`** (SOL-STEALER-LOGS-VIEWER, 2026-07-14: paired credential rows + dedicated viewer sub-tab delivered; dedup detection, group-by-domain, raw view, full export set, keyboard nav, per-file splitting remain); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; movement/timeline layer's first increment (`shot_time`→`LocationVisited`) and the multi-event movement/path reconstruction layer both delivered 2026-07-14; only AU bounding precision and the by-design-open cell-DB auto-sync remain); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
+- **§4 (capability C1–C10):** C8 delivered ✅ (`streaming_probe`, 42-site webcam/fan/adult prober); **C9 delivered** ✅ (SOL-CACHE-INTERSCAN, cycle 18, `raw_archive` + dispatch cache gate); **C10 delivered** ✅ (SOL-STEALER-LOGS-VIEWER, second increment 2026-07-14: full file-explorer refactor — tree + group-by-domain, dedup detection, search highlighting, sortable columns, raw view, keyboard nav, full export set; only the literal per-file taxonomy remains, a documented structural limit of the importer's input format, not a gap); **C5 `[~]`** (SOL-GEOINT: `opencellid` cycle 19 + `cell_local`/`hse cells import` cycle 21 delivered, Weiszfeld geometric-median convergence delivered 2026-07-01 — stale here since, corrected 2026-07-05; movement/timeline layer's first increment (`shot_time`→`LocationVisited`) and the multi-event movement/path reconstruction layer both delivered 2026-07-14; only AU bounding precision and the by-design-open cell-DB auto-sync remain); **C3 `[~]`** (SOL-AU-MOAT: hlr_cnam/ahpra/acma_rrl/trove_au/smtp_vrfy/`austlii` shipped, courts/AustLII closed; GNAF/ASIC/cadastre remaining); **C4 `[~]`** (SOL-NETINT: netlas + censys + securitytrails + bgpview + ripestat all shipped; passive-DNS history + CDN cert-hash origin remaining); **C1 `[~]`** (SOL-CORR: `identity_paths` + CONNECTIONS cycle 26, timeline `classify` widened cycle 27, `SharesSecretWith` reused-secret link cycle 28, AU-112 shared-CIDR-infrastructure rule 2026-07-13; only the `Ssid` rule-gap remains, blocked on an import-extractor change); C2/C6/C7 open by design, gated on §3.F. **SOL-UPDATE `[x]`** (cycle 22, `hse update`/upgrade + CLI consolidation 19→13 visible commands).
 
 ---
 
@@ -8557,3 +8656,129 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   localhost. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full
   suite 0 failures (4686 lib tests, +6). **Paired:** `PROBLEM_TREE` T2.111
   `[ ]`→`[x]` + §8 — same commit.
+- **2026-07-14 — SOL-RATELIMIT-UNIVERSAL-PRIMITIVES extended + new
+  SOL-KEYPOOL-REGISTRY-GAPS `[ ]`→`[x]`: "the rotating API keys of all
+  types" gap, diagnosed end to end.** Operator instruction: "diagnose how
+  the rate limiting works and correct the universal rust code for HSE and
+  the rotating API keys of all types." Read every layer of the shared
+  machinery (`util::key_pool`'s tiered health-scored LRU-spreading
+  rotation, the per-host and per-module circuit breakers, `util::http::
+  fetch`'s keyed-error helpers) directly against source, then
+  cross-checked against git history (`55ad59ec`, `a5c5fac3`/`722ad061`,
+  `4b865458` — several prior hardening passes on exactly this subsystem)
+  before concluding the machinery itself is sound. The real gap: a full
+  diff of every `HUNTSMAN_*` env var a module actually reads against every
+  `env_var` registered in `util::service_defs` (the single registry
+  `is_poolable_service`/CSV-multi-key-expansion/the health dashboard/
+  `report_key_exhausted` all key off) found **nine genuine per-service
+  keys with zero registration**: `github` (shared by three modules),
+  `urlhaus`/abuse.ch, `hlrlookups` + `opencnam` (hlr_cnam's two keys),
+  `trove_au`, `fullcontact`, `domainsdb`, `niamonx`, `osintcat`. For any
+  of these, before this fix: the documented `KEY=a,b,c` multi-key
+  rotation convention silently sent a broken literal comma-joined
+  credential instead of splitting it; the key never appeared on the
+  operator's health dashboard; and any `report_key_exhausted` call
+  against it was a pure no-op (the pool had no entry to mark). Four of
+  the nine modules (`urlhaus`, `github_user`, `github_code_search`,
+  `github_commits`) compounded this with their own bug — catching a
+  401/403/429 and correctly degrading to a clean empty result (a
+  best-effort/optional-auth call shouldn't fail the module) but never
+  telling the pool, conflating two independent decisions. The other five
+  already called `report_key_exhausted` correctly; registration alone
+  activates their pre-existing reports. Delivered: nine new `ServiceDef`
+  entries, each `test_url`/`key_header` read directly off the owning
+  module's own request-building code rather than assumed — a discipline
+  that caught two wrong guesses (real `niamonx`/`osintcat` base domains;
+  `urlhaus`'s real path has no `/api/` segment unlike sibling
+  `threatfox`'s) and one live-confirmed false-positive landmine
+  (`domainsdb.info`'s real search endpoint returns 200 for ANY non-empty
+  bearer token — a naive probe URL would have validated a garbage key as
+  genuine; fixed by omitting the required `domain` param so the probe can
+  only land the safe `Indeterminate` the existing `dehashed`
+  omission-note precedent already established, never a false `Valid`).
+  `urlhaus::resolve_key` (new pure function) resolves both which key to
+  use (dedicated vs. the `threatfox` fallback) and which service a
+  rejection reports against. `github_code_search`/`github_commits`/
+  `github_user::fetch::{fetch_orgs,fetch_gists}` now call the shared
+  `note_keyed_error` when a token was actually in play (`fetch_orgs`/
+  `fetch_gists` needed a signature change, `http: &reqwest::Client` →
+  `ctx: &ModuleContext`, to reach it at all). 17 new regression tests: 9
+  in `service_defs::tests` (one per service, each pinning both
+  `is_poolable_service` and the exact auth scheme against the owning
+  module's real code — `domainsdb`'s additionally asserts the probe URL
+  omits `domain`, guarding the false-positive fix), 4 on
+  `urlhaus::resolve_key`. Live-verified against the real compiled binary:
+  a real `hse import` of a Stealerlogs fixture, a real running `hse
+  serve`, and a headless-Chromium pass confirmed zero console/page errors
+  across every touched module. Gate green: fmt/clippy `-D warnings`/
+  rustdoc clean, full suite 0 failures (4699 lib tests, +40 combined with
+  the intervening T2.111 fix). **Paired:** `PROBLEM_TREE` T2.153
+  `[ ]`→`[x]` + §8 — same commit.
+- **2026-07-14 — SOL-STEALER-LOGS-VIEWER second increment `[~]`→`[x]`:
+  full file-explorer refactor per the operator's detailed spec, closing
+  C10.** Pure `scan_info/stealer.js` rewrite — the first increment's data
+  model (`StealerRow`/`/stealer-rows`) already carried every field this
+  increment needed, so no backend or schema change was required. The
+  machine sidebar became a real `<details>`-based expand/collapse tree
+  (Machine ▸ {Passwords.txt, Combos.txt}, per-file row counts,
+  Expand-all/Collapse-all), joined by a second Group-by-domain mode
+  (Domain ▸ rows, with an honest "(no domain — combo rows)" bucket rather
+  than fabricating a site for combo-shaped rows this importer's format
+  can't provide). Delivered: cross-machine duplicate-password detection
+  (computed once over the FULL dataset so a password's global reuse stays
+  visible even filtered to one machine, not per-view) with a badge/tint/
+  filter; live search highlighting via `<mark>` (an early draft sliced
+  the highlighted span using the RAW query's length against the ALREADY-
+  ESCAPED text, corrupting the mark boundary for any query containing
+  `&`/`<`/`>`/`"`/`'` — caught and fixed before shipping, not after);
+  sortable columns (click a header, toggle ascending/descending, blank
+  values always sort last); a raw view that reuses the exact same
+  formatter the exports use, so what's on screen always matches what
+  downloads/copies; full keyboard navigation (↑/↓ moves focus between
+  rows via native `tabIndex`, Enter copies the focused row's password);
+  and the complete export set (Copy logins / Copy passwords — both
+  explicitly deduplicated and labelled as such — Copy url:login:pass —
+  one line per row, not deduplicated — and Download). Two real bugs
+  caught by live interactive testing before shipping, neither visible
+  from code review alone: (1) the "All" link's click handler was queried
+  as `$('#st-all', treeHost)`, scoped to the `#st-tree` subtree that gets
+  fully replaced on every render — but `#st-all` actually lives in the
+  static shell OUTSIDE that subtree (a sibling in the panel heading), so
+  the query always returned nothing, the listener never attached, and
+  clicking "All" fell through to the bare `<a href="#">`'s default
+  behaviour, hash-routing the entire SPA away from the scan to the
+  router's default route — confirmed via a Playwright test that timed
+  out waiting for a table that no longer existed on the page; fixed by
+  moving the wiring to the one-time toolbar-setup block, correctly scoped
+  to the tab's root. (2) the new dup-row/highlight/focus styles were
+  authored as hardcoded light-mode hex colours; a real headless-Chromium
+  screenshot against the actually-running app (which is dark-first by
+  design) showed them as low-contrast, near-illegible text — rewritten
+  against the app's own `--warning-dim`/`--accent`/`--accent-text`/
+  `--bg-hover` CSS custom properties (the active-node treatment mirrors
+  the Browse tab's own `#browse-rollup tr.active-kind` selected-row
+  pattern for consistency), then re-verified correct with two more real
+  screenshots, one per theme. Literal per-file (System.txt/
+  Credentials.txt/ClientAt.txt/EmployeeAt.txt) splitting remains
+  undeliverable — the "Stealerlogs" export this importer parses is
+  already a restructured victim/credential/domain summary, not a raw
+  stealer-log archive, and never carries that file-level provenance for
+  any credential; documented as a permanent structural limitation rather
+  than a "not yet," which is why C10 closes `[x]` here rather than
+  staying `[~]` indefinitely. Live-verified end to end against the real
+  compiled binary, not mocked: a real `hse import` of a Stealerlogs
+  fixture deliberately shaped with a 3× password reuse across 2 machines
+  (to exercise dedup detection), a real running `hse serve`, and a
+  headless-Chromium interaction pass driving every feature — reveal-all,
+  search+highlight, the dedup filter, ascending/descending sort, raw
+  view, group-by-domain, machine/file selection, keyboard nav, and all
+  four export actions — reading back actual clipboard content and actual
+  downloaded-file bytes (not merely confirming a click didn't throw),
+  matching exactly the expected values throughout, zero console/page
+  errors across the whole pass, verified in both dark and light theme.
+  Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4699 lib tests — no Rust changes this increment; this repo
+  has no JS test framework, so live interactive verification against the
+  real running app is the applicable methodology, consistent with this
+  project's established web-UI verification convention). **Paired:**
+  `PROBLEM_TREE` C10 `[~]`→`[x]` + §8 — same commit.

@@ -365,7 +365,7 @@ impl Module for GithubUser {
 
         // GitHub organisations this user belongs to → Organisation entities.
         let token = ctx.key_opt("HUNTSMAN_GITHUB_TOKEN");
-        let org_logins = fetch::fetch_orgs(&ctx.http, login, token).await;
+        let org_logins = fetch::fetch_orgs(ctx, login, token).await;
         for org_login in org_logins {
             let mut org = Entity::new(EntityKind::Organisation, &org_login, 0.70, &ctx.scan_id);
             org.tag("github-org");
@@ -383,7 +383,7 @@ impl Module for GithubUser {
         // Public gists → tag profile entity, then scan content for emails and
         // leaked API keys (send_tagged inside fetch_gist_content routes every
         // response body through the found_keys scanner automatically).
-        let gist_ids = fetch::fetch_gists(&ctx.http, login, token).await;
+        let gist_ids = fetch::fetch_gists(ctx, login, token).await;
         if !gist_ids.is_empty()
             && let Some(first) = result.entities.first_mut()
         {

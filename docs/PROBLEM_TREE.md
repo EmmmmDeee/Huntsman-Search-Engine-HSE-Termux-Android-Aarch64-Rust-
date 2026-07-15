@@ -2221,6 +2221,89 @@ zero shipped cost — F.3); `aho-corasick` + `memchr` now direct deps (F.1,
   on `opencorporates`. Gate green: fmt/clippy `-D warnings`/rustdoc clean,
   full suite 0 failures (4659 lib tests). **Paired:** `SOLUTION_TREE`
   SOL-RATELIMIT-UNIVERSAL-PRIMITIVES (new node), §5 — same commit.
+- **`[x]` T2.153 · Nine genuine per-service API keys had ZERO key-pool
+  integration — not a T2.152-style bypass of the retry/report *mechanics*,
+  but entire services absent from the registry those mechanics depend on**,
+  plus four modules that additionally swallowed a 401/403/429 without ever
+  calling `report_key_exhausted`.
+  Operator instruction: "diagnose how the rate limiting works and correct
+  the universal rust code for HSE and the rotating API keys of all types."
+  Read every layer end-to-end (`util::key_pool` rotation/health-scoring,
+  the per-host and per-module circuit breakers, `util::http::fetch`'s
+  keyed-error helpers) and cross-checked against git history — the
+  machinery itself is sound (survived several prior hardening passes:
+  `55ad59ec` stopped transient probes from permanently invalidating valid
+  keys, `a5c5fac3`/`722ad061` token-anchored 429 classification, `4b865458`
+  real `Retry-After` handling). The real gap: `KeyPool::add`/CSV multi-key
+  expansion/the health dashboard/`report_key_exhausted` all key off
+  `service_defs::find_service`, and a full env-var-vs-registry diff found
+  **nine services referenced by real modules that were never registered
+  at all** — `github` (github_user/github_code_search/github_commits'
+  shared `HUNTSMAN_GITHUB_TOKEN`), `urlhaus`/abuse.ch, `hlrlookups` +
+  `opencnam` (hlr_cnam's two keys), `trove_au`, `fullcontact`, `domainsdb`,
+  `niamonx`, `osintcat`. Concretely, for any of these: the documented
+  `HUNTSMAN_X_KEY=a,b,c` multi-key convention silently breaks (the CSV
+  split in `util/keys/io.rs` only fires for a registered `env_var`, so a
+  comma-joined string would be sent as one literal broken credential); the
+  key never appears on the operator's key-health dashboard; and
+  `report_key_exhausted` calls against it are no-ops (the pool has no
+  entry to mark). Four of the nine modules (`urlhaus`, and
+  `github_user`/`github_code_search`/`github_commits` sharing one token)
+  compounded this with their OWN bug: each caught a 401/403/429 and
+  degraded cleanly to an empty result (correct — don't fail a best-effort/
+  optional-auth call) but never told the pool, conflating "don't error the
+  module" with "don't inform the pool" when the two are independent. The
+  other five (`trove_au`, `fullcontact`, `domainsdb`, `niamonx`,
+  `osintcat`) already called `report_key_exhausted`/`ctx.report_key_
+  exhausted` correctly — registration alone turns their pre-existing
+  (previously no-op) reports into real pool state, no module-code change
+  needed. → **Solution:** nine new `ServiceDef` entries in
+  `util/service_defs/mod.rs`, each verified against the owning module's
+  OWN request-building code (not assumed) — two were caught wrong by live
+  verification before shipping: `niamonx`/`osintcat`'s real base URLs
+  (`dash.niamonx.io/api/v2`, `www.osintcat.net/api`) differ from a
+  plausible-looking guess, and `urlhaus`'s real path is `/v1/host/` with
+  NO `/api/` segment despite sibling `threatfox`'s registered path
+  including one. A live probe against `domainsdb.info`'s real search
+  endpoint found it returns 200 for ANY non-empty bearer token — a
+  `domain=`-bearing probe URL would have made the validator read a
+  garbage key as `Valid`, a false positive strictly worse than the safe
+  `Indeterminate` the existing `dehashed` omission-note precedent already
+  established for a POST-only API; fixed by omitting the required
+  `domain` param so auth-presence is still checked (no header → 401) but
+  a present token can never reach the unreliable 200-regardless-of-
+  validity path. `fullcontact`/`niamonx`/`urlhaus` are POST-only APIs a
+  GET-based probe can't safely validate either way, so all three land the
+  same documented safe `Indeterminate`-only trade-off. `urlhaus::
+  resolve_key` (new pure function) resolves the dedicated key vs. the
+  `threatfox` fallback (same abuse.ch account, per the module's own doc
+  comment) AND which service name a rejection should report against, so a
+  fallback-key rejection correctly credits `threatfox`, not a phantom
+  `urlhaus` pool entry. `github_code_search`/`github_commits`/
+  `github_user::fetch::{fetch_orgs,fetch_gists}` now call the shared
+  `note_keyed_error` when a token was actually in play (an anonymous call
+  hitting the unauthenticated limit is correctly left unreported — that's
+  not a key problem); `fetch_orgs`/`fetch_gists` needed a signature change
+  (`http: &reqwest::Client` → `ctx: &ModuleContext`) to reach
+  `report_key_exhausted` at all. **P2/capability** (the "rotating API
+  keys of all types" gap spans defect — modules dropping a real signal —
+  and missing capability — services that were never wired in at all).
+  17 new regression tests: 9 in `service_defs::tests` (one per newly
+  registered service, each pinning BOTH `is_poolable_service` and the
+  exact `key_header` scheme against the owning module's real request
+  code — the `see_know`/`netlas` tests just above are the precedent for
+  why a mismatched header silently mis-reports a valid key as invalid;
+  `domainsdb`'s test additionally asserts the probe URL omits `domain`,
+  guarding the false-positive fix), 4 on `urlhaus::resolve_key`
+  (dedicated-key precedence, fallback, empty-string-is-absent, both-absent
+  → `None`). Live-verified against the real compiled binary — not just
+  unit tests: a real `hse import` of a Stealerlogs fixture, a real running
+  `hse serve`, and a headless-Chromium pass confirmed zero console/page
+  errors across every module touched. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4699 lib tests, +40 —
+  the intervening T2.111 ip_reputation fix landed +6 in the same window).
+  **Paired:** `SOLUTION_TREE` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES (extended)
+  + SOL-KEYPOOL-REGISTRY-GAPS (new node), §5 — same commit.
 - **`[x]` T2.8 · Unbounded response-body reads (on-device OOM / DoS)** *(fully closed 2026-06-17)* — several
   fetch paths buffer an *entire* response body into RAM with the size check applied
   only *after* the read (or no cap at all), bypassing the codebase's own
@@ -5799,7 +5882,7 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   when `ttl > 0 && result non-empty`; `Scan::modules_cached` counter persisted.
   Schema snapshot test updated. **Paired:** `SOLUTION_TREE` SOL-CACHE-INTERSCAN
   `[ ]`→`[x]` + §3/§4/§5 — same commit.
-- **`[~]` C10 · Stealer Logs Viewer — a dedicated, paired credential
+- **`[x]` C10 · Stealer Logs Viewer — a dedicated, paired credential
   browser for imported stealer-log data** — *Problem:* a stealer-log import
   (`cli/import/stealer.rs`, the "Stealerlogs" victim-centric export) already
   flattens every credential into the generic entity graph, but that
@@ -5857,6 +5940,70 @@ primitives. AU bias and an offensive (active-collection) posture throughout.
   `[~]` (partially delivered — a real, scoped, useful increment, not the
   full spec) rather than `[x]`, honestly. **Paired:** `SOLUTION_TREE`
   SOL-STEALER-LOGS-VIEWER (new node), §5 — same commit.
+  ✅ **Second increment (delivered 2026-07-14): full file-explorer refactor,
+  closing every deferred item except one structural limitation.**
+  `scan_info/stealer.js` rebuilt: the machine sidebar is now a real
+  `<details>`-based tree (Machine ▸ {Passwords.txt, Combos.txt}, per-file
+  row counts, Expand-all/Collapse-all), plus a second "Group by domain"
+  mode (Domain ▸ rows, with an honest "(no domain — combo rows)" bucket
+  rather than fabricating a site for combo-shaped rows). Delivered:
+  duplicate-password detection (cross-MACHINE reuse — computed once over
+  the full dataset, not the current filter, so a password's global reuse
+  stays visible even when viewing one machine — with a "reused" badge, a
+  themed row tint, and a "Reused passwords only" filter); live search
+  highlighting (`<mark>`, escaped-needle-length-correct — an earlier draft
+  sliced the mark span using the RAW query's length against the ESCAPED
+  text, corrupting the highlight for any query containing `&`/`<`/`>`/
+  `"`/`'`, caught before shipping); sortable columns (click a header,
+  toggle asc/desc, blanks always sort last); a raw view (reuses the exact
+  export formatter, so what's on screen is exactly what downloads/copies);
+  full keyboard navigation (↑/↓ moves focus between rows via native
+  `tabIndex`, Enter copies the focused row's password); and the full
+  export set (Copy logins / Copy passwords — both deduplicated, labelled
+  as such — / Copy url:login:pass — not deduplicated, one line per row —
+  / Download .txt). **Still not deliverable, and now a permanent,
+  documented limitation rather than a "not yet" gap:** literal per-file
+  (System.txt/Credentials.txt/ClientAt.txt/EmployeeAt.txt) splitting — the
+  "Stealerlogs" export this importer parses is already a restructured
+  victim/credential/domain summary, not a raw stealer-log archive, and
+  never carries that file-level provenance for any credential; only a
+  future importer reading the raw archive format could ever populate it,
+  so marking C10 `[x]` here reflects "complete relative to what this
+  architecture can honestly support," not "nothing left." Two real bugs
+  caught and fixed by live interactive testing before shipping (not by
+  code review alone): (1) the "All" link's click handler was wired via
+  `$('#st-all', treeHost)` — scoped to the `#st-tree` subtree that gets
+  replaced on every render — but `#st-all` actually lives in the static
+  shell OUTSIDE that subtree, so the query always found nothing, the
+  listener never attached, and clicking "All" fell through to the bare
+  `<a href="#">`'s default navigation, hash-routing the whole SPA away
+  from the scan entirely; moved to the one-time toolbar-wiring block and
+  correctly scoped. (2) the new dup/highlight/focus styles were hardcoded
+  light-mode hex colours, which a real headless-Chromium screenshot showed
+  as low-contrast, near-illegible text against this app's actual (dark-
+  first) theme; rewritten against the app's own `--warning-dim`/
+  `--accent`/`--accent-text`/`--bg-hover` CSS custom properties (mirroring
+  the Browse tab's own `#browse-rollup tr.active-kind` selected-row
+  pattern for the tree's active-node styling), verified correct in BOTH
+  themes via two more real screenshots. No backend/schema changes needed
+  — every feature here is a pure `stealer.js` rewrite over data the
+  existing `StealerRow`/`/stealer-rows` endpoint from the first increment
+  already returns in full. Live-verified against the real compiled binary
+  end to end, not mocked: a real `hse import` of a Stealerlogs fixture (3×
+  password reuse across 2 machines, deliberately shaped to exercise
+  dedup detection), a real running `hse serve`, and a headless-Chromium
+  interaction pass driving every feature — reveal-all, search+highlight,
+  dedup filter, ascending/descending sort, raw view, group-by-domain,
+  machine/file selection, keyboard nav, and all four export actions —
+  reading back actual clipboard content and actual downloaded-file bytes
+  (not just "the click didn't throw"), confirming exact expected values
+  throughout, with zero console/page errors across the whole pass, in
+  both dark and light theme. Gate green: fmt/clippy `-D warnings`/rustdoc
+  clean, full suite 0 failures (4699 lib tests — no Rust changes in this
+  increment; JS has no test framework in this repo, so live interactive
+  verification is the applicable methodology, consistent with this
+  project's established web-UI verification convention). **Paired:**
+  `SOLUTION_TREE` SOL-STEALER-LOGS-VIEWER `[~]`→`[x]`, §5 — same commit.
 
 ---
 
@@ -12675,3 +12822,52 @@ way, so this specific drift class can't recur silently again.
   localhost, not a mock. Gate green: fmt/clippy `-D warnings`/rustdoc
   clean, full suite 0 failures (4686 lib tests, +6). **Paired:**
   `SOLUTION_TREE` SOL-IPREP-SWALLOWED `[ ]`→`[x]` — same commit.
+- **2026-07-14** — **T2.153: universal rate-limit + key-rotation audit,
+  "the rotating API keys of all types" gap.** User instruction, diagnosed
+  end to end rather than assumed: the shared primitives (`key_pool`,
+  circuit breakers, `fetch.rs` keyed-error helpers) are sound — the real
+  gap was nine genuine per-service keys (`github`, `urlhaus`, `hlrlookups`,
+  `opencnam`, `trove_au`, `fullcontact`, `domainsdb`, `niamonx`,
+  `osintcat`) that were never registered in `service_defs` at all, so
+  rotation/CSV-multi-key/the health dashboard/`report_key_exhausted` were
+  all silent no-ops for them regardless of how correct the calling
+  module's own error handling was. Registered all nine, each `test_url`/
+  `key_header` verified against the owning module's real request code
+  (two caught wrong by live probing before shipping: `niamonx`/
+  `osintcat`'s real base domains, `urlhaus`'s real `/v1/` path without
+  abuse.ch sibling `threatfox`'s `/api/` segment) and a live-confirmed
+  false-positive landmine defused (`domainsdb`'s search endpoint accepts
+  ANY bearer token with 200 — fixed by omitting the required `domain`
+  param so the probe can only land the safe `Indeterminate`, never a false
+  `Valid`). Fixed the 4 modules (of the 9) that additionally swallowed a
+  401/403/429 without reporting it: `urlhaus`, `github_user`,
+  `github_code_search`, `github_commits`. 17 new tests. Live-verified via
+  a real `hse import` + real `hse serve` + headless-Chromium pass, zero
+  errors. Gate green: fmt/clippy `-D warnings`/rustdoc clean, full suite 0
+  failures (4699 lib tests, +40 combined with the intervening T2.111 fix).
+  **Paired:** `SOLUTION_TREE` SOL-RATELIMIT-UNIVERSAL-PRIMITIVES (extended)
+  + SOL-KEYPOOL-REGISTRY-GAPS (new), §4 note updated — same commit.
+- **2026-07-14** — **C10 second increment: Stealer Logs Viewer full
+  file-explorer refactor, `[~]`→`[x]`.** User-provided detailed spec
+  (file-explorer layout, smart split, search everywhere, sortable columns,
+  duplicate detection, per-file stats, group-by-domain, raw view, keyboard
+  nav, full export set). Delivered every item the current importer's data
+  model can honestly support; literal per-file (System.txt/Credentials.txt/
+  ClientAt/EmployeeAt) splitting remains permanently undeliverable by this
+  importer's input format (a restructured victim/credential/domain
+  summary, not a raw stealer-log archive) — documented as a structural
+  limitation, not a "not yet." Pure frontend rewrite, no backend/schema
+  changes. Two real bugs caught by live interactive testing before
+  shipping, not by code review alone: the "All" link's click handler was
+  wired to the wrong DOM scope and never attached, so clicking it
+  hash-navigated the whole SPA away from the scan; and the new dup/
+  highlight/focus styles were hardcoded light-mode colours, illegible
+  against this app's actual dark-first theme until rewritten against the
+  app's own CSS custom properties. Live-verified end to end against the
+  real compiled binary: a real `hse import`, a real running `hse serve`,
+  and a headless-Chromium pass exercising every feature and reading back
+  actual clipboard/download content (not just "didn't throw"), in both
+  themes, zero console/page errors throughout. Gate green: fmt/clippy `-D
+  warnings`/rustdoc clean, full suite 0 failures (4699 lib tests — no Rust
+  changes this increment). **Paired:** `SOLUTION_TREE`
+  SOL-STEALER-LOGS-VIEWER `[~]`→`[x]`, §4 note updated — same commit.

@@ -33,6 +33,21 @@ const KEY_ENV_FALLBACK: &str = "HUNTSMAN_THREATFOX_KEY";
 
 pub struct UrlHaus;
 
+/// Resolve which abuse.ch key to use and which `ServiceDef` a rejection of it
+/// should be reported against: the dedicated `urlhaus` key if set, else the
+/// `threatfox` fallback (same abuse.ch account, different pool entry) — see
+/// the module doc comment. Pure and total over its inputs so the precedence
+/// and empty-string handling are unit-testable without a live HTTP round-trip.
+fn resolve_key<'a>(
+    primary: Option<&'a str>,
+    fallback: Option<&'a str>,
+) -> Option<(&'a str, &'static str)> {
+    primary
+        .filter(|k| !k.is_empty())
+        .map(|k| (k, "urlhaus"))
+        .or_else(|| fallback.filter(|k| !k.is_empty()).map(|k| (k, "threatfox")))
+}
+
 #[derive(Deserialize)]
 struct UrlhausResp {
     query_status: String,
@@ -199,10 +214,8 @@ impl Module for UrlHaus {
 
         // abuse.ch requires a free Auth-Key on every request since 2024. Without
         // one, skip cleanly instead of erroring on every host with a 401.
-        let Some(key) = ctx
-            .key_opt(KEY_ENV)
-            .or_else(|| ctx.key_opt(KEY_ENV_FALLBACK))
-            .filter(|k| !k.is_empty())
+        let Some((key, key_service)) =
+            resolve_key(ctx.key_opt(KEY_ENV), ctx.key_opt(KEY_ENV_FALLBACK))
         else {
             tracing::debug!(
                 target: "module.urlhaus",
@@ -221,8 +234,12 @@ impl Module for UrlHaus {
 
         let status = resp.status();
         // A present-but-rejected key (401/403) degrades to a clean skip rather
-        // than spamming a module error on every host in the scan.
+        // than spamming a module error on every host in the scan — but the
+        // key pool must still learn about it, or a dead/rotated-away key
+        // silently degrades every host forever with no operator-visible
+        // signal and no chance to rotate to another pooled key.
         if matches!(status.as_u16(), 401 | 403) {
+            crate::util::http::note_keyed_error(status.as_u16(), key_service, key, ctx);
             tracing::warn!(target: "module.urlhaus", %status, "abuse.ch rejected the Auth-Key");
             return Ok(ModuleResult::new());
         }

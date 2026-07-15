@@ -115,6 +115,14 @@ impl Module for GithubCodeSearch {
         let resp = req.send_tagged(SRC).await?;
         let status = resp.status();
         if status.as_u16() == 403 || status.as_u16() == 429 {
+            // Degrade to empty rather than failing the module (this search is
+            // best-effort) — but if a token was actually in play, the key pool
+            // must still learn it got rejected/throttled, or a dead token
+            // silently degrades every future scan with no operator-visible
+            // signal and no chance to rotate to another pooled token.
+            if let Some(tok) = token {
+                crate::util::http::note_keyed_error(status.as_u16(), "github", tok, ctx);
+            }
             return Ok(ModuleResult::new());
         }
         if !status.is_success() {

@@ -11,18 +11,22 @@ versions can include breaking changes; patch versions are bug-fix-only.
 ## [Unreleased]
 
 ### Added
-- **New "Stealer Logs" tab: a dedicated, paired credential browser for
-  imported stealer-log data (first increment).** Previously an imported
-  stealer log's credentials only showed up in the generic Browse tab, with
-  a login and its password appearing as two separate, unlinked entities —
+- **New "Stealer Logs" tab: a file-explorer-style, paired credential
+  browser for imported stealer-log data.** Previously an imported stealer
+  log's credentials only showed up in the generic Browse tab, with a
+  login and its password appearing as two separate, unlinked entities —
   no way to see which one went with the other, which machine they came
-  from, or when they were captured. The new tab groups credentials by
-  source machine, keeps login+password+domain+capture-date together per
-  row, and adds search, a Password/Combo (site vs. raw-pair) filter,
-  reveal-all plus per-row reveal/copy on passwords, click-to-copy domains,
-  and a bulk copy/download export. Duplicate-password detection,
-  group-by-domain, a raw view, the full export set, and keyboard
-  navigation are a planned follow-up, not included in this increment.
+  from, or when they were captured. The new tab keeps login+password+
+  domain+capture-date together per row in a real expand/collapse tree
+  (machine ▸ Passwords.txt/Combos.txt, or group by domain instead), with:
+  search with live match highlighting; sortable columns; reveal-all plus
+  per-row reveal/copy on passwords; click-to-copy domains; cross-machine
+  duplicate-password detection with a one-click filter; a raw text view;
+  full keyboard navigation (↑/↓, Enter to copy); and one-click exports
+  (copy all logins, copy all passwords, copy url:login:pass, or download
+  the file). Literal per-file (System.txt/Credentials.txt/ClientAt/
+  EmployeeAt) splitting isn't available — the imported format this
+  importer reads doesn't carry that per-credential file provenance.
 - **Internal: the correlation pass now has a proper `criterion` benchmark,
   closing the last open item in the standing proof-and-measurement foundation
   (PROBLEM_TREE F.3 / SOLUTION_TREE SOL-F3).** `correlate_entities` — the
@@ -344,6 +348,19 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Nine of HSE's API-key-gated providers (GitHub, abuse.ch/URLhaus,
+  hlrlookups.com, OpenCNAM, Trove, FullContact, domainsdb.info, NiamonX,
+  OsintCat) had no key rotation, no health-dashboard visibility, and the
+  documented `KEY=key1,key2,key3` multi-key convention silently sent a
+  broken literal string instead of splitting it.** These services were
+  simply never registered with the key-rotation system, so none of its
+  benefits applied even though the affected modules' own key-handling
+  code was otherwise correct. All nine are now fully registered — the
+  multi-key convention, rotation, and dashboard visibility all work for
+  them as they already did for every other keyed provider. Four modules
+  (GitHub profile/code-search/commit-search, URLhaus) additionally now
+  correctly report a rejected or rate-limited key back to the pool
+  instead of silently degrading with no operator-visible signal.
 - **`ip_reputation` could not tell a real source outage apart from a clean
   "nothing found."** Both `run_otx` (AlienVault OTX threat-pulse lookup)
   and `run_tor_check` (Tor exit-relay check) discarded every transport or
