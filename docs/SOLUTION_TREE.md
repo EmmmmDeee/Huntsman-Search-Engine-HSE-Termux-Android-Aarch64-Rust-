@@ -12166,3 +12166,12 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   integration guards extended. Gate green — 4885 lib + 103 api pass. DB
   integrity+WAL and cell-DB legs remain, node stays `[~]`. **Paired:**
   `PROBLEM_TREE` T2.168 — same commit.
+- **2026-07-15 (cont'd)** — **SOL-BUNDLE-ENRICH storage-health leg delivered**:
+  `integrity_check` added to the `StoragePort` trait (default `["ok"]`, SQLite
+  runs `PRAGMA integrity_check`) so the bundle checks the operator's REAL
+  on-disk DB — corruption was previously invisible (the self-test uses a
+  throwaway temp DB). New STORAGE HEALTH section + `detect_issues` arms
+  (integrity fail → CRITICAL, `-wal` > 64 MiB → WARNING). +1 unit arm test,
+  render + integration guards. Gate green — 4886 lib + 103 api. Only the
+  cell-DB leg remains; node stays `[~]`. **Paired:** `PROBLEM_TREE` T2.168 —
+  same commit.

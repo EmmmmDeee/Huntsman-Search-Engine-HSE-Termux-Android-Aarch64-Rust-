@@ -464,11 +464,22 @@ pub async fn system_debug_bundle(
         let scans = store.list_scans(200)?;
         let events = store
             .recent_module_outcome_events(crate::util::scraper_health::RECENT_EVENTS_WINDOW)?;
-        Ok::<_, crate::core::error::Error>((scans, events))
+        // Real on-disk DB health. An integrity check that can't even run is
+        // itself a problem, so fold the error into a problem row rather than
+        // dropping it. The `-wal` size is best-effort off the default path
+        // (`None` when overridden / absent — an honest omission, never a false
+        // "healthy").
+        let db_integrity = store
+            .integrity_check()
+            .unwrap_or_else(|e| vec![format!("integrity check could not run: {e}")]);
+        let wal_bytes = std::fs::metadata(format!("{}-wal", crate::default_db_path()))
+            .ok()
+            .map(|m| m.len());
+        Ok::<_, crate::core::error::Error>((scans, events, db_integrity, wal_bytes))
     })
     .await;
-    let (scans, events) = match loaded {
-        Ok(Ok(pair)) => pair,
+    let (scans, events, db_integrity, wal_bytes) = match loaded {
+        Ok(Ok(tuple)) => tuple,
         Ok(Err(e)) => return internal_error(&e),
         Err(e) => return internal_error(&format!("debug-bundle query task failed: {e}")),
     };
@@ -519,6 +530,8 @@ pub async fn system_debug_bundle(
         log_dump,
         log_lines,
         key_pool,
+        db_integrity,
+        wal_bytes,
         update_commits_behind,
         update_last_checked,
         update_phase,

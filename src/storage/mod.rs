@@ -819,6 +819,10 @@ impl crate::core::port::StoragePort for Store {
         Store::checkpoint_truncate(self)
     }
 
+    fn integrity_check(&self) -> Result<Vec<String>> {
+        Store::integrity_check(self)
+    }
+
     fn prune_events(&self, max_age_secs: u64, max_rows: usize) -> Result<usize> {
         Store::prune_events(self, max_age_secs, max_rows)
     }

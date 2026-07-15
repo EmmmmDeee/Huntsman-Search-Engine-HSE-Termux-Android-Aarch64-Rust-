@@ -4002,8 +4002,15 @@ direct.**
   only place the silent death is visible. **A real `hse serve` run caught a
   false positive** — an UNTESTED key (not yet probed, may work on first use)
   was flagged "ALL DEAD"; fixed by excluding untested from the dead test, with
-  a regression test. *Remaining legs (still `[~]`):* real on-disk DB
-  integrity+WAL, and cell-tower GEOINT dataset.
+  a regression test. **Storage-health leg DELIVERED 2026-07-15:** added
+  `integrity_check` to the `StoragePort` trait (default `["ok"]`, SQLite
+  override runs `PRAGMA integrity_check` — mirroring the `checkpoint_truncate`
+  trait pattern) so the handler checks the REAL on-disk store (the self-test
+  only round-trips a throwaway temp DB); a STORAGE HEALTH section reports
+  integrity + `-wal` size, and two pure `detect_issues` arms fire — a
+  non-`["ok"]` integrity result → CRITICAL, a `-wal` past 64 MiB
+  (`WAL_RUNAWAY_BYTES`, checkpointing stalled) → WARNING. *Remaining leg (still
+  `[~]`):* cell-tower GEOINT dataset.
   A 4-lens verification workflow over the T2.163 delivery (each finding
   re-verified against real code) confirmed the bundle silently misses: (1)
   **key-pool / dead-key health** — when a service's keys are all
@@ -17604,3 +17611,17 @@ way, so this specific drift class can't recur silently again.
   warnings`/strict-rustdoc/`cargo test` — 4885 lib + 103 api pass. T2.168 stays
   `[~]` (DB integrity+WAL and cell-DB legs remain). **Paired:** `SOLUTION_TREE`
   SOL-BUNDLE-ENRICH (still `[~]`), §5 — same commit.
+- **2026-07-15** — **Executed T2.168 (storage-health leg)**: on-disk DB
+  corruption was invisible everywhere (the self-test only checks a throwaway
+  temp DB). Added `integrity_check` to the `StoragePort` trait (default
+  `["ok"]`, SQLite override runs `PRAGMA integrity_check`, mirroring
+  `checkpoint_truncate`) so the loopback handler checks the operator's REAL
+  store off-reactor, plus a best-effort `-wal` size read off the default path.
+  New STORAGE HEALTH section + two pure `detect_issues` arms: integrity
+  non-`["ok"]` → CRITICAL (back up + re-import), `-wal` > 64 MiB
+  (`WAL_RUNAWAY_BYTES`) → WARNING. **Tests:** +1 arm test (corruption CRITICAL
+  / runaway-WAL WARNING / healthy no-op) + STORAGE HEALTH render + integration
+  section guards + a corrupt-DB render fixture. Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc/`cargo test` — 4886 lib + 103 api
+  pass. T2.168 stays `[~]` (only the cell-DB leg remains). **Paired:**
+  `SOLUTION_TREE` SOL-BUNDLE-ENRICH (still `[~]`), §5 — same commit.

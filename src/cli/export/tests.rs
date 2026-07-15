@@ -754,6 +754,8 @@ fn healthy_issue_inputs() -> IssueInputs<'static> {
         update_error: None,
         update_commits_behind: None,
         dead_key_services: vec![],
+        db_integrity_issue: None,
+        wal_oversized: false,
     }
 }
 
@@ -895,6 +897,28 @@ fn key_pool_untested_key_is_not_counted_dead() {
 }
 
 #[test]
+fn detect_issues_flags_db_corruption_as_critical_and_a_runaway_wal_as_warning() {
+    // On-disk corruption is invisible to the self-test (throwaway temp DB), so
+    // the bundle is the only place it can surface — at CRITICAL.
+    let mut corrupt = healthy_issue_inputs();
+    corrupt.db_integrity_issue = Some("row 42 missing from index idx_entities_uid");
+    let issues = detect_issues(&corrupt);
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].severity, SEV_CRITICAL);
+    assert_eq!(issues[0].category, "storage");
+    assert!(issues[0].detail.contains("row 42 missing"));
+    // A runaway WAL is a real device disk-footprint failure → WARNING.
+    let mut wal = healthy_issue_inputs();
+    wal.wal_oversized = true;
+    let issues = detect_issues(&wal);
+    assert_eq!(issues.len(), 1);
+    assert_eq!(issues[0].severity, SEV_WARNING);
+    assert_eq!(issues[0].category, "storage");
+    // A healthy DB raises nothing.
+    assert!(detect_issues(&healthy_issue_inputs()).is_empty());
+}
+
+#[test]
 fn detect_issues_flags_a_failed_self_update_as_critical() {
     let mut inp = healthy_issue_inputs();
     inp.update_error = Some("git pull rejected: local changes");
@@ -955,6 +979,8 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
             revoked: 0,
             avg_health: 0.1,
         }],
+        db_integrity: vec!["*** in database main ***".into(), "row 7 missing".into()],
+        wal_bytes: Some(128 * 1024 * 1024),
         update_commits_behind: Some(3),
         update_last_checked: 1_700_000_000,
         update_phase: "idle".into(),
@@ -973,6 +999,7 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
         "── SCRAPER HEALTH",
         "── PROVIDER QUOTAS",
         "── KEY POOL",
+        "── STORAGE HEALTH",
         "── RECENT SCANS",
         "── RECENT LOGS",
         "── SOURCE FILES",
@@ -984,6 +1011,11 @@ fn system_bundle_has_every_section_and_surfaces_verdict_logs_and_failed_scan_err
     // The fully-dead seeknow pool is marked and reaches the verdict.
     assert!(out.contains("ALL DEAD"));
     assert!(out.contains("all 2 pooled key"));
+    // Corrupt DB + runaway WAL both render and reach the verdict.
+    assert!(out.contains("integrity: FAIL"));
+    assert!(out.contains("row 7 missing"));
+    assert!(out.contains("RUNAWAY"));
+    assert!(out.contains("database integrity check FAILED"));
     // The self-diagnosing verdict surfaces the failing self-test check.
     assert!(out.contains("[CRITICAL]"), "verdict must flag the failure");
     assert!(out.contains("temp db open failed"));
@@ -1006,6 +1038,8 @@ fn system_bundle_reports_all_clear_when_healthy() {
         log_dump: String::new(),
         log_lines: 0,
         key_pool: vec![],
+        db_integrity: vec!["ok".into()],
+        wal_bytes: Some(4096),
         update_commits_behind: Some(0),
         update_last_checked: 0,
         update_phase: "idle".into(),

@@ -646,7 +646,18 @@ pub(crate) struct IssueInputs<'a> {
     /// `(service, total_keys)` for each configured service whose pooled keys are
     /// ALL non-active — its keyed modules silently return nothing.
     pub dead_key_services: Vec<(&'a str, usize)>,
+    /// the first `PRAGMA integrity_check` problem row when the on-disk DB is
+    /// corrupt (`None` ⇒ healthy `["ok"]`).
+    pub db_integrity_issue: Option<&'a str>,
+    /// whether the SQLite `-wal` sidecar has grown past the safe bound.
+    pub wal_oversized: bool,
 }
+
+/// The `-wal` size (bytes) above which the write-ahead log is considered to be
+/// running away — checkpointing has stalled and the sidecar is eating device
+/// storage. 64 MiB: comfortably above a healthy transient WAL, well below a
+/// level that matters on a phone.
+pub(crate) const WAL_RUNAWAY_BYTES: u64 = 64 * 1024 * 1024;
 
 /// Join every health signal into one worst-first problem list. **Pure** (no
 /// I/O), so the classification policy is unit-testable off fixtures; a fully
@@ -774,6 +785,27 @@ pub(crate) fn detect_issues(inp: &IssueInputs) -> Vec<DetectedIssue> {
             ),
         });
     }
+    // On-disk database corruption — the highest-severity, most-invisible signal:
+    // the self-test only checks a throwaway temp DB, so a corrupt real store
+    // never shows anywhere else.
+    if let Some(issue) = inp.db_integrity_issue {
+        issues.push(DetectedIssue {
+            severity: SEV_CRITICAL,
+            category: "storage",
+            detail: format!(
+                "database integrity check FAILED: {issue} — back up the DB and consider `hse` re-import; corruption silently loses/garbles stored findings"
+            ),
+        });
+    }
+    if inp.wal_oversized {
+        issues.push(DetectedIssue {
+            severity: SEV_WARNING,
+            category: "storage",
+            detail:
+                "the SQLite -wal sidecar has grown past 64 MiB — checkpointing appears stalled; it will keep eating device storage until the process cleanly closes the DB"
+                    .to_string(),
+        });
+    }
     issues.sort_by(|a, b| {
         severity_rank(a.severity)
             .cmp(&severity_rank(b.severity))
@@ -837,6 +869,14 @@ pub(crate) struct SystemDebugInputs {
     /// Per-service key-pool health (value-free), for the KEY POOL section and
     /// the silently-dead-pool verdict arm.
     pub key_pool: Vec<KeyPoolSummary>,
+    /// `PRAGMA integrity_check` rows for the REAL on-disk store — `["ok"]` when
+    /// healthy, one or more problem descriptions when corrupt (the self-test
+    /// only round-trips a throwaway temp DB, never the operator's data).
+    pub db_integrity: Vec<String>,
+    /// Size of the SQLite `-wal` sidecar in bytes, or `None` if not found. A
+    /// runaway WAL (checkpointing stalled) is a real on-device disk-footprint
+    /// failure mode.
+    pub wal_bytes: Option<u64>,
     /// Commits the running binary is behind upstream, or `None` if never
     /// checked / offline. A build that is behind may be hitting bugs already
     /// fixed upstream — the exact situation a real operator debug bundle showed
@@ -968,6 +1008,13 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             .filter(|k| k.is_dead())
             .map(|k| (k.service.as_str(), k.total))
             .collect(),
+        // Healthy integrity is exactly `["ok"]`; any other row is a problem.
+        db_integrity_issue: inp
+            .db_integrity
+            .iter()
+            .find(|r| r.as_str() != "ok")
+            .map(String::as_str),
+        wal_oversized: inp.wal_bytes.is_some_and(|b| b > WAL_RUNAWAY_BYTES),
     });
     let (crit, warn) = issues.iter().fold((0usize, 0usize), |(c, w), i| {
         if i.severity == SEV_CRITICAL {
@@ -1209,6 +1256,39 @@ pub(crate) fn render_system_debug_bundle(inp: &SystemDebugInputs) -> String {
             k.avg_health,
             dead
         );
+    }
+
+    // ── 4e. Storage health — the REAL on-disk DB (self-test only checks a
+    //        throwaway temp DB, so corruption is invisible everywhere else). ──
+    let integrity_ok = inp.db_integrity.iter().all(|r| r == "ok");
+    let _ = writeln!(s, "\n── STORAGE HEALTH (real on-disk DB) ──");
+    if integrity_ok {
+        let _ = writeln!(s, "  integrity: ok");
+    } else {
+        let _ = writeln!(
+            s,
+            "  integrity: FAIL — {} issue(s):",
+            inp.db_integrity
+                .iter()
+                .filter(|r| r.as_str() != "ok")
+                .count()
+        );
+        for row in inp.db_integrity.iter().filter(|r| r.as_str() != "ok") {
+            let _ = writeln!(s, "    • {row}");
+        }
+    }
+    match inp.wal_bytes {
+        Some(b) => {
+            let note = if b > WAL_RUNAWAY_BYTES {
+                "  · RUNAWAY (checkpointing stalled)"
+            } else {
+                ""
+            };
+            let _ = writeln!(s, "  WAL size : {} KiB{note}", b / 1024);
+        }
+        None => {
+            let _ = writeln!(s, "  WAL size : (no -wal sidecar found)");
+        }
     }
 
     // ── 5. Recent scans (with each failed scan's error inline) ──
