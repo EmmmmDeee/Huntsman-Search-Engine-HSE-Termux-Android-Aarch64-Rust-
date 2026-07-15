@@ -167,9 +167,11 @@ impl Module for HuggingfaceUser {
             "https://huggingface.co/api/users/{}/overview",
             urlencode(handle)
         );
-        let user: HfUser = match fetch_json_or_404(&ctx.http, SRC, &url).await {
-            Ok(Some(u)) => u,
-            Ok(None) | Err(_) => return Ok(ModuleResult::new()),
+        // 404 (`Ok(None)`) = genuine "no such user" clean miss; every other
+        // failure (429/5xx/transport) propagates via `?` instead of a fake 404
+        // (T2.117 — `fetch_json_or_404`'s split is pinned in `util::http::tests`).
+        let Some(user) = fetch_json_or_404::<HfUser>(&ctx.http, SRC, &url).await? else {
+            return Ok(ModuleResult::new());
         };
         // Identity guard: the overview response echoes the requested handle in
         // its top-level `user` field; confirm it matches so a redirect or a

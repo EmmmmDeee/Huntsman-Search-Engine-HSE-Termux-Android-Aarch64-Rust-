@@ -281,6 +281,66 @@ async fn fetch_json_propagates_a_non_2xx_status_as_err_not_a_silent_default() {
     crate::util::circuit_breaker::record_success("127.0.0.1");
 }
 
+#[tokio::test]
+async fn fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    // The exact contract the nine Social profile modules (`bitbucket_user` +
+    // 8 others) rely on after T2.117: a genuine 404 is the platform's "no such
+    // user" clean miss (`Ok(None)`), while a 429/5xx/transport failure is a real
+    // outage that MUST surface as `Err` — never be collapsed into the same empty
+    // result as the clean miss (the fake-404 defect that
+    // `Ok(None) | Err(_) => return Ok(empty)` produced). Those modules' own
+    // `process()` hardcodes a live HTTPS host (no URL seam to mock), so the split
+    // they now depend on is pinned here at the primitive layer, hermetically, on
+    // loopback. Sibling of `fetch_json_propagates_a_non_2xx_status_as_err_...`
+    // above, which pins the no-absent-list `fetch_json` variant for the T2.115
+    // (psbdmp) case; this one pins the 404-is-absent `fetch_json_or_404` variant.
+    async fn serve_once(status: u16, reason: &'static str) -> std::net::SocketAddr {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (mut sock, _) = listener.accept().await.unwrap();
+            let mut buf = vec![0u8; 2048];
+            let _ = sock.read(&mut buf).await;
+            let body = b"{}";
+            let head = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Length: {}\r\n\r\n",
+                body.len()
+            );
+            let _ = sock.write_all(head.as_bytes()).await;
+            let _ = sock.write_all(body).await;
+            let _ = sock.flush().await;
+        });
+        addr
+    }
+
+    let client = build_client();
+
+    // 404 → Ok(None): the genuine "not on this platform" clean miss stays a miss.
+    crate::util::circuit_breaker::record_success("127.0.0.1"); // isolate from parallel tests
+    let addr = serve_once(404, "Not Found").await;
+    let miss: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&client, "test_404_miss", &format!("http://{addr}/")).await;
+    assert!(
+        matches!(miss, Ok(None)),
+        "a genuine 404 must map to Ok(None), got {miss:?}"
+    );
+
+    // 503 → Err: a real outage must NOT masquerade as the clean miss.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+    let addr = serve_once(503, "Service Unavailable").await;
+    let outage: crate::core::error::Result<Option<serde_json::Value>> =
+        fetch_json_or_404(&client, "test_404_outage", &format!("http://{addr}/")).await;
+    assert!(
+        outage.is_err(),
+        "a 503 must propagate as Err, not Ok(None), got {outage:?}"
+    );
+    // The 503 recorded a breaker failure for the shared loopback host — reset it
+    // so this test can't nudge a later parallel test toward FAILURE_THRESHOLD.
+    crate::util::circuit_breaker::record_success("127.0.0.1");
+}
+
 #[test]
 fn traced_client_builds_and_tolerates_non_ascii_id() {
     let _ = build_client_with_trace("plain-ascii-id");

@@ -3621,10 +3621,19 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   instead of folding it into the same empty result the genuine k-Anonymity
   "not found" signal (a `200` whose listing omits the suffix) also
   produces. See `PROBLEM_TREE` T2.116 for the full finding.
-- **`[ ]` SOL-NINE-SOCIAL-FAKE-404 · Split the `Err(_)` arm from the
+- **`[x]` SOL-NINE-SOCIAL-FAKE-404 · Split the `Err(_)` arm from the
   genuine-404 `Ok(None)` arm across all nine Social modules** →
-  **T2.117**. Queued, not yet started — see `PROBLEM_TREE` T2.117 for the
-  finding.
+  **T2.117**. Delivered 2026-07-15: replaced the identical
+  `match { Ok(Some) => x, Ok(None) | Err(_) => return Ok(empty) }` collapse
+  in `launchpad_user`/`codewars_user`/`hexpm_user`/`dockerhub_user`/
+  `bitbucket_user`/`huggingface_user`/`sourceforge_user`/`cpan_user`/
+  `gitea_user` with the `fetch.rs`-recommended `let Some(x) =
+  fetch_json_or_404::<T>(…).await? else { return Ok(empty); }` idiom — 404
+  stays a clean miss, every real 429/5xx/transport failure now propagates.
+  All nine hit fixed known hosts (not arbitrary probe domains), so an outage
+  there is genuinely actionable. New hermetic primitive-layer guard
+  `fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err` pins the
+  contract. See `PROBLEM_TREE` T2.117 for the full finding.
 - **`[ ]` SOL-ASIC-CKAN-HANDROLL · Migrate `asic_persons`/
   `asic_banned_orgs`/`asic_business_names` onto shared `util::ckan::Response`**
   → **T2.118**. Queued, not yet started — see `PROBLEM_TREE` T2.118 for the
@@ -4613,8 +4622,10 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   (`niamonx`; its fix centralised T2.111's `combine_result` into a shared
   `ModuleResult::or_hard_failure`), and **T2.116** (`pwned_passwords`)
   delivered 2026-07-15; **T2.115** (`psbdmp`) and **T2.121** (`urlhaus`)
-  delivered 2026-07-15 on the parallel `main` line. 33 of 49 still queued
-  (16 of T2.102–T2.150 now `[x]`, machine-counted against the tree).*
+  delivered 2026-07-15 on the parallel `main` line. **T2.117** (nine Social
+  profile modules' shared fake-404 collapse) delivered 2026-07-15. 32 of 49
+  still queued (17 of T2.102–T2.150 now `[x]`, machine-counted against the
+  tree).*
 
 ### 4b · Solutions begun but unfinished (the finish queue)
 - **SOL-F1** — substrate + **seven** consumers landed (`is_captcha_page`,
@@ -11897,3 +11908,17 @@ The Gallant/`burntsushi` primitives, read as the **means** rather than the rule:
   fmt/clippy `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo
   test` — 4865 total pass (+3). **Paired:** `PROBLEM_TREE` T2.116
   `[ ]`→`[x]` — same commit.
+- **2026-07-15 (cont'd)** — **SOL-NINE-SOCIAL-FAKE-404 closed** (nine Social
+  profile modules sharing `Ok(None) | Err(_) => return Ok(empty)`, a fake
+  404 that hid every real 429/5xx/transport outage). Verified the exact nine
+  by grep+read (`launchpad_user`/`codewars_user`/`hexpm_user`/
+  `dockerhub_user`/`bitbucket_user`/`huggingface_user`/`sourceforge_user`/
+  `cpan_user`/`gitea_user`), confirmed all hit fixed known hosts (propagation
+  is correct, not the arbitrary-domain `fetch_json_probe` case), and replaced
+  each collapse with the `fetch.rs`-recommended `let Some(x) =
+  fetch_json_or_404::<T>(…).await? else { return Ok(empty); }`. New hermetic
+  primitive-layer guard `fetch_json_or_404_maps_404_to_none_but_propagates_
+  5xx_as_err` pins the 404-vs-5xx split (CONVENTIONS §7 class guard, matching
+  the reviewed T2.115 precedent). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4864 total pass (+1).
+  **Paired:** `PROBLEM_TREE` T2.117 `[ ]`→`[x]` — same commit.

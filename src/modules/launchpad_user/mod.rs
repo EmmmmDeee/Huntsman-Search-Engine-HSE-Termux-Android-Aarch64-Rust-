@@ -152,9 +152,13 @@ impl Module for LaunchpadUser {
         }
         // Launchpad uses a tilde prefix in the API path to denote a person.
         let url = format!("https://api.launchpad.net/1.0/~{}", urlencode(handle));
-        let person: LpPerson = match fetch_json_or_404(&ctx.http, SRC, &url).await {
-            Ok(Some(p)) => p,
-            Ok(None) | Err(_) => return Ok(ModuleResult::new()),
+        // A genuine 404 (`Ok(None)`) is a real "no such Launchpad person" clean
+        // miss; every other failure (429/5xx/transport) propagates via `?` as a
+        // real `Error::module` instead of masquerading as that clean miss
+        // (T2.117). `fetch_json_or_404`'s 404→`None`/non-2xx→`Err` split is the
+        // contract this relies on (hermetically pinned in `util::http::tests`).
+        let Some(person) = fetch_json_or_404::<LpPerson>(&ctx.http, SRC, &url).await? else {
+            return Ok(ModuleResult::new());
         };
         if !person.name.eq_ignore_ascii_case(handle) {
             return Ok(ModuleResult::new());
