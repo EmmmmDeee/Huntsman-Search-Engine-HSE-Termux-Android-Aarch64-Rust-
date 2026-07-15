@@ -472,6 +472,18 @@ versions can include breaking changes; patch versions are bug-fix-only.
   route `/static/{*file}` to serve the new nested module paths.
 
 ### Fixed
+- **Nine Social profile modules (`launchpad_user`, `codewars_user`,
+  `hexpm_user`, `dockerhub_user`, `bitbucket_user`, `huggingface_user`,
+  `sourceforge_user`, `cpan_user`, `gitea_user`) converted a real fetch
+  failure into a fake 404 (T2.117).** Each shared the identical
+  `match fetch_json_or_404(…) { Ok(Some(x)) => x, Ok(None) | Err(_) =>
+  return Ok(empty) }` collapse, so a 429/5xx/transport outage was
+  indistinguishable from "this username doesn't exist on this platform."
+  All nine query a fixed known host, so an outage there is genuinely
+  actionable — replaced with the `let Some(x) = fetch_json_or_404::<T>(…)
+  .await? else { return Ok(empty); }` idiom, keeping a genuine 404 a clean
+  miss while propagating real failures. A new hermetic primitive-layer test
+  pins the 404-vs-5xx split all nine now rely on.
 - **`pwned_passwords` treated a non-2xx response (a transient 429/5xx)
   identically to a genuine zero-count "not pwned" result (T2.116).**
   Confirmed the k-Anonymity range API's genuine "not found" signal is

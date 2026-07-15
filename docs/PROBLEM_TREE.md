@@ -2083,15 +2083,40 @@ direct.**
   local HTTP server. Gate green: fmt/clippy `--all-targets -D warnings`/
   strict-rustdoc `cargo doc`/`cargo test` — 4865 total pass (+3). **Paired:**
   `SOLUTION_TREE` SOL-PWNEDPW-NON2XX `[ ]`→`[x]` — same commit.
-- **`[ ]` T2.117 · Nine Social profile modules (`bitbucket_user` + 8 others)
+- **`[x]` T2.117 · Nine Social profile modules (`bitbucket_user` + 8 others)
   share `Ok(None)|Err(_) => Ok(ModuleResult::new())`, converting real
   fetch failures into a fake 404.**
   A 429/5xx/timeout is indistinguishable from "this username doesn't exist
   on this platform" across all nine modules. → **Solution:** split the
   `Err(_)` arm out from the genuine-404 `Ok(None)` arm and propagate fetch
   failures across all nine modules. **P2**. *Queued from the 2026-07-14
-  comprehensive audit, wave 1 (module categories) — not yet investigated or
-  fixed.* **Paired:** `SOLUTION_TREE` SOL-NINE-SOCIAL-FAKE-404 (new stub).
+  comprehensive audit, wave 1 (module categories).* **Fixed (2026-07-15):**
+  confirmed by direct read that the nine — `launchpad_user`, `codewars_user`,
+  `hexpm_user`, `dockerhub_user`, `bitbucket_user`, `huggingface_user`,
+  `sourceforge_user`, `cpan_user`, `gitea_user` — each carry the identical
+  three-line block `let <v>: <T> = match fetch_json_or_404(…).await { Ok(Some
+  (x)) => x, Ok(None) | Err(_) => return Ok(ModuleResult::new()) }`, and that
+  every one queries a *fixed known host* (api.bitbucket.org, hub.docker.com,
+  huggingface.co, …) with the username in the URL path — so a transport
+  error/5xx there is a real, actionable outage, exactly the case
+  `fetch_json_probe` (the arbitrary-domain WebFinger/NIP-05 variant) is
+  deliberately *not* used for. Replaced each collapse with the idiom
+  `fetch.rs`'s own doc comment recommends — `let Some(<v>) =
+  fetch_json_or_404::<T>(…).await? else { return Ok(ModuleResult::new()); }`
+  — so a genuine 404 (`Ok(None)`) stays the clean "no such user" miss while
+  every 429/5xx/transport failure propagates via `?` as a real
+  `Error::module` (a `ModuleError` event feeding the circuit breaker + T2.7
+  health streak). The nine modules hardcode a live HTTPS host, so — per the
+  reviewed precedent set for the identical T2.115 (`psbdmp`) case, whose own
+  test comment already anticipated "~9 other modules" — the split they now
+  rely on is pinned at the primitive layer by a new hermetic loopback test
+  `fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err`
+  (404→`Ok(None)`, 503→`Err`), the class-level guard (CONVENTIONS §7) for the
+  contract, not an instance-level red/green (which a hardcoded-URL
+  `process()` cannot have hermetically). Gate green: fmt/clippy
+  `--all-targets -D warnings`/strict-rustdoc `cargo doc`/`cargo test`.
+  **Paired:** `SOLUTION_TREE` SOL-NINE-SOCIAL-FAKE-404 `[ ]`→`[x]` — same
+  commit.
 - **`[ ]` T2.118 · `asic_persons`/`asic_banned_orgs`/`asic_business_names`
   hand-roll their own fetch instead of the shared `util::ckan::Response`.**
   Hand-rolling drops CKAN's `success` field and swallows every real
@@ -17059,3 +17084,30 @@ way, so this specific drift class can't recur silently again.
   server. Gate green: fmt/clippy `--all-targets -D warnings`/strict-rustdoc
   `cargo doc`/`cargo test` — 4865 total pass (+3). **Paired:**
   `SOLUTION_TREE` SOL-PWNEDPW-NON2XX `[ ]`→`[x]`, §5 — same commit.
+- **2026-07-15 (cont'd)** — **Executed T2.117** (nine Social profile modules
+  sharing `Ok(None) | Err(_) => return Ok(ModuleResult::new())`, converting a
+  real fetch failure into a fake 404). Verified the "nine modules" claim by
+  direct grep+read rather than trusting the stub: exactly nine
+  (`launchpad_user`, `codewars_user`, `hexpm_user`, `dockerhub_user`,
+  `bitbucket_user`, `huggingface_user`, `sourceforge_user`, `cpan_user`,
+  `gitea_user`) carry the byte-identical three-line collapse, and each
+  queries a *fixed known host* with the username in the URL path — so a
+  429/5xx/transport failure there is a real actionable outage, exactly the
+  case `fetch_json_probe` (the arbitrary-domain variant) is deliberately NOT
+  used for, confirming propagation is correct for all nine. Replaced each
+  with the idiom `fetch.rs`'s own doc recommends — `let Some(x) =
+  fetch_json_or_404::<T>(…).await? else { return Ok(ModuleResult::new()); }`
+  — mapping a genuine 404 (`Ok(None)`) to the unchanged clean "no such user"
+  miss while propagating every real failure via `?`. Because all nine
+  hardcode a live HTTPS host (no URL seam), the split they now rely on is
+  pinned at the primitive layer by a new hermetic loopback test
+  `fetch_json_or_404_maps_404_to_none_but_propagates_5xx_as_err`
+  (404→`Ok(None)`, 503→`Err`) — the class-level guard (CONVENTIONS §7),
+  following the exact precedent the reviewed T2.115 (`psbdmp`) fix set for
+  this situation (its own primitive-test comment already named "~9 other
+  modules" — this is that work). Gate green: fmt/clippy `--all-targets -D
+  warnings`/strict-rustdoc `cargo doc`/`cargo test` — 4864 total pass (+1
+  http guard; the nine module edits add no tests of their own — a
+  hardcoded-URL `process()` has no hermetic instance-level red/green, so the
+  contract is guarded once at the primitive). **Paired:** `SOLUTION_TREE`
+  SOL-NINE-SOCIAL-FAKE-404 `[ ]`→`[x]`, §5 — same commit.
